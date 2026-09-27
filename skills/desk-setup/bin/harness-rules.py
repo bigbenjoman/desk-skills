@@ -13,6 +13,16 @@
 Options (before the command): --settings PATH (default ~/.claude/settings.json)
                               --ledger PATH   (default ~/.claude/desk/harness-rules.json)
 
+Where rules may go. A plan that WIDENS access (any `allow` entry, or any `remove_guards`) is written
+only to a settings file inside a repo's own `.claude/` directory (<repo root>/.claude/<file>), and
+only if git ignores that file there: `git check-ignore` from the repo root, which honours the repo's
+.gitignore files, .git/info/exclude and your global excludes. The report names the file that
+ignores it; if only .git/info/exclude or your global excludes do, it recommends adding
+`.claude/settings.local.json` to the repo's .gitignore so every clone is covered. A tracked or
+un-ignored file is refused: an allow rule must never reach git. User-level files
+(~/.claude/settings.json, or any path not in a repo's .claude/) take deny and ask rules only, so
+the baseline stays user-level; an allow plan aimed at one is refused (exit 2, nothing written).
+
 Plan shape:
   {"add":           [{"list": "allow|ask|deny", "rule": "Bash(gh pr ready *)", "rows": ["pr-ready"]}],
    "remove_guards": [{"list": "ask", "rule": "Bash(gh pr merge *--auto*)", "rows": ["pr-auto-merge"]}]}
@@ -24,13 +34,16 @@ stays removed when a plan re-adds it, and is put back once when the row that rem
 revoked. A baseline plan may hold only deny entries; `<slack>` in a rule expands to
 mcp__claude_ai_Slack__ and each --slack-prefix. Re-applying any plan is a no-op. Every write backs
 up settings.json and the ledger first, and writes through a symlink with the file's mode kept.
-Exit 2 on an unreadable settings.json, ledger or plan; nothing is written then.
+Exit 2 on an unreadable settings.json, ledger or plan, or a refused destination; nothing is written
+then. `remove` never creates a settings file: when the file does not exist it says no rule was
+removed from it and drops only the ledger records.
 """
 
 import datetime
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -86,6 +99,67 @@ def write_json(path, data):
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+def _git(root, *args):
+    try:
+        return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=10)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def repo_settings_scope(settings_path):
+    """(repo root, path relative to it) when the file is <repo root>/.claude/<file>, else None."""
+    path = os.path.abspath(os.path.expanduser(settings_path))
+    folder = os.path.dirname(path)
+    if os.path.basename(folder) != ".claude":
+        return None
+    user_claude = os.path.join(os.path.expanduser("~"), ".claude")
+    if os.path.realpath(folder) == os.path.realpath(user_claude):
+        return None  # ~/.claude is user-level even when $HOME is itself a git repo (dotfiles)
+    root = os.path.dirname(folder)
+    r = _git(root, "rev-parse", "--show-toplevel")
+    if not r or r.returncode != 0 or os.path.realpath(r.stdout.strip()) != os.path.realpath(root):
+        return None
+    return root, os.path.join(".claude", os.path.basename(path))
+
+
+def check_ignored(root, rel):
+    """Die unless git ignores rel in root. Returns a note naming what ignores it."""
+    tracked = _git(root, "ls-files", "--error-unmatch", "--", rel)
+    if tracked and tracked.returncode == 0:
+        die(f"{os.path.join(root, rel)} is tracked by git, so allow rules written there would be "
+            "committed; nothing changed. Untrack it and add it to the repo's .gitignore.")
+    q = _git(root, "check-ignore", "-q", "--", rel)
+    if not q or q.returncode != 0:
+        die(f"git does not ignore {rel} in {root}, so allow rules written there could be committed; "
+            f"nothing changed. Add `{rel}` to {os.path.join(root, '.gitignore')} and run it again.")
+    v = _git(root, "check-ignore", "-v", "--", rel)
+    source = (v.stdout.split(":", 1)[0] if v and v.returncode == 0 else "").strip()
+    src_abs = os.path.realpath(source if os.path.isabs(source) else os.path.join(root, source))
+    inside = src_abs.startswith(os.path.realpath(root) + os.sep)
+    info_exclude = source.replace(os.sep, "/").endswith(".git/info/exclude")
+    if inside and not info_exclude:
+        return f"ignored by the repo's {os.path.relpath(src_abs, os.path.realpath(root))}"
+    what = ".git/info/exclude (this clone only)" if info_exclude else f"your global excludes ({source})"
+    return (f"ignored only by {what}; recommend adding `{rel}` to {os.path.join(root, '.gitignore')} "
+            "so every clone and teammate is covered")
+
+
+def widens(plan):
+    return any(e["list"] == "allow" for e in plan.get("add", [])) or bool(plan.get("remove_guards"))
+
+
+def check_destination(settings_path, plan):
+    """Refuse a widening plan anywhere but an ignored file in a repo's .claude/. Returns a note."""
+    if not widens(plan):
+        return None
+    scope = repo_settings_scope(settings_path)
+    if scope is None:
+        die(f"{settings_path} is user-level (not in a repo's .claude/), and this plan grants access "
+            "(allow rules or removed guards). Grants are per repo: pass --settings "
+            "<repo root>/.claude/settings.local.json. Nothing changed.")
+    return check_ignored(*scope)
 
 
 class State:
@@ -144,7 +218,7 @@ class State:
             b = backup(p, stamp)
             if b:
                 self.log.append(f"backup   {b}")
-        if not self.settings_existed:
+        if not self.settings_existed and self.settings != {}:
             self._created("file")
         # Drop containers setup created and nothing else now uses.
         perm = self.settings.get("permissions")
@@ -157,7 +231,9 @@ class State:
                 del self.settings["permissions"]
                 self.ledger["created"].remove("permissions")
         empty = not self.ledger["rules"] and not self.ledger["removed_guards"]
-        if empty and "file" in self.ledger["created"] and self.settings == {}:
+        if not self.settings_existed and self.settings == {}:
+            self.ledger["created"] = [k for k in self.ledger["created"] if k != "file"]
+        elif empty and "file" in self.ledger["created"] and self.settings == {}:
             if os.path.exists(self.settings_path):
                 os.remove(self.settings_path)
             self.log.append(f"removed  {self.settings_path} (setup had created it)")
@@ -225,7 +301,11 @@ def apply_plan(st, plan):
 
 
 def cmd_add(st, plan_path):
-    apply_plan(st, read_plan(plan_path))
+    plan = read_plan(plan_path)
+    note = check_destination(st.settings_path, plan)
+    if note:
+        st.log.append(f"gitignore {st.settings_path}: {note}")
+    apply_plan(st, plan)
     st.save()
 
 
@@ -256,15 +336,26 @@ def cmd_baseline(st, plan_path, prefixes, check):
 def cmd_remove(st, rows, everything):
     revoked = set(rows)
     hit = (lambda owners: True) if everything else (lambda owners: bool(revoked & set(owners)))
+    missing = not st.settings_existed
     for rec in [r for r in st.ledger["rules"] if hit(r["rows"])]:
         cur = st.perm_list(rec["list"], create=False) or []
+        st.ledger["rules"].remove(rec)
         if rec["rule"] in cur:
             cur.remove(rec["rule"])
-        st.ledger["rules"].remove(rec)
-        st.log.append(f"REMOVED  {rec['list']:5} {rec['rule']}  ({', '.join(rec['rows'])})")
+            st.log.append(f"REMOVED  {rec['list']:5} {rec['rule']}  ({', '.join(rec['rows'])})")
+        elif missing:
+            st.log.append(f"absent   {rec['list']:5} {rec['rule']}  ({st.settings_path} does not exist: "
+                          "nothing removed from it; ledger record dropped)")
+        else:
+            st.log.append(f"absent   {rec['list']:5} {rec['rule']}  (no longer in {st.settings_path}; "
+                          "ledger record dropped)")
     for g in list(st.ledger["removed_guards"]):
         if everything or revoked & set(g["guard_rows"]):
             st.ledger["removed_guards"].remove(g)  # the rule it guarded is gone too
+        elif revoked & set(g["rows"]) and missing:
+            st.ledger["removed_guards"].remove(g)
+            st.log.append(f"absent   {g['list']:5} {g['rule']}  ({st.settings_path} does not exist: "
+                          "guard not restored; ledger record dropped)")
         elif revoked & set(g["rows"]):
             st.ledger["removed_guards"].remove(g)
             cur = st.perm_list(g["list"], create=True)
@@ -277,6 +368,10 @@ def cmd_remove(st, rows, everything):
                 st.ledger["rules"].append({"list": g["list"], "rule": g["rule"], "rows": g["guard_rows"],
                                            "added": datetime.date.today().isoformat()})
             st.log.append(f"REGUARD  {g['list']:5} {g['rule']}  ({', '.join(g['guard_rows'])})")
+    if not st.log:
+        what = "any recorded rule" if everything else f"a recorded rule owned by {', '.join(rows)}"
+        where = f"{st.settings_path} does not exist and the" if missing else "the"
+        st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
     st.save()
 
 
