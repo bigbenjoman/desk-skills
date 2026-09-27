@@ -1,47 +1,69 @@
 #!/usr/bin/env bash
 # Create an isolated worktree for one ticket.
 #
-#   setup-worktree.sh <TICKET> <branch>
+#   setup-worktree.sh [--for-worker] <TICKET> <branch>
+#
+# --for-worker   the worktree is for a detached autopilot worker (pass.mjs sets it). The primary
+#                checkout's .claude/settings.local.json (the human's own harness allow rules) is then
+#                NOT copied in, and an existing copy is disabled: a worker's permissions come only
+#                from the settings file spawn-worker.sh generates.
 #
 # Everything repo-specific comes from this repo's desk config (desk-env), never from this file:
-#   §0 Default branch         the base a new branch is cut from (origin/<default>)
-#   §4 Env files              copied from the primary checkout by copy-env.sh
-#   §4 Command prefix         put in front of every toolchain command (`none` = nothing)
-#   §4 Install                run in the new worktree (`none` = skip; unset = refuse)
-#   §4 Project subagents sync run so .claude/agents is populated before a worker starts (`none` = skip)
-#   §4 Local database         Postgres in docker -> a per-ticket database (`none` = skip), gated on §3 db-per-ticket
+#   §0 Default branch          the base a new branch is cut from (origin/<default>)
+#   §4 Env files               copied from the primary checkout by copy-env.sh
+#   §4 Command prefix          put in front of every toolchain command (`none` = nothing)
+#   §4 Install                 run in the new worktree, each item in its directory (`none` = skip; unset = refuse)
+#   §4 Project subagents sync  run so .claude/agents is populated before a worker starts (`none` = skip)
+#   §4 Local database          `postgres container <name>`: a per-ticket database, gated on §3 db-per-ticket
+#   §4 Database URL variable   every variable repointed at that database, or blanked when there is none
+#   §4 Database migrate        run against the per-ticket database only
+#
+# Databases, the rule: in a worktree's copied env files, every §4 Database URL variable either points
+# at this ticket's own local database or is blank. A URL whose host is not local (a hosted, staging or
+# production database) is never rewritten into a local one: it is blanked. So is every variable when
+# no per-ticket database was provisioned. No worktree can reach a shared database through its env files.
+#
+# Atomic: a failure after `git worktree add` removes the worktree (and the branch and database, when
+# this run created them), so a half-built worktree is never mistaken for a ready one. A run killed
+# outright leaves `.desk-setup-incomplete` in the worktree, and the next run finishes the setup rather
+# than reporting the worktree as ready.
 #
 # Ordering is load-bearing: env files must land before the install, because an install step can run
-# code generation that hard-fails without them. The database URL is then repointed at a per-ticket
-# database so a seed or a database-backed test in one worktree cannot wipe another worktree's data.
+# code generation that hard-fails without them.
 #
 # The last lines printed are machine-read by pass.mjs: `worktree=`, `branch=`, `database=`
-# (`database=none` when the repo has no local database, `database=shared` when one exists but no
-# per-ticket database was made).
+# (`database=<name>` only when that per-ticket database exists; otherwise `database=none`).
 set -euo pipefail
 
-TICKET="${1:?usage: setup-worktree.sh <TICKET> <branch>}"
-BRANCH="${2:?usage: setup-worktree.sh <TICKET> <branch>}"
-
-# The ticket names a directory; never let it climb out of the worktrees dir.
-case "$TICKET" in
-  */*|.*|*..*|'') echo "FAIL: ticket '$TICKET' is not usable as a directory name" >&2; exit 2 ;;
-esac
+FOR_WORKER=""
+if [ "${1:-}" = "--for-worker" ]; then FOR_WORKER=1; shift; fi
+TICKET="${1:?usage: setup-worktree.sh [--for-worker] <TICKET> <branch>}"
+BRANCH="${2:?usage: setup-worktree.sh [--for-worker] <TICKET> <branch>}"
 
 PG_CONTAINER_ENV="${DESK_PG_CONTAINER:-}"   # an explicit env override beats the config text below
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+# The ticket names a directory and a database: its shape is checked first (no /, no ..).
+node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
 desk_load_paths || exit 1
 
 MAIN="$DESK_REPO_ROOT"
 WT="$DESK_WORKTREES_DIR/$TICKET"
 BASE="origin/$DESK_DEFAULT_BRANCH"
+MARKER="$WT/.desk-setup-incomplete"
 
 say() { printf '[setup-worktree] %s\n' "$*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
 is_none() { case "$(lc "$1")" in none|none\ *|none\(*) return 0 ;; esac; return 1; }
 # A config row desk-env.mjs does not know yet (it exits non-zero on an unknown id) reads as the fallback.
 cfg_opt() { local v; if v="$(desk_cfg "$1" 2>/dev/null)" && [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "${2:-}"; fi; }
+
+case "$BRANCH" in
+  -*|*..*|*' '*|*.lock|/*|*/) fail "branch '$BRANCH' is not a usable branch name" ;;
+esac
+[ "$BRANCH" != "$DESK_DEFAULT_BRANCH" ] || fail "refusing to set up a ticket worktree on the default branch ($BRANCH)"
+git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || fail "branch '$BRANCH' is not a valid git branch name"
 
 # ---- toolchain ---------------------------------------------------------------------------------
 # A detached worker's shell does not get an interactive shell's PATH injection (mise, asdf, nvm), which
@@ -51,32 +73,48 @@ if PREFIX="$(desk_cfg command-prefix 2>/dev/null)"; then
 else
   PREFIX=""; say "note: config §4 Command prefix is unset — running toolchain commands bare"
 fi
-if ! INSTALL="$(desk_cfg install-cmd 2>/dev/null)"; then
-  echo "FAIL: config §4 Install is not set — run /desk-setup (write \`none\` if there is no install step). Refusing to guess." >&2
-  exit 1
-fi
-is_none "$INSTALL" && INSTALL=""
-AGENTS_SYNC="$(cfg_opt agents-sync '')"
-AGENTS_SYNC_UNSET=""
-[ -z "$AGENTS_SYNC" ] && AGENTS_SYNC_UNSET=1
-is_none "${AGENTS_SYNC:-none}" && AGENTS_SYNC=""
+# Command rows as `DIR<TAB>CMD` lines (desk-env cmds): an item may name the directory it runs in.
+INSTALL_CMDS="$(node "$DESK_ENV_MJS" cmds install-cmd 2>/dev/null)" || \
+  fail "config §4 Install is not set — run /desk-setup (write \`none\` if there is no install step). Refusing to guess."
+AGENTS_UNSET=""
+AGENTS_CMDS="$(node "$DESK_ENV_MJS" cmds agents-sync 2>/dev/null)" || { AGENTS_UNSET=1; AGENTS_CMDS=""; }
+MIGRATE_CMDS="$(node "$DESK_ENV_MJS" cmds db-migrate-cmd 2>/dev/null || true)"
 
 # Fail before creating anything if the toolchain cannot even be found.
-if [ -n "$INSTALL" ]; then
-  first="$(printf '%s' "${PREFIX:-$INSTALL}" | awk '{print $1}')"
+if [ -n "$INSTALL_CMDS" ]; then
+  first="$(printf '%s' "${PREFIX:-$(printf '%s\n' "$INSTALL_CMDS" | head -1 | cut -f2)}" | awk '{print $1}')"
   command -v "$first" >/dev/null 2>&1 \
-    || { echo "FAIL: '$first' not found on PATH (config §4 Command prefix / Install). A detached shell has no interactive PATH setup." >&2; exit 1; }
+    || fail "'$first' not found on PATH (config §4 Command prefix / Install). A detached shell has no interactive PATH setup."
 fi
 
-run_tool() { # run_tool <dir> <configured command>
-  ( cd "$1" && sh -c "${PREFIX:+$PREFIX }$2" )
+run_tool() { # run_tool <dir relative to the worktree> <configured command>
+  ( cd "$WT/$1" && sh -c "${PREFIX:+$PREFIX }$2" )
+}
+run_cmds() { # run_cmds <DIR<TAB>CMD lines> — every item, each in its directory; stops at the first failure
+  local d c
+  while IFS="$(printf '\t')" read -r d c; do
+    [ -n "$c" ] || continue
+    say "  $d: $c"
+    run_tool "$d" "$c" || return 1
+  done <<EOF_CMDS
+$1
+EOF_CMDS
 }
 
 # Claude Code harness allow rules written by /desk-setup for this repo live in the primary checkout's
-# .claude/settings.local.json (gitignored). A worktree needs the same rules, and a revocation must
-# reach an existing worktree too, so this is refreshed every time, keeping the previous copy.
+# .claude/settings.local.json (gitignored). A worktree a PERSON works in needs the same rules, and a
+# revocation must reach it too, so this is refreshed every time, keeping the previous copy. A worker's
+# worktree must never carry them: they are the human's grants (the merge driver among them), and the
+# worker's own generated settings are its whole permission surface.
 sync_local_settings() {
   local src="$MAIN/.claude/settings.local.json" dst="$WT/.claude/settings.local.json"
+  if [ -n "$FOR_WORKER" ]; then
+    if [ -f "$dst" ]; then
+      mv "$dst" "$dst.desk-disabled"
+      say "disabled .claude/settings.local.json in this worker's worktree (kept as settings.local.json.desk-disabled)"
+    fi
+    return 0
+  fi
   [ -f "$src" ] || { say "no $src — no per-repo harness rules to copy"; return 0; }
   if [ -f "$dst" ] && cmp -s "$src" "$dst"; then return 0; fi
   mkdir -p "$WT/.claude"
@@ -90,70 +128,225 @@ sync_local_settings() {
 # adversarial pass into one model checking its own work. A `claude -p` worker loads its agent
 # registry once at startup, so this must happen before the spawn.
 sync_agents() { # sync_agents strict|lenient
-  if [ -z "$AGENTS_SYNC" ]; then
-    if [ -n "$AGENTS_SYNC_UNSET" ]; then say "  WARNING: config §4 Project subagents sync is unset — named subagents may be general-purpose"
+  if [ -z "$AGENTS_CMDS" ]; then
+    if [ -n "$AGENTS_UNSET" ]; then say "  WARNING: config §4 Project subagents sync is unset — named subagents may be general-purpose"
     else say "  config §4 Project subagents sync is none — skipped"; fi
     return 0
   fi
-  if ! run_tool "$WT" "$AGENTS_SYNC" >/dev/null 2>&1; then
-    [ "$1" = strict ] && { echo "FAIL: subagents sync ($AGENTS_SYNC) errored in $WT" >&2; exit 1; }
+  if ! run_cmds "$AGENTS_CMDS" >/dev/null 2>&1; then
+    [ "$1" = strict ] && fail "subagents sync errored in $WT"
     say "  subagents sync failed in $WT"; return 0
   fi
   local n
   n=$(find "$WT/.claude/agents" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$n" -gt 0 ]; then say "  $n agent(s) linked"
-  elif [ "$1" = strict ]; then echo "FAIL: .claude/agents still empty after '$AGENTS_SYNC'" >&2; exit 1
-  else say "  WARNING: .claude/agents still empty after '$AGENTS_SYNC'"; fi
+  elif [ "$1" = strict ]; then fail ".claude/agents still empty after the subagents sync"
+  else say "  WARNING: .claude/agents still empty after the subagents sync"; fi
 }
 
 # ---- per-ticket database plan ------------------------------------------------------------------
-# Only Postgres in a docker container is automated. Anything else is reported and left alone.
 LOCAL_DB="$(cfg_opt local-db '')"
-DB_VAR="$(cfg_opt db-url-var DATABASE_URL)"
-DB_MIGRATE="$(cfg_opt db-migrate-cmd '')"
-REPO_NAME="$(lc "${DESK_GH_REPO#*/}")"
-TICKET_PART="$(lc "$TICKET" | tr -cd 'a-z0-9')"
-DB="$(printf '%s_%s' "$REPO_NAME" "$TICKET_PART" | cut -c1-63)"   # Postgres identifiers cap at 63
+DB_VARS_UNSET=""
+DB_VARS="$(node "$DESK_ENV_MJS" list db-url-var 2>/dev/null)" || { DB_VARS=""; DB_VARS_UNSET=1; }
+is_none "$(printf '%s' "$DB_VARS" | head -1)" && DB_VARS=""
+DB_VARS="$(printf '%s\n' "$DB_VARS" | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' || true)"
+if [ -n "$DB_VARS_UNSET" ]; then
+  if [ -n "$FOR_WORKER" ]; then
+    fail "config §4 Database URL variable is not set — run /desk-setup (write \`none\` if the repo has no database). A worker's worktree must not inherit a database URL nobody has named."
+  fi
+  say "WARNING: config §4 Database URL variable is unset — env files are copied unchanged, so this worktree uses whatever database they name"
+fi
+# The toolchain commands below (install, migrate) must not pick a database URL up from this shell.
+while IFS= read -r v; do [ -n "$v" ] && unset "$v"; done <<EOF_VARS
+$DB_VARS
+EOF_VARS
+
+PG_CONTAINER="$(printf '%s' "$LOCAL_DB" | sed -nE 's/^[Pp]ostgres[[:space:]]+container[[:space:]]+([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p')"
+[ -n "$PG_CONTAINER_ENV" ] && [ -n "$PG_CONTAINER" ] && PG_CONTAINER="$PG_CONTAINER_ENV"
+REPO_PART="$(lc "${DESK_GH_REPO#*/}" | tr -c 'a-z0-9\n' '_' | tr -d '\n')"
+TICKET_PART="$(lc "$TICKET" | tr -c 'a-z0-9\n' '_' | tr -d '\n')"
+DB="$(printf '%s_%s' "$REPO_PART" "$TICKET_PART" | cut -c1-63)"   # Postgres identifiers cap at 63
 DB_MODE=none
 if [ -z "$LOCAL_DB" ]; then
   say "note: config §4 Local database is unset — no per-ticket database (run /desk-setup to set it, or \`none\`)"
 elif is_none "$LOCAL_DB"; then
-  :
-elif ! printf '%s' "$LOCAL_DB" | grep -qiE 'postgres|psql'; then
-  say "note: §4 Local database is not Postgres ($LOCAL_DB) — per-ticket databases are not automated for it"
-  DB_MODE=shared
+  say "config §4 Local database is none — no per-ticket database"
+elif [ -z "$PG_CONTAINER" ]; then
+  say "note: §4 Local database is '$LOCAL_DB', not \`postgres container <name>\` — per-ticket databases are not automated for it"
 elif [ "$(desk_perm db-per-ticket)" != yes ]; then
-  say "note: config §3 db-per-ticket is $(desk_perm db-per-ticket) — no per-ticket database; §3 tests-shared-db governs database-backed tests"
-  DB_MODE=shared
+  say "note: config §3 db-per-ticket is $(desk_perm db-per-ticket) — no per-ticket database"
+elif [ -z "$DB_VARS" ]; then
+  say "note: config §4 Database URL variable names nothing — no variable to point at a per-ticket database, so none is made"
 else
   DB_MODE=ticket
 fi
-PG_CONTAINER="$PG_CONTAINER_ENV"
-if [ -z "$PG_CONTAINER" ]; then
-  PG_CONTAINER="$(printf '%s' "$LOCAL_DB" | grep -oE 'container[ =:]+[A-Za-z0-9_.-]+' | head -1 | sed -E 's/^container[ =:]+//' || true)"
-fi
-PG_CONTAINER="${PG_CONTAINER:-$DESK_PG_CONTAINER}"
+[ "$DB_MODE" = ticket ] || [ -z "$DB_VARS" ] || say "every §4 Database URL variable ($(printf '%s' "$DB_VARS" | paste -sd ' ' -)) will be blanked in the copied env files"
+
+ENV_FILES="$(node "$DESK_ENV_MJS" list env-files 2>/dev/null || true)"
+is_none "$(printf '%s' "$ENV_FILES" | head -1)" && ENV_FILES=""
+
+# Repoint (ticket) or blank (none) every listed variable in every copied env file, then verify.
+# A non-local URL is blanked, never rewritten. Prints one line per change; exits 1 if the result is
+# not what the rule says.
+rewrite_env() { # rewrite_env ticket|blank
+  node - "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const [mode, wt, db, container, varsRaw, filesRaw] = process.argv.slice(2);
+const vars = varsRaw.split('\n').filter(Boolean);
+const files = filesRaw.split('\n').filter(Boolean);
+const LOCAL = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', 'host.docker.internal', container].filter(Boolean).map((h) => h.toLowerCase()));
+const URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([^@/]*)@)?(\[[^\]]*\]|[^/:?#]*)(:\d+)?(\/[^?#]*)?(\?[^#]*)?$/i;
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const lineRe = new RegExp(`^(\\s*(?:export\\s+)?)(${vars.map(esc).join('|')})(\\s*=\\s*)(.*)$`);
+let bad = 0;
+let touched = 0;
+function target(value) {
+  let q = '';
+  let v = value.trim();
+  const m = /^(['"])(.*)\1\s*(#.*)?$/.exec(v);
+  if (m) { q = m[1]; v = m[2]; } else v = v.replace(/\s+#.*$/, '');
+  if (mode === 'blank' || v === '') return { out: '', what: 'blanked' };
+  const u = URL_RE.exec(v);
+  if (u) {
+    const host = u[3].toLowerCase();
+    if (!LOCAL.has(host)) return { out: '', what: `blanked (host ${u[3]} is not local, so it is never rewritten)` };
+    return { out: `${q}${u[1]}://${u[2] != null ? `${u[2]}@` : ''}${u[3]}${u[4] ?? ''}/${db}${u[6] ?? ''}${q}`, what: `repointed at ${db}` };
+  }
+  if (/^[A-Za-z0-9_]+$/.test(v)) return { out: `${q}${db}${q}`, what: `set to ${db}` };
+  return { out: '', what: 'blanked (not a URL or a database name)' };
+}
+function ok(value) {
+  const v = value.trim().replace(/^(['"])(.*)\1$/, '$2');
+  if (v === '') return true;
+  if (mode === 'blank') return false;
+  const u = URL_RE.exec(v);
+  if (u) return LOCAL.has(u[3].toLowerCase()) && (u[5] ?? '') === `/${db}`;
+  return v === db;
+}
+if (vars.length) {
+  for (const rel of files) {
+    const f = path.join(wt, rel);
+    if (!fs.existsSync(f)) continue;
+    const lines = fs.readFileSync(f, 'utf8').split('\n');
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lineRe.exec(lines[i]);
+      if (!m) continue;
+      const t = target(m[4]);
+      const next = `${m[1]}${m[2]}=${t.out}`;
+      if (next !== lines[i]) { lines[i] = next; changed = true; }
+      console.log(`[setup-worktree]   ${rel}: ${m[2]} ${t.what}`);
+      touched++;
+    }
+    if (changed) fs.writeFileSync(f, lines.join('\n'));
+    // Verify from disk, not from what was meant to be written.
+    for (const l of fs.readFileSync(f, 'utf8').split('\n')) {
+      const m = lineRe.exec(l);
+      if (m && !ok(m[4])) { console.error(`FAIL: ${rel}: ${m[2]} still holds a value outside this ticket's database`); bad++; }
+    }
+  }
+}
+if (!touched && vars.length) console.log(`[setup-worktree]   no copied env file sets ${vars.join(', ')}`);
+process.exit(bad ? 1 : 0);
+NODE
+}
+
+pg_user() { # the user in the first local database URL the primary checkout's env files name, else postgres
+  local rel u
+  while IFS= read -r rel; do
+    [ -n "$rel" ] && [ -f "$MAIN/$rel" ] || continue
+    u="$(sed -nE 's#^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=["'"'"']?[a-z0-9+.-]+://([^:@/]+)(:[^@/]*)?@(localhost|127\.0\.0\.1|'"$PG_CONTAINER"')[:/].*#\2#p' "$MAIN/$rel" | head -1)"
+    [ -n "$u" ] && { printf '%s' "$u"; return; }
+  done <<EOF_FILES
+$ENV_FILES
+EOF_FILES
+  printf 'postgres'
+}
+CREATED_DB=""
+ensure_db() { # the per-ticket database exists, or setup fails
+  command -v docker >/dev/null 2>&1 || fail "docker is not on PATH — cannot create $DB in $PG_CONTAINER"
+  local user; user="$(pg_user)"
+  local have
+  have="$(docker exec "$PG_CONTAINER" psql -U "$user" -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = '$DB'" 2>/dev/null)" \
+    || fail "cannot reach Postgres in container $PG_CONTAINER as $user (is it running? §4 Local database names it as \`postgres container <name>\`)"
+  if [ "$have" = 1 ]; then say "  database $DB already exists"; return 0; fi
+  docker exec "$PG_CONTAINER" psql -U "$user" -d postgres -c "CREATE DATABASE \"$DB\"" >/dev/null \
+    || fail "could not create database $DB in $PG_CONTAINER"
+  CREATED_DB="$user"
+  say "  created database $DB in $PG_CONTAINER"
+}
+
+databases() { # provision (or confirm) the database and make every env file follow the rule
+  if [ "$DB_MODE" = ticket ]; then
+    say "per-ticket database $DB"
+    ensure_db
+    rewrite_env ticket || fail "database variables could not be repointed at $DB"
+  elif [ -n "$DB_VARS" ]; then
+    say "blanking database variables (no per-ticket database)"
+    rewrite_env blank || fail "database variables could not be blanked"
+  fi
+}
+
+# ---- failure cleanup -----------------------------------------------------------------------------
+CREATED_WT=""; CREATED_BRANCH=""
+cleanup() {
+  local rc=$?
+  [ "$rc" -ne 0 ] && [ -n "$CREATED_WT" ] || return 0
+  say "setup failed (exit $rc) — removing the half-built worktree so it is never mistaken for a ready one"
+  git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"
+  git -C "$MAIN" worktree prune >/dev/null 2>&1 || true
+  if [ -n "$CREATED_BRANCH" ]; then git -C "$MAIN" branch -D "$BRANCH" >/dev/null 2>&1 && say "  removed branch $BRANCH (this run created it)"; fi
+  if [ -n "$CREATED_DB" ]; then docker exec "$PG_CONTAINER" psql -U "$CREATED_DB" -d postgres -c "DROP DATABASE IF EXISTS \"$DB\"" >/dev/null 2>&1 && say "  dropped database $DB (this run created it)"; fi
+  return 0
+}
+trap cleanup EXIT
+
+finish() {
+  rm -f "$MARKER"
+  say "done"
+  say "worktree=$WT"
+  say "branch=$BRANCH"
+  case "$DB_MODE" in ticket) say "database=$DB" ;; *) say "database=none" ;; esac
+}
 
 mkdir -p "$DESK_WORKTREES_DIR"
 
-if [ -d "$WT" ]; then
-  say "worktree already exists at $WT — leaving it alone"
-  # ...but ALWAYS re-sync the harness rules and the agent links: a worktree created before either
-  # existed has none, and syncing after the worker starts is too late. Cheap and idempotent.
+if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
+  say "worktree already exists at $WT — leaving its code alone"
+  have_branch="$(git -C "$WT" branch --show-current 2>/dev/null || true)"
+  [ "$have_branch" = "$BRANCH" ] || fail "$WT is on branch '${have_branch:-?}', not $BRANCH — refusing to hand it out for this ticket"
+  # ...but ALWAYS re-sync the harness rules and the agent links (a worktree created before either
+  # existed has none), and re-apply the database rule, so the `database=` line below is true now.
   sync_local_settings
   sync_agents lenient
-  case "$DB_MODE" in ticket) say "database=$DB" ;; *) say "database=$DB_MODE" ;; esac
+  databases
+  finish
   exit 0
 fi
 
-git -C "$MAIN" fetch origin --quiet
-
-if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-  say "branch $BRANCH already exists — checking it out into the worktree"
-  git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
+if [ -d "$WT" ]; then
+  # A previous run was killed between creating the worktree and finishing. Finish it now, and treat
+  # it as ours to remove if this attempt fails too.
+  say "found $MARKER — a previous setup did not finish; completing it"
+  grep -q '^created_branch=1' "$MARKER" 2>/dev/null && CREATED_BRANCH=1
+  CREATED_WT=1
 else
-  say "creating $BRANCH off $BASE"
-  git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "$BASE" --quiet
+  git -C "$MAIN" fetch origin --quiet
+  if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    say "branch $BRANCH already exists — checking it out into the worktree"
+    git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
+  else
+    say "creating $BRANCH off $BASE"
+    git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "$BASE" --quiet
+    CREATED_BRANCH=1
+  fi
+  CREATED_WT=1
+  printf 'ticket=%s\nbranch=%s\ncreated_branch=%s\nstarted=%s\n' "$TICKET" "$BRANCH" "${CREATED_BRANCH:-0}" "$(date -u +%FT%TZ)" > "$MARKER"
+  # Keep the marker out of `git status` without touching the repo's .gitignore.
+  excl="$(git -C "$WT" rev-parse --git-path info/exclude)"
+  case "$excl" in /*) ;; *) excl="$WT/$excl" ;; esac
+  mkdir -p "$(dirname "$excl")"; grep -qxF '/.desk-setup-incomplete' "$excl" 2>/dev/null || echo '/.desk-setup-incomplete' >> "$excl"
 fi
 
 # copy-env.sh finds the primary checkout via the shared git common dir, so it is
@@ -162,55 +355,11 @@ say "seeding env files"
 ( cd "$WT" && bash "$DESK_ENV_DIR/copy-env.sh" )
 
 sync_local_settings
+databases
 
-# ---- per-ticket database -------------------------------------------------------------------------
-if [ "$DB_MODE" = ticket ]; then
-  # The env file that carries the database URL: the first §4 Env files entry that defines it.
-  ENV_FILE=""
-  set -f
-  for rel in $(desk_cfg env-files 2>/dev/null | tr ',;' '  '); do
-    if [ -f "$WT/$rel" ] && grep -q "^$DB_VAR=" "$WT/$rel"; then ENV_FILE="$WT/$rel"; break; fi
-  done
-  set +f
-  if [ -z "$ENV_FILE" ]; then
-    say "WARNING: no §4 Env files entry defines $DB_VAR — cannot repoint it; the worktree uses whatever database its env names"
-    DB_MODE=shared
-  fi
-fi
-
-if [ "$DB_MODE" = ticket ]; then
-  # The database the primary checkout uses, which a worktree must never point at.
-  MAIN_ENV="$MAIN/${ENV_FILE#"$WT/"}"
-  SHARED_DB="$(sed -nE "s#^$DB_VAR=\"?.*/([^/?\"]+).*#\\1#p" "$MAIN_ENV" 2>/dev/null | head -1)"
-  PG_USER="$(sed -nE "s#^$DB_VAR=\"?[a-z]+://([^:@/]+)[:@].*#\\1#p" "$ENV_FILE" | head -1)"
-  PG_USER="${PG_USER:-postgres}"
-
-  say "repointing $DB_VAR at $DB"
-  desk_sed_inplace "s#^($DB_VAR=\"?.*/)[^/?\"]+(\\?[^\"]*)?(\"?)\$#\\1$DB\\2\\3#" "$ENV_FILE"
-
-  if ! grep -q "^$DB_VAR=.*/$DB" "$ENV_FILE"; then
-    echo "FAIL: $DB_VAR rewrite did not take in $ENV_FILE" >&2; exit 1
-  fi
-  if [ -n "$SHARED_DB" ] && [ "$SHARED_DB" != "$DB" ] && grep -q "^$DB_VAR=.*/$SHARED_DB\([?\"]\|\$\)" "$ENV_FILE"; then
-    echo "FAIL: $DB_VAR still points at the shared $SHARED_DB" >&2; exit 1
-  fi
-
-  # Allocating a name is not provisioning: create it, and let migrations bring it up properly.
-  say "provisioning database $DB in container $PG_CONTAINER"
-  if ! command -v docker >/dev/null 2>&1; then
-    say "  WARNING: docker is not on PATH — $DB not created; a worker needing data will have to"
-  elif docker exec "$PG_CONTAINER" psql -U "$PG_USER" -lqt 2>/dev/null | cut -d'|' -f1 | grep -qw "$DB"; then
-    say "  already exists — leaving it alone"
-  elif docker exec "$PG_CONTAINER" psql -U "$PG_USER" -c "CREATE DATABASE \"$DB\"" >/dev/null 2>&1; then
-    say "  created"
-  else
-    say "  WARNING: could not create $DB (is $PG_CONTAINER running? name it in §4 Local database as \`container <name>\`, or set DESK_PG_CONTAINER) — a worker needing data will have to"
-  fi
-fi
-
-if [ -n "$INSTALL" ]; then
+if [ -n "$INSTALL_CMDS" ]; then
   say "installing dependencies (this is the slow part)"
-  run_tool "$WT" "$INSTALL"
+  run_cmds "$INSTALL_CMDS" || fail "config §4 Install failed in $WT"
 else
   say "config §4 Install is none — no install step"
 fi
@@ -219,16 +368,13 @@ say "linking subagents"
 sync_agents strict
 
 if [ "$DB_MODE" = ticket ]; then
-  if [ -z "$DB_MIGRATE" ] || is_none "$DB_MIGRATE"; then
+  if [ -z "$MIGRATE_CMDS" ]; then
     say "note: no database migrate command configured — $DB is empty; a data-dependent ticket will need to migrate it"
   else
     say "applying migrations to $DB"
-    if run_tool "$WT" "$DB_MIGRATE" >/dev/null 2>&1; then say "  migrated"
+    if run_cmds "$MIGRATE_CMDS" >/dev/null 2>&1; then say "  migrated"
     else say "  WARNING: migrations did not complete — a data-dependent ticket will need to fix this"; fi
   fi
 fi
 
-say "done"
-say "worktree=$WT"
-say "branch=$BRANCH"
-case "$DB_MODE" in ticket) say "database=$DB" ;; *) say "database=$DB_MODE" ;; esac
+finish

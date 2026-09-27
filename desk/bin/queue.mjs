@@ -6,12 +6,14 @@
 // logs plus `claude agents --json`. Created on first use; never shipped.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { queueFile, stateDir, skillsDir } from './desk-env.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID } from './desk-env.mjs';
 
 const QUEUE = queueFile();
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
 
-const empty = () => ({ version: 1, batch: null, concurrency: 2, tickets: {} });
+// The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
+// orchestrator's ladder changes it per pass with set-batch, and pass.mjs never exceeds the cap.
+const empty = () => ({ version: 1, batch: null, concurrency: concurrencyLimits().def, tickets: {} });
 
 function load() {
   if (!existsSync(QUEUE)) return empty();
@@ -115,6 +117,8 @@ switch (cmd) {
   case 'add': {
     const [key, type = 'Bug', lane = '?'] = args;
     if (!key) throw new Error('usage: queue.mjs add <TICKET> [type] [lane]');
+    // The key names files (logs, parks, briefings, worker settings): never a path.
+    if (!SAFE_ID.test(key) || key.includes('..')) throw new Error(`'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
     if (q.tickets[key]) { console.log(`${key} already in the queue (${q.tickets[key].state}) — not re-adding`); break; }
     q.tickets[key] = {
       key, type, lane, state: 'queued',

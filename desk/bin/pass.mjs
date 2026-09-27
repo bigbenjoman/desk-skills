@@ -263,21 +263,27 @@ const concurrency = Math.min(Number(fresh.concurrency ?? concDefault), concCap);
 // start something" (Linux MemAvailable; macOS free+inactive+purgeable), never on the footprint
 // figure. This only ever DELAYS a spawn by one pass; it never kills anything.
 // AUTOPILOT_MIN_AVAIL_GB overrides; 0 disables.
-const MIN_AVAIL_GB = Number(process.env.AUTOPILOT_MIN_AVAIL_GB ?? 4);
+// The thresholds are config §3b "Spawn gate (available memory)": above `start` a new worker may start;
+// between `hold` and `start` nothing new starts; below `hold` the batch is meant to run at `dropTo`
+// workers, so nothing new starts until it has drained to that. AUTOPILOT_MIN_AVAIL_GB overrides
+// `start` (0 disables the gate).
+const GATE = E.spawnGate();
+const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
 if (lowMemory) {
-  report.stalled.push(
-    `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G floor — holding spawns this pass ` +
-    `(${running.length} running; a worker mid-suite will drain)`,
-  );
+  report.stalled.push(availGB < GATE.hold
+    ? `memory: ${availGB.toFixed(1)}G available, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
+      `holding spawns (${running.length} running; a worker mid-suite will drain)`
+    : `memory: ${availGB.toFixed(1)}G available, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
+      `(${running.length} running; a worker mid-suite will drain)`);
 }
 const slots = (overBudget || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
 const runningKeys = new Set(running.map((r) => r.key));
 
-// A ticket whose log already carries AUTOPILOT_DONE has finished, whatever its state says.
-// answer.mjs un-parks on the way through, so answering a worker that then finishes and exits leaves
-// a resumable ticket with no live worker, and this loop would spawn a SECOND worker onto a
+// A ticket whose log already carries AUTOPILOT_DONE has finished, whatever its state says. The
+// orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
+// un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
 // completed ticket. This is a guard, not the cure: markers are never consumed.
 // Deliberate re-runs stay possible — rotate the log, or name the ticket:
 //   AUTOPILOT_RERUN=<TICKET> node pass.mjs
@@ -308,11 +314,25 @@ if (blockedByDone.length) {
 
 for (const t of eligible.slice(0, Math.max(0, slots))) {
   const wt = join(WORKTREES, t.key);
-  const setup = shOut('bash', [join(BIN, 'setup-worktree.sh'), t.key, t.branch], { cwd: MAIN }).out;
-  if (!existsSync(wt)) { q('set', t.key, 'state=failed'); report.failed.push(`${t.key}: worktree setup failed — ${setup.slice(-200)}`); continue; }
-  // setup-worktree.sh names the database it prepared (the repo's naming, from config §4), or says
-  // `none` (no local database) / `shared` (no per-ticket one was made). One source, never re-derived here.
-  const database = [...setup.matchAll(/\[setup-worktree\] database=(\S+)/g)].pop()?.[1] ?? 'unknown';
+  // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
+  // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
+  // worktree it could not finish, and a half-built one must not get a worker.
+  const setupRun = shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN });
+  const setup = setupRun.out;
+  const setupWt = [...setup.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim();
+  if (!setupRun.ok || setupWt !== wt || !existsSync(wt)) {
+    const why = setup.split('\n').filter((l) => /FAIL|WARNING|failed/.test(l)).slice(-3).join(' ') || setup.slice(-200);
+    q('park', t.key, `worktree setup failed, not spawned — ${why}`);
+    report.parked.push(`${t.key}: worktree setup failed, not spawned — ${why}`);
+    continue;
+  }
+  // The branch this ticket's PR must come from: recorded so the merge driver matches the PR by
+  // branch, never by a fuzzy key search.
+  const branch = [...setup.matchAll(/\[setup-worktree\] branch=(\S+)/g)].pop()?.[1] ?? t.branch;
+  // setup-worktree.sh names the per-ticket database it created, or says `none` (every database
+  // variable blanked). One source, never re-derived here.
+  const database = [...setup.matchAll(/\[setup-worktree\] database=(\S+)/g)].pop()?.[1] ?? 'none';
+  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database };
 
   // The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling
   // tickets have learnt, and — critically — the answers the user has already given.
@@ -357,7 +377,7 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
 
   // Prove the generated permissions behave before committing a worker to this ticket.
   const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, 'preflight'], {
-    cwd: MAIN, env: { ...process.env, AUTOPILOT_PREFLIGHT: '1' },
+    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
   }).out;
   if (!/\[preflight\] pass/.test(pre)) {
     q('set', t.key, 'state=failed');
@@ -378,11 +398,11 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
 
   // Reset the stall counters: a respawn after a log rotation starts a smaller log than the stored
   // size, and without this the stall killer shoots each fresh worker within a pass or two.
-  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, 'stage=0/9',
+  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
-    env: { ...process.env, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   if (!/\[spawn\] ticket=/.test(spawned.out)) {
     q('set', t.key, 'state=failed', 'session_id=null', 'port=null');

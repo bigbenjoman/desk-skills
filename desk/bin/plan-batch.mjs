@@ -4,7 +4,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, jiraName, githubHandle, configValue } from './desk-env.mjs';
+import { stateDir, binDir, jiraName, githubHandle, configValue, permission, SAFE_ID } from './desk-env.mjs';
 
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
@@ -13,6 +13,7 @@ if (!tickets.length) { console.error('usage: plan-batch.mjs <TICKET> [<TICKET> .
 
 const records = [];
 for (const t of tickets) {
+  if (!SAFE_ID.test(t) || t.includes('..')) { console.error(`'${t}' is not usable as a ticket id`); process.exit(2); }
   const p = join(STATE, 'triage', `${t}.json`);
   if (!existsSync(p)) { console.error(`missing triage record for ${t} — run triage.sh ${t}`); process.exit(1); }
   records.push(JSON.parse(readFileSync(p, 'utf8')));
@@ -49,6 +50,18 @@ for (let i = 0; i < admitted.length; i++) {
   }
 }
 
+// What a ticket that needs a database will actually get, from the same rules setup-worktree.sh applies.
+const localDb = (configValue('local-db') ?? '').trim();
+const DB_NOTE = !localDb
+  ? 'config §4 Local database is unset, so no per-ticket database is made and its database variables are blanked — a database-backed check will park'
+  : /^none\b/i.test(localDb)
+    ? 'config §4 Local database is none, so it gets NO database: every §4 Database URL variable is blanked in its worktree, and a database-backed check parks'
+    : !/^postgres container\s+\S+$/i.test(localDb)
+      ? `config §4 Local database is "${localDb}", which is not \`postgres container <name>\`, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
+      : permission('db-per-ticket') !== 'yes'
+        ? `config §3 db-per-ticket is ${permission('db-per-ticket')}, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
+        : 'its own per-ticket database will be created in the local Postgres, or the worktree is not set up';
+
 const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b === t ? [c.a] : []));
 
 console.log(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
@@ -63,7 +76,7 @@ for (const r of ours) {
   console.log(`\n${r.ticket}  lane ${r.lane}  ${admit ? 'ADMIT' : `PARK (lane ${r.lane} — run manually)`}`);
   console.log(`  ${r.summary}`);
   console.log(`  branch: ${r.branch}`);
-  if (r.needs_db) console.log('  ! needs a database — its own per-ticket DB will be provisioned');
+  if (r.needs_db) console.log(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) console.log(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) console.log(`  ! prior art: ${pa}`);
   if (r.lane_original) console.log(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);
