@@ -55,7 +55,7 @@ What the settings mean for clearance:
 | Setting (ruleset `pull_request` parameter, or classic equivalent) | If set | If not |
 |---|---|---|
 | `allowed_merge_methods` | only these merge; §4 Merge method must be one of them | the repo-level `allow_*_merge` flags decide |
-| required status checks | those contexts, asserted per name at head | §4 Required checks `none`: every check on the PR must be green |
+| required status checks | those contexts, each completed with success at head (skipped is not success) | §4 Required checks `none`: nothing is required by name, but green still needs every non-advisory check passed and at least one success (desk-config "Green") |
 | `strict_required_status_checks_policy` / "require branches to be up to date" | the PR next to merge must be updated first | being behind never blocks a merge |
 | `required_approving_review_count` > 0 | the platform refuses an unapproved merge; report `READY` | no *positive* approval is enforced |
 | a standing `CHANGES_REQUESTED` | blocks the merge outright (see below) | nothing refuses it, and clearance still parks it |
@@ -92,7 +92,7 @@ method restriction. Check `rules/branches/<that branch>` before assuming otherwi
 
 | PR | Command |
 |---|---|
-| Unstacked | `gh pr merge <n> --<method>`, or `gh pr merge <n> --<method> --auto` to land on green (only where §4 Repo merge settings allows auto-merge) |
+| Unstacked | `gh pr merge <n> --<method> --match-head-commit <sha>`, or the same with `--auto` to land on green (only where §4 Repo merge settings allows auto-merge). Never for a PR under a §4 Merge holds glob |
 | Stacked (`gh api repos/<repo>/pulls/<n> --jq .stack` is non-null) | `gh api -X PUT repos/<repo>/pulls/<n>/merge-async -f merge_method=<method>` |
 
 Stacked PRs refuse `gh pr merge` ("must be merged using the asynchronous merge REST API"), `--auto`
@@ -258,7 +258,7 @@ the same check or a dead build reads as ready.
 
 ```bash
 gh pr update-branch --rebase <n>        # server-side; refuses on .github/workflows/** without `workflow` scope
-gh pr merge <n> --<method>              # unstacked only; <method> is §4 Merge method
+gh pr merge <n> --<method> --match-head-commit <sha>   # unstacked only; <method> is §4 Merge method, <sha> the head you checked
 git merge-tree --write-tree --name-only origin/<base> origin/<branch>   # conflict probe, no worktree
 git rev-list --count origin/<branch>..origin/<base>                     # behind-ness
 gh pr view <n> --json autoMergeRequest,mergeStateStatus,mergeable       # will going green merge it?

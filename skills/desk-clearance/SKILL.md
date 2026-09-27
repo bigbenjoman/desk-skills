@@ -102,7 +102,7 @@ commits, replies, PR bodies, ticket comments — carries any; where `allowed`, s
 | `pr-update-branch` | update a behind PR when it is next to merge | ask per PR | report it behind |
 | `pr-conflict-reviewed` | apply the resolution you proposed, printed as a record | propose it in the batch round | report the conflicting files |
 | `ci-rerun` | rerun per the rules below | ask per rerun | report the failure |
-| **`pr-merge-green`** | serial merge lane; bar = required checks green | same bar, ask per merge | report `READY` at `APPROVED` + green, never merge |
+| **`pr-merge-green`** | serial merge lane; bar = green at head (desk-config "Green") | same bar, ask per merge | report `READY` at `APPROVED` + green, never merge |
 | **`merge-feedback-first`** | outstanding human feedback is worked before a merge | — | the bar alone decides; feedback is still worked and reported |
 | `jira-close-own-merged` | §4 Done state on merge | ask per ticket | note it in the report |
 | `pr-images` | upload, one PR at a time | ask per run | leave images in the handoff dir |
@@ -152,12 +152,18 @@ not, and `mergeable` never is — it flaps to `UNKNOWN` every time the default b
 
 **What config can never loosen:**
 
-- **Every required check green at the PR's current head.** The required contexts are read live
+- **Green at the PR's current head, as the config defines it** (desk-config "Green", the one
+  definition `desk-ticket`, `desk-autopilot` and the merge driver use too): every required check
+  completed with success (**skipped does not count**); no other check failed, errored, timed out or
+  is still queued or running, unless §4 Advisory checks names it; and at least one check completed
+  with success, so a head with no checks at all is not green. The required contexts are read live
   from the ruleset and branch protection API, never from memory, a workflow file, or even §4
   Required checks — the script compares that row with the live answer and prints any drift, which
-  is a reason to re-run `/desk-setup`, not to trust the row. Where nothing on the platform requires
-  a check and §4 Required checks is `none`, **every check that reports on the PR** must be green,
-  and a head with no checks at all is not green. Green belongs to a SHA.
+  is a reason to re-run `/desk-setup`, not to trust the row. Green belongs to a SHA, and the merge
+  is pinned to it (`--match-head-commit`).
+- **No §4 Merge holds entry applies.** A PR whose files match a glob in §4 Merge holds needs a manual step
+  before it merges (the hold says which), so a person merges it: clearance never does, whatever §3
+  grants, and never arms auto-merge on it. It is reported under `HELD` with the reason.
 - **No standing `CHANGES_REQUESTED`.** Where §4 Branch protection enforces it the platform refuses
   the merge; where it does not (or it is `none`), clearance refuses it itself. Only that reviewer
   clears it.
@@ -289,8 +295,9 @@ WSL the guest cannot see what Windows lets VmmemWSL grow to.
 pair. Two branches editing one spec concurrently manufacture a conflict.
 
 You share the box with autopilot workers and interactive sessions: put every unit-test or e2e run
-(§4 Unit tests, §4 E2E tests) behind `~/.claude/desk/bin/with-lock.sh test …` with test workers at
-config §3b "Test worker cap under the test lock",
+(§4 Unit tests, §4 E2E tests) behind `~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD>`
+(each item from `desk-env cmds test-cmd`, never `cd dir && …`) with `--maxWorkers=` config §3b "Test
+worker cap under the test lock" appended only to Jest and Vitest commands, never to pytest,
 and browser work behind `with-lock.sh browser …` — the same locks autopilot takes. It uses `flock`
 where it exists (macOS: `brew install flock`) and a crash-safe `mkdir` lock otherwise.
 
@@ -308,20 +315,22 @@ Before each merge, from freshly derived state:
    the reviewer's threads where nobody will answer them.
 2. **Overlap.** If anything sharing a file merged since this PR's checks ran, update and get a fresh
    green first.
-3. **Re-verify.** `OPEN`, not `DIRTY`, verdict unchanged, feedback still 0 (under `merge-feedback-first`), and **re-read the head
-   SHA** — the required checks must be green on that SHA.
+3. **Re-verify.** `OPEN`, not `DIRTY`, verdict unchanged, feedback still 0 (under `merge-feedback-first`), no §4 Merge holds glob matches its files, and **re-read the head
+   SHA** — that SHA must be green.
 4. **Title and body.** Under a squash merge the commit message is the PR title and body, so a stale
    description becomes permanent history. The title must follow §5 PR title — where §4 Tracker is
    `jira`, the ticket key in it is what links the merge to the ticket.
 5. **§4 Merge method, and only that.** The render prints it and warns if a ruleset allows
-   something else. Unstacked: `gh pr merge <n> --<method>` (or leave armed auto-merge to fire).
+   something else. Unstacked: `gh pr merge <n> --<method> --match-head-commit <the SHA from step 3>`
+   (or leave armed auto-merge, armed with the same `--match-head-commit`, to fire).
    **Stacked** (the render says `STACKED`): every ordinary path refuses, including `--auto`; use
    `gh api -X PUT repos/<§0 GitHub repo>/pulls/<n>/merge-async -f merge_method=<method>`, which only
    *enqueues* — poll `.merged`. Merge stacks bottom-up.
-6. **Confirm** `state == MERGED` and record the merge commit SHA.
+6. **Confirm** `state == MERGED`, that the merged head (`headRefOid`) is the SHA you checked, and
+   record the merge commit SHA. A different head means something merged unchecked: stop and report.
 
 **Armed auto-merge merges without you.** If the render says `AUTO-MERGE ARMED`, anything that turns
-the required checks green — a clean §4 Local review verdict where a check reads it, a rerun — merges
+the head green — a posted verdict reading as §4 Clean review verdict where a check reads it, a rerun — merges
 the PR seconds later, unless it is `DIRTY`. Treat clearing the gate on such a PR as the merge itself:
 apply the bar first.
 
@@ -379,6 +388,7 @@ the state render already knows. So the report is a fixed shape, not a summary yo
 CLEARANCE PASS <time> - <n> open PRs - bar: <gate|approved>
 MERGED       #<n> <TICKET> <merge sha>
 READY        #<n> <TICKET>  (when §3 pr-merge-green is no or TODO, §4 Merge method is unset, or approvals are required)
+HELD         #<n> <TICKET> at <sha> - <the §4 Merge holds reason>   (green; a person merges it)
 HANDED BACK  #<n> <TICKET> -> <reviewer>            (re-review requested)
 WORKED, NOT HANDED BACK  #<n> - <why>
 PARKED       #<n> - <reason, and whether it is the merge or the comments that are parked>
@@ -416,7 +426,7 @@ from a self-review; anything genuinely uncertain.
 ## Updating branches and conflicts
 
 **Update only if actually behind, and only when next to merge** — it burns CI, moves the head (which
-voids a §4 Local review verdict recorded at the old SHA) and re-pings reviewers. Whether being behind
+voids a §4 Clean review verdict recorded at the old SHA) and re-pings reviewers. Whether being behind
 blocks a merge is §4 Branch protection ("branch must be up to date", `strict` in the API): where it
 does not, behind is never a reason to wait; where it does, update the PR that is next to merge, and
 only that one. Use `gh pr update-branch --rebase <n>`: server-side,

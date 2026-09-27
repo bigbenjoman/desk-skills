@@ -345,18 +345,26 @@ attempt a login.
 ## 4. Opening it
 
 ```bash
-gh pr create --draft --base <default> --body-file <path> --title "<title in the §5 PR title format>"
+gh pr create --repo <§0 GitHub repo> --base <default> --head <your branch> --draft \
+  --body-file <path> --title "<title in the §5 PR title format>"
 ```
 
-Gated on config §3 `pr-open`. Always pass `--title` explicitly.
+Gated on config §3 `pr-open`. Always pass `--repo`, `--head` and `--title` explicitly. `--repo` is
+what keeps the PR on this repo when `origin` is a fork (without it `gh` may offer, or pick, the
+fork), and `--head` is the ticket's recorded branch, the one the merge driver will look the PR up
+by.
 
 **Draft first**, unless §5 PR lifecycle says this repo doesn't use drafts. The draft gives the
 images somewhere to land. Then follow §5 PR lifecycle; the usual order is: upload the images, post
 the Stage 4b self-review (`desk-ticket` Stage 7), and — if §3 `pr-ready`, `pr-auto-merge` and
 `pr-merge-green` all allow, and §4 Repo merge settings allow auto-merge — `gh pr ready <n> &&
-gh pr merge <n> --auto --<§4 Merge method>`. Merging needs every §4 Required check green (with
-`none`, every check on the PR); never `--admin`, never past a failing check (`merge-bypass` is
-`never`). A draft cannot merge, so a PR left drafted is a merge silently deferred; if a row says
+gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>`. Merging needs the head
+**green** as the config defines it (desk-config "Green": every §4 Required checks entry completed
+with success, skipped not counting; nothing else failed, errored, timed out or still running unless
+§4 Advisory checks names it; at least one success), and is always pinned to that head with
+`--match-head-commit`. A PR touching a glob in §4 Merge holds is never armed or merged by a skill:
+report it with the hold's reason and the user merges. Never `--admin`, never past a failing check
+(`merge-bypass` is `never`). A draft cannot merge, so a PR left drafted is a merge silently deferred; if a row says
 `no`, say plainly it waits on the user. `desk-ticket`'s "Merging" section owns shepherding,
 including disarming auto-merge when review feedback lands under §3 `merge-feedback-first`. If `gh`
 fails, fall back to handing over the raw markdown to paste.
@@ -433,7 +441,7 @@ about immediately, not at the bottom of a finished PR description.
 | Screenshots with a consent banner over the content | Seed its cookie before the first `goto` |
 | A before/after table on a change that renders identically | Omit the section and say why in one line |
 | Opening a non-draft PR | Draft first (unless §5 PR lifecycle says otherwise); images and self-review land before it goes ready |
-| Merging with `--squash` because it's the usual | `--<§4 Merge method>`, and only once §4 Required checks are green |
+| Merging with `--squash` because it's the usual | `--<§4 Merge method> --match-head-commit <sha>`, and only once that head is green (desk-config "Green") and no §4 Merge holds entry applies |
 | Carrying the messages register into a PR body | Different register; normal prose is right here |
 | Shortening a PR by dropping a caveat or a change | Simplify the wording, not the content |
 | "Self-reviewed, all clean" in Testing | Give the counts and the SHA |

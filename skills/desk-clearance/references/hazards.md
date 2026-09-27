@@ -183,7 +183,7 @@ script with a hand-rolled `gh` call is the day they come back.
   nothing. Always `--paginate`; distrust any result of *exactly* 30 rows.
 - **A bot counted as a reviewer.** `github-actions` wrote 86 of 87 issue comments on one open set.
 - **An empty `reviewDecision` read as "not changes-requested".** It is also what an approval looks like.
-- **Green belonging to an older commit.** Re-read the head immediately before merging.
+- **Green belonging to an older commit.** Re-read the head immediately before merging, and pin the merge to it (`--match-head-commit`).
 - **A required check you named from memory — or from the config.** Check names change. Read the
   ruleset and branch protection; the config row is a record, not the authority.
 - **An empty result set satisfying a universal test.** `all`, `every`, `none` are vacuously true over

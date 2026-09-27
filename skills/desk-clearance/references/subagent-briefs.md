@@ -106,7 +106,9 @@ to two subagents, and never give two PRs that share a source file to subagents r
 >    anywhere.
 > 3. Config §4 Typecheck, §4 Lint, and the §4 Unit tests covering what you touched, each with §4
 >    Command prefix and using only §4 Package manager, the tests behind
->    `~/.claude/desk/bin/with-lock.sh test …` at the §3b "Test worker cap under the test lock". Any
+>    `~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD>` (each item of
+>    `desk-env cmds test-cmd`; never `cd dir && …`), with `--maxWorkers=<§3b "Test worker cap under
+>    the test lock">` appended only to a Jest or Vitest command, never to pytest. Any
 >    row that is `none`: skip that step and say so in your return. Anything §5 Repo instructions
 >    requires for the kind of change you made (an extra test suite, a generator, a check script)
 >    runs too.
