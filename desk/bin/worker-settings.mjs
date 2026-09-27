@@ -43,8 +43,13 @@
 //   - Neither permission mode is sufficient alone. `acceptEdits` auto-approves edits but denies Bash;
 //     `dontAsk` allows allow-listed Bash but denies edits. So grant BOTH explicitly: Edit/Write
 //     scoped to the worktree, plus the Bash allow-list. Deny still wins over allow.
-//   - Absolute paths in Edit/Write rules need a DOUBLE leading slash: Write(//abs/...) is honoured,
-//     Write(/abs/...) is SILENTLY IGNORED, in both directions.
+//   - File rules are Edit(...) only. Claude Code matches every file-writing tool against Edit rules
+//     and IGNORES Write(...) rules (it says so at startup), so a Write deny protects nothing.
+//   - Absolute paths in Edit rules need a DOUBLE leading slash: Edit(//abs/...) is honoured,
+//     Edit(/abs/...) is SILENTLY IGNORED, in both directions.
+//   - Workers are launched with --setting-sources "" (spawn-worker.sh, triage.sh), so the user's own
+//     settings, which may allow Bash(*), never widen this list. That also drops the user-level
+//     attribution hook, so it is re-registered here.
 //   - A malformed --settings file is silently IGNORED in --print mode, handing the worker full
 //     permissions while looking locked down. So this validates before writing.
 //   - A denial reported by a worker may be the FILESYSTEM sandbox, not the rule list: /tmp (locks)
@@ -54,7 +59,7 @@
 //     rule for a binary, allow or deny, is built by `bash()` below; never write one by hand.
 import { writeFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
 
@@ -220,7 +225,7 @@ if (mode === 'triage') {
     ...READS.flatMap((b) => bash(b)),
     ...bash('desk-jira', ...JIRA_READ),
     ...bash('gh', ' pr list', ' pr view', ' issue view'),
-    `Write(${abs(STATE)}/triage/${T}.json)`, `Write(${abs(STATE)}/triage/${T}.challenge.json)`,
+    `Edit(${abs(STATE)}/triage/${T}.json)`, `Edit(${abs(STATE)}/triage/${T}.challenge.json)`,
   );
   deny.push(
     ...READ_DENY,
@@ -237,15 +242,15 @@ if (mode === 'triage') {
   // The worktree, and in the state dir only this ticket's park file and screenshots. Not answers/
   // (a worker must not answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
-    `Edit(${abs(WT)}/**)`, `Write(${abs(WT)}/**)`,
-    `Write(${abs(STATE)}/parks/${T}.json)`, `Write(${abs(STATE)}/parks/${T}.*)`,
-    `Write(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
+    `Edit(${abs(WT)}/**)`, `Edit(${abs(WT)}/**)`,
+    `Edit(${abs(STATE)}/parks/${T}.json)`, `Edit(${abs(STATE)}/parks/${T}.*)`,
+    `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
   deny.push(
-    `Edit(${abs(WT)}/.claude/settings.json)`, `Write(${abs(WT)}/.claude/settings.json)`,
-    `Edit(${abs(WT)}/.claude/settings.local.json)`, `Write(${abs(WT)}/.claude/settings.local.json)`,
-    `Edit(${abs(WT)}/.git)`, `Write(${abs(WT)}/.git)`, `Write(${abs(WT)}/.git/**)`,
+    `Edit(${abs(WT)}/.claude/settings.json)`, `Edit(${abs(WT)}/.claude/settings.json)`,
+    `Edit(${abs(WT)}/.claude/settings.local.json)`, `Edit(${abs(WT)}/.claude/settings.local.json)`,
+    `Edit(${abs(WT)}/.git)`, `Edit(${abs(WT)}/.git)`, `Edit(${abs(WT)}/.git/**)`,
   );
 
   // ---- reads, desk-env, git, gh, desk-jira -----------------------------------------------------
@@ -401,7 +406,7 @@ if (mode === 'triage') {
   try { list = execFileSync('git', ['-C', WT, 'worktree', 'list', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { /* no git yet */ }
   for (const line of list.split('\n')) {
     const other = /^worktree (.+)$/.exec(line)?.[1];
-    if (other && other !== WT) deny.push(`Write(${abs(other)}/**)`, `Edit(${abs(other)}/**)`);
+    if (other && other !== WT) deny.push(`Edit(${abs(other)}/**)`, `Edit(${abs(other)}/**)`);
   }
 
   const mem = E.memoryDir();
@@ -414,6 +419,11 @@ if (mode === 'triage') {
 }
 
 const settings = { permissions: { allow: [...new Set(allow)], deny: [...new Set(deny)], additionalDirectories: [...dirs] } };
+// The attribution hook normally lives in the user's settings, which workers do not load.
+const HOOK = join(E.HOME, '.claude', 'hooks', 'deny-ai-attribution.py');
+if (existsSync(HOOK)) {
+  settings.hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HOOK}"`, timeout: 10 }] }] };
+}
 
 // Validate before writing: a silently-ignored settings file is full permissions.
 const p = JSON.parse(JSON.stringify(settings)).permissions;

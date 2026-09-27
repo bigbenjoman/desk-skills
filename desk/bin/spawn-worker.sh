@@ -117,10 +117,12 @@ TOOL$i=OK or TOOL$i=BLOCKED — run: $p"; done
 JIRA=OK or JIRA=BLOCKED — run: desk-jira whoami
 DENY=OK or DENY=BLOCKED — run: git stash list
 DENY2=OK or DENY2=BLOCKED — run: git -c alias.st=status st
+ESCAPE=OK or ESCAPE=BLOCKED — run: touch $CANARY.bash
 CODEX=OK or CODEX=BLOCKED — run: codex --version"
-  NCHECKS=$((i + 6))
+  NCHECKS=$((i + 7))
   RESULT=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS" \
+    --setting-sources "" --strict-mcp-config \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
     "${ADD_DIRS[@]}" \
@@ -139,6 +141,9 @@ $CHECKS" \
   for _ in "${TOOL_PROBES[@]}"; do i=$((i + 1)); check "TOOL$i" OK; done   # every toolchain binary (config §4) executes
   check DENY  BLOCKED   # deny must still win over allow
   check DENY2 BLOCKED   # git config and aliases are not reachable through -c
+  check ESCAPE BLOCKED  # a shell write outside the worktree is refused: proves user-level settings
+                        # (e.g. a personal Bash(*) allow) are NOT loaded into the worker
+  [ -e "$CANARY.bash" ] && { echo "  ESCAPE file was created: $CANARY.bash — the worker is NOT isolated"; rm -f "$CANARY.bash"; fail=1; }
   if [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" = none ]; then echo "  JIRA   skipped  (config §4 Tracker is none)"
   elif [ -n "$HAVE_JIRA" ]; then check JIRA OK   # Stage 8 must be reachable
   else echo "  JIRA   skipped  (desk-jira not installed — Jira steps will park for the orchestrator)"; fi
@@ -201,6 +206,7 @@ cd "$WT"
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
   --output-format stream-json --include-partial-messages --verbose \
+  --setting-sources "" --strict-mcp-config \
   --permission-mode dontAsk \
   --settings "$SETTINGS" \
   "${ADD_DIRS[@]}" \

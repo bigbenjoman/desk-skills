@@ -177,7 +177,9 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `autopilot-judgement` | Make and record an engineering or scope call instead of parking (product and other people's rulings still stop) | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 
-`autopilot-worker-mode` values: `dontAsk + generated allow-list` (Edit/Write scoped to the
+`autopilot-worker-mode` values: `dontAsk + generated allow-list` (workers are launched with
+`--setting-sources ""`, so your own Claude Code settings, including any broad `Bash(*)` allow, never
+reach them; file access is Edit rules scoped to the
 worker's own worktree, every other worktree denied, toolchain allow-listed) or `none` (no workers).
 `autopilot-merge` can be `yes` only if `pr-merge-green` is.
 

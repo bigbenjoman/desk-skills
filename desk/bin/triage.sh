@@ -135,6 +135,7 @@ PROMPT_END
 
 cd "$MAIN"
 desk_timeout 600 claude -p "$PROMPT" \
+  --setting-sources "" --strict-mcp-config \
   --settings "$SETTINGS" \
   --permission-mode dontAsk \
   --allowedTools "Read,Grep,Glob,Bash,Write" \
@@ -207,6 +208,7 @@ CHALLENGE_END
 
   cd "$MAIN"
   desk_timeout 420 claude -p "$CHALLENGE_PROMPT" \
+    --setting-sources "" --strict-mcp-config \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
     --allowedTools "Read,Grep,Glob,Bash,Write" \
