@@ -133,13 +133,17 @@ install_file() {
   cp "$src" "$pristine"
 }
 
+# Python bytecode is build output, never shipped: not copied, and not counted as an edit.
+DIFF_X=(-x __pycache__ -x '*.pyc')
+prune_bytecode() { find "$1" \( -name __pycache__ -o -name '*.pyc' \) -prune -exec rm -rf {} + 2>/dev/null || true; }
+
 # install_dir <src dir> <dest dir> — same, for a whole skill directory
 install_dir() {
   local src="${1%/}" dest="${2%/}" rel pristine
   rel="${dest#"$HOME"/}"
   pristine="$PRISTINE/$rel"
-  if [ -d "$dest" ] && ! diff -rq "$src" "$dest" >/dev/null 2>&1; then
-    if [ ! -d "$pristine" ] || ! diff -rq "$dest" "$pristine" >/dev/null 2>&1; then
+  if [ -d "$dest" ] && ! diff -rq "${DIFF_X[@]}" "$src" "$dest" >/dev/null 2>&1; then
+    if [ ! -d "$pristine" ] || ! diff -rq "${DIFF_X[@]}" "$dest" "$pristine" >/dev/null 2>&1; then
       mkdir -p "$(dirname "$BACKUP/$rel")"
       cp -R "$dest" "$BACKUP/$rel"
       note "your edited ~/$rel was saved to $BACKUP/$rel"
@@ -150,6 +154,8 @@ install_dir() {
   mkdir -p "$(dirname "$dest")" "$(dirname "$pristine")"
   cp -R "$src" "$dest"
   cp -R "$src" "$pristine"
+  prune_bytecode "$dest"
+  prune_bytecode "$pristine"
 }
 
 echo "desk-skills installer  ($SRC)"
@@ -206,7 +212,11 @@ if need codex 0 "brew install --cask codex, or npm i -g @openai/codex" \
   fi
 fi
 
-need flock 0 "brew install flock" "sudo apt install util-linux" "autopilot serialises test suites box-wide with it" || true
+if [ "$OS" = mac ] && ! has flock; then
+  note "flock not installed: fine on macOS, where with-lock.sh falls back to an atomic mkdir lock (brew install flock to use flock instead)"
+else
+  need flock 0 "brew install flock" "sudo apt install util-linux" "autopilot serialises test suites box-wide with it" || true
+fi
 need lsof 0 "ships with macOS" "sudo apt install lsof" "cleanup and dev find port and worktree owners with it" || true
 
 if [ "$CHECK_ONLY" = 1 ]; then
@@ -317,7 +327,7 @@ if [ -d "$SRC/desk/bin" ]; then
   count=0
   for f in "$SRC"/desk/bin/*; do
     [ -f "$f" ] || continue
-    case "$f" in *.bak*) continue ;; esac
+    case "$f" in *.bak*|*.pyc) continue ;; esac
     install_file "$f" "$DESKDIR/bin/$(basename "$f")"
     chmod +x "$DESKDIR/bin/$(basename "$f")"
     count=$((count + 1))
@@ -403,11 +413,12 @@ case "$rc" in
   0) ok "already registered in ~/.claude/settings.json" ;;
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the hook" ;;
   *)
-    note "Registers a PreToolUse(Bash) hook at user level. In a repo whose desk config sets AI attribution"
-    note "to forbidden (and only there): a git commit message, gh pr or gh api body,"
-    note "or desk-jira text (inline, heredoc or file) carrying a Co-Authored-By trailer, Claude-Session,"
-    note "an Anthropic noreply address, a Claude session link, 'Generated with Claude Code' or the robot"
-    note "emoji is denied. Other repos are untouched. Other hooks are kept."
+    note "Registers a PreToolUse(Bash) hook at user level. Aimed at a repo whose desk config sets AI"
+    note "attribution to forbidden (judged per subcommand, by the repo it targets): a git commit, merge,"
+    note "tag or note message, a gh pr/issue/release or gh api body, or desk-jira text (inline, heredoc"
+    note "or file, also inside bash -c or eval) carrying a Co-Authored-By trailer naming Claude or"
+    note "Anthropic, Claude-Session, an Anthropic noreply address, a Claude session link, 'Generated with"
+    note "Claude Code' or the robot emoji is denied. Other repos are untouched. Other hooks are kept."
     if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if settings_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
