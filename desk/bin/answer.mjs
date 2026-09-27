@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 // Answer a ticket's open question — either a triage unknown (before it is spawned)
 // or a live worker's paused question (while it waits).
+//
+// It RECORDS the answer; it never changes a ticket's state. A parked ticket stays parked: whether
+// it resumes, is requeued, or is finished by hand is the orchestrator's decision (the autopilot
+// skill and orchestrator-recovery.md), because a park can be a lane C/D ticket that must not run
+// unattended at all, and un-parking here once sent exactly such a ticket to a headless worker.
 import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, queueFile } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, SAFE_ID } from './desk-env.mjs';
 
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
@@ -14,6 +19,10 @@ const text = rest.join(' ').trim();
 if (!ticket || !text) {
   console.error('usage: answer.mjs <TICKET> "<the answer>"');
   process.exit(1);
+}
+if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
+  console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
+  process.exit(2);
 }
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
@@ -72,16 +81,22 @@ const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
 if (existsSync(brief)) appendFileSync(brief, entry);
 else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 
-// Clearing the question count is what makes the ticket eligible to spawn.
+// A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible
+// to spawn, and answering them is exactly what the user was asked to do. A parked ticket is left
+// parked, with its park intact, for the orchestrator to decide.
 try {
   const Q = existsSync(queueFile()) ? JSON.parse(readFileSync(queueFile(), 'utf8')) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
-    execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
-    if (Q.tickets[ticket].state === 'parked') {
-      execFileSync('node', [QUEUE, 'set', ticket, 'state=triaged', 'park=null'], { stdio: 'ignore' });
-      console.log(`${ticket}: answered and un-parked. Check its log for a spent AUTOPILOT_DONE (see orchestrator-recovery.md) before trusting the next pass to respawn it.`);
-    } else {
+    const st = Q.tickets[ticket].state;
+    if (st === 'triaged' || st === 'queued') {
+      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
       console.log(`${ticket}: answered.`);
+    } else if (st === 'parked') {
+      console.log(`${ticket}: answer recorded in its briefing. It is STILL PARKED — the orchestrator decides whether it ` +
+        'resumes, is requeued (`queue.mjs set <TICKET> state=triaged park=null`), or is finished by hand. A lane C or D ' +
+        'park is never requeued for a headless worker.');
+    } else {
+      console.log(`${ticket}: answer recorded (state ${st}).`);
     }
   } else {
     console.log(`${ticket}: answer recorded (not in the queue yet — it will be read at spawn).`);

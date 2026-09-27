@@ -7,17 +7,21 @@
 #
 #   triage.sh <TICKET>
 #
-# With config §4 Tracker `jira`, <TICKET> is a key matching §4 Ticket key pattern and the ticket is
-# read with desk-jira. With Tracker `none`, <TICKET> is either `issue-<n>` (GitHub issue n of this
-# repo, read with `gh issue view`) or a lowercase kebab slug the orchestrator chose, whose text (a
-# plain description) must already be written to $DESK_STATE/tickets/<TICKET>.md.
+# Which ids are accepted, and where each one's text comes from (desk-env ticket-kind):
+#   a key matching §4 Ticket key pattern          read from the tracker with desk-jira
+#   an id matching §4 Other work id patterns       (e.g. `P1-M14-FIX-1`, `BUG-119-5`) and, with §4
+#   or, with Tracker none, a lower-case kebab slug   Tracker none, a slug: read from the ticket file
+#                                                    $DESK_STATE/tickets/<TICKET>.md, which the
+#                                                    orchestrator writes before triage
+#   `issue-<n>` with Tracker none                  GitHub issue n of this repo, via `gh issue view`
+# Ids are case-sensitive as written.
 set -euo pipefail
 
 TICKET="${1:?usage: triage.sh <TICKET>}"
-case "$TICKET" in */*|.*|*..*|'') echo "FAIL: ticket '$TICKET' is not usable as a file name" >&2; exit 2 ;; esac
 
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+KIND="$(node "$DESK_ENV_MJS" ticket-kind "$TICKET")" || exit 2
 desk_load_paths || exit 1
 # Read-only and foreground, so `ask` does not block it: the batch is confirmed once, at Stage 3, and
 # that one question round needs triage's output to exist. `no` still refuses.
@@ -34,28 +38,24 @@ TRACKER="$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')"
 BRANCH_CONV="$(cfg_opt branch-names '<type>/<TICKET>-<kebab-slug>')"
 REPO_DESC="$(cfg_opt repo-description '')"
 INSTRUCTIONS="$(cfg_opt repo-instructions 'CLAUDE.md or AGENTS.md, where they exist')"
-if [ "$TRACKER" = none ]; then
-  printf '%s' "$TICKET" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$' \
-    || { echo "FAIL: with config §4 Tracker none, a ticket is issue-<n> or a lowercase kebab slug, not '$TICKET'" >&2; exit 2; }
-  ISSUE_NO="$(printf '%s' "$TICKET" | sed -nE 's/^issue-([0-9]+)$/\1/p')"
-  if [ -n "$ISSUE_NO" ]; then
+if [ "$KIND" = work-id ] || [ "$KIND" = slug ] || [ "$KIND" = issue ]; then
+  if [ "$KIND" = issue ]; then
+    ISSUE_NO="${TICKET#issue-}"
     READ_TICKET="Read the ticket, GitHub issue #$ISSUE_NO, with \`gh issue view $ISSUE_NO --repo $DESK_GH_REPO --comments\` (a later comment can settle or rule out what the description asks for)"
     STATUS_JSON='"<the issue state: open or closed>"'
     ASSIGNEE_JSON='"<the issue assignee GitHub login, or null if unassigned>"'
   else
+    # Not a tracker key, so there is nothing to fetch: the text is whatever the orchestrator wrote.
     TICKET_FILE="$STATE/tickets/$TICKET.md"
-    [ -f "$TICKET_FILE" ] || { echo "FAIL: config §4 Tracker is none and '$TICKET' is not issue-<n>, so the ticket text must be at $TICKET_FILE — write it first" >&2; exit 1; }
-    READ_TICKET="Read the ticket in $TICKET_FILE"
+    [ -f "$TICKET_FILE" ] || { echo "FAIL: '$TICKET' is not a tracker key ($KIND), so its text must be in $TICKET_FILE — write the ticket there first (a description of the work, and where it came from)" >&2; exit 1; }
+    READ_TICKET="Read the ticket in $TICKET_FILE (it is not a tracker issue; this file is the whole ticket)"
     STATUS_JSON="null"
     ASSIGNEE_JSON="null"
   fi
   RELATED="If the ticket names another piece of work (\"follow-up from …\", an issue number), check whether it merged: \`git log --oneline $BASE --grep=<its name or number>\`"
   TYPE_HINT="Bug|Feature|Chore, your reading of the ticket"
 else
-  PATTERN="$(cfg_opt ticket-pattern '')"
-  [ -n "$PATTERN" ] || { echo "FAIL: config §4 Ticket key pattern is not set — run /desk-setup. Refusing to guess." >&2; exit 1; }
-  node -e 'const [p,t]=process.argv.slice(1); if(!new RegExp(`^(?:${p})$`).test(t)) process.exit(1)' "$PATTERN" "$TICKET" \
-    || { echo "FAIL: '$TICKET' does not match config §4 Ticket key pattern ($PATTERN)" >&2; exit 2; }
+  [ "$TRACKER" != none ] || { echo "FAIL: '$TICKET' reads as a tracker key but config §4 Tracker is none" >&2; exit 2; }
   READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for)"
   RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\` and \`unknowns\` (which base to use)"
   TYPE_HINT="Jira issue type"
@@ -64,8 +64,8 @@ else
 fi
 ROUTING="$DESK_SKILLS_DIR/desk-ticket/references/desk-ticket-routing.md"
 OUT="$STATE/triage/$TICKET.json"
-SETTINGS="$DESK_HOME/workers/$TICKET.triage.settings.json"
-mkdir -p "$STATE/triage" "$DESK_HOME/workers"
+SETTINGS="$STATE/workers/$TICKET.triage.settings.json"   # per repo, like the worker's
+mkdir -p "$STATE/triage" "$STATE/workers"
 
 [ -f "$ROUTING" ] || { echo "FAIL: routing file missing at $ROUTING — is desk-ticket installed?" >&2; exit 1; }
 node "$DESK_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
