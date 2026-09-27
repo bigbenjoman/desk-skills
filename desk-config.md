@@ -46,6 +46,20 @@ permissions. Editing this file directly also works.
 Skills cite rows as `§3 <key>`, e.g. `§3 pr-merge-green`, and other rows by section and name, e.g.
 `§4 Ticket key pattern`. Keys and row names are stable; the wording beside them can change.
 
+**How a value is written.** The value is what sits in backticks. A row that holds a list (checks,
+env files, commands, projects) takes **one backtick span per item**, e.g.
+`` `Lint, Type Check & Build` `Verify script sign-off` ``: items are never split on commas, so a
+name may contain one. A `|` inside backticks is part of the value. Words outside backticks are notes
+for people and are ignored by the scripts. A **command** item may name the directory it runs in,
+relative to the repo root, as `` `apps/api: uv run pytest` ``; never write `cd dir && …`, which
+breaks the test lock and the worker allow-list.
+
+**"Green" means one thing everywhere** (merge driver, clearance, ticket, autopilot): on the exact
+head commit being merged, every §4 Required check completed with success (skipped does not count);
+no other check failed, errored, timed out or is still queued or running, unless §4 Advisory checks
+names it; and at least one check completed with success. The merge is then pinned to that commit
+(`--match-head-commit`), so a push after the check cannot be merged unchecked.
+
 ---
 
 ## 0. This repo
@@ -240,7 +254,8 @@ such thing.
 | Jira site | `TODO` (e.g. `yourteam.atlassian.net`) |
 | Jira cloudId | `TODO` (for the Atlassian connector fallback) |
 | Jira project | `TODO` (key and name, e.g. `KAN` "Voice PA"; issue types) |
-| Ticket key pattern | `TODO` (a regex, e.g. `KAN-[0-9]+`; branch names, PR titles and autopilot arguments are matched against it) |
+| Ticket key pattern | `TODO` (a regex for this tracker's keys, e.g. `KAN-[0-9]+`; `none` with Tracker `none`) |
+| Other work id patterns | `TODO` (regexes for ids work is also named by that are NOT tracker keys, one span each, e.g. planning-tool ids `P[0-9]+-M[0-9]+(-FIX)?-[0-9]+` or `BUG-[0-9]+(-[0-9]+)*`; or `none`. Such an id is accepted as a ticket, and its text comes from a ticket file the skill writes, never from Jira) |
 | Workflow | `TODO` (the states in order, e.g. `To Do → In Progress → In Review → Done`) |
 | In-progress state | `TODO` (what `jira-transition` moves to when work starts) |
 | Review state | `TODO` (what it moves to when the PR is open; `none` to skip) |
@@ -255,8 +270,9 @@ such thing.
 | Field | Value |
 |---|---|
 | Branch protection | `TODO` (as detected: required approvals, whether a standing `CHANGES_REQUESTED` blocks, whether the branch must be up to date; `none` if unprotected) |
-| Required checks | `TODO` (the check names that must be green to merge, as detected; with `none`, every check on the PR must be green) |
-| Advisory checks | `TODO` (checks that run but do not block, or `none`) |
+| Required checks | `TODO` (the check names that must succeed to merge, one span each, exactly as GitHub shows them; from branch protection AND rulesets. `none` only when nothing is required, and then "Green" still requires every non-advisory check to pass) |
+| Advisory checks | `TODO` (checks that may fail without blocking a merge, one span each, e.g. a check that is red on the default branch too; or `none`. Every other check that runs must pass: see "Green" above) |
+| Merge holds | `TODO` (paths a PR may touch only with a person merging it, each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)` ``; or `none`. Autopilot and clearance never merge such a PR themselves; they report it with the reason) |
 | Merge method | `TODO` (`squash`, `merge` or `rebase`; what the skills pass to `gh pr merge`) |
 | Repo merge settings | `TODO` (auto-merge allowed? `delete_branch_on_merge`?) |
 | `gh` token scopes | `TODO` (needs `repo` and `workflow`) |
@@ -272,28 +288,28 @@ such thing.
 | Package manager | `TODO` (e.g. `pnpm`; name any that are forbidden) |
 | Command prefix | `TODO` (what agent shells put in front, e.g. `mise exec --`, or `none`) |
 | Install | `TODO` (e.g. `pnpm install --frozen-lockfile`) |
-| Dev server | `TODO` (e.g. `pnpm --filter frontend dev`; takes `PORT`) |
+| Dev server | `TODO` (one span per app, e.g. `` `pnpm --filter frontend dev` `portal: pnpm dev` ``; say whether each honours `PORT` or hard-codes a port, since workers are given ports from §3b's port + 1 upwards) |
 | Typecheck | `TODO` |
 | Lint | `TODO` |
-| Unit tests | `TODO` (and how to run one file) |
+| Unit tests | `TODO` (one span per suite, e.g. `` `pnpm turbo run test` `apps/api: uv run pytest` ``; note how to run one file) |
 | E2E tests | `TODO` (or `none`) |
 | Integration tests | `TODO` (database-backed suite, and whether it needs its own database; or `none`) |
 | Build | `TODO` |
-| Env files | `TODO` (which `.env*` files a new worktree needs copied from the primary checkout, or `none`) |
+| Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |
 
 ### Environments and services
 
 | Field | Value |
 |---|---|
-| Local database | `TODO` (e.g. Postgres in docker container `<name>` on :5432, how to create one per ticket; or `none`) |
-| Database URL variable | `TODO` (the env var the app reads its database URL from, e.g. `DATABASE_URL`; or `none`) |
+| Local database | `TODO` (a local Postgres that per-ticket databases can be created in, as `` `postgres container <name>` ``, e.g. `` `postgres container voicepa-postgres-1` ``; or `none` when the app uses a hosted database such as Neon. `none` means workers get no database at all) |
+| Database URL variable | `TODO` (every env var that holds a database URL or name, one span each, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` ``; or `none`. In a worker's worktree each one is repointed at its own per-ticket database or, when none was provisioned, blanked, so no worker can reach a shared, staging or production database) |
 | Database migrate | `TODO` (command that brings a fresh database up to schema, e.g. `pnpm db:migrate`; or `none`) |
 | Seed | `TODO` (command that loads local data into a fresh database, or `none`) |
 | Local services | `TODO` (search, mail catcher, queues, with ports; or `none`) |
-| Staging | `TODO` (URL, and how access is protected; or `none`) |
+| Staging | `TODO` (one span per app, `` `<app>: <url>` ``, and how access is protected; or `none`) |
 | Staging bypass token location | `TODO` (a file only you read, e.g. `~/.config/desk/repos/<slug>/vercel-staging-bypass`: the path, never the token) |
 | Production | `TODO` (URL and how it is deployed; skills never deploy it) |
-| Vercel | `TODO` (team slug and project ids, or `none`) |
+| Vercel | `TODO` (team slug, then one span per project, `` `<app>: <project id>` ``; or `none`) |
 | Slack channels | `TODO` (channels relevant to this repo, or `none`) |
 | Check-out destination | `TODO` (where `/desk-checkout` drafts go: a Slack channel, a file path, or `none`) |
 

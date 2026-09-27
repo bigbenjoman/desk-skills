@@ -15,7 +15,9 @@
 //
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
-//   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS), exit 3 if unset
+//   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset
+//   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
+//   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
@@ -29,7 +31,7 @@
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
@@ -45,24 +47,38 @@ const git = (dir, ...args) => {
   catch { return ''; }
 };
 
-// `owner/name` from a GitHub remote URL (ssh, https or ssh://), else null.
+// `owner/name` from any git remote URL: https://host/owner/name(.git)(/), git@host:owner/name.git,
+// ssh://git@host:443/owner/name.git, and ssh host aliases such as git@github-work:owner/name.git.
+// The host is deliberately ignored: an alias hides it, and the last two path segments are the repo.
+// Returns null for anything that does not end in owner/name.
 export function ownerRepoFromUrl(url) {
-  const m = /github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(String(url ?? '').trim());
+  const u = String(url ?? '').trim().replace(/\/+$/, '').replace(/\.git$/, '');
+  const m = /(?:^[a-z][a-z0-9+.-]*:\/\/[^/]+\/|^[^@\s/]+@[^:\s/]+:|^[^:\s/]+:(?!\/))(?:.*\/)?([^/\s:]+)\/([^/\s:]+)$/i.exec(u);
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
-// The repo this process works in. Slug is `owner__name`; a repo with no GitHub origin falls back to
-// `local__<main checkout dir name>`, so it can still be configured.
+// GitHub owner and repo names are case-insensitive, so the slug is lower-case: two clones spelled
+// differently must find one config, on a case-sensitive filesystem as well as on macOS.
+export const slugOf = (ownerRepo) => ownerRepo.toLowerCase().replace('/', '__');
+
+// The repo this process works in. Slug is `owner__name` of the origin remote. A repo with no usable
+// origin falls back to `local__<main checkout dir name>-<hash of its path>`, so two unrelated remote-less
+// repos with the same folder name never share a config. DESK_REPO_OVERRIDE (`owner/name`) forces a
+// repo for tests; it is deliberately not a name any desk script exports, so it cannot leak into a
+// child process and silently switch repos.
 let repoCache = null;
 export function currentRepo() {
   if (repoCache) return repoCache;
   const dir = expandHome(process.env.DESK_REPO_DIR ?? process.cwd());
-  const ownerRepo = process.env.DESK_GH_REPO || ownerRepoFromUrl(git(dir, 'remote', 'get-url', 'origin'));
+  const ownerRepo = process.env.DESK_REPO_OVERRIDE || ownerRepoFromUrl(git(dir, 'remote', 'get-url', 'origin'));
   let slug = null;
-  if (ownerRepo) slug = ownerRepo.replace('/', '__');
+  if (ownerRepo) slug = slugOf(ownerRepo);
   else {
     const common = git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir');
-    if (common) slug = `local__${basename(dirname(common))}`;
+    if (common) {
+      const root = dirname(common);
+      slug = `local__${basename(root).toLowerCase()}-${createHash('sha1').update(root).digest('hex').slice(0, 8)}`;
+    }
   }
   repoCache = { dir, ownerRepo, slug };
   return repoCache;
@@ -174,6 +190,8 @@ export const CONFIG_ROWS = Object.freeze({
   'jira-cloudid': { section: '4', row: 'Jira cloudId' },
   labels: { section: '4', row: 'Labels' },
   'required-checks': { section: '4', row: 'Required checks' },
+  'work-id-patterns': { section: '4', row: 'Other work id patterns' },
+  'merge-holds': { section: '4', row: 'Merge holds' },
   'merge-method': { section: '4', row: 'Merge method' },
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },
@@ -229,6 +247,24 @@ export class DeskConfigError extends Error {}
 let cache = null;
 const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
+// Split a markdown table row into cells. A `|` inside backticks is part of the value (a regex such
+// as `KAN-[0-9]+|VPL-[0-9]+`), not a column break; `\|` is a literal pipe too.
+function splitRow(line) {
+  const body = line.replace(/^\|/, '').replace(/\|$/, '');
+  const cells = [];
+  let cur = '';
+  let tick = false;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '\\' && body[i + 1] === '|') { cur += '|'; i++; continue; }
+    if (c === '`') tick = !tick;
+    if (c === '|' && !tick) { cells.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
 function parseConfig() {
   if (cache) return cache;
   const path = configPathOrNull();
@@ -242,18 +278,20 @@ function parseConfig() {
     if (h) { section = h[1].toLowerCase(); header = null; cache.sections[section] ??= { byKey: {}, byName: {} }; continue; }
     if (!section) continue;
     if (!line.startsWith('|')) { header = null; continue; }
-    const cells = line.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    const cells = splitRow(line);
     if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue; // separator row
     if (!header) { header = cells.map(norm); continue; }
     let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1;
     if (col < 0) col = 1;
     const keyCol = header.indexOf('key');
     const cell = cells[col] ?? '';
-    const tick = /`([^`]*)`/.exec(cell);
-    const value = (tick ? tick[1] : cell).trim();
+    const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+    const items = spans.length ? spans : [cell.trim()];
     const s = cache.sections[section];
-    if (keyCol >= 0) { const k = norm(cells[keyCol] ?? ''); if (k) s.byKey[k] = value; }
-    else { const n = norm(cells[0] ?? ''); if (n) s.byName[n] = value; }
+    // `value` is the first item (what every single-valued row means); `items` is every backtick span.
+    const entry = { value: items[0], items };
+    if (keyCol >= 0) { const k = norm(cells[keyCol] ?? ''); if (k) s.byKey[k] = entry; }
+    else { const n = norm(cells[0] ?? ''); if (n) s.byName[n] = entry; }
   }
   return cache;
 }
@@ -266,11 +304,36 @@ function rowFor(id) {
   return r;
 }
 
-// Exact lookup by logical id. Unset (missing row, blank, TODO) is null.
+// `<slug>` in a value (the template's own path examples) means this repo's slug.
+const expandSlug = (v) => (typeof v === 'string' && v.includes('<slug>') && currentRepo().slug
+  ? v.replaceAll('<slug>', currentRepo().slug) : v);
+
+// Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
+// configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
   const { section, row } = rowFor(id);
-  const v = parseConfig().sections[section]?.byName[norm(row)];
-  return unset(v) ? null : v;
+  const e = parseConfig().sections[section]?.byName[norm(row)];
+  return unset(e?.value) ? null : expandSlug(e.value);
+}
+
+// Every item of a row, one per backtick span, in order. Items are never split on commas: a check
+// can be called `Lint, Type Check & Build`. Unset is null; `none` is ['none'] (callers test isNone).
+export function configValues(id) {
+  const { section, row } = rowFor(id);
+  const e = parseConfig().sections[section]?.byName[norm(row)];
+  if (!e || unset(e.value)) return null;
+  return e.items.filter((x) => !unset(x)).map(expandSlug);
+}
+export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
+
+// A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
+// -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
+export function parseCommandItem(item) {
+  const m = /^([A-Za-z0-9._][A-Za-z0-9._/-]*):\s+(\S.*)$/.exec(String(item).trim());
+  if (m && !m[1].split('/').includes('..')) {
+    return { dir: m[1].replace(/\/+$/, ''), cmd: m[2] };
+  }
+  return { dir: '.', cmd: String(item).trim() };
 }
 
 // env -> config -> fallback. Identity-shaped values have no fallback and fail loudly.
@@ -293,7 +356,7 @@ export function resolve({ env, id, fallback, identity = false }) {
 export function permission(id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
-  const v = parseConfig().sections['3']?.byKey[norm(key)];
+  const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return 'no';
   return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
 }
@@ -302,7 +365,7 @@ export function permission(id) {
 export function permissionOrUnset(id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
-  const v = parseConfig().sections['3']?.byKey[norm(key)];
+  const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return null;
   return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? null;
 }
@@ -480,6 +543,19 @@ if (isMain) {
         if (!r.slug) process.exit(3);
         break;
       }
+      case 'list': {
+        const v = configValues(args[0]);
+        if (v == null) process.exit(3);
+        for (const x of v) console.log(expandHome(x));
+        break;
+      }
+      case 'cmds': {
+        const v = configValues(args[0]);
+        if (v == null) process.exit(3);
+        if (isNone(v)) break;
+        for (const x of v) { const c = parseCommandItem(x); console.log(`${c.dir}\t${c.cmd}`); }
+        break;
+      }
       case 'get': {
         const v = configValue(args[0]);
         if (v == null) process.exit(3);
@@ -541,7 +617,7 @@ if (isMain) {
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
       default:
-        console.error('usage: desk-env.mjs where|get|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
+        console.error('usage: desk-env.mjs where|get|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
         process.exit(2);
     }
   } catch (e) {
