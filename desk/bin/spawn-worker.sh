@@ -14,6 +14,10 @@
 # silently-denied permissions that looked like success.
 #
 # setsid may fork, so $! is not the worker. The session id is the only durable handle.
+#
+# From pass.mjs: AUTOPILOT_BRANCH (the branch setup-worktree.sh made, the only one the worker may
+# push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
+# per-ticket database). Standalone, the branch is read from the worktree and the database is none.
 set -euo pipefail
 
 TICKET="${1:?usage: spawn-worker.sh <TICKET> <worktree> <session-uuid|preflight> [briefing-file]}"
@@ -25,17 +29,20 @@ BRIEFING="${4:-}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
 desk_load_paths || exit 1
 desk_require_headless || exit 1
+node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
 command -v claude >/dev/null 2>&1 || { echo "FAIL: claude CLI not on PATH" >&2; exit 1; }
 
 STATE="$DESK_STATE"
 BIN="$DESK_BIN"
 CONTRACT="$DESK_SKILLS_DIR/desk-autopilot/references/autopilot-worker-contract.md"
 LOG="$STATE/logs/$TICKET.log"
-SETTINGS="$DESK_HOME/workers/$TICKET.settings.json"
+# Per repo: $DESK_STATE is this repo's batch state, so two repos with the same ticket key never
+# share (or overwrite) one another's permission file.
+SETTINGS="$STATE/workers/$TICKET.settings.json"
 
 [ -d "$WT" ] || { echo "FAIL: worktree $WT does not exist — run setup-worktree.sh first" >&2; exit 1; }
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
-mkdir -p "$DESK_HOME/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images"
+mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images"
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
@@ -64,14 +71,25 @@ if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
   DRY_NOTE=" This is a DRY RUN: pushing, opening a PR, posting a review and every Jira write are blocked on purpose. Commit locally, do everything else in full, then print AUTOPILOT_DONE saying what you would have pushed. Do not treat those blocks as errors to work around."
 fi
 
-if ! WS_OUT="$(node "$BIN/worker-settings.mjs" worker --ticket "$TICKET" --wt "$WT" --out "$SETTINGS" ${AUTOPILOT_DRY_RUN:+--dry})"; then
+BRANCH="${AUTOPILOT_BRANCH:-$(git -C "$WT" branch --show-current 2>/dev/null || true)}"
+DATABASE="${AUTOPILOT_DATABASE:-none}"
+if ! WS_OUT="$(node "$BIN/worker-settings.mjs" worker --ticket "$TICKET" --wt "$WT" --out "$SETTINGS" \
+    --branch "$BRANCH" --database "$DATABASE" ${AUTOPILOT_DRY_RUN:+--dry})"; then
   echo "FAIL: settings for $TICKET are invalid or unsafe — refusing to spawn" >&2
   exit 1
 fi
 DENIED="$(printf '%s\n' "$WS_OUT" | grep '^CONFIG_DENIED: ' || true)"
-# The command that proves this repo's toolchain executes under the generated rules (config §4).
-TOOL_PROBE="$(printf '%s\n' "$WS_OUT" | sed -n 's/^TOOLCHAIN_PROBE: //p' | head -1)"
-[ -n "$TOOL_PROBE" ] || { echo "FAIL: worker-settings produced no toolchain probe — config §4 toolchain unset?" >&2; exit 1; }
+printf '%s\n' "$WS_OUT" | grep '^CONFIG_WARN: ' | sed 's/^/[spawn] /' >&2 || true
+# The commands that prove each toolchain binary executes under the generated rules (config §4).
+TOOL_PROBES=()
+while IFS= read -r l; do [ -n "$l" ] && TOOL_PROBES+=("$l"); done < <(printf '%s\n' "$WS_OUT" | sed -n 's/^TOOLCHAIN_PROBE: //p')
+[ "${#TOOL_PROBES[@]}" -gt 0 ] || { echo "FAIL: worker-settings produced no toolchain probe — config §4 toolchain unset?" >&2; exit 1; }
+
+# A database URL in the orchestrator's own environment would reach the worker however carefully its
+# env files were repointed. Every §4 Database URL variable is removed from what the worker inherits.
+while IFS= read -r v; do
+  case "$v" in ''|none|*[!A-Za-z0-9_]*) ;; *) unset "$v" ;; esac
+done < <(node "$DESK_ENV_MJS" list db-url-var 2>/dev/null || true)
 # With no tracker (config §4 Tracker `none`) there is no Jira step to prove reachable.
 TRACKER="$(desk_cfg tracker 2>/dev/null || echo unset)"
 CONFIG_NOTE=""
@@ -88,13 +106,21 @@ if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
   HAVE_JIRA=""; command -v desk-jira >/dev/null 2>&1 && HAVE_JIRA=1
   HAVE_CODEX=""; command -v codex >/dev/null 2>&1 && HAVE_CODEX=1
   cd "$WT"
-  RESULT=$(desk_timeout 300 claude -p "Perform these six checks and reply with EXACTLY six lines, nothing else. Do not stop early if one is refused.
-W_IN=OK or W_IN=BLOCKED  — write the file $WT/.preflight.tmp containing x
-W_OUT=OK or W_OUT=BLOCKED — write the file $CANARY containing x
-TOOL=OK or TOOL=BLOCKED — run: $TOOL_PROBE
+  # One line per check; a TOOLn line for every toolchain binary, so a second toolchain (a Python
+  # backend beside a JS frontend) is proved to execute, not just the first.
+  CHECKS="W_IN=OK or W_IN=BLOCKED  — write the file $WT/.preflight.tmp containing x
+W_OUT=OK or W_OUT=BLOCKED — write the file $CANARY containing x"
+  i=0
+  for p in "${TOOL_PROBES[@]}"; do i=$((i + 1)); CHECKS="$CHECKS
+TOOL$i=OK or TOOL$i=BLOCKED — run: $p"; done
+  CHECKS="$CHECKS
 JIRA=OK or JIRA=BLOCKED — run: desk-jira whoami
 DENY=OK or DENY=BLOCKED — run: git stash list
-CODEX=OK or CODEX=BLOCKED — run: codex --version" \
+DENY2=OK or DENY2=BLOCKED — run: git -c alias.st=status st
+CODEX=OK or CODEX=BLOCKED — run: codex --version"
+  NCHECKS=$((i + 6))
+  RESULT=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
+$CHECKS" \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
     "${ADD_DIRS[@]}" \
@@ -109,8 +135,10 @@ CODEX=OK or CODEX=BLOCKED — run: codex --version" \
   echo "[preflight] $TICKET"
   check W_IN  OK        # must be able to edit its own worktree
   check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
-  check TOOL  OK        # this repo's toolchain (config §4) must actually execute
+  i=0
+  for _ in "${TOOL_PROBES[@]}"; do i=$((i + 1)); check "TOOL$i" OK; done   # every toolchain binary (config §4) executes
   check DENY  BLOCKED   # deny must still win over allow
+  check DENY2 BLOCKED   # git config and aliases are not reachable through -c
   if [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" = none ]; then echo "  JIRA   skipped  (config §4 Tracker is none)"
   elif [ -n "$HAVE_JIRA" ]; then check JIRA OK   # Stage 8 must be reachable
   else echo "  JIRA   skipped  (desk-jira not installed — Jira steps will park for the orchestrator)"; fi

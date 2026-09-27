@@ -6,13 +6,32 @@
 #   with-lock.sh test  <config §4 Unit tests command> <specs>   # at config §3b's test worker cap: 4, 2 while the spawn gate says hold
 #   with-lock.sh tsc   <config §4 Typecheck command>
 #   with-lock.sh browser <screenshot capture>
+#   with-lock.sh test --cwd apps/api -- uv run pytest tests/x.py
+#   with-lock.sh nolock --cwd portal -- pnpm dev              # a directory, no lock
+# --cwd runs the command in that directory, relative to the root of the git worktree the caller is in:
+# the form a §4 command item with a directory (`apps/api: uv run pytest`) takes, because `cd dir && …`
+# is a compound command that neither the lock nor the worker allow-list can see into. The directory
+# must be a plain relative path inside the worktree (no leading /, no ..).
 # The locks are box-wide on purpose, shared by every repo desk runs in: memory is per machine, not per repo.
 #
 # Uses flock(1) where it exists (Linux). Where it does not (stock macOS) it falls back to an atomic
 # `mkdir` lock recording the wrapper's and the command's pids, so a crashed holder is detected and
 # taken over instead of wedging the box. Both block with no timeout: waiting is the feature.
 set -uo pipefail
-name="${1:?usage: with-lock.sh <test|tsc|browser> <command...>}"; shift
+name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--cwd <dir> --] <command...>}"; shift
+if [ "${1:-}" = "--cwd" ]; then
+  [ "$#" -ge 3 ] && [ "$3" = "--" ] || { echo "with-lock.sh: usage: with-lock.sh <lock> --cwd <dir> -- <command...>" >&2; exit 2; }
+  rel="$2"; shift 3
+  case "/$rel/" in
+    //*|*/../*) echo "with-lock.sh: --cwd '$rel' must be a relative path inside the worktree, without .." >&2; exit 2 ;;
+  esac
+  case "$rel" in /*|'') echo "with-lock.sh: --cwd '$rel' must be a relative path inside the worktree" >&2; exit 2 ;; esac
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "with-lock.sh: --cwd needs to run inside a git worktree" >&2; exit 2; }
+  target="$(cd "$top/$rel" 2>/dev/null && pwd -P)" || { echo "with-lock.sh: --cwd $rel does not exist under $top" >&2; exit 2; }
+  real_top="$(cd "$top" && pwd -P)"
+  case "$target/" in "$real_top"/*) ;; *) echo "with-lock.sh: --cwd $rel resolves outside the worktree ($target)" >&2; exit 2 ;; esac
+  cd "$target" || exit 2
+fi
 [ "$#" -gt 0 ] || { echo "with-lock.sh: no command given" >&2; exit 2; }
 
 dir="${DESK_LOCK_DIR:-/tmp}"
@@ -22,8 +41,12 @@ dir="${DESK_LOCK_DIR:-/tmp}"
 case "$name" in
   test|tsc) lock="$dir/desk-test.lock" ;;
   browser)  lock="$dir/desk-browser.lock" ;;
+  # nolock: no lock at all, only --cwd. A §4 command item with a directory that is not heavy (a dev
+  # server, a lint) runs this way, because the worker allow-list has no `cd`.
+  nolock)   lock="" ;;
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac
+[ -n "$lock" ] || exec "$@"
 
 if command -v flock >/dev/null 2>&1; then
   exec flock "$lock" "$@"
