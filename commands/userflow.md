@@ -3,121 +3,157 @@ description: Regenerate the product IA map from the code by spawning a role-shar
 argument-hint: "[role ...]"
 ---
 
-Regenerate the Studia IA map.
+Regenerate the IA map for the repo you are in.
 
-## What this produces, and who reads it
+## 0. This repo
 
-| Output | Committed? | Read by |
+This command runs in many different repositories. Establish which one before deciding anything:
+
+1. Run `desk-env where`. If it prints `EXISTS=yes`, read the `CONFIG` file: §0 One-line
+   description, §2 Primary repo root, §4 toolchain (package manager, command prefix), §5
+   conventions and Repo instructions. If it prints `EXISTS=no` or the command is missing, carry on
+   without it — this command does not need a desk config.
+2. Read the repo's own instruction files where they exist: `CLAUDE.md`, `AGENTS.md`, `DESIGN.md`,
+   at the root and in each frontend app.
+3. Detect the frontend app(s) and routing model: monorepo layout (`pnpm-workspace.yaml`,
+   `turbo.json`, `workspaces`, `apps/*`), framework (Next.js App or Pages Router, React Router,
+   Remix, SvelteKit, …), where routes live, where the auth/role checks live (middleware, route
+   guards, layouts, auth-provider metadata such as Clerk `publicMetadata`, NextAuth/Auth.js
+   session callbacks, Supabase claims, a role enum in the database schema), and where e2e specs
+   live. A repo with two user-facing apps (say a customer app and a separate admin portal) is
+   mapped as one product: each role is mapped in the app(s) it actually uses.
+
+You pass what you found here to every Otto — they have no shell and no conversation history.
+
+## 1. Decide where the output goes
+
+**Detect an existing convention first.** Look for an IA pipeline the repo already has: an IA
+manifest (`**/ia/manifest.yml` or similar), package scripts such as `ia:apply` / `ia:render`, an
+`ia.json`, a `journeys.yml`, or an instruction file that names an IA location. If one exists, use
+its paths, its role list and its scripts, and follow its own documentation over the defaults below.
+If it distinguishes derived *areas* (route-based groupings of screens) from hand-authored
+*journeys* (coded user stories), keep them distinct — never write derived data into a hand-authored
+file.
+
+**If there is no convention**, use `docs/ia/` at the repo root:
+
+| Output | Committed? | Written by |
 |---|---|---|
-| `packages/studia-web/ia/.findings/<role>.json` | **no**, gitignored | `ia:apply`, one file per shard |
-| `packages/studia-web/ia/ia.json` | yes | the model — everything else is derived from it |
-| `packages/studia-web/ia/ia.render.json` | **no**, gitignored | `apps/userflow`, and step 5's board |
-| the generated FigJam board | n/a | humans wanting a shareable snapshot |
+| `docs/ia/.findings/<role>.json` | **no** — scratch, one file per shard | you, verbatim from each Otto |
+| `docs/ia/manifest.yml` | yes | you, once: the role list, each role's entries and route prefixes, the app(s) in scope |
+| `docs/ia/ia.json` | yes | you, step 5: the merged, validated graph |
+| `docs/ia/journeys.md` | yes | you, step 5: one derived flow per role, readable by humans |
 
-Each file has exactly one writer. **`ia:apply` writes `ia.json`; `ia:render` writes
-`ia.render.json`** from an unchanged `ia.json` — that is the command to run after editing
-`naming.yml` or `journeys.yml`, and it is what the `studia-journeys` Vercel project runs at
-build time, because the payload is derived rather than committed. `ia:render` is also the only
-thing that reads `journeys.yml`, so it is the only thing that can fail the build on a journey
-code whose prefix was never declared or a `nodes:` entry pointing at a screen that no longer
-exists. Running `ia:apply` alone leaves the map showing whatever the last render produced.
+**State the location to the user before spawning anyone**, and say whether it came from an
+existing convention or is the default. If `docs/ia/.findings/` is not gitignored, say so and
+recommend adding it rather than committing scratch.
 
-`apps/userflow` is the interactive reader of that payload and the reason this pipeline exists.
-It is a separate Vercel project (`studia-journeys`, Root Directory `apps/userflow`). Run it
-locally with `bun run --filter @studia/userflow dev` on port 3100.
+## 2. Resolve the roles (the shards)
 
-**Two words that are not synonyms.** An **area** is a route-derived band of the map —
-`checkout`, `account`, `lesson` — assigned by `src/lib/ia/areas.ts` from a screen's first route
-segment, then spread along edges within a role. It is a grouping of screens. A **journey** is a
-coded user story with acceptance criteria, such as `PAY-6`; it spans areas and roles, and one
-screen serves many. Areas are derived; journeys are hand-authored. Do not read one as the other.
+Every role gets a shard. The role list comes from **the code, not from memory**:
 
-A `naming.yml` written before this rename used `journeys:` and `journey:`. Those still load, with
-a warning, for one release.
+- If the repo's IA manifest declares roles, use exactly those.
+- Otherwise derive them from the auth/role model found in step 0: role enums, role metadata the
+  auth provider sets, middleware and guards that branch on a role, per-role route groups or apps.
+  Add `anonymous` if the product has any signed-out surface.
+- For each role, record its **entries** (where it lands: a public homepage, the post-sign-in
+  redirect for that role) and its **route prefixes**, each with the file that proves it.
 
-## 1. Resolve the shards
+If the code does not settle the list — two names that may be one role, per-organisation
+permissions that may or may not change which screens exist, a role no screen checks — **ask the
+user**, with your recommended list first and the evidence for each role, rather than guessing.
+Write the settled list to the manifest so the next run does not re-derive it.
 
-Read `packages/studia-web/ia/manifest.yml`.
+If `$ARGUMENTS` names one or more roles, re-derive only those and reuse the existing findings on
+disk for the rest — useful when one area has changed and a full run is not worth the tokens. The
+findings are uncommitted scratch, so "on disk" means *this checkout*, from a run you did yourself.
+A fresh clone has none, so the first run in a new checkout has to derive every role; if a reused
+shard's file is missing, stop and name it.
 
-Every role it declares gets a shard. If `$ARGUMENTS` names one or more roles, re-derive only
-those and reuse the existing findings on disk for the rest — useful when one area has changed
-and a full run is not worth 400k tokens.
-
-The findings are gitignored scratch, so "on disk" means *this checkout*, from a run you did
-yourself. A fresh clone has none, and `ia:apply` exits non-zero naming the missing file, so the
-first run in a new checkout has to derive every role.
-
-A role named in `$ARGUMENTS` that the manifest does not declare is an error. Stop and say so
+A role named in `$ARGUMENTS` that the role list does not declare is an error. Stop and say so
 rather than inventing an entry point.
 
-## 2. Spawn the team
+## 3. Spawn the team
 
-Spawn one teammate per shard, all using the `otto-ia-mapper` agent type, named `otto-<role>`.
-Teammates inherit none of your conversation history, so each prompt must be self-contained
-and state:
+Spawn one teammate per shard, all using the `otto-ia-mapper` agent type, named `otto-<role>`,
+in parallel. Teammates inherit none of your conversation history, so each prompt must be
+self-contained and state:
 
 - the role it owns, and that it owns only that role
-- that role's `entries` and `prefixes` from the manifest
+- that role's `entries` and `prefixes`
+- the app(s) in scope, the routing model, and where routes, auth/role checks and e2e specs live
+  (from step 0), plus the desk config path if `EXISTS=yes`
 - the labels other shards are likely to use for cross-role destinations, so `toRole` edges
-  line up — at minimum the portal screen of each other role
+  line up — at minimum the landing screen of each other role
 
-Create one task per teammate on the shared task list.
+If the harness offers a shared task list, create one task per teammate on it.
 
-**Wait for all of them.** Do not start analysing the code yourself, and do not proceed on
-four shards out of five. If a teammate fails or returns unparseable JSON, report which role
-is missing and stop — never run the apply script on partial findings.
+**Wait for all of them.** Do not start analysing the code yourself, and do not proceed on a
+partial set of shards. If a teammate fails or returns unparseable JSON, report which role is
+missing and stop — never apply partial findings.
 
-## 3. Persist the findings
+## 4. Persist the findings
 
-The teammates have no write tool, so you write for them. Save each reply verbatim to:
+The teammates have no write tool, so you write for them. Save each reply verbatim to
+`<ia dir>/.findings/<role>.json`.
 
-```
-packages/studia-web/ia/.findings/<role>.json
-```
+The filename must match the `role` field inside the JSON; the run is rejected if they disagree.
 
-The filename must match the `role` field inside the JSON; the apply script rejects the run if
-they disagree.
+## 5. Apply
 
-## 4. Apply
+**If the repo has its own apply/render scripts**, run them with the repo's package manager and
+command prefix (§4 in the desk config, otherwise what the lockfile implies), from the directory
+its docs name. They validate, merge, lay out and write the model; run the render step too if the
+pipeline has one, since a model applied but not rendered leaves any viewer showing the previous
+run.
 
-```bash
-bun run --filter studia-web ia:apply
-```
+**Otherwise you are the apply step**, and you fail closed exactly as a script would. Validate every
+shard before merging anything:
 
-This validates every shard, merges them into one graph, checks the graph's invariants, lays
-it out and writes `packages/studia-web/ia/ia.json`. Follow it with `ia:render` to rebuild the
-payload the app draws:
+- it parses, and its `role` matches its filename
+- every `route` is free of route groups and other directory-only segments
+- labels are unique within the shard, and every edge's `from` and `to` resolve to a label in the
+  shard — or, when `toRole` is set, to a label in that role's shard
+- every `decision` has at least two outgoing edges, each with a `label`
+- every `terminal` has a `terminalKind` and no outgoing edges; no other node has a `terminalKind`
+- `route` is null only on a decision; `contents` is present on every node
+- every `unknowns` entry has a `where`
 
-```bash
-bun run --filter studia-web ia:render
-```
+If any check fails, report every failure with its shard and stop. Then merge: give each node the
+id `<role>:<kebab-case label>`, rewrite edges to ids, and compute which screens no entry of any
+role can reach (following cross-role edges). Write `ia.json` with the nodes, edges, unknowns, the
+unreachable list, the counts, and the commit SHA it was derived from. Write `journeys.md` with, per
+role, a Mermaid `flowchart` of its shard (decisions as diamonds, terminals marked by kind,
+cross-role edges pointing at the other role's node), followed by that role's unknowns — headed as
+*derived from the code on <date> at <sha>*, so nobody mistakes it for hand-authored user stories.
 
-The script fails closed. If it exits non-zero, report the error and stop. Do not hand-edit
-`ia.json`, and do not adjust the findings to make an error go away — a decision the script
-rejects for having one exit is a decision Otto got wrong, and silently correcting it hides
-the signal this command exists to produce.
+Either way: do not hand-edit the merged output, and do not adjust the findings to make an error go
+away — a decision rejected for having one exit is a decision Otto got wrong, and silently
+correcting it hides the signal this command exists to produce. Re-run that role instead.
 
-## 5. Draw the board
+## 6. Draw the board
 
-Only if step 4 succeeded, and only if `figma.boardFileKey` in the manifest is non-empty.
+Only if step 5 succeeded, and only if the repo's IA manifest (or its instruction files) names a
+generated FigJam board key. Otherwise say there is no board configured and stop after step 5 — the
+map is still written and inspectable.
 
-Load the `figma-use` skill first — it is mandatory before any `use_figma` call. Then draw
-`ia.render.json` onto that board: wipe its existing contents and recreate every node and
-edge from the payload. The payload carries absolute coordinates, fills, strokes, shapes and
-dashes already resolved; draw what it says rather than making layout decisions of your own.
+Load the `figma-use` skill first — it is mandatory before any `use_figma` call. Then draw the
+merged map onto that board: wipe its existing contents and recreate every node and edge. If the
+repo's pipeline produced a render payload with coordinates, fills, strokes and dashes already
+resolved, draw what it says rather than making layout decisions of your own.
 
-Never write to the hand-authored *Rough IA — Userflow V2* board. The generated board is a
-separate file and the manifest holds its key.
+Never write to a hand-authored IA board. The generated board is a separate file, and the manifest
+holds its key.
 
-If `boardFileKey` is empty, say so and stop after step 4 — the payload is still written and
-inspectable.
-
-## 6. Report
+## 7. Report
 
 Give the user:
 
-- the counts the script printed — screens / decisions / terminals, edges and how many are
-  cross-role, confirmed vs inferred, unreachable, unknowns
+- where the output was written, and whether that location came from a convention or the default
+- the role list and how it was decided (from a manifest, derived from which files, or confirmed
+  by the user)
+- the counts — screens / decisions / terminals, edges and how many are cross-role, confirmed vs
+  inferred, unreachable, unknowns
 - the board URL if you drew one
 - every `unknown`, with its reason. These matter more than the screens that resolved cleanly:
   each one is either genuinely dynamic or a gap in the analysis, and only a human can tell
