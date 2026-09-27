@@ -40,9 +40,10 @@ How to resume, by what was parked:
 | Parked on | Resume by |
 |---|---|
 | a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
-| triage lane C or D, now released by the user | `queue.mjs set <TICKET> lane=<A, B or E> state=triaged park=null`, then `queue.mjs front <TICKET>`; scope it in the briefing first if it is genuinely big |
+| triage lane C or D | **never requeued for a headless worker**: it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E> state=triaged park=null`, then `queue.mjs front <TICKET>` |
 | a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload |
-| a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it (below) |
+| a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs set <TICKET> state=triaged park=null` plus the fields below |
+| any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
@@ -54,6 +55,8 @@ you go idle, which is the one wait that works.
 The `<state>/answers/<TICKET>.txt` mailbox is read only by a worker that is **parked on a
 question**. A running worker never polls it, and the stale file then makes that worker's next park
 return "answered" instantly. For a running worker: `SendMessage` it, then delete the answer file.
+Workers can read the mailbox but never delete it (their only writable state files are their park
+record and images), so **clearing it after it has been read is always yours**.
 
 A contract or rule change does not reach a live worker either: it read the contract at spawn.
 Message each running worker as well as editing the file.

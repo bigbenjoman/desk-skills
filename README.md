@@ -162,7 +162,7 @@ Jira sets §4 Tracker to `none`; the ticket skills then work from a plain descri
 Run `/desk-autopilot` again to check progress, answer a parked question or resume. Batch state is
 kept per repo, so two repos can run batches at once. Workers keep going if you close the session.
 A worker can push only its own branch and cannot merge, undraft, run git config or aliases, or
-write through `gh api`. Those deny rules catch mistakes, not every deliberate workaround; the skills
+use `gh api` at all. Those deny rules catch mistakes, not every deliberate workaround; the skills
 themselves are what keep the work in bounds.
 
 ## Updating

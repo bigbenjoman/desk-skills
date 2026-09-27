@@ -46,15 +46,19 @@ stop and wait:
 
 1. **Print the question**, at the start of a line and never inside a code fence:
    `AUTOPILOT_PARK: <one-line question>`. This is the channel that always works: writes outside
-   your worktree and the state directory are refused. Put the full payload (the exact Jira text, the
+   your worktree are refused, apart from `$DESK_STATE/parks/<TICKET>.json` and your images
+   directory. You may also write the question there as `{"question": "<one line>"}`, which the
+   orchestrator's pass reports while you wait. Put the full payload (the exact Jira text, the
    PR body, the diff, whatever needs approving) in your normal output above that line.
 2. `SendMessage` the orchestrator with `notify_when_idle: true`. Its name is in your briefing. If
    that name is unreachable, run `ListAgents` **once**: the orchestrator is named after its batch,
    so adding a ticket renames it, and exactly one row that is the same batch with tickets added or
    removed is the same session. Send to it and say you matched it. No plausible row means nobody
    is listening.
-3. If you are re-invoked, read the answer file named in your briefing. Answered → read it, delete
-   it, continue, and say in your report what you asked and were told.
+3. If you are re-invoked, read the answer file named in your briefing. Answered → read it and
+   continue, and say in your report what you asked and were told. **Do not delete it**: you cannot
+   (the state directory is read-only to you apart from your park and image files), and the
+   orchestrator clears it.
 4. Otherwise **end your turn**. You have printed the marker, so the question is not lost. Never sit
    blocked; you are holding a worktree and a concurrency slot.
 
@@ -82,8 +86,8 @@ index. Plus, specific to running unattended:
 - **A lane demotion to C or D.** Both need a person before code: C an agreed plan or a product
   answer, D a design build checked against its frame.
 - **Anything the user's config does not grant.** Your prompt lists the config §3 keys that are not
-  `yes`; their commands are denied by your settings in every spelling: bare name, absolute path,
-  `git -C <dir> …`, and the `gh api` write forms. When your work reaches one, do not look for another
+  `yes`; their commands are denied by your settings in every spelling: bare name, absolute path and
+  `git -C <dir> …` (`gh api` is refused to every worker whatever §3 says). When your work reaches one, do not look for another
   route to the same effect (an interpreter, the §4 Command prefix, a script). Print the exact payload
   and park naming the step.
 
@@ -145,13 +149,15 @@ tests gives for passing arguments. Never append it to pytest or any other runner
 and the suite fails before running (pytest is single-process unless the repo configures otherwise).
 
 ```bash
-~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> [<spec files>]   # Jest / Vitest
-~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> [<test files>]                      # pytest and others
-~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <integration CMD> --maxWorkers=<half the cap> <file>
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> [<spec files>]   # Jest / Vitest only
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> [<test files>]                      # pytest and every other runner: no --maxWorkers
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <integration CMD> --maxWorkers=<half the cap> <file>   # Jest / Vitest only
 ~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <typecheck CMD>
 ```
 
-`<DIR>` is `.` for an item with no directory.
+For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well. Write the command
+exactly as the row gives it, then your arguments: the allow rule matches that prefix and nothing
+else.
 
 Use the lower cap §3b gives (by default half) while `desk-env mem status` shows `avail=` in the hold
 band (config §3b "Spawn gate (available memory)"; by default 4–8 GiB), and `1` for a database-backed
@@ -244,7 +250,8 @@ and say in the review that a round was discarded. Subagents may also be denied c
 so run the suite yourself and hand them the result.
 
 **`codex` follows config §3 `codex-review`.** Where the review refutes its findings with codex and
-the key is `yes`, `Bash(codex:*)` and its resolved absolute path are in the worker allow-list and the
+the key is `yes`, `codex exec --sandbox read-only …` and `codex --version` (and the resolved absolute
+path's same forms) are in the worker allow-list and the
 spawn preflight asserted `CODEX=OK` before you were launched, so the refutation is a **real
 cross-vendor refutation** and findings are **not** tagged `(same-vendor)`. Where a required check
 reads the verdict's vendor, it may require the cross-vendor one. Where your prompt lists
@@ -328,7 +335,7 @@ reports the review as run. **A refused `gh` call is not a finding about your per
 
 The code reviewer (config §4 People) reads findings on the PR. A clean run posts too: absence of a
 review has to mean *not reviewed*. **Never `--approve` or `--request-changes`**, and never post a P0
-you have left in place. After posting, list the PR's reviews and confirm exactly one verdict marker
+you have left in place. After posting, list the PR's reviews (`gh pr view <n> --json reviews`) and confirm exactly one verdict marker
 exists at your head.
 
 **The review comment is part of the terminal state.** A PR without it is unfinished: report
@@ -367,8 +374,10 @@ files.
   take the "before" with `git checkout HEAD~1 -- <path>`, **never `git stash`** (it is shared across
   every worktree); and real data needs the repo's seed command (§4 Local database says how), run
   against your own database. "I could not seed" is not a reason to skip evidence.
-- **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --base <default> --head <your branch>
-  --draft --body-file <file>`: `--repo` so a fork's origin never gets the PR. Never open a
+- **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
+  <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
+  command beginning `gh pr create --draft` or `gh pr create --repo <repo> --draft`, and `--repo`
+  keeps a fork's origin from getting the PR. Never open a
   ready-for-review PR, and never mark one ready: `gh pr ready` is denied to you. A non-draft PR
   notifies the reviewer **the moment it opens**, before the orchestrator has uploaded your
   screenshots, and pulls the reviewer to evidence tables still full of placeholders. The orchestrator
@@ -395,22 +404,48 @@ files.
 
 Permission rules match the string you write, not the file it resolves to. Prefer the plain form:
 
-- `desk-jira …`, `codex …`, `desk-env …`: plain names; no `VAR=value` prefix on anything
-- The §4 toolchain rows as written: an item with a directory runs there through
-  `with-lock.sh … --cwd <DIR> --` (suites, typecheck) or from the worktree root; `cd` inside a
-  compound command is refused. An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass
-  the port as an argument in whatever form the §4 Dev server row gives (e.g. `-- --port 3008`)
-- The package manager's one-off runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`,
-  `bunx`) and the §4 Command prefix run on its own (`<prefix> <anything>`) are denied: run a TS
-  script with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`
-- `git push` reaches only your own branch on `origin` (`git push origin HEAD` or
-  `git push -u origin <your branch>`); any other ref is denied. `git config`, `git -c …` and git
-  aliases are denied, as are `gh alias` and every `gh api` write: replies to review threads are the
-  orchestrator's
+Your settings are an **allow-list**: anything not named here is refused.
+
+- `desk-jira …`, `desk-env …`: plain names; no `VAR=value` prefix on anything.
+- **The §4 toolchain rows, exactly as configured.** An item at the root (`DIR` `.`) runs bare, with
+  your own arguments after it. An item with a directory has no bare form (you cannot `cd`), so it
+  runs as `~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD> [args]`, where `<lock>` is
+  `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck, `browser` for §4 E2E
+  tests, and `nolock` for everything else (lint, build, dev server), which only changes directory.
+  An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an argument in
+  whatever form the §4 Dev server row gives (e.g. `-- --port 3008`).
+- **The package manager**: only `<§4 Package manager> install` with no arguments, `<bin> --version`,
+  and the configured rows. `add`/`remove`, the one-off runners (`npx`, `npm exec`/`x`,
+  `pnpm exec`/`dlx`, `yarn dlx`, `bunx`, `uvx`) and the §4 Command prefix run on its own
+  (`<prefix> <anything>`) are refused: a ticket that needs a new dependency parks. Run a TS script
+  with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`.
+- **`git push`: only these exact commands** for your own recorded branch: `git push origin <branch>`,
+  `git push -u origin <branch>`, `git push --set-upstream origin <branch>`, and, only where §3
+  `git-force-with-lease` is `yes`, `git push --force-with-lease origin <branch>`. Bare `git push`,
+  `git push origin HEAD` and any other ref are refused. `git config`, `git -c …`, `git -C …`,
+  aliases and `git stash` are refused.
+- **`gh`**: reads (`pr view`, `pr list`, `pr checks`, `pr diff`, `run view`, `run list`,
+  `issue view`, `repo view`), and only where §3 grants them `gh pr create --draft …` (it must begin
+  exactly `gh pr create --draft` or `gh pr create --repo <§0 GitHub repo> --draft`), `pr edit`,
+  `pr review` (commented only), `pr comment`, `pr update-branch`, `run rerun`. **`gh api` is refused
+  in every form**, and `gh alias` too: read reviews with `gh pr view <n> --json reviews,comments`,
+  and answer a review thread with a `gh pr comment` naming it (§3 `pr-reply`); resolving threads is
+  the orchestrator's.
+- **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
+  is `yes`.
+- **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
+  `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`. **Not** `sed`,
+  `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`: edit files with Edit/Write.
+- **psql**, only where you have a per-ticket database, only as
+  `docker exec [-i] <container> psql [-U postgres] -d <your database>`.
 - No `$( )` substitution, no output redirection (`> file`), no loops in a command that must succeed
 - `rm` is denied: `git clean -f <paths>` (or `-fdx` for directories) removes scratch files and proves the tree is clean
 - `curl` is denied: drive a page with Playwright rather than probing it over HTTP
 - Scratch scripts go at the worktree root and get `git clean`ed; `/tmp` is readable, not writable
+- **Files outside your worktree**: you may write only `$DESK_STATE/parks/<TICKET>.json` (your park
+  record, `{"question": "<one line>"}`) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
+  Everything else in the state directory (answers, briefings, the queue, locks, other workers'
+  files, your own settings) is read-only to you
 
 If something is refused, try the plain form once before concluding you lack the capability.
 

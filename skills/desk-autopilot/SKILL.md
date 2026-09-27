@@ -131,22 +131,33 @@ the absolute path `command -v` resolves, and in `git -C <dir> …` form) and tel
 keys, as `CONFIG_DENIED: <key> (<setting>)`, so it parks with the exact payload instead of attempting.
 Enforcement is the rule, not the wording: see the contract §2.
 
-**What every worker is refused, whatever §3 says** (from `worker-settings.mjs`; the settings file
-lives in `$DESK_STATE/workers/`, outside the repo, and the worker gets **no copy of your
-`.claude/settings.local.json`**, so none of your own allows reach it):
+**A worker's settings are an allow-list** (`worker-settings.mjs`, written to
+`$DESK_STATE/workers/<TICKET>.settings.json`; a triage pass gets
+`$DESK_STATE/workers/<TICKET>.triage.settings.json`, read-only). Both live outside the repo, and
+`pass.mjs` creates worker worktrees with `setup-worktree.sh --for-worker`, so the worker gets **no
+copy of your `.claude/settings.local.json`** and none of your own allows reach it. Whatever §3 says,
+a worker cannot:
 
-- pushing anything but its own recorded branch to `origin` (and never with force, `--delete`,
-  `--mirror` or a `+refspec`);
-- `git config`, `git -c …` and git aliases (an alias such as `-c alias.p=push` would run anything);
-- `gh pr merge`, `gh pr ready`, approving or requesting changes, `gh alias`, and `gh api` writes
-  (REST methods, fields and every graphql mutation);
-- the package manager's one-off runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`,
-  `bunx`) and the §4 Command prefix run wholesale (`<prefix> <anything>`): toolchain commands
-  are allowed only in the forms §4 names;
-- migrations (§4 Database migrate) unless the worker was given its own per-ticket database;
-- writing outside its own worktree and its own files under `$DESK_STATE`.
+- push anything but the exact commands `git push [-u|--set-upstream] origin <its branch>` (and
+  `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`); bare
+  `git push` is refused;
+- run `git config`, `git -c …`, `git -C …`, git aliases or `git stash`;
+- run `gh api` in any form, `gh alias`, `gh pr merge`, `gh pr ready`, or approve or request changes;
+  so it cannot resolve review threads (it replies with `gh pr comment` under §3 `pr-reply`) and
+  opens PRs only with a command beginning `gh pr create --draft` or
+  `gh pr create --repo <§0 GitHub repo> --draft`;
+- run the package manager beyond `install` with no arguments and the configured rows (no `add`,
+  no `exec`/`dlx`/`x`, no `npx`/`bunx`/`uvx`), or the §4 Command prefix on its own;
+- run `sed`, `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`; `codex` other than
+  `codex exec --sandbox read-only …` / `codex --version`; `psql` other than
+  `docker exec <container> psql [-U postgres] -d <its database>`;
+- run migrations or seeds (§4 Database migrate, Seed) unless it was given its own per-ticket database;
+- write outside its worktree, except `$DESK_STATE/parks/<TICKET>.json` and
+  `$DESK_STATE/images/<TICKET>/**`. It cannot write or delete `answers/`: you clear a ticket's
+  answer file once it has been read.
 
-It may run `desk-env …`, `~/.claude/desk/bin/with-lock.sh …` and the §4 toolchain rows. **Database
+It may run `desk-env …` and the §4 toolchain rows, a directory item as
+`~/.claude/desk/bin/with-lock.sh <test|tsc|browser|nolock> --cwd <dir> -- <cmd>`. **Database
 variables**: in each worker's worktree every §4 Database URL variable is repointed at its own
 per-ticket database or, when none was provisioned (§4 Local database `none`, or §3 `db-per-ticket`
 not `yes`), **blanked**, so a worker never reaches a shared, staging or production database. A
@@ -154,7 +165,7 @@ worktree whose setup failed at any step is removed and the ticket parked with th
 reason; a worker never runs in a half-made worktree.
 
 **These rules catch mistakes, not every deliberate workaround.** Git accepts abbreviated flags that
-no pattern can list, and workers run `node` and `python3`. The contract is what keeps a worker in
+no pattern can list, and the configured toolchain commands run code. The contract is what keeps a worker in
 bounds, so never widen a worker's grants on the strength of the deny list.
 
 | §3 key | `yes` | anything else |
@@ -162,15 +173,16 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | `autopilot-workers` | `pass.mjs` spawns workers; `triage.sh` runs | `ask`: `triage.sh` still runs (read-only, foreground); confirm the batch at Stage 3, then run passes with `AUTOPILOT_USER_APPROVED=1`. `no`: neither runs; say so |
 | `git-push`, `pr-open`, `pr-edit` | worker pushes / opens the draft / edits the body | worker parks at that step with the branch or PR body; you ask, then do it |
 | `pr-self-review-comment` | worker posts the §4 Local review command's report (`gh pr review`, `gh pr comment`) | worker parks with the report; you ask, then post it |
-| `pr-reply` | you reply to and resolve threads on the batch's PRs (workers never write through `gh api`, whatever this row says) | report the threads to the user |
+| `pr-reply` | a worker may reply with `gh pr comment`; resolving threads (GraphQL, `gh api`) is yours, since workers never get `gh api` whatever this row says | the worker parks with its replies; you post them or report the threads to the user |
 | `pr-update-branch`, `ci-rerun` | worker may `gh pr update-branch` / `gh run rerun`; the merge driver reruns completed red runs | denied to the worker; the driver logs the red run and leaves it for you |
 | `jira-comment`, `jira-transition`, `jira-create`, `jira-edit` (Tracker `jira` only) | worker posts / moves / creates / edits (`edit`, `labels`, `attach`) itself | worker parks with `desk-jira`'s block; relay it verbatim (Stage 6c) |
 | `codex-review` | workers get `codex`; the preflight asserts `CODEX=OK` (fails if codex is missing, unless `AUTOPILOT_ALLOW_NO_CODEX=1`) | `codex` is denied and the preflight asserts `CODEX=BLOCKED`; refutations are same-vendor, and where a required check demands a cross-vendor verdict those PRs cannot pass it: say so |
 | `pr-images` | `pass.mjs` uploads automatically | `pass.mjs` reports the directory; ask, then run the uploader with `DESK_UPLOAD_APPROVED=1` |
 | `read-figma` | workers get the Figma read tools | a ticket needing the frame parks |
-| `pr-ready`, `pr-auto-merge` | you undraft (and arm auto-merge, where §4 Repo merge settings allow it) once the checks in Stage 7 hold | report the PR as ready to undraft |
-| `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green (it arms `--auto` only where `pr-auto-merge` is `yes`) | the driver refuses to start (exit 1); report green PRs to the user |
-| `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms its auto-merge | the checks alone decide; feedback is still worked and reported |
+| `pr-ready` | you undraft once the checks in Stage 7 hold | report the PR as ready to undraft |
+| `pr-auto-merge` | not used in a batch: neither you nor the driver arms auto-merge, because the platform's idea of green is not the config's | — |
+| `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green, pinned to the head | the driver refuses to start (exit 1); report green PRs to the user |
+| `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms any auto-merge armed on it | the checks alone decide; feedback is still worked and reported |
 
 Never widen a row because the batch would go faster. Offer `/desk-setup` instead.
 
@@ -193,7 +205,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 2 | Plan | `plan-batch.mjs`: ownership, admission, collisions, and the question batch. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | `pass.mjs`, self-paced via `/loop`. It preflights, spawns, harvests, reports. **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
-| 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket parked at triage (lane C or D) that the user has now released: `queue.mjs set <TICKET> lane=<A/B/E> state=triaged park=null`, then `queue.mjs front <TICKET>`. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue per `references/orchestrator-recovery.md`. For a *running* worker, `SendMessage` it. |
+| 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs set <TICKET> state=triaged park=null`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
 | 6b | Notify | When a pass reports `WAITING ON YOU` or `PARKED`, send **one** `PushNotification` covering everything that pass surfaced (where §3b "Push notification when a batch needs you" is `yes`). Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
@@ -283,7 +295,10 @@ PR link and its head SHA, and it stays there until the user says they have merge
 
 **Start the merge driver at Stage 4, before the first worker finishes: do not merge off your own
 turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
-unmerged: nothing undrafts, arms or retriggers it until the orchestrator's next turn.
+unmerged: nothing undrafts, merges or retriggers it until the orchestrator's next turn.
+
+The driver **refuses to start while §4 Merge holds is unset** (write `none` when nothing is held),
+as it does for §4 Required checks and Merge method.
 
 ```bash
 nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "ABC-3:ABC-1" \
@@ -291,13 +306,16 @@ nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "A
 ```
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
-a time**: skips (and disarms) a PR with outstanding review feedback where `merge-feedback-first` is
-`yes`, skips a PR under a §4 Merge holds glob (logging `HELD` and the reason), arms
-`--auto --<§4 Merge method>` where `pr-auto-merge` is `yes`, merges outright with §4 Merge method and
-`--match-head-commit <sha>` when the head is green, skips a `DIRTY` PR, and, where `ci-rerun` is
-`yes`, retriggers `gh run rerun <id> --failed` only once that run has reached `completed`. It never
-undrafts. It matches a ticket's PR by the recorded branch and base (above). `--tickets` takes
-whitespace-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket
+a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes`, skips
+a PR under a §4 Merge holds glob (logging `HELD` and the reason), disarming any auto-merge armed on
+either, merges with §4 Merge method and `--match-head-commit <sha>` when the head is green, updates
+a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, skips a `DIRTY` PR,
+and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
+reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
+config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
+`merge_blocked=` (a hold, or behind without `pr-update-branch`), which `queue.mjs render` shows. It
+matches a ticket's PR by the recorded branch and base (above). `--tickets` takes whitespace- or
+comma-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket
 key pattern, §4 Other work id patterns, or the Tracker-`none` forms), and `--deps` anything not
 `<key>:<key>[,<key>…]`. Only one driver runs at a time (`<state>/merge-driver.lock.d`); a second
 exits 1 naming the holder's pid. Two things it must get right or it makes the problem worse: **never
@@ -316,24 +334,22 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   its review. If the gate polls for the verdict briefly, a review posted inside that window passes
   the same run. Posting starts no run of its own: CI typically runs only on open, reopen and push.
   Otherwise confirm the verdict's SHA equals `headRefOid` and re-run the whole failed set once the
-  run is `completed`. With auto-merge armed, clearing the gate is the merge.
+  run is `completed`. The driver merges on its next loop once the gate clears.
 - **A PR that has gone `DIRTY` merges nothing.** Resolve it, then expect the re-review: that is the
   cost this stage exists to avoid paying seven more times. A conflict in a generated file (one whose
   header says it is generated) is resolved by taking `<default>`'s version and re-running only that
   generator.
 - **Undraft only once the PR is done and reviewed with no findings**, and only where config §3
-  `pr-ready` is `yes` (arm auto-merge only where `pr-auto-merge` is too), then do whatever is needed
-  to merge it immediately. Done and reviewed means the review verdict on the PR's **current**
+  `pr-ready` is `yes`, then do whatever is needed to merge it immediately. Done and reviewed means the review verdict on the PR's **current**
   `headRefOid` reads as §4 Clean review verdict with nothing deferred and no requirement gaps, the
   screenshots are uploaded (or the body says nothing renders differently), and `mergeStateStatus` is
   not `DIRTY`. A review gate may pass with gaps open, so a gap count above 0 is a question for the
   user, not a merge: keep it draft, since the driver merges any ready PR that goes green. With §4
   Local review command `none`, there is no verdict: "reviewed" is then the user's call, so report the
   PR rather than undrafting it. A clean verdict on a conflicted head is spent the moment the conflict
-  is resolved. Workers are denied `gh pr ready`, so check these facts yourself, then `gh pr ready` and
-  `gh pr merge <n> --<§4 Merge method> --auto --match-head-commit <headRefOid>` in the same breath
-  (never for a PR under a §4 Merge holds glob). Undrafting earlier pings the reviewer before the evidence
-  is in.
+  is resolved. Workers are denied `gh pr ready`, so check these facts yourself, then `gh pr ready`;
+  the driver merges it, pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do
+  not arm auto-merge. Undrafting earlier pings the reviewer before the evidence is in.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart
@@ -402,9 +418,10 @@ thing the challenge calls "new" against `origin/<default>` and say what you foun
 not the verdict. **Read the challenge line**: `plan-batch` prints `challenge CONFIRMED`, or
 `! challenge did not run`: a single unreviewed opinion that must not be reported as settled.
 
-**A lane is a proposal.** When the user says a park is wrong, re-lane with
-`queue.mjs set <TICKET> lane=A state=triaged` and, where the ticket is genuinely big, scope it in the
-briefing so what runs really is one sitting.
+**A lane is a proposal.** When the user rules that a park's lane is wrong (it is really A, B or E),
+re-lane it with `queue.mjs set <TICKET> lane=A state=triaged park=null` and, where the ticket is
+genuinely big, scope it in the briefing so what runs really is one sitting. That is a new lane, not
+a requeue of a C or D: a ticket that stays C or D is worked interactively, never by a worker.
 
 ## Asking
 
