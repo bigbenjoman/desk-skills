@@ -291,6 +291,25 @@ if [ -n "$stale" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
+section "Subagents and commands  -> ~/.claude/agents, ~/.claude/commands"
+
+# User-level, so they load in every repo; each one reads the repo it is in (desk config, CLAUDE.md,
+# the detected stack). A repo's own .claude/agents/<name>.md takes precedence over these.
+# A same-named file this installer did not write (e.g. an older copy from another repo) is backed up
+# under $BACKUP before it is replaced, by install_file.
+for kind in agents commands; do
+  [ -d "$SRC/$kind" ] || continue
+  count=0
+  for f in "$SRC/$kind"/*.md; do
+    [ -f "$f" ] || continue
+    install_file "$f" "$CLAUDE_DIR/$kind/$(basename "$f")"
+    count=$((count + 1))
+  done
+  ok "$count $kind"
+  wrote "$kind   ~/.claude/$kind ($count; a same-named copy you had is backed up first)"
+done
+
+# ---------------------------------------------------------------------------------------------
 section "Autopilot and clearance tooling  -> ~/.claude/desk/bin"
 
 if [ -d "$SRC/desk/bin" ]; then

@@ -21,6 +21,32 @@ macOS, Linux and WSL.
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 
+## Subagents
+
+Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
+Each one starts by reading the repo it is in: its desk config if there is one, its `CLAUDE.md` /
+`AGENTS.md` / `DESIGN.md`, and the stack it detects. None of them assumes a framework. Summon one
+by first name ("Hello Bea", "ask Nadia").
+
+| Agent | Model | Use for |
+|---|---|---|
+| `ada-devils-advocate` | opus | An adversarial second opinion; stress-testing a decision or plan; judging outputs |
+| `bea-business-analyst` | opus | Turning a rough idea into a well-formed ticket in this repo's tracker (or a GitHub issue); never files without approval |
+| `jim-solution-architect` | opus | Infrastructure and architecture across whatever clouds the repo uses |
+| `karen-seo-optimizer` | sonnet | SEO, GEO and AEO on the repo's public site |
+| `lena-code-reviewer` | opus | Critical, actionable review of a diff or PR against this repo's bar |
+| `mira-playwright-expert` | opus | Playwright E2E, placing a test in the pyramid, hunting flake |
+| `muriel-design-engineer` | sonnet | Figma to production components in the repo's design system |
+| `nadia-security-auditor` | opus | Auth, tenant and role isolation, payment and media boundaries |
+| `otto-ia-mapper` | opus | One role's slice of the product's screens, derived from the code (spawned by `/userflow`) |
+| `suki-frontend-architect` | opus | Frontend architecture, the repo's design system, motion (Muriel when there is a Figma comp) |
+| `theo-api-designer` | opus | API and contract design in the repo's API style, with expand-contract changes |
+
+`/userflow` (in `commands/`) maps the product's information architecture: one Otto per role.
+
+A repo that wants a tailored agent adds its own `.claude/agents/<name>.md`; Claude Code prefers
+the project copy over the user-level one.
+
 ## How per-repo configuration works
 
 ```
@@ -65,7 +91,8 @@ cd ~/desk-skills
 
 The installer checks your tools, then:
 
-- installs the skills, the autopilot scripts (`~/.claude/desk/bin`), `desk-env` and `desk-jira`
+- installs the skills, the eleven subagents and `/userflow` (`~/.claude/agents`, `~/.claude/commands`;
+  a same-named copy you already had is backed up first), the autopilot scripts (`~/.claude/desk/bin`), `desk-env` and `desk-jira`
   (`~/.local/bin`), and a hook that blocks AI attribution **only in repos whose config forbids it**
 - **asks first** before changing `~/.claude/settings.json` (registering the hook, adding the
   always-on deny rules), installing plugins (superpowers, codex, playwright, code-review,
