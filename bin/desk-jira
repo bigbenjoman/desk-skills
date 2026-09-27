@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+# Direct Jira Cloud REST access for the Studia SV project.
+# Replaces the claude.ai Atlassian connector for scripted/agent use: one hop, no proxy.
+#
+# Setup, once:
+#   export JIRA_EMAIL=you@studia.io          # or: printf %s you@studia.io > ~/.config/studia/jira-email
+#   mkdir -p ~/.config/studia
+#   printf %s '<your atlassian api token>' > ~/.config/studia/atlassian-token
+#   chmod 600 ~/.config/studia/atlassian-token
+# Create a token at https://id.atlassian.com/manage-profile/security/api-tokens
+# The token is never stored in this script and must never be committed.
+#
+# Auth: Basic (email + API token). Token read from JIRA_TOKEN or the token file below.
+# Text-bearing calls use API v2, which accepts plain strings on Cloud; v3 would demand ADF JSON.
+# Search uses /rest/api/3/search/jql, because Cloud has removed the old /search endpoints.
+#
+# Written for bash 3.2 as well as 4+/5, so it runs on stock macOS. Needs curl and jq.
+
+set -euo pipefail
+
+SITE="${JIRA_SITE:-studia-team-gdndoc1i.atlassian.net}"
+TOKEN_FILE="${JIRA_TOKEN_FILE:-$HOME/.config/studia/atlassian-token}"
+EMAIL_FILE="${JIRA_EMAIL_FILE:-$HOME/.config/studia/jira-email}"
+PROJECT="${JIRA_PROJECT:-SV}"
+
+# Agent shells often skip the login profile, so the email can also live in a file.
+EMAIL="${JIRA_EMAIL:-}"
+if [[ -z "$EMAIL" && -r "$EMAIL_FILE" ]]; then EMAIL=$(tr -d ' \t\r\n' < "$EMAIL_FILE"); fi
+
+# Launch Priority, Size, Impact, Repository, Sprint. Requested explicitly because search
+# otherwise returns null for every custom field, which reads as "nothing is set".
+SEARCH_FIELDS='["key","summary","status","assignee","reporter","labels","priority","issuetype","customfield_10159","customfield_10511","customfield_10512","customfield_10513","customfield_10020"]'
+
+# jq helper: render any Jira field value as one short string.
+JQ_VAL='def val: if . == null then "-"
+  elif type == "array" then (if length == 0 then "-" else (map(val) | join(", ")) end)
+  elif type == "object" then (.value // .name // .displayName // .accountId // tojson)
+  else tostring end;'
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+token() {
+  if [[ -n "${JIRA_TOKEN:-}" ]]; then printf '%s' "$JIRA_TOKEN"; return; fi
+  [[ -r "$TOKEN_FILE" ]] || die "no token: set JIRA_TOKEN or create $TOKEN_FILE (chmod 600)"
+  tr -d ' \t\r\n' < "$TOKEN_FILE"
+}
+
+# api <method> <path> [curl args...] — path is everything after /rest/
+api() {
+  local method="$1" path="$2"; shift 2
+  local out code msgs tok
+  tok=$(token) || exit 1
+  out=$(curl -sS -w '\n%{http_code}' -X "$method" \
+    -u "$EMAIL:$tok" \
+    -H 'Accept: application/json' \
+    "https://$SITE/rest/$path" "$@")
+  code=$(printf '%s' "$out" | tail -n1)
+  out=$(printf '%s' "$out" | sed '$d')
+  if [[ "$code" =~ ^2 ]]; then printf '%s' "$out"; return 0; fi
+  printf 'HTTP %s from %s %s\n' "$code" "$method" "$path" >&2
+  # Print Jira's parsed messages; if there are none, print the raw body rather than nothing.
+  # A bare "HTTP 400" with no reason makes a call like create look broken.
+  msgs=$(printf '%s\n' "$out" | jq -r '(.errorMessages // [])[], (.errors // {} | to_entries[] | "\(.key): \(.value)")' 2>/dev/null || true)
+  if [[ -n "$msgs" ]]; then printf '%s\n' "$msgs" >&2; else printf '%s\n' "${out:-(empty response body)}" >&2; fi
+  return 1
+}
+
+json() { api "$@" -H 'Content-Type: application/json'; }
+
+FIELD_SCHEMA=''
+field_type() {  # schema.type of a field id (option, user, array, string...), empty if unknown
+  if [[ -z "$FIELD_SCHEMA" ]]; then FIELD_SCHEMA=$(api GET 'api/3/field') || return 1; fi
+  printf '%s' "$FIELD_SCHEMA" | jq -r --arg k "$1" '.[] | select(.id == $k) | .schema.type // empty'
+}
+
+my_account_id() { api GET 'api/3/myself' | jq -r '.accountId'; }
+
+# Turn a key=value list into a fields object.
+#   key=@path       the file's contents, as a string (a missing file is an error, never the literal)
+#   key=<json>      kept as JSON, so '{"value":"P1"}', 266 and null pass straight through
+#   key=<bare>      wrapped to the shape the field needs: assignee/reporter -> {"accountId"}
+#                   ("me" resolves to your own account), priority/issuetype -> {"name"},
+#                   a select custom field -> {"value"}, a user custom field -> {"accountId"}
+fields_from_args() {
+  local obj='{}' pair k v t
+  for pair in "$@"; do
+    [[ "$pair" == *=* ]] || die "expected field=value, got: $pair"
+    k="${pair%%=*}"; v="${pair#*=}"
+    if [[ "$v" == @* ]]; then
+      [[ -f "${v#@}" ]] || die "desk-jira: file not found for $k: ${v#@}"
+      obj=$(printf '%s' "$obj" | jq --arg k "$k" --rawfile v "${v#@}" '.[$k]=$v')
+      continue
+    fi
+    if [[ -n "$v" ]] && printf '%s' "$v" | jq . >/dev/null 2>&1; then
+      obj=$(printf '%s' "$obj" | jq --arg k "$k" --argjson v "$v" '.[$k]=$v')
+      continue
+    fi
+    case "$k" in
+      assignee|reporter)
+        [[ "$v" == me ]] && v=$(my_account_id)
+        obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]={accountId:$v}') ;;
+      priority|issuetype)
+        obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]={name:$v}') ;;
+      customfield_*)
+        t=$(field_type "$k" 2>/dev/null || true)
+        case "$t" in
+          option) obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]={value:$v}') ;;
+          user)   obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]={accountId:$v}') ;;
+          *)      obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]=$v') ;;
+        esac ;;
+      *)
+        obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]=$v') ;;
+    esac
+  done
+  printf '%s' "$obj"
+}
+
+body_of() {  # file path (optionally @path), or the literal string
+  if [[ -f "$1" ]]; then cat "$1"; return; fi
+  if [[ "$1" == @* && -f "${1#@}" ]]; then cat "${1#@}"; return; fi
+  # Without this, a mistyped invocation posts the mistake as the body:
+  # `comment SV-1 --file b.txt` would set the comment to the literal "--file".
+  case "$1" in
+    --*)  echo "desk-jira: '$1' looks like a flag - the body is positional: <body-file|text>" >&2; return 2 ;;
+    @*|*.md|*.txt|*.json|*.adf)
+          echo "desk-jira: file not found: ${1#@}" >&2; return 2 ;;
+  esac
+  printf '%s' "$1"
+}
+
+usage() {
+  cat <<'EOF'
+desk-jira <command> [args]
+
+  whoami                          confirm auth
+  search <jql> [max] [--json]     key / status / launch priority / summary
+  get <KEY> [--json]              issue detail, custom fields included
+  fields [filter]                 field ids and names (find custom fields)
+  meta [issuetype]                createmeta: required fields + allowed values
+
+  create <type> <summary> <desc-file|text> [field=value ...]
+  edit <KEY> <field=value ...>    prints each field read back from Jira after the write
+  labels <KEY> add|remove <label ...>
+
+  comment <KEY> <body-file|text>
+  comments <KEY>                  existing comments (check idempotency markers)
+
+  transitions <KEY>               available transitions, with ids
+  transition <KEY> <name-or-id>   exact or case-insensitive name match
+
+  attach <KEY> <file ...>
+
+  api <path>                      read-only GET of /rest/<path>, raw JSON (e.g. api/3/myself)
+
+Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
+               (customfield_10159=P1 -> {"value":"P1"}, assignee=me -> your accountId)
+
+Env overrides: JIRA_SITE JIRA_EMAIL JIRA_EMAIL_FILE JIRA_PROJECT JIRA_TOKEN JIRA_TOKEN_FILE
+EOF
+}
+
+cmd="${1:-}"; [[ -n "$cmd" ]] || { usage; exit 1; }
+shift || true
+command -v jq >/dev/null || die "jq is required"
+command -v curl >/dev/null || die "curl is required"
+
+# Fail loudly here rather than inside a subshell, where an exit would be swallowed
+# and the call would go out unauthenticated and come back 401.
+case "$cmd" in
+  -h|--help|help) ;;
+  *) [[ -n "$EMAIL" ]] || die "no email: set JIRA_EMAIL (or write it to $EMAIL_FILE) - see the setup notes at the top of this script" ;;
+esac
+
+case "$cmd" in
+  whoami)
+    api GET 'api/3/myself' | jq -r '"\(.displayName) <\(.emailAddress)>  accountId=\(.accountId)"'
+    ;;
+
+  search)
+    [[ $# -ge 1 ]] || die 'usage: desk-jira search <jql> [max] [--json]'
+    jql="$1"; shift
+    max=50; raw=0
+    for a in "$@"; do
+      case "$a" in --json) raw=1 ;; *[0-9]*) max="$a" ;; esac
+    done
+    payload=$(jq -n --arg jql "$jql" --argjson max "$max" --argjson f "$SEARCH_FIELDS" \
+      '{jql:$jql, maxResults:$max, fields:$f}')
+    res=$(json POST 'api/3/search/jql' -d "$payload")
+    if (( raw )); then printf '%s\n' "$res"; else
+      printf '%s' "$res" | jq -r "$JQ_VAL"'
+        if (.issues | length) == 0 then "no issues"
+        else (.issues[] | "\(.key)\t\(.fields.status.name)\t\(.fields.customfield_10159 | val)\t\(.fields.summary)") end'
+      if [[ "$(printf '%s' "$res" | jq -r '.nextPageToken // empty')" != "" ]]; then
+        echo "(more results: raise max)" >&2
+      fi
+    fi
+    ;;
+
+  get)
+    [[ $# -ge 1 ]] || die 'usage: desk-jira get <KEY> [--json]'
+    key="$1"; shift
+    res=$(api GET "api/2/issue/$key")
+    if [[ "${1:-}" == '--json' ]]; then printf '%s\n' "$res"; else
+      printf '%s' "$res" | jq -r "$JQ_VAL"'
+        "key      : \(.key)",
+        "type     : \(.fields.issuetype.name)",
+        "status   : \(.fields.status.name)",
+        "summary  : \(.fields.summary)",
+        "assignee : \(.fields.assignee | val)",
+        "reporter : \(.fields.reporter | val)",
+        "labels   : \(.fields.labels | val)",
+        "priority : \(.fields.priority | val)",
+        "launch   : \(.fields.customfield_10159 | val)",
+        "size     : \(.fields.customfield_10511 | val)",
+        "impact   : \(.fields.customfield_10512 | val)",
+        "repo     : \(.fields.customfield_10513 | val)",
+        "sprint   : \(.fields.customfield_10020 | val)",
+        "",
+        (.fields.description // "(no description)")'
+    fi
+    ;;
+
+  fields)
+    res=$(api GET 'api/3/field')
+    if [[ -n "${1:-}" ]]; then
+      printf '%s' "$res" | jq -r --arg f "$1" \
+        '.[] | select(.name | ascii_downcase | contains($f | ascii_downcase)) | "\(.id)\t\(.name)\t\(.schema.type // "-")"'
+    else
+      printf '%s' "$res" | jq -r '.[] | select(.custom) | "\(.id)\t\(.name)\t\(.schema.type // "-")"'
+    fi
+    ;;
+
+  meta)
+    res=$(api GET "api/2/issue/createmeta?projectKeys=$PROJECT&expand=projects.issuetypes.fields")
+    printf '%s' "$res" | jq -r --arg t "${1:-}" '
+      .projects[0].issuetypes[]
+      | select($t == "" or (.name | ascii_downcase) == ($t | ascii_downcase))
+      | "== \(.name)",
+        (.fields | to_entries[] | select(.value.required)
+          | "  required: \(.key)  (\(.value.name))"),
+        (.fields | to_entries[] | select(.value.allowedValues != null)
+          | "  \(.key) (\(.value.name)) allows: \([.value.allowedValues[] | .name // .value] | join(", "))")'
+    ;;
+
+  create)
+    [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...]'
+    type="$1"; summary="$2"; desc=$(body_of "$3") || exit 2; shift 3
+    extra=$(fields_from_args "$@") || exit 2
+    payload=$(jq -n \
+      --arg p "$PROJECT" --arg t "$type" --arg s "$summary" --arg d "$desc" --argjson e "$extra" \
+      '{fields: ({project:{key:$p}, issuetype:{name:$t}, summary:$s, description:$d} + $e)}')
+    json POST 'api/2/issue' -d "$payload" \
+      | jq -r --arg site "$SITE" '"created \(.key)  https://\($site)/browse/\(.key)"'
+    ;;
+
+  edit)
+    [[ $# -ge 2 ]] || die 'usage: desk-jira edit <KEY> <field=value ...>'
+    key="$1"; shift
+    f=$(fields_from_args "$@") || exit 2
+    payload=$(jq -n --argjson f "$f" '{fields:$f}')
+    json PUT "api/2/issue/$key" -d "$payload" >/dev/null
+    # A 204 is not proof the value landed (a bare accountId can no-op), so read it back.
+    names=$(printf '%s' "$f" | jq -r 'keys | join(",")')
+    back=$(api GET "api/2/issue/$key?fields=$names")
+    echo "updated $key - read back:"
+    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL"'
+      .fields as $got | $sent | keys[] as $k
+      | ($got[$k]) as $v
+      | if $v == null and $sent[$k] != null then "  \($k): (empty - the write did not stick)"
+        else "  \($k): " + ($v | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end)
+        end'
+    ;;
+
+  labels)
+    [[ $# -ge 2 ]] || die 'usage: desk-jira labels <KEY> add|remove <label ...>'
+    key="$1"; op="$2"; shift 2
+    [[ "$op" == add || "$op" == remove ]] || die 'op must be add or remove'
+    ops=$(printf '%s\n' "$@" | jq -R . | jq -s --arg op "$op" '[.[] | {($op): .}]')
+    payload=$(jq -n --argjson ops "$ops" '{update:{labels:$ops}}')
+    json PUT "api/2/issue/$key" -d "$payload" >/dev/null && echo "$op labels on $key: $*"
+    ;;
+
+  comment)
+    [[ $# -ge 2 ]] || die 'usage: desk-jira comment <KEY> <body-file|text>'
+    key="$1"; body=$(body_of "$2") || exit 2
+    payload=$(jq -n --arg b "$body" '{body:$b}')
+    json POST "api/2/issue/$key/comment" -d "$payload" \
+      | jq -r '"commented on '"$key"' (id \(.id))"'
+    ;;
+
+  comments)
+    [[ $# -ge 1 ]] || die 'usage: desk-jira comments <KEY>'
+    api GET "api/2/issue/$1/comment" \
+      | jq -r 'if (.comments|length)==0 then "no comments" else
+          .comments[] | "--- \(.author.displayName) \(.created[0:10]) (id \(.id))\n\(.body)" end'
+    ;;
+
+  transitions)
+    [[ $# -ge 1 ]] || die 'usage: desk-jira transitions <KEY>'
+    api GET "api/2/issue/$1/transitions" \
+      | jq -r '.transitions[] | "\(.id)\t\(.name)\t-> \(.to.name)"'
+    ;;
+
+  transition)
+    [[ $# -ge 2 ]] || die 'usage: desk-jira transition <KEY> <name-or-id>'
+    key="$1"; want="$2"
+    list=$(api GET "api/2/issue/$key/transitions")
+    id=$(printf '%s' "$list" | jq -r --arg w "$want" '
+      [.transitions[] | select((.id == $w) or (.name | ascii_downcase) == ($w | ascii_downcase))]
+      | if length == 1 then .[0].id else empty end')
+    if [[ -z "$id" ]]; then
+      echo "no unique match for '$want'. available:" >&2
+      printf '%s' "$list" | jq -r '.transitions[] | "  \(.id)\t\(.name)\t-> \(.to.name)"' >&2
+      exit 1
+    fi
+    payload=$(jq -n --arg id "$id" '{transition:{id:$id}}')
+    json POST "api/2/issue/$key/transitions" -d "$payload" >/dev/null
+    echo "$key -> $(printf '%s' "$list" | jq -r --arg id "$id" '.transitions[]|select(.id==$id)|.to.name')"
+    ;;
+
+  attach)
+    [[ $# -ge 2 ]] || die 'usage: desk-jira attach <KEY> <file ...>'
+    key="$1"; shift
+    args=()
+    for f in "$@"; do [[ -f "$f" ]] || die "no such file: $f"; args+=(-F "file=@$f"); done
+    api POST "api/3/issue/$key/attachments" -H 'X-Atlassian-Token: no-check' "${args[@]}" \
+      | jq -r '.[] | "attached \(.filename) (\(.size) bytes)"'
+    ;;
+
+  api)
+    [[ $# -eq 1 ]] || die 'usage: desk-jira api <path>   (GET only; the path is everything after /rest/)'
+    api GET "$1"; echo
+    ;;
+
+  -h|--help|help) usage ;;
+  *) die "unknown command: $cmd (try --help)" ;;
+esac

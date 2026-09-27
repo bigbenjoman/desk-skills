@@ -1,0 +1,30 @@
+{
+  "_about": "Deny-only plan applied by `harness-rules.py baseline` whatever the answers: install.sh (asked) or /desk-setup before any allow. <slack> expands to mcp__claude_ai_Slack__ plus any --slack-prefix. The git push patterns are best-effort: git takes bundled short flags (-qf) and unique long-option prefixes (--forc, --delet, --mirro), so no pattern fences every spelling.",
+  "add": [
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_send_message"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_schedule_message"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_create_canvas"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_update_canvas"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_create_list"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_update_list"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_add_list_record"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_update_list_record"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_add_reaction"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_create_conversation"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_complete_file_upload"},
+    {"list": "deny", "rows": ["slack-send"], "rule": "<slack>slack_get_file_upload_url"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(gh pr merge *--admin*)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push *--force)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push *--force *)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push -f*)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push * -f)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push * -f *)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push +*)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push * +*)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push *--mirror*)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push *--delete*)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push -d *)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push * -d)"},
+    {"list": "deny", "rows": ["merge-bypass"], "rule": "Bash(git push * -d *)"}
+  ]
+}

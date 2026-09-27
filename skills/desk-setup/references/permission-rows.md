@@ -1,0 +1,179 @@
+# Permission rows — questions, trade-offs, harness rules
+
+One question per row, four per `AskUserQuestion` call, in these rounds. The first option is the
+Recommended value (the original author's current practice), labelled `(Recommended)`. "Unlocks"
+and "Exposes" go into that option's description; the alternatives get their own one-line trade-off.
+**Where a row's rule reaches further than the row's wording (marked _Reach_), say so in the
+question.** The answer then covers what the rule really allows.
+
+## The rule column
+
+What `/desk-setup` §4 hands to `bin/harness-rules.py`. Rules are written only when **every** row
+in the rule's owner set is `yes`; revoking any owner removes the rule.
+
+- Plain rules go to `permissions.allow`. `ask:` rules go to `permissions.ask` and only force a
+  prompt; `unguard:` removes an `ask:` guard setup added earlier (put back on revoke).
+- `—` means no rule can be scoped to the row's wording, so it keeps prompting. **When in doubt, no
+  allow rule: a prompt is safer than an over-grant.**
+- `<slack>`, `<figma>`, `<atlassian>` are the MCP prefixes of claude.ai connectors,
+  `mcp__claude_ai_Slack__`, `mcp__claude_ai_Figma__`, `mcp__claude_ai_Atlassian_Rovo__` (check the
+  session's tool list; use what it shows).
+
+**Rule syntax, verified** (docs: code.claude.com/docs/en/permissions, and an empirical
+`claude -p --settings … --permission-mode dontAsk` run against stub binaries):
+
+| Fact | Consequence |
+|---|---|
+| `*` matches any text, spaces included, and can be empty; it may sit anywhere | `Bash(gh pr merge *--admin*)` catches `--admin` in any position |
+| `:*` is recognised only as a trailing wildcard, and a mid-rule `*` plus trailing `:*` did **not** match (`Bash(git -C * push:*)` let `git -C /tmp push` run) | never mix them; this file uses ` *` throughout |
+| A space in the pattern is literal: `Bash(git push * --tags*)` misses `git push --tags origin` | flag guards are written `*--flag*`; short flags as `-f*`, `* -f`, `* -f *` (never `*-f*`, which matches `fix/…` branches) |
+| A trailing ` *` also matches the bare command only when it is the rule's sole wildcard | exact tails such as `Bash(gh pr merge * --squash)` are safe allow forms |
+| Order is deny, then ask, then allow; first match wins. Compound commands are split and every part must match; `timeout`, `nohup`, `nice`, `time`, `stdbuf` are stripped first | guards beat allows; `nohup …/merge-driver.sh` matches its rule |
+| An allow does not match past `VAR=1 cmd` (unless the variable is a known-safe one), a `$B/` path, `git -C dir`, or an absolute binary path | those forms prompt; that is the safe direction |
+| git takes bundled short flags (`-qf`) and any unique prefix of a long option (`--force-w`, `--delet`, `--mirro`, `--upl`) | no exact-string guard fences a broad git allow, so git gets no allow that a flag can turn dangerous; a guard is written as the shortest unambiguous prefix (`*--u*`) |
+
+## Always written — the deny-only plan
+
+`references/baseline-deny.json`, applied by `harness-rules.py baseline`: by `install.sh` when the
+user accepts its settings edits, otherwise by §4 before any allow is offered. Whatever the answers
+and whatever the connector detection says: it only takes capability away. The file is the list;
+this table is the summary.
+
+| Owner | Denies |
+|---|---|
+| `slack-send` | the Slack connector's send and write tools (`slack_send_message`, `slack_schedule_message`, canvas, list, reaction, conversation and file-upload tools) under `mcp__claude_ai_Slack__`, plus any other Slack prefix passed as `--slack-prefix` |
+| `merge-bypass` | `gh pr merge *--admin*`; **best-effort** `git push` with `--force`, `-f`, a `+refspec`, `--mirror`, `--delete` or `-d`. git's abbreviations (`-qf`, `--forc`, `--delet`) and `git -C dir push` get past them: they catch a slip, not a workaround |
+| `others-prs`, `product-calls`, `legal-content` | — (the skills refuse; no rule can tell whose PR or what content) |
+
+`slack_send_message_draft` is never denied; it is `slack-draft`'s allow. `--force-with-lease` is
+not denied: `git-force-with-lease` can be `yes`, and it prompts.
+
+## Rows only setup reads
+
+No skill script looks these up. They decide harness rules (`read-*`, `git-commit`,
+`slack-draft`) or they are enforced by the skills' own written rules (`autopilot-worker-mode`,
+`autopilot-judgement`, `autopilot-reclaim`, `db-per-ticket`, `skills-edit`, `vercel-env`, and the
+`never`/`stop` rows). Ask them like any other row; say this when the user asks what one changes.
+
+## Round 1 — your work, read
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `read-own-work` | yes | every skill: tickets, PRs, reviews, CI state | nothing beyond your own output. _Reach_: the rules read any PR or ticket, so they need `read-others` too | ask | owners `read-own-work` + `read-others`: `Bash(gh pr view *)` `Bash(gh pr list *)` `Bash(gh pr checks *)` `Bash(gh pr diff *)` `Bash(gh run list *)` `Bash(gh run view *)` `Bash(desk-jira whoami)` `Bash(desk-jira get *)` `Bash(desk-jira search *)` `Bash(desk-jira comments *)` `Bash(desk-jira transitions *)` `Bash(desk-jira fields *)` |
+| `read-local-git` | yes | cleanup, autopilot collision checks, stray-commit guard | other sessions' worktrees are read (not written) | ask | `Bash(git status *)` `Bash(git log *)` `Bash(git diff *)` `Bash(git show *)` `Bash(git fetch *)` `Bash(git worktree list *)` `Bash(git merge-tree *)` `Bash(git rev-parse *)` · `ask: Bash(git log *--output*)` `ask: Bash(git diff *--output*)` `ask: Bash(git show *--output*)` (they write files; git rejects `--outp`, ambiguous with `--output-indicator-*`) · `ask: Bash(git fetch *--u*)` `ask: Bash(git fetch *--upload*)` (`--upload-pack`, or any prefix down to `--upl`, runs a command; `*--u*` also prompts `--unshallow`) |
+| `read-others` | yes | ownership checks, sibling PRs a ticket depends on | colleagues' PR and ticket text enters the session | no (weakens the ownership guard; the read rules are then not written) | co-owner of `read-own-work`'s rules |
+| `read-slack-public` | yes | a reviewer's ruling or a convention announced in a channel | channel messages, including other people's words | ask · no | `<slack>slack_search_public` only. `slack_read_channel` and `slack_read_thread` also open private channels and DMs, so they keep prompting |
+
+## Round 2 — tools, read
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `read-figma` | yes | design context and screenshots for UI tickets | design files linked from tickets | ask · no | `<figma>get_design_context` `<figma>get_screenshot` `<figma>get_metadata` `<figma>get_variable_defs` |
+| `read-vercel` | yes | preview build state, why a deploy failed, runtime logs | build and runtime logs, which can include request data | ask · no | `Bash(vercel inspect *)` `Bash(vercel logs *)` `Bash(vercel list *)` `mcp__plugin_vercel_vercel__list_deployments` `mcp__plugin_vercel_vercel__get_deployment` `mcp__plugin_vercel_vercel__get_deployment_build_logs` `mcp__plugin_vercel_vercel__get_runtime_logs` |
+| `read-confluence` | ask | background from team pages | whatever the page holds | yes · no | `<atlassian>getConfluencePage` `<atlassian>searchConfluenceUsingCql` |
+| `codex-review` | yes | cross-vendor refutation: a second model tries to break each finding | diff excerpts go to OpenAI under your codex seat | ask · no (refutation is then same-vendor, and says so) | `Bash(codex exec --sandbox read-only *)` · `ask:` `Bash(codex exec *--dangerously*)` `Bash(codex exec *--full-auto*)` `Bash(codex exec *--approve*)` `Bash(codex exec *danger-full-access*)` `Bash(codex exec *workspace-write*)` `Bash(codex exec *--config*)` `Bash(codex exec * -c*)` `Bash(codex exec *--enable*)` `Bash(codex exec *--disable*)` `Bash(codex exec *--profile*)` `Bash(codex exec * -p*)` `Bash(codex exec *--output*)` `Bash(codex exec * -o*)` (attached forms such as `-cfoo=1` and `-p=x` included; codex does not abbreviate long options) |
+
+## Round 3 — Jira, routine
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `jira-assign-self` | yes | starting a ticket without a round-trip | board shows you on it | ask | — (`desk-jira edit` can set any assignee) |
+| `jira-comment` | yes | the root-cause + PR-link comment posts as it happens; exact text printed `posted` | text is public to the team under your name; editable. _Reach_: the rule posts on **any** SV ticket, other people's included; only the skill's `jira-others` check keeps it to yours | ask (every comment prompts) | `Bash(desk-jira comment *)` |
+| `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *assignee*)` `ask: Bash(desk-jira create *reporter*)` (routing is `jira-route`). No `attach` rule: it reaches any ticket |
+| `jira-edit` | yes | narrowing a description to what shipped, Launch Priority, labels | overwrites fields others read | ask | — (`desk-jira edit` and `labels` reach any ticket and any field, assignee included) |
+
+## Round 4 — Jira, board state
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `jira-transition` | yes | In Development on start, Review/QA when the PR is up | board state the team filters on | ask | — (`desk-jira transition` reaches any ticket and any state, Done included) |
+| `jira-close-own-merged` | yes | the ticket goes to Done the moment your own last PR on the key merges, with its one-line comment | a Done others act on, on evidence: a merged PR you authored and no PR on the key still open | ask · no | — |
+| `jira-close` | ask | duplicate, not-a-bug and already-fixed closes without a wait | a judgement others act on; already-fixed needs every acceptance criterion checked | yes | — |
+| `jira-route` | ask | — | a ticket lands on a colleague in your name | yes · no | — |
+
+## Round 5 — git
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `git-commit` | yes | commits in the ticket's own branch | local only | ask | `Bash(git add *)` `Bash(git commit *)` |
+| `git-push` | yes | the skills push your ticket branch without asking you first; the DIFF REVIEW block is a record; a stray commit still hard-stops | your branch on GitHub, CI runs. Claude Code still prompts on every push unless you run a mode that does not prompt: no allow rule is written, because git's flag abbreviations (`-qf`, `--force-w`, `--delet`) mean no pattern can fence every dangerous spelling. The deny-only plan catches plain force, delete and mirror pushes as a best-effort backstop | ask | — |
+| `git-force-with-lease` | ask | rewriting your own pushed branch | overwrites remote history; fails if someone else pushed. Prompts either way | yes · no | — |
+| `pr-open` | yes | draft PR opened as soon as the branch is ready | a PR in the team's list | ask | `Bash(gh pr create *)` |
+
+## Round 6 — PR content
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `pr-edit` | yes | body and title kept current, image table filled | text reviewers read. _Reach_: `gh pr edit` also adds reviewers and reaches any PR, so its rule needs `pr-request-review` too | ask | owners `pr-edit` + `pr-request-review`: `Bash(gh pr edit *)` · `ask: Bash(gh pr edit *--base*)` |
+| `pr-images` | yes | before/after images uploaded without a pause | drives a browser signed in to GitHub as you; never submits a comment | ask (every run) · no (placeholders) | `Bash(node ~/.claude/desk/bin/upload-images.mjs *)` |
+| `pr-self-review-comment` | yes | the clean `/pullbot` sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
+| `pr-reply` | yes | clearance works, replies to and resolves review threads | replies under your name; resolving hides a thread | ask | — (`gh api graphql` cannot be scoped; `Bash(gh api *)` would also allow merges and deletions) |
+
+## Round 7 — PR to merge
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `pr-request-review` | yes | hand-back to the reviewer; infra/security owner added without asking | pings a colleague | ask | co-owner of `pr-edit`'s rule |
+| `pr-ready` | ask | undraft once the verdict at head is `p0=0 p1=0 p2=0 deferred=0 gaps=0` and not DIRTY | the PR enters review queues and the merge driver's view. _Reach_: any PR | yes | `Bash(gh pr ready *)` |
+| `pr-auto-merge` | ask | GitHub merges the moment the gate clears | merges without a final look | yes · no | owners `pr-auto-merge` + `pr-merge-green`: `Bash(gh pr merge * --auto --squash)` `Bash(gh pr merge * --squash --auto)` · `unguard: Bash(gh pr merge *--auto*)` |
+| `pr-merge-green` | ask | squash-merge on `🏁 CI gate`, no approval wait (the ruleset needs 0; a CHANGES_REQUESTED still blocks) | code reaches `main` and deploys with no human approval: the agent's own verdict is the last check. _Reach_: any PR the `*` names, `--repo` included; `--admin` is always denied | yes · no (you merge; skills report ready at APPROVED + green) | `Bash(gh pr merge * --squash)` · `ask: Bash(gh pr merge *--auto*)` (removed when `pr-auto-merge` is yes) |
+
+## Round 8 — shepherding
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `pr-update-branch` | yes | behind-main PRs refreshed server-side before merge | a new CI run. _Reach_: any PR | ask | `Bash(gh pr update-branch *)` |
+| `pr-conflict-unreviewed` | yes | DIRTY PRs fixed and re-reviewed without a round-trip | a resolution nobody else has read yet | ask | — |
+| `pr-conflict-reviewed` | ask | — | a silent resolution can revert a reviewer's merged work | yes | — |
+| `ci-rerun` | yes | a cancelled run or known flake retried, completed runs only | CI minutes; a rerun on a live run cancels it. _Reach_: any run; the skill checks it completed | ask | `Bash(gh run rerun *)` |
+
+## Round 9 — autopilot (say the plain explanation first)
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `autopilot-workers` | yes | a named batch worked in parallel while you are away | headless agents acting as you with nobody watching, within your grants | no | `Bash(node ~/.claude/desk/bin/pass.mjs *)` `Bash(node ~/.claude/desk/bin/plan-batch.mjs *)` `Bash(node ~/.claude/desk/bin/queue.mjs *)` `Bash(node ~/.claude/desk/bin/answer.mjs *)` `Bash(node ~/.claude/desk/bin/harvest.mjs *)` `Bash(node ~/.claude/desk/bin/desk-env.mjs *)` `Bash(~/.claude/desk/bin/triage.sh *)`. Never `with-lock.sh` (it runs whatever command it is given) and never the scripts `pass.mjs` runs itself |
+| `autopilot-worker-mode` | dontAsk + generated allow-list | writes scoped to the worker's own worktree, every other worktree denied, a preflight proves it | anything on the allow-list runs without a prompt | none | — (workers get their own settings file) |
+| `autopilot-merge` | no (PRs wait for you) | serial merge driver: each PR merges when green, then the next colliding ticket starts | PRs merge while you are away | yes (only with `pr-merge-green` yes) | owners `autopilot-workers` + `autopilot-merge`: `Bash(~/.claude/desk/bin/merge-driver.sh *)` |
+| `autopilot-judgement` | yes | engineering and scope calls made and recorded instead of parking the batch | a call you might have made differently; you can overrule | no (park and ask) | — |
+
+## Round 10 — shared state
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `autopilot-reclaim` | yes | a batch survives memory pressure | an orphaned server or `tsc` is killed (never a worker mid-commit, never another session's) | no (batch drops concurrency only) | — |
+| `db-per-ticket` | yes | isolated seeds, migrations and screenshots | disk, invisible to other sessions | ask | — |
+| `db-clone-staging` | yes | real tutor and subject data locally | reads live staging under load; the copy holds real personal data | ask · no | — |
+| `staging-write` | ask + backup + independent review | data fixes on staging | data others depend on | no | — |
+
+## Round 11 — local
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `typesense-reindex` | ask | search reflects your change | collections are global: every session's index | no | — |
+| `specs-it-shared` | no | integration suites without a per-ticket DB | `deleteMany()` wipes another session's data | ask | — |
+| `worktree-remove` | ask | disk back (~4GB per worktree) | untracked files, local state | yes | — |
+| `branch-delete` | no | tidy branch list | `-D` discards commits `-d` refused to | ask | — |
+
+## Round 12 — other
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `server-stop` | ask | ports and memory back | a server another session may still be using | yes · no | — |
+| `skills-edit` | ask | fixing a skill mid-task | a change that steers every future session | yes · no | — |
+| `vercel-env` | ask | env changes without waiting on the owner | a production auth boundary; tell the owner either way | no | — |
+| `slack-draft` | yes | a drafted message sitting in your Slack composer | nothing is sent. _Reach_: a draft in any channel or DM | ask · no | `<slack>slack_send_message_draft` |
+
+## Round 13 — guards
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `merge-feedback-first` | yes | no reviewer comment is merged past unanswered | a green PR waits while its feedback is worked | no (the gate alone decides; feedback is still worked and reported) | — |
+| `jira-others` | no | reconcile sweeps could act on others' tickets | narrating or closing someone else's work as you | ask | — |
+
+## Round 14 — your day, read (`/desk-checkout`)
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `read-transcripts` | yes | the story behind the day's work: what you chased, what got found, work that never became a PR | your prompts and Claude's replies from every session that day, including non-Studia ones (the check-out lists those rather than posting them) | ask · no | — (the collector runs from a `$S/` path, which no allow rule matches) |
+| `read-calendar` | yes | the meeting lines, and the decisions from Gemini's notes | event titles and attendees; the notes carry everything said in the meeting, HR and personal matters included (the check-out leaves those out). _Reach_: the rule lists events on any calendar shared with you, colleagues' included, not only your primary | ask · no | `mcp__claude_ai_Google_Calendar__list_events`. Gmail keeps prompting: `search_threads` and `get_thread` open the whole mailbox |
+| `read-slack-own` | ask | asks and agreements you made in DMs, which often carry the day's decisions | the other side of each DM too. _Reach_: the search can match anyone's messages in your DMs and private channels | yes · no | — (`slack_search_public_and_private` reaches past your own messages) |
