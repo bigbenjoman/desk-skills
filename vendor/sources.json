@@ -580,24 +580,6 @@
       "notes": "SKILL.md blob first appears at d65b69e0be (2026-01-23) but local AGENTS.md only matches e1f1e7b0 (2026-01-25, 'update build script'); at e1f1e7b all 59 local files (SKILL.md, AGENTS.md, 57 rules/*) are byte-identical. Upstream dir name is react-best-practices; installed under the name vercel-react-b",
       "tree_sha256": "14f2d93484fd85e230d935c813f31cec0d0521481d414d762a3919ec07bd39c2"
     },
-    "energy-trader": {
-      "source": {
-        "type": "checkout",
-        "repo": "bigbenjoman/energy-trader",
-        "branch": "main"
-      },
-      "license": null,
-      "notes": "Your own skill. Split from bigbenjoman/forewatt .claude/skills/energy-trader with its history (2026-09-27)."
-    },
-    "property-expert": {
-      "source": {
-        "type": "checkout",
-        "repo": "bigbenjoman/property-expert",
-        "branch": "main"
-      },
-      "license": null,
-      "notes": "Your own skill. Split from bigbenjoman/yield-index .claude/skills/property-expert with its history (2026-09-27). Its library/ holds paid standards (RICS Red Book, IVS): keep the repo private."
-    },
     "ai-seo": {
       "source": {
         "type": "github",

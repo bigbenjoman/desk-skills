@@ -14,9 +14,7 @@ is a modifier, `?`/`*` glob in unquoted args — use `bash -c '…' _ args` or q
   links to it. Sources in `vendor/sources.json` (types `github`, `drive`, `checkout`).
   `skills-upstream list|outdated|upgrade|verify|plugins|rehash`; `/desk-update` is the brew-style skill.
   - 59 pinned third-party skills (byte-identical to a proven upstream commit / Drive zip).
-  - `checkout` type: `energy-trader` → `bigbenjoman/energy-trader`, `property-expert` →
-    `bigbenjoman/property-expert` (both private, split with history 2026-09-27), and `clerk` →
-    `clerk/skills` cloned in `~/.agents/sources/clerk` with 11 sub-skills linked.
+  - `checkout` type: `clerk` → `clerk/skills` cloned in `~/.agents/sources/clerk` with 11 sub-skills linked.
   - Backups of everything moved: `~/.agents/desk-backup/20260927-*`.
 - **pullbot** `~/pullbot` → `bigbenjoman/pullbot`, PR #1 merged (generic per-repo config).
 
@@ -31,18 +29,12 @@ is a modifier, `?`/`*` glob in unquoted args — use `bash -c '…' _ args` or q
    `https://drive.google.com/embeddedfolderview?id=<id>`, download, confirm byte-identical, add as
    `drive` entries (see ux-designer's entry), `skills-upstream rehash`, `./install.sh </dev/null`.
    `learned` and `synced` are not skills (ECC data dir, claude.ai skill cache): leave them.
-3. **Submodules** (Ben chose this): in `bigbenjoman/forewatt` replace `.claude/skills/energy-trader`
-   and in `bigbenjoman/yield-index` (local clone `~/yieldindex`) replace `.claude/skills/property-expert`
-   with a git submodule of the new repo at the SAME path, pinned to the commit whose tree equals the
-   current copy (verify tree equality first). Both paths are load-bearing: forewatt
-   `.github/workflows/doc-guards.yml` runs `docs/trading-skill/tools/check_skill_pointers.py --skill
-   .claude/skills/energy-trader`; yield-index `.github/workflows/ci.yml` path-filters
-   `.claude/skills/property-expert/references/**`, `apps/pipeline/tests/test_attribution_single_source.py`
-   and scoring code cite it. CI needs `actions/checkout` with `submodules: true` and access to the
-   private skill repo: proposed read-only **deploy key** per skill repo (public half on the skill repo,
-   private half as a secret in the consumer repo, `ssh-key:` on checkout) — confirm with Ben before
-   creating keys/secrets. Use worktrees off `origin/main` (Ben's checkouts have in-flight work). PRs,
-   not direct pushes.
+3. ~~Submodules~~ **Dropped 2026-09-27 (Ben's call).** energy-trader is used only by forewatt and
+   property-expert only by yield-index, so each lives in its own repo's `.claude/skills/` and nowhere
+   else: no user-level copy, no `sources.json` entry, no sync. (A private submodule would also have
+   failed Vercel's clone in both repos, and CI reads both folders.) The split repos
+   `bigbenjoman/energy-trader` / `property-expert` are unused; Ben to archive or delete them. The
+   user-level clones are in `~/.agents/desk-backup/*-skill-repos-retired/`.
 4. **Open PRs for Ben to merge**: voicepa #356 (drop shadowing skill copies), forewatt #142 (drop
    context-audit copy).
 5. **`/desk-setup` in voicepa is mid-way.** Config written at
