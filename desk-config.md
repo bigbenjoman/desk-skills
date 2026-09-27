@@ -286,6 +286,8 @@ such thing.
 | Field | Value |
 |---|---|
 | Local database | `TODO` (e.g. Postgres in docker container `<name>` on :5432, how to create one per ticket; or `none`) |
+| Database URL variable | `TODO` (the env var the app reads its database URL from, e.g. `DATABASE_URL`; or `none`) |
+| Database migrate | `TODO` (command that brings a fresh database up to schema, e.g. `pnpm db:migrate`; or `none`) |
 | Seed | `TODO` (command that loads local data into a fresh database, or `none`) |
 | Local services | `TODO` (search, mail catcher, queues, with ports; or `none`) |
 | Staging | `TODO` (URL, and how access is protected; or `none`) |

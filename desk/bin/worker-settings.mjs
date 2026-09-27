@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 // Generate the --settings file for a headless worker or a triage pass.
 //
-//   worker-settings.mjs worker --ticket SV-XXX --wt <worktree> --out <file> [--dry]
-//   worker-settings.mjs triage --ticket SV-XXX --out <file>
+//   worker-settings.mjs worker --ticket <TICKET> --wt <worktree> --out <file> [--dry]
+//   worker-settings.mjs triage --ticket <TICKET> --out <file>
 //
 // Prints one `CONFIG_DENIED: <§3 key> (<setting>)` line per capability the user's config §3 does not
-// grant, so the spawner can tell the worker what it must park on instead of attempting.
+// grant, so the spawner can tell the worker what it must park on instead of attempting. In worker
+// mode it also prints one `TOOLCHAIN_PROBE: <command>` line: the harmless command (`<tool> --version`,
+// behind §4 Command prefix) the preflight runs to prove the toolchain allow rules actually execute.
+//
+// The toolchain is this repo's, from config §4 (Package manager, Command prefix and the Toolchain
+// command rows): each command's binary is allowed by name and path, the exact configured commands are
+// allowed as prefixes, and any package manager §4 Package manager names as forbidden is denied.
 //
 // Hard-won details, each of which failed silently once:
 //   - A worker's fs access is scoped to its cwd, and `.claude/` is write-protected, so the skills
@@ -23,7 +29,7 @@
 //   - Bash rules match the command string as written. A binary allowed by name AND by absolute
 //     path must be DENIED by both too, or `/usr/bin/git push` walks past a `git push` deny. So every
 //     rule for a binary, allow or deny, is built by `bash()` below; never write one by hand.
-//   - Prefix rules cannot stop an allowed interpreter (`node -e`, `python3 -c`, `bun`) from shelling
+//   - Prefix rules cannot stop an allowed interpreter (`node -e`, `python3 -c`, a package manager) from shelling
 //     out. The deny list stops the ordinary command forms; the contract and the preflight do the rest.
 import { writeFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -39,7 +45,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (k.startsWith('--')) opt[k.slice(2)] = rest[++i];
 }
 if (!['worker', 'triage'].includes(mode) || !opt.ticket || !opt.out || (mode === 'worker' && !opt.wt)) {
-  console.error('usage: worker-settings.mjs worker --ticket SV-XXX --wt <worktree> --out <file> [--dry]\n       worker-settings.mjs triage --ticket SV-XXX --out <file>');
+  console.error('usage: worker-settings.mjs worker --ticket <TICKET> --wt <worktree> --out <file> [--dry]\n       worker-settings.mjs triage --ticket <TICKET> --out <file>');
   process.exit(2);
 }
 
@@ -69,7 +75,7 @@ const forms = (bin) => {
 // A rule with a `*` in the middle that also ends in `:*` never matches anything, so
 // `Bash(git -C * push:*)` let `git -C /tmp push origin main` run. `*` can match empty, so the spaces
 // around it are part of the pattern: `push *--tags*` catches `push --tags x`, `push * --tags*` does not.
-// Never glob a short flag as `*-f*`: it matches branch names like `fix/SV-1-foo`.
+// Never glob a short flag as `*-f*`: it matches branch names like `fix/ABC-1-foo`.
 const rule = (f, pat) => (pat.includes('*') ? `Bash(${f}${pat})` : `Bash(${f}${pat}:*)`);
 const bash = (bin, ...subs) => (subs.length ? subs : ['']).flatMap((sub) => forms(bin).map((f) => rule(f, sub)));
 
@@ -93,6 +99,78 @@ const GH_API_WRITES = [
   ' api -f *', ' api -F *', ' api --field*', ' api --raw-field*', ' api --input*',
 ];
 
+// ---- this repo's toolchain, from config §4 ------------------------------------------------------
+// A config row desk-env.mjs does not know yet (it throws on an unknown id) reads as unset.
+const cfg = (id) => { try { return E.configValue(id); } catch { return null; } };
+const isNone = (v) => v != null && /^none\b/i.test(String(v).trim());
+const BIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+// Words that are never granted wholesale because a configured command happens to start with them:
+// a shell or a fetcher allowed by name is an allow-everything. The exact configured command is still
+// allowed as a prefix below, so `bash scripts/test.sh` works without allowing `bash`.
+const NEVER_WHOLESALE = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'env', 'exec', 'eval', 'sudo', 'doas',
+  'rm', 'curl', 'wget', 'xargs', 'nohup', 'time', 'timeout', 'git', 'gh', 'docker', 'cd', 'source', '.']);
+// ...and a few that are not even allowed as the exact configured command, because a prefix rule for
+// `rm -rf build` also matches `rm -rf build /`. git, gh and docker have their own rules.
+const NO_EXACT = new Set(['rm', 'sudo', 'doas', 'curl', 'wget', 'eval', 'exec', 'xargs', 'env', 'git', 'gh', 'docker', 'cd', 'source', '.']);
+// Porting check: `bun` below is one entry in a generic list of package managers §4 may name as
+// forbidden, not a default toolchain. Nothing is allowed from this list; it only feeds deny rules.
+const KNOWN_PMS = ['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'deno', 'uv', 'uvx', 'pip', 'pip3', 'pipx', 'poetry', 'pdm', 'hatch', 'cargo', 'go', 'gradle', 'mvn', 'bundle', 'composer', 'mix'];
+
+const prefixRaw = cfg('command-prefix');
+const PREFIX = prefixRaw && !isNone(prefixRaw) ? prefixRaw.trim() : '';
+const pmRaw = cfg('package-manager');
+const PM = pmRaw && !isNone(pmRaw) ? (/^[^\s,;(]+/.exec(pmRaw.trim())?.[0] ?? '') : '';
+// "pnpm (npm, npx forbidden)" / "uv; pip is blocked": every known package manager named after the
+// primary one, in a value that says forbidden/blocked/never/not allowed, is denied.
+const FORBIDDEN = pmRaw && /forbid|block|never|not allowed|banned|disallow/i.test(pmRaw)
+  ? KNOWN_PMS.filter((b) => b !== PM && new RegExp(`(^|[^A-Za-z0-9_-])${b}([^A-Za-z0-9_-]|$)`).test(pmRaw.slice(PM.length)))
+  : [];
+const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'seed-cmd', 'agents-sync', 'db-migrate-cmd'];
+const commands = TOOL_IDS.map(cfg).filter((v) => v && !isNone(v)).map((v) => v.trim());
+const stripPrefix = (c) => (PREFIX && c.startsWith(`${PREFIX} `) ? c.slice(PREFIX.length + 1).trim() : c);
+const toolBins = new Set();
+const exactCommands = new Set();
+for (const c of commands) {
+  for (let seg of c.split(/&&|\|\||;|\|/)) {
+    seg = stripPrefix(seg.trim()).replace(/^(\w+=\S*\s+)+/, '');
+    if (!seg) continue;
+    const b = seg.split(/\s+/)[0];
+    if (!NO_EXACT.has(b)) exactCommands.add(seg);
+    if (BIN_NAME.test(b) && !NEVER_WHOLESALE.has(b)) toolBins.add(b);
+  }
+}
+if (PM && BIN_NAME.test(PM) && !NEVER_WHOLESALE.has(PM)) toolBins.add(PM);
+const prefixBin = PREFIX.split(/\s+/)[0];
+if (prefixBin && BIN_NAME.test(prefixBin) && !NEVER_WHOLESALE.has(prefixBin)) toolBins.add(prefixBin);
+for (const f of FORBIDDEN) toolBins.delete(f);
+// A package manager's one-off runner fetches and executes an arbitrary package, so allowing the package
+// manager must not allow it. The subcommand forms (`npm exec`, `pnpm dlx`, `yarn dlx`, `bun x`,
+// `uv tool run`) are always denied. A standalone runner binary (npx, pnpx, bunx, uvx) is never allowed
+// wholesale either: it is denied, unless a configured §4 command runs through it, in which case only
+// that exact command is allowed (the prefix rules above) and everything else it could run is refused
+// by dontAsk, which runs nothing that is not allow-listed.
+// Porting check: `bun` here is one generic entry among several; it only ever produces deny rules.
+const RUNNERS = {
+  npm: { bins: ['npx'], subs: [' exec'] }, pnpm: { bins: ['pnpx'], subs: [' dlx'] }, yarn: { bins: [], subs: [' dlx'] },
+  bun: { bins: ['bunx'], subs: [' x'] }, uv: { bins: ['uvx'], subs: [' tool run'] },
+};
+const runnerUsedByConfig = (bin) => commands.some((c) => c.split(/&&|\|\||;|\|/).some((seg) => stripPrefix(seg.trim()).replace(/^(\w+=\S*\s+)+/, '').split(/\s+/)[0] === bin));
+const RUNNER_DENY = [];
+for (const [pm, r] of Object.entries(RUNNERS)) {
+  if (pm !== PM && !toolBins.has(pm)) continue;
+  for (const sub of r.subs) RUNNER_DENY.push(...bash(pm, sub), ...(PREFIX ? [rule(`${PREFIX} ${pm}`, sub)] : []));
+  for (const rb of r.bins) {
+    toolBins.delete(rb);
+    if (!runnerUsedByConfig(rb)) RUNNER_DENY.push(...bash(rb), ...(PREFIX ? [rule(`${PREFIX} ${rb}`, '')] : []));
+  }
+}
+// What the preflight runs: the package manager if named, else the first configured command's binary.
+const probeBin = (PM && toolBins.has(PM)) ? PM : [...toolBins].find((b) => b !== prefixBin) ?? '';
+const TOOLCHAIN_PROBE = probeBin ? `${PREFIX ? `${PREFIX} ` : ''}${probeBin} --version` : '';
+const configured = (id) => { const v = cfg(id); return !!v && !isNone(v); };
+const HAS_LOCAL_DB = configured('local-db');
+const HAS_SERVICES = HAS_LOCAL_DB || configured('local-services');
+
 const STATE = E.stateDir();
 const BIN = E.binDir();
 const allow = [];
@@ -100,6 +178,7 @@ const deny = [];
 const dirs = new Set([STATE, E.skillsDir()]);
 const denied = [];
 
+const TRIAGE_READS = new Set(['rg', 'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc']);
 if (mode === 'triage') {
   // Read-only by construction: no Edit, Write only to the triage records, every mutating command denied.
   allow.push(
@@ -107,25 +186,31 @@ if (mode === 'triage') {
     'Bash(rg:*)', 'Bash(grep:*)', 'Bash(find:*)', 'Bash(ls:*)', 'Bash(cat:*)',
     'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
     ...bash('desk-jira', ' get', ' search', ' comments'),
-    ...bash('gh', ' pr list', ' pr view'),
+    ...bash('gh', ' pr list', ' pr view', ' issue view'),
     `Write(${abs(STATE)}/triage/**)`,
   );
   deny.push(
     ...['commit', 'push', 'checkout', 'stash', 'worktree'].flatMap((s) => bash('git', ...git(s))),
     ...bash('gh', ' pr create', ' pr edit', ' pr merge', ' pr review', ' pr ready', ' pr comment', ' issue comment', ...GH_API_WRITES),
     ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels'),
-    ...bash('bun'),
+    // Triage reads; it never installs, builds or runs anything from the toolchain.
+    ...[...toolBins, ...FORBIDDEN].filter((b) => !TRIAGE_READS.has(b)).flatMap((b) => bash(b)),
   );
 } else {
   const WT = opt.wt.replace(/\/+$/, '');
   allow.push(
     `Edit(${abs(WT)}/**)`, `Write(${abs(WT)}/**)`, `Write(${abs(STATE)}/**)`,
-    ...bash('bun'), ...bash('mise'), ...bash('node'), 'Bash(python3:*)',
-    ...bash('git'), ...bash('gh'), ...bash('desk-jira'), ...bash('docker'),
+    ...[...toolBins].flatMap((b) => bash(b)),
+    ...[...exactCommands].flatMap((c) => [rule(c, ''), ...(PREFIX ? [rule(`${PREFIX} ${c}`, '')] : [])]),
+    ...bash('node'), 'Bash(python3:*)',
+    ...bash('git'), ...bash('gh'), ...bash('desk-jira'),
+    // Local containers and the database client only where §4 says the repo has them.
+    ...(HAS_SERVICES ? bash('docker') : []),
+    ...(HAS_LOCAL_DB ? ['Bash(psql:*)', 'Bash(createdb:*)'] : []),
     'Bash(rg:*)', 'Bash(grep:*)', 'Bash(find:*)', 'Bash(ls:*)', 'Bash(cat:*)',
     'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(sed:*)', 'Bash(awk:*)',
     'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(diff:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
-    'Bash(psql:*)', 'Bash(createdb:*)', 'Bash(flock:*)',
+    'Bash(flock:*)',
     `Bash(${BIN}/with-lock.sh:*)`, ...(tilde(BIN) ? [`Bash(${tilde(BIN)}/with-lock.sh:*)`] : []),
     `Bash(${BIN}/desk-env.mjs:*)`,
   );
@@ -140,7 +225,10 @@ if (mode === 'triage') {
     ...bash('git', ...FORCE_PUSH, ...git('stash')), // the stash is shared across every worktree
     'Bash(pkill:*)', 'Bash(killall:*)',
     ...bash('docker', ' compose down'), 'Bash(docker-compose down:*)',
-    ...bash('bun', ' run --filter @studia-portal/web test'), // the portal's full Vitest suite never terminates
+    // Package managers config §4 names as forbidden in this repo, by name and by path.
+    ...FORBIDDEN.flatMap((b) => bash(b)),
+    // ...and the allowed package manager's one-off runner (see RUNNERS).
+    ...RUNNER_DENY,
   );
 
   // Config §3 -> allow or deny. A headless worker cannot ask, so anything short of `yes` is denied
@@ -216,7 +304,10 @@ const settings = { permissions: { allow: [...new Set(allow)], deny: [...new Set(
 // went wrong, and a silently-ignored settings file is full permissions.
 const p = JSON.parse(JSON.stringify(settings)).permissions;
 if (!p.deny.length) { console.error('FAIL: deny list is empty — refusing to write settings'); process.exit(1); }
-if (mode === 'worker' && !p.allow.some((a) => a.startsWith('Bash(bun'))) { console.error('FAIL: no bun allow rule'); process.exit(1); }
+if (mode === 'worker' && (!toolBins.size || !TOOLCHAIN_PROBE)) {
+  console.error('FAIL: no toolchain allow rule — config §4 Package manager and the Toolchain command rows are unset. Run /desk-setup; refusing to guess a toolchain.');
+  process.exit(1);
+}
 if ([...p.allow, ...p.deny].some((a) => /^(Edit|Write)\(\/[^/]/.test(a))) { console.error('FAIL: single-slash absolute rule would be ignored'); process.exit(1); }
 const deadGlob = [...p.allow, ...p.deny].filter((a) => /^Bash\(.*\*.*:\*\)$/.test(a));
 if (deadGlob.length) { console.error(`FAIL: a mid-pattern * with a trailing :* never matches: ${deadGlob[0]}`); process.exit(1); }
@@ -224,3 +315,4 @@ if (deadGlob.length) { console.error(`FAIL: a mid-pattern * with a trailing :* n
 mkdirSync(dirname(opt.out), { recursive: true });
 writeFileSync(opt.out, `${JSON.stringify(settings, null, 2)}\n`);
 for (const d of denied) console.log(`CONFIG_DENIED: ${d}`);
+if (mode === 'worker') console.log(`TOOLCHAIN_PROBE: ${TOOLCHAIN_PROBE}`);

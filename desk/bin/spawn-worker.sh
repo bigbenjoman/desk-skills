@@ -16,15 +16,15 @@
 # setsid may fork, so $! is not the worker. The session id is the only durable handle.
 set -euo pipefail
 
-TICKET="${1:?usage: spawn-worker.sh SV-XXX <worktree> <session-uuid|preflight> [briefing-file]}"
+TICKET="${1:?usage: spawn-worker.sh <TICKET> <worktree> <session-uuid|preflight> [briefing-file]}"
 WT="${2:?worktree required}"
 SID="${3:?session uuid required}"
 BRIEFING="${4:-}"
 
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
-studia_load_paths || exit 1
-studia_require_headless || exit 1
+desk_load_paths || exit 1
+desk_require_headless || exit 1
 command -v claude >/dev/null 2>&1 || { echo "FAIL: claude CLI not on PATH" >&2; exit 1; }
 
 STATE="$DESK_STATE"
@@ -45,29 +45,35 @@ if [ -n "${AUTOPILOT_PORT:-}" ]; then
   PORT="$AUTOPILOT_PORT"
 else
   PORT="$DESK_WORKER_PORT_FLOOR"   # same floor pass.mjs uses: one above the user's dev port
-  while studia_port_in_use "$PORT"; do PORT=$((PORT + 1)); done
+  while desk_port_in_use "$PORT"; do PORT=$((PORT + 1)); done
 fi
 
 # Per-worker spend ceiling: a runaway guard, not a cap on asked-for work. A number of USD, or
 # none/off/no cap. Anything else is refused here, before the preflight, rather than handed to
 # claude as an empty --max-budget-usd that kills the worker while [spawn] still prints.
-if ! BUDGET="$(studia_budget worker)"; then
+if ! BUDGET="$(desk_budget worker)"; then
   echo "FAIL: per-worker budget is malformed — refusing to spawn $TICKET" >&2
   exit 1
 fi
 BUDGET_ARGS=()
 [ "$BUDGET" != "none" ] && BUDGET_ARGS=(--max-budget-usd "$BUDGET")
-CODEX_PERM="$(studia_perm codex-review)"
+CODEX_PERM="$(desk_perm codex-review)"
 
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
   DRY_NOTE=" This is a DRY RUN: pushing, opening a PR, posting a review and every Jira write are blocked on purpose. Commit locally, do everything else in full, then print AUTOPILOT_DONE saying what you would have pushed. Do not treat those blocks as errors to work around."
 fi
 
-if ! DENIED="$(node "$BIN/worker-settings.mjs" worker --ticket "$TICKET" --wt "$WT" --out "$SETTINGS" ${AUTOPILOT_DRY_RUN:+--dry})"; then
+if ! WS_OUT="$(node "$BIN/worker-settings.mjs" worker --ticket "$TICKET" --wt "$WT" --out "$SETTINGS" ${AUTOPILOT_DRY_RUN:+--dry})"; then
   echo "FAIL: settings for $TICKET are invalid or unsafe — refusing to spawn" >&2
   exit 1
 fi
+DENIED="$(printf '%s\n' "$WS_OUT" | grep '^CONFIG_DENIED: ' || true)"
+# The command that proves this repo's toolchain executes under the generated rules (config §4).
+TOOL_PROBE="$(printf '%s\n' "$WS_OUT" | sed -n 's/^TOOLCHAIN_PROBE: //p' | head -1)"
+[ -n "$TOOL_PROBE" ] || { echo "FAIL: worker-settings produced no toolchain probe — config §4 toolchain unset?" >&2; exit 1; }
+# With no tracker (config §4 Tracker `none`) there is no Jira step to prove reachable.
+TRACKER="$(desk_cfg tracker 2>/dev/null || echo unset)"
 CONFIG_NOTE=""
 if [ -n "$DENIED" ]; then
   CONFIG_NOTE=" The user's config does not grant these, so the matching commands are denied to you: $(printf '%s' "$DENIED" | sed 's/^CONFIG_DENIED: //' | paste -sd ';' - | sed 's/;/; /g'). When your work reaches one, do not look for another route: print the exact payload (the Jira text, the PR body, the push you would make) and park naming that step, per the worker contract section 2."
@@ -82,10 +88,10 @@ if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
   HAVE_JIRA=""; command -v desk-jira >/dev/null 2>&1 && HAVE_JIRA=1
   HAVE_CODEX=""; command -v codex >/dev/null 2>&1 && HAVE_CODEX=1
   cd "$WT"
-  RESULT=$(studia_timeout 300 claude -p "Perform these six checks and reply with EXACTLY six lines, nothing else. Do not stop early if one is refused.
+  RESULT=$(desk_timeout 300 claude -p "Perform these six checks and reply with EXACTLY six lines, nothing else. Do not stop early if one is refused.
 W_IN=OK or W_IN=BLOCKED  — write the file $WT/.preflight.tmp containing x
 W_OUT=OK or W_OUT=BLOCKED — write the file $CANARY containing x
-BUN=OK or BUN=BLOCKED — run: bun --version
+TOOL=OK or TOOL=BLOCKED — run: $TOOL_PROBE
 JIRA=OK or JIRA=BLOCKED — run: desk-jira whoami
 DENY=OK or DENY=BLOCKED — run: git stash list
 CODEX=OK or CODEX=BLOCKED — run: codex --version" \
@@ -102,21 +108,23 @@ CODEX=OK or CODEX=BLOCKED — run: codex --version" \
   }
   echo "[preflight] $TICKET"
   check W_IN  OK        # must be able to edit its own worktree
-  check W_OUT BLOCKED   # must NOT be able to touch the main checkout
-  check BUN   OK        # the toolchain must actually execute
+  check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
+  check TOOL  OK        # this repo's toolchain (config §4) must actually execute
   check DENY  BLOCKED   # deny must still win over allow
-  if [ -n "$HAVE_JIRA" ]; then check JIRA OK   # Stage 8 must be reachable
+  if [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" = none ]; then echo "  JIRA   skipped  (config §4 Tracker is none)"
+  elif [ -n "$HAVE_JIRA" ]; then check JIRA OK   # Stage 8 must be reachable
   else echo "  JIRA   skipped  (desk-jira not installed — Jira steps will park for the orchestrator)"; fi
   # Cross-vendor refutation. Where config §3 codex-review is yes it must reach the binary, not a
-  # denial: the CI review gate requires vendor=codex-cross, so a worker without codex produces PRs
-  # that can never merge. AUTOPILOT_ALLOW_NO_CODEX=1 accepts a missing binary knowingly. Where the row
-  # is not yes, codex is denied on purpose, so the check proves the deny holds instead.
+  # denial: the user asked for cross-vendor review, and a worker without codex silently reviews its
+  # own work with the same vendor (and fails any review gate the repo keys on the vendor).
+  # AUTOPILOT_ALLOW_NO_CODEX=1 accepts a missing binary knowingly. Where the row is not yes, codex is
+  # denied on purpose, so the check proves the deny holds instead.
   if [ "$CODEX_PERM" = "yes" ]; then
     if [ -n "$HAVE_CODEX" ]; then check CODEX OK
     elif [ -n "${AUTOPILOT_ALLOW_NO_CODEX:-}" ]; then echo "  CODEX  skipped  (not installed; AUTOPILOT_ALLOW_NO_CODEX set — reviews will be same-vendor)"
-    else echo "  CODEX  FAIL     (codex not installed — the CI gate needs vendor=codex-cross; install it or set AUTOPILOT_ALLOW_NO_CODEX=1)"; fail=1; fi
+    else echo "  CODEX  FAIL     (codex not installed but config §3 codex-review is yes — install it or set AUTOPILOT_ALLOW_NO_CODEX=1)"; fail=1; fi
   elif [ -n "$HAVE_CODEX" ]; then check CODEX BLOCKED
-  else echo "  CODEX  skipped  (config §3 codex-review is $CODEX_PERM — reviews will be same-vendor and cannot pass the CI gate)"; fi
+  else echo "  CODEX  skipped  (config §3 codex-review is $CODEX_PERM — reviews will be same-vendor)"; fi
 
   # An empty result is not a permissions verdict: the preflight is itself a claude -p call, and
   # the account's session limit makes it fail with no reason at all.
@@ -124,7 +132,7 @@ CODEX=OK or CODEX=BLOCKED — run: codex --version" \
 
   # Never trust the model's own report over the filesystem.
   if [ -e "$CANARY" ]; then
-    echo "  !! canary file was actually created in the main checkout — boundary NOT enforced" >&2
+    echo "  !! canary file was actually created in the primary checkout — boundary NOT enforced" >&2
     rm -f "$CANARY"; fail=1
   fi
   rm -f "$WT/.preflight.tmp"
@@ -162,7 +170,7 @@ $(cat "$BRIEFING")"
 
 cd "$WT"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
-studia_detach claude -p "$PROMPT" \
+desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
   --output-format stream-json --include-partial-messages --verbose \
   --permission-mode dontAsk \

@@ -189,6 +189,8 @@ export const CONFIG_ROWS = Object.freeze({
   'build-cmd': { section: '4', row: 'Build' },
   'integration-cmd': { section: '4', row: 'Integration tests' },
   'seed-cmd': { section: '4', row: 'Seed' },
+  'db-url-var': { section: '4', row: 'Database URL variable' },
+  'db-migrate-cmd': { section: '4', row: 'Database migrate' },
   'branch-protection': { section: '4', row: 'Branch protection' },
   'advisory-checks': { section: '4', row: 'Advisory checks' },
   'repo-merge-settings': { section: '4', row: 'Repo merge settings' },

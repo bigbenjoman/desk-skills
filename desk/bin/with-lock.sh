@@ -3,9 +3,10 @@
 # `flock <file> -c '<cmd>'`: the permission matcher will not auto-approve a wrapper that executes an
 # inner command it cannot statically verify, even with Bash(flock:*) allowed. The denial is
 # silent-ish and workers then run suites UNLOCKED, which is the whole OOM path this guards.
-#   with-lock.sh test  bun run --filter studia-web test -- --maxWorkers=4 <specs>   # config §3b Jest cap: 4, 2 while the spawn gate says hold
-#   with-lock.sh tsc   bun run typecheck
+#   with-lock.sh test  <config §4 Unit tests command> <specs>   # at config §3b's test worker cap: 4, 2 while the spawn gate says hold
+#   with-lock.sh tsc   <config §4 Typecheck command>
 #   with-lock.sh browser <screenshot capture>
+# The locks are box-wide on purpose, shared by every repo desk runs in: memory is per machine, not per repo.
 #
 # Uses flock(1) where it exists (Linux). Where it does not (stock macOS) it falls back to an atomic
 # `mkdir` lock recording the wrapper's and the command's pids, so a crashed holder is detected and
@@ -19,8 +20,8 @@ dir="${DESK_LOCK_DIR:-/tmp}"
 # and a typecheck (~3.5GB) run at the same time from two different workers, each correctly believing
 # it was serialised, and OOM-kill a full suite. Typechecks queue behind suites.
 case "$name" in
-  test|tsc) lock="$dir/studia-test.lock" ;;
-  browser)  lock="$dir/studia-browser.lock" ;;
+  test|tsc) lock="$dir/desk-test.lock" ;;
+  browser)  lock="$dir/desk-browser.lock" ;;
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac
 

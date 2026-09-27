@@ -114,7 +114,7 @@ switch (cmd) {
 
   case 'add': {
     const [key, type = 'Bug', lane = '?'] = args;
-    if (!key) throw new Error('usage: queue.mjs add SV-XXX [type] [lane]');
+    if (!key) throw new Error('usage: queue.mjs add <TICKET> [type] [lane]');
     if (q.tickets[key]) { console.log(`${key} already in the queue (${q.tickets[key].state}) — not re-adding`); break; }
     q.tickets[key] = {
       key, type, lane, state: 'queued',

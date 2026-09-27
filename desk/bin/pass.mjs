@@ -15,6 +15,7 @@ const BIN = E.binDir();
 const STATE = E.stateDir();
 const QUEUE_FILE = E.queueFile();
 const GH_REPO = E.ghRepo();
+const DEFAULT_BRANCH = E.defaultBranch();
 const DRY = !!process.env.AUTOPILOT_DRY_RUN;
 
 if (!existsSync(QUEUE_FILE)) {
@@ -279,7 +280,7 @@ const runningKeys = new Set(running.map((r) => r.key));
 // a resumable ticket with no live worker, and this loop would spawn a SECOND worker onto a
 // completed ticket. This is a guard, not the cure: markers are never consumed.
 // Deliberate re-runs stay possible — rotate the log, or name the ticket:
-//   AUTOPILOT_RERUN=SV-XXXX node pass.mjs
+//   AUTOPILOT_RERUN=<TICKET> node pass.mjs
 const rerunAllowed = new Set((process.env.AUTOPILOT_RERUN ?? '').split(/[,\s]+/).filter(Boolean));
 
 const alreadyFinished = (r) => {
@@ -309,6 +310,9 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
   const wt = join(WORKTREES, t.key);
   const setup = shOut('bash', [join(BIN, 'setup-worktree.sh'), t.key, t.branch], { cwd: MAIN }).out;
   if (!existsSync(wt)) { q('set', t.key, 'state=failed'); report.failed.push(`${t.key}: worktree setup failed — ${setup.slice(-200)}`); continue; }
+  // setup-worktree.sh names the database it prepared (the repo's naming, from config §4), or says
+  // `none` (no local database) / `shared` (no per-ticket one was made). One source, never re-derived here.
+  const database = [...setup.matchAll(/\[setup-worktree\] database=(\S+)/g)].pop()?.[1] ?? 'unknown';
 
   // The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling
   // tickets have learnt, and — critically — the answers the user has already given.
@@ -372,7 +376,6 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
   // eslint-disable-next-line no-await-in-loop
   while (taken.has(port) || await E.portInUse(port)) port += 1;
 
-  const database = `studia-web_${t.key.toLowerCase().replace(/-/g, '')}`;
   // Reset the stall counters: a respawn after a log rotation starts a smaller log than the stored
   // size, and without this the stall killer shoots each fresh worker within a pass or two.
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, 'stage=0/9',
@@ -393,8 +396,8 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
 const drift = [];
 for (const t of Object.values(queue().tickets)) {
   if (!t.worktree || !existsSync(t.worktree)) continue;
-  const behind = sh('git', ['-C', t.worktree, 'rev-list', '--count', 'HEAD..origin/main'], { tolerant: true });
-  if (/^\d+$/.test(behind) && Number(behind) > 0) drift.push(`${t.key} is ${behind} behind main`);
+  const behind = sh('git', ['-C', t.worktree, 'rev-list', '--count', `HEAD..origin/${DEFAULT_BRANCH}`], { tolerant: true });
+  if (/^\d+$/.test(behind) && Number(behind) > 0) drift.push(`${t.key} is ${behind} behind ${DEFAULT_BRANCH}`);
 }
 
 // ---- report --------------------------------------------------------------

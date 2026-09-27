@@ -12,7 +12,7 @@ const QUEUE = join(binDir(), 'queue.mjs');
 const [ticket, ...rest] = process.argv.slice(2);
 const text = rest.join(' ').trim();
 if (!ticket || !text) {
-  console.error('usage: answer.mjs SV-XXX "<the answer>"');
+  console.error('usage: answer.mjs <TICKET> "<the answer>"');
   process.exit(1);
 }
 

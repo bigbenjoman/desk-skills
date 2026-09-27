@@ -4,12 +4,12 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, jiraName } from './desk-env.mjs';
+import { stateDir, binDir, jiraName, githubHandle, configValue } from './desk-env.mjs';
 
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
 const tickets = process.argv.slice(2);
-if (!tickets.length) { console.error('usage: plan-batch.mjs SV-XXX [SV-YYY ...]'); process.exit(1); }
+if (!tickets.length) { console.error('usage: plan-batch.mjs <TICKET> [<TICKET> ...]'); process.exit(1); }
 
 const records = [];
 for (const t of tickets) {
@@ -22,11 +22,15 @@ for (const t of tickets) {
 // Someone else's ticket is reported, never worked — they may already be on it, and a
 // surprise branch against their ticket is worse than doing nothing. Jira reports the
 // assignee by display name, so the owner is config §1's Jira display name. No default:
-// a wrong name would admit someone else's tickets.
+// a wrong name would admit someone else's tickets. With config §4 Tracker `none` a ticket is either
+// a GitHub issue (`issue-<n>`), whose assignee is a GitHub login and is tested against config §1's
+// GitHub handle (logins are case-insensitive), or a plain description, which has no assignee.
+const noTracker = /^none\b/i.test(configValue('tracker') ?? '');
 let OWNER;
-try { OWNER = jiraName(); } catch (e) { console.error(e.message); process.exit(4); }
-const notOurs = records.filter((r) => r.assignee && r.assignee !== OWNER);
-const ours = records.filter((r) => !r.assignee || r.assignee === OWNER);
+try { OWNER = noTracker ? githubHandle() : jiraName(); } catch (e) { console.error(e.message); process.exit(4); }
+const isOwner = (a) => (noTracker ? String(a).toLowerCase() === OWNER.toLowerCase() : a === OWNER);
+const notOurs = records.filter((r) => r.assignee && !isOwner(r.assignee));
+const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));
 
 // Admission. C and D park at triage: both need a person before any code. C needs an agreed
 // plan or a product answer, and D a design build checked against its frame.
@@ -59,7 +63,6 @@ for (const r of ours) {
   console.log(`\n${r.ticket}  lane ${r.lane}  ${admit ? 'ADMIT' : `PARK (lane ${r.lane} — run manually)`}`);
   console.log(`  ${r.summary}`);
   console.log(`  branch: ${r.branch}`);
-  if (r.admin_api) console.log('  ! touches admin API — the Stop hook will require an openapi:gen');
   if (r.needs_db) console.log('  ! needs a database — its own per-ticket DB will be provisioned');
   if (co.length) console.log(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) console.log(`  ! prior art: ${pa}`);
