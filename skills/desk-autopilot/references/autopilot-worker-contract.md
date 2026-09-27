@@ -401,7 +401,7 @@ Permission rules match the string you write, not the file it resolves to. Prefer
   compound command is refused. An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass
   the port as an argument in whatever form the §4 Dev server row gives (e.g. `-- --port 3008`)
 - The package manager's one-off runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`,
-  `bunx`) and the §4 Command prefix run on its own (`mise exec -- <anything>`) are denied: run a TS
+  `bunx`) and the §4 Command prefix run on its own (`<prefix> <anything>`) are denied: run a TS
   script with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`
 - `git push` reaches only your own branch on `origin` (`git push origin HEAD` or
   `git push -u origin <your branch>`); any other ref is denied. `git config`, `git -c …` and git

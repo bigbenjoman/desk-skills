@@ -314,7 +314,7 @@ non-tracker ticket: nothing to move).
 
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
-  check completed with success (skipped does not count); no other check failed, errored, timed out
+  checks entry completed with success (skipped does not count); no other check failed, errored, timed out
   or is still queued or running, unless §4 Advisory checks names it; and at least one check
   completed with success. Then merge pinned to that commit with `--match-head-commit`. With §4
   Branch protection `none`, nothing on GitHub stops a red merge, so the check is entirely yours.
@@ -518,7 +518,7 @@ work went up attached to an unrelated ticket.
 - Treating a user's "should we…?" as an instruction: it opens a discussion; answer with a proposal
 - With Tracker `none`, about to comment on, label or close the GitHub issue
 - About to work a non-tracker ticket without having written its ticket file
-- About to merge without `--match-head-commit`, or a PR under a §4 Merge hold
+- About to merge without `--match-head-commit`, or a PR under a §4 Merge holds glob
 
 ## Rationalizations
 
@@ -541,7 +541,7 @@ work went up attached to an unrelated ticket.
 | "One more round will get it clean" | Three is the cap. Stop and report what is left. |
 | "The deferred count was wrong, I'll re-post it corrected" | Changed counts need a new run. A re-post can clear a known P0 with no code change. |
 | "No branch protection here, so a red check doesn't matter" | Protection `none` moves the rule from GitHub to you. Never merge red. |
-| "It's green, the hold is just a formality" | A §4 Merge hold is a manual step the repo needs before merging. Report it; the user merges. |
+| "It's green, the hold is just a formality" | A §4 Merge holds entry is a manual step the repo needs before merging. Report it; the user merges. |
 
 ## Resume file
 

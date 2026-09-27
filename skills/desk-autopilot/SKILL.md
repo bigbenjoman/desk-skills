@@ -141,7 +141,7 @@ lives in `$DESK_STATE/workers/`, outside the repo, and the worker gets **no copy
 - `gh pr merge`, `gh pr ready`, approving or requesting changes, `gh alias`, and `gh api` writes
   (REST methods, fields and every graphql mutation);
 - the package manager's one-off runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`,
-  `bunx`) and the §4 Command prefix run wholesale (`mise exec -- <anything>`): toolchain commands
+  `bunx`) and the §4 Command prefix run wholesale (`<prefix> <anything>`): toolchain commands
   are allowed only in the forms §4 names;
 - migrations (§4 Database migrate) unless the worker was given its own per-ticket database;
 - writing outside its own worktree and its own files under `$DESK_STATE`.
@@ -197,7 +197,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
 | 6b | Notify | When a pass reports `WAITING ON YOU` or `PARKED`, send **one** `PushNotification` covering everything that pass surfaced (where §3b "Push notification when a batch needs you" is `yes`). Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
-| 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge hold): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
+| 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
 
 Idle = every ticket merged, parked or failed. Say so and stop. Do not invent work. **Never
@@ -269,7 +269,7 @@ cost of holding PRs open is the same, so say so rather than letting them queue.
 
 **"Green" is the config's one definition** (desk-config "Green"), the same in the driver, in
 `desk-clearance`, in `desk-ticket` and here: on the **exact head commit** being merged, every §4
-Required check completed with success (**skipped does not count**); no other check failed, errored,
+Required checks entry completed with success (**skipped does not count**); no other check failed, errored,
 timed out or is still queued or running, unless §4 Advisory checks names it; and at least one check
 completed with success. With Required checks `none`, the second and third clauses still apply. The
 merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-head-commit <sha>`, so a
@@ -292,7 +292,7 @@ nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "A
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips (and disarms) a PR with outstanding review feedback where `merge-feedback-first` is
-`yes`, skips a PR under a §4 Merge hold (logging `HELD` and the reason), arms
+`yes`, skips a PR under a §4 Merge holds glob (logging `HELD` and the reason), arms
 `--auto --<§4 Merge method>` where `pr-auto-merge` is `yes`, merges outright with §4 Merge method and
 `--match-head-commit <sha>` when the head is green, skips a `DIRTY` PR, and, where `ci-rerun` is
 `yes`, retriggers `gh run rerun <id> --failed` only once that run has reached `completed`. It never
@@ -332,7 +332,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   PR rather than undrafting it. A clean verdict on a conflicted head is spent the moment the conflict
   is resolved. Workers are denied `gh pr ready`, so check these facts yourself, then `gh pr ready` and
   `gh pr merge <n> --<§4 Merge method> --auto --match-head-commit <headRefOid>` in the same breath
-  (never for a PR under a §4 Merge hold). Undrafting earlier pings the reviewer before the evidence
+  (never for a PR under a §4 Merge holds glob). Undrafting earlier pings the reviewer before the evidence
   is in.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
@@ -651,7 +651,7 @@ that one field between passes: never by hand-spawning, and never by holding tick
 - A ticket in the batch the user did not name
 - Reporting a lane-C/D park as settled when its challenge line says the pass did not run
 - About to merge with branch protection `none` because GitHub would allow it
-- About to merge a PR under a §4 Merge hold, or without `--match-head-commit`
+- About to merge a PR under a §4 Merge holds glob, or without `--match-head-commit`
 - About to triage a non-tracker key without having written its ticket file
 - About to rename a slug into a fake ticket key because a script refused it
 
@@ -678,4 +678,4 @@ that one field between passes: never by hand-spawning, and never by holding tick
 | "I'll ask whether to throttle" | Decide from the monitor. Report the decision and the number behind it; do not park it. |
 | "That idle dev server is wasting 1.2GB" | It is probably a peer's. Ask over `SendMessage`; killing another session's server has already cost someone a ticket. |
 | "No branch protection, so it can merge now" | Protection `none` means the rule is yours to enforce. Green is the config's definition, at the head you pin. |
-| "The hold is for backend deploys and this change is tiny" | A §4 Merge hold is a person's merge whatever the size. Report it with the reason. |
+| "The hold is for backend deploys and this change is tiny" | A §4 Merge holds entry is a person's merge whatever the size. Report it with the reason. |

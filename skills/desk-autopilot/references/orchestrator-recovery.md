@@ -138,7 +138,7 @@ re-running a ticket from scratch.
   pattern or the script mid-batch to get past it.
 - **A PR the merge driver never touches** is usually on a branch other than the ticket's recorded
   `branch`, or based on something other than `<default>`. Check `gh pr view <n> --json
-  headRefName,baseRefName` against `queue.mjs render`; a PR under a §4 Merge hold is skipped by
+  headRefName,baseRefName` against `queue.mjs render`; a PR under a §4 Merge holds glob is skipped by
   design and is the user's to merge.
 
 ## Waiting on a process
