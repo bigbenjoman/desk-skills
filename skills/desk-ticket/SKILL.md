@@ -5,11 +5,11 @@ description: >-
   ("do ticket ABC-508", "fix this GitHub issue", "do this: <description>"), or mid-ticket when
   about to commit, push, open or update a PR, comment on or transition the ticket, reply to a
   review comment, take screenshots, or clean up a branch or worktree. The ticket is a key
-  matching this repo's ticket key pattern, or, where the repo has no tracker, a GitHub issue URL
-  or a plain description. Also when resuming an interrupted session. Applies even when the
+  matching this repo's ticket key pattern, an id matching its other work id patterns (planning-tool
+  or bug ids), or, where the repo has no tracker, a GitHub issue URL or a plain description. Also when resuming an interrupted session. Applies even when the
   request is only the single step ("just push it", "give me the PR body") rather than the whole
   ticket.
-argument-hint: "<TICKET | GitHub issue URL | \"description\"> [--tail]"
+argument-hint: "<TICKET | work id | GitHub issue URL | \"description\"> [--tail]"
 ---
 
 # desk-ticket
@@ -46,7 +46,7 @@ Placeholders used below:
 
 | Placeholder | Means |
 |---|---|
-| `<TICKET>` | the ticket's key (examples use `ABC-123`), or with no tracker the slug below |
+| `<TICKET>` | the ticket's key (examples use `ABC-123`): a tracker key, a work id, or with no tracker `issue-<n>` or a slug (below) |
 | `<default>` | §0 Default branch |
 | `<repo>` | §0 GitHub repo (`owner/name`) |
 | a §4 Toolchain row, e.g. "§4 Typecheck" | that command, with §4 Command prefix in front unless the prefix is `none` |
@@ -55,19 +55,41 @@ Then read `references/desk-ticket-working-style.md` before writing code. It carr
 standing conventions on minimal changes, comments, branch naming, diff hygiene, generated files
 and evidence capture.
 
-### When §4 Tracker is `none`
+### What the ticket can be, and the ticket file
 
-The argument is a GitHub issue URL or a plain description instead of a key. Everything else runs,
-with these changes, each said in one line when you reach it rather than silently skipped:
+| Argument | `<TICKET>` | Text comes from |
+|---|---|---|
+| a key matching §4 Ticket key pattern (Tracker `jira`) | the key | Jira, via `desk-jira` |
+| an id matching §4 Other work id patterns (any tracker), e.g. `P1-M14-FIX-1`, `BUG-119-5` | the id exactly as given, case kept | the planning file that defines it (`.belmont/`, or wherever §5 Repo instructions say work is planned), or the user |
+| with Tracker `none`: a GitHub issue URL or `#<n>` | `issue-<n>` | the issue, `gh issue view <n> --repo <repo> --comments` (§3 `read-own-work` / `read-others`) |
+| with Tracker `none`: a plain description | a kebab-case slug of it (two to five words, lowercase ASCII) that you state at Stage 0 | the user's words: anything they leave open is a question |
 
-- **`<TICKET>` is a slug.** `issue-<n>` for a GitHub issue; otherwise a short kebab-case slug of the
-  description (two to five words, lowercase ASCII) that you state at Stage 0 and use everywhere a key
-  would go: the branch, the resume file, the handoff directory, the session name, the comment marker.
-  If §4 Ticket key pattern is set anyway (a repo that names work by task ids in its own planning
-  files), an argument matching it is the key, and its content is read from wherever the repo's
-  instructions (§5) say those ids are defined.
-- **Reading the ticket.** A GitHub issue: `gh issue view <url> --comments` (§3 `read-own-work` /
-  `read-others`). A description: that is the whole ticket, so anything it leaves open is a question.
+Anything else is not a ticket here: say which patterns it failed and ask. `<TICKET>` goes everywhere
+a key would: the branch, the resume file, the handoff directory, the session name, the comment
+marker. A work id is matched whole: `BUG-119` is not `BUG-119-5`.
+
+**For every non-tracker `<TICKET>`, write the ticket file at Stage 0**, so a later session, an
+autopilot batch and the merge driver all read the same text: `$DESK_STATE/tickets/<TICKET>.md`
+(`desk-env paths` prints `DESK_STATE`), as
+
+```markdown
+# <TICKET>
+
+Source: <one of: the user, in this conversation · GitHub issue <owner/name>#<n> · <planning file path>, entry <id>>
+
+<the ticket text, verbatim: title, description, acceptance criteria>
+
+## Comments
+<for a GitHub issue, every comment in order with author and date; otherwise omit this section>
+```
+
+Copy, never summarise. For a planning id, find its entry in the planning file and copy the task
+text and acceptance criteria with the path in `Source:`; no entry, or two, is a question. If the file
+already exists, read it and say so rather than overwriting it. Never write one for a tracker key.
+
+For every non-tracker ticket, these change, each said in one line when you reach it rather than
+silently skipped:
+
 - **The issue type** comes from the description, the issue's labels, or asking: bug, feature, or
   other. It picks the branch prefix exactly as a Jira type would.
 - **Every Jira step is skipped**: no assignment at Stage 0, no transition at Stage 2, no comment or
@@ -81,15 +103,15 @@ with these changes, each said in one line when you reach it rather than silently
 | # | Stage | What happens |
 |---|---|---|
 | 0 | Triage | Read the ticket fully: description, comments, linked issues, the design link if one is set. Note the issue type. Rename the session (below). Assign to the user if unassigned (Jira only). Pick a **provisional** lane and state it with its cost, **plus which skills own which stage** (below). Write the resume file. **Do not transition the ticket yet.** |
-| 1 | Branch | Off up-to-date `<default>`, named per §5 Branch names, prefix from the issue type. Worktree if another session is live, or lane C/D. **A new worktree then runs §4 Project subagents sync**, see below. |
+| 1 | Branch | Off up-to-date `<default>`, named per §5 Branch names with `<TICKET>` in it, prefix from the issue type. Record the exact branch in the resume file: the PR is opened from it and is found by it (the autopilot merge driver matches a ticket's PR by its exact head branch and base `<default>`), so never rename it later. Worktree if another session is live, or lane C/D. **A new worktree then runs §4 Project subagents sync**, see below. |
 | 2 | Understand | Read the code paths, and **what the repo's own documentation says about them** before writing any code (below). Reproduce the bug. **Commit the lane now**: this is the first point it is knowable. Transition to §4 In-progress state (Jira only). Flag anything wrong in the ticket. |
 | 3 | Implement | Per lane. A change that is not mechanical gets its design from the area's expert first, and you write the code (below). Lane C stops for agreement before this stage; lane D hands the build to the project's design-build agent where it has one (routing reference). |
 | 4 | Verify | `desk-dev` for the environment. §4 Typecheck, §4 Lint (its fixing form if the row gives one), §4 Unit tests and the knowledge check where the repo has one; a §4 Build only when the change needs one (below). Add a spec that guards the fix. A claim the knowledge check reports as changed gets written back in this branch (below). Then run the docs check from `desk-pr` §1 and **report** what it finds: a hit is sometimes a stale comment in the source rather than a page edit, and that is far cheaper to learn here than at Stage 7. Report only; rewriting a page is the user's call. |
 | 4b | Self-review | Run §4 Local review command on the branch, **before** Stage 5, so a finding cannot invalidate screenshots already taken. With `none`, the stage is a stated skip (below). Two preconditions, each a silent false clean otherwise: where the command is a repo-local skill, the tree must contain it (rebase onto `<default>` rather than skipping), and an empty diff is a stated skip, never a clean run. **Fix what the review confirms, then report**; do not stop and ask first. Apply every confirmed P0 and P1, and any P2 whose fix is mechanical, as their own commit. Produce the `SELF-REVIEW` block as a record of what was done, with an outcome against every finding. Re-run after fixes, **at most three rounds**: each fix is itself unreviewed code, so only a round that finds nothing has reviewed everything. If the third round still finds something, stop: report what is left, do not open the PR, and let the user decide. **Three things also stop and wait**, because no refutation settles them: a finding whose fix changes product, design or catalog behaviour; **a fix that grows**: it needs a new file other than its own spec, or a file the ticket's diff does not already touch (Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites.); and any finding you could not confirm because the refutation pass did not run. |
 | 5 | Evidence | **Only if the change alters what renders, or what a server route, webhook or job does at runtime.** For a rendered change, confirm the running server's HEAD matches your branch, capture before/after to `<handoff dir>/<TICKET>/` (config §2), and delete the Playwright artefacts. For a server or webhook fix, the evidence is the request or log that shows the fix running, not only a screenshot. If neither applies, skip the stage and say so in one line. |
 | 6 | Hygiene | Diff review against the checklist in the working-style reference. |
-| 7 | PR | **Invoke the `desk-pr` skill and follow it. Do not write the body from memory.** It owns the hygiene block, the permitted sections, the Testing-bullet standard and the before/after image table. Ends with `gh pr create --draft --body-file`, then the image upload. **Then post the Stage 4b report to the new PR**, then, where config §3 permits, **undraft it, arm auto-merge and shepherd it until it merges**. See "Merging" below. |
-| 8 | Jira | Tracker `none`: skip, and say so. Otherwise invoke `desk-jira`. Comment per §5 Ticket comment: root cause in one sentence, fix in one sentence, PR link. Nothing else; see "Jira comments" in the working-style reference. Transition to §4 Review state (skip if it is `none`) by reading the available transitions, never a hardcoded name. |
+| 7 | PR | **Invoke the `desk-pr` skill and follow it. Do not write the body from memory.** It owns the hygiene block, the permitted sections, the Testing-bullet standard and the before/after image table. Ends with `gh pr create --repo <repo> --base <default> --draft --body-file`, then the image upload. **Then post the Stage 4b report to the new PR**, then, where config §3 permits, **undraft it, arm auto-merge and shepherd it until it merges**. See "Merging" below. |
+| 8 | Jira | A non-tracker ticket (a work id, or Tracker `none`): skip, and say so. Otherwise invoke `desk-jira`. Comment per §5 Ticket comment: root cause in one sentence, fix in one sentence, PR link. Nothing else; see "Jira comments" in the working-style reference. Transition to §4 Review state (skip if it is `none`) by reading the available transitions, never a hardcoded name. |
 | 9 | Cleanup | `git status` clean, release the lock, report the PR link and whether it merged. |
 
 **Skill routing goes in the plan, not a closing checklist (Stage 0).** State a short table of which
@@ -123,7 +145,7 @@ exports), or a client/server module boundary. A framework build usually runs its
 take the `tsc` lock:
 
 ```bash
-~/.claude/desk/bin/with-lock.sh tsc <§4 Build>
+~/.claude/desk/bin/with-lock.sh tsc --cwd <DIR> -- <CMD>     # each DIR<TAB>CMD from `desk-env cmds build-cmd`
 ```
 
 **Keep the knowledge base true (Stage 4).** Where the repo has a knowledge check, CI usually runs it
@@ -136,12 +158,16 @@ itself at `cpus - 1` workers by default, with no awareness of any other run. A l
 width holds several GB resident, so two at once oversubscribe both RAM and CPU and each finishes
 slower than if you had simply waited.
 
-**Cap it and lock it, every time** (the cap is config §3b "Test worker cap under the test lock"),
-passing the cap through the runner's worker flag (`--maxWorkers` for Jest and Vitest), in the form
-§4 Unit tests gives for passing arguments:
+**Cap it and lock it, every time** (the cap is config §3b "Test worker cap under the test lock").
+§4 Unit tests holds one backtick span per suite, and a suite may name its directory
+(`` `apps/api: uv run pytest` ``); `desk-env cmds test-cmd` prints each as `DIR<TAB>CMD` (`DIR` is
+`.` at the root). Run each in its directory with `--cwd`, never as `cd <dir> && …`, and append the
+cap as `--maxWorkers=<cap>` **only to a Jest or Vitest command**, in the form §4 Unit tests gives for
+passing arguments; pytest and other runners reject the flag:
 
 ```bash
-~/.claude/desk/bin/with-lock.sh test <§4 Unit tests> --maxWorkers=<cap>
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap>   # Jest / Vitest
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD>                       # pytest and others
 ```
 
 `with-lock.sh` (installed by `install.sh`) serialises you against every other session and every
@@ -152,7 +178,7 @@ It uses `flock` where it exists (macOS: `brew install flock`) and otherwise a `m
 takes over from a dead holder. Do not hand-roll a lock of your own.
 
 A typecheck is often a single multi-GB process; take the same lock for it
-(`with-lock.sh tsc <§4 Typecheck>`) rather than running typecheck and a suite together. Screenshot
+(`with-lock.sh tsc --cwd <DIR> -- <CMD>` for each item of `desk-env cmds typecheck-cmd`) rather than running typecheck and a suite together. Screenshot
 and Playwright capture uses a separate lock, `with-lock.sh browser …`, so it does not queue behind a
 suite it was never competing with. To see what is holding things:
 
@@ -228,9 +254,12 @@ reviewer feedback or after merging `<default>`, starts again at one.
 report goes onto the PR as one `COMMENTED` review, immediately after `gh pr create --draft`:
 
 ```bash
-GH_TOKEN=$(gh auth token -u <GitHub handle, config §1>) gh pr review <n> \
-  --repo <repo> --comment --body-file <report>
+gh pr review <n> --repo <repo> --comment --body-file <report>
 ```
+
+Plain `gh`, authenticated as §1 GitHub handle (`gh auth status` shows the active account; switch
+with `gh auth switch` if it is another). Never a `GH_TOKEN=…` prefix: no harness rule matches a
+`VAR=value` form, and autopilot workers are refused it outright.
 
 Where the review command defines markers, use them exactly. Open the body with its **local-review
 marker**: that is what lets a later sweep tell a real review from the empty `COMMENTED` artefact
@@ -270,22 +299,27 @@ also needs `pr-merge-green`), and §4 Repo merge settings allow auto-merge, righ
 post:
 
 ```bash
-gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method>
+gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>
 ```
 
 Where the repo does not allow auto-merge, undrafting is the same and the merge is yours to make on
-green under `pr-merge-green`. Then **shepherd it until it merges** rather than handing back at
+green under `pr-merge-green`, always pinned: `gh pr merge <n> --<§4 Merge method>
+--match-head-commit <the head SHA whose checks you read>`. **A PR that touches a glob in §4 Merge
+holds is never merged or armed by you**, whatever §3 grants: report it ready with the hold's reason
+(the manual step the repo needs first) and let the user merge it. Then **shepherd it until it merges** rather than handing back at
 "armed": the same rules the autopilot's merge driver follows, for one PR. If either row is `ask`,
 ask; otherwise stop at the draft and report the link. Once it merges, and it was the last open PR on
-the key, move the ticket to §4 Done state via `desk-jira` under §3 `jira-close-own-merged` (Tracker
-`none`: nothing to move).
+the key, move the ticket to §4 Done state via `desk-jira` under §3 `jira-close-own-merged` (a
+non-tracker ticket: nothing to move).
 
-- **Merge on §4 Required checks alone.** Those are the checks that must be green; §4 Advisory checks
-  are not. With §4 Required checks `none`, every check on the PR must be green. With §4 Branch
-  protection `none`, nothing on GitHub stops a red merge, so the check is entirely yours: never merge
-  with a required check (or, with `none`, any check) red, pending or missing. Read check state with
-  `gh pr checks <n> --json name,state,bucket`, or `awk -F'\t'` on the plain output: it is
-  tab-separated, and a check name carrying an emoji breaks whitespace splitting.
+- **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
+  `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
+  check completed with success (skipped does not count); no other check failed, errored, timed out
+  or is still queued or running, unless §4 Advisory checks names it; and at least one check
+  completed with success. Then merge pinned to that commit with `--match-head-commit`. With §4
+  Branch protection `none`, nothing on GitHub stops a red merge, so the check is entirely yours.
+  Read check state with `gh pr checks <n> --json name,state,bucket`, or `awk -F'\t'` on the plain
+  output: it is tab-separated, and a check name carrying an emoji breaks whitespace splitting.
 - **A review gate can fail on a fresh PR's first run when the review posts late.** Where a required
   check reads the posted verdict: CI typically runs only on open, reopen and push, so posting a review
   starts nothing. If the gate polls for the verdict briefly after the run starts, a review posted
@@ -362,7 +396,7 @@ Each one stops and waits for the user unless config §3 grants it. Silence is no
    real value isn't in the ticket, the sheet, or the database, ask. Prefer an authoritative source,
    or "only what's real", over a plausible list. The call is the product owner's (§4 People); design
    questions go to the designer, or the product owner where Designer is `none`.
-2. **Show Jira text.** (Tracker `none`: there is none to show.) Whether it blocks depends on config
+2. **Show Jira text.** (A non-tracker ticket: there is none to show.) Whether it blocks depends on config
    §3 `jira-comment`, `jira-create` and `jira-edit`: at `yes`, comments, new tickets and description
    edits post without blocking, provided the exact text is printed as it goes, so the user reads
    what *was* posted; at `ask`, print it and wait. Three are decisions rather than records, and wait:
@@ -483,6 +517,8 @@ work went up attached to an unrelated ticket.
 - Claiming a codex refutation on a run where codex was never made to answer
 - Treating a user's "should we…?" as an instruction: it opens a discussion; answer with a proposal
 - With Tracker `none`, about to comment on, label or close the GitHub issue
+- About to work a non-tracker ticket without having written its ticket file
+- About to merge without `--match-head-commit`, or a PR under a §4 Merge hold
 
 ## Rationalizations
 
@@ -505,6 +541,7 @@ work went up attached to an unrelated ticket.
 | "One more round will get it clean" | Three is the cap. Stop and report what is left. |
 | "The deferred count was wrong, I'll re-post it corrected" | Changed counts need a new run. A re-post can clear a known P0 with no code change. |
 | "No branch protection here, so a red check doesn't matter" | Protection `none` moves the rule from GitHub to you. Never merge red. |
+| "It's green, the hold is just a formality" | A §4 Merge hold is a manual step the repo needs before merging. Report it; the user merges. |
 
 ## Resume file
 
@@ -526,14 +563,14 @@ them. Two files for one ticket means two sessions were working it, and picking t
 resumes the wrong state.
 
 **A resume file whose ticket is already done is stale: never resume from it.** Check the ticket's
-status before trusting the file (§4 Done state; with Tracker `none`, the PR merged or the issue
+status before trusting the file (§4 Done state; for a non-tracker ticket, the PR merged or the issue
 closed). If it is done, say the file is spent, offer to delete it, and start fresh rather than
 replaying finished work.
 
-The file is removed when the ticket reaches §4 Done state (with no tracker, when the PR merges), not
+The file is removed when the ticket reaches §4 Done state (for a non-tracker ticket, when the PR merges), not
 when the PR opens: `--tail` still needs it while the ticket sits in §4 Review state.
 
-Records: ticket and type (or the slug and what it was made from) · provisional vs committed lane,
+Records: ticket and type (or, for a non-tracker ticket, the key, its ticket file and what it was made from) · provisional vs committed lane,
 with the Stage-2 evidence · worktree path · branch · base `<default>` SHA · dev-server port · locks
 held · **the pending gate, the exact payload already shown, and which answer is awaited** · Jira
 mutations already made (assignment, transition, comment marker) · the Stage-4b review: the head SHA

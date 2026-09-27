@@ -18,15 +18,20 @@ measured on, ~16GB of a 24GB grant. Nothing inside the guest can see that limit.
 
 **Cap the test runner every time. Never run the bare §4 Unit tests command.** The cap is config §3b
 "Test worker cap under the test lock" (and its lower figure while available memory is in the hold
-band of §3b "Spawn gate (available memory)"), passed as the runner's worker flag (`--maxWorkers` for
-Jest and Vitest). `with-lock.sh` serialises suites *and* typechecks on one lock, so exactly one
-suite runs machine-wide at a time. Do not raise it without re-reading available memory.
+band of §3b "Spawn gate (available memory)"), appended as `--maxWorkers=<cap>` **only to a Jest or
+Vitest command**; never to pytest or another runner, which rejects the flag. `with-lock.sh`
+serialises suites *and* typechecks on one lock, so exactly one suite runs machine-wide at a time.
+Do not raise the cap without re-reading available memory.
 
-    ~/.claude/desk/bin/with-lock.sh test <§4 Unit tests> --maxWorkers=<cap> [<spec files>]
-    ~/.claude/desk/bin/with-lock.sh test <integration-suite command> --maxWorkers=<half the cap> <file>
-    ~/.claude/desk/bin/with-lock.sh tsc  <§4 Typecheck>
+Each command comes from `desk-env cmds <id>` as `DIR<TAB>CMD` (`DIR` is `.` at the worktree root).
+Run it in its directory with `--cwd`, never as `cd <dir> && …`:
 
-(Each with §4 Command prefix in front unless it is `none`.)
+    ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> [<spec files>]   # Jest / Vitest
+    ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> [<test files>]                      # pytest, others
+    ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <integration CMD> --maxWorkers=<half the cap> <file>
+    ~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <typecheck CMD>
+
+(Each `<CMD>` with §4 Command prefix in front unless it is `none`.)
 
 **Prefer targeted specs over the full suite.** Run the specs your diff touches while iterating and
 keep the full suite for your final pass: CI runs it on every push regardless.
@@ -49,6 +54,10 @@ to the lower cap. Do not spend retries proving the denial.
 A typecheck is one multi-GB process (more under load). **`with-lock.sh tsc` takes the same lock as
 suites**: two locks let one worker run a suite while another ran a typecheck, each correctly
 believing it was serialised, and OOM-killed a full suite. Never typecheck outside it.
+
+**Your database variables are yours or blank.** Every §4 Database URL variable in your worktree
+points at your own per-ticket database, or is blank when none was made. Never fill a blank one in:
+it is what keeps workers off shared, staging and production databases.
 
 **Database-backed integration runs collide with each other, not with the dev database** (only where
 §4 Local database is set). A suite that isolates by per-worker schema (keyed on the runner's pool or

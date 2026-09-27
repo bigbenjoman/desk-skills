@@ -51,11 +51,18 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
 | §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port" | the ladder, the test cap, spend guards, and the port workers must never take |
-| §4 "Tracker", "Ticket key pattern" | what a batch argument is, and what the scripts accept as a key |
-| §4 "Required checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
+| §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
+| §4 "Required checks", "Advisory checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
+| §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
-| §4 "Local database", "Local services", "Vercel" | per-ticket databases; what workers must not rebuild; preview-build logs |
+| §4 "Local database", "Database URL variable", "Local services", "Vercel" | per-ticket databases (or blanked database variables); what workers must not rebuild; preview-build logs |
+| §5 "Branch names" | the branch each worker's worktree is created on |
 | §4 People | whose call a parked question is |
+
+Every list row holds one backtick span per item, and a command item may name its directory as
+`` `apps/api: uv run pytest` ``. Read lists with `desk-env list <id>` and commands with
+`desk-env cmds <id>` (`DIR<TAB>CMD` per item); never split a value on commas and never turn a
+command into `cd dir && …`.
 
 The scripts look §3 up by its **key** and other rows by exact row name, through one map in
 `desk-env.mjs`. A missing row, a blank or a `TODO` is `no`, never a neighbouring row's value.
@@ -63,20 +70,60 @@ The scripts look §3 up by its **key** and other rows by exact row name, through
 The budgets must be a positive number of USD or `none`/`off`/`no cap`; anything else ("25 USD")
 refuses to spawn rather than reading as no cap.
 
-### A batch where §4 Tracker is `none`
+### What a batch argument can be, and the ticket file
 
-The arguments are GitHub issue URLs (or `#<n>` numbers on §0 GitHub repo) and, where the user gives
-them, short quoted descriptions. Each gets the key `desk-ticket` would give it: `issue-<n>`, or a
-kebab-case slug of the description stated back to the user at Stage 2. That key names the queue
-entry, worktree, branch, log and screenshot directory. If §4 Ticket key pattern is set anyway (task
-ids from the repo's own planning files), arguments matching it are keys as usual.
+Every argument becomes one **key**, which names the queue entry, worktree, log and screenshot
+directory. There are three kinds, the same ones `desk-ticket` accepts:
 
-Everything Jira-shaped drops out: the Jira rows of the §3 table below do not apply, workers skip
-`desk-ticket`'s Jira stages, and "unassigned or yours" means a GitHub issue with no assignee or
-assigned to §1 GitHub handle (a description the user typed is theirs by definition). **If an
-installed script refuses a key that is not a §4 Ticket key pattern match** (the merge driver's
-`--tickets`, `plan-batch`, `triage.sh`), stop and say which script and which key: never reshape a
-slug to look like a ticket key to get past it.
+| Argument | Key | Where its text comes from |
+|---|---|---|
+| a tracker key matching §4 Ticket key pattern (Tracker `jira`) | the key as given | Jira, read by `triage.sh` with `desk-jira` |
+| an id matching §4 Other work id patterns (any tracker), e.g. a planning-tool id `P1-M14-FIX-1` or `BUG-119-5` | the id exactly as given, case kept | the ticket file you write (below), never Jira |
+| with Tracker `none`: a GitHub issue URL or `#<n>` on §0 GitHub repo | `issue-<n>` | the ticket file you write, from the issue |
+| with Tracker `none`: a short description the user typed | a lowercase kebab slug of it, stated back at Stage 2 | the ticket file you write, from the user's words |
+
+An argument that is none of these is refused: say so and ask; never reshape it to look like a key.
+
+**For every key that is not a tracker key, write its ticket file before Stage 1 triage**, because
+triage, the worker and the merge driver read the ticket from there and nowhere else. The file is
+`$DESK_STATE/tickets/<KEY>.md` (`desk-env paths` prints `DESK_STATE`), written as:
+
+```markdown
+# <KEY>
+
+Source: <one of: the user, in this conversation · GitHub issue <owner/name>#<n> · <path of the planning file>, entry <id>>
+
+<the ticket text, verbatim: title, description, acceptance criteria>
+
+## Comments
+<for a GitHub issue, every comment in order with author and date; otherwise omit this section>
+```
+
+- **From the user**: their words verbatim, plus anything they added when you stated the slug back.
+- **From a GitHub issue**: `gh issue view <n> --repo <§0 GitHub repo> --comments`, copied, not
+  summarised. A later comment can settle or rule out what the description asks for.
+- **From a planning file** (`.belmont/`, or wherever §5 Repo instructions say the repo plans work):
+  find the entry for that id and copy the task text and its acceptance criteria verbatim, with the
+  file's path in `Source:`. Two entries with the same id, or none, is a question for the user, not a
+  pick.
+
+Never write a ticket file for a tracker key (Jira is the source), and never edit one after triage:
+answers go through `answer.mjs` into the ticket's briefing.
+
+Everything Jira-shaped drops out for a non-tracker key: the Jira rows of the §3 table below do not
+apply, workers skip `desk-ticket`'s Jira stages, and "unassigned or yours" means a GitHub issue with no
+assignee or assigned to §1 GitHub handle (a description the user typed, or a planning entry, is
+theirs by definition). **If an installed script refuses a key** (the merge driver's `--tickets`,
+`plan-batch`, `triage.sh`), stop and say which script and which key: never reshape it to get past
+the refusal.
+
+**The branch is recorded, and the merge driver finds the PR by it.** Triage proposes a branch name
+from §5 Branch names; `setup-worktree.sh` creates the worktree on it and the queue records it as the
+ticket's `branch`. The merge driver takes a PR as the ticket's only when its head branch is **exactly**
+that recorded branch and its base is §0 Default branch, so a promotion PR (default → production), a
+PR for a longer id that starts with this one (`BUG-119-5` vs `BUG-119`) and a colleague's PR on the
+same key are never merged by it. Never rename a worker's branch or open its PR from another one: the
+driver will not see it.
 
 **Workers cannot ask, so §3 decides up front what they may do.** `worker-settings.mjs` (run by
 `spawn-worker.sh`) turns every worker row below that is not `yes` into deny rules (by bare name, by
@@ -84,18 +131,38 @@ the absolute path `command -v` resolves, and in `git -C <dir> …` form) and tel
 keys, as `CONFIG_DENIED: <key> (<setting>)`, so it parks with the exact payload instead of attempting.
 Enforcement is the rule, not the wording: see the contract §2.
 
-**These rules catch mistakes, not a deliberate workaround.** Git accepts bundled and abbreviated
-flags (`-qf`, `--force-w`, `--delet`), which no pattern can list, and workers may run `node`,
-`python3` and the §4 Package manager. A stray `--force` or a push through `git -C` is stopped; a
-worker set on getting round the rules is not. The contract is what keeps a worker in bounds, so
-never widen a worker's grants on the strength of the deny list.
+**What every worker is refused, whatever §3 says** (from `worker-settings.mjs`; the settings file
+lives in `$DESK_STATE/workers/`, outside the repo, and the worker gets **no copy of your
+`.claude/settings.local.json`**, so none of your own allows reach it):
+
+- pushing anything but its own recorded branch to `origin` (and never with force, `--delete`,
+  `--mirror` or a `+refspec`);
+- `git config`, `git -c …` and git aliases (an alias such as `-c alias.p=push` would run anything);
+- `gh pr merge`, `gh pr ready`, approving or requesting changes, `gh alias`, and `gh api` writes
+  (REST methods, fields and every graphql mutation);
+- the package manager's one-off runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`,
+  `bunx`) and the §4 Command prefix run wholesale (`mise exec -- <anything>`): toolchain commands
+  are allowed only in the forms §4 names;
+- migrations (§4 Database migrate) unless the worker was given its own per-ticket database;
+- writing outside its own worktree and its own files under `$DESK_STATE`.
+
+It may run `desk-env …`, `~/.claude/desk/bin/with-lock.sh …` and the §4 toolchain rows. **Database
+variables**: in each worker's worktree every §4 Database URL variable is repointed at its own
+per-ticket database or, when none was provisioned (§4 Local database `none`, or §3 `db-per-ticket`
+not `yes`), **blanked**, so a worker never reaches a shared, staging or production database. A
+worktree whose setup failed at any step is removed and the ticket parked with the setup log's
+reason; a worker never runs in a half-made worktree.
+
+**These rules catch mistakes, not every deliberate workaround.** Git accepts abbreviated flags that
+no pattern can list, and workers run `node` and `python3`. The contract is what keeps a worker in
+bounds, so never widen a worker's grants on the strength of the deny list.
 
 | §3 key | `yes` | anything else |
 |---|---|---|
 | `autopilot-workers` | `pass.mjs` spawns workers; `triage.sh` runs | `ask`: `triage.sh` still runs (read-only, foreground); confirm the batch at Stage 3, then run passes with `AUTOPILOT_USER_APPROVED=1`. `no`: neither runs; say so |
 | `git-push`, `pr-open`, `pr-edit` | worker pushes / opens the draft / edits the body | worker parks at that step with the branch or PR body; you ask, then do it |
 | `pr-self-review-comment` | worker posts the §4 Local review command's report (`gh pr review`, `gh pr comment`) | worker parks with the report; you ask, then post it |
-| `pr-reply` | worker may write through `gh api` (explicit methods, graphql mutations, REST fields) | those `gh api` forms are denied |
+| `pr-reply` | you reply to and resolve threads on the batch's PRs (workers never write through `gh api`, whatever this row says) | report the threads to the user |
 | `pr-update-branch`, `ci-rerun` | worker may `gh pr update-branch` / `gh run rerun`; the merge driver reruns completed red runs | denied to the worker; the driver logs the red run and leaves it for you |
 | `jira-comment`, `jira-transition`, `jira-create`, `jira-edit` (Tracker `jira` only) | worker posts / moves / creates / edits (`edit`, `labels`, `attach`) itself | worker parks with `desk-jira`'s block; relay it verbatim (Stage 6c) |
 | `codex-review` | workers get `codex`; the preflight asserts `CODEX=OK` (fails if codex is missing, unless `AUTOPILOT_ALLOW_NO_CODEX=1`) | `codex` is denied and the preflight asserts `CODEX=BLOCKED`; refutations are same-vendor, and where a required check demands a cross-vendor verdict those PRs cannot pass it: say so |
@@ -121,16 +188,16 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 |---|---|---|
 | 0 | Claim | `queue.mjs init`. `pass.mjs` takes an exclusive lock at `<state>/orchestrator.lock` and refuses to run if a live orchestrator holds it; a lock from a dead process is taken over automatically. Each pass also writes a heartbeat under `<state>/orchestrators/`, so another batch's `init` sees this one between passes (fresh = under 15 minutes). `init` backs up and re-seeds `batch-notes.md`: **check the `## MEMORY` heading is there**. See *Sharing the machine*. |
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
-| 1 | Triage | `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
+| 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs`: ownership, admission, collisions, and the question batch. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | `pass.mjs`, self-paced via `/loop`. It preflights, spawns, harvests, reports. **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
-| 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the briefing. **It does not resume a parked ticket**: `pass.mjs` only spawns `triaged`, and the worker has already exited. Finish the parked step yourself or requeue per `references/orchestrator-recovery.md`. For a *running* worker, `SendMessage` it. |
+| 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket parked at triage (lane C or D) that the user has now released: `queue.mjs set <TICKET> lane=<A/B/E> state=triaged park=null`, then `queue.mjs front <TICKET>`. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue per `references/orchestrator-recovery.md`. For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
 | 6b | Notify | When a pass reports `WAITING ON YOU` or `PARKED`, send **one** `PushNotification` covering everything that pass surfaced (where §3b "Push notification when a batch needs you" is `yes`). Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
-| 7 | Merge | The moment a PR's required checks are green, **merge it** (where granted): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
+| 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge hold): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
 
 Idle = every ticket merged, parked or failed. Say so and stop. Do not invent work. **Never
@@ -200,10 +267,19 @@ ahead of it, none of which exist had each merged when it first went green.
 allows), keep the checks green, and put each green PR in front of the user the moment it flips: the
 cost of holding PRs open is the same, so say so rather than letting them queue.
 
-**"Green" is §4 Required checks, every one passed.** With that row `none`, it is every check on the
-PR. §4 Advisory checks never block, and never count as green either. With §4 Branch protection
-`none`, GitHub will accept a merge with red checks, so the rule is enforced only by you and the
-driver: a missing, pending or red required check is not green.
+**"Green" is the config's one definition** (desk-config "Green"), the same in the driver, in
+`desk-clearance`, in `desk-ticket` and here: on the **exact head commit** being merged, every §4
+Required check completed with success (**skipped does not count**); no other check failed, errored,
+timed out or is still queued or running, unless §4 Advisory checks names it; and at least one check
+completed with success. With Required checks `none`, the second and third clauses still apply. The
+merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-head-commit <sha>`, so a
+push after the checks cannot be merged unchecked. With §4 Branch protection `none`, GitHub will
+accept a merge with red checks, so the rule is enforced only by you and the driver.
+
+**Merge holds.** A PR whose diff touches any glob in §4 Merge holds is merged by a person, never by
+the driver or by you, whatever §3 grants: the repo needs a manual step first (the hold says which).
+The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
+PR link and its head SHA, and it stays there until the user says they have merged it.
 
 **Start the merge driver at Stage 4, before the first worker finishes: do not merge off your own
 turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
@@ -216,21 +292,24 @@ nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "A
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips (and disarms) a PR with outstanding review feedback where `merge-feedback-first` is
-`yes`, arms `--auto --<§4 Merge method>` where `pr-auto-merge` is `yes`, merges outright with §4
-Merge method when the required checks are green, skips a `DIRTY` PR, and, where `ci-rerun` is
+`yes`, skips a PR under a §4 Merge hold (logging `HELD` and the reason), arms
+`--auto --<§4 Merge method>` where `pr-auto-merge` is `yes`, merges outright with §4 Merge method and
+`--match-head-commit <sha>` when the head is green, skips a `DIRTY` PR, and, where `ci-rerun` is
 `yes`, retriggers `gh run rerun <id> --failed` only once that run has reached `completed`. It never
-undrafts. `--tickets` takes whitespace- or comma-separated keys and refuses (exit 2) anything that is
-not a key for this repo (§4 Ticket key pattern, or the Tracker-`none` key form), and `--deps` anything
-not `<key>:<key>[,<key>…]`. Only one driver runs at a time (`<state>/merge-driver.lock.d`); a second
+undrafts. It matches a ticket's PR by the recorded branch and base (above). `--tickets` takes
+whitespace-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket
+key pattern, §4 Other work id patterns, or the Tracker-`none` forms), and `--deps` anything not
+`<key>:<key>[,<key>…]`. Only one driver runs at a time (`<state>/merge-driver.lock.d`); a second
 exits 1 naming the holder's pid. Two things it must get right or it makes the problem worse: **never
 retrigger a run that is not `completed`** (per-PR `cancel-in-progress` kills the run in flight, and a
 loop that re-reads too soon after a rerun sees the stale `completed` and fires again, starving the PR
 forever) and **only one PR may be building a preview at a time** (see the preview-build cap below).
 
-- **Merge on the required checks, not on the checks you like.** Other red checks are advisory. Read
-  them with `gh pr checks <n> --json name,state,bucket`, or `awk -F'\t'` on the plain output: it is
-  tab-separated and a name column that carries an emoji makes splitting on whitespace silently yield
-  the wrong word instead of the verdict, and nothing ever merges.
+- **Merge on green as defined, not on the checks you like.** A red check is advisory only when §4
+  Advisory checks names it; a skipped required check is not a pass. Read checks with
+  `gh pr checks <n> --json name,state,bucket` against the head SHA you will pin, or `awk -F'\t'` on
+  the plain output: it is tab-separated and a name column that carries an emoji makes splitting on
+  whitespace silently yield the wrong word instead of the verdict, and nothing ever merges.
 - **Never bypass them.** `--admin` is not yours to use (`merge-bypass` is `never`).
 - **A review gate can fail on a PR's first CI run when the review posts late.** Where a required
   check reads the posted review verdict: opening the PR triggers CI seconds before the worker posts
@@ -252,8 +331,9 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   Local review command `none`, there is no verdict: "reviewed" is then the user's call, so report the
   PR rather than undrafting it. A clean verdict on a conflicted head is spent the moment the conflict
   is resolved. Workers are denied `gh pr ready`, so check these facts yourself, then `gh pr ready` and
-  `gh pr merge --<§4 Merge method> --auto` in the same breath. Undrafting earlier pings the reviewer
-  before the evidence is in.
+  `gh pr merge <n> --<§4 Merge method> --auto --match-head-commit <headRefOid>` in the same breath
+  (never for a PR under a §4 Merge hold). Undrafting earlier pings the reviewer before the evidence
+  is in.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart
@@ -410,7 +490,8 @@ Default **2**, cap **3** (config §3b "Autopilot worker concurrency" can change 
 are account-level, shared with the user's own sessions. Worker ports start **one above** config §3b
 "Preferred dev-server port" (`AUTOPILOT_PORT_FLOOR` overrides), skipping any port another ticket
 holds or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
-gets its own database. Shared local services (§4 Local services: a search index, a cache) cannot be
+gets its own database; otherwise every §4 Database URL variable in its worktree is blanked, and a
+ticket that needs a database parks. Shared local services (§4 Local services: a search index, a cache) cannot be
 isolated, so workers park rather than rebuild them.
 
 Count a worker at ~0.5GB idle and ~3GB in its heavy stages (typecheck, lint and specs in its own
@@ -455,8 +536,9 @@ that fires only on the ceiling held 5 minutes with nothing heavy running to expl
 runaway process is a call to make from the monitor, not a park.
 
 **Test runners ignore the cap unless it is on the command line**, so seed the worker-count flag
-(`--maxWorkers` for Jest and Vitest) into `batch-notes.md` (the header does) and `SendMessage` any
-worker seen over it.
+(`--maxWorkers=<cap>`, appended **only** to a Jest or Vitest command; never to pytest or another
+runner, which rejects it) into `batch-notes.md` (the header does) and `SendMessage` any worker seen
+over it.
 
 ### On WSL (config §2 "Running on WSL?" = yes)
 
@@ -490,7 +572,7 @@ minutes") is the only warning before a 10GB spike.
 
 | Resource | Protocol |
 |---|---|
-| **Test suites** | One at a time machine-wide, via `~/.claude/desk/bin/with-lock.sh test …` (unit, integration, E2E) and `with-lock.sh tsc …` (same lock). No timeout, no bypass; waiting is the feature. Two database-backed integration runs also collide on their per-worker schemas for the whole run, so announce integration runs to peers. |
+| **Test suites** | One at a time machine-wide, via `~/.claude/desk/bin/with-lock.sh test --cwd <dir> -- <cmd>` (unit, integration, E2E; `<dir>` and `<cmd>` from `desk-env cmds test-cmd`) and `with-lock.sh tsc --cwd <dir> -- <cmd>` (same lock). No timeout, no bypass; waiting is the feature. Two database-backed integration runs also collide on their per-worker schemas for the whole run, so announce integration runs to peers. |
 | **GitHub PR image upload** | One signed-in browser profile (config §2), so it is exclusive. `pass.mjs` serialises it *within* your batch; across sessions claim it by message before `upload-images.mjs` runs and release it by message immediately after. Screenshot *capture* uses Playwright's own browser and `with-lock.sh browser`, and is safely concurrent: do not serialise the wrong one. Never delete the profile's `SingletonLock`. |
 | **Ports** | Yours start above the user's dev port. Publish your range, treat a peer's as claimed, and never kill a server you did not start however idle it looks. |
 | **Files** | Exchange diff surfaces at handshake. `plan-batch` finds collisions inside your batch only; the cross-batch one can only come from the peer. |
@@ -508,18 +590,21 @@ after `init`. The rules also live in the worker contract, which is never truncat
 ## Commands
 
 ```bash
-B=~/.claude/desk/bin; S=<state>              # desk-env paths prints DESK_STATE
-$B/triage.sh ABC-123                         # read-only, no worktree
-AUTOPILOT_WRITE_QUEUE=1 node $B/plan-batch.mjs ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
-node $B/answer.mjs ABC-123 "<answer>"
-node $B/pass.mjs                             # one pass; drive with /loop
-node $B/queue.mjs render                     # status
-node $B/queue.mjs front ABC-123              # move a released ticket to the front of the spawn order
-node $B/harvest.mjs $S/logs/ABC-123.log
-AUTOPILOT_DRY_RUN=1 …                        # no push, no PR, no review post, no Jira writes
-AUTOPILOT_USER_APPROVED=1 node $B/pass.mjs   # only when §3 autopilot-workers is `ask` and the user confirmed this batch
-AUTOPILOT_ALLOW_NO_CODEX=1 node $B/pass.mjs  # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
-nohup $B/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" >> $S/merge-driver.log 2>&1 &
+# Written exactly as the harness rules name them (permission-rows.md), so they match without a
+# prompt: `node ~/.claude/desk/bin/<x>.mjs`, `~/.claude/desk/bin/<x>.sh`, `desk-env`. Never via a
+# shell variable such as $B: no allow rule matches a variable path. <state> is DESK_STATE from
+# `desk-env paths`, written out in full.
+~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
+AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
+node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
+node ~/.claude/desk/bin/pass.mjs                                      # one pass; drive with /loop
+node ~/.claude/desk/bin/queue.mjs render                              # status
+node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order
+node ~/.claude/desk/bin/harvest.mjs <state>/logs/ABC-123.log
+AUTOPILOT_DRY_RUN=1 …                                                 # no push, no PR, no review post, no Jira writes
+AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
+AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
+nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" >> <state>/merge-driver.log 2>&1 &
 
 # config
 desk-env where                   # which repo, which config, does it exist
@@ -530,18 +615,18 @@ desk-env budget worker           # 25 | none; exit 4 if malformed
 # resource management
 desk-env mem status              # vmmem= avail= rss=
 desk-env heavy                   # suites, typechecks, dev servers actually running (never pgrep -f)
-$B/with-lock.sh test true        # probe the lock once
-cat ~/.claude/skills/desk-autopilot/references/batch-notes-header.md >> $S/batch-notes.md
+~/.claude/desk/bin/with-lock.sh test true   # probe the lock once
+cat ~/.claude/skills/desk-autopilot/references/batch-notes-header.md >> <state>/batch-notes.md
 
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
-node $B/queue.mjs render | tail -n +2; desk-env mem status
+node ~/.claude/desk/bin/queue.mjs render | tail -n +2; desk-env mem status
 [ "$(desk-env mem used | cut -d. -f1)" -ge "<§3b ceiling>" ] && [ -z "$(desk-env heavy)" ] && echo "SUSTAINED-HIGH: footprint over the ceiling with nothing running to explain it"
 
 # apply the ladder — top-level field
-node $B/queue.mjs set-batch concurrency=1
+node ~/.claude/desk/bin/queue.mjs set-batch concurrency=1
 ```
 
-With §4 Tracker `none`, the keys above are `issue-<n>` or the slugs stated at Stage 2.
+The keys above can be any of the three kinds: a tracker key, an §4 Other work id patterns id, or (Tracker `none`) `issue-<n>` or the slug stated at Stage 2.
 
 `pass.mjs` re-reads `concurrency` from the queue on every pass, so the ladder is applied by editing
 that one field between passes: never by hand-spawning, and never by holding tickets out of the batch.
@@ -566,6 +651,8 @@ that one field between passes: never by hand-spawning, and never by holding tick
 - A ticket in the batch the user did not name
 - Reporting a lane-C/D park as settled when its challenge line says the pass did not run
 - About to merge with branch protection `none` because GitHub would allow it
+- About to merge a PR under a §4 Merge hold, or without `--match-head-commit`
+- About to triage a non-tracker key without having written its ticket file
 - About to rename a slug into a fake ticket key because a script refused it
 
 ## Rationalizations
@@ -590,4 +677,5 @@ that one field between passes: never by hand-spawning, and never by holding tick
 | "`free` says 2.5Gi used, there is loads of room" | `free`'s `used` excludes page cache. It has read 2.5Gi while the host sat past 16GB. Read `avail`. |
 | "I'll ask whether to throttle" | Decide from the monitor. Report the decision and the number behind it; do not park it. |
 | "That idle dev server is wasting 1.2GB" | It is probably a peer's. Ask over `SendMessage`; killing another session's server has already cost someone a ticket. |
-| "No branch protection, so it can merge now" | Protection `none` means the rule is yours to enforce. Green is every required check passed. |
+| "No branch protection, so it can merge now" | Protection `none` means the rule is yours to enforce. Green is the config's definition, at the head you pin. |
+| "The hold is for backend deploys and this change is tiny" | A §4 Merge hold is a person's merge whatever the size. Report it with the reason. |

@@ -11,9 +11,16 @@ actually changes. Where this file and a skill disagree about anything else, **th
 **Read this repo's config first, as `desk-ticket` says** (`desk-env where`, then Read the `CONFIG`
 file). Every "§" below is a row of it. `EXISTS=no` is a park: print `AUTOPILOT_PARK: no desk config
 for <slug>: run /desk-setup` and end your turn. `<TICKET>` is your ticket's key as the briefing gives
-it (with §4 Tracker `none`, `issue-<n>` or a slug; every Jira step below is then skipped).
+it: a tracker key (§4 Ticket key pattern), an id matching §4 Other work id patterns, or with §4
+Tracker `none` `issue-<n>` or a slug. **For every key that is not a tracker key, the ticket is the
+file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage (its `Source:` line
+says whether it came from the user, a GitHub issue or a planning file); read it at Stage 0 and skip
+every Jira step below. Your branch is the one your worktree was created on, recorded in the queue:
+never rename it and never open your PR from another branch, or the merge driver cannot find it.
 `<default>` is §0 Default branch, `<repo>` §0 GitHub repo, and a §4 Toolchain row means that command
-with §4 Command prefix in front unless the prefix is `none`.
+with §4 Command prefix in front unless the prefix is `none`. List rows hold one backtick span per
+item, and a command item may name its directory (`` `apps/api: uv run pytest` ``): read them with
+`desk-env cmds <id>`, which prints `DIR<TAB>CMD` per item.
 
 ## 0. If you were given a task instead of a ticket
 
@@ -129,15 +136,22 @@ A parallel test runner (Jest, Vitest and most others) sizes itself at `cpus - 1`
 ~0.7GB each, with no awareness of the sibling worker, the second batch, or the user's own session
 starting the same run a second later. One uncapped run can take the machine from 6GB to nearly 18GB.
 
-**Cap it and lock it every time. Never the bare §4 Unit tests command.** The cap is config §3b
-"Test worker cap under the test lock", passed through the runner's worker flag (`--maxWorkers` for
-Jest and Vitest) in the form §4 Unit tests gives for passing arguments:
+**Cap it and lock it every time. Never the bare §4 Unit tests command.** Each item of
+`desk-env cmds test-cmd` (and `typecheck-cmd`, `integration-cmd`) is a `DIR<TAB>CMD` pair; run it
+under the lock **in its directory with `--cwd`**, never as `cd <dir> && …` (a compound command is
+refused and would run unlocked). The cap is config §3b "Test worker cap under the test lock",
+appended as `--maxWorkers=<cap>` **only when the command is Jest or Vitest**, in the form §4 Unit
+tests gives for passing arguments. Never append it to pytest or any other runner: pytest rejects it
+and the suite fails before running (pytest is single-process unless the repo configures otherwise).
 
 ```bash
-~/.claude/desk/bin/with-lock.sh test <§4 Unit tests> --maxWorkers=<cap> [<spec files>]
-~/.claude/desk/bin/with-lock.sh test <the repo's integration-suite command> --maxWorkers=<half the cap> <file>
-~/.claude/desk/bin/with-lock.sh tsc  <§4 Typecheck>
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> [<spec files>]   # Jest / Vitest
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> [<test files>]                      # pytest and others
+~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <integration CMD> --maxWorkers=<half the cap> <file>
+~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <typecheck CMD>
 ```
+
+`<DIR>` is `.` for an item with no directory.
 
 Use the lower cap §3b gives (by default half) while `desk-env mem status` shows `avail=` in the hold
 band (config §3b "Spawn gate (available memory)"; by default 4–8 GiB), and `1` for a database-backed
@@ -190,11 +204,16 @@ are yours to run too, capped and locked:
   still exercises its own subject. Never weaken an assertion, skip a test, or relax your change to
   get green**: if a test genuinely asserts behaviour your change made obsolete, park and say which
   test and why.
-- Where §4 Local database is set, your database URL already points at your own per-ticket database,
-  so database-backed suites are safe to run against it. Two integration runs in different worktrees
-  still collide on their per-worker schemas, so check nobody else is in one first (the batch notes
-  carry the command) and follow §3 `tests-shared-db`. With §4 Local database `none`, a suite that
-  needs a database it does not have is a park naming the suite, not a skip.
+- **Your database variables.** Every §4 Database URL variable in your worktree's env files points at
+  your own per-ticket database when one was made (your briefing names it), and is **blank**
+  otherwise (§4 Local database `none`, or §3 `db-per-ticket` not `yes`). Blank is deliberate: it is
+  what stands between you and a shared, staging or production database. Never fill it in, never
+  copy a URL from another env file or the primary checkout, and never run §4 Database migrate
+  without a per-ticket database (it is denied). With your own database, database-backed suites are
+  safe to run against it; two integration runs in different worktrees still collide on their
+  per-worker schemas, so check nobody else is in one first (the batch notes carry the command) and
+  follow §3 `tests-shared-db`. With a blank database, a suite that needs one is a park naming the
+  suite, not a skip.
 
 ### Self-review — `desk-ticket` Stage 4b
 
@@ -330,8 +349,8 @@ files.
 ## 5. What the orchestrator owns, not you
 
 - **Your port and your database** are assigned in your briefing. Never the user's own dev-server
-  port (§3b). Never repoint the database URL: where §4 Local database is set, it already points at
-  your own per-ticket database.
+  port (§3b). Never repoint or fill in a database variable: it already points at your own per-ticket
+  database, or is blank because you have none.
 - **Uploading images to the PR.** You capture; the orchestrator uploads. One shared signed-in browser
   profile means uploads must be serialised. Capture per `desk-ticket` Stage 5 and build the table
   per `desk-pr` (**not optional when anything renders differently**) into the screenshot
@@ -348,7 +367,8 @@ files.
   take the "before" with `git checkout HEAD~1 -- <path>`, **never `git stash`** (it is shared across
   every worktree); and real data needs the repo's seed command (§4 Local database says how), run
   against your own database. "I could not seed" is not a reason to skip evidence.
-- **Opening the PR as a DRAFT.** `gh pr create --draft --body-file <file>`. Never open a
+- **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --base <default> --head <your branch>
+  --draft --body-file <file>`: `--repo` so a fork's origin never gets the PR. Never open a
   ready-for-review PR, and never mark one ready: `gh pr ready` is denied to you. A non-draft PR
   notifies the reviewer **the moment it opens**, before the orchestrator has uploaded your
   screenshots, and pulls the reviewer to evidence tables still full of placeholders. The orchestrator
@@ -358,9 +378,11 @@ files.
   with `git clean -f pr-body.md`). Do **not** pipe it via a `--body-file -` heredoc: that can fail
   with the body existing only in the transcript, leaving the branch pushed and **no PR at all**.
 
-  **If the PR still cannot be opened, that is a PARK, never a done.** Print the body between
-  `AUTOPILOT_PR_BODY_BEGIN` / `AUTOPILOT_PR_BODY_END` markers on their own lines so the orchestrator
-  can recover it verbatim, then park naming the branch and the exact command that failed. A pushed
+  **If the PR still cannot be opened, that is a PARK, never a done.** Print the body between two
+  marker lines, each at the start of its own line and written exactly with the colon,
+  `AUTOPILOT_PR_BODY_BEGIN:` and `AUTOPILOT_PR_BODY_END:` (the harvester only recognises
+  `AUTOPILOT_<NAME>:`), so the orchestrator can recover it verbatim, then park naming the branch and
+  the exact command that failed. A pushed
   branch with no PR is invisible to `desk-clearance` and to every reviewer.
 
   **Name every step you did not reach, not just the one that failed.** A park lists the whole
@@ -373,12 +395,18 @@ files.
 
 Permission rules match the string you write, not the file it resolves to. Prefer the plain form:
 
-- `desk-jira …`, `codex …`: plain names; no `VAR=value` prefix on anything
-- The §4 toolchain rows as written, run from the worktree root: `cd` inside a compound command is
-  refused. An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an
-  argument in whatever form the §4 Dev server row gives (e.g. `-- --port 3008`)
-- The package manager's one-off runner (its `dlx` / `x` form) is denied: run a TS script with the
-  worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`
+- `desk-jira …`, `codex …`, `desk-env …`: plain names; no `VAR=value` prefix on anything
+- The §4 toolchain rows as written: an item with a directory runs there through
+  `with-lock.sh … --cwd <DIR> --` (suites, typecheck) or from the worktree root; `cd` inside a
+  compound command is refused. An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass
+  the port as an argument in whatever form the §4 Dev server row gives (e.g. `-- --port 3008`)
+- The package manager's one-off runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`,
+  `bunx`) and the §4 Command prefix run on its own (`mise exec -- <anything>`) are denied: run a TS
+  script with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`
+- `git push` reaches only your own branch on `origin` (`git push origin HEAD` or
+  `git push -u origin <your branch>`); any other ref is denied. `git config`, `git -c …` and git
+  aliases are denied, as are `gh alias` and every `gh api` write: replies to review threads are the
+  orchestrator's
 - No `$( )` substitution, no output redirection (`> file`), no loops in a command that must succeed
 - `rm` is denied: `git clean -f <paths>` (or `-fdx` for directories) removes scratch files and proves the tree is clean
 - `curl` is denied: drive a page with Playwright rather than probing it over HTTP

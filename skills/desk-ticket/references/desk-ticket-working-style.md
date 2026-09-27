@@ -3,8 +3,8 @@
 The standing conventions for ticket work. Every rule here came from a real review comment or
 correction. Where a rule depends on a fact about this repo, it names the config row (this repo's
 config, resolved with `desk-env where`) or the §5 Repo instructions files that carry it; those files
-win on anything they cover. `<TICKET>` is the ticket key, or with §4 Tracker `none` the slug
-`desk-ticket` settled at Stage 0. `<default>` is §0 Default branch.
+win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 Other work id patterns id, or with §4 Tracker
+`none` the `issue-<n>` or slug `desk-ticket` settled at Stage 0. `<default>` is §0 Default branch.
 
 ## Working style
 
@@ -45,8 +45,9 @@ win on anything they cover. `<TICKET>` is the ticket key, or with §4 Tracker `n
 - **Use the key exactly as §4 Ticket key pattern writes it, in the branch name.** Jira matches the
   key only in its canonical case (`ABC-123`, never `abc-123`), and a commit-message hook or GitHub's
   PR-title prefill may read it from there. A branch with no key at all (`worktree-*`, `agent-*`)
-  gives the hook and the title nothing to work with. With Tracker `none`, the slug goes where the key
-  would.
+  gives the hook and the title nothing to work with. A work id (§4 Other work id patterns) goes in
+  exactly as given, case kept; with Tracker `none`, `issue-<n>` or the slug goes where the key would.
+  Once the branch exists, it stays: the PR is found by its exact head branch.
 - The issue type decides the prefix. Sibling branches (`git branch -r`) are advisory: check
   them, but don't let one odd sibling override the type rule.
 - Commit and push as the user (config §1 "Git author name / email"). AI attribution follows §5 AI
@@ -146,7 +147,8 @@ People run several sessions at once and need to know where each one is without a
 
 ## Jira comments
 
-With §4 Tracker `none` there are none: skip this section. Otherwise §5 Ticket comment is the shape;
+For a ticket that is not a tracker key (a work id, or Tracker `none`) there are none: skip this
+section. Otherwise §5 Ticket comment is the shape;
 by default, short and plain, three parts, nothing more:
 
 1. Root cause, one sentence.

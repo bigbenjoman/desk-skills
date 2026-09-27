@@ -4,8 +4,9 @@ Read this before answering a park, re-running a ticket, resuming a dead worker, 
 batch that has gone quiet. Every rule here is a place where the scripts' obvious reading was wrong.
 
 `<state>` is this repo's batch state, `~/.desk-autopilot/<slug>/` (`desk-env paths` prints it as
-`DESK_STATE`). `<TICKET>` is a queue key: a ticket key, or with §4 Tracker `none` the `issue-<n>` or
-slug key the batch gave it.
+`DESK_STATE`). `<TICKET>` is a queue key: a tracker key, an §4 Other work id patterns id, or with §4
+Tracker `none` the `issue-<n>` or slug key the batch gave it. Every non-tracker key has its ticket
+text in `<state>/tickets/<TICKET>.md`, written by you before triage; a requeue reuses it.
 
 ## The ledger is GitHub and the tracker, never the log
 
@@ -28,8 +29,21 @@ so a worker parked holding an approved Jira comment exits and nothing receives t
 
 So, when a park needs the user: get the answer, **verify the real state** (`gh pr view`, and
 `desk-jira get` where §4 Tracker is `jira`), and either finish the parked step yourself or requeue
-the ticket. `answer.mjs` alone does nothing for a parked ticket: `pass.mjs` spawns only
-`state=triaged`.
+the ticket. **`answer.mjs` records; it never un-parks.** It appends the answer to
+`<state>/briefings/<TICKET>.md` (so a requeued worker reads it), writes the mailbox only when a
+worker is live and waiting, and lowers the open-question count. A `parked` ticket stays `parked`
+until you decide: `pass.mjs` spawns only `state=triaged`, and un-parking a lane C or D ticket by
+reflex would run it unattended, which is exactly what its park prevents.
+
+How to resume, by what was parked:
+
+| Parked on | Resume by |
+|---|---|
+| a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
+| triage lane C or D, now released by the user | `queue.mjs set <TICKET> lane=<A, B or E> state=triaged park=null`, then `queue.mjs front <TICKET>`; scope it in the briefing first if it is genuinely big |
+| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload |
+| a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it (below) |
+| a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
@@ -49,10 +63,10 @@ Message each running worker as well as editing the file.
 A requeue is several fields, not one, and each missing one fails silently:
 
 ```bash
-B=~/.claude/desk/bin; S=<state>
-mv $S/logs/<TICKET>.log $S/logs/<TICKET>.log.round1        # else alreadyFinished() blocks it
-node $B/queue.mjs set <TICKET> state=triaged open_questions=0 park=null session_id=null pid=null idle_passes=0 log_bytes=0
-node $B/queue.mjs front <TICKET>                            # spawn order is .tickets key order
+# <state> written out in full: no allow rule matches a variable path
+mv <state>/logs/<TICKET>.log <state>/logs/<TICKET>.log.round1        # else alreadyFinished() blocks it
+node ~/.claude/desk/bin/queue.mjs set <TICKET> state=triaged open_questions=0 park=null session_id=null pid=null idle_passes=0 log_bytes=0
+node ~/.claude/desk/bin/queue.mjs front <TICKET>                      # spawn order is .tickets key order
 ```
 
 `pass.mjs` resets `log_bytes`/`idle_passes` at spawn, because a rotated log makes the byte count go
@@ -61,7 +75,9 @@ respawns is the tell.
 
 Remove the old worktree first (`git worktree remove --force`, under §3 `worktree-remove`) if the
 follow-up needs a fresh branch off current `<default>` (§0 Default branch); otherwise
-`setup-worktree.sh` reuses it.
+`setup-worktree.sh` reuses it on the same recorded branch. Keep the queue's `branch` as it is: the
+merge driver finds the ticket's PR by that exact head branch, so a requeue that changes it strands
+any PR already open.
 
 **Then check the briefing survived.** `pass.mjs` rebuilds `<state>/briefings/<TICKET>.md` at spawn
 and keeps only its `## Answer from the user` blocks. Instructions given while nothing was running
@@ -116,9 +132,14 @@ re-running a ticket from scratch.
   Check whether the path is reachable before widening a command rule, and after changing any
   spawn-path script, spawn one worker and read its briefing before trusting a batch to it.
 - **A script refusing a key** (the merge driver's `--tickets`, `plan-batch`, `triage.sh`) is a
-  mismatch between the argument and §4 Ticket key pattern (or the Tracker-`none` key form). Read the
-  refusal, check the row, and fix the argument or offer `/desk-setup`; never edit the pattern or the
-  script mid-batch to get past it.
+  mismatch between the argument and §4 Ticket key pattern, §4 Other work id patterns or the
+  Tracker-`none` key forms, or a non-tracker key with no `<state>/tickets/<TICKET>.md`. Read the
+  refusal, check the row and the file, and fix the argument or offer `/desk-setup`; never edit the
+  pattern or the script mid-batch to get past it.
+- **A PR the merge driver never touches** is usually on a branch other than the ticket's recorded
+  `branch`, or based on something other than `<default>`. Check `gh pr view <n> --json
+  headRefName,baseRefName` against `queue.mjs render`; a PR under a §4 Merge hold is skipped by
+  design and is the user's to merge.
 
 ## Waiting on a process
 
