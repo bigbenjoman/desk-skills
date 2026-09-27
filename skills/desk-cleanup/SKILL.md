@@ -43,7 +43,7 @@ Portable shell for every check below (macOS and Linux/WSL) is in
 
 ## Ownership — the hard boundary
 
-**Only ever acts on tickets assigned to the config §1 Jira account and PRs authored by the config
+**Only ever acts on tickets assigned to the config §1 Jira account id and PRs authored by the config
 §1 GitHub handle.** Both, every time. With §4 Tracker `none` there are no tickets: the PR author,
 and a worktree whose branch is one of those PRs' heads, are the whole test.
 
@@ -111,11 +111,28 @@ it is not; `git fetch origin --unshallow` restores the full ancestry and every m
 Defined here so this skill stands alone. `desk-jira` owns the CLI, comment format and idempotency
 markers — use it for the writes, not for the decision.
 
-1. List issues assigned to the config §1 Jira account in §4 Review state (with Review state `none`,
-   in §4 In-progress state — the state a ticket rests in while its PR is open).
-2. For each, search the key across **every** PR state:
-   `gh pr list --repo <repo> --search "<TICKET>" --state all --json number,state,author,mergedAt,headRefName`.
-3. Classify:
+1. List issues assigned to the config §1 Jira account id in §4 Review state (with Review state
+   `none`, in §4 In-progress state — the state a ticket rests in while its PR is open).
+2. For each, search the key across **every** PR state, fetching title and head branch so the match
+   can be checked:
+   `gh pr list --repo <repo> --search "<TICKET>" --state all --json number,title,state,author,mergedAt,headRefName,baseRefName`.
+3. **Keep only the PRs that carry the key as a whole id.** GitHub's search is fuzzy: it matches
+   words, ignores case and punctuation, and returns `ABC-12` for a search on `ABC-123` or
+   `ABC-1234`, and `BUG-119-5` for `BUG-119`. A PR counts only when its title or its head branch
+   contains `<TICKET>` with no letter, digit or `-<digit>` continuing it on either side:
+
+   ```bash
+   gh pr list --repo <repo> --search "<TICKET>" --state all \
+     --json number,title,state,author,mergedAt,headRefName,baseRefName \
+     | jq --arg k "<TICKET>" '[.[] | select(
+         ((.title + " " + .headRefName) | ascii_upcase)
+         | test("(^|[^A-Z0-9])" + ($k | ascii_upcase) + "(?![0-9]|-[0-9])"))]'
+   ```
+
+   Match case-insensitively, since branches are often lower-case, but never loosen the bounds.
+   Every Done proposal below is made from this filtered list only; a PR the search returned and the
+   filter dropped is ignored, not counted as "a PR on the key".
+4. Classify:
 
 | Evidence | Proposal |
 |---|---|
