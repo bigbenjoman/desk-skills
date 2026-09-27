@@ -193,7 +193,15 @@ def drive_extract(zip_bytes, src, dest):
 
 
 # ---- commands ----------------------------------------------------------------------------------
-def checkout_dir(name):
+SOURCES_DIR = os.path.expanduser("~/.agents/sources")
+
+
+def checkout_dir(name, entry=None):
+    """A checkout that IS one skill lives at ~/.agents/skills/<name>. A checkout that ships several
+    skills (source.subskills) lives at ~/.agents/sources/<name>, and each listed sub-skill is linked
+    into ~/.agents/skills/<basename> by install.sh, so there is still one copy on disk."""
+    if entry and entry["source"].get("subskills"):
+        return os.path.join(SOURCES_DIR, name)
     return os.path.join(INSTALLED, name)
 
 
@@ -207,7 +215,7 @@ def git(d, *args):
 def check_one(name, entry):
     src, pin = entry["source"], entry.get("pin", {})
     if src["type"] == "checkout":
-        d = checkout_dir(name)
+        d = checkout_dir(name, entry)
         if not os.path.isdir(os.path.join(d, ".git")):
             raise RuntimeError(f"~/.agents/skills/{name} is not a clone of {src['repo']} (run ./install.sh)")
         branch = src.get("branch", "main")
@@ -289,7 +297,7 @@ def cmd_upgrade(data, names):
         e = data["skills"][name]
         src, pin = e["source"], e.get("pin", {})
         if src["type"] == "checkout":
-            d = checkout_dir(name)
+            d = checkout_dir(name, e)
             before = git(d, "rev-parse", "--short", "HEAD")
             print(git(d, "pull", "--ff-only", "-q", "origin", src.get("branch", "main")) or f"{name}: pulled")
             print(f"{name}: {before} -> {git(d, 'rev-parse', '--short', 'HEAD')} (git checkout; nothing to commit in desk-skills)")
@@ -404,7 +412,7 @@ def cmd_verify(data):
     bad = 0
     for name, e in sorted(data["skills"].items()):
         if e["source"]["type"] == "checkout":
-            d = checkout_dir(name)
+            d = checkout_dir(name, e)
             try:
                 url = git(d, "remote", "get-url", "origin")
                 ok = e["source"]["repo"].lower() in url.lower()

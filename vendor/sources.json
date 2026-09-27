@@ -835,6 +835,28 @@
       "license": null,
       "notes": "Installed via `npx skills` 2026-02-04. Tree == lock hash 3116f3e; unchanged at upstream HEAD. Repo has no LICENSE file (GitHub reports none). The SKILL.md fetches its guideline text from a URL at runtime, so content can change without a repo commit.",
       "tree_sha256": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
+    },
+    "clerk": {
+      "source": {
+        "type": "checkout",
+        "repo": "clerk/skills",
+        "branch": "main",
+        "subskills": [
+          "skills/core/clerk",
+          "skills/core/clerk-cli",
+          "skills/core/clerk-setup",
+          "skills/core/clerk-backend-api",
+          "skills/core/clerk-custom-ui",
+          "skills/frameworks/clerk-nextjs-patterns",
+          "skills/frameworks/clerk-react-patterns",
+          "skills/features/clerk-webhooks",
+          "skills/features/clerk-orgs",
+          "skills/features/clerk-billing",
+          "skills/features/clerk-testing"
+        ]
+      },
+      "license": null,
+      "notes": "Clerk's recommended source (clerk.com/docs: `npx skills add clerk/skills`). One clone in ~/.agents/sources/clerk; the listed sub-skills are linked into ~/.agents/skills. Framework/mobile skills your repos do not use (astro, nuxt, vue, tanstack, react-router, chrome-extension, expo, swift, android) are left out to save context; add a path here to link one."
     }
   }
 }
