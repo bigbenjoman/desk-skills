@@ -52,12 +52,28 @@ this table is the summary.
 `slack_send_message_draft` is never denied; it is `slack-draft`'s allow. `--force-with-lease` is
 not denied: `git-force-with-lease` can be `yes`, and it prompts.
 
-## Rows only setup reads
+## Which rows a script reads
 
-No skill script looks these up. They decide harness rules (`read-*`, `git-commit`,
-`slack-draft`) or they are enforced by the skills' own written rules (`autopilot-worker-mode`,
-`autopilot-judgement`, `autopilot-reclaim`, `db-per-ticket`, `skills-edit`, `vercel-env`, and the
-`never`/`stop` rows). Ask them like any other row; say this when the user asks what one changes.
+Besides the harness rules below, some rows are read by a script at run time, so changing one takes
+effect on the next run without a re-install. Measured against the scripts; when the user asks what
+a row changes, say which of these applies.
+
+| Script | Rows it reads |
+|---|---|
+| `worker-settings.mjs` (a worker's own settings) | `git-push`, `pr-open`, `pr-edit`, `pr-self-review-comment`, `pr-reply`, `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
+| `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
+| `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-auto-merge`, `ci-rerun`, `merge-feedback-first` |
+| `pass.mjs` | `autopilot-workers`, `pr-images` |
+| `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
+| `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
+| `upload-images.mjs` | `pr-images` |
+| `clearance-state.mjs` | `pr-merge-green`, `merge-feedback-first` |
+| `/desk-checkout`'s collectors (`github_activity.py`, `jira_activity.py`, `claude_activity.py`) | `read-own-work`, `read-transcripts`, per repo |
+
+Every other row is read by no script. It decides harness rules (most `read-*` rows, `git-commit`,
+`slack-draft`) or is enforced by the skills' own written rules (`autopilot-worker-mode`,
+`autopilot-judgement`, `autopilot-reclaim`, `skills-edit`, `vercel-env`, and the `never`/`stop`
+rows).
 
 ## Round 1 — your work, read
 
@@ -135,7 +151,7 @@ No skill script looks these up. They decide harness rules (`read-*`, `git-commit
 
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
-| `autopilot-workers` | yes | a named batch worked in parallel while you are away | headless agents acting as you with nobody watching, within your grants | no | `Bash(node ~/.claude/desk/bin/pass.mjs *)` `Bash(node ~/.claude/desk/bin/plan-batch.mjs *)` `Bash(node ~/.claude/desk/bin/queue.mjs *)` `Bash(node ~/.claude/desk/bin/answer.mjs *)` `Bash(node ~/.claude/desk/bin/harvest.mjs *)` `Bash(node ~/.claude/desk/bin/desk-env.mjs *)` `Bash(~/.claude/desk/bin/triage.sh *)`. Never `with-lock.sh` (it runs whatever command it is given) and never the scripts `pass.mjs` runs itself |
+| `autopilot-workers` | yes | a named batch worked in parallel while you are away | headless agents acting as you with nobody watching, within your grants | no | `Bash(node ~/.claude/desk/bin/pass.mjs *)` `Bash(node ~/.claude/desk/bin/plan-batch.mjs *)` `Bash(node ~/.claude/desk/bin/queue.mjs *)` `Bash(node ~/.claude/desk/bin/answer.mjs *)` `Bash(node ~/.claude/desk/bin/harvest.mjs *)` `Bash(node ~/.claude/desk/bin/desk-env.mjs *)` `Bash(desk-env *)` `Bash(~/.claude/desk/bin/triage.sh *)`. The skills invoke the scripts in exactly these forms (never through a `$B/` variable, which no rule matches). Never `with-lock.sh` (it runs whatever command it is given) and never the scripts `pass.mjs` runs itself |
 | `autopilot-worker-mode` | dontAsk + generated allow-list | writes scoped to the worker's own worktree, every other worktree denied, a preflight proves it | anything on the allow-list runs without a prompt | none | — (workers get their own settings file) |
 | `autopilot-merge` | no (PRs wait for you) | serial merge driver: each PR merges when green, then the next colliding ticket starts | PRs merge while you are away | yes (only with `pr-merge-green` yes) | owners `autopilot-workers` + `autopilot-merge`: `Bash(~/.claude/desk/bin/merge-driver.sh *)` |
 | `autopilot-judgement` | yes | engineering and scope calls made and recorded instead of parking the batch | a call you might have made differently; you can overrule | no (park and ask) | — |

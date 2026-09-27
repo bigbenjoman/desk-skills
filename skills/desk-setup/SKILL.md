@@ -101,15 +101,32 @@ git worktree list --porcelain | awk '/^worktree /{print $2}'   # infer the workt
 uname -s; grep -qi microsoft /proc/version 2>/dev/null && echo WSL
 # §4 GitHub and CI
 gh api repos/{owner}/{repo} --jq '{squash:.allow_squash_merge,merge:.allow_merge_commit,rebase:.allow_rebase_merge,auto:.allow_auto_merge,del:.delete_branch_on_merge}'
-gh api repos/{owner}/{repo}/branches/<default>/protection 2>&1          # 404 "not protected" is an answer
-gh api repos/{owner}/{repo}/rulesets --jq '.[] | {name, enforcement}' 2>/dev/null   # rulesets can replace protection
-gh pr list --state merged --limit 20 --json title,headRefName,body
-gh pr checks <a recent merged PR>                                        # names of the checks that run
+# Required checks come from TWO places; read both. A repo protected only by a ruleset answers 404
+# to the first call and is NOT unprotected.
+gh api repos/{owner}/{repo}/branches/<default>/protection 2>&1          # classic protection; 404 "not protected" is an answer
+gh api repos/{owner}/{repo}/rules/branches/<default> \
+  --jq '.[] | {type, ruleset_id, parameters}' 2>&1                      # every ruleset rule that applies to the default branch
+gh api repos/{owner}/{repo}/rulesets --jq '.[] | {name, enforcement}' 2>/dev/null   # ruleset names, for the summary
+gh pr list --state merged --limit 20 --json number,title,headRefName,body,mergeCommit
+gh api repos/{owner}/{repo}/commits/<mergeCommit oid> --jq '.parents | length'   # per PR: 1 = squash or rebase, 2 = merge commit
+for n in <the last 15 merged PR numbers>; do gh pr checks "$n" --json name,state; done   # names that run, and which fail
 gh auth status -h github.com 2>&1 | sed -n 's/.*Token scopes: //p'        # needs repo + workflow
-# §4 toolchain
-ls package.json pnpm-lock.yaml yarn.lock package-lock.json bun.lock* mise.toml .tool-versions .nvmrc turbo.json pyproject.toml uv.lock requirements*.txt Makefile docker-compose*.yml vercel.json 2>/dev/null
+# §4 toolchain: find, not an ls glob (zsh aborts a whole `ls` on one unmatched glob), and one level
+# of apps/, packages/, services/ and the like, where a monorepo keeps its Python and JS projects
+find . -maxdepth 3 \( -name node_modules -o -name .git -o -name .venv \) -prune -o -type f \( \
+  -name package.json -o -name pnpm-lock.yaml -o -name yarn.lock -o -name package-lock.json -o -name 'bun.lock*' \
+  -o -name mise.toml -o -name .tool-versions -o -name .nvmrc -o -name turbo.json \
+  -o -name pyproject.toml -o -name uv.lock -o -name poetry.lock -o -name 'requirements*.txt' -o -name alembic.ini \
+  -o -name Makefile -o -name 'docker-compose*.yml' -o -name 'compose*.yml' -o -name vercel.json \) -print | sort
 jq -r '.packageManager // empty, (.scripts // {} | to_entries[] | "\(.key)\t\(.value)")' package.json
-ls .claude/agents .agents 2>/dev/null; ls CLAUDE.md AGENTS.md claude.md agents.md 2>/dev/null
+find . -maxdepth 1 \( -name .claude -o -name .agents -o -iname claude.md -o -iname agents.md \) -print
+# §4 environments: names only, never values
+find . -maxdepth 3 -name node_modules -prune -o -name '.env*' -type f -print | sort
+grep -hoE '^[A-Z0-9_]*(DATABASE|DB|POSTGRES|PG)[A-Z0-9_]*=' $(find . -maxdepth 3 -name node_modules -prune -o -name '.env*' -type f -print) 2>/dev/null | sort -u   # variable names only
+# §4 other work ids and merge holds
+git branch -r --sort=-committerdate --format='%(refname:short)' | head -50
+find . -maxdepth 2 -type d \( -name .belmont -o -name .planning -o -name .plans \) -print   # planning tools that mint their own ids
+grep -niE 'before merg|merge.*only after|do not merge|must (run|build).*(merg|deploy)' CLAUDE.md AGENTS.md claude.md agents.md 2>/dev/null
 # §4 tracker (only if the user says this repo uses Jira)
 desk-jira where
 desk-jira whoami                                        # display name, email, account id
@@ -146,23 +163,64 @@ How to turn what you find into rows:
   Tokens: https://id.atlassian.com/manage-profile/security/api-tokens. The **Jira site** is asked
   (or taken from the start-point repo) before `whoami` can run: `desk-jira` reads it from the
   config, so write §4 Jira site first, then re-run `desk-jira where`.
+- **How list rows are written.** Every row that holds a list (checks, env files, commands,
+  database variables, patterns, holds, staging and Vercel apps) gets **one backtick span per item**:
+  `` `Lint, Type Check & Build` `Verify script sign-off` ``. The scripts never split on commas, so a
+  check name may contain one. A command that runs in a subdirectory is written
+  `` `apps/api: uv run pytest` ``, **never** `cd apps/api && uv run pytest`: the directory form is
+  what the test lock and the worker allow-list understand. Show the user the row in this form when
+  you confirm it, and read it back with `desk-env list <id>` / `desk-env cmds <id>` after writing.
 - **Ticket key pattern.** Propose `<PROJECT>-[0-9]+` from the Jira project; check it against recent
-  branch names and PR titles and say how many matched. A repo that also names work by other ids
-  (planning-tool task ids, bug numbers) keeps the Jira pattern; mention the others in §5 Branch names.
+  branch names and PR titles and say how many matched (a repo can put keys in titles but never in
+  branches; say which).
+- **Other work id patterns.** From the same branch and PR-title history, and from any planning
+  directory found (`.belmont/` and the like), look for ids that are not tracker keys: planning-tool
+  task ids (`P1-M14-FIX-1`), bug numbers (`BUG-119-5`). Propose a regex per family, one span each,
+  with the count of branches or titles each matched and two examples; the user confirms or writes
+  `none`. Such ids are then accepted as tickets whose text comes from a ticket file, never Jira.
 - **Workflow states.** From the project's statuses, propose In-progress, Review and Done states; the
   user confirms. `none` for Review is fine.
-- **Required checks.** From branch protection or rulesets. **Unprotected is not an error**: write
-  §4 Branch protection `none` and §4 Required checks `none` (the skills then require every check on
-  the PR to pass) and say that in this repo nothing stops a merge except the skills themselves.
-- **Merge method.** The only method the repo allows; if several are allowed, the one the last 20
-  merged PRs used.
+- **Branch protection and Required checks.** Merge what classic protection and the rulesets
+  (`rules/branches/<default>`: `required_status_checks` rules, `pull_request` rules for approvals,
+  `required_linear_history`) say; name which source each check came from. A repo that answers 404
+  to classic protection but has a ruleset **is protected**; say so. Only when both are empty is it
+  unprotected. **Unprotected is not an error**: write §4 Branch protection `none` and §4 Required
+  checks `none` (green then still needs every non-advisory check to pass) and say that in this repo
+  nothing stops a merge except the skills themselves.
+- **Advisory checks.** From the last 15 merged PRs' checks, propose as Advisory any check that
+  failed on most of them (it merged red, so it is not gating in practice), with the failure count,
+  e.g. "`Run e2e tests` failed on 14 of 15". Never propose a required check. The user confirms each;
+  `none` is the default. Everything not listed must pass for "green".
+- **Merge holds.** Search the repo instructions for steps a person must do before merging certain
+  changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
+  each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
+  user confirms or writes `none`. Say that autopilot and clearance will never merge a PR that
+  touches a held path: they report it with the reason and a person merges.
+- **Merge method.** From the repo's allowed methods (`allow_squash_merge`, `allow_merge_commit`,
+  `allow_rebase_merge`) and the merged-PR history: a merge commit with **two parents** is `merge`;
+  one parent is `squash` (or `rebase`, when only rebase is allowed). Propose the method the last 20
+  merged PRs mostly used, provided the repo still allows it; say the split, e.g. "18 merge commits,
+  2 squash".
 - **Toolchain.** From the lockfile and `packageManager` (`pnpm-lock.yaml` → pnpm; `mise.toml` or
   `.tool-versions` → Command prefix `mise exec --`, else `none`), and the `scripts` in
-  `package.json` / `turbo.json` / `pyproject.toml` / `Makefile` for the command rows. Propose, then
-  confirm; a guessed test command that does not exist wastes a worker's whole run.
+  `package.json` / `turbo.json` / `pyproject.toml` / `Makefile` for the command rows. A Python
+  project under `apps/*` (a `pyproject.toml`, `uv.lock` or `requirements*.txt` there) gets its own
+  command items in its directory, e.g. `` `apps/api: uv run pytest` ``, and its `alembic.ini` a
+  §4 Database migrate candidate. Propose, then confirm; a guessed test command that does not exist
+  wastes a worker's whole run.
 - **Env files.** The `.env*` files the primary checkout has that a fresh worktree lacks
   (`git -C <root> ls-files --others --ignored --exclude-standard | grep -E '(^|/)\.env'`). Names
   only; never read them.
+- **Database URL variable.** **Every** variable name in those env files (and `.env.example`) that
+  holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
+  one span each, from the name scan above; never read a value. Missing one matters: a worker's
+  worktree has each listed variable repointed at its own database or blanked, and an unlisted one
+  keeps whatever the copied env file says.
+- **Local database.** A Postgres container per-ticket databases can be created in, as
+  `` `postgres container <name>` ``, or `none` for a hosted database. **If it is `none` but the env
+  files hold a database URL, warn plainly**: that URL is shared (often staging or production), and
+  autopilot workers will get every §4 Database URL variable **blanked**, so they cannot run
+  database-backed tests or migrations at all.
 - **Local review command.** Offer what the repo ships (a skill in `.agents/skills` or
   `.claude/skills`, a `.pullbot.yml`), then `/code-review`, then `none`.
 - **People.** For a solo repo propose `you` in every role and say so. For a team repo, propose from
@@ -293,13 +351,30 @@ python3 $H "${REPO_RULES[@]}" add "${TMPDIR:-/tmp}/desk-harness-plan-$SLUG.json"
 python3 $H "${REPO_RULES[@]}" list --markdown      # replaces the §3c table
 ```
 
-`settings.local.json` is gitignored by Claude Code. Check that it is (`git check-ignore -q
-.claude/settings.local.json`); if it is not, stop and say so before writing: rules must not reach
-git. Existing worktrees do not see it; `setup-worktree.sh` copies it into worktrees it creates,
-and you offer to copy it into the ones `git worktree list` shows (backing up any that exist).
+**Check that git ignores `settings.local.json` before writing**, and check it against the repo's
+own rules, not only yours:
+
+```bash
+git -C "$ROOT" check-ignore -v .claude/settings.local.json   # which file ignores it, if any
+git -C "$ROOT" ls-files --error-unmatch .claude/settings.local.json 2>/dev/null && echo TRACKED
+```
+
+- Ignored by the repo's `.gitignore` (the `-v` output names a `.gitignore` in the repo): proceed.
+- Ignored only by your global excludes (`core.excludesFile`, `~/.config/git/ignore`) or by
+  `.git/info/exclude`: it is safe on this machine but a colleague's clone would commit theirs.
+  Recommend adding `.claude/settings.local.json` to the repo's `.gitignore` (in a PR, their call),
+  then proceed.
+- Not ignored at all, or `TRACKED`: **stop**. `harness-rules.py` refuses too: rules must not reach
+  git. Offer the `.gitignore` line (and `git rm --cached` for a tracked copy) as the user's action.
+
+Existing worktrees you open yourself do not see the file; offer to copy it into the ones
+`git worktree list` shows (backing up any that exist). **Autopilot worker worktrees never get a
+copy**: `setup-worktree.sh` does not copy it, because it carries your own allows (merge driver
+included). Workers run on their own settings built from §3 by `worker-settings.mjs`, kept outside the
+repo in `$DESK_STATE/workers/`.
 
 Say plainly: a harness rule removes the prompt, not the skill's own gate. Autopilot workers never
-use these rules; they get their own settings file built from §3.
+use these rules.
 
 ## 5. Write it, then show every row
 
@@ -316,14 +391,15 @@ repo      : <owner/name> · default <branch> · <description>
 identity  : <name> · short <short form> · <github> · jira <email / none> · <jira display name> ·
             account <jira account id> · git <author> · pronouns <pronouns or they/them>
 paths     : root <path> · worktrees <path> · handoff <path> · backups <path> · WSL <yes/no>
-tracker   : <jira site / none> · project <key> · keys <pattern> · states <in-progress> → <review> → <done> ·
-            priority <field> · desk-jira <yes/no>
-github    : protection <summary / none> · required <checks / none> · merge <method> · auto-merge <on/off> ·
+tracker   : <jira site / none> · project <key> · keys <pattern> · other ids <patterns / none> ·
+            states <in-progress> → <review> → <done> · priority <field> · desk-jira <yes/no>
+github    : protection <summary (classic / ruleset <name>) / none> · required <checks / none> ·
+            advisory <checks / none> · holds <glob: why / none> · merge <method> · auto-merge <on/off> ·
             gh scopes <scopes> · codex <yes date / no> · review <command> (clean = <verdict>)
 toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build ·
-            env files <names>
-services  : db <…/none> · services <…/none> · staging <url/none> · vercel <…/none> · slack <…/none> ·
-            check-out → <destination>
+            env files <names>          (each list item as its own backtick span, `dir: cmd` where it has one)
+services  : db <…/none> · db vars <names / none> · services <…/none> · staging <url/none> ·
+            vercel <…/none> · slack <…/none> · check-out → <destination>
 people    : reviewer <…> · infra/security <…> · product <…> · designer <…> · QA <…> · deletes <…>
 reading   : own-work <a> · local-git <a> · others <a> · slack-public <a> · figma <a> · vercel <a> ·
             confluence <a> · transcripts <a> · calendar <a> · slack-own <a>
