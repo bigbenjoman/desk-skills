@@ -38,6 +38,7 @@ Then `/desk-ticket <TICKET>` for one ticket, or `/desk-autopilot <TICKET> <TICKE
 | `desk-jira` | Ticket comments, edits, transitions | loads itself |
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
+| `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
 
 A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), another id you list in
 setup (a planning id such as `P1-M14-FIX-1`, a bug id such as `BUG-119-5`), or, in a repo with no
@@ -67,6 +68,43 @@ by first name ("Hello Bea", "ask Nadia").
 `/userflow` (in `commands/`) maps the product's information architecture: one Otto per role.
 A repo that wants a tailored agent adds its own `.claude/agents/<name>.md`; Claude Code prefers
 the project copy over the user-level one.
+
+## Skills, one copy each
+
+Every skill on the machine, desk's or anyone else's, has **one real copy** in
+`~/.agents/skills/<name>`; `~/.claude/skills/<name>` is a link to it. No skill is copied into a repo
+or duplicated between the two folders, so there is one thing to update and nothing to drift.
+
+Besides desk's own `desk-*` skills, `install.sh` installs the third-party skills listed in
+[`vendor/sources.json`](vendor/sources.json). Each entry records where the skill came from and
+which version is installed, as one of three source types:
+
+| Type | Use for | Where the files live | "Outdated" means |
+|---|---|---|---|
+| `github` | a skill published in a GitHub repo | `vendor/<name>/`, byte-identical to `{repo, path}` at `pin.commit` | a newer commit touches that path |
+| `drive` | a skill published as a zip in a public Google Drive folder (e.g. Yummy Design's ux/ui skills) | `vendor/<name>/`, unpacked from the zip whose `sha256` is pinned | the folder's file name or modified date changed |
+| `checkout` | your own skills, and upstreams you want to track live | a git clone at `~/.agents/skills/<name>`; nothing in `vendor/`. A repo holding several skills (`subskills`, e.g. `clerk/skills`) is cloned once to `~/.agents/sources/<name>` and each listed sub-skill linked in | `origin/<branch>` has commits you have not pulled |
+
+`vendor/<name>/` is never edited by hand: its `tree_sha256` in `sources.json` is checked by
+`skills-upstream verify`. A local change belongs upstream, or in a repo-level override
+(`<repo>/.claude/skills/<name>`, which Claude Code prefers).
+
+`skills-upstream` (installed to `~/.local/bin`, runs from this checkout) manages them:
+
+```bash
+skills-upstream list                  # every tracked skill, its source and pin
+skills-upstream outdated              # compare each pin with its source; exit 10 if any is behind
+skills-upstream upgrade <name>...     # pull the newest upstream into vendor/ (or git pull a checkout)
+skills-upstream upgrade --all
+skills-upstream verify                # vendor/ matches sources.json, installed copies match vendor/
+skills-upstream plugins               # installed plugins vs their marketplaces
+skills-upstream rehash                # re-record tree hashes after adding an entry
+```
+
+`upgrade` only writes `vendor/` (review it with `git diff`, then commit and run `./install.sh`); a
+`checkout` upgrade is a `git pull --ff-only` in the clone and leaves nothing to commit here. To
+track a skill that has no entry yet, prove a specific upstream version is byte-identical to the
+installed copy first; a skill whose source cannot be proven stays untracked and is reported as such.
 
 ## Install
 
@@ -262,6 +300,11 @@ cd ~/desk-skills && git pull && ./install.sh
 
 Restart Claude Code. Repo configs are kept; if the template gained rows, `/desk-setup` in that repo
 asks only those. Re-run `./install.sh` after a Playwright plugin update, which undoes its patch.
+
+**`/desk-update`** does all of it brew-style, from any directory: pulls desk-skills, runs
+`skills-upstream outdated`, `verify` and `plugins`, reports one table (outdated, drifted,
+unreachable, untracked), says what changed upstream for each, and upgrades only what you pick, after
+showing the diff. It never pushes the desk-skills commit without asking.
 
 ## Changing things
 

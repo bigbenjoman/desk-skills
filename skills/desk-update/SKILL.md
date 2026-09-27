@@ -19,6 +19,7 @@ own source of truth; this skill checks all three and upgrades only what the user
 |---|---|---|---|
 | desk's own (`desk-*`, the subagents, `/userflow`) | `~/.agents/skills`, `~/.claude/agents`, `~/.claude/commands` | the desk-skills checkout (`bigbenjoman/desk-skills`) | `git pull` + `./install.sh` |
 | **pinned third-party** (e.g. Yummy's ux/ui-designer, context-audit) | `~/.agents/skills/<name>`, linked from `~/.claude/skills` | `vendor/sources.json`: a GitHub repo path or a Google Drive folder | `skills-upstream upgrade` + review + `./install.sh` |
+| **your own / tracked live** (`checkout` entries, e.g. energy-trader, property-expert, clerk) | a git clone at `~/.agents/skills/<name>`, or `~/.agents/sources/<name>` with `subskills` linked in | `vendor/sources.json`: `{repo, branch}` | `skills-upstream upgrade <name>` (`git pull --ff-only`; nothing to commit in desk-skills) |
 | plugin skills (superpowers, vercel, …) | the plugin cache | the plugin's marketplace | `claude plugin marketplace update` + `claude plugin update` |
 
 Anything else in `~/.agents/skills` or `~/.claude/skills` is **untracked**: its source is not
