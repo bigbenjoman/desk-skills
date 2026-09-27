@@ -19,6 +19,7 @@
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
+//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|issue|slug, exit 2 if the id is not accepted
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
@@ -440,6 +441,50 @@ export function concurrencyLimits() {
   return { def, cap: nums[1] ?? Math.max(def, 3) };
 }
 
+// §3b "Spawn gate (available memory)", e.g. `start work > 8 GiB · hold 4–8 · drop to 1 below 4`:
+// start = spawn only above this, hold = below it run at most one worker, dropTo = that one.
+// Unset reads as the template's recommended values. AUTOPILOT_MIN_AVAIL_GB overrides start (0 = off).
+export function spawnGate() {
+  const v = configValue('spawn-gate') ?? '';
+  const num = (re) => { const m = re.exec(v); return m ? Number(m[1]) : null; };
+  const start = num(/start[^0-9]*(\d+(?:\.\d+)?)/i) ?? num(/(\d+(?:\.\d+)?)/) ?? 8;
+  const hold = num(/below\s*(\d+(?:\.\d+)?)/i) ?? num(/hold\s*(\d+(?:\.\d+)?)/i) ?? Math.min(4, start);
+  const dropTo = num(/(?:drop to|drop)\s*(\d+)/i) ?? num(/(\d+)\s*below/i) ?? 1;
+  const env = process.env.AUTOPILOT_MIN_AVAIL_GB;
+  return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : start, hold, dropTo };
+}
+
+// ---- ticket ids ------------------------------------------------------------------------------
+// A ticket id names files and directories, so it is checked for shape before anything else, then
+// against this repo's config. Case-sensitive as written: `ABC-1` and `abc-1` are different ids.
+//   tracker   matches §4 Ticket key pattern in full           -> text from the tracker
+//   work-id   matches one §4 Other work id patterns item      -> text from $DESK_STATE/tickets/<id>.md
+//   issue     `issue-<n>` with §4 Tracker none                 -> GitHub issue n
+//   slug      lower-case kebab with §4 Tracker none           -> text from $DESK_STATE/tickets/<id>.md
+// -> { ok: true, kind } | { ok: false, error }
+export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
+export function ticketKind(key) {
+  const k = String(key ?? '');
+  if (!SAFE_ID.test(k) || k.includes('..')) return { ok: false, error: `'${k}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
+  const tracker = (configValue('tracker') ?? '').trim().toLowerCase();
+  const pattern = configValue('ticket-pattern');
+  if (pattern && !isNone(pattern) && fullMatch(pattern, k)) return { ok: true, kind: 'tracker' };
+  const others = configValues('work-id-patterns');
+  if (others && !isNone(others) && others.some((p) => fullMatch(p, k))) return { ok: true, kind: 'work-id' };
+  if (/^none\b/.test(tracker)) {
+    if (/^issue-[0-9]+$/.test(k)) return { ok: true, kind: 'issue' };
+    if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(k)) return { ok: true, kind: 'slug' };
+  }
+  const want = [
+    pattern && !isNone(pattern) ? `§4 Ticket key pattern (${pattern})` : null,
+    others && !isNone(others) ? `a §4 Other work id patterns item (${others.join(' | ')})` : null,
+    /^none\b/.test(tracker) ? 'issue-<n> or a lower-case kebab slug (§4 Tracker none)' : null,
+  ].filter(Boolean);
+  if (!tracker) want.push('(§4 Tracker is unset — run /desk-setup)');
+  return { ok: false, error: `'${k}' is not ${want.join(', or ') || 'a ticket id this config accepts'}` };
+}
+
 // ---- memory --------------------------------------------------------------------------------
 // Two numbers answer two different questions; see the autopilot skill's memory section.
 //   avail: is there room to START something?  Linux MemAvailable; macOS free+inactive+purgeable+speculative.
@@ -499,11 +544,12 @@ export function heavyProcesses() {
   for (const line of out.split('\n')) {
     const m = /^\s*(\d+)\s+(.*)$/.exec(line);
     if (!m || Number(m[1]) === process.pid) continue;
-    const [a0 = '', a1 = ''] = m[2].split(/\s+/);
+    const [a0 = '', a1 = '', a2 = ''] = m[2].split(/\s+/);
     const exe = basename(a0);
     if (['claude', 'bash', 'sh', 'zsh', 'grep', 'ps', 'awk'].includes(exe)) continue;
-    const hay = `${exe} ${a1}`;
-    if (/jest|vitest|tsc|next-server|next dev|playwright|storybook/.test(hay)) rows.push({ pid: Number(m[1]), args: m[2].slice(0, 160) });
+    // argv[2] only for `python -m <module>`, so a Python suite or server counts the same as a JS one.
+    const hay = `${exe} ${basename(a1)}${/^python/.test(exe) && a1 === '-m' ? ` ${a2}` : ''}`;
+    if (/jest|vitest|tsc|next-server|next dev|playwright|storybook|pytest|uvicorn|gunicorn/.test(hay)) rows.push({ pid: Number(m[1]), args: m[2].slice(0, 160) });
   }
   return rows;
 }
@@ -560,6 +606,12 @@ if (isMain) {
         const v = configValue(args[0]);
         if (v == null) process.exit(3);
         console.log(expandHome(v));
+        break;
+      }
+      case 'ticket-kind': {
+        const r = ticketKind(args[0]);
+        if (!r.ok) { console.error(`desk: ${r.error}`); process.exit(2); }
+        console.log(r.kind);
         break;
       }
       case 'perm-or-unset': {
