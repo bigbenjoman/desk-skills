@@ -2,15 +2,18 @@
 """Summarise the authenticated GitHub user's pull-request activity on the check-out day.
 
 Uses the `gh` CLI (already authenticated), so no token handling here. Lists PRs you
-opened, merged, closed or pushed to, and other people's PRs you reviewed. Open PRs
-carry their review decision and check state, which is what "waiting on approval"
-claims need. Output is grouped Studia / side projects / not Studia work.
+opened, merged, closed or pushed to, and other people's PRs you reviewed, across every
+repo. Open PRs carry their review decision and check state, which is what "waiting on
+approval" claims need.
 
-Side projects are repos you want reported but kept apart from Studia work: set
-DESK_CHECKOUT_SIDE_REPOS to a comma-separated list of owner/repo.
+Rows are grouped by scope (see desk_repos.py): this check-out (the current repo and any
+configured desk repo sharing its §4 Check-out destination), side projects
+(DESK_CHECKOUT_SIDE_REPOS, comma-separated owner/repo), other configured desk repos, and
+work that is not for this check-out. A configured repo is read only when its own §3
+read-own-work is `yes` (or `ask` and passed with --include <slug>).
 
 Usage:
-  github_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD]
+  github_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD] [--include <slug>]
 """
 import argparse
 import json
@@ -23,10 +26,7 @@ from datetime import datetime, timezone
 sys.dont_write_bytecode = True  # a __pycache__ in the installed skill reads as a user edit to install.sh
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import window  # noqa: E402
-
-DESK_OWNER = "Sophos-Education"
-SIDE_REPOS = {r.strip() for r in os.environ.get("DESK_CHECKOUT_SIDE_REPOS", "").split(",") if r.strip()}
-GROUPS = ("Studia", "Side project", "Not Studia work")
+import desk_repos  # noqa: E402
 
 
 def gh(*args):
@@ -43,12 +43,6 @@ def search(query):
     if raw is None:
         raise SystemExit(f"gh search failed for {query!r}")
     return json.loads(raw).get("items", [])
-
-
-def group_of(repo):
-    if repo in SIDE_REPOS:
-        return "Side project"
-    return "Studia" if repo.startswith(DESK_OWNER + "/") else "Not Studia work"
 
 
 def pr_state(repo, number):
@@ -93,7 +87,10 @@ def my_reviews(repo, number, login, since, until):
 def main():
     ap = argparse.ArgumentParser()
     window.add_day_argument(ap)
+    desk_repos.add_include_argument(ap)
     args = ap.parse_args()
+    repos, _current = desk_repos.load_all(args.include)
+    skipped = set()
     start, end = window.resolve(args.day)
     since, until = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
     login = (gh("api", "user", "-q", ".login") or "").strip()
@@ -102,8 +99,20 @@ def main():
     def within(ts):
         return bool(ts) and since <= parse_time(ts) < until
 
+    def scope(repo):
+        """Scope of an owner/repo, or None when that repo's own config does not allow reading it."""
+        sc, cfg = desk_repos.scope_for_repo_name(repo, repos)
+        ok, note = desk_repos.allowed(cfg, "read-own-work")
+        if not ok:
+            skipped.add(note)
+            return None
+        return sc
+
     def describe(pr):
         repo = pr["repository_url"].split("repos/")[1]
+        sc = scope(repo)
+        if sc is None:
+            return None
         merged_at = (pr.get("pull_request") or {}).get("merged_at")
         events = []
         if within(pr["created_at"]):
@@ -120,7 +129,7 @@ def main():
                 events.append(pr_state(repo, pr["number"]))
         if not events:
             return None  # touched only by bots, CI, title edits or branch syncs
-        return group_of(repo), f"- {repo}#{pr['number']} {pr['title']} — {'; '.join(events)}"
+        return sc, f"- {repo}#{pr['number']} {pr['title']} — {'; '.join(events)}"
 
     mine = search(f"is:pr author:{login} updated:>={day}")
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -130,25 +139,32 @@ def main():
 
     def describe_review(pr):
         repo = pr["repository_url"].split("repos/")[1]
+        sc = scope(repo)
+        if sc is None:
+            return None
         states = my_reviews(repo, pr["number"], login, since, until)
         if not states:
             return None
         author = (pr.get("user") or {}).get("login", "?")
-        return f"- {repo}#{pr['number']} {pr['title']} (by {author}) — you: {', '.join(states)}"
+        label = "" if sc == "this" else f" [{desk_repos.SCOPE_LABELS[sc]}]"
+        return f"- {repo}#{pr['number']} {pr['title']} (by {author}) — you: {', '.join(states)}{label}"
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         reviews = [r for r in pool.map(describe_review, reviewed) if r]
 
     print(f"# GitHub activity for {login}, {window.label(start)}\n")
-    for group in GROUPS:
+    for group in sorted(desk_repos.SCOPE_ORDER, key=desk_repos.SCOPE_ORDER.get):
         items = [line for g, line in rows if g == group]
         if items:
-            print(f"## {group} PRs ({len(items)})")
+            print(f"## {desk_repos.SCOPE_LABELS[group]} PRs ({len(items)})")
             print("\n".join(items) + "\n")
     if not rows:
         print("No PRs of yours moved in the window.\n")
     print(f"## Reviews you gave ({len(reviews)})")
     print("\n".join(reviews) if reviews else "none")
+    if skipped:
+        print("\n## Skipped by permission")
+        print("\n".join(f"- {n}" for n in sorted(skipped)))
 
 
 if __name__ == "__main__":

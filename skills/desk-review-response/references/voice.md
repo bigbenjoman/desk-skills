@@ -3,14 +3,15 @@
 For anything the user will send or paste as themselves: PR review replies, Jira comments, Slack
 drafts to colleagues, standup points.
 
-**Config §5 "Messages to colleagues" is the source of truth.** What follows is the team's
-default register, and setup offers it as the default. If a user has changed that row, the row wins.
+**Config §5 "Messages to colleagues" is the source of truth** for this repo (resolve it with
+`desk-env where`, then Read the config). What follows is the default register behind that row's
+default wording. If the user has changed that row, the row wins.
 If you have seen enough of the user's own writing this session — their Slack messages, Jira comments,
 PR replies — let it tune the details, within the rules below.
 
 ## The register
 
-Plain, direct, British. Written like someone talking, not someone drafting. Short sentences. The
+Plain, direct. Written like someone talking, not someone drafting. Short sentences. The
 point goes in the first line.
 
 **Never:**
@@ -21,7 +22,7 @@ point goes in the first line.
   confirming". They bury the point
 - bold on every other phrase
 - a summary paragraph restating what was just said
-- American spelling
+- spelling that differs from the user's own (British or American: match what their own writing uses)
 
 **Do:**
 - lead with what the issue is, then the ask
@@ -51,11 +52,11 @@ posts under their account and cannot be retracted.
 
 Shape that works:
 
-> Quick one on SV-482 - the backfill's done on staging, 143 rows across 78 profiles, GCSE filter
-> now returns 77 tutors instead of 0.
+> Quick one on ABC-482 - the backfill's done on staging, 143 rows across 78 profiles, the category
+> filter now returns 77 results instead of 0.
 >
-> One risk: a tutors:import re-run would wipe it, since the script isn't merged. Do we want it in
-> main, or just re-run the backfill after any import?
+> One risk: a re-run of the import would wipe it, since the script isn't merged. Do we want it in
+> the default branch, or just re-run the backfill after any import?
 
 Outcome with numbers, the one risk, then the decision in front of the reader. No preamble.
 
@@ -73,7 +74,8 @@ it like you're talking, not me. Just what you pinpoint the issue to be."*
 
 - **PR bodies** are ordinary technical prose where em-dashes and longer sentences are normal — see
   `desk-pr`. Don't carry one register into the other.
-- **User-facing copy you draft** — SEO titles and descriptions, marketing text, i18n strings — has no
-  em-dashes or similar flourishes (decorative en-dashes, semicolon chains) either; they read as
-  AI-written on public pages. Copy supplied verbatim by design or product (Figma, the product owner)
+- **User-facing copy you draft** — SEO titles and descriptions, marketing text, i18n strings —
+  follows config §5 "User-facing copy you write". Unless that row says otherwise it has no em-dashes
+  or similar flourishes (decorative en-dashes, semicolon chains) either; they read as AI-written on
+  public pages. Copy supplied verbatim by design or product (the design file, the §4 product owner)
   ships as given.

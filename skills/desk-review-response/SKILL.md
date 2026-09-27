@@ -1,8 +1,8 @@
 ---
 name: desk-review-response
 description: >-
-  Use when a reviewer has commented on a Studia pull request — the team reviewer, the product owner
-  or anyone else requesting changes, leaving inline comments, or approving with notes. Also when
+  Use when a reviewer has commented on a pull request in this repo — the code reviewer, the product
+  owner or anyone else requesting changes, leaving inline comments, or approving with notes. Also when
   asked to reply to review feedback, or to judge whether a reviewer's comment is correct.
 ---
 
@@ -13,8 +13,19 @@ description: >-
 **Core principle: assess every comment before touching any code.** The reviewer is usually right,
 but not always, and finding out after you've rewritten the file is expensive in both directions.
 
-**Read `~/.claude/desk-config.md` first** — §3 for whether you may push (`git-push`), post replies and resolve
-threads (`pr-reply`), §4 for the code reviewer and product owner, §5 for the written register.
+**Resolve this repo's config first.**
+
+```bash
+desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
+```
+
+Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`. Then:
+§0 for the GitHub repo, §1 for the user's GitHub handle, §3 for whether you may push (`git-push`),
+post replies and resolve threads (`pr-reply`), §4 People for who the code reviewer and product owner
+are (name and GitHub handle), §4 Local review command and Clean review verdict for the fix review,
+§4 What review here consistently asks for, and §5 for the written register (Messages to colleagues)
+and AI attribution.
 
 The order the skill's author asked for, repeatedly: *"Don't change the code yet, let's talk before
 you start working. Are all of the reviewer's comments correct?"* and *"is that what we should have
@@ -55,12 +66,16 @@ faster than changing the code and changing it back.
 - When done, confirm **every** comment is addressed or explicitly declined — a re-review that
   finds a missed comment costs another round trip.
 - Fix commits go on the user's branch, pushed under §3 `git-push`. No `git reset` or history
-  rewriting to "start clean". No AI attribution (config §5).
+  rewriting to "start clean". AI attribution as §5 AI attribution says: none at all where it is
+  `forbidden`; where it is `allowed`, whatever the repo's own instructions require.
 
 ## Review the fixes before you reply
 
 A review fix is new code, and nobody has reviewed it — the reviewer's comment predates it. Run
-`/pullbot` at the new head before pushing, the same Stage 4b `desk-ticket` runs.
+§4 Local review command at the new head before pushing, the same Stage 4b `desk-ticket` runs. A round
+is clean when its report matches §4 Clean review verdict. §4 Local review command `none`: review the
+fix diff yourself against §4 What review here consistently asks for, run §4 Typecheck, Lint and the
+unit tests touching the changed files, and say plainly that no local review command ran.
 
 **Fix what it confirms and run it again, at most three rounds.** Each fix is itself unreviewed code,
 so only a round that finds nothing has reviewed everything; if the third still finds something, stop
@@ -71,7 +86,7 @@ the user, and the loop continues around them. Moving equivalent sites onto a hel
 creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR
 body. Growth means new behaviour, not new call sites.
 
-Not ceremony: a review fix can carry a P0 the original review never reached — a server-side gate
+Not ceremony: a review fix can carry a top-severity bug the original review never reached — a server-side gate
 the reviewer asked for, bypassable one procedure away. They cannot have seen it, because it did not
 exist when they commented.
 
@@ -80,7 +95,9 @@ exist when they commented.
 Each of these is a write under the user's GitHub account — check the config §3 row first
 (`pr-reply` to reply and resolve, `pr-self-review-comment` for the self-review, `git-push` for fixes).
 
-- The self-review goes up as one `COMMENTED` review, body opening `<!-- pullbot:local -->`.
+- The self-review goes up as one `COMMENTED` review, body opening `<!-- pullbot:local -->`. The
+  marker is a fixed protocol string shared with `desk-ticket`, `desk-autopilot` and
+  `desk-clearance`, whatever §4 Local review command is; keep it verbatim.
 - A later "fixed in `<sha>`" follow-up opens `<!-- pullbot:reply -->` instead — it posts at a head
   nothing has reviewed, and the review marker would claim otherwise.
 - **Never `--approve` or `--request-changes`.**
@@ -94,7 +111,8 @@ Each of these is a write under the user's GitHub account — check the config §
 
 ```bash
 # unresolved threads with ids and bodies
-gh api graphql -f query='{ repository(owner:"Sophos-Education", name:"studia-web") {
+# OWNER and NAME from §0 GitHub repo (GH_REPO in `desk-env where`)
+gh api graphql -f query='{ repository(owner:"OWNER", name:"NAME") {
   pullRequest(number: N) { reviewThreads(last:100) { nodes {
     id isResolved path line comments(first:20){ nodes { author{login} body } } } } } } }'
 
@@ -116,29 +134,29 @@ question where the reviewer will see it.
 
 ## What reviewers here actually ask for
 
-**Read the config §4 people table** ("Code reviewer", "Product owner") for who reviews this user's
-work and who answers product and destination questions. If the table is `TODO`, say so; you can still assess comments on
-their merits.
+**Read the config §4 People table** ("Code reviewer", "Product owner") for who reviews this user's
+work and who answers product and destination questions; match comment authors by the GitHub handle
+it gives. `you` means the user reviews or decides themselves (a solo repo): comments from anyone
+else are assessed on their merits, and product questions go to the user. If the table is `TODO`, say
+so; you can still assess comments on their merits.
 
-The house standard below was mined from the repo's review history and is not confirmed with the
-current reviewer. Treat it as what this repo has rejected, not as anyone's stated
-preference — lead with the code, not with "they always ask for this":
+**The house standard is §4 "What review here consistently asks for".** It was mined from the repo's
+review history when setup ran, or written by the user, and is not necessarily confirmed with the
+current reviewer. Treat it as what this repo has rejected before, not as anyone's stated preference
+— lead with the code, not with "they always ask for this". If the table is empty or `TODO`, assess
+every comment on its merits alone.
+
+Two rows hold in every repo because the config owns them:
 
 | Pattern | What gets asked for |
 |---|---|
-| Verbose comment blocks | Shorten them, or cut them. One short human line at most |
-| A new helper or regex with no specs | Add specs for it |
-| A one-off script in the diff | Run it once from the branch, then delete it — it does not need to reach `main` |
-| A hardcoded value where an env var already exists | Use the env var |
-| A change unrelated to the ticket | Justify it or take it out |
-| A temporary or placeholder version of something | Don't — check whether a real ticket already covers it |
-| A UI change with no evidence | Before/after screenshots |
-| A bespoke component where the design system has one | Reuse it. A feature-local component a second surface needs gets promoted into `src/components/studia/`, renamed generically — possibly as its own PR |
-| New infrastructure | Expect to justify it; fewer moving parts wins (infra owner, config §4) |
+| New infrastructure | Expect to justify it; fewer moving parts wins (§4 People "Infra and security owner") |
+| A product, destination or copy decision | Not yours; it goes to the product owner |
 
-Product and destination questions — where a link goes, whether a flow is right — go to the product
-owner (config §4). If a comment asks for a product, design or catalog decision, that is not yours to
-answer in a reply. Draft the question instead.
+Product and destination questions — where a link goes, whether a flow is right — go to §4 People
+Product owner. If a comment asks for a product, design or catalog decision, that is not yours to
+answer in a reply (`product-calls` is `stop`). Draft the question instead. A design question goes to
+§4 People Designer, or the product owner when Designer is `none`.
 
 ## Replies
 
@@ -168,8 +186,8 @@ soon as you establish it. That changes what the user says back to the reviewer.
 | Fixing extra things while you're in there | Only what was agreed |
 | A long, apologetic reply | Two or three sentences, what changed, done |
 | `gh pr comment` to answer an inline comment | Thread reply via GraphQL on the thread id |
-| Answering a product question yourself | Draft it for the product owner (config §4) |
+| Answering a product question yourself | Draft it for §4 People Product owner |
 | Declaring it addressed without re-checking every thread | Enumerate from GitHub and confirm each |
-| Replying and pushing without reviewing the fix | The fix is unreviewed code; `/pullbot` at the new head first |
+| Replying and pushing without reviewing the fix | The fix is unreviewed code; §4 Local review command at the new head first |
 | Resolving a thread you answered but did not act on | Resolve means addressed, not replied-to |
 | Expecting 0 unresolved threads to unblock the PR | A standing `CHANGES_REQUESTED` needs a new approval |

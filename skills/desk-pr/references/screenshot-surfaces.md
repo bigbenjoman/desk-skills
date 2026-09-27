@@ -4,29 +4,32 @@ Pick the cheapest surface that renders the real component with real copy. In ord
 
 | Surface | Use when | Needs |
 |---|---|---|
-| Storybook | Presentational component driven by props | Nothing — no Clerk, DB or middleware |
-| Throwaway preview page | Needs providers Storybook doesn't mount, or auth/third-party data you can fake as props | A temporary page + route entry, reverted before the diff |
-| The real app, signed in | Needs real server data | A seeded DB and a Clerk session — see blockers below |
+| The repo's component workshop (Storybook or similar), if it has one | Presentational component driven by props | Nothing beyond the workshop's own dev command |
+| Throwaway preview page | Needs providers the workshop doesn't mount, or auth/third-party data you can fake as props | A temporary page (and route entry, if routing is allowlisted), reverted before the diff |
+| The real app, signed in | Needs real server data | A seeded database (§4 Local database) and a signed-in session — see blockers below |
+| §4 Staging | The change is already deployed there, or the "before" is exactly what staging runs now | §4 Staging reachable; a bypass token from §4 Staging bypass token location if staging is protected. `none`: not an option |
 
-Whatever the surface, use a port nobody else holds (config §3b "Preferred dev-server port"),
-import `playwright` by absolute path from the worktree's own `node_modules`, and save to
-`<handoff dir>/SV-XXX/`.
+Whatever the surface, use a port nobody else holds (config §3b "Preferred dev-server port"), start
+the app with §4 Dev server (prefixed with §4 Command prefix unless it is `none`), import `playwright`
+by absolute path from the worktree's own `node_modules` (or the primary checkout's, §2 Primary repo
+root), and save to `<§2 Handoff directory>/<TICKET>/`.
 
 ## Every surface: suppress the overlays
 
-**Seed the Cookiebot consent cookie before the first `goto`.** Without it the banner covers the
-content, and on some pages the dialog breaks hydration so measurements come back junk (a row
-selector intermittently `null`), and every shot has to be recaptured.
+**Seed any cookie-consent state before the first `goto`.** If the app shows a consent banner,
+without it the banner covers the content, and on some pages the dialog breaks hydration so
+measurements come back junk (a row selector intermittently `null`), and every shot has to be
+recaptured.
 
 ```js
-await ctx.addCookies([{ name: 'CookieConsent', value: '<consent value>', domain: 'localhost', path: '/' }]);
+await ctx.addCookies([{ name: '<consent cookie name>', value: '<consent value>', domain: 'localhost', path: '/' }]);
 ```
 
-Get `<consent value>` by accepting the banner once in a normal browser on localhost and copying the
-`CookieConsent` cookie (it starts `{stamp:%27-1%27%2Cnecessary:true%2C…`).
+Get the name and value by accepting the banner once in a normal browser on localhost and copying
+the cookie it sets. Never invent one.
 
-Also hide the Next dev overlay with `addStyleTag` —
-`nextjs-portal, [data-nextjs-toast], [id^="CybotCookiebot"] { display: none !important }` — and
+Also hide the framework's dev overlay (for Next.js: `nextjs-portal, [data-nextjs-toast]`) and the
+consent dialog's root with `addStyleTag` — `<selectors> { display: none !important }` — and
 re-apply after opening a modal, since the overlay re-mounts.
 
 ## Getting a genuine "before"
@@ -34,75 +37,65 @@ re-apply after opening a modal, since the overlay re-mounts.
 Capture *after* first. Then restore the old code in place and let the dev server hot-reload:
 
 ```bash
-git checkout origin/main -- <component paths> <src/i18n/messages/en/<ns>.json>
+git checkout origin/<§0 Default branch> -- <component paths> <any messages/translation files they read>
 # shoot before
 git checkout HEAD -- <same paths>
 git diff HEAD --stat   # must be empty
 ```
 
-- **Restore the i18n messages file in the same command.** The old component reads keys the new one
+- **Restore any i18n messages file in the same command.** The old component reads keys the new one
   renamed, so components alone render missing-key errors.
 - A file the change renamed away comes back on restore: `git rm --cached` + `rm` it.
 - Never `git stash` for this — after a commit it no-ops, and stashes are shared across worktrees.
 
-## Storybook
+## Component workshop (Storybook)
 
-`.storybook/preview.tsx` mounts a real `NextIntlClientProvider` on the actual message files, so a
-story renders real copy (unlike Jest, where `t()` returns the key).
+Check how the repo's preview config mounts providers: if it mounts the real i18n provider on the
+actual message files, a story renders real copy (unlike unit tests, where a translation function
+often returns the key).
 
 - Shoot the iframe: `http://127.0.0.1:<port>/iframe.html?id=<story-id>&viewMode=story`. The id is
-  the `title` slugified plus the export: `Subscriptions/SubscriptionSuccessScreen` +
-  `ParentForChildSuccess` → `subscriptions-subscriptionsuccessscreen--parent-for-child-success`.
+  the `title` slugified plus the export: `Checkout/SuccessScreen` + `ForGuest` →
+  `checkout-successscreen--for-guest`.
 - Screenshot the `#storybook-root` locator, not the page.
-- Override the hardcoded port with `bun run --filter studia-web storybook -- -p <port>`.
+- Override a hardcoded port by passing `-p <port>` through the repo's storybook script.
 - **Assert the DOM as well as the pixels** — read the CTA text and `href` back per story. Guard with
   `locator.count()`; a state with no `<a>` makes a bare `getAttribute` throw.
-- **The tRPC mock returns no data.** `.storybook/mocks/trpc-react.tsx` answers every `useQuery` with
-  `{ data: undefined, isSuccess: true }`, so anything behind a data gate renders empty and silently
-  dead-ends (the booking picker shows every date disabled). To reach it, copy the mock outside the
-  repo, make the proxy path-aware (return fixture data when `path.join('.')` matches the procedure),
-  capture, restore from the copy, check `git status`.
+- **Data mocks often return nothing.** If the workshop mocks the API client so every query resolves
+  with no data, anything behind a data gate renders empty and silently dead-ends. To reach it, copy
+  the mock outside the repo, make it return fixture data for the one call you need, capture,
+  restore from the copy, check `git status`.
 
-## Throwaway preview page — studia-web
+## Throwaway preview page
 
-For a component whose real screen needs auth or third-party data (e.g. saved-card rows needing Clerk
-*and* a Stripe customer), render it from a page with hand-written props:
+For a component whose real screen needs auth or third-party data (e.g. saved-card rows needing a
+signed-in user *and* a payment-provider customer), render it from a page with hand-written props:
 
-1. **Put it under `src/app/(public)/<name>/page.tsx`.** There is no root layout, so a page at
-   `src/app/dev/…` fails to build.
-2. **Add the route to `publicRoutes` in `middleware.ts`** temporarily — the matcher lists paths, so
-   `(public)` alone still redirects. Revert before the diff.
-3. **Give the page `pt-24` or more.** The fixed navbar intercepts pointer events and clicks time out.
+1. **Put it where the app's routing will build it** — inside a route group that has a layout, not
+   somewhere that fails to build for lack of one. Look for an existing dev-only page as precedent.
+2. **If routing is gated by an allowlist** (auth middleware listing public paths), add the route
+   temporarily. Revert before the diff.
+3. **Clear any fixed header.** Give the page enough top padding that a fixed navbar does not
+   intercept pointer events and time out clicks.
 4. **Paste the real i18n strings**, never sample copy. Invented text changes line wrapping, every
-   measurement and both shots, and can produce a false "copy differs from Figma" finding.
-5. **Give each mock shell `shrink-0`.** Side-by-side shells in a flex row shrink below their fixed
-   width; a before shot went up at 262px and looked like a real layout.
-
-## Throwaway preview page — portal
-
-Everything is under `apps/portal/apps/web/`. No `.env`, Clerk login or staging DB is needed:
-
-- The portal has no `middleware.ts`, and `src/app/dev/` sits outside the `(portal)` layout that
-  redirects to `/login` (precedent: `src/app/dev/email-preview/page.tsx`, guarded against production).
-- Components render from hand-written fixtures; type-only DB imports are erased at build.
-- `ClerkProvider` needs a publishable key present, not valid, if the page never calls `auth()`. A
-  synthetic `pk_test_` key built from the dev instance hostname in the root layout's comment works,
-  in `apps/web/.env.local` (gitignored). It is not a real secret; never copy a real key instead.
-- The portal's own Playwright may want a browser build that isn't installed — import studia-web's by
-  absolute path instead.
-- `next dev` writes untracked `AGENTS.md`/`CLAUDE.md` into `apps/web/` and modifies tracked
-  `next-env.d.ts`/`tsconfig.tsbuildinfo`. Delete and restore them, plus the page and `.env.local`.
+   measurement and both shots, and can produce a false "copy differs from the design" finding.
+5. **Give each mock shell `shrink-0`** (or the equivalent). Side-by-side shells in a flex row shrink
+   below their fixed width; a before shot went up at 262px and looked like a real layout.
+6. **An auth provider that only needs a key to be present** can take a synthetic, obviously-fake
+   test key in a gitignored local env file. It is not a real secret; never copy a real key instead.
+7. Dev servers can write untracked or modify tracked files (generated type stubs, build info, agent
+   files). Delete and restore them, plus the page and any env file you added.
 
 ## Signed-in, data-backed surfaces: known blockers
 
-- **`db:seed:rich` may die importing `server-only`.** Run it with the flag `tutors:import` already
-  carries: from `packages/studia-web`, `bunx tsx --conditions=react-server prisma/seed.ts --rich`.
-  Seed an isolated per-ticket database, never the shared one and never staging.
-- **The dev Clerk instance can be at its 100-user quota** — `createUser` returns 403
-  `user_quota_exceeded`. **Do not prune the leftover test users**; that is shared across every
-  checkout. Sign in as an existing user with a Backend-API sign-in token redeemed via
-  `Clerk.client.signIn.create({ strategy: 'ticket', ticket })` + `setActive`, and save Playwright
-  `storageState` — the token is single-use.
+- **Seed an isolated per-ticket database**, never a shared one and never staging (§4 Local
+  database; §3 `db-per-ticket`, and `tests-shared-db` for anything another session may be using).
+  Local database `none`: this surface needs whatever the repo's instructions say, or it is not an
+  option — use a cheaper one.
+- **A development auth instance can be at its user quota** (user creation returns a quota error).
+  **Do not prune the leftover test users**; they are shared across every checkout. Sign in as an
+  existing test user with the provider's server-side sign-in token where it has one, and save
+  Playwright `storageState` — such tokens are usually single-use.
 
-Both are cheaper to avoid than to fix: for a component-level visual change, use Storybook or a
+Both are cheaper to avoid than to fix: for a component-level visual change, use the workshop or a
 preview page.

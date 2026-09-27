@@ -10,14 +10,20 @@ check-out itself, so it stays terse.
 A session that loads the desk-checkout skill is cut off at that point, so the
 drafting session never reports itself and needs no session ID.
 
-A session counts as Studia work when its directory is under the primary repo root,
-the worktrees directory or the legacy portal checkout in ~/.claude/desk-config.md §2
-(without a config: any path with a directory named studia*). Directories listed in
-DESK_CHECKOUT_SIDE_ROOTS (comma-separated) are reported as side projects; anything
-else is marked not Studia work.
+Every session under ~/.claude/projects is considered, whatever repo it ran in. Its scope
+comes from the per-repo desk configs (see desk_repos.py): a session whose directory is under
+a configured repo's §2 Primary repo root or Worktrees directory takes that repo's scope
+(this check-out, other desk repo), the current repo's checkout counts as this check-out
+even unconfigured, directories in DESK_CHECKOUT_SIDE_ROOTS (comma-separated) are side
+projects, and anything else is marked not work for this check-out. Ticket keys are found
+with each in-scope repo's §4 Ticket key pattern.
+
+A session in a configured repo is summarised only when that repo's §3 read-transcripts is
+`yes` (or `ask` and passed with --include <slug>); a session in no configured repo follows
+the current repo's row.
 
 Usage:
-  claude_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD]
+  claude_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD] [--include <slug>]
   claude_activity.py --session <id-prefix> [--tail 6]   # the last substantive replies, in full
 """
 import argparse
@@ -32,6 +38,7 @@ from datetime import datetime
 sys.dont_write_bytecode = True  # a __pycache__ in the installed skill reads as a user edit to install.sh
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import window  # noqa: E402
+import desk_repos  # noqa: E402
 
 HOME = os.path.expanduser("~")
 NOISE_PREFIXES = (
@@ -51,35 +58,11 @@ HOUSEKEEPING = re.compile(
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 PR_IN_COMMAND = re.compile(r"gh pr (?:merge|ready|view|edit|checks|review|comment|close)\s+(?:-\S+\s+\S+\s+)*#?(\d{3,5})\b")
 PR_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
-CONFIG = os.path.join(HOME, ".claude", "desk-config.md")
-CONFIG_ROOT_ROWS = ("Primary repo root", "Worktrees directory", "Legacy studia-portal checkout")
 SELF_MARKER = "desk-checkout"
 
-
-def configured_roots():
-    """The Studia paths from desk-config §2, or None when there is no usable config."""
-    try:
-        text = open(CONFIG, encoding="utf-8").read()
-    except OSError:
-        return None
-    roots = []
-    for row in CONFIG_ROOT_ROWS:
-        m = re.search(r"^\|\s*" + re.escape(row) + r"\s*\|\s*`([^`]+)`", text, re.M)
-        if m and m.group(1) not in ("TODO", "none"):
-            roots.append(os.path.realpath(os.path.expanduser(m.group(1).rstrip("/"))))
-    return tuple(roots) or None
-
-
-def expand_roots(value):
-    return tuple(os.path.realpath(os.path.expanduser(p.strip().rstrip("/"))) for p in value.split(",") if p.strip())
-
-
-def under(cwd, roots):
-    return any(cwd == r or cwd.startswith(r + os.sep) for r in roots)
-
-
-DESK_ROOTS = configured_roots()
-SIDE_ROOTS = expand_roots(os.environ.get("DESK_CHECKOUT_SIDE_ROOTS", ""))
+# Filled in main(): every configured repo, the current one, and the side-project roots.
+REPOS, CURRENT, SIDE_ROOTS = [], None, ()
+TICKET_RES = []
 
 
 def entry_time(entry):
@@ -157,20 +140,31 @@ def repo_label(cwd):
     return rel
 
 
-def is_studia(cwd):
-    if not cwd:
-        return False
-    if DESK_ROOTS is None:
-        return any(part.startswith("studia") for part in cwd.split(os.sep))
-    return under(os.path.realpath(cwd), DESK_ROOTS)
+_scope_cache = {}
 
 
-def scope_of(cwd):
-    if is_studia(cwd):
-        return ""
-    if cwd and under(os.path.realpath(cwd), SIDE_ROOTS):
-        return ", SIDE PROJECT"
-    return ", NOT Studia work"
+def scope_and_repo(cwd):
+    """(scope, Repo or None) for a session directory: this / side / other / none."""
+    if cwd in _scope_cache:
+        return _scope_cache[cwd]
+    repo = desk_repos.repo_for_path(cwd, REPOS, CURRENT)
+    if repo is not None:
+        out = (repo.scope, repo)
+    elif cwd and desk_repos.under(os.path.realpath(cwd), SIDE_ROOTS):
+        out = ("side", None)
+    else:
+        out = ("none", None)
+    _scope_cache[cwd] = out
+    return out
+
+
+def in_scope(cwd):
+    return bool(cwd) and scope_and_repo(cwd)[0] == "this"
+
+
+def scope_suffix(cwd):
+    sc = scope_and_repo(cwd)[0]
+    return "" if sc == "this" else ", " + desk_repos.SCOPE_LABELS[sc]
 
 
 def read_session(path, since, until):
@@ -210,9 +204,10 @@ def read_session(path, since, until):
                         s["commits"].append(m.group(1))
                     s["prs"].update(PR_IN_COMMAND.findall(cmd))
             for blob in filter(None, [prompt, text]):
-                if not is_studia(s["cwd"]):
-                    break  # a non-Studia session relaying Studia news must not merge into Studia items
-                s["tickets"].update(re.findall(r"\bSV-\d{2,5}\b", blob))
+                if not in_scope(s["cwd"]):
+                    break  # a session elsewhere relaying this team's news must not merge into its items
+                for rx in TICKET_RES:
+                    s["tickets"].update(m.group(0) for m in rx.finditer(blob))
                 s["prs"].update(PR_URL.findall(blob))
             if prompt or text or tools:
                 # Span covers substantive events only, so a late /login error doesn't stretch it.
@@ -232,29 +227,45 @@ def tail_mode(prefix, since, until, n):
         print(f"No session starting {prefix} active in the window.")
         return
     s = read_session(matches[0], since, until)
+    ok, note = desk_repos.allowed(scope_and_repo(s["cwd"])[1] or CURRENT, "read-transcripts")
+    if not ok:
+        print(f"Session {s['id'][:8]} withheld: {note}")
+        return
     print(f"# Session {s['id']} — {repo_label(s['cwd'])}, last {n} substantive replies\n")
     for when, text in s["texts"][-n:]:
         print(f"## {when.astimezone().strftime('%H:%M')}\n{text[:2500]}\n")
 
 
 def main():
+    global REPOS, CURRENT, SIDE_ROOTS, TICKET_RES
     ap = argparse.ArgumentParser()
     window.add_day_argument(ap)
+    desk_repos.add_include_argument(ap)
     ap.add_argument("--session", help="print one session's last replies in full instead")
     ap.add_argument("--tail", type=int, default=6)
     ap.add_argument("--prompt-chars", type=int, default=280)
     ap.add_argument("--max-prompts", type=int, default=8)
     args = ap.parse_args()
     since, until = window.resolve(args.day)
+    REPOS, CURRENT = desk_repos.load_all(args.include)
+    SIDE_ROOTS = desk_repos.side_roots()
+    TICKET_RES = [r.ticket_regex for r in REPOS if r.scope == "this" and r.ticket_regex]
 
     if args.session:
         tail_mode(args.session, since, until, args.tail)
         return
 
-    sessions, workers = [], []
+    sessions, workers, withheld = [], [], {}
     for path in find_files(since):
         s = read_session(path, since, until)
         if not s["first"]:
+            continue
+        # Per-repo permission: a configured repo's own §3 read-transcripts decides; a session in
+        # no configured repo follows the current repo's row.
+        owner = scope_and_repo(s["cwd"])[1] or CURRENT
+        ok, note = desk_repos.allowed(owner, "read-transcripts")
+        if not ok:
+            withheld[note] = withheld.get(note, 0) + 1
             continue
         # A session with no tool calls and one short prompt is a probe ("reply with just OK").
         if not s["tools"] and sum(len(p) for p in s["prompts"]) < 60:
@@ -266,15 +277,15 @@ def main():
             workers.append(s)
             continue
         sessions.append(s)
-    order = {"": 0, ", SIDE PROJECT": 1, ", NOT Studia work": 2}
-    sessions.sort(key=lambda s: (order[scope_of(s["cwd"])], s["first"]))
+    sessions.sort(key=lambda s: (desk_repos.SCOPE_ORDER[scope_and_repo(s["cwd"])[0]], s["first"]))
 
-    print(f"# Claude Code activity, {window.label(since)} (Europe/London) — {len(sessions)} sessions\n")
+    tz = since.astimezone().tzname() or "local time"
+    print(f"# Claude Code activity, {window.label(since)} ({tz}) — {len(sessions)} sessions\n")
     if not sessions:
         print("No Claude Code activity in the window.")
     for s in sessions:
         kind = "headless worker" if s["entrypoint"] in ("sdk-cli", "sdk-ts", "sdk-py") else "interactive"
-        scope = scope_of(s["cwd"])
+        scope = scope_suffix(s["cwd"])
         edits = sum(n for t, n in s["tools"].items() if t in EDIT_TOOLS)
         span = f"{s['first'].astimezone():%H:%M}–{s['last'].astimezone():%H:%M}"
         print(f"## {repo_label(s['cwd'])}  [{span}, {kind}{scope}, session {s['id'][:8]}]")
@@ -301,6 +312,8 @@ def main():
         print()
     if workers:
         print(f"({len(workers)} short headless autopilot/preflight sessions omitted)")
+    for note, n in sorted(withheld.items()):
+        print(f"({n} session{'s' if n > 1 else ''} withheld: {note})")
 
 
 if __name__ == "__main__":
