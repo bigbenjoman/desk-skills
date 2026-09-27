@@ -1,0 +1,80 @@
+{
+  "_about": "Third-party skills pinned in desk-skills. vendor/<name>/ holds the exact upstream files at `pin`; install.sh installs them as the ONE real copy in ~/.agents/skills/<name> and links ~/.claude/skills/<name> to it. `bin/skills-upstream check` compares each pin with its source and only reports; `bin/skills-upstream adopt <name>` pulls the newest upstream into vendor/ for review as a git diff. `tree_sha256` is the hash of the vendored folder (sorted relative paths and file contents), recomputed by `skills-upstream verify`.",
+  "skills": {
+    "ux-designer": {
+      "source": {
+        "type": "drive",
+        "publisher": "Yummy Design",
+        "page": "https://yummy-design.notion.site/Claude-UX-UI-Design-Skills-31462791470981a99fe1c993b08c5347",
+        "folder_id": "196AUVl6MC_hp9uzIaVsDoCxvTFDLQ8GU",
+        "file_id": "1sRhwms57CHTIrnZTP_BnxbatrZSRuMbT",
+        "file_name": "ux-ui designer skill Jul 26.zip",
+        "zip_path": "Claude Skills Jul '26/ux-designer.skill",
+        "skill_subdir": "ux-designer"
+      },
+      "pin": {
+        "version": "v3 (July 2026)",
+        "drive_modified": "Jul 9",
+        "zip_sha256": "de297e9765c6e527d64ee7502d63322ca5dc83d0d9aaa71d11493ee262855a7f"
+      },
+      "license": null,
+      "notes": "Ships with ui-designer in one zip. The Notion page announces releases with a 'vN Update' banner; Notion rate-limits scripts, so the check watches the Drive folder.",
+      "tree_sha256": "975f437cd9eb2e0b5100570007ea96c9e2db659d70659f3f14bc97258c5a27eb"
+    },
+    "ui-designer": {
+      "source": {
+        "type": "drive",
+        "publisher": "Yummy Design",
+        "page": "https://yummy-design.notion.site/Claude-UX-UI-Design-Skills-31462791470981a99fe1c993b08c5347",
+        "folder_id": "196AUVl6MC_hp9uzIaVsDoCxvTFDLQ8GU",
+        "file_id": "1sRhwms57CHTIrnZTP_BnxbatrZSRuMbT",
+        "file_name": "ux-ui designer skill Jul 26.zip",
+        "zip_path": "Claude Skills Jul '26/ui-designer.skill",
+        "skill_subdir": "ui-designer"
+      },
+      "pin": {
+        "version": "v3 (July 2026)",
+        "drive_modified": "Jul 9",
+        "zip_sha256": "de297e9765c6e527d64ee7502d63322ca5dc83d0d9aaa71d11493ee262855a7f"
+      },
+      "license": null,
+      "notes": "Ships with ux-designer in one zip.",
+      "tree_sha256": "abc4ba2bd6427f0027b87be5739963e3269b549ab24ff911105ae98237f5ca29"
+    },
+    "ux-copywriter": {
+      "source": {
+        "type": "drive",
+        "publisher": "Yummy Design",
+        "page": "https://yummy-design-sprint.notion.site/Claude-UX-Copywriter-Skill-31962791470980989abdcd6312890920",
+        "folder_id": "1lSwUatVOzOX5TGWgBDjKA820RiUsVLNr",
+        "file_id": "11abquTJu5apXPRidznmrc4XmBBUx7Fm5",
+        "file_name": "ux-copywriter.zip",
+        "zip_path": "",
+        "skill_subdir": "ux-copywriter"
+      },
+      "pin": {
+        "version": "March 2026",
+        "drive_modified": "Mar 4",
+        "zip_sha256": "cecce057715b334133108434bf560460db2e1e036fbd9d550328199dbf78268d"
+      },
+      "license": null,
+      "notes": "",
+      "tree_sha256": "08db7916908c28f87aa0e3d1805e0d2ed72004124193bae8a9584ce435813b33"
+    },
+    "context-audit": {
+      "source": {
+        "type": "github",
+        "repo": "Vesely/skills",
+        "path": "context-audit",
+        "install": "npx skills@latest add Vesely/skills/context-audit"
+      },
+      "pin": {
+        "commit": "8560b4f2d",
+        "date": "2026-04-13"
+      },
+      "license": null,
+      "notes": "The repo has no licence file. A Codex-reworded variant existed in voicepa's .agents/skills; this is the upstream Claude Code version.",
+      "tree_sha256": "6570bad1023212ba9b64da6584b991a468e47b2e7c636b0f17fd35ef92b8e091"
+    }
+  }
+}

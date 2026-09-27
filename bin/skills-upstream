@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Check and upgrade the third-party skills pinned in desk-skills' vendor/ (brew-style).
+
+  skills-upstream list                 every pinned skill, its source and pin
+  skills-upstream outdated [--json]    compare each pin with its source; exit 10 if any is outdated
+  skills-upstream upgrade <name>...    pull the newest upstream into vendor/<name> and update the pin
+  skills-upstream upgrade --all        ...for every outdated skill
+  skills-upstream verify               vendor/ matches sources.json, and ~/.agents/skills matches vendor/
+  skills-upstream plugins [--json]     installed Claude Code plugins vs the version their marketplace pins
+                                       (run `claude plugin marketplace update` first); exit 10 if any is behind
+  skills-upstream rehash               record each vendor/<name> tree hash in sources.json (after a hand edit)
+
+Sources (vendor/sources.json):
+  github  {repo, path}                 newest commit touching <path> vs pin.commit (via `gh`)
+  drive   {folder_id, file_name, ...}  the public folder's file list vs pin.drive_modified and file name;
+                                       a changed zip is downloaded and its sha256 compared with the pin
+
+`upgrade` only changes files inside vendor/ (review them with `git diff`); installing them is
+install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify`, which only reads.
+Last successful `outdated` run is stamped in ~/.claude/desk/skills-upstream.last.
+"""
+
+import hashlib
+import html
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import zipfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+VENDOR = os.path.join(ROOT, "vendor")
+SOURCES = os.path.join(VENDOR, "sources.json")
+INSTALLED = os.path.expanduser("~/.agents/skills")
+STAMP = os.path.expanduser("~/.claude/desk/skills-upstream.last")
+UA = {"User-Agent": "Mozilla/5.0 (desk-skills skills-upstream)"}
+
+
+def die(msg, code=2):
+    print(f"skills-upstream: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load():
+    with open(SOURCES) as f:
+        return json.load(f)
+
+
+def save(data):
+    tmp = SOURCES + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, SOURCES)
+
+
+RUNTIME_MARKERS = {".DS_Store", ".in_use", ".orphaned_at"}   # written by macOS / Claude Code, not content
+
+
+def tree_files(path):
+    out = {}
+    for dirpath, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", "node_modules", ".git") and d not in RUNTIME_MARKERS]
+        for name in files:
+            if name in RUNTIME_MARKERS or name.endswith(".pyc"):
+                continue
+            full = os.path.join(dirpath, name)
+            with open(full, "rb") as f:
+                out[os.path.relpath(full, path)] = hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
+def tree_changes(new, old):
+    """Relative paths that differ between two folders, marked +added, -removed or ~changed."""
+    a, b = tree_files(new), tree_files(old)
+    return ([f"+{p}" for p in sorted(a.keys() - b.keys())] + [f"-{p}" for p in sorted(b.keys() - a.keys())]
+            + [f"~{p}" for p in sorted(a.keys() & b.keys()) if a[p] != b[p]])
+
+
+def tree_sha256(path):
+    """Hash of a skill folder: sorted relative paths plus contents; runtime markers and bytecode ignored."""
+    h = hashlib.sha256()
+    for dirpath, dirs, files in os.walk(path):
+        dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", "node_modules") and d not in RUNTIME_MARKERS and d != ".git")
+        for name in sorted(files):
+            if name in RUNTIME_MARKERS or name.endswith(".pyc"):
+                continue
+            full = os.path.join(dirpath, name)
+            h.update(os.path.relpath(full, path).encode() + b"\0")
+            with open(full, "rb") as f:
+                h.update(f.read())
+            h.update(b"\0")
+    return h.hexdigest()
+
+
+def http(url, timeout=60):
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def gh(*args):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:300])
+    return r.stdout
+
+
+# ---- github ------------------------------------------------------------------------------------
+def github_latest(src):
+    out = gh("api", f"repos/{src['repo']}/commits?path={src['path']}&per_page=1",
+             "--jq", ".[0] | [.sha, .commit.author.date[0:10], (.commit.message | split(\"\\n\")[0])] | @tsv")
+    sha, date, msg = out.strip().split("\t", 2)
+    return {"commit": sha[:9], "date": date, "message": msg}
+
+
+def github_count_since(src, pin_commit):
+    out = gh("api", f"repos/{src['repo']}/commits?path={src['path']}&per_page=100", "--jq", ".[].sha")
+    shas = out.split()
+    for i, s in enumerate(shas):
+        if s.startswith(pin_commit):
+            return i
+    return None  # pin not in the last 100 commits of this path
+
+
+def github_fetch(src, commit, dest):
+    """Copy every file under src.path at commit into dest."""
+    tree = json.loads(gh("api", f"repos/{src['repo']}/git/trees/{commit}?recursive=1"))
+    prefix = src["path"].rstrip("/") + "/"
+    files = [t["path"] for t in tree["tree"] if t["type"] == "blob" and t["path"].startswith(prefix)]
+    if not files:
+        raise RuntimeError(f"nothing under {src['path']} at {commit}")
+    for p in files:
+        raw = gh("api", f"repos/{src['repo']}/contents/{p}?ref={commit}", "--jq", ".content")
+        import base64
+        data = base64.b64decode(raw)
+        out = os.path.join(dest, p[len(prefix):])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(data)
+
+
+# ---- drive -------------------------------------------------------------------------------------
+def drive_listing(folder_id):
+    page = http(f"https://drive.google.com/embeddedfolderview?id={folder_id}").decode("utf-8", "replace")
+    rows = []
+    for m in re.finditer(r'<a href="https://drive.google.com/file/d/([^/]+)/[^"]*"[^>]*>.*?'
+                         r'<div class="flip-entry-title">(.*?)</div>.*?'
+                         r'<div class="flip-entry-last-modified"><div>(.*?)</div>', page, re.S):
+        rows.append({"file_id": m.group(1), "file_name": html.unescape(m.group(2)),
+                     "modified": html.unescape(m.group(3))})
+    if not rows and "flip-entry" not in page:
+        raise RuntimeError(f"could not read Drive folder {folder_id} (is it still public?)")
+    return rows
+
+
+def drive_download(file_id):
+    return http(f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t", 120)
+
+
+def drive_extract(zip_bytes, src, dest):
+    """Unpack the skill folder from the zip (a nested .skill is itself a zip)."""
+    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    inner = z
+    if src.get("zip_path"):
+        names = [n for n in z.namelist() if n.endswith(src["zip_path"])]
+        if not names:
+            raise RuntimeError(f"{src['zip_path']} not in {src['file_name']}")
+        inner = zipfile.ZipFile(io.BytesIO(z.read(names[0])))
+    sub = src["skill_subdir"].rstrip("/") + "/"
+    members = [n for n in inner.namelist() if not n.endswith("/") and "/__MACOSX/" not in "/" + n
+               and os.path.basename(n) != ".DS_Store"]
+    # the skill may sit at the root of the archive or under <skill_subdir>/, possibly nested once more
+    roots = sorted({n[: n.index(sub) + len(sub)] for n in members if sub in n}, key=len)
+    base = roots[0] if roots else ""
+    picked = [n for n in members if n.startswith(base)]
+    if not any(os.path.basename(n) == "SKILL.md" for n in picked):
+        raise RuntimeError(f"no SKILL.md for {src['skill_subdir']} in the archive")
+    for n in picked:
+        out = os.path.join(dest, n[len(base):])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(inner.read(n))
+
+
+# ---- commands ----------------------------------------------------------------------------------
+def check_one(name, entry):
+    src, pin = entry["source"], entry["pin"]
+    if src["type"] == "github":
+        latest = github_latest(src)
+        behind = github_count_since(src, pin["commit"])
+        outdated = not latest["commit"].startswith(pin["commit"][:7])
+        return {"name": name, "outdated": outdated, "pinned": f"{pin['commit']} ({pin['date']})",
+                "latest": f"{latest['commit']} ({latest['date']}) {latest['message']}",
+                "behind": behind, "source": f"github:{src['repo']}/{src['path']}"}
+    if src["type"] == "drive":
+        rows = drive_listing(src["folder_id"])
+        same = [r for r in rows if r["file_id"] == src["file_id"]]
+        cur = same[0] if same else (rows[0] if rows else None)
+        if cur is None:
+            raise RuntimeError("folder is empty")
+        changed = (cur["file_id"] != src["file_id"] or cur["file_name"] != src["file_name"]
+                   or cur["modified"] != pin["drive_modified"])
+        extra = [r["file_name"] for r in rows if r["file_id"] != src["file_id"]]
+        return {"name": name, "outdated": changed, "pinned": f"{src['file_name']} ({pin['drive_modified']})",
+                "latest": f"{cur['file_name']} ({cur['modified']})" + (f"; also in folder: {', '.join(extra)}" if extra else ""),
+                "behind": None, "source": f"drive:{src['folder_id']}", "_row": cur}
+    raise RuntimeError(f"unknown source type {src['type']}")
+
+
+def cmd_list(data):
+    for name, e in sorted(data["skills"].items()):
+        s, p = e["source"], e["pin"]
+        where = f"{s['repo']}/{s['path']}" if s["type"] == "github" else f"Drive {s['file_name']} ({s.get('publisher', '')})"
+        ver = p.get("commit") or p.get("version")
+        print(f"{name:22} {s['type']:7} {where}  @ {ver}")
+
+
+def cmd_outdated(data, as_json=False):
+    results, errors = [], []
+    for name, e in sorted(data["skills"].items()):
+        try:
+            results.append(check_one(name, e))
+        except Exception as ex:  # noqa: BLE001 - a source being unreachable is reported, never fatal
+            errors.append({"name": name, "error": str(ex)})
+    for r in results:
+        r.pop("_row", None)
+    if as_json:
+        print(json.dumps({"results": results, "errors": errors}, indent=2))
+    else:
+        for r in results:
+            mark = "OUTDATED" if r["outdated"] else "ok      "
+            behind = f"  ({r['behind']} newer commit{'s' if r['behind'] != 1 else ''})" if r["outdated"] and r["behind"] else ""
+            print(f"{mark} {r['name']:22} pinned {r['pinned']}" + (f"\n         {'':22} latest {r['latest']}{behind}" if r["outdated"] else ""))
+        for e in errors:
+            print(f"ERROR    {e['name']:22} {e['error']}")
+    if not errors:
+        os.makedirs(os.path.dirname(STAMP), exist_ok=True)
+        with open(STAMP, "w") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
+    if errors:
+        return 3
+    return 10 if any(r["outdated"] for r in results) else 0
+
+
+def cmd_upgrade(data, names):
+    if names == ["--all"]:
+        names = [n for n, e in sorted(data["skills"].items()) if check_one(n, e)["outdated"]]
+        if not names:
+            print("everything is up to date")
+            return 0
+    zips = {}
+    for name in names:
+        if name not in data["skills"]:
+            die(f"{name} is not in vendor/sources.json (see `skills-upstream list`)")
+        e = data["skills"][name]
+        src, pin = e["source"], e["pin"]
+        tmp = tempfile.mkdtemp(prefix=f"skills-upstream-{name}-")
+        try:
+            if src["type"] == "github":
+                latest = github_latest(src)
+                github_fetch(src, latest["commit"], tmp)
+                new_pin = {"commit": latest["commit"], "date": latest["date"]}
+                label = f"{pin['commit']} -> {latest['commit']} ({latest['date']}: {latest['message']})"
+            else:
+                row = check_one(name, e)["_row"]
+                if row["file_id"] not in zips:
+                    zips[row["file_id"]] = drive_download(row["file_id"])
+                blob = zips[row["file_id"]]
+                drive_extract(blob, {**src, "file_name": row["file_name"]}, tmp)
+                src.update({"file_id": row["file_id"], "file_name": row["file_name"]})
+                new_pin = {**pin, "drive_modified": row["modified"], "zip_sha256": hashlib.sha256(blob).hexdigest()}
+                new_pin["version"] = f"{row['file_name']} ({row['modified']})"
+                label = f"{pin.get('version')} -> {new_pin['version']}"
+            dest = os.path.join(VENDOR, name)
+            if tree_sha256(tmp) == (tree_sha256(dest) if os.path.isdir(dest) else ""):
+                print(f"{name}: upstream content is identical to vendor/{name}; pin updated only")
+            else:
+                shutil.rmtree(dest, ignore_errors=True)
+                shutil.copytree(tmp, dest)
+                print(f"{name}: {label}")
+            e["pin"] = new_pin
+            e["tree_sha256"] = tree_sha256(dest)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    save(data)
+    print("\nReview:  git -C", ROOT, "diff --stat -- vendor/   then install with ./install.sh")
+    return 0
+
+
+PLUGINS_DIR = os.path.expanduser("~/.claude/plugins")
+
+
+def cmd_plugins(as_json=False):
+    """Compare each installed plugin with the commit its marketplace pins.
+
+    Marketplaces pin a plugin to a git sha. A plugin reports either that sha (as its version) or a
+    semver from its own .claude-plugin/plugin.json; for the latter, the pinned sha's plugin.json is
+    read from GitHub. Anything that cannot be compared is reported as unknown, never as current."""
+    installed = json.loads(subprocess.run(["claude", "plugin", "list", "--json"], capture_output=True,
+                                          text=True, check=True).stdout or "[]")
+    rows = []
+    for p in installed:
+        name, _, market = p["id"].partition("@")
+        row = {"plugin": p["id"], "installed": p.get("version"), "latest": None, "status": "unknown", "note": ""}
+        mfile = os.path.join(PLUGINS_DIR, "marketplaces", market, ".claude-plugin", "marketplace.json")
+        try:
+            entry = next(e for e in json.load(open(mfile))["plugins"] if e.get("name") == name)
+        except Exception:  # noqa: BLE001
+            row["note"] = f"no entry in {market}'s marketplace.json"
+            rows.append(row)
+            continue
+        src = entry.get("source")
+        if isinstance(src, dict) and src.get("sha"):
+            sha = src["sha"]
+            inst = str(p.get("version") or "")
+            if re.fullmatch(r"[0-9a-f]{7,40}", inst):
+                row["latest"] = sha[:12]
+                row["status"] = "ok" if sha.startswith(inst) or inst.startswith(sha[:len(inst)]) else "outdated"
+            else:
+                m = re.search(r"github\.com[/:]([^/]+/[^/.]+)", src.get("url", "") or src.get("repo", ""))
+                path = (src.get("path") or "").strip("/")
+                if m:
+                    try:
+                        mani = gh("api", f"repos/{m.group(1)}/contents/{(path + '/') if path else ''}.claude-plugin/plugin.json?ref={sha}",
+                                  "--jq", ".content")
+                        import base64
+                        ver = json.loads(base64.b64decode(mani)).get("version")
+                        row["latest"] = ver
+                        row["status"] = "ok" if ver == inst else ("outdated" if ver else "unknown")
+                    except Exception as ex:  # noqa: BLE001
+                        row["note"] = f"could not read plugin.json at {sha[:9]}: {str(ex)[:80]}"
+                else:
+                    row["note"] = "pinned source is not a GitHub repo"
+        elif isinstance(src, str) and src.startswith("./"):
+            # The plugin lives inside the marketplace itself. `claude plugin marketplace update`
+            # refreshes that copy, so the installed plugin is current exactly when its folder
+            # matches the marketplace's folder for it.
+            mdir = os.path.join(PLUGINS_DIR, "marketplaces", market, src[2:])
+            inst_dir = p.get("installPath") or ""
+            if os.path.isdir(mdir) and os.path.isdir(inst_dir):
+                same = tree_sha256(mdir) == tree_sha256(inst_dir)
+                row["latest"] = "marketplace copy"
+                row["status"] = "ok" if same else "outdated"
+                if not same:
+                    row["note"] = "changed: " + ", ".join(tree_changes(mdir, inst_dir)[:6])
+            else:
+                row["note"] = "marketplace or installed folder not found"
+        elif entry.get("version"):
+            row["latest"] = entry["version"]
+            row["status"] = "ok" if entry["version"] == p.get("version") else "outdated"
+        else:
+            row["note"] = "marketplace entry has no pinned sha or version"
+        rows.append(row)
+    if as_json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for r in rows:
+            mark = {"ok": "ok      ", "outdated": "OUTDATED", "unknown": "UNKNOWN "}[r["status"]]
+            print(f"{mark} {r['plugin']:48} installed {r['installed']}" + (f" -> {r['latest']}" if r["status"] == "outdated" else "") + (f"  ({r['note']})" if r["note"] else ""))
+    return 10 if any(r["status"] == "outdated" for r in rows) else 0
+
+
+def cmd_verify(data):
+    bad = 0
+    for name, e in sorted(data["skills"].items()):
+        v = os.path.join(VENDOR, name)
+        if not os.path.isdir(v):
+            print(f"MISSING  vendor/{name}")
+            bad = 1
+            continue
+        vh = tree_sha256(v)
+        if e.get("tree_sha256") and e["tree_sha256"] != vh:
+            print(f"CHANGED  vendor/{name} differs from sources.json tree_sha256 (edited by hand?)")
+            bad = 1
+        inst = os.path.join(INSTALLED, name)
+        if not os.path.isdir(inst):
+            print(f"NOT INSTALLED  ~/.agents/skills/{name} (run ./install.sh)")
+            bad = 1
+        elif tree_sha256(inst) != vh:
+            print(f"DRIFTED  ~/.agents/skills/{name} differs from vendor/{name} (run ./install.sh)")
+            bad = 1
+        else:
+            print(f"ok       {name}")
+    return bad
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    data = load()
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "list":
+        cmd_list(data)
+        return 0
+    if cmd in ("outdated", "check"):
+        return cmd_outdated(data, "--json" in rest)
+    if cmd == "upgrade":
+        if not rest:
+            die("usage: skills-upstream upgrade <name>... | --all")
+        return cmd_upgrade(data, rest)
+    if cmd == "verify":
+        return cmd_verify(data)
+    if cmd == "plugins":
+        return cmd_plugins("--json" in rest)
+    if cmd == "rehash":
+        for name in data["skills"]:
+            data["skills"][name]["tree_sha256"] = tree_sha256(os.path.join(VENDOR, name))
+        save(data)
+        print(f"recorded {len(data['skills'])} tree hashes")
+        return 0
+    if cmd == "stamp-age-days":
+        try:
+            print(int((time.time() - os.path.getmtime(STAMP)) // 86400))
+        except OSError:
+            print(9999)
+        return 0
+    die(f"unknown command {cmd} (try --help)")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

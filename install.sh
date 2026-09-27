@@ -243,10 +243,14 @@ esac
 
 shipped=" "
 count=0
-for dir in "$SRC"/skills/desk-*/; do
+vcount=0
+# desk's own skills, then the third-party skills pinned in vendor/ (vendor/sources.json says where
+# each came from). Either way ~/.agents/skills/<name> is the ONE real copy and ~/.claude/skills/<name>
+# is a link to it; a loose real copy found in ~/.claude/skills is moved to the backup first.
+for dir in "$SRC"/skills/desk-*/ "$SRC"/vendor/*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
-  shipped="$shipped$name "
+  case "$dir" in "$SRC"/vendor/*) vcount=$((vcount + 1)) ;; *) shipped="$shipped$name " ;; esac
   install_dir "$dir" "$AGENTS/$name"
   count=$((count + 1))
   if [ "$LINK_MODE" = each ]; then
@@ -269,7 +273,7 @@ done
 # The config template, where /desk-setup reads it to find rows a newer version added.
 TEMPLATE="$AGENTS/desk-setup/references/desk-config.template.md"
 [ -d "$AGENTS/desk-setup" ] && install_file "$SRC/desk-config.md" "$TEMPLATE"
-wrote "skills   ~/.agents/skills/desk-* ($count, replaced wholesale)"
+wrote "skills   ~/.agents/skills/desk-* and $vcount vendored ($count, replaced wholesale)"
 wrote "template ~/.agents/skills/desk-setup/references/desk-config.template.md (from desk-config.md)"
 wrote "pristine ~/.agents/.desk-pristine (what this install wrote, to tell your edits from ours)"
 [ "$LINK_MODE" = each ] && wrote "links    ~/.claude/skills/desk-* -> ~/.agents/skills"
@@ -343,6 +347,15 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-env"
   ok "desk-env -> ~/.local/bin (desk-env where: which repo config applies here)"
   wrote "desk-env ~/.local/bin/desk-env"
+  # skills-upstream runs from this checkout (vendor/ lives here), so the shim records where it is.
+  UP_SHIM="$(mktemp)"
+  printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: check and upgrade the pinned third-party skills.\nexec python3 "%s" "$@"\n' \
+    "$SRC/bin/skills-upstream" > "$UP_SHIM"
+  install_file "$UP_SHIM" "$HOME/.local/bin/skills-upstream"; rm -f "$UP_SHIM"
+  chmod +x "$HOME/.local/bin/skills-upstream"
+  printf '%s\n' "$SRC" > "$DESKDIR/source-checkout"
+  ok "skills-upstream -> ~/.local/bin (runs from $SRC)"
+  wrote "shim     ~/.local/bin/skills-upstream, ~/.claude/desk/source-checkout"
 else
   note "this checkout ships no desk/bin; skipped"
 fi
@@ -633,6 +646,28 @@ done
 [ "$configured" = 0 ] && note "no repo is configured yet: run /desk-setup inside each repo you want desk in"
 note "template /desk-setup writes from: ~/.agents/skills/desk-setup/references/desk-config.template.md"
 [ "$OS" = wsl ] && note "WSL: /desk-setup will ask for a Windows-visible handoff directory and a memory ceiling"
+
+# ---------------------------------------------------------------------------------------------
+section "Pinned third-party skills: upstream check"
+
+# Upstreams change rarely, so this runs at most every 30 days; `/desk-update` or
+# `skills-upstream outdated` checks on demand. It only reports; nothing is upgraded here.
+if [ -f "$SRC/vendor/sources.json" ]; then
+  age="$(python3 "$SRC/bin/skills-upstream" stamp-age-days 2>/dev/null || echo 9999)"
+  if [ "$CHECK_ONLY" = 1 ]; then
+    note "last checked ${age} day(s) ago; not checking under --check"
+  elif [ "${age:-9999}" -ge 30 ]; then
+    rc=0; out="$(python3 "$SRC/bin/skills-upstream" outdated 2>&1)" || rc=$?
+    printf '%s\n' "$out" | sed 's/^/        /'
+    case "$rc" in
+      0)  ok "every pinned skill matches its upstream" ;;
+      10) warn "upstream has newer versions (above). Review and adopt them with /desk-update" ;;
+      *)  warn "could not reach every source (above); try /desk-update later" ;;
+    esac
+  else
+    ok "checked ${age} day(s) ago; next check after 30 days (or run /desk-update)"
+  fi
+fi
 
 printf '\nDone. %s warning(s) above.\n' "$WARNINGS"
 if [ -n "$WROTE" ]; then
