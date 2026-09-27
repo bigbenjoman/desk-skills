@@ -228,8 +228,8 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 ## 3c. Harness rules written by setup
 
 `/desk-setup` adds Claude Code `permissions` allow rules for your `yes` rows to **this repo's**
-`<Primary repo root>/.claude/settings.local.json` (gitignored by Claude Code, and copied into each
-worktree `setup-worktree.sh` creates), so a grant in one repo never reaches another. The always-on
+`<Primary repo root>/.claude/settings.local.json` (it must be gitignored; setup checks, and copies it into worktrees you create yourself, but
+**never** into an autopilot worker's worktree: workers get their own rules built from §3), so a grant in one repo never reaches another. The always-on
 deny rules for the `never` rows live in `~/.claude/settings.json`, because they only take capability
 away. Setup records only rules it added (never ones you had), every row owning each, and any guard it
 removed. Revoking any owning row removes the rule. Machine copy:
