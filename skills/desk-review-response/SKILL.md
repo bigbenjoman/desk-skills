@@ -95,11 +95,15 @@ exist when they commented.
 Each of these is a write under the user's GitHub account — check the config §3 row first
 (`pr-reply` to reply and resolve, `pr-self-review-comment` for the self-review, `git-push` for fixes).
 
-- The self-review goes up as one `COMMENTED` review, body opening `<!-- pullbot:local -->`. The
-  marker is a fixed protocol string shared with `desk-ticket`, `desk-autopilot` and
-  `desk-clearance`, whatever §4 Local review command is; keep it verbatim.
-- A later "fixed in `<sha>`" follow-up opens `<!-- pullbot:reply -->` instead — it posts at a head
-  nothing has reviewed, and the review marker would claim otherwise.
+- The self-review goes up as one `COMMENTED` review whose body opens with **the local-review marker
+  §4 Local review command defines** (for `/pullbot`, `<!-- pullbot:local -->`), then its verdict
+  marker, exactly as `desk-ticket` Stage 7 and the autopilot worker contract post it. The markers
+  belong to the review command, not to desk: find them in its docs or in a review it has already
+  posted, and keep them verbatim, because `desk-clearance` and any required check match on them.
+  A command that defines no marker gets none; never invent one.
+- A later "fixed in `<sha>`" follow-up opens with the command's reply marker instead (for
+  `/pullbot`, `<!-- pullbot:reply -->`) and carries no verdict — it posts at a head nothing has
+  reviewed, and the review marker would claim otherwise.
 - **Never `--approve` or `--request-changes`.**
 - Never post a verdict at a commit that already has one with different counts; changed counts need
   a new run.

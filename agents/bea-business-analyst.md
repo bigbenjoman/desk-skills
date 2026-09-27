@@ -78,7 +78,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
 
    Ask about persona, money, and data-visibility implications early — they are where requirements most often turn out to be incomplete.
 
-5. **Before You Draft — Check for Duplicates**: search the tracker for existing tickets covering the same ground and surface anything close — `desk-jira search` (JQL) with Tracker `jira`, `gh issue list --search "<terms>" --state all` otherwise. Raising a duplicate wastes more time than the search costs.
+5. **Before You Draft — Check for Duplicates**: search the tracker for existing tickets covering the same ground and surface anything close — `desk-jira search` (JQL) with Tracker `jira`, `gh issue list --search "<terms>" --state all` otherwise. Raising a duplicate wastes more time than the search costs. `desk-jira search` checks its credentials before it searches and exits non-zero on a bad or expired token, so an empty result with exit 0 genuinely means no matches; a non-zero exit means the search did not run, and you say so rather than reporting "no duplicates".
 
 6. **Ticket Authoring**: once you have sufficient detail, draft a comprehensive issue. If §5 Ticket format names the sections, use those; otherwise:
    - **Project**: §4 Jira project unless told otherwise; with Tracker `none`, the current GitHub repo

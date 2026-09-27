@@ -63,7 +63,9 @@ the project copy over the user-level one.
 - The folder name is the repo's GitHub `owner__name`, read from `git remote get-url origin`. Every
   worktree of a repo finds the same config, so autopilot workers need no copying.
 - Nothing is written into the repo itself except the Claude Code allow rules you grant, which go in
-  the repo's `.claude/settings.local.json`. Claude Code keeps that file out of git.
+  the repo's `.claude/settings.local.json`. Setup refuses to write them unless git ignores that file,
+  and recommends adding it to the repo's own `.gitignore`. Autopilot workers never get a copy: their
+  settings are generated from the config, outside the repo.
 - `desk-env where` shows which config applies in the current directory.
 - A skill run in a repo with no config stops and offers `/desk-setup`. Values never carry over
   between repos unless you choose them again. Setup can *start* from another repo's answers to save
@@ -77,8 +79,8 @@ What lives in each repo's config (template: [`desk-config.md`](desk-config.md)):
 | §1 Who you are | name, GitHub handle, Jira email and account, git author, all per repo |
 | §2 Paths | main checkout, worktrees, handoff and backup folders |
 | §3 Permissions | the allowlist: every capability `yes`, `ask` or `no`, answered by you |
-| §3b Autonomy | budgets, concurrency, memory gates, dev-server port |
-| §4 Tracker, tools and team | Jira site/project/states/fields (or `none`), required checks, merge method, local review command, toolchain commands, databases, staging, Vercel, Slack, people by role |
+| §3b Cost and autonomy | budgets, concurrency, memory gates, dev-server port |
+| §4 Tracker, tools and team | Jira site/project/states/fields (or `none`), other work id patterns, required and advisory checks, merge holds, merge method, local review command, toolchain commands, databases, staging, Vercel, Slack, people by role |
 | §5 Conventions | branch and PR title format, PR body, AI attribution, ticket format, the repo's own instruction files |
 
 ## Install
@@ -93,7 +95,9 @@ The installer checks your tools, then:
 
 - installs the skills, the eleven subagents and `/userflow` (`~/.claude/agents`, `~/.claude/commands`;
   a same-named copy you already had is backed up first), the autopilot scripts (`~/.claude/desk/bin`), `desk-env` and `desk-jira`
-  (`~/.local/bin`), and a hook that blocks AI attribution **only in repos whose config forbids it**
+  (`~/.local/bin`), and a hook that blocks AI attribution **only in repos whose config forbids it**,
+  judged per git or `gh` subcommand by the repo that subcommand targets (so `git -C other commit`
+  follows the other repo's rule)
 - **asks first** before changing `~/.claude/settings.json` (registering the hook, adding the
   always-on deny rules), installing plugins (superpowers, codex, playwright, code-review,
   code-simplifier, frontend-design, vercel), replacing a `desk-jira` it didn't install, or patching
@@ -145,17 +149,21 @@ Jira sets §4 Tracker to `none`; the ticket skills then work from a plain descri
 1. **Triage** reads each ticket and flags anything it can't do alone.
 2. **Plan** orders the batch so tickets touching the same files don't collide.
 3. **Ask once**: every open question for the batch, in one go.
-4. **Run**: one headless worker per ticket, each in its own worktree, port and (if the repo has one)
-   database, limited to the permissions you granted in this repo.
+4. **Run**: one headless worker per ticket, each in its own worktree and port, limited to the
+   permissions you granted in this repo. A worker gets its own database where the repo has a local
+   one; otherwise its database variables are blanked, so no worker can reach a shared or production
+   database.
 5. **Merge**: if you allowed merging in this repo, each PR is merged with the repo's merge method
-   once its required checks go green, one at a time. The recommended settings leave merging to you,
-   so green PRs are reported instead.
+   once it is green at its head (the config's one definition), pinned to that commit, one at a time.
+   PRs touching a path the config marks as a merge hold are always left for you. The recommended
+   settings leave merging to you, so green PRs are reported instead.
 6. **Park**: anything that needs a person waits, and you get a notification.
 
 Run `/desk-autopilot` again to check progress, answer a parked question or resume. Batch state is
 kept per repo, so two repos can run batches at once. Workers keep going if you close the session.
-Their deny rules catch mistakes (a stray `--force`, pushing through `git -C`), not a deliberate
-workaround; the skills themselves are what keep the work in bounds.
+A worker can push only its own branch and cannot merge, undraft, run git config or aliases, or
+write through `gh api`. Those deny rules catch mistakes, not every deliberate workaround; the skills
+themselves are what keep the work in bounds.
 
 ## Updating
 

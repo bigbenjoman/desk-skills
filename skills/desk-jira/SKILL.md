@@ -72,7 +72,15 @@ What the CLI does for you, and the traps it still has:
 - **Bodies are positional.** `comment <KEY> <body-file|text>`, and `create`'s description the same
   way. There is no `--file` flag. The CLI refuses a body that looks like a flag or a missing
   `.md`/`.txt`. Write approved text to a file and pass the path. The literal-string form of
-  `create` can return a bare 400, and a file avoids shell-quoting anyway.
+  `create` can return a bare 400, and a file avoids shell-quoting anyway. **The file must be inside
+  the repo, `$DESK_STATE` or a temp directory**: the CLI refuses any other path (and `field=@path`
+  and `attach` the same way), so it can never post another repo's credentials by mistake.
+- **Reads prove the login first.** `search`, `get` and `comments` check the credentials before
+  querying and exit non-zero on a bad or expired token, because Jira answers an anonymous search
+  with 200 and no issues. An empty `search` with exit 0 is a real "no matches"; a non-zero exit is
+  a search that did not run, never "nothing found".
+- **Credentials never reach an argv.** The CLI hands them to curl on stdin (`curl -K -`); a recipe
+  you run by hand does the same (`references/jira-rest-recipes.md`).
 - **`search` shows the §4 Priority custom field** in its third column when §4 Priority names one
   (`desk-jira where` prints which), otherwise the built-in priority. For anything you will act on,
   confirm with `desk-jira get <KEY>`, which prints every set custom field by name (`--json` for raw).

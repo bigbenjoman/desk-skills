@@ -10,10 +10,16 @@ DIR="$(desk-jira where --dir)"                       # ~/.config/desk/repos/<slu
 SITE="$(desk-env get jira-site | awk '{print $1}')"  # §4 Jira site
 PROJECT="$(desk-env get jira-project | awk '{print $1}')"  # §4 Jira project key
 EMAIL="${JIRA_EMAIL:-$(tr -d ' \t\r\n' < "$DIR/jira-email")}"
-AUTH="$EMAIL:$(tr -d ' \t\r\n' < "$DIR/atlassian-token")"
+# Credentials go to curl as a config on stdin (`-K -`), never on its argv, where `ps` shows them to
+# every user on the machine. printf is a shell builtin, so it does not put them on an argv either.
+jcurl() { printf 'user = "%s:%s"\n' "$EMAIL" "$(tr -d ' \t\r\n' < "$DIR/atlassian-token")" | curl -K - -sS "$@"; }
 ```
 
-Never echo `$AUTH`, and never paste the token into a command you will show in the conversation.
+Never echo the token, never pass it as `-u`, and never paste it into a command you will show in the
+conversation. `jcurl` reads stdin for the credentials, so send a body with `-d` or `--data-binary
+@<file>` (a file inside the repo, `$DESK_STATE` or a temp dir), never on stdin. Before trusting an
+empty read, check `desk-jira whoami` succeeds: Jira answers an anonymous request with 200 and no
+issues.
 
 ## Read every write back
 
@@ -33,12 +39,12 @@ A 2xx is not proof. Past failures all returned success:
 names suggest creates the link backwards, and it still returns 201.
 
 ```bash
-curl -sS -u "$AUTH" -X POST -H 'Content-Type: application/json' \
+jcurl -X POST -H 'Content-Type: application/json' \
   "https://$SITE/rest/api/3/issueLink" \
   -d '{"type":{"name":"Blocks"},"inwardIssue":{"key":"ABC-2"},"outwardIssue":{"key":"ABC-1"}}'
 
 # read back (read-only)
-curl -sS -u "$AUTH" "https://$SITE/rest/api/3/issue/ABC-1?fields=issuelinks" | jq -r '
+jcurl "https://$SITE/rest/api/3/issue/ABC-1?fields=issuelinks" | jq -r '
   .fields.issuelinks[] | if .outwardIssue then "\(.type.outward) \(.outwardIssue.key)"
                          else "\(.type.inward) \(.inwardIssue.key)" end'
 ```
@@ -52,11 +58,11 @@ No CLI subcommand. `desk-jira comments <KEY>` prints each comment's id.
 
 ```bash
 # edit — comments hold no media, so v2 wiki markup is safe (200 = applied)
-curl -sS -u "$AUTH" -X PUT -H 'Content-Type: application/json' \
+jcurl -X PUT -H 'Content-Type: application/json' \
   "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>" -d "$(jq -n --rawfile b body.md '{body:$b}')"
 
 # delete a mistaken comment (204)
-curl -sS -u "$AUTH" -X DELETE "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>"
+jcurl -X DELETE "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>"
 ```
 
 Editing the canonical root-cause comment beats leaving a superseded one that now reads as false.
@@ -81,7 +87,7 @@ The file form (`desk-jira create Task "<summary>" body.md field=value…`) is th
 lists them. Raw fallback:
 
 ```bash
-curl -sS -u "$AUTH" -X POST -H 'Content-Type: application/json' \
+jcurl -X POST -H 'Content-Type: application/json' \
   "https://$SITE/rest/api/2/issue" \
   -d "$(jq -n --rawfile d body.md --arg p "$PROJECT" '{fields:{project:{key:$p},issuetype:{name:"Bug"},summary:"…",description:$d}}')"
 ```

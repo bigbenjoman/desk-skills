@@ -61,15 +61,20 @@ the repo's instructions provide.
 ## The command
 
 ```bash
-cd <the directory the repo's instructions say to run the dev server from>
-<prefix> <§4 Install>                          # first run in a fresh worktree only
+desk-env cmds dev-cmd                          # one DIR<TAB>CMD line per app in §4 Dev server
+cd <DIR>                                       # a separate step, never `cd <DIR> && …` in one command
+<prefix> <§4 Install>                          # first run in a fresh worktree only (from the root)
 export <DB URL VAR>="<staging-copy url>"       # only for real-data work; built in references/desk-dev-clone-staging.md
-PORT=<port> <prefix> <§4 Dev server>
+PORT=<port> <prefix> <CMD>
 ```
 
+§4 Dev server holds one backtick span per app, and an app that runs in a subdirectory is written
+`` `portal: pnpm dev` ``; pick the line for the app you need. The row notes whether an app honours
+`PORT` or hard-codes one: a hard-coded port cannot be moved, so check nothing else holds it.
+
 A fresh worktree needs the files §4 Env files names copied from §2 Primary repo root first (`none`:
-nothing to copy). Read the variable names — the database URL, the auth keys — from the repo's env
-example or its instructions, never from memory.
+nothing to copy). Read the variable names — the database URLs, the auth keys — from §4 Database URL
+variable (every one it lists), the repo's env example or its instructions, never from memory.
 
 **A task runner can strip the exports.** If §4 Dev server goes through a monorepo task runner
 (Turborepo, nx, a workspace filter), check what it passes through: Turborepo, for example, passes

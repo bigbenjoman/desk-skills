@@ -40,7 +40,8 @@ from shell, `desk_cfg` / `desk_perm` / `desk_load_paths` in `desk-env.sh`.
 | Studia's Jira site, cloudId, workflow names (`In Development`, `Review/QA`, `Done`) | `§4 Jira site`, `Jira cloudId`, `In-progress state`, `Review state`, `Done state` |
 | Launch Priority `customfield_10159`, `sev-pN` labels, Figma field | `§4 Priority`, `§4 Labels`, `§4 Other fields` |
 | `studia-web`, `Sophos-Education/...` | `§0 GitHub repo`, `§2 Primary repo root` |
-| `🏁 CI gate` and its list of checks, Protect Main ruleset | `§4 Required checks`, `§4 Branch protection` ("green" = every required check passed; with `none`, every check on the PR) |
+| `🏁 CI gate` and its list of checks, Protect Main ruleset | `§4 Required checks`, `§4 Advisory checks`, `§4 Branch protection`, and the one definition of "green" in the config's Rules (required checks succeeded at the exact head, skipped not counting; nothing else red or pending unless advisory; merges pinned with `--match-head-commit`) |
+| "build the Lambda images before merging backend changes" and similar manual steps | `§4 Merge holds` (`` `<glob>: <why>` ``): skills never merge such a PR and report the reason |
 | `--squash` | `§4 Merge method` |
 | `/pullbot`, `pullbot-gate`, `review-bar`, `p0=0 p1=0 p2=0` | `§4 Local review command`, `§4 Clean review verdict` |
 | bun only, `mise exec -- bun`, npm/pnpm/npx blocked | `§4 Package manager`, `§4 Command prefix`, and the `§4 Toolchain` command rows |
@@ -65,12 +66,21 @@ Renamed permission keys: `typesense-reindex` became `local-reindex`, and `specs-
 2. **A Studia fact becomes a config read, not a different hardcoded fact.** Never write `pnpm`,
    `KAN-`, `main`, a person, or a URL into a skill.
 3. **`none` is a real value.** Every step that depends on a §4 row says what happens when it is
-   `none` (no Jira: skip the Jira steps; no local database: skip per-ticket DBs; no designer: the
-   design questions go to the product owner).
-4. **Tracker `none`.** The ticket skills then take a plain description or a GitHub issue URL in
-   place of a key, name the branch from a slug of it, and skip every Jira step.
-5. **Examples are neutral.** `ABC-123`, `<TICKET>`, `owner/repo`, `example.com`.
-6. **The finished check** (run from the repo root):
+   `none` (no Jira: skip the Jira steps; no local database: skip per-ticket DBs and blank the
+   workers' database variables; no designer: the design questions go to the product owner).
+4. **Ticket ids.** A ticket is a tracker key (§4 Ticket key pattern), an id matching §4 Other work
+   id patterns, or with Tracker `none` a GitHub issue (`issue-<n>`) or a slug of a plain description.
+   For every non-tracker id the skill (`desk-ticket`) or orchestrator (`desk-autopilot`, before
+   triage) writes `$DESK_STATE/tickets/<KEY>.md` with the ticket text and its source, and every Jira
+   step is skipped. The branch follows §5 Branch names and is recorded; PRs are matched by it.
+5. **List values and commands.** A list row is one backtick span per item, never split on commas; a
+   command item may be `` `<dir>: <cmd>` ``. Skills read them with `desk-env list <id>` and
+   `desk-env cmds <id>` and run a command in its directory with `with-lock.sh … --cwd <dir> --`,
+   never `cd dir && …`. Scripts are invoked in the exact form the harness rules name
+   (`node ~/.claude/desk/bin/<x>.mjs`, `~/.claude/desk/bin/<x>.sh`, `desk-env`), never through a
+   shell variable.
+6. **Examples are neutral.** `ABC-123`, `<TICKET>`, `owner/repo`, `example.com`.
+7. **The finished check** (run from the repo root):
 
    ```bash
    grep -rniE 'studia|sophos|\bSV-|\bbun\b|mise exec|typesense|specs-it|mailpit|mousedown|chris anthony|joni|shan |blake|next\.studia|🏁|customfield_10159|agenda' \
