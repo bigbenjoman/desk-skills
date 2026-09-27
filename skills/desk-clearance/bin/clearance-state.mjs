@@ -11,8 +11,7 @@
 //   node clearance-state.mjs json                the raw state file path
 //
 // Run it from inside the repo (any worktree): the repo, and so the config, come from the origin
-// remote via desk-env. DESK_CONFIG, DESK_GH_REPO and DESK_REPO_DIR override that, as for every desk
-// script; DESK_CLEARANCE_DIR overrides where state is written.
+// remote via desk-env. DESK_CONFIG and DESK_REPO_DIR override that, as for every desk script; DESK_CLEARANCE_DIR overrides where state is written.
 //
 // Every failure is loud. Nothing here ever defaults to a clean state, or to someone's identity.
 
@@ -50,10 +49,16 @@ async function loadDeskEnv() {
     join(homedir(), '.claude', 'desk', 'bin', 'desk-env.mjs'),
     join(here, '..', '..', '..', 'desk', 'bin', 'desk-env.mjs'),
   ].filter(Boolean)
-  for (const c of candidates) if (existsSync(c)) return import(pathToFileURL(c).href)
+  for (const c of candidates) {
+    if (!existsSync(c)) continue
+    // gate.mjs, the one definition of "green" (shared with merge-driver.sh), sits beside desk-env.mjs.
+    const g = join(dirname(c), 'gate.mjs')
+    if (!existsSync(g)) die(`${g} not found beside ${c} - re-run install.sh from desk-skills`)
+    return [await import(pathToFileURL(c).href), await import(pathToFileURL(g).href)]
+  }
   die(`desk-env.mjs not found (tried ${candidates.join(', ')}). Run install.sh from desk-skills.`)
 }
-const E = await loadDeskEnv()
+const [E, G] = await loadDeskEnv()
 
 const CONFIG = E.configPathOrNull()
 const cmdName = process.argv[2] || 'derive'
@@ -94,6 +99,13 @@ function rawRow(section, rowName) {
 }
 function cfg(id, section, rowName) {
   try { return E.configValue(id) } catch { return rawRow(section, rowName) }
+}
+// A list row: one item per backtick span, never split on commas (a check can be called
+// `Lint, Type Check & Build`). null when unset; [] for `none`.
+function cfgList(id) {
+  const v = E.configValues(id)
+  if (v == null) return null
+  return E.isNone(v) ? [] : v
 }
 const isNone = (v) => /^none\b/i.test(String(v ?? '').trim())
 
@@ -161,7 +173,7 @@ function resolveRepo() {
 // is right for a grant and WRONG for merge-feedback-first, where unset must mean the strict default.
 // So that one also checks the row is really there.
 const perm = (id) => E.permission(id)
-const rowIsSet = (key) => rawRow('3', key) != null
+const rowIsSet = (id) => E.permissionOrUnset(id) != null
 
 // Which bar a merge must clear, beyond the platform's own rules. §3 `pr-merge-green`: `yes` or
 // `ask` means the green required checks are the bar; anything else, TODO included, means a formal
@@ -254,10 +266,9 @@ async function requiredChecks(base) {
   ].filter(Boolean)
   const live = [...new Set([...fromRules, ...fromProtection])]
 
-  const cfgRaw = cfg('required-checks', '4', 'Required checks')
-  const cfgNames = cfgRaw && !isNone(cfgRaw)
-    ? cfgRaw.split(/\s*[,;]\s*/).map((s) => s.trim()).filter(Boolean)
-    : []
+  const cfgItems = cfgList('required-checks')
+  const cfgRaw = cfgItems == null ? null : cfgItems.length ? cfgItems.join(' | ') : 'none'
+  const cfgNames = cfgItems || []
   const sourceOf = [fromRules.length && 'ruleset', fromProtection.length && 'branch protection'].filter(Boolean).join(' + ')
 
   if (live.length) {
@@ -270,13 +281,15 @@ async function requiredChecks(base) {
         : missing.length || extra.length
           ? `config §4 Required checks differs from the ${sourceOf} (config only: ${missing.join(', ') || '-'}; live only: ${extra.join(', ') || '-'}) - re-run /desk-setup`
           : null
-    return { mode: 'named', names: live, source: sourceOf, drift, allowedMergeMethods: allowed }
+    // The bar is the union: what the platform enforces AND what the config names, so neither a stale
+    // config nor a check the platform does not enforce can lower it.
+    return { mode: 'named', names: [...new Set([...live, ...cfgNames])], source: sourceOf, drift, allowedMergeMethods: allowed }
   }
   if (cfgRaw && isNone(cfgRaw)) {
     return { mode: 'all', names: [], source: 'config §4 Required checks none, and nothing on the platform requires one - every check on the PR must be green', drift: null, allowedMergeMethods: allowed }
   }
   if (cfgNames.length) {
-    die(`config §4 Required checks lists ${cfgNames.join(', ')}, but neither a ruleset nor branch protection on ${base} requires any check. Verify by hand and re-run /desk-setup before trusting any "green".`)
+    return { mode: 'named', names: cfgNames, source: 'config §4 Required checks (nothing on the platform requires them)', drift: `config §4 Required checks lists ${cfgNames.join(' | ')}, but neither a ruleset nor branch protection on ${base} requires any check - the platform will not stop a merge; clearance still does`, allowedMergeMethods: allowed }
   }
   die(`nothing on ${base} requires a check and config §4 Required checks is unset - run /desk-setup (write none if every check on a PR is the bar). Refusing to guess.`)
 }
@@ -321,7 +334,8 @@ async function derive({ withGit }) {
   if (data.errors?.length) die(`GraphQL errors: ${JSON.stringify(data.errors).slice(0, 400)}`)
   const nodes = data?.data?.search?.nodes
   if (!Array.isArray(nodes)) die('no search.nodes in response - treat as failure, not as "no PRs"')
-  if (nodes.length === 0) die(`0 open PRs returned for ${AUTHOR}. Verify by hand before believing it.`)
+  // Zero is an answer (exit 0), but say how it was reached so it can be checked by hand.
+  if (nodes.length === 0) console.error(`clearance-state: 0 open PRs by ${AUTHOR} in ${GH.full} (search: repo:${GH.full} is:pr is:open author:${AUTHOR})`)
   if (data.data.search.issueCount > nodes.length) {
     die(`search returned ${nodes.length} of ${data.data.search.issueCount} PRs - raise the search page size rather than work a partial set`)
   }
@@ -333,10 +347,14 @@ async function derive({ withGit }) {
   ])
   const byHead = new Map(allOpen.map((p) => [p.headRefName, p]))
 
-  const prs = nodes.map((p) => classify(p, byHead, { AUTHOR, required, mergeBar, base: base.branch }))
+  const advisory = cfgList('advisory-checks') || []
+  const holdItems = E.configValues('merge-holds')
+  const holds = G.parseHolds(holdItems)
+  const prs = nodes.map((p) => classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base: base.branch }))
 
   if (withGit) await annotateGit(prs, REPO, base.branch)
   await annotateRest(prs)
+  applyHolds(prs, holds, holdItems == null)
   overlaps(prs)
   await order(prs, withGit, REPO)
 
@@ -345,7 +363,7 @@ async function derive({ withGit }) {
   if (existsSync(STATE)) writeFileSync(PREV, readFileSync(STATE, 'utf8'))
   const out = {
     derivedAt: new Date().toISOString(), repo: GH.full, author: AUTHOR, base,
-    required, mergeMethod, mergeBar, mergePermission: mergePermission(), feedbackFirst: feedbackFirst(), prs,
+    required, advisory, holds, mergeMethod, mergeBar, mergePermission: mergePermission(), feedbackFirst: feedbackFirst(), prs,
   }
   writeFileSync(STATE, JSON.stringify(out, null, 2))
   return out
@@ -372,16 +390,17 @@ function outstandingFeedback(p, AUTHOR, isHuman) {
   }
 }
 
-function checkState(ctx, name) {
-  const hits = ctx.filter((c) => (c.name || c.context) === name)
+// Per-name display state; the verdict itself is G.evaluateGate's.
+function checkState(checks, name) {
+  const hits = checks.filter((c) => c.name === name)
   if (!hits.length) return 'ABSENT'
-  const norm = hits.map((c) => (c.status && c.status !== 'COMPLETED' ? 'PENDING' : c.conclusion || c.state || 'PENDING'))
-  if (norm.includes('PENDING') || norm.includes('EXPECTED')) return 'PENDING'
-  if (norm.every((s) => s === 'SUCCESS')) return 'SUCCESS'
-  return norm.find((s) => s !== 'SUCCESS')
+  if (hits.some((c) => c.status !== 'COMPLETED' && c.status !== 'completed')) return 'PENDING'
+  if (hits.every((c) => c.conclusion === 'success')) return 'SUCCESS'
+  return String(hits.find((c) => c.conclusion !== 'success').conclusion || 'UNKNOWN').toUpperCase()
 }
+const GATE_WORD = { pass: 'SUCCESS', pending: 'PENDING', absent: 'ABSENT', fail: 'FAILURE' }
 
-function classify(p, byHead, { AUTHOR, required, mergeBar, base }) {
+function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base }) {
   const isHuman = (a) => a && !isBot(a) && a.login !== AUTHOR
   const head = p.commits?.nodes?.[0]?.commit
   if (!head) die(`#${p.number}: no head commit in response`)
@@ -414,23 +433,18 @@ function classify(p, byHead, { AUTHOR, required, mergeBar, base }) {
   const rollup = head.statusCheckRollup
   const ctx = rollup?.contexts?.nodes || []
   const contextsTruncated = !!rollup?.contexts?.pageInfo?.hasNextPage
-  // "named": the platform's required contexts, each asserted positively. "all" (config §4 Required
-  // checks `none`, nothing required on the platform): every context on the head is the bar, and a
-  // head with no checks at all is ABSENT - an empty set is never vacuously green.
-  const names = required.mode === 'all'
-    ? [...new Set(ctx.map((c) => c.name || c.context).filter(Boolean))]
-    : required.names
-  const gates = Object.fromEntries(names.map((n) => [n, checkState(ctx, n)]))
-  const states = Object.values(gates)
-  const gate = !states.length ? 'ABSENT'
-    : states.every((s) => s === 'SUCCESS') ? 'SUCCESS'
-    : states.includes('ABSENT') ? 'ABSENT'
-    : states.includes('PENDING') ? 'PENDING'
-    : states.find((s) => s !== 'SUCCESS')
-  const advisoryFailing = ctx
-    .filter((c) => !names.includes(c.name || c.context))
-    .filter((c) => ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT'].includes(c.conclusion || c.state))
-    .map((c) => `${c.name || c.context}:${c.conclusion || c.state}`)
+  // desk-config.md's one definition of green, evaluated by gate.mjs exactly as merge-driver.sh does:
+  // every required check succeeded (skipped does not count), nothing else failed or is still running
+  // unless §4 Advisory checks names it, and at least one check succeeded. A head with no checks at
+  // all is ABSENT - an empty set is never vacuously green.
+  const checks = G.normaliseRollup(ctx)
+  const names = required.names
+  const green = G.evaluateGate(checks, { required: names, advisory })
+  const gates = Object.fromEntries(names.map((n) => [n, checkState(checks, n)]))
+  const gate = GATE_WORD[green.state]
+  const advisoryFailing = checks
+    .filter((c) => advisory.includes(c.name) && c.status === 'completed' && !['success', 'skipped', 'neutral'].includes(c.conclusion))
+    .map((c) => `${c.name}:${c.conclusion}`)
 
   const baseIsDefault = p.baseRefName === base
   const basePR = byHead.get(p.baseRefName) || null
@@ -453,7 +467,7 @@ function classify(p, byHead, { AUTHOR, required, mergeBar, base }) {
     reviewers: [...new Set(decisive.map((r) => r.author?.login).filter(Boolean))],
     pendingReviewers: (p.reviewRequests?.nodes || []).map((r) => r.requestedReviewer?.login).filter(Boolean),
     assignees: (p.assignees?.nodes || []).map((a) => a.login),
-    gate, gates, contextsTruncated, advisoryFailing,
+    gate, gates, gateReasons: green.reasons, contextsTruncated, advisoryFailing,
     stacked: null, behind: null, files: [], overlaps: [],
   }
   pr.feedback = pr.threads + pr.reviewBodies + pr.issueComments
@@ -483,7 +497,7 @@ function lane(pr, bar, base, mode) {
       ? 'no check reported on head at all - nothing proves it green; check refs/pull/N/merge exists'
       : 'a required check never reported on head - check refs/pull/N/merge exists')
   }
-  if (!['SUCCESS', 'PENDING', 'ABSENT'].includes(pr.gate)) park.push(`required check ${pr.gate} - read it before any rerun`)
+  if (pr.gate === 'FAILURE') park.push(`not green: ${pr.gateReasons.slice(0, 3).join('; ')} - read it before any rerun`)
   if (pr.rdConflict) park.push('reviewDecision says CHANGES_REQUESTED but /reviews disagrees')
   if (pr.threadsTruncated) park.push('review thread list truncated - count by hand')
   if (pr.contextsTruncated) park.push('check list truncated - read required checks by hand')
@@ -550,6 +564,17 @@ async function annotateRest(prs) {
   }))
 }
 
+// §4 Merge holds: a PR touching a held path is never merged by clearance; a person merges it, after the
+// step the hold names. An unset row, or an unreadable file list, holds every PR rather than none.
+function applyHolds(prs, holds, unset) {
+  for (const pr of prs) {
+    if (unset) { pr.holds = []; pr.parkReasons.push('config §4 Merge holds is unset - run /desk-setup (`none` if no path needs a person)'); pr.mergeBlocked = true; continue }
+    pr.holds = G.matchHolds(pr.files || [], holds).map((h) => ({ glob: h.glob, why: h.why, count: h.files.length, first: h.files[0] }))
+    for (const h of pr.holds) pr.parkReasons.push(`merge hold ${h.glob}: ${h.why} (${h.count} file${h.count > 1 ? 's' : ''}, e.g. ${h.first})`)
+    if (pr.holds.length) pr.mergeBlocked = true
+  }
+}
+
 // Pairwise file overlap. Transitive clustering is wrong here: A-B and B-C sharing files does
 // not make A and C conflict, and chaining through registry files (i18n messages, barrel index,
 // .env.example) merges the whole batch into one useless blob. Only the pair matters: before
@@ -606,9 +631,12 @@ function render(state) {
   const req = Array.isArray(state.required) ? { mode: 'named', names: state.required, source: 'ruleset' } : state.required
   console.log(`  repo ${state.repo}  base ${state.base?.branch ?? '?'}  [${state.base?.source ?? 'state predates the field'}]`)
   console.log(req.mode === 'all'
-    ? `  required checks: every check on the PR  [${req.source}]`
-    : `  required checks (live, from the ${req.source}): ${req.names.join(', ')}`)
+    ? `  required checks: none - every non-advisory check on the PR must pass  [${req.source}]`
+    : `  required checks (from the ${req.source}): ${req.names.join(' | ')}`)
   if (req.drift) console.log(`  WARNING ${req.drift}`)
+  console.log(`  green: required checks succeeded (skipped does not count), no other check failed or running unless advisory, at least one success  [desk-config.md "Green", gate.mjs]`)
+  if (state.advisory) console.log(`  advisory checks: ${state.advisory.length ? state.advisory.join(' | ') : 'none'}  [config §4 Advisory checks]`)
+  if (state.holds) console.log(`  merge holds: ${state.holds.length ? state.holds.map((h) => h.glob).join(' | ') : 'none'}  [config §4 Merge holds]`)
   const mm = state.mergeMethod ?? { method: null, source: 'state predates the field' }
   console.log(`  merge method: ${mm.method ?? 'UNSET - do not merge'}  [${mm.source}]`)
   if (mm.warn) console.log(`  WARNING ${mm.warn}`)
@@ -655,8 +683,15 @@ function render(state) {
   console.log('  WORK COMMENTS (fan out)  ' + list(prs.filter((p) => p.worksComments).map((p) => p.number)))
   console.log(`  ${mergeLabel.padEnd(24)} ` + list(ready.map((p) => p.number)))
   console.log('  PARK MERGE ONLY          ' + list(prs.filter((p) => p.mergeBlocked).map((p) => p.number)))
+  // Every merge is pinned to the head the gate evaluated, so a push after the check cannot land unchecked.
+  if (ready.length && state.mergeMethod?.method) {
+    console.log('\n  merge commands (pinned to the head that was checked):')
+    for (const p of ready) console.log(`    gh pr merge ${p.number} --repo ${state.repo} --${state.mergeMethod.method} --match-head-commit ${p.head}`)
+  }
   const armed = prs.filter((p) => p.autoMerge && p.mergeState !== 'DIRTY')
   if (armed.length) console.log('  AUTO-MERGE ARMED, not DIRTY - going green merges these: ' + list(armed.map((p) => p.number)))
+  const armedHeld = prs.filter((p) => p.autoMerge && (p.holds || []).length)
+  if (armedHeld.length) console.log('  DISARM: auto-merge is armed on a PR a §4 Merge hold says a person must merge: ' + list(armedHeld.map((p) => p.number)))
   const orph = prs.filter((p) => p.wouldOrphan.length)
   if (orph.length) {
     console.log('\n  DO NOT MERGE - would close another PR with open threads:')

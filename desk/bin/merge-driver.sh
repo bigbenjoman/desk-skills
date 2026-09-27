@@ -4,23 +4,38 @@
 #     >> ~/.desk-autopilot/<slug>/merge-driver.log 2>&1 &
 # Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
 #
-# --tickets  the batch's keys (whitespace- or comma-separated). Each must match config §4 Ticket key
-#            pattern in full; with §4 Tracker `none`, each is `issue-<n>` (GitHub issue n, which also
-#            matches `#<n>` in a title) or the batch's lowercase kebab slug. Only PRs whose title or head
-#            branch carries one of them are touched
+# --tickets  the batch's ids (whitespace- or comma-separated), each one `desk-env ticket-kind` accepts:
+#            a §4 Ticket key pattern key, a §4 Other work id patterns id, or with §4 Tracker `none`
+#            `issue-<n>` or a lower-case kebab slug. Case-sensitive as written.
 # --deps     space-separated succ:pred[,pred] — succ is released (state=triaged, moved to the front of
 #            the spawn order) once EVERY pred's PR has merged. Chain only real file collisions.
 #
-# Per loop, over the batch's READY (non-draft) PRs authored by config §1's GitHub handle, ONE AT A TIME:
-#   - skips a PR with outstanding review feedback where §3 merge-feedback-first is yes (a
-#     CHANGES_REQUESTED decision or an unresolved thread), and disarms its auto-merge
-#   - arms `gh pr merge --<§4 Merge method> --auto` where §3 pr-auto-merge is yes, and merges outright
-#     when green: every check §4 Required checks names has passed (with `none`, every check on the PR)
-#   - skips a DIRTY PR (a conflict needs resolving and a fresh review, not a merge)
-#   - where §3 ci-rerun is yes, reruns `--failed` only on a workflow run that has reached `completed`, with a
-#     12-minute cooldown. Per-PR cancel-in-progress kills a run in flight, and a loop that re-reads too
-#     soon after a rerun sees the stale `completed` and fires again, starving the PR forever.
-# It NEVER undrafts: that happens only after the review at the current head is clean (see SKILL.md).
+# Which PRs are the batch's: open, authored by config §1's GitHub handle, based on §0 Default branch
+# (never a promotion PR such as main -> production), and whose head branch is the branch recorded in
+# the queue for that ticket (setup-worktree.sh made it). Only where no branch is recorded does the
+# driver fall back to the id in the title or branch, bounded so `BUG-119` never matches `BUG-119-5`
+# or `BUG-1190` while `fix/BUG-119-login` does.
+#
+# Per loop, every ready (non-draft) batch PR is considered in turn, and the first that is mergeable
+# is merged; one merge per loop, because a merge moves the default branch under every other PR. A
+# PR that cannot merge is skipped with its reason logged and never blocks the others:
+#   - touches a §4 Merge holds path          held for a person, with the hold's reason
+#   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
+#                                            unless §3 merge-feedback-first is explicitly `no`
+#                                            (unset, ask and yes are all the strict default)
+#   - DIRTY                                  a conflict needs resolving and a fresh review
+#   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
+#                                            is yes (once per head), else parked for a person
+#   - not green                              "green" is desk-config.md's one definition, evaluated by
+#                                            gate.mjs (shared with desk-clearance); a head must stay
+#                                            green across two loops before it merges, so a check that
+#                                            passes before the rest of CI has even queued cannot land it
+#   - refused by `gh pr merge`               backed off for 10 minutes, then retried
+# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`.
+# Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
+# the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
+# It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
+# armed auto-merge on a held PR, or one with feedback outstanding, is disarmed.
 #
 # Refuses to start unless config §3 autopilot-merge AND pr-merge-green are both `yes`, or while another
 # merge driver is running. Where the grants are missing, the orchestrator reports green PRs and the
@@ -43,30 +58,18 @@ done
 
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+is_key(){ node "$DESK_ENV_MJS" ticket-kind "$1" >/dev/null 2>&1; }
+key_error(){ node "$DESK_ENV_MJS" ticket-kind "$1" 2>&1 >/dev/null | sed 's/^desk: //'; }
 
-# What a key looks like in this repo: §4 Ticket key pattern, or a kebab slug when there is no tracker.
-# Matched in full with JavaScript regex semantics (the pattern may use \d), never with grep -E.
-TRACKER="$(desk_cfg tracker 2>/dev/null | tr 'A-Z' 'a-z' || true)"
-if [ "$TRACKER" = none ]; then
-  PATTERN='[a-z0-9]+(?:-[a-z0-9]+)*'; KIND="issue-<n> or a lowercase kebab slug"; EDGE='A-Za-z0-9-'
-else
-  PATTERN="$(desk_cfg ticket-pattern 2>/dev/null || true)"
-  [ -n "$PATTERN" ] || { echo "FAIL: config §4 Ticket key pattern is not set — run /desk-setup. Refusing to guess which PRs are the batch's." >&2; exit 1; }
-  KIND="a key matching config §4 Ticket key pattern ($PATTERN)"; EDGE='A-Za-z0-9'
-fi
-is_key(){ node -e 'const [p,t]=process.argv.slice(1); process.exit(new RegExp(`^(?:${p})$`).test(t) ? 0 : 1)' "$PATTERN" "$1"; }
-
-# Every key is checked on its own. A stray separator builds `(K1|K2|)`, whose empty
-# alternative matches every open PR by the author.
+# Every id is checked on its own. A stray separator must never build an empty alternative that
+# matches every open PR by the author.
 set -f
 KEY_LIST=()
 for t in $(printf '%s' "$TICKETS" | tr ',\n\t' '   '); do
-  if ! is_key "$t"; then
-    echo "FAIL: --tickets entry '$t' is not $KIND" >&2; exit 2
-  fi
+  is_key "$t" || { echo "FAIL: --tickets entry: $(key_error "$t")" >&2; exit 2; }
   KEY_LIST+=("$t")
 done
-[ "${#KEY_LIST[@]}" -gt 0 ] || { echo "FAIL: --tickets is required and must name at least one ticket ($KIND)" >&2; exit 2; }
+[ "${#KEY_LIST[@]}" -gt 0 ] || { echo "FAIL: --tickets is required and must name at least one ticket" >&2; exit 2; }
 DEP_LIST=()
 for pair in $(printf '%s' "$DEPS" | tr '\n\t' '  '); do
   succ=${pair%%:*}; preds=${pair#*:}
@@ -76,23 +79,10 @@ for pair in $(printf '%s' "$DEPS" | tr '\n\t' '  '); do
     is_key "$succ" || ok=0
     for pred in $(printf '%s' "$preds" | tr ',' ' '); do is_key "$pred" || ok=0; done
   fi
-  [ "$ok" = 1 ] || { echo "FAIL: --deps entry '$pair' is malformed (want <succ>:<pred>[,<pred>], each $KIND)" >&2; exit 2; }
+  [ "$ok" = 1 ] || { echo "FAIL: --deps entry '$pair' is malformed (want <succ>:<pred>[,<pred>], each an accepted ticket id)" >&2; exit 2; }
   DEP_LIST+=("$pair")
 done
 set +f
-# Keys are literal: escape them before they become a regex, then bound them so ABC-1 never matches ABC-12.
-re_escape(){ printf '%s' "$1" | sed 's/[][\.*^$+?(){}|/]/\\&/g'; }
-# Each key carries its own bounds. With no tracker, issue-<n> is bounded by digits only (so the branch
-# `fix/issue-12-login` matches and `issue-120` does not) and also matches the `#<n>` a PR title uses.
-key_re(){ local n; n="$(printf '%s' "$1" | sed -nE 's/^issue-([0-9]+)$/\1/p')"
-  if [ "$TRACKER" = none ] && [ -n "$n" ]; then
-    printf '(^|[^A-Za-z0-9-])issue-%s([^0-9]|$)|#%s([^0-9]|$)' "$n" "$n"
-  else
-    printf '(^|[^%s])%s([^%s]|$)' "$EDGE" "$(re_escape "$1")" "$EDGE"
-  fi; }
-KEY_RES=()
-for t in "${KEY_LIST[@]}"; do KEY_RES+=("($(key_re "$t"))"); done
-KEYS="$(IFS='|'; printf '%s' "${KEY_RES[*]}")"
 
 for id in autopilot-merge pr-merge-green; do
   p="$(desk_perm "$id")"
@@ -102,7 +92,6 @@ for id in autopilot-merge pr-merge-green; do
     exit 1
   fi
 done
-AUTO_PERM="$(desk_perm pr-auto-merge)"
 
 # How this repo merges, and what "green" means here — both from config §4, never assumed.
 MERGE_METHOD="$(desk_cfg merge-method 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}' || true)"
@@ -110,16 +99,16 @@ case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *) echo "FAIL: config §4 Merge method is '${MERGE_METHOD:-unset}' — want squash, merge or rebase. Run /desk-setup." >&2; exit 1 ;;
 esac
-if ! REQUIRED_RAW="$(desk_cfg required-checks 2>/dev/null)"; then
-  echo "FAIL: config §4 Required checks is not set — run /desk-setup (\`none\` means every check on the PR must pass)." >&2; exit 1
+if ! REQUIRED="$(node "$DESK_ENV_MJS" list required-checks 2>/dev/null)"; then
+  echo "FAIL: config §4 Required checks is not set — run /desk-setup (\`none\` when nothing is required; every non-advisory check must still pass)." >&2; exit 1
 fi
-REQUIRED=""   # newline-separated check names; empty = every check on the PR
-case "$(printf '%s' "$REQUIRED_RAW" | tr 'A-Z' 'a-z')" in
-  none|none\ *) ;;
-  *) REQUIRED="$(printf '%s' "$REQUIRED_RAW" | tr ',;' '\n\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$' || true)" ;;
-esac
+node "$DESK_ENV_MJS" list merge-holds >/dev/null 2>&1 \
+  || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
-FEEDBACK_PERM="$(desk_perm merge-feedback-first)"
+UPDATE_PERM="$(desk_perm pr-update-branch)"
+# Strict unless explicitly relaxed: unset, ask and yes all mean feedback is worked before merging.
+FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
+if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 
 desk_load_paths || exit 1
 desk_load_identity || exit 1
@@ -127,7 +116,7 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 
 # ---- one driver at a time --------------------------------------------------------------------
-# Two drivers would each arm, merge and rerun the same PRs, and double reruns cancel each other.
+# Two drivers would each merge and rerun the same PRs, and double reruns cancel each other.
 mkdir -p "$DESK_STATE"
 LOCKD="$DESK_STATE/merge-driver.lock.d"
 while ! mkdir "$LOCKD" 2>/dev/null; do
@@ -147,49 +136,45 @@ trap 'exit 143' TERM
 cd "$DESK_REPO_ROOT" || exit 1
 log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
 Q="$DESK_BIN/queue.mjs"
+GATE="$DESK_BIN/gate.mjs"
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
+BASE_BRANCH="$DESK_DEFAULT_BRANCH"
+SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
+GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 
-# The regex goes to jq with --arg, never spliced into a jq string, so no quoting layer can mangle it.
-# A PR belongs to the batch if its title OR its head branch carries a key: branch names carry the
-# ticket by convention (§5 Branch names) even where titles do not.
-prs(){ # prs <true|false>  — draft or ready batch PRs
-  gh pr list --repo "$REPO" --state open --author "$AUTHOR" --limit 100 --json number,title,headRefName,isDraft 2>/dev/null \
-    | jq -r --argjson d "$1" --arg re "$KEYS" '.[] | select(.isDraft==$d) | select((.title + " " + .headRefName) | test($re)) | .number' 2>/dev/null | sort -n
+# The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
+# A recorded branch is matched exactly; only an id with none falls back to the bounded regex.
+ticket_map(){
+  node - "$DESK_QUEUE" "${KEY_LIST[@]}" <<'NODE'
+const fs = require('fs');
+const [qf, ...keys] = process.argv.slice(2);
+let q = {};
+try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: regex only */ }
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+const re = (k) => {
+  const n = /^issue-([0-9]+)$/.exec(k)?.[1];
+  if (n) return `(^|[^A-Za-z0-9-])issue-${n}([^0-9]|$)|#${n}([^0-9]|$)`;
+  // Right edge: end, a character that cannot continue an id, or `-` followed by a non-digit — so the
+  // slug after a key (`fix/BUG-119-login`) matches and a longer id (`BUG-119-5`, `BUG-1190`) does not.
+  return `(^|[^A-Za-z0-9-])${esc(k)}($|[^A-Za-z0-9-]|-[^0-9])`;
+};
+console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: re(k) }))));
+NODE
 }
-merged_for(){
-  gh pr list --repo "$REPO" --state merged --author "$AUTHOR" --limit 100 --json number,title,headRefName 2>/dev/null \
-    | jq -r --arg re "$(key_re "$1")" '.[] | select((.title + " " + .headRefName) | test($re)) | .number' 2>/dev/null | head -1
+# prs <state> -> lines `<number>\t<isDraft>\t<key>` for the batch's PRs based on the default branch.
+prs(){
+  local map; map="$(ticket_map)" || return 1
+  gh pr list --repo "$REPO" --state "$1" --author "$AUTHOR" --base "$BASE_BRANCH" --limit 100 \
+      --json number,title,headRefName,baseRefName,isDraft 2>/dev/null \
+    | jq -r --argjson m "$map" --arg base "$BASE_BRANCH" '
+        .[] | select(.baseRefName == $base) | . as $p
+        | [ $m[] | .re as $re | select((.branch != "" and $p.headRefName == .branch)
+                          or (.branch == "" and (($p.title + " " + $p.headRefName) | test($re)))) | .key ] as $k
+        | select(($k | length) > 0)
+        | "\($p.number)\t\($p.isDraft)\t\($k[0])"' 2>/dev/null | sort -n
 }
-# Green, from structured output (never by splitting the table, whose name column can carry emoji):
-#   pass     every §4 Required check reported and passed (skipped counts as passed, as GitHub counts it);
-#            with Required checks `none`, every check on the PR passed and there is at least one
-#   fail     any of those checks failed or was cancelled
-#   pending  anything else, including a required check that has not reported yet
-gate(){
-  gh pr checks "$1" --repo "$REPO" --json name,bucket 2>/dev/null | jq -r --arg req "$REQUIRED" '
-    ($req | split("\n") | map(select(length > 0))) as $names
-    | def bad: . == "fail" or . == "cancel";
-      def good: . == "pass" or . == "skipping";
-    if ($names | length) == 0 then
-      if length == 0 then "pending"
-      elif any(.[]; .bucket | bad) then "fail"
-      elif all(.[]; .bucket | good) then "pass" else "pending" end
-    else
-      . as $all
-      | [ $names[] as $n | [ $all[] | select(.name == $n) | .bucket ] ] as $b
-      | if any($b[]; any(.[]; bad)) then "fail"
-        elif all($b[]; length > 0 and all(.[]; good)) then "pass" else "pending" end
-    end' 2>/dev/null
-}
-# Resolve runs from the PR's head SHA, never from the top of `gh run list`.
-# Prints "<in-flight count> <failed completed run ids...>".
-runs_for(){ local sha; sha=$(gh pr view "$1" --repo "$REPO" --json headRefOid -q .headRefOid 2>/dev/null)
-  [ -n "$sha" ] || return 0
-  gh run list --repo "$REPO" --commit "$sha" --limit 50 --json databaseId,status,conclusion 2>/dev/null \
-    | jq -r 'if length == 0 then "" else
-        "\([.[] | select(.status != "completed")] | length) \([.[] | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")) | .databaseId] | map(tostring) | join(" "))"
-      end' 2>/dev/null; }
+merged_for(){ prs merged | awk -F'\t' -v k="$1" '$3 == k { print $1; exit }'; }
 # Prints "<reviewDecision> <unresolved thread count>". An empty reviewDecision is not an approval.
 feedback(){
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query='
@@ -197,6 +182,7 @@ feedback(){
       reviewDecision reviewThreads(first:100){nodes{isResolved}}}}}' \
     --jq '.data.repository.pullRequest | "\(.reviewDecision // "NONE") \([.reviewThreads.nodes[] | select(.isResolved|not)] | length)"' 2>/dev/null
 }
+queue_note(){ node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; }
 
 release_chain(){
   local pair succ preds st all got pred n
@@ -217,62 +203,113 @@ release_chain(){
   done
 }
 
-log "merge driver up: repo=$REPO author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "${REQUIRED:-every check}" | paste -sd ',' -)] auto-merge=$AUTO_PERM ci-rerun=$RERUN_PERM feedback-first=$FEEDBACK_PERM"
+backed_off(){ local f="$SD/backoff-$1"; [ -f "$f" ] && [ "$(date +%s)" -lt "$(cat "$f" 2>/dev/null || echo 0)" ]; }
+back_off(){ echo $(( $(date +%s) + ${2:-600} )) > "$SD/backoff-$1"; }
+
+behind(){ # behind <n> <sha> <key>
+  if [ "$UPDATE_PERM" = yes ]; then
+    if [ -f "$SD/updated-$1-$2" ]; then log "#$1 BEHIND; update already requested at ${2:0:9} — waiting for it"; return; fi
+    if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
+    else log "#$1 BEHIND and update-branch refused: $(printf '%s' "$out" | tail -1)"; back_off "$1"; fi
+  else
+    log "#$1 BEHIND and §3 pr-update-branch is $UPDATE_PERM — parked for a person to update"
+    queue_note "$3" "behind $BASE_BRANCH; §3 pr-update-branch is $UPDATE_PERM"
+  fi
+}
+
+rerun(){ # rerun <n> <sha> <gate json>
+  local g="$3" pend ids names rid name cnt cd_file now last
+  [ "$RERUN_PERM" = yes ] || { log "#$1 red at ${2:0:9} — config §3 ci-rerun is $RERUN_PERM, so not rerunning; report it"; return; }
+  pend=$(printf '%s' "$g" | jq -r '.gate.pending | length')
+  [ "$pend" = 0 ] || { log "#$1 red, but $pend check(s) still running — waiting for them before any rerun"; return; }
+  ids=$(printf '%s' "$g" | jq -r '.gate.failedRuns[]?')
+  names=$(printf '%s' "$g" | jq -r '.gate.failing[].name')
+  [ -n "$ids" ] || { log "#$1 red with nothing a rerun could fix ($(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')) — report it"; return; }
+  # At most twice per check per head: a check red after two reruns is red, not flaky.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    cnt=$(grep -cxF "$name" "$SD/reruns-$1-$2" 2>/dev/null || true)
+    if [ "${cnt:-0}" -ge 2 ]; then log "#$1 \"$name\" still red after 2 reruns at ${2:0:9} — not rerunning again; report it"; return; fi
+  done <<EOF_NAMES
+$names
+EOF_NAMES
+  cd_file="$SD/cooldown-$1"; now=$(date +%s); last=$(cat "$cd_file" 2>/dev/null || echo 0)
+  if [ $((now - last)) -lt 720 ]; then log "#$1 red, cooling down ($(( (720 - (now - last)) / 60 ))m left)"; return; fi
+  for rid in $ids; do
+    log "#$1 red + completed -> rerun --failed on run $rid"
+    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then echo "$now" > "$cd_file"
+    else log "#$1 rerun of $rid refused"; fi
+  done
+  printf '%s\n' "$names" >> "$SD/reruns-$1-$2"
+}
+
+try_pr(){ # try_pr <n> <key> -> 0 when it merged
+  local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out
+  backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
+  g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
+  sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
+  [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
+
+  holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.glob) (\(.why); \(.count) file(s), e.g. \(.files[0] // "?"))"')
+  if [ -n "$holds" ]; then
+    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    log "#$n HELD by §4 Merge holds — a person merges it: $(printf '%s' "$holds" | paste -sd ';' -)"
+    queue_note "$key" "merge hold: $(printf '%s' "$holds" | head -1)"
+    return 1
+  fi
+
+  if [ -n "$FEEDBACK_STRICT" ]; then
+    fb=$(feedback "$n")
+    if [ -z "$fb" ]; then log "#$n could not read review state — not merging it this loop"; return 1; fi
+    decision=${fb% *}; unresolved=${fb##* }
+    if [ "$decision" = "CHANGES_REQUESTED" ] || [ "${unresolved:-0}" -gt 0 ]; then
+      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      log "#$n has outstanding review feedback ($decision, $unresolved unresolved) — work it first; not merging (§3 merge-feedback-first: $FEEDBACK_RAW)"
+      return 1
+    fi
+  fi
+
+  case "$ms" in
+    DIRTY) log "#$n DIRTY — needs a conflict resolution and a fresh review"; return 1 ;;
+    BEHIND) behind "$n" "$sha" "$key"; return 1 ;;
+  esac
+
+  case "$state" in
+    pass) ;;
+    fail) log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"; rerun "$n" "$sha" "$g"; return 1 ;;
+    *) log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
+  esac
+
+  # Green now. It must still be green at the same head on a later loop before it merges.
+  green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)
+  if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n green at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
+  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n green at ${sha:0:9} — confirming"; return 1; fi
+
+  log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"
+  if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
+    log "#$n MERGED ($key)"; rm -f "$SD/green-$n"; return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
+  else log "#$n merge refused: $(printf '%s' "$out" | tail -1) — backing off 10m, the rest carry on"; back_off "$n"; fi
+  return 1
+}
+
+log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW"
 while true; do
   release_chain
 
-  drafts=$(prs true | tr '\n' ' '); [ -n "${drafts// /}" ] && log "draft (still reviewing): $drafts"
-  open=$(prs false)
-  [ -z "$open" ] && { log "no ready batch PRs"; sleep 60; continue; }
+  list=$(prs open) || { log "could not list PRs"; sleep 120; continue; }
+  drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
+  ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 }')
+  [ -z "$ready" ] && { log "no ready batch PRs"; sleep 60; continue; }
 
-  n=$(printf '%s\n' "$open" | head -1)
-  log "focus #$n (serial)"
-
-  if [ "$FEEDBACK_PERM" = "yes" ]; then
-    fb=$(feedback "$n")
-    if [ -z "$fb" ]; then log "#$n could not read review state - not merging this loop"; sleep 120; continue; fi
-    decision=${fb% *}; unresolved=${fb##* }
-    if [ "$decision" = "CHANGES_REQUESTED" ] || [ "${unresolved:-0}" -gt 0 ]; then
-      gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
-      log "#$n has outstanding review feedback ($decision, $unresolved unresolved) - work it first; not merging"
-      sleep 120; continue
-    fi
-  fi
-
-  [ "$AUTO_PERM" = "yes" ] && gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --auto >/dev/null 2>&1
-
-  ms=$(gh pr view "$n" --repo "$REPO" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null)
-  [ "$ms" = "DIRTY" ] && { log "#$n DIRTY - needs a conflict resolution and a fresh review"; sleep 120; continue; }
-
-  g=$(gate "$n")
-  if [ "$g" = "pass" ]; then
-    log "#$n gate GREEN - merging"
-    if gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" >/dev/null 2>&1; then log "#$n MERGED"; release_chain; else log "#$n merge refused (ms=$ms)"; fi
-    sleep 30; continue
-  fi
-
-  rr=$(runs_for "$n")
-  if [ -z "$rr" ]; then log "#$n no workflow run yet (checks: ${g:-unreadable})"; sleep 120; continue; fi
-  inflight=${rr%% *}; failed_ids=${rr#* }; [ "$failed_ids" = "$rr" ] && failed_ids=""
-  if [ "$g" != "fail" ] || [ -z "${failed_ids// /}" ]; then
-    log "#$n checks ${g:-unreadable}; $inflight run(s) in flight"; sleep 120; continue
-  fi
-
-  if [ "$g" = "fail" ]; then
-    if [ "$RERUN_PERM" != "yes" ]; then
-      log "#$n red + completed - config §3 ci-rerun is $RERUN_PERM, so not rerunning; report it"
-    else
-      cd_file="$DESK_STATE/.cooldown-$n"
-      now=$(date +%s); last=0; [ -f "$cd_file" ] && last=$(cat "$cd_file" 2>/dev/null || echo 0)
-      if [ $((now - last)) -lt 720 ]; then
-        log "#$n red, cooling down ($(( (720 - (now - last)) / 60 ))m left)"
-      else
-        for rid in $failed_ids; do
-          log "#$n red + completed -> rerun --failed on $rid"
-          if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then echo "$now" > "$cd_file"; else log "#$n rerun of $rid refused"; fi
-        done
-      fi
-    fi
-  fi
-  sleep 120
+  merged=""
+  while IFS="$(printf '\t')" read -r n key; do
+    [ -n "$n" ] || continue
+    # stdin from /dev/null: nothing inside may eat the list this loop is reading.
+    if try_pr "$n" "$key" </dev/null; then merged=1; release_chain </dev/null; break; fi
+  done <<EOF_READY
+$ready
+EOF_READY
+  if [ -n "$merged" ]; then sleep 30; else sleep 120; fi
 done
