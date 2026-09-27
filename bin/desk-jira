@@ -2,7 +2,8 @@
 # Direct Jira Cloud REST access for the desk-* skills, configured PER REPO.
 # Replaces the claude.ai Atlassian connector for scripted/agent use: one hop, no proxy.
 #
-# Which Jira: the repo you run it in. Its slug (`owner__name` of the origin remote) picks
+# Which Jira: the repo you run it in. Its slug, as `desk-env where` resolves it (lower-case
+# `owner__name` of the origin remote from any host; `local__<name>-<hash>` without one), picks
 #   ~/.config/desk/repos/<slug>/config.md         §4 Jira site, Jira project, Priority
 #   ~/.config/desk/repos/<slug>/jira-email        your Atlassian login email for that site
 #   ~/.config/desk/repos/<slug>/atlassian-token   an API token (chmod 600)
@@ -19,39 +20,93 @@
 # Cloud; v3 would demand ADF JSON. Search uses /rest/api/3/search/jql, because Cloud has removed the
 # old /search endpoints.
 #
+# Credentials reach curl as a config on stdin (curl -K -), never on argv. Files it sends must be
+# inside the repo, $DESK_STATE or a temp dir. search/get/comments prove the login first, because
+# Jira answers an anonymous search with 200 and no issues.
+#
 # Written for bash 3.2 as well as 4+/5, so it runs on stock macOS. Needs curl, jq and git; node to
-# read the repo config.
+# resolve the repo and read its config through desk-env.mjs (a built-in fallback resolves the repo
+# by the same rules when desk-env.mjs is missing, but then there is no config to read).
 
 set -euo pipefail
 
 DESK_ENV_MJS="${DESK_ENV_MJS:-$HOME/.claude/desk/bin/desk-env.mjs}"
 
-# owner__name of the origin remote, else local__<main checkout name>, else empty.
-repo_slug() {
-  local url common re='github\.com[:/]+([^/]+)/([^/]+)$'
-  url=$(git remote get-url origin 2>/dev/null || true)
-  if [[ "$url" =~ $re ]]; then
-    printf '%s__%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}"; return
-  fi
-  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  if [[ -n "$common" ]]; then printf 'local__%s' "$(basename "$(dirname "$common")")"; fi
+# `owner/name` from any git remote URL. The FALLBACK for when desk-env.mjs is missing, and a port of
+# its ownerRepoFromUrl: any host (ssh aliases included), trailing slashes and .git dropped, and the
+# last two path segments are the repo. Prints nothing for a URL that does not end in owner/name.
+owner_repo_from_url() {
+  local u="$1" path="" tail_re='(^|/)([^/[:space:]:]+)/([^/[:space:]:]+)$'
+  u="${u#"${u%%[![:space:]]*}"}"; u="${u%"${u##*[![:space:]]}"}"
+  while [[ "$u" == */ ]]; do u="${u%/}"; done
+  u="${u%.git}"
+  local -a prefixes=('^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/(.*)$' '^[^@[:space:]/]+@[^:[:space:]/]+:(.*)$' '^[^:[:space:]/]+:(.*)$')
+  local i
+  for i in 0 1 2; do
+    [[ "$u" =~ ${prefixes[$i]} ]] || continue
+    path="${BASH_REMATCH[1]}"
+    if [[ $i == 2 && "$path" == /* ]]; then continue; fi
+    if [[ "$path" =~ $tail_re ]]; then printf '%s/%s' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"; return; fi
+  done
 }
 
-SLUG="${DESK_SLUG:-$(repo_slug)}"
-REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/$SLUG"
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# One row of this repo's config, or empty. desk-env.mjs reads it, so there is one parser.
+# The fallback slug, by desk-env.mjs's rules: DESK_REPO_OVERRIDE, else owner__name of origin
+# (lower-case), else local__<main checkout name>-<8 hex of its path>, else empty.
+fallback_slug() {
+  local or common root hash
+  or="${DESK_REPO_OVERRIDE:-$(owner_repo_from_url "$(git remote get-url origin 2>/dev/null || true)")}"
+  if [[ -n "$or" ]]; then lower "${or/\//__}"; return; fi
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  [[ -n "$common" ]] || return 0
+  root=$(dirname "$common")
+  if command -v shasum >/dev/null 2>&1; then hash=$(printf '%s' "$root" | shasum -a 1)
+  else hash=$(printf '%s' "$root" | sha1sum); fi
+  printf 'local__%s-%s' "$(lower "$(basename "$root")")" "${hash:0:8}"
+}
+
+# Which repo, and where its config and credentials live: desk-env.mjs `where` is the single source
+# of truth. Its output is parsed, never eval'd.
+SLUG="" CONFIG_PATH="" REPO_DIR=""
+if [[ -r "$DESK_ENV_MJS" ]] && command -v node >/dev/null 2>&1; then
+  sq="'"; esc="'\\''"   # desk-env quotes as '...' with each ' written '\''
+  while IFS= read -r line; do
+    k="${line%%=*}"; v="${line#*=}"; v="${v#$sq}"; v="${v%$sq}"; v=${v//"$esc"/$sq}
+    case "$k" in SLUG) SLUG="$v" ;; CONFIG) CONFIG_PATH="$v" ;; CREDS) REPO_DIR="$v" ;; esac
+  done < <(node "$DESK_ENV_MJS" where 2>/dev/null || true)
+else
+  SLUG=$(fallback_slug)
+  if [[ -n "$SLUG" ]]; then
+    REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/$SLUG"
+    CONFIG_PATH="${DESK_CONFIG:-$REPO_DIR/config.md}"
+  fi
+fi
+[[ -n "$SLUG" ]] || REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/(no repo)"
+
+# One row of this repo's config, or empty. desk-env.mjs reads it (and resolves the repo itself, by
+# the same rules as `where`), so there is one parser. Without desk-env there is no config to read.
 cfg() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
-  DESK_CONFIG="${DESK_CONFIG:-$REPO_DIR/config.md}" node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
+  node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
 }
 # First word of a row ('KAN "Voice PA"; Task, Bug' -> KAN); `none` reads as empty.
+first_word_raw() { printf '%s' "$1" | awk '{print $1}' | tr -d '`,;' | tr '[:upper:]' '[:lower:]'; }
 first_word() {
   local v; v=$(printf '%s' "$1" | awk '{print $1}' | tr -d '`,;')
   if [[ "$v" != none ]]; then printf '%s' "$v"; fi
 }
 
 SITE="${JIRA_SITE:-$(first_word "$(cfg jira-site)")}"
+# The base URL: https://<site>. A site written with a scheme is kept as is, but plain http is only
+# accepted for a local host (a test stub), so credentials never cross the network unencrypted.
+case "$SITE" in
+  https://*) BASE="${SITE%/}" ;;
+  http://127.0.0.1*|http://localhost*|http://\[::1\]*) BASE="${SITE%/}" ;;
+  http://*) printf 'desk-jira: refusing plain http for %s: use https\n' "$SITE" >&2; exit 1 ;;
+  "") BASE="" ;;
+  *) BASE="https://${SITE%/}" ;;
+esac
 PROJECT="${JIRA_PROJECT:-$(first_word "$(cfg jira-project)")}"
 TOKEN_FILE="${JIRA_TOKEN_FILE:-$REPO_DIR/atlassian-token}"
 EMAIL_FILE="${JIRA_EMAIL_FILE:-$REPO_DIR/jira-email}"
@@ -74,21 +129,47 @@ JQ_VAL='def val: if . == null then "-"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
-token() {
-  if [[ -n "${JIRA_TOKEN:-}" ]]; then printf '%s' "$JIRA_TOKEN"; return; fi
-  [[ -r "$TOKEN_FILE" ]] || die "no token: set JIRA_TOKEN or create $TOKEN_FILE (chmod 600)"
-  tr -d ' \t\r\n' < "$TOKEN_FILE"
+have_token() { [[ -n "${JIRA_TOKEN:-}" || -r "$TOKEN_FILE" ]]; }
+
+# A string for a double-quoted curl config value.
+cfgq() { local v="${1//\\/\\\\}"; printf '%s' "${v//\"/\\\"}"; }
+
+# curl with Basic auth. The credentials go to curl as a config on stdin (curl -K -), never on its
+# argv, where any user could read them with ps; xtrace is paused while the token is in a variable,
+# so `bash -x desk-jira ...` does not print it either.
+curl_auth() {
+  local xt=0 tok rc=0
+  case $- in *x*) xt=1; set +x ;; esac
+  if [[ -n "${JIRA_TOKEN:-}" ]]; then tok="$JIRA_TOKEN"; else tok=$(tr -d ' \t\r\n' < "$TOKEN_FILE"); fi
+  printf 'user = "%s:%s"\n' "$(cfgq "$EMAIL")" "$(cfgq "$tok")" | curl -sS -K - "$@" || rc=$?
+  tok=""
+  if (( xt )); then set -x; fi
+  return $rc
+}
+
+# Jira answers an anonymous request with 200 and an empty result, so "no issues" proves nothing
+# until the credentials have been. One /myself call per invocation settles it.
+AUTH_OK=0
+ensure_auth() {
+  (( AUTH_OK )) && return 0
+  local code
+  code=$(curl_auth -o /dev/null -w '%{http_code}' -H 'Accept: application/json' "$BASE/rest/api/3/myself") \
+    || die "desk-jira: could not reach $BASE (see the curl error above)"
+  case "$code" in
+    2*) AUTH_OK=1 ;;
+    401|403)
+      local src="$TOKEN_FILE"; [[ -n "${JIRA_TOKEN:-}" ]] && src='$JIRA_TOKEN'
+      die "desk-jira: authentication failed for $SITE as $EMAIL (HTTP $code). Check the token in $src." ;;
+    *) die "desk-jira: the auth check against $SITE returned HTTP $code" ;;
+  esac
 }
 
 # api <method> <path> [curl args...] — path is everything after /rest/
 api() {
   local method="$1" path="$2"; shift 2
-  local out code msgs tok
-  tok=$(token) || exit 1
-  out=$(curl -sS -w '\n%{http_code}' -X "$method" \
-    -u "$EMAIL:$tok" \
-    -H 'Accept: application/json' \
-    "https://$SITE/rest/$path" "$@")
+  local out code msgs
+  out=$(curl_auth -w '\n%{http_code}' -X "$method" -H 'Accept: application/json' "$BASE/rest/$path" "$@") \
+    || { printf 'desk-jira: could not reach %s (see the curl error above)\n' "$BASE" >&2; return 1; }
   code=$(printf '%s' "$out" | tail -n1)
   out=$(printf '%s' "$out" | sed '$d')
   if [[ "$code" =~ ^2 ]]; then printf '%s' "$out"; return 0; fi
@@ -98,6 +179,38 @@ api() {
   msgs=$(printf '%s\n' "$out" | jq -r '(.errorMessages // [])[], (.errors // {} | to_entries[] | "\(.key): \(.value)")' 2>/dev/null || true)
   if [[ -n "$msgs" ]]; then printf '%s\n' "$msgs" >&2; else printf '%s\n' "${out:-(empty response body)}" >&2; fi
   return 1
+}
+
+realpath_of() {
+  if command -v realpath >/dev/null 2>&1; then realpath "$1" 2>/dev/null
+  else python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
+}
+
+# A file whose contents leave this machine (a body, a field=@file, an attachment) must be inside
+# this repo's worktree, $DESK_STATE or a temp dir. Never under the desk config root (other repos'
+# tokens live there), never inside a .git directory, never an .env file. Symlinks are resolved first.
+check_outgoing_file() {
+  local f="$1" real root top cfgroot
+  real=$(realpath_of "$f") || die "desk-jira: cannot resolve $f"
+  [[ -n "$real" ]] || die "desk-jira: cannot resolve $f"
+  cfgroot=$(realpath_of "${DESK_CONFIG_ROOT:-$HOME/.config/desk}" || true)
+  if [[ -n "$cfgroot" && ( "$real" == "$cfgroot" || "$real" == "$cfgroot"/* ) ]]; then
+    die "desk-jira: refusing to send $f: it resolves under $cfgroot, where desk keeps per-repo credentials"
+  fi
+  case "/$real/" in
+    */.git/*) die "desk-jira: refusing to send $f: it is inside a .git directory" ;;
+  esac
+  case "$(basename "$real")" in
+    .env|.env.*) die "desk-jira: refusing to send $f: an .env file holds secrets" ;;
+  esac
+  top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  for root in "$top" "${DESK_STATE:-}" "${TMPDIR:-}" /tmp; do
+    [[ -n "$root" ]] || continue
+    root=$(realpath_of "$root" || true)
+    [[ -n "$root" ]] || continue
+    [[ "$real" == "${root%/}"/* ]] && return 0
+  done
+  die "desk-jira: refusing to send $f ($real): a body, field=@file or attachment must be inside this repo's worktree (${top:-none here}), \$DESK_STATE or a temp dir (\$TMPDIR, /tmp)"
 }
 
 json() { api "$@" -H 'Content-Type: application/json'; }
@@ -123,6 +236,7 @@ fields_from_args() {
     k="${pair%%=*}"; v="${pair#*=}"
     if [[ "$v" == @* ]]; then
       [[ -f "${v#@}" ]] || die "desk-jira: file not found for $k: ${v#@}"
+      check_outgoing_file "${v#@}"
       obj=$(printf '%s' "$obj" | jq --arg k "$k" --rawfile v "${v#@}" '.[$k]=$v')
       continue
     fi
@@ -151,8 +265,8 @@ fields_from_args() {
 }
 
 body_of() {  # file path (optionally @path), or the literal string
-  if [[ -f "$1" ]]; then cat "$1"; return; fi
-  if [[ "$1" == @* && -f "${1#@}" ]]; then cat "${1#@}"; return; fi
+  if [[ -f "$1" ]]; then check_outgoing_file "$1"; cat "$1"; return; fi
+  if [[ "$1" == @* && -f "${1#@}" ]]; then check_outgoing_file "${1#@}"; cat "${1#@}"; return; fi
   # Without this, a mistyped invocation posts the mistake as the body:
   # `comment KEY-1 --file b.txt` would set the comment to the literal "--file".
   case "$1" in
@@ -193,7 +307,9 @@ Field values:  field=@file reads a file · JSON passes through · a bare value i
 
 Config:        this repo's ~/.config/desk/repos/<slug>/ (see `desk-jira where`)
 Env overrides: JIRA_SITE JIRA_EMAIL JIRA_EMAIL_FILE JIRA_PROJECT JIRA_TOKEN JIRA_TOKEN_FILE
-               JIRA_PRIORITY_FIELD DESK_SLUG DESK_CONFIG
+               JIRA_PRIORITY_FIELD; the repo itself as desk-env resolves it (DESK_REPO_OVERRIDE,
+               DESK_CONFIG, DESK_CONFIG_ROOT)
+Files sent:    a body, field=@file or attachment must be inside this repo, $DESK_STATE or a temp dir
 EOF
 }
 
@@ -206,16 +322,23 @@ command -v curl >/dev/null || die "curl is required"
 # and the call would go out unauthenticated and come back 401.
 case "$cmd" in
   -h|--help|help|where) ;;
-  *) [[ -n "$SLUG" ]] || die "not inside a git repo, so there is no repo to take the Jira site from (set DESK_SLUG, or JIRA_SITE and JIRA_PROJECT)"
-     [[ -n "$SITE" ]] || die "no Jira site for $SLUG: set §4 Jira site in $REPO_DIR/config.md (/desk-setup), or JIRA_SITE"
-     [[ -n "$EMAIL" ]] || die "no email for $SLUG: write it to $EMAIL_FILE (or set JIRA_EMAIL) - see the setup notes at the top of this script" ;;
+  *) [[ -n "$SLUG" || -n "${JIRA_SITE:-}" ]] || die "not inside a git repo, so there is no repo to take the Jira site from (run it inside the repo, or set JIRA_SITE and JIRA_PROJECT)"
+     if [[ -z "$SITE" ]]; then
+       [[ "$(first_word_raw "$(cfg tracker)")" == none ]] && die "Tracker is none for $SLUG: this repo has no Jira (config §4 Tracker in $CONFIG_PATH)"
+       die "no Jira site for ${SLUG:-this repo}: set §4 Jira site in ${CONFIG_PATH:-the repo config} (/desk-setup), or JIRA_SITE"
+     fi
+     [[ -n "$EMAIL" ]] || die "no email for ${SLUG:-this repo}: write it to $EMAIL_FILE (or set JIRA_EMAIL) - see the setup notes at the top of this script"
+     have_token || die "no token for ${SLUG:-this repo}: create $TOKEN_FILE (chmod 600) or set JIRA_TOKEN" ;;
 esac
 
 case "$cmd" in
   where)
     if [[ "${1:-}" == --dir ]]; then [[ -n "$SLUG" ]] || die "not inside a git repo"; printf '%s\n' "$REPO_DIR"; exit 0; fi
     echo "repo    : ${SLUG:-(not in a git repo)}"
-    echo "site    : ${SITE:-(unset)}"
+    echo "config  : ${CONFIG_PATH:-(none)}"
+    if [[ -n "$SITE" ]]; then echo "site    : $SITE"
+    elif [[ -n "$SLUG" && "$(first_word_raw "$(cfg tracker)")" == none ]]; then echo "site    : (Tracker is none for $SLUG)"
+    else echo "site    : (unset)"; fi
     echo "project : ${PROJECT:-(unset: create needs it)}"
     echo "email   : ${EMAIL:-(unset)}  <- $EMAIL_FILE"
     if [[ -n "${JIRA_TOKEN:-}" ]]; then echo "token   : from JIRA_TOKEN"
@@ -225,6 +348,7 @@ case "$cmd" in
     ;;
 
   whoami)
+    ensure_auth
     api GET 'api/3/myself' | jq -r '"\(.displayName) <\(.emailAddress)>  accountId=\(.accountId)"'
     ;;
 
@@ -235,6 +359,7 @@ case "$cmd" in
     for a in "$@"; do
       case "$a" in --json) raw=1 ;; *[0-9]*) max="$a" ;; esac
     done
+    ensure_auth   # an empty result means "no issues" only once the credentials are proven
     payload=$(jq -n --arg jql "$jql" --argjson max "$max" --argjson f "$SEARCH_FIELDS" \
       '{jql:$jql, maxResults:$max, fields:$f}')
     res=$(json POST 'api/3/search/jql' -d "$payload")
@@ -251,6 +376,7 @@ case "$cmd" in
   get)
     [[ $# -ge 1 ]] || die 'usage: desk-jira get <KEY> [--json]'
     key="$1"; shift
+    ensure_auth   # anonymous gets a 404 that reads like a missing issue
     res=$(api GET "api/2/issue/$key?expand=names")
     if [[ "${1:-}" == '--json' ]]; then printf '%s\n' "$res"; else
       printf '%s' "$res" | jq -r "$JQ_VAL"'
@@ -342,6 +468,7 @@ case "$cmd" in
 
   comments)
     [[ $# -ge 1 ]] || die 'usage: desk-jira comments <KEY>'
+    ensure_auth
     api GET "api/2/issue/$1/comment" \
       | jq -r 'if (.comments|length)==0 then "no comments" else
           .comments[] | "--- \(.author.displayName) \(.created[0:10]) (id \(.id))\n\(.body)" end'
@@ -374,7 +501,7 @@ case "$cmd" in
     [[ $# -ge 2 ]] || die 'usage: desk-jira attach <KEY> <file ...>'
     key="$1"; shift
     args=()
-    for f in "$@"; do [[ -f "$f" ]] || die "no such file: $f"; args+=(-F "file=@$f"); done
+    for f in "$@"; do [[ -f "$f" ]] || die "no such file: $f"; check_outgoing_file "$f"; args+=(-F "file=@$f"); done
     api POST "api/3/issue/$key/attachments" -H 'X-Atlassian-Token: no-check' "${args[@]}" \
       | jq -r '.[] | "attached \(.filename) (\(.size) bytes)"'
     ;;
