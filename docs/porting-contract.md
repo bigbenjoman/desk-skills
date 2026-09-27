@@ -78,3 +78,26 @@ Renamed permission keys: `typesense-reindex` became `local-reindex`, and `specs-
    ```
 
    Any hit left must be deliberate and explained in a comment beside it.
+
+## Subagents (`agents/`) and commands (`commands/`)
+
+The eleven subagents began as studia-web's project subagents. They are installed **user-level**
+(`~/.claude/agents/`) by `install.sh`, so they load in every repo, which means each one must discover
+the repo it is in rather than assume one. A repo that needs a tailored agent adds a project-level
+`.claude/agents/<name>.md`, which Claude Code prefers over the user-level copy.
+
+1. **Keep the persona.** Name, `model`, `color`, `memory`, `tools`, voice, structure and every
+   judgement rule stay. Only facts about one codebase go.
+2. **Every agent opens with a "This repo" step**: run `desk-env where`; if `EXISTS=yes`, read that
+   config (§0 description, §4 toolchain, tracker and people, §5 conventions and Repo instructions).
+   Always read the repo's own instruction files (`CLAUDE.md`, `AGENTS.md`, `DESIGN.md` where they
+   exist) and detect the stack from the repo (`package.json`, lockfiles, framework config). The
+   agent must work in a repo with no desk config.
+3. **A stack fact becomes a detected fact.** "Use tRPC and bun" becomes "use the API style and
+   package manager this repo already uses". Framework expertise stays as expertise, e.g. tRPC is
+   one of several API styles Theo knows, not the one he assumes.
+4. **Studia-only machinery goes or becomes conditional**: the `.agents/knowledge` base,
+   `knowledge:check`, `agents:sync`, the `studia-` design tokens, `packages/studia-web`,
+   Studia's user roles.
+5. **Tickets**: Bea writes to the tracker in §4 via `desk-jira`; with Tracker `none` she drafts a
+   GitHub issue (`gh issue create`). Neither is created without the user's approval.
