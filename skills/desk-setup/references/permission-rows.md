@@ -60,9 +60,9 @@ a row changes, say which of these applies.
 
 | Script | Rows it reads |
 |---|---|
-| `worker-settings.mjs` (a worker's own settings) | `git-push`, `pr-open`, `pr-edit`, `pr-self-review-comment`, `pr-reply`, `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
+| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment`, `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
-| `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-auto-merge`, `ci-rerun`, `merge-feedback-first` |
+| `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
 | `pass.mjs` | `autopilot-workers`, `pr-images` |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
@@ -127,7 +127,7 @@ rows).
 | `pr-edit` | yes | body and title kept current, image table filled | text reviewers read. _Reach_: `gh pr edit` also adds reviewers and reaches any PR, so its rule needs `pr-request-review` too | ask | owners `pr-edit` + `pr-request-review`: `Bash(gh pr edit *)` · `ask: Bash(gh pr edit *--base*)` |
 | `pr-images` | yes | before/after images uploaded without a pause | drives a browser signed in to GitHub as you; never submits a comment | ask (every run) · no (placeholders) | `Bash(node ~/.claude/desk/bin/upload-images.mjs *)` |
 | `pr-self-review-comment` | yes | the clean §4 Local review command sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
-| `pr-reply` | yes | clearance works, replies to and resolves review threads | replies under your name; resolving hides a thread | ask | — (`gh api graphql` cannot be scoped; `Bash(gh api *)` would also allow merges and deletions) |
+| `pr-reply` | yes | clearance works, replies to and resolves review threads | replies under your name; resolving hides a thread. **Autopilot workers never get `gh api`, even at `yes`**: a worker replies only with `gh pr comment`, and resolving threads stays with you or the orchestrator | ask | — (`gh api graphql` cannot be scoped; `Bash(gh api *)` would also allow merges and deletions) |
 
 ## Round 7 — PR to merge
 

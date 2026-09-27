@@ -194,7 +194,8 @@ How to turn what you find into rows:
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
   changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
-  user confirms or writes `none`. Say that autopilot and clearance will never merge a PR that
+  user confirms or writes `none`. **The row must be set**: `none` is a fine answer, but while it is
+  unset the merge driver refuses to start and clearance parks every PR. Say that autopilot and clearance will never merge a PR that
   touches a held path: they report it with the reason and a person merges.
 - **Merge method.** From the repo's allowed methods (`allow_squash_merge`, `allow_merge_commit`,
   `allow_rebase_merge`) and the merged-PR history: a merge commit with **two parents** is `merge`;
@@ -215,9 +216,13 @@ How to turn what you find into rows:
   holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
   one span each, from the name scan above; never read a value. Missing one matters: a worker's
   worktree has each listed variable repointed at its own database or blanked, and an unlisted one
-  keeps whatever the copied env file says.
-- **Local database.** A Postgres container per-ticket databases can be created in, as
-  `` `postgres container <name>` ``, or `none` for a hosted database. **If it is `none` but the env
+  keeps whatever the copied env file says. **Unset blocks worker setup** (`setup-worktree.sh`
+  refuses to make a worker worktree nobody has named the database variables for); write `none` only
+  when the repo has no database at all.
+- **Local database.** Exactly one of two forms, because the scripts parse it: `` `postgres container
+  <name>` `` (a running Postgres container per-ticket databases can be created in), or `none` (a
+  hosted database, or none at all). Anything else is not automated: workers then get no per-ticket
+  database. **If it is `none` but the env
   files hold a database URL, warn plainly**: that URL is shared (often staging or production), and
   autopilot workers will get every §4 Database URL variable **blanked**, so they cannot run
   database-backed tests or migrations at all.
@@ -351,21 +356,13 @@ python3 $H "${REPO_RULES[@]}" add "${TMPDIR:-/tmp}/desk-harness-plan-$SLUG.json"
 python3 $H "${REPO_RULES[@]}" list --markdown      # replaces the §3c table
 ```
 
-**Check that git ignores `settings.local.json` before writing**, and check it against the repo's
-own rules, not only yours:
-
-```bash
-git -C "$ROOT" check-ignore -v .claude/settings.local.json   # which file ignores it, if any
-git -C "$ROOT" ls-files --error-unmatch .claude/settings.local.json 2>/dev/null && echo TRACKED
-```
-
-- Ignored by the repo's `.gitignore` (the `-v` output names a `.gitignore` in the repo): proceed.
-- Ignored only by your global excludes (`core.excludesFile`, `~/.config/git/ignore`) or by
-  `.git/info/exclude`: it is safe on this machine but a colleague's clone would commit theirs.
-  Recommend adding `.claude/settings.local.json` to the repo's `.gitignore` (in a PR, their call),
-  then proceed.
-- Not ignored at all, or `TRACKED`: **stop**. `harness-rules.py` refuses too: rules must not reach
-  git. Offer the `.gitignore` line (and `git rm --cached` for a tracked copy) as the user's action.
+**`harness-rules.py` enforces where allows may go**: it writes an allow plan only to a
+`settings.local.json` inside a repo's own `.claude/` that git ignores there, and refuses a tracked
+or un-ignored file and any user-level file (exit 2, nothing written). Pass its report on: when only
+`.git/info/exclude` or your global excludes ignore the file, it recommends adding
+`.claude/settings.local.json` to the repo's `.gitignore` so a colleague's clone is covered too
+(their call, in a PR). On a refusal, offer that `.gitignore` line (and `git rm --cached` for a
+tracked copy) as the user's own action.
 
 Existing worktrees you open yourself do not see the file; offer to copy it into the ones
 `git worktree list` shows (backing up any that exist). **Autopilot worker worktrees never get a

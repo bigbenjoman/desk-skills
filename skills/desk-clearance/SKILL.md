@@ -122,7 +122,8 @@ Run them in order. 1–2 are cheap and precede everything.
 node ~/.agents/skills/desk-clearance/bin/clearance-state.mjs derive
 ```
 
-~8s for the whole set. Run it from inside the repo: the repo and its config come from the origin
+~8s for the whole set. Zero open PRs is an answer, not a failure: it exits 0 and says on stderr
+which search it ran. Run it from inside the repo: the repo and its config come from the origin
 remote. It writes `~/.desk-clearance/<slug>/state.json` and renders a table: lane per PR,
 verdict, human feedback counts, required-check state, behind-count, park reasons, stack and
 auto-merge flags, file overlap, merge order. Author comes from `--author` → `DESK_GITHUB_HANDLE` →
@@ -156,14 +157,18 @@ not, and `mergeable` never is — it flaps to `UNKNOWN` every time the default b
   definition `desk-ticket`, `desk-autopilot` and the merge driver use too): every required check
   completed with success (**skipped does not count**); no other check failed, errored, timed out or
   is still queued or running, unless §4 Advisory checks names it; and at least one check completed
-  with success, so a head with no checks at all is not green. The required contexts are read live
-  from the ruleset and branch protection API, never from memory, a workflow file, or even §4
-  Required checks — the script compares that row with the live answer and prints any drift, which
-  is a reason to re-run `/desk-setup`, not to trust the row. Green belongs to a SHA, and the merge
-  is pinned to it (`--match-head-commit`).
+  with success, so a head with no checks at all is not green. **The required checks are the union**
+  of what the platform requires (read live from the ruleset and branch protection API, never from
+  memory or a workflow file) and what §4 Required checks names, so neither a stale config nor a
+  check the platform does not enforce can lower the bar. The script prints any drift between the
+  two, which is a reason to re-run `/desk-setup`. Green belongs to a SHA, and the merge is pinned to
+  it (`--match-head-commit`).
 - **No §4 Merge holds entry applies.** A PR whose files match a glob in §4 Merge holds needs a manual step
   before it merges (the hold says which), so a person merges it: clearance never does, whatever §3
-  grants, and never arms auto-merge on it. It is reported under `HELD` with the reason.
+  grants, and never arms auto-merge on it. `clearance-state.mjs` parks such a PR's merge (its park
+  reason names the glob and why) and prints `DISARM` for any held PR with auto-merge armed; you
+  disarm it and report it under `HELD`. **While §4 Merge holds is unset, every PR's merge is
+  parked** until `/desk-setup` sets it (`none` is a fine answer).
 - **No standing `CHANGES_REQUESTED`.** Where §4 Branch protection enforces it the platform refuses
   the merge; where it does not (or it is `none`), clearance refuses it itself. Only that reviewer
   clears it.
@@ -321,8 +326,10 @@ Before each merge, from freshly derived state:
    description becomes permanent history. The title must follow §5 PR title — where §4 Tracker is
    `jira`, the ticket key in it is what links the merge to the ticket.
 5. **§4 Merge method, and only that.** The render prints it and warns if a ruleset allows
-   something else. Unstacked: `gh pr merge <n> --<method> --match-head-commit <the SHA from step 3>`
-   (or leave armed auto-merge, armed with the same `--match-head-commit`, to fire).
+   something else. Unstacked: the render prints the exact pinned command for each ready PR,
+   `gh pr merge <n> --repo <§0 GitHub repo> --<method> --match-head-commit <head>`; run that one,
+   after confirming step 3's SHA is still that head (or leave armed auto-merge, armed with the same
+   `--match-head-commit`, to fire).
    **Stacked** (the render says `STACKED`): every ordinary path refuses, including `--auto`; use
    `gh api -X PUT repos/<§0 GitHub repo>/pulls/<n>/merge-async -f merge_method=<method>`, which only
    *enqueues* — poll `.merged`. Merge stacks bottom-up.

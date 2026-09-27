@@ -345,11 +345,14 @@ attempt a login.
 ## 4. Opening it
 
 ```bash
-gh pr create --repo <§0 GitHub repo> --base <default> --head <your branch> --draft \
+gh pr create --repo <§0 GitHub repo> --draft --base <default> --head <your branch> \
   --body-file <path> --title "<title in the §5 PR title format>"
 ```
 
-Gated on config §3 `pr-open`. Always pass `--repo`, `--head` and `--title` explicitly. `--repo` is
+Gated on config §3 `pr-open`. Always pass `--repo`, `--head` and `--title` explicitly, and keep
+`--repo <§0 GitHub repo> --draft` first, in that order: an autopilot worker's allow rule matches only
+a command beginning `gh pr create --draft` or `gh pr create --repo <§0 GitHub repo> --draft`, and the
+same form keeps interactive and worker PRs identical. `--repo` is
 what keeps the PR on this repo when `origin` is a fork (without it `gh` may offer, or pick, the
 fork), and `--head` is the ticket's recorded branch, the one the merge driver will look the PR up
 by.
