@@ -1,6 +1,6 @@
 *.zip
 .DS_Store
 *.bak*
-*.tmp-studia
+*.tmp-desk
 node_modules/
 __pycache__/

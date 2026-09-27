@@ -1,7 +1,7 @@
 # Permission rows — questions, trade-offs, harness rules
 
-One question per row, four per `AskUserQuestion` call, in these rounds. The first option is the
-Recommended value (the original author's current practice), labelled `(Recommended)`. "Unlocks"
+One question per row, four per `AskUserQuestion` call, in these rounds. Skip the Jira rounds (write
+`no`) when §4 Tracker is `none`. The first option is the Recommended value (a proven starting point), labelled `(Recommended)`. "Unlocks"
 and "Exposes" go into that option's description; the alternatives get their own one-line trade-off.
 **Where a row's rule reaches further than the row's wording (marked _Reach_), say so in the
 question.** The answer then covers what the rule really allows.
@@ -15,6 +15,10 @@ in the rule's owner set is `yes`; revoking any owner removes the rule.
   prompt; `unguard:` removes an `ask:` guard setup added earlier (put back on revoke).
 - `—` means no rule can be scoped to the row's wording, so it keeps prompting. **When in doubt, no
   allow rule: a prompt is safer than an over-grant.**
+- `<merge>` is this repo's §4 Merge method as a flag (`--squash`, `--merge` or `--rebase`); setup
+  substitutes it before writing, so the rule matches exactly what the skills run here.
+- Allow rules go to **this repo's** `<Primary repo root>/.claude/settings.local.json`, so a grant
+  in one repo never reaches another. The deny-only plan goes to `~/.claude/settings.json`.
 - `<slack>`, `<figma>`, `<atlassian>` are the MCP prefixes of claude.ai connectors,
   `mcp__claude_ai_Slack__`, `mcp__claude_ai_Figma__`, `mcp__claude_ai_Atlassian_Rovo__` (check the
   session's tool list; use what it shows).
@@ -78,16 +82,16 @@ No skill script looks these up. They decide harness rules (`read-*`, `git-commit
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
 | `jira-assign-self` | yes | starting a ticket without a round-trip | board shows you on it | ask | — (`desk-jira edit` can set any assignee) |
-| `jira-comment` | yes | the root-cause + PR-link comment posts as it happens; exact text printed `posted` | text is public to the team under your name; editable. _Reach_: the rule posts on **any** SV ticket, other people's included; only the skill's `jira-others` check keeps it to yours | ask (every comment prompts) | `Bash(desk-jira comment *)` |
+| `jira-comment` | yes | the root-cause + PR-link comment posts as it happens; exact text printed `posted` | text is public to the team under your name; editable. _Reach_: the rule posts on **any** ticket on the Jira site, other people's included; only the skill's `jira-others` check keeps it to yours | ask (every comment prompts) | `Bash(desk-jira comment *)` |
 | `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *assignee*)` `ask: Bash(desk-jira create *reporter*)` (routing is `jira-route`). No `attach` rule: it reaches any ticket |
-| `jira-edit` | yes | narrowing a description to what shipped, Launch Priority, labels | overwrites fields others read | ask | — (`desk-jira edit` and `labels` reach any ticket and any field, assignee included) |
+| `jira-edit` | yes | narrowing a description to what shipped, the §4 Priority field, labels | overwrites fields others read | ask | — (`desk-jira edit` and `labels` reach any ticket and any field, assignee included) |
 
 ## Round 4 — Jira, board state
 
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
-| `jira-transition` | yes | In Development on start, Review/QA when the PR is up | board state the team filters on | ask | — (`desk-jira transition` reaches any ticket and any state, Done included) |
-| `jira-close-own-merged` | yes | the ticket goes to Done the moment your own last PR on the key merges, with its one-line comment | a Done others act on, on evidence: a merged PR you authored and no PR on the key still open | ask · no | — |
+| `jira-transition` | yes | §4 In-progress state on start, §4 Review state when the PR is up | board state the team filters on | ask | — (`desk-jira transition` reaches any ticket and any state, Done included) |
+| `jira-close-own-merged` | yes | the ticket goes to §4 Done state the moment your own last PR on the key merges, with its one-line comment | a Done others act on, on evidence: a merged PR you authored and no PR on the key still open | ask · no | — |
 | `jira-close` | ask | duplicate, not-a-bug and already-fixed closes without a wait | a judgement others act on; already-fixed needs every acceptance criterion checked | yes | — |
 | `jira-route` | ask | — | a ticket lands on a colleague in your name | yes · no | — |
 
@@ -106,7 +110,7 @@ No skill script looks these up. They decide harness rules (`read-*`, `git-commit
 |---|---|---|---|---|---|
 | `pr-edit` | yes | body and title kept current, image table filled | text reviewers read. _Reach_: `gh pr edit` also adds reviewers and reaches any PR, so its rule needs `pr-request-review` too | ask | owners `pr-edit` + `pr-request-review`: `Bash(gh pr edit *)` · `ask: Bash(gh pr edit *--base*)` |
 | `pr-images` | yes | before/after images uploaded without a pause | drives a browser signed in to GitHub as you; never submits a comment | ask (every run) · no (placeholders) | `Bash(node ~/.claude/desk/bin/upload-images.mjs *)` |
-| `pr-self-review-comment` | yes | the clean `/pullbot` sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
+| `pr-self-review-comment` | yes | the clean §4 Local review command sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
 | `pr-reply` | yes | clearance works, replies to and resolves review threads | replies under your name; resolving hides a thread | ask | — (`gh api graphql` cannot be scoped; `Bash(gh api *)` would also allow merges and deletions) |
 
 ## Round 7 — PR to merge
@@ -114,9 +118,9 @@ No skill script looks these up. They decide harness rules (`read-*`, `git-commit
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
 | `pr-request-review` | yes | hand-back to the reviewer; infra/security owner added without asking | pings a colleague | ask | co-owner of `pr-edit`'s rule |
-| `pr-ready` | ask | undraft once the verdict at head is `p0=0 p1=0 p2=0 deferred=0 gaps=0` and not DIRTY | the PR enters review queues and the merge driver's view. _Reach_: any PR | yes | `Bash(gh pr ready *)` |
-| `pr-auto-merge` | ask | GitHub merges the moment the gate clears | merges without a final look | yes · no | owners `pr-auto-merge` + `pr-merge-green`: `Bash(gh pr merge * --auto --squash)` `Bash(gh pr merge * --squash --auto)` · `unguard: Bash(gh pr merge *--auto*)` |
-| `pr-merge-green` | ask | squash-merge on `🏁 CI gate`, no approval wait (the ruleset needs 0; a CHANGES_REQUESTED still blocks) | code reaches `main` and deploys with no human approval: the agent's own verdict is the last check. _Reach_: any PR the `*` names, `--repo` included; `--admin` is always denied | yes · no (you merge; skills report ready at APPROVED + green) | `Bash(gh pr merge * --squash)` · `ask: Bash(gh pr merge *--auto*)` (removed when `pr-auto-merge` is yes) |
+| `pr-ready` | ask | undraft once the local review at head reads §4 Clean review verdict and the PR is not DIRTY | the PR enters review queues and the merge driver's view. _Reach_: any PR | yes | `Bash(gh pr ready *)` |
+| `pr-auto-merge` | ask | GitHub merges the moment the gate clears | merges without a final look | yes · no | owners `pr-auto-merge` + `pr-merge-green`: `Bash(gh pr merge * --auto <merge>)` `Bash(gh pr merge * <merge> --auto)` · `unguard: Bash(gh pr merge *--auto*)` |
+| `pr-merge-green` | ask | merge (§4 Merge method) once §4 Required checks are green, no approval wait (a standing CHANGES_REQUESTED still stops it) | code reaches the default branch, and deploys wherever the repo deploys from it, with no human approval unless §4 Branch protection requires one: the agent's own verdict can be the last check. _Reach_: any PR the `*` names, `--repo` included; `--admin` is always denied | yes · no (you merge; skills report ready at APPROVED + green) | `Bash(gh pr merge * <merge>)` · `ask: Bash(gh pr merge *--auto*)` (removed when `pr-auto-merge` is yes) |
 
 ## Round 8 — shepherding
 
@@ -142,15 +146,15 @@ No skill script looks these up. They decide harness rules (`read-*`, `git-commit
 |---|---|---|---|---|---|
 | `autopilot-reclaim` | yes | a batch survives memory pressure | an orphaned server or `tsc` is killed (never a worker mid-commit, never another session's) | no (batch drops concurrency only) | — |
 | `db-per-ticket` | yes | isolated seeds, migrations and screenshots | disk, invisible to other sessions | ask | — |
-| `db-clone-staging` | yes | real tutor and subject data locally | reads live staging under load; the copy holds real personal data | ask · no | — |
+| `db-clone-staging` | yes | real staging data locally (skip when §4 Local database or Staging is `none`) | reads live staging under load; the copy holds real personal data | ask · no | — |
 | `staging-write` | ask + backup + independent review | data fixes on staging | data others depend on | no | — |
 
 ## Round 11 — local
 
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
-| `typesense-reindex` | ask | search reflects your change | collections are global: every session's index | no | — |
-| `specs-it-shared` | no | integration suites without a per-ticket DB | `deleteMany()` wipes another session's data | ask | — |
+| `local-reindex` | ask | a shared local index or cache (§4 Local services) reflects your change | it is shared: every session's copy is rebuilt (skip when §4 Local services is `none`) | no | — |
+| `tests-shared-db` | no | database-backed tests without a per-ticket DB | test setup that truncates or deletes wipes another session's data | ask | — |
 | `worktree-remove` | ask | disk back (~4GB per worktree) | untracked files, local state | yes | — |
 | `branch-delete` | no | tidy branch list | `-D` discards commits `-d` refused to | ask | — |
 
@@ -174,6 +178,6 @@ No skill script looks these up. They decide harness rules (`read-*`, `git-commit
 
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
-| `read-transcripts` | yes | the story behind the day's work: what you chased, what got found, work that never became a PR | your prompts and Claude's replies from every session that day, including non-Studia ones (the check-out lists those rather than posting them) | ask · no | — (the collector runs from a `$S/` path, which no allow rule matches) |
-| `read-calendar` | yes | the meeting lines, and the decisions from Gemini's notes | event titles and attendees; the notes carry everything said in the meeting, HR and personal matters included (the check-out leaves those out). _Reach_: the rule lists events on any calendar shared with you, colleagues' included, not only your primary | ask · no | `mcp__claude_ai_Google_Calendar__list_events`. Gmail keeps prompting: `search_threads` and `get_thread` open the whole mailbox |
+| `read-transcripts` | yes | the story behind the day's work: what you chased, what got found, work that never became a PR | your prompts and Claude's replies from every session that day, including sessions in other repos (the check-out lists those rather than posting them) | ask · no | — (the collector runs from a `$S/` path, which no allow rule matches) |
+| `read-calendar` | yes | the meeting lines, and the decisions from meeting notes in your Gmail (e.g. Gemini's) | event titles and attendees; the notes carry everything said in the meeting, HR and personal matters included (the check-out leaves those out). _Reach_: the rule lists events on any calendar shared with you, colleagues' included, not only your primary | ask · no | `mcp__claude_ai_Google_Calendar__list_events`. Gmail keeps prompting: `search_threads` and `get_thread` open the whole mailbox |
 | `read-slack-own` | ask | asks and agreements you made in DMs, which often carry the day's decisions | the other side of each DM too. _Reach_: the search can match anyone's messages in your DMs and private channels | yes · no | — (`slack_search_public_and_private` reaches past your own messages) |

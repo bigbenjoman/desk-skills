@@ -70,7 +70,7 @@ def write_json(path, data):
     real = os.path.realpath(path)
     folder = os.path.dirname(real)
     os.makedirs(folder, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".studia-", suffix=".tmp", dir=folder)
+    fd, tmp = tempfile.mkstemp(prefix=".desk-", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -308,7 +308,7 @@ USAGE = ("usage: harness-rules.py [--settings P] [--ledger P] add <plan.json> | 
 def main(argv):
     home = os.path.expanduser("~")
     settings = os.path.join(home, ".claude", "settings.json")
-    ledger = os.path.join(home, ".claude", "studia", "harness-rules.json")
+    ledger = os.path.join(home, ".claude", "desk", "harness-rules.json")
     args = list(argv)
     while args and args[0] in ("--settings", "--ledger"):
         if len(args) < 2:

@@ -2,7 +2,11 @@
 // Shared resolver for the desk/bin scripts: one place that turns "who am I, where is the repo,
 // what am I allowed to do" into values, so no script hardcodes a person or a machine.
 //
-// Resolution order for every value: environment variable -> ~/.claude/desk-config.md -> default.
+// Config is PER REPO: ~/.config/desk/repos/<slug>/config.md, where <slug> is `owner__name` of the
+// origin remote of the repo the process runs in (DESK_REPO_DIR, else the cwd). Every worktree of a
+// repo shares the remote, so they share one config. DESK_CONFIG overrides the lookup outright.
+//
+// Resolution order for every value: environment variable -> this repo's config -> default.
 // Anything identity-shaped (GitHub handle, Jira name, repo root) has NO default and fails loudly:
 // a guessed handle sends work to the wrong place silently.
 //
@@ -10,6 +14,7 @@
 // differ in exactly one file.
 //
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
+//   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS), exit 3 if unset
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
@@ -29,9 +34,49 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 
 export const HOME = process.env.HOME || homedir();
-export const CONFIG_PATH = process.env.DESK_CONFIG ?? join(HOME, '.claude', 'desk-config.md');
-
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
+
+// ---- which repo, which config --------------------------------------------------------------
+export const deskConfigRoot = () => expandHome(process.env.DESK_CONFIG_ROOT ?? join(HOME, '.config', 'desk'));
+
+const git = (dir, ...args) => {
+  try { return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  catch { return ''; }
+};
+
+// `owner/name` from a GitHub remote URL (ssh, https or ssh://), else null.
+export function ownerRepoFromUrl(url) {
+  const m = /github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(String(url ?? '').trim());
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+// The repo this process works in. Slug is `owner__name`; a repo with no GitHub origin falls back to
+// `local__<main checkout dir name>`, so it can still be configured.
+let repoCache = null;
+export function currentRepo() {
+  if (repoCache) return repoCache;
+  const dir = expandHome(process.env.DESK_REPO_DIR ?? process.cwd());
+  const ownerRepo = process.env.DESK_GH_REPO || ownerRepoFromUrl(git(dir, 'remote', 'get-url', 'origin'));
+  let slug = null;
+  if (ownerRepo) slug = ownerRepo.replace('/', '__');
+  else {
+    const common = git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+    if (common) slug = `local__${basename(dirname(common))}`;
+  }
+  repoCache = { dir, ownerRepo, slug };
+  return repoCache;
+}
+
+export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskConfigRoot(), 'repos', slug) : null);
+export const credsDir = () => repoConfigDir();
+
+export function configPathOrNull() {
+  if (process.env.DESK_CONFIG) return expandHome(process.env.DESK_CONFIG);
+  const d = repoConfigDir();
+  return d ? join(d, 'config.md') : null;
+}
+const configPathHint = () =>
+  configPathOrNull() ?? '(no repo: run inside the repo, or set DESK_REPO_DIR or DESK_CONFIG)';
 
 // ---- the one map from what a script means to where the config says it ------------------------
 // Scripts never name a config row directly. They name a logical id below, and this is the only
@@ -41,36 +86,111 @@ export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/
 // are matched by display name. Either way the match is EXACT (case, backticks and spacing aside):
 // a near-miss must read as unset, never borrow a neighbouring row's value.
 export const PERMISSION_KEYS = Object.freeze({
-  'autopilot-workers': 'autopilot-workers',
-  'autopilot-merge': 'autopilot-merge',
-  'pr-merge-green': 'pr-merge-green',
-  'merge-feedback-first': 'merge-feedback-first',
-  'pr-auto-merge': 'pr-auto-merge',
-  'pr-ready': 'pr-ready',
-  'git-push': 'git-push',
-  'pr-open': 'pr-open',
-  'pr-edit': 'pr-edit',
-  'pr-self-review-comment': 'pr-self-review-comment',
-  'pr-reply': 'pr-reply',
-  'pr-images': 'pr-images',
-  'pr-update-branch': 'pr-update-branch',
+  'read-own-work': 'read-own-work',
+  'read-local-git': 'read-local-git',
+  'read-others': 'read-others',
+  'read-slack-public': 'read-slack-public',
+  'read-figma': 'read-figma',
+  'read-vercel': 'read-vercel',
+  'read-confluence': 'read-confluence',
+  'read-transcripts': 'read-transcripts',
+  'read-calendar': 'read-calendar',
+  'read-slack-own': 'read-slack-own',
+  'jira-assign-self': 'jira-assign-self',
   'jira-comment': 'jira-comment',
-  'jira-transition': 'jira-transition',
   'jira-create': 'jira-create',
   'jira-edit': 'jira-edit',
+  'jira-transition': 'jira-transition',
+  'jira-close-own-merged': 'jira-close-own-merged',
+  'jira-close': 'jira-close',
+  'jira-route': 'jira-route',
+  'jira-others': 'jira-others',
+  'git-commit': 'git-commit',
+  'git-push': 'git-push',
+  'git-force-with-lease': 'git-force-with-lease',
+  'pr-open': 'pr-open',
+  'pr-edit': 'pr-edit',
+  'pr-images': 'pr-images',
+  'pr-self-review-comment': 'pr-self-review-comment',
+  'pr-reply': 'pr-reply',
+  'pr-request-review': 'pr-request-review',
+  'pr-ready': 'pr-ready',
+  'pr-auto-merge': 'pr-auto-merge',
+  'pr-merge-green': 'pr-merge-green',
+  'merge-feedback-first': 'merge-feedback-first',
+  'pr-update-branch': 'pr-update-branch',
+  'pr-conflict-unreviewed': 'pr-conflict-unreviewed',
+  'pr-conflict-reviewed': 'pr-conflict-reviewed',
   'ci-rerun': 'ci-rerun',
   'codex-review': 'codex-review',
-  'read-figma': 'read-figma',
+  'autopilot-workers': 'autopilot-workers',
+  'autopilot-worker-mode': 'autopilot-worker-mode',
+  'autopilot-merge': 'autopilot-merge',
+  'autopilot-judgement': 'autopilot-judgement',
+  'autopilot-reclaim': 'autopilot-reclaim',
+  'db-per-ticket': 'db-per-ticket',
+  'db-clone-staging': 'db-clone-staging',
+  'staging-write': 'staging-write',
+  'local-reindex': 'local-reindex',
+  'tests-shared-db': 'tests-shared-db',
+  'worktree-remove': 'worktree-remove',
+  'branch-delete': 'branch-delete',
+  'server-stop': 'server-stop',
+  'skills-edit': 'skills-edit',
+  'vercel-env': 'vercel-env',
+  'slack-draft': 'slack-draft',
+  'slack-send': 'slack-send',
+  'merge-bypass': 'merge-bypass',
+  'others-prs': 'others-prs',
+  'product-calls': 'product-calls',
+  'legal-content': 'legal-content',
 });
 
 export const CONFIG_ROWS = Object.freeze({
+  'gh-repo': { section: '0', row: 'GitHub repo' },
+  'default-branch': { section: '0', row: 'Default branch' },
+  'repo-description': { section: '0', row: 'One-line description' },
   'github-handle': { section: '1', row: 'GitHub handle' },
+  'jira-email': { section: '1', row: 'Jira email' },
   'jira-display-name': { section: '1', row: 'Jira display name' },
+  'jira-account-id': { section: '1', row: 'Jira account id' },
   name: { section: '1', row: 'Name' },
   'repo-root': { section: '2', row: 'Primary repo root' },
   'worktrees-dir': { section: '2', row: 'Worktrees directory' },
+  'handoff-dir': { section: '2', row: 'Handoff directory' },
+  'backups-dir': { section: '2', row: 'Backups directory' },
   wsl: { section: '2', row: 'Running on WSL?' },
   'browser-profile': { section: '2', row: 'Signed-in browser profile' },
+  tracker: { section: '4', row: 'Tracker' },
+  'jira-site': { section: '4', row: 'Jira site' },
+  'jira-project': { section: '4', row: 'Jira project' },
+  'ticket-pattern': { section: '4', row: 'Ticket key pattern' },
+  'in-progress-state': { section: '4', row: 'In-progress state' },
+  'review-state': { section: '4', row: 'Review state' },
+  'done-state': { section: '4', row: 'Done state' },
+  'jira-priority': { section: '4', row: 'Priority' },
+  'required-checks': { section: '4', row: 'Required checks' },
+  'merge-method': { section: '4', row: 'Merge method' },
+  'local-review': { section: '4', row: 'Local review command' },
+  'clean-verdict': { section: '4', row: 'Clean review verdict' },
+  'agents-sync': { section: '4', row: 'Project subagents sync' },
+  'package-manager': { section: '4', row: 'Package manager' },
+  'command-prefix': { section: '4', row: 'Command prefix' },
+  'install-cmd': { section: '4', row: 'Install' },
+  'dev-cmd': { section: '4', row: 'Dev server' },
+  'typecheck-cmd': { section: '4', row: 'Typecheck' },
+  'lint-cmd': { section: '4', row: 'Lint' },
+  'test-cmd': { section: '4', row: 'Unit tests' },
+  'e2e-cmd': { section: '4', row: 'E2E tests' },
+  'build-cmd': { section: '4', row: 'Build' },
+  'env-files': { section: '4', row: 'Env files' },
+  'local-db': { section: '4', row: 'Local database' },
+  'local-services': { section: '4', row: 'Local services' },
+  staging: { section: '4', row: 'Staging' },
+  'checkout-destination': { section: '4', row: 'Check-out destination' },
+  'ai-attribution': { section: '5', row: 'AI attribution' },
+  'branch-names': { section: '5', row: 'Branch names' },
+  'pr-title': { section: '5', row: 'PR title' },
   'dev-port': { section: '3b', row: 'Preferred dev-server port' },
   concurrency: { section: '3b', row: 'Autopilot worker concurrency' },
   'memory-ceiling': { section: '3b', row: 'Memory ceiling for parallel work (GB)' },
@@ -92,11 +212,12 @@ const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCa
 
 function parseConfig() {
   if (cache) return cache;
-  cache = { exists: existsSync(CONFIG_PATH), sections: {} };
+  const path = configPathOrNull();
+  cache = { path, exists: !!path && existsSync(path), sections: {} };
   if (!cache.exists) return cache;
   let section = null;
   let header = null;
-  for (const raw of readFileSync(CONFIG_PATH, 'utf8').split('\n')) {
+  for (const raw of readFileSync(path, 'utf8').split('\n')) {
     const line = raw.trim();
     const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
     if (h) { section = h[1].toLowerCase(); header = null; cache.sections[section] ??= { byKey: {}, byName: {} }; continue; }
@@ -140,10 +261,10 @@ export function resolve({ env, id, fallback, identity = false }) {
   const fromCfg = id ? configValue(id) : null;
   if (fromCfg != null) return expandHome(fromCfg);
   if (!identity && fallback !== undefined) return typeof fallback === 'function' ? fallback() : fallback;
-  const where = parseConfig().exists ? CONFIG_PATH : `${CONFIG_PATH} (missing)`;
+  const where = parseConfig().exists ? configPathHint() : `${configPathHint()} (missing)`;
   const r = id ? CONFIG_ROWS[id] : null;
   throw new DeskConfigError(
-    `studia: ${r ? `"${r.row}"` : env} is not set. Set ${env ? `$${env} or ` : ''}` +
+    `desk: ${r ? `"${r.row}"` : env} is not set. Set ${env ? `$${env} or ` : ''}` +
       `${r ? `config §${r.section} "${r.row}"` : 'it'} in ${where} — run /desk-setup. Refusing to guess.`,
   );
 }
@@ -166,7 +287,7 @@ export function parseBudget(raw, label) {
   const v = String(raw ?? '').trim().toLowerCase();
   if (/^(none|off|no|no cap)$/.test(v)) return { off: true };
   if (/^\d+(\.\d+)?$/.test(v) && Number(v) > 0) return { usd: Number(v) };
-  throw new DeskConfigError(`studia: ${label} is "${raw}" — want a positive number of USD, or none/off/no cap. Refusing to guess.`);
+  throw new DeskConfigError(`desk: ${label} is "${raw}" — want a positive number of USD, or none/off/no cap. Refusing to guess.`);
 }
 export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: '25' }), 'the per-worker budget');
 export const batchBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' }), 'the batch budget');
@@ -184,11 +305,19 @@ export const worktreesDir = () => resolve({
   fallback: () => { const r = repoRoot(); return join(dirname(r), `${basename(r)}-worktrees`); },
 }).replace(/\/+$/, '');
 export const browserProfile = () => resolve({ env: 'DESK_BROWSER_PROFILE', id: 'browser-profile', identity: true });
-export const ghRepo = () => resolve({ env: 'DESK_GH_REPO', fallback: 'Sophos-Education/studia-web' });
-export const studiaHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
-export const binDir = () => join(studiaHome(), 'bin');
-export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? join(HOME, '.desk-autopilot'));
-export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(studiaHome(), 'queue.json'));
+// The origin remote wins over the config row: the row is what setup saw, the remote is what is true now.
+export const ghRepo = () => currentRepo().ownerRepo ?? resolve({ env: 'DESK_GH_REPO', id: 'gh-repo', identity: true });
+export const repoSlug = () => {
+  const s = currentRepo().slug;
+  if (!s) throw new DeskConfigError(`desk: not inside a git repo, so there is no repo config to read. ${configPathHint()}`);
+  return s;
+};
+export const defaultBranch = () => resolve({ env: 'DESK_DEFAULT_BRANCH', id: 'default-branch', fallback: 'main' });
+export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
+export const binDir = () => join(deskHome(), 'bin');
+// Batch state is per repo, so autopilot can run in two repos at once without sharing a queue.
+export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? join(HOME, '.desk-autopilot', repoSlug()));
+export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHome(), 'repos', repoSlug(), 'queue.json'));
 export const skillsDir = () => expandHome(process.env.DESK_SKILLS_DIR ?? join(HOME, '.agents', 'skills'));
 export const lockDir = () => expandHome(process.env.DESK_LOCK_DIR ?? '/tmp');
 // Claude Code keys a project's memory dir by the absolute cwd with every non-alphanumeric char as `-`.
@@ -312,6 +441,17 @@ if (isMain) {
   const [cmd, ...args] = process.argv.slice(2);
   try {
     switch (cmd) {
+      case 'where': {
+        const r = currentRepo(); const p = configPathOrNull();
+        const q = (v) => `'${String(v ?? '').replace(/'/g, `'\\''`)}'`;
+        console.log(`SLUG=${q(r.slug)}`);
+        console.log(`GH_REPO=${q(r.ownerRepo)}`);
+        console.log(`CONFIG=${q(p)}`);
+        console.log(`CREDS=${q(repoConfigDir())}`);
+        console.log(`EXISTS=${p && existsSync(p) ? 'yes' : 'no'}`);
+        if (!r.slug) process.exit(3);
+        break;
+      }
       case 'get': {
         const v = configValue(args[0]);
         if (v == null) process.exit(3);
@@ -337,7 +477,7 @@ if (isMain) {
         break;
       case 'paths': {
         const lines = {
-          DESK_REPO_ROOT: repoRoot(), DESK_WORKTREES_DIR: worktreesDir(), DESK_HOME: studiaHome(),
+          DESK_REPO_ROOT: repoRoot(), DESK_WORKTREES_DIR: worktreesDir(), DESK_HOME: deskHome(), DESK_SLUG: repoSlug(), DESK_REPO_CONFIG_DIR: repoConfigDir(), DESK_DEFAULT_BRANCH: defaultBranch(),
           DESK_BIN: binDir(), DESK_STATE: stateDir(), DESK_QUEUE: queueFile(), DESK_SKILLS_DIR: skillsDir(),
           DESK_LOCK_DIR: lockDir(), DESK_MEMORY_DIR: memoryDir(), DESK_GH_REPO: ghRepo(),
           DESK_PG_CONTAINER: pgContainer(), DESK_DEV_PORT: devPort(), DESK_WORKER_PORT_FLOOR: workerPortFloor(), DESK_IS_WSL: isWSL() ? 'yes' : 'no',
@@ -367,7 +507,7 @@ if (isMain) {
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
       default:
-        console.error('usage: desk-env.mjs get|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
+        console.error('usage: desk-env.mjs where|get|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
         process.exit(2);
     }
   } catch (e) {

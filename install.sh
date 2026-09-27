@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Installs the studia-* Claude Code skills and the environment they expect.
+# Installs the desk-* Claude Code skills and the environment they expect, once per machine.
+# Per-repo settings are not written here: run /desk-setup inside each repo.
 #
 #   ./install.sh           asks before settings.json, plugins, a foreign desk-jira, the Playwright patch
 #   ./install.sh --yes     accepts those prompts too, except large downloads (scripted re-install)
 #   ./install.sh --check   reports dependencies only, changes nothing
 #
-# Safe to re-run. Studia-owned files (the skills, ~/.claude/desk/bin, the hook script, a first
-# config) are written without asking and listed at the end; a copy you edited is backed up first.
-# An existing config is never overwritten. settings.json is backed up before it is touched.
+# Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env and desk-jira in
+# ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
+# is backed up first. Repo configs under ~/.config/desk/repos are never touched. settings.json is
+# backed up before it is touched.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,14 +17,13 @@ TS="$(date +%Y%m%d-%H%M%S)"
 CLAUDE_DIR="$HOME/.claude"
 AGENTS="$HOME/.agents/skills"
 SKILLS_LINK="$CLAUDE_DIR/skills"
-STUDIA="$CLAUDE_DIR/studia"
+DESKDIR="$CLAUDE_DIR/desk"
 PRISTINE="$HOME/.agents/.desk-pristine"   # what the last install wrote, to tell your edits from ours
 BACKUP="$HOME/.agents/desk-backup/$TS"
-CONFIG="$CLAUDE_DIR/desk-config.md"
+CONFIG_ROOT="${DESK_CONFIG_ROOT:-$HOME/.config/desk}"
 SETTINGS="$CLAUDE_DIR/settings.json"
 HOOK="$CLAUDE_DIR/hooks/deny-ai-attribution.py"
-PROFILE_DIR="$HOME/.cache/ms-playwright-mcp/studia-profile"
-REPO="${DESK_REPO:-$HOME/code/studia-web}"
+PROFILE_DIR="$HOME/.cache/ms-playwright-mcp/desk-profile"
 
 PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official playwright@claude-plugins-official codex@openai-codex"
 
@@ -71,7 +72,7 @@ def write_json(path, data):
     real = os.path.realpath(path)
     folder = os.path.dirname(real)
     os.makedirs(folder, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".studia-", suffix=".tmp", dir=folder)
+    fd, tmp = tempfile.mkstemp(prefix=".desk-", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -180,32 +181,17 @@ if need gh 1 "brew install gh" "see https://github.com/cli/cli/blob/trunk/docs/i
         esac
       done
     fi
-    if gh api repos/Sophos-Education/studia-web --jq .full_name >/dev/null 2>&1; then
-      ok "gh can read Sophos-Education/studia-web"
-    else
-      warn "gh cannot read Sophos-Education/studia-web. Ask to be added to the org, then re-run."
-    fi
   else
     bad "gh is not signed in. Run: gh auth login -h github.com -s repo,workflow"
   fi
 fi
 
-# bun is mise-managed from studia-web's .tool-versions. Agent shells often miss mise's PATH
-# injection, which is why the skills call `mise exec -- bun`.
-if need mise 0 "brew install mise" "curl https://mise.run | sh" "studia-web pins node and bun through mise"; then
-  if [ -f "$REPO/.tool-versions" ]; then
-    if bunpath="$(cd "$REPO" && mise which bun 2>/dev/null)"; then
-      ok "bun via mise in $REPO  ($bunpath)"
-    else
-      warn "mise has not installed bun for $REPO. Run: cd $REPO && mise install"
-    fi
-  else
-    note "no studia-web checkout at $REPO to check bun against (set DESK_REPO=/path/to/studia-web)"
-  fi
-fi
+# Some repos pin node and other tools through mise; /desk-setup detects that per repo and writes
+# `mise exec --` as the repo's command prefix, because agent shells often miss mise's PATH injection.
+need mise 0 "brew install mise" "curl https://mise.run | sh" "only for repos that pin tools through mise" || true
 
 if need codex 0 "brew install --cask codex, or npm i -g @openai/codex" \
-    "npm i -g @openai/codex (or bun add -g @openai/codex)" "cross-vendor refutation in /pullbot and autopilot"; then
+    "npm i -g @openai/codex" "cross-vendor refutation in local review and autopilot"; then
   note "codex --version and codex login status pass even on a seat with no usage left; only a real call proves it."
   if [ "$CHECK_ONLY" = 1 ]; then
     note "no real codex call under --check; run ./install.sh without it, or /desk-setup, to make one"
@@ -215,7 +201,7 @@ if need codex 0 "brew install --cask codex, or npm i -g @openai/codex" \
       ok "codex answered"
     else
       warn "codex did not answer: $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
-      note "run 'codex login' and pick the Studia team seat; 'start a free trial of Plus' means you landed on a personal one"
+      note "run 'codex login' and pick the seat you use for this work; 'start a free trial of Plus' means that seat has no plan"
     fi
   fi
 fi
@@ -247,7 +233,7 @@ esac
 
 shipped=" "
 count=0
-for dir in "$SRC"/skills/studia-*/; do
+for dir in "$SRC"/skills/desk-*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
   shipped="$shipped$name "
@@ -273,14 +259,14 @@ done
 # The config template, where /desk-setup reads it to find rows a newer version added.
 TEMPLATE="$AGENTS/desk-setup/references/desk-config.template.md"
 [ -d "$AGENTS/desk-setup" ] && install_file "$SRC/desk-config.md" "$TEMPLATE"
-wrote "skills   ~/.agents/skills/studia-* ($count, replaced wholesale)"
+wrote "skills   ~/.agents/skills/desk-* ($count, replaced wholesale)"
 wrote "template ~/.agents/skills/desk-setup/references/desk-config.template.md (from desk-config.md)"
 wrote "pristine ~/.agents/.desk-pristine (what this install wrote, to tell your edits from ours)"
-[ "$LINK_MODE" = each ] && wrote "links    ~/.claude/skills/studia-* -> ~/.agents/skills"
+[ "$LINK_MODE" = each ] && wrote "links    ~/.claude/skills/desk-* -> ~/.agents/skills"
 
-# Stale: a studia-* skill this installer put there (pristine copy, or our link) that no longer ships.
+# Stale: a desk-* skill this installer put there (pristine copy, or our link) that no longer ships.
 stale=""
-for d in "$AGENTS"/studia-*; do
+for d in "$AGENTS"/desk-*; do
   [ -d "$d" ] || continue
   name="$(basename "$d")"
   case "$shipped" in *" $name "*) continue ;; esac
@@ -308,17 +294,26 @@ fi
 section "Autopilot and clearance tooling  -> ~/.claude/desk/bin"
 
 if [ -d "$SRC/desk/bin" ]; then
-  mkdir -p "$STUDIA/bin"
+  mkdir -p "$DESKDIR/bin"
   count=0
   for f in "$SRC"/desk/bin/*; do
     [ -f "$f" ] || continue
     case "$f" in *.bak*) continue ;; esac
-    install_file "$f" "$STUDIA/bin/$(basename "$f")"
-    chmod +x "$STUDIA/bin/$(basename "$f")"
+    install_file "$f" "$DESKDIR/bin/$(basename "$f")"
+    chmod +x "$DESKDIR/bin/$(basename "$f")"
     count=$((count + 1))
   done
   ok "$count scripts (queue.json, workers/ and batch state are never touched)"
   wrote "scripts  ~/.claude/desk/bin ($count)"
+  # desk-env on PATH: the skills run `desk-env where` to find the current repo's config.
+  mkdir -p "$HOME/.local/bin"
+  ENV_SHIM="$(mktemp)"
+  printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: the per-repo config resolver.\nexec node "%s" "$@"\n' \
+    "$DESKDIR/bin/desk-env.mjs" > "$ENV_SHIM"
+  install_file "$ENV_SHIM" "$HOME/.local/bin/desk-env"; rm -f "$ENV_SHIM"
+  chmod +x "$HOME/.local/bin/desk-env"
+  ok "desk-env -> ~/.local/bin (desk-env where: which repo config applies here)"
+  wrote "desk-env ~/.local/bin/desk-env"
 else
   note "this checkout ships no desk/bin; skipped"
 fi
@@ -346,11 +341,7 @@ if [ -f "$SRC/bin/desk-jira" ]; then
   esac
   first="$(command -v desk-jira 2>/dev/null || true)"
   [ -n "$first" ] && [ "$first" != "$JIRA_DEST" ] && warn "a different desk-jira comes first on PATH: $first"
-  if "$JIRA_DEST" whoami >/dev/null 2>&1; then
-    ok "desk-jira whoami works"
-  else
-    note "desk-jira is not configured yet (JIRA_EMAIL or ~/.config/studia/jira-email, plus ~/.config/studia/atlassian-token; see README)"
-  fi
+  note "desk-jira is configured per repo by /desk-setup (site in the repo's config, email and token beside it)"
 fi
 
 # ---------------------------------------------------------------------------------------------
@@ -393,10 +384,11 @@ case "$rc" in
   0) ok "already registered in ~/.claude/settings.json" ;;
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the hook" ;;
   *)
-    note "Registers a PreToolUse(Bash) hook at user level: a git commit message, gh pr or gh api body,"
+    note "Registers a PreToolUse(Bash) hook at user level. In a repo whose desk config sets AI attribution"
+    note "to forbidden (and only there): a git commit message, gh pr or gh api body,"
     note "or desk-jira text (inline, heredoc or file) carrying a Co-Authored-By trailer, Claude-Session,"
     note "an Anthropic noreply address, a Claude session link, 'Generated with Claude Code' or the robot"
-    note "emoji is denied, in every repo. Other hooks are kept."
+    note "emoji is denied. Other repos are untouched. Other hooks are kept."
     if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if settings_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
@@ -406,51 +398,10 @@ case "$rc" in
     ;;
 esac
 
-# Claude Code's own attribution (settings key `attribution`, docs: code.claude.com/docs/en/settings).
-# Empty commit and pr strings plus sessionUrl false hide all of it; the hook stays as the backstop.
-# attribution_setting <check|apply> — exit 0 already hidden/applied, 1 not, 2 unreadable settings.json
-attribution_setting() {
-  python3 - "$SETTINGS" "$1" <<'PY'
-import json, os, sys
-path, mode = sys.argv[1], sys.argv[2]
-data = {}
-if os.path.exists(path):
-    try:
-        with open(path) as f:
-            raw = f.read()
-        data = json.loads(raw) if raw.strip() else {}
-    except Exception:
-        sys.exit(2)
-if not isinstance(data, dict):
-    sys.exit(2)
-a = data.get("attribution")
-hidden = isinstance(a, dict) and a.get("commit") in ("", False) and a.get("pr") in ("", False) \
-    and a.get("sessionUrl") is False
-if mode == "check" or hidden:
-    sys.exit(0 if hidden else 1)
-if not isinstance(a, dict):
-    a = data["attribution"] = {}
-a.update({"commit": "", "pr": "", "sessionUrl": False})
-exec(os.environ["DESK_WRITE_JSON_PY"])
-write_json(path, data)
-PY
-}
-
-rc=0; attribution_setting check || rc=$?
-case "$rc" in
-  0) ok "Claude Code's own commit and PR attribution is already off" ;;
-  2) warn "$SETTINGS is not valid JSON; fix it, then re-run to turn attribution off" ;;
-  *)
-    note "Claude Code adds a Co-Authored-By trailer and a PR line by default. Sets attribution to"
-    note "{\"commit\": \"\", \"pr\": \"\", \"sessionUrl\": false} at user level; other keys are kept."
-    if confirm "Turn it off in ~/.claude/settings.json (backed up first)?"; then
-      backup_settings
-      if attribution_setting apply; then ok "attribution off"; else warn "could not write ~/.claude/settings.json"; fi
-    else
-      note "left on; the hook still denies it in commits, PR bodies and Jira text if registered"
-    fi
-    ;;
-esac
+# Claude Code's own attribution is a per-repo choice (config §5 AI attribution): /desk-setup
+# writes it to the repo's .claude/settings.local.json where the repo forbids it. The hook above
+# acts only in repos whose config says `forbidden`, so registering it changes nothing elsewhere.
+note "AI attribution is decided per repo by /desk-setup; nothing is changed at user level here"
 
 # The deny-only plan (skills/desk-setup/references/baseline-deny.json): Slack send and write
 # tools, gh pr merge --admin, and best-effort force, delete and mirror pushes. It only takes
@@ -518,8 +469,8 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Playwright MCP"
 
-# The plugin ships `npx @playwright/mcp@latest`. Inside studia-web npm dies on the root
-# package.json's overrides before the MCP handshake (CONNECTION_CLOSED), and the default
+# The plugin ships `npx @playwright/mcp@latest`. Inside a monorepo whose root package.json carries
+# overrides, npm can die before the MCP handshake (CONNECTION_CLOSED), and the default
 # `chrome` channel is not installed on most dev boxes. bunx, the bundled chromium and a pinned
 # profile fix all three. A plugin update resets the file, so re-run this installer afterwards.
 pw_files=""
@@ -618,9 +569,8 @@ EOF
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       if [ "$(jq -r '(.mcpServers // .).playwright.command // empty' "$f" 2>/dev/null)" = npx ]; then
-        warn "left on npx: bunx does not run outside studia-web here, so a swap would break the MCP elsewhere"
-        note "npx fails to start inside studia-web (root overrides). Fix: mise use -g bun@<studia-web's"
-        note "version>, or install bun globally, then re-run ./install.sh"
+        note "left on npx: bunx is not on PATH outside a checkout here, so a swap would break the MCP"
+        note "if the MCP fails to start inside a repo (CONNECTION_CLOSED), install bun globally and re-run ./install.sh"
         break
       fi
     done <<EOF
@@ -636,66 +586,34 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------------------------
-section "studia-web checkout"
+section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
-if [ -e "$REPO/.git" ]; then
-  links="$(find "$REPO/.claude/agents" -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d ' ')"
-  if [ "${links:-0}" -gt 0 ]; then
-    ok "$links project subagent links in $REPO/.claude/agents"
-  else
-    warn "$REPO/.claude/agents has no subagent links. /pullbot's named reviewers then silently run as general-purpose."
-    note "fix: cd $REPO && mise exec -- bun run agents:sync   (gitignored links; also needed in any worktree made by hand)"
-    if has mise && confirm "Run agents:sync in $REPO now?"; then
-      (cd "$REPO" && mise exec -- bun run agents:sync) || warn "agents:sync failed; run it by hand"
-    fi
-  fi
-else
-  note "no checkout at $REPO. Clone it, or re-run with DESK_REPO=/path/to/studia-web; /desk-setup asks too."
-fi
+mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
+configured=0
+for c in "$CONFIG_ROOT"/repos/*/config.md; do
+  [ -f "$c" ] || continue
+  configured=$((configured + 1))
+  slug="$(basename "$(dirname "$c")")"
+  # Unset table values only, not the word TODO in the rules text.
+  # shellcheck disable=SC2016
+  todos="$(grep -c '^|.*`TODO`' "$c" 2>/dev/null || true)"
+  if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
+  else ok "$slug"; fi
+done
+[ "$configured" = 0 ] && note "no repo is configured yet: run /desk-setup inside each repo you want desk in"
+note "template /desk-setup writes from: ~/.agents/skills/desk-setup/references/desk-config.template.md"
 [ "$OS" = wsl ] && note "WSL: /desk-setup will ask for a Windows-visible handoff directory and a memory ceiling"
-
-# ---------------------------------------------------------------------------------------------
-section "User-level review-bar and pullbot copies"
-
-# Only the studia-web copy is supported. Reported for you to remove; never deleted or refreshed.
-if copies="$(bash "$SRC/skills/desk-setup/bin/user-skill-copies.sh" "$REPO")"; then
-  ok "none; /pullbot uses studia-web's own .agents/skills copy"
-else
-  printf '%s\n' "$copies"
-  n="$(printf '%s\n' "$copies" | grep -c '^  WARN ' || true)"
-  WARNINGS=$((WARNINGS + ${n:-0}))
-fi
-
-# ---------------------------------------------------------------------------------------------
-section "Config"
-
-if [ -f "$CONFIG" ]; then
-  ok "kept your existing ~/.claude/desk-config.md (never overwritten)"
-  if grep -qE 'Check-out channel|Work-log directory' "$CONFIG"; then
-    warn "it is the 1.x layout. Run /desk-setup: it carries your answers across and asks the new rows."
-  fi
-  note "template for comparison: ~/.agents/skills/desk-setup/references/desk-config.template.md"
-else
-  cp "$SRC/desk-config.md" "$CONFIG"
-  ok "created ~/.claude/desk-config.md (every answer TODO until /desk-setup)"
-  wrote "config   ~/.claude/desk-config.md (new; never overwritten once it exists)"
-fi
-# Unset table values only, not the word TODO in the rules text.
-# shellcheck disable=SC2016
-todos="$(grep -c '^|.*`TODO`' "$CONFIG" 2>/dev/null || true)"
 
 printf '\nDone. %s warning(s) above.\n' "$WARNINGS"
 if [ -n "$WROTE" ]; then
-  echo "Written or moved, because these paths are studia-owned (an edited copy is backed up"
+  echo "Written or moved, because these paths are desk-owned (an edited copy is backed up"
   echo "under $BACKUP first):"
   printf '%s' "$WROTE"
 fi
 echo
 echo "Next:"
 echo "  1. Restart Claude Code so it loads the skills, plugins and hook."
-echo "  2. Run /desk-setup. It confirms who you are and where things live, then asks you"
-echo "     every permission, one by one. Nothing is granted until you answer it."
-if [ "${todos:-0}" -gt 0 ]; then
-  echo "     ($todos unanswered fields right now; the skills stop and ask until they are set.)"
-fi
-echo "  3. Then: /desk-ticket SV-XXX, or /desk-autopilot SV-XXX SV-YYY for a batch."
+echo "  2. cd into a repo and run /desk-setup. It detects that repo's Jira, checks, toolchain and"
+echo "     conventions, has you confirm them, then asks every permission for that repo, one by one."
+echo "     Nothing is granted until you answer it. Repeat per repo (it can start from another repo's answers)."
+echo "  3. Then, in that repo: /desk-ticket ABC-123, or /desk-autopilot ABC-1 ABC-2 for a batch."

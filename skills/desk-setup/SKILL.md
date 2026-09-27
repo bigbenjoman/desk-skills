@@ -1,99 +1,195 @@
 ---
 name: desk-setup
 description: >-
-  Use when setting up the studia-* skills for the first time or after ./install.sh, or when
-  changing what they may do — "set up the studia skills", "configure studia", "run studia setup",
-  "grant/revoke a studia permission", "let autopilot merge", "stop it merging", "why does it keep
-  asking me", or when another studia-* skill reports that `~/.claude/desk-config.md` is missing,
-  is on the 1.x layout, or has a TODO or missing row.
-argument-hint: "[permissions]"
+  Use when setting up the desk-* skills in a repository for the first time or after ./install.sh,
+  or when changing what they may do in that repo — "set up desk here", "configure desk for this
+  repo", "run desk setup", "grant/revoke a desk permission", "let autopilot merge", "stop it
+  merging", "why does it keep asking me", "use my voicepa settings for this repo", or when another
+  desk-* skill reports that this repo has no desk config, or a TODO or missing row.
+argument-hint: "[permissions | from <owner__name> | list]"
 ---
 
 # desk-setup
 
 ## Overview
 
-Fills in `~/.claude/desk-config.md` by asking, so the other skills know who the user is, where
-things live, and **what they may do on the user's behalf**, including unattended.
+Writes **this repo's** desk config by detecting and asking, so the other skills know who the user
+is here, which Jira and people this repo uses, how it builds and merges, and **what they may do on
+the user's behalf in this repo**, including unattended.
+
+Every repo has its own config. Nothing in one repo's config applies to another:
+
+```bash
+desk-env where     # SLUG=owner__name  CONFIG=~/.config/desk/repos/<slug>/config.md  CREDS=<that folder>  EXISTS=yes|no
+```
+
+`CONFIG` is the file this skill writes. `CREDS` is the folder, beside it, for this repo's Jira email
+and token. Outside a git repo `desk-env where` exits 3: stop and ask which repo to set up.
 
 **Core principle: every permission is granted out loud, by the person it belongs to, in this
-conversation. Nothing is assumed, inherited, or inferred from a default.**
+conversation, for this repo. Nothing is assumed, inherited, or inferred from a default or from
+another repo.**
 
-Each §3 row carries a **Recommended** value: the suggested starting point for the team. Most are
-proven day-to-day practice; undrafting and merging are recommended at `ask`, so an engineer is
-involved before `main`. Setup offers it as the first option, and the user still answers every row.
-A row the user has not answered is a `no`.
+Each §3 row carries a **Recommended** value: a proven starting point. Undrafting and merging are
+recommended at `ask`, so a person is involved before the default branch. Setup offers it as the
+first option, and the user still answers every row. A row the user has not answered is a `no`.
 
 ## Never do these
 
-- **Never write a permission the user did not choose in this conversation.** Recommended is the
-  first option of the *question*, never the answer.
+- **Never write a permission the user did not choose in this conversation.** Recommended, or
+  another repo's answer, is the first option of the *question*, never the answer.
 - **Never fill a value you merely guessed.** Detected-then-confirmed is fine; guessed is not.
-- **Never change an existing config or settings file without a before/after**, and back up
-  `~/.claude/settings.json` before touching it.
+- **Never change an existing config or settings file without a before/after**, and back up every
+  `settings.json` / `settings.local.json` before touching it.
+- **Never ask for, echo or write a token.** The user writes credentials to `CREDS` themselves; you
+  only check the file exists and is `600`.
 - **Never read a private source to decide whether you may read it.** Connector checks look for
   the tools; they never call one against content.
 - **Never offer `yes` on a non-configurable row**, and never argue for a grant after a `no`.
+- **Never write an allow rule to `~/.claude/settings.json`.** Allows are per repo, in the repo's
+  `.claude/settings.local.json`; only the deny-only plan is user-level.
 
 | Excuse | Reality |
 |---|---|
+| "They said yes to this in voicepa, so here too" | Different repo, different blast radius. Offer it as the starting point; ask the row. |
 | "They took Recommended on the Jira rows, so the PR rows too" | Different capabilities, different answers. Ask each row. |
-| "Recommended is the team default, so it's safe" | Safe for someone who chose it knowing the trade. That is what the question is for. |
 | "Forty rows is tedious; I'll offer accept-all" | The user asked to be asked. Four per round, as many rounds as it takes. |
 | "They didn't answer that one; leave it as recommended" | Unanswered is `no`. Say which rows you left off. |
 | "I detected their GitHub handle, I can detect their permissions" | Facts can be detected. Consent cannot. |
+| "It's their own solo repo, the people rows don't matter" | Write `you`. The skills route questions by those rows. |
 
 ## Modes
 
 | Invocation | Does |
 |---|---|
-| `/desk-setup` | detect → interview → connectors → harness rules → write → summary |
-| `/desk-setup permissions` | reads the config, then straight to the interview |
+| `/desk-setup` | where → start point → detect → interview → connectors → harness rules → write → summary |
+| `/desk-setup permissions` | reads this repo's config, then straight to the interview |
+| `/desk-setup from <owner__name>` | as `/desk-setup`, starting from that repo's §1, §3 and §3b answers |
+| `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`; changes nothing |
 | config already exists | re-run: current values are the starting point; ask what to change |
-| config on the 1.x layout (has `Work-log directory` or `Check-out channel`) | migrate: see *Migrating from 1.x* |
+
+## 0. Which repo, and where to start from
+
+1. Run `desk-env where` and say which repo this is (`GH_REPO`) and where its config will live.
+2. If `EXISTS=yes`, this is a re-run: see *Re-running and revoking*.
+3. Otherwise list the other configured repos. If there are any, ask one question: start from one of
+   them, or from scratch. **Recommended: the configured repo that shares the most with this one**
+   (same GitHub owner, then same Jira site); its description says which rows will be pre-filled.
+   Starting from another repo pre-fills **§1** (identity, confirmed row by row, because the email
+   and Jira account can differ per client), and **§3 / §3b as the first option of each question**,
+   never as answers. §0, §2, §4 and §5 are always detected fresh for this repo.
+4. If that repo uses the same Jira site, offer to copy its `jira-email` and `atlassian-token` into
+   this repo's `CREDS` (`cp -p`, then `chmod 600`). Say that the token is then shared by both repos
+   and that revoking it in Atlassian breaks both.
 
 ## 1. Detect, then confirm
 
-Run these, then show one table (field · value · where it came from) and have the user correct it
-in one round. Say before you start that the codex check makes one real request.
+Run these from the repo root, then show one table (field · value · where it came from) per config
+section and have the user correct it, one round per section. Say before you start that the codex
+check makes one real request and the Jira checks make read-only API calls.
 
 ```bash
+# §0 this repo
+gh repo view --json nameWithOwner,defaultBranchRef,description
+# §1 you
 gh api user --jq .login
-gh auth status -h github.com 2>&1 | sed -n 's/.*Token scopes: //p'        # needs repo + workflow
-git config --global user.name; git config --global user.email
+git log -n 50 --format='%an <%ae>' | sort | uniq -c | sort -rn | head -3   # the author this repo's commits use
+git config user.name; git config user.email
+# §2 paths
+git rev-parse --path-format=absolute --git-common-dir     # parent = primary repo root
+git worktree list --porcelain | awk '/^worktree /{print $2}'   # infer the worktrees dir
 uname -s; grep -qi microsoft /proc/version 2>/dev/null && echo WSL
-for d in ~/code/studia-web ~/studia-web ~/src/studia-web; do [ -e "$d/.git" ] && echo "$d"; done
-git -C <repo> worktree list --porcelain | awk '/^worktree /{print $2}'   # infer the worktrees dir
-desk-jira whoami                                                           # Jira display name, email, account id
-(cd <repo> && codex exec --sandbox read-only "Reply with exactly: CODEX_OK")
+# §4 GitHub and CI
+gh api repos/{owner}/{repo} --jq '{squash:.allow_squash_merge,merge:.allow_merge_commit,rebase:.allow_rebase_merge,auto:.allow_auto_merge,del:.delete_branch_on_merge}'
+gh api repos/{owner}/{repo}/branches/<default>/protection 2>&1          # 404 "not protected" is an answer
+gh api repos/{owner}/{repo}/rulesets --jq '.[] | {name, enforcement}' 2>/dev/null   # rulesets can replace protection
+gh pr list --state merged --limit 20 --json title,headRefName,body
+gh pr checks <a recent merged PR>                                        # names of the checks that run
+gh auth status -h github.com 2>&1 | sed -n 's/.*Token scopes: //p'        # needs repo + workflow
+# §4 toolchain
+ls package.json pnpm-lock.yaml yarn.lock package-lock.json bun.lock* mise.toml .tool-versions .nvmrc turbo.json pyproject.toml uv.lock requirements*.txt Makefile docker-compose*.yml vercel.json 2>/dev/null
+jq -r '.packageManager // empty, (.scripts // {} | to_entries[] | "\(.key)\t\(.value)")' package.json
+ls .claude/agents .agents 2>/dev/null; ls CLAUDE.md AGENTS.md claude.md agents.md 2>/dev/null
+# §4 tracker (only if the user says this repo uses Jira)
+desk-jira where
+desk-jira whoami                                        # display name, email, account id
+desk-jira api 'api/3/project/search?maxResults=50' | jq -r '.values[] | "\(.key)\t\(.name)"'
+desk-jira api 'api/3/project/<KEY>/statuses' | jq -r '[.[].statuses[].name] | unique | join(", ")'
+desk-jira fields priority                               # a custom priority field, if any
+# §4 people
+gh api repos/{owner}/{repo}/collaborators --jq '.[].login' 2>/dev/null
+cat .github/CODEOWNERS CODEOWNERS 2>/dev/null | head -20
+# §5 conventions
+git log -n 40 --format='%s%n%b' | grep -ciE 'co-authored-by: *claude|generated with \[?claude code'   # attribution already in use?
+git branch -r --sort=-committerdate | head -30
+# everything else
+(codex exec --sandbox read-only "Reply with exactly: CODEX_OK")
 claude plugin list --json | jq -r '.[] | "\(.id) enabled=\(.enabled)"'
 jq '.hooks.PreToolUse' ~/.claude/settings.json | grep -c deny-ai-attribution
-find <repo>/.claude/agents -maxdepth 1 -type l | wc -l
-bash ~/.agents/skills/desk-setup/bin/user-skill-copies.sh <repo>        # user-level review-bar/pullbot copies
+bash ~/.agents/skills/desk-setup/bin/user-skill-copies.sh <repo root>      # user-level skills shadowing this repo's
 awk '/MemTotal/{printf "%.0f\n",$2/1048576}' /proc/meminfo 2>/dev/null || echo $(( $(sysctl -n hw.memsize) / 1073741824 ))
 ```
 
-- **Handoff directory on WSL** must be Windows-visible. Find the Windows username with
-  `cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r'` and propose
-  `/mnt/c/Users/<name>/Downloads/`. Elsewhere `~/Downloads/`.
-- **Jira account**: `desk-jira whoami`. If it is not configured, point at the README's `desk-jira`
-  section; do not guess an account id.
-- **codex**: only the exit code and a `CODEX_OK` in the output count. `codex login status` passes
-  on a seat with no usage left.
+How to turn what you find into rows:
+
+- **Tracker.** Ask once: does this repo use Jira? If not, write `none` in every Jira row, `none` in
+  §1 Jira email / display name / account id, and skip the Jira rounds of the interview.
+- **Jira credentials.** If `desk-jira where` shows no email or token, tell the user to write them
+  (`CREDS` from `desk-env where`), as their own action, and wait:
+
+  ```
+  ! mkdir -p <CREDS> && chmod 700 <CREDS>
+  ! printf %s 'you@example.com' > <CREDS>/jira-email
+  ! printf %s '<api token>' > <CREDS>/atlassian-token && chmod 600 <CREDS>/atlassian-token
+  ```
+
+  Tokens: https://id.atlassian.com/manage-profile/security/api-tokens. The **Jira site** is asked
+  (or taken from the start-point repo) before `whoami` can run: `desk-jira` reads it from the
+  config, so write §4 Jira site first, then re-run `desk-jira where`.
+- **Ticket key pattern.** Propose `<PROJECT>-[0-9]+` from the Jira project; check it against recent
+  branch names and PR titles and say how many matched. A repo that also names work by other ids
+  (planning-tool task ids, bug numbers) keeps the Jira pattern; mention the others in §5 Branch names.
+- **Workflow states.** From the project's statuses, propose In-progress, Review and Done states; the
+  user confirms. `none` for Review is fine.
+- **Required checks.** From branch protection or rulesets. **Unprotected is not an error**: write
+  §4 Branch protection `none` and §4 Required checks `none` (the skills then require every check on
+  the PR to pass) and say that in this repo nothing stops a merge except the skills themselves.
+- **Merge method.** The only method the repo allows; if several are allowed, the one the last 20
+  merged PRs used.
+- **Toolchain.** From the lockfile and `packageManager` (`pnpm-lock.yaml` → pnpm; `mise.toml` or
+  `.tool-versions` → Command prefix `mise exec --`, else `none`), and the `scripts` in
+  `package.json` / `turbo.json` / `pyproject.toml` / `Makefile` for the command rows. Propose, then
+  confirm; a guessed test command that does not exist wastes a worker's whole run.
+- **Env files.** The `.env*` files the primary checkout has that a fresh worktree lacks
+  (`git -C <root> ls-files --others --ignored --exclude-standard | grep -E '(^|/)\.env'`). Names
+  only; never read them.
+- **Local review command.** Offer what the repo ships (a skill in `.agents/skills` or
+  `.claude/skills`, a `.pullbot.yml`), then `/code-review`, then `none`.
+- **People.** For a solo repo propose `you` in every role and say so. For a team repo, propose from
+  collaborators and CODEOWNERS; the user names the roles.
+- **AI attribution.** Propose `allowed` if recent commits already carry a Claude trailer (the repo's
+  own instructions then decide the wording), otherwise ask. If the user picks `forbidden`, offer to
+  also write `{"attribution": {"commit": "", "pr": "", "sessionUrl": false}}` into the repo's
+  `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
+  the hook is the backstop.
+- **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
+- **Handoff directory** on WSL must be Windows-visible (`/mnt/c/Users/<name>/Downloads/`); elsewhere
+  `~/Downloads/`.
+- **codex**: only the exit code and a `CODEX_OK` in the output count.
 - **Memory ceiling** default: WSL `16`; otherwise physical RAM minus ~8.
-- **Write what detection found** into §4 once the user has seen the table: `desk-jira set up?`
-  (`yes` only if `whoami` succeeded), `gh token scopes` (the scopes as printed) and `Codex answers
-  a real call?` (`yes` with the date, or `no` with the error line).
+- **What review asks for** (optional): offer to mine the last 30 review comments on merged PRs
+  (`gh api repos/{owner}/{repo}/pulls/comments?per_page=100`) into §4's table. Say it reads
+  colleagues' review text; skip on a `no`.
 
 Fix what detection finds before the interview, each as the user's own action:
 
 | Finding | Tell them |
 |---|---|
-| `gh` lacks `workflow` | `! gh auth refresh -h github.com -s workflow` (updating a branch that touches workflows fails without it) |
-| codex fails | `! codex login`, and pick the Studia team seat |
+| `gh` lacks `workflow` | `! gh auth refresh -h github.com -s workflow` |
+| codex fails | `! codex login` |
 | plugins missing or hook unregistered | re-run `./install.sh` from the desk-skills checkout, then restart |
-| `.claude/agents` has no links | offer to run `mise exec -- bun run agents:sync` in the repo (gitignored links; needed in every hand-made worktree) |
-| a user-level `review-bar` or `pullbot` copy | show the script's output (path, source commit, how far behind) and ask them to remove it by hand: only studia-web's `.agents/skills` copy is supported. Never delete or refresh it for them |
+| `.claude/agents` has no links and §4 Project subagents sync is set | offer to run that command in the repo |
+| a user-level skill shadows one the repo ships | show the script's output and ask them to decide; never delete or refresh it for them |
 
 ## 2. The permission interview
 
@@ -103,16 +199,18 @@ it unlocks and what it exposes, the alternatives, and the harness rules it maps 
 **How to ask:**
 
 - `AskUserQuestion`, **one question per row, at most four per call**, in the rounds the reference
-  lists. Run as many calls as it takes.
-- **First option = the Recommended value, labelled `(Recommended)`.** Its description says what it
-  unlocks *and* what it exposes. The alternatives are real choices, with their own trade-off.
+  lists. Run as many calls as it takes. Skip the Jira rounds when §4 Tracker is `none`.
+- **First option = the Recommended value, labelled `(Recommended)`.** If the start-point repo
+  answered differently, say so in the question ("in voicepa you chose `yes`") and keep both as
+  options; the user picks. Its description says what it unlocks *and* what it exposes, **in this
+  repo** (an unprotected repo makes `pr-merge-green` riskier; say so).
 - After each round, echo the four answers in one line before the next round.
 
 **Before the autopilot round, say this plainly:** autopilot runs detached `claude -p` workers, one
-per ticket, in their own worktrees. They edit code, push, open PRs, post to Jira and — with
-`autopilot-merge` — merge on a green `🏁 CI gate`, **with nobody watching**. Anything they are not
-granted, they park and ask about rather than guess. A worker never has more than the user's own
-§3 grants.
+per ticket, in their own worktrees of this repo. They edit code, push, open PRs, post to Jira and,
+with `autopilot-merge`, merge once §4 Required checks are green, **with nobody watching**. Anything
+they are not granted, they park and ask about rather than guess. A worker never has more than the
+user's own §3 grants in this repo.
 
 **Consistency checks — ask again rather than writing a contradiction:**
 
@@ -120,32 +218,31 @@ granted, they park and ask about rather than guess. A worker never has more than
 |---|---|
 | `autopilot-workers` is `no` | write `no`/`none` for the other autopilot rows; say so, don't ask them |
 | `pr-auto-merge` ≠ `pr-merge-green` | auto-merge merges on green by itself; ask which they meant |
+| `pr-auto-merge` is `yes` but §4 Repo merge settings say auto-merge is off | it cannot work here; say so and write `no` unless they turn it on in GitHub first |
 | `autopilot-merge` is `yes` but `pr-merge-green` is not | a worker cannot exceed its user; ask again |
-| `read-others` is `no` | the `read-own-work` harness rules are not written either (they read any PR or ticket); say so |
-| `pr-edit` is `yes` but `pr-request-review` is not | `gh pr edit` gets no harness rule (it also adds reviewers); say so |
+| `read-others` is `no` | the `read-own-work` harness rules are not written either; say so |
+| `pr-edit` is `yes` but `pr-request-review` is not | `gh pr edit` gets no harness rule; say so |
 | `autopilot-merge` is `no` | `merge-driver.sh` gets no harness rule |
-| `staging-write` | only `ask + backup + independent review` or `no` are offered |
+| `staging-write` | only `ask + backup + independent review` or `no` are offered; `no` when §4 Staging is `none` |
+| `db-per-ticket`, `db-clone-staging`, `tests-shared-db` with §4 Local database `none` | write `no`; say there is no local database to act on |
+| `local-reindex` with §4 Local services `none` | write `no`; say so |
 
 **State what is not on offer**, so the absence reads as a decision: sending or scheduling a Slack
-message; merging past the gate or plain `--force`; touching someone else's PR; deciding product,
-design or catalog questions; committing legal or compliance content. Editing the file to `yes`
-changes nothing. The deny-only plan (§4 step 1) is in `settings.json` whatever the answers.
+message; merging past required checks or plain `--force`; touching someone else's PR; deciding
+product, design or content questions; committing legal or compliance content. Editing the file to
+`yes` changes nothing. The deny-only plan (§4 step 1) is in `~/.claude/settings.json` whatever the
+answers.
 
-**When a row's rule reaches further than its wording** (the reference's _Reach_ notes: `desk-jira
-comment` posts on any ticket, `gh pr ready`/`comment`/`merge` on any PR), put that reach in the
-Recommended option's description. For `git-push` say that Claude Code still prompts on each push:
-no allow rule is written, because git's abbreviations (`-qf`, `--force-w`, `--delet`) mean no
-pattern can fence every dangerous spelling. **When the user asks what a row
-changes**, some rows only decide harness rules or are enforced by the skills' own rules: see
-*Rows only setup reads* in the reference.
+**When a row's rule reaches further than its wording** (the reference's _Reach_ notes), put that
+reach in the Recommended option's description. For `git-push` say that Claude Code still prompts on
+each push: no allow rule is written, because git's abbreviations mean no pattern can fence every
+dangerous spelling.
 
-**Then §3b** (three rounds): subagents without asking, autopilot worker concurrency, memory ceiling
-for parallel work, spawn gate; Jest cap, preferred dev-server port, park-after minutes, per-worker
-budget; batch budget, report every stage transition on long runs, push notification when a batch
-needs you. Then **§4** (two rounds): confirm or correct the code
-reviewer, the Vercel, infra and security owner, the product owner, the designer; the QA filers and
-who deletes Jira tickets. If the user *is* that person, write `you`. Then the staging bypass token
-location: a path only, never ask for or write the token.
+**Then §3b** (three rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
+spawn gate; test worker cap, preferred dev-server port (propose one no other configured repo uses,
+so two repos' servers never collide), park-after minutes, per-worker budget; batch budget, stage
+reports, push notification. Then confirm **§4 People** (one round) and the staging bypass token
+location: a path only, never the token.
 
 ## 3. Connector checklist
 
@@ -154,134 +251,127 @@ in this session (`ToolSearch` with the keywords below). Do not call it.
 
 | Connector | Needed by | Look for | If missing |
 |---|---|---|---|
-| Atlassian (claude.ai) | Jira rows when `desk-jira` fails; `read-confluence` | `getJiraIssue`, `getConfluencePage` | claude.ai → Settings → Connectors → Atlassian → Connect, then restart Claude Code signed in to the same account |
-| Slack (claude.ai) | `slack-draft`, `read-slack-public`, `read-slack-own` | `slack_send_message_draft` | same path, Slack. The connector can also send; §4 denies those tools either way |
-| Google Calendar and Gmail (claude.ai) | `read-calendar` | `list_events`, `search_threads` | same path, Google Calendar and Gmail |
-| Figma (claude.ai) | `read-figma` | `get_design_context` | same path, Figma |
-| Vercel (plugin) | `read-vercel` | `mcp__plugin_vercel_vercel__list_deployments` | `claude plugin install vercel@claude-plugins-official`, restart, `/mcp` to authenticate. CLI: `vercel login`, `vercel switch sophos-education-27386abb` |
-| Playwright (plugin) | `pr-images`, screenshots | `browser_navigate` | re-run `./install.sh` (its Playwright step), restart. A `CONNECTION_CLOSED` at startup is the npx fault that step fixes |
+| Atlassian (claude.ai) | Jira rows when `desk-jira` fails; `read-confluence` | `getJiraIssue`, `getConfluencePage` | claude.ai → Settings → Connectors → Atlassian → Connect, then restart Claude Code. The connector is signed in to one Atlassian account: if this repo's Jira is a different site or login, `desk-jira` is the path and the connector is only a fallback |
+| Slack (claude.ai) | `slack-draft`, `read-slack-public`, `read-slack-own`, a Slack §4 Check-out destination | `slack_send_message_draft` | same path, Slack. The connector can also send; the deny-only plan denies those tools either way |
+| Google Calendar and Gmail (claude.ai) | `read-calendar` | `list_events`, `search_threads` | same path |
+| Figma (claude.ai) | `read-figma` | `get_design_context` | same path |
+| Vercel (plugin) | `read-vercel` | `mcp__plugin_vercel_vercel__list_deployments` | `claude plugin install vercel@claude-plugins-official`, restart, `/mcp`. CLI: `vercel login`, `vercel switch <§4 Vercel team>` |
+| Playwright (plugin) | `pr-images`, screenshots | `browser_navigate` | re-run `./install.sh` (its Playwright step), restart |
 
-`claude mcp list` shows server status; `/mcp` inside a session re-authenticates. Report each
-connector as present, missing (with the step) or not needed.
+Report each connector as present, missing (with the step) or not needed.
 
 ## 4. Harness permissions
 
-Offer to write Claude Code `permissions` rules to `~/.claude/settings.json` so granted actions stop
-prompting. The rule column of `references/permission-rows.md` is the only source; read its syntax
-table first. **The rules must never grant more than the answers: a prompt is always preferable to
-an over-grant, so when in doubt, no allow rule.** Never hand-edit `settings.json` for this;
-`bin/harness-rules.py` does the merge and the record.
+Offer to write Claude Code `permissions` rules so granted actions stop prompting. The rule column
+of `references/permission-rows.md` is the only source; read its syntax table first. **The rules
+must never grant more than the answers: a prompt is always preferable to an over-grant.** Never
+hand-edit a settings file for this; `bin/harness-rules.py` does the merge and the record.
 
 ```bash
 H=~/.agents/skills/desk-setup/bin/harness-rules.py
+eval "$(desk-env where)"                                   # SLUG, CONFIG, CREDS
+ROOT=<§2 Primary repo root>
+REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harness-rules.json")
 ```
 
-1. **The deny-only plan first, before any allow is offered.** Run `python3 $H baseline --check`.
-   Exit 0: `install.sh` already wrote it; say so. Exit 1: show the `missing` lines, say it only
-   takes capability away (Slack send and write tools, `gh pr merge --admin`, best-effort force,
-   delete and mirror pushes), then run `python3 $H baseline`, adding `--slack-prefix <prefix>` for
-   any other Slack prefix the session shows. This is not a question and does not depend on the
-   answers or the connector check. Exit 2: `settings.json` is unreadable; stop §4 and say so.
-2. **Build the allow plan** (JSON; shape in the script's header):
+1. **The deny-only plan first, user-level, before any allow is offered.** Run
+   `python3 $H baseline --check` (defaults: `~/.claude/settings.json`, ledger
+   `~/.claude/desk/harness-rules.json`). Exit 0: already there; say so. Exit 1: show the `missing`
+   lines, say it only takes capability away, then run `python3 $H baseline` (add
+   `--slack-prefix <prefix>` for any other Slack prefix the session shows). Not a question. Exit 2:
+   the settings file is unreadable; stop §4 and say so.
+2. **Build the allow plan** (JSON; shape in the script's header), replacing `<merge>` with this
+   repo's §4 Merge method flag:
    - an `add` entry for each rule whose **every** owner row is `yes`, `rows` = all its owners.
-     `ask` and `no` rows add nothing to `allow`.
-   - the row's `ask:` guards with the same owners; `unguard:` entries go in `remove_guards`,
-     `rows` = the granting row.
-3. **Show the plan** grouped by row, _Reach_ notes included, and get a yes.
-4. Apply it, then refresh §3c:
+   - the row's `ask:` guards with the same owners; `unguard:` entries go in `remove_guards`.
+3. **Show the plan** grouped by row, _Reach_ notes included, name the file it goes to
+   (`<root>/.claude/settings.local.json`), and get a yes.
+4. Apply it **to this repo only**, then refresh §3c:
 
 ```bash
-python3 $H add "${TMPDIR:-/tmp}/studia-harness-plan.json"   # backs up settings.json and the ledger
-python3 $H list --markdown                                   # replaces the §3c table
+python3 $H "${REPO_RULES[@]}" add "${TMPDIR:-/tmp}/desk-harness-plan-$SLUG.json"
+python3 $H "${REPO_RULES[@]}" list --markdown      # replaces the §3c table
 ```
 
-`add` and `baseline` print each rule as `NEW` (written and recorded), `recorded` (already setup's;
-owners merged) or `yours` (the user already had it: never recorded, never removed), and each guard
-as `UNGUARD`, `unguarded` (already removed; kept so) or left alone. Re-running a plan changes
-nothing. Report the counts from that output, not from the plan.
+`settings.local.json` is gitignored by Claude Code. Check that it is (`git check-ignore -q
+.claude/settings.local.json`); if it is not, stop and say so before writing: rules must not reach
+git. Existing worktrees do not see it; `setup-worktree.sh` copies it into worktrees it creates,
+and you offer to copy it into the ones `git worktree list` shows (backing up any that exist).
 
-Say plainly: a harness rule removes the prompt, not the skill's own gate. Where a rule reaches
-further than its row, the skill's own ownership check is all that keeps it to the user's work.
-Every close other than `jira-close-own-merged`'s, product calls and the stray-commit check still
-stop. Autopilot workers never use these rules; they get their own settings file built from §3.
+Say plainly: a harness rule removes the prompt, not the skill's own gate. Autopilot workers never
+use these rules; they get their own settings file built from §3.
 
 ## 5. Write it, then show every row
 
-Write `~/.claude/desk-config.md` from the template
+`mkdir -p` the config folder (`chmod 700`), then write `CONFIG` from the template
 `~/.agents/skills/desk-setup/references/desk-config.template.md` (`install.sh` copies the
 checkout's `desk-config.md` there on every run), **keeping its structure, section numbers, row
-keys and the Rules header**; skills cite rows by key. Then print every row with the user's own
-answer in place of each `<answer>`:
+names, keys and the Rules header**; skills cite rows by them. Then print every row with the user's
+own answer:
 
 ```
-STUDIA CONFIG WRITTEN — ~/.claude/desk-config.md
+DESK CONFIG WRITTEN — <CONFIG>   (repo <owner/name>)
 
-identity  : <name> · short <short form> · <github> · <jira email> · <jira display name> ·
+repo      : <owner/name> · default <branch> · <description>
+identity  : <name> · short <short form> · <github> · jira <email / none> · <jira display name> ·
             account <jira account id> · git <author> · pronouns <pronouns or they/them>
-paths     : repo <path> · worktrees <path> · legacy portal <path or none> · handoff <path> · WSL <yes/no>
-detected  : desk-jira <yes/no> · gh scopes <scopes> · codex <yes date / no>
-reading   : own-work <answer> · local-git <answer> · others <answer> · slack-public <answer> ·
-            figma <answer> · vercel <answer> · confluence <answer>
-jira      : assign-self <answer> · comment <answer> · create <answer> · edit <answer> · transition <answer> ·
-            close-own-merged <answer> · close <answer> · route <answer>
-git / PR  : commit <answer> · push <answer> · force-with-lease <answer> · open <answer> · edit <answer> ·
-            images <answer> · pullbot <answer> · reply <answer> · request-review <answer> · ready <answer> ·
-            auto-merge <answer> · merge-green <answer> · update-branch <answer> ·
-            conflict-unreviewed <answer> · conflict-reviewed <answer> · ci-rerun <answer> · codex <answer>
-guards    : merge-feedback-first <answer> · jira-others <answer>
-autopilot : workers <answer> · mode <answer> · merge <answer> · judgement <answer> · reclaim <answer>
-local     : db-per-ticket <answer> · clone-staging <answer> · staging-write <answer> · reindex <answer> ·
-            specs-it-shared <answer> · worktree-remove <answer> · branch-delete <answer> ·
-            server-stop <answer> · skills-edit <answer> · vercel-env <answer> · slack-draft <answer>
+paths     : root <path> · worktrees <path> · handoff <path> · backups <path> · WSL <yes/no>
+tracker   : <jira site / none> · project <key> · keys <pattern> · states <in-progress> → <review> → <done> ·
+            priority <field> · desk-jira <yes/no>
+github    : protection <summary / none> · required <checks / none> · merge <method> · auto-merge <on/off> ·
+            gh scopes <scopes> · codex <yes date / no> · review <command> (clean = <verdict>)
+toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build ·
+            env files <names>
+services  : db <…/none> · services <…/none> · staging <url/none> · vercel <…/none> · slack <…/none> ·
+            check-out → <destination>
+people    : reviewer <…> · infra/security <…> · product <…> · designer <…> · QA <…> · deletes <…>
+reading   : own-work <a> · local-git <a> · others <a> · slack-public <a> · figma <a> · vercel <a> ·
+            confluence <a> · transcripts <a> · calendar <a> · slack-own <a>
+jira      : assign-self <a> · comment <a> · create <a> · edit <a> · transition <a> · close-own-merged <a> ·
+            close <a> · route <a> · others <a>
+git / PR  : commit <a> · push <a> · force-with-lease <a> · open <a> · edit <a> · images <a> · self-review <a> ·
+            reply <a> · request-review <a> · ready <a> · auto-merge <a> · merge-green <a> · feedback-first <a> ·
+            update-branch <a> · conflict-unreviewed <a> · conflict-reviewed <a> · ci-rerun <a> · codex <a>
+autopilot : workers <a> · mode <a> · merge <a> · judgement <a> · reclaim <a>
+local     : db-per-ticket <a> · clone-staging <a> · staging-write <a> · reindex <a> · tests-shared-db <a> ·
+            worktree-remove <a> · branch-delete <a> · server-stop <a> · skills-edit <a> · vercel-env <a> ·
+            slack-draft <a>
 never     : slack-send · merge-bypass · others-prs      stop: product-calls · legal-content
-autonomy  : subagents <answer> · workers <answer> (cap <answer>) · memory <answer>GB · spawn gate <answer> ·
-            Jest <answer> · port <answer> · park <answer>m · budget <answer>/<answer> ·
-            stage reports <answer> · push notify <answer>
-people    : reviewer <name> · Vercel/infra/security <name> · product <name> · designer <name> ·
-            QA <names> · deletes tickets <name> · bypass token at <path>
+autonomy  : subagents <a> · workers <a> (cap <a>) · memory <a>GB · spawn gate <a> · tests <a> · port <a> ·
+            park <a>m · budget <a>/<a> · stage reports <a> · push notify <a>
+conventions: branches <…> · PR title <…> · attribution <forbidden/allowed> · instructions <files>
 connectors: Atlassian <present/missing/not needed> · Slack <…> · Figma <…> · Vercel <…> · Playwright <…>
-harness   : deny-only plan <already there / n NEW> · <n> NEW allow · <n> ask · <n> guards removed ·
-            <n> yours (untouched) · backup <path>
+harness   : deny-only plan <already there / n NEW> (user-level) · <n> NEW allow · <n> ask · <n> guards removed ·
+            <n> yours (untouched) → <root>/.claude/settings.local.json · backup <path>
 still TODO: <rows>
 ```
 
-Every row appears, including the `no`s. Then say how to change it: re-run `/desk-setup`, or
-`/desk-setup permissions`, or edit the file. No reinstall needed.
+Every row appears, including the `no`s. Then say how to change it: re-run `/desk-setup` in this
+repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other repos are untouched.
 
 ## Re-running and revoking
 
-- **Read the existing config first**; show current values as the starting point.
-- Ask what they want to change instead of re-interviewing. Diff the row keys of
-  `~/.agents/skills/desk-setup/references/desk-config.template.md` (§3, §3b, §4) against the
-  file: rows the template has that the file lacks are asked; nothing else is.
+- **Read this repo's config first**; show current values as the starting point.
+- Ask what they want to change instead of re-interviewing. Diff the row keys and names of the
+  template against the file: rows the template has that the file lacks are asked; nothing else is.
+- Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
+  difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.
 - **Before/after for every changed row**; never reset one quietly.
-- Revoking is as easy as granting: set the row, run `python3 $H remove <row> [<row>...]` (it backs
-  up, removes every rule any revoked row owns, and restores a guard that row had removed), refresh
-  §3c from `list --markdown`, confirm. Do not argue for the capability it costs.
+- Revoking is as easy as granting: set the row, run
+  `python3 $H "${REPO_RULES[@]}" remove <row> [<row>...]` (backs up, removes every rule the row
+  owns in this repo, restores a guard it had removed), refresh §3c, confirm. Do not argue for the
+  capability it costs.
 - A row newly `yes` on a re-run: `add` a plan with just its rules (and any `unguard:`).
-
-## Migrating from 1.x
-
-Carry §1 and the paths across (confirmed, not silently). Map old rows by meaning: Jira comment,
-transition and create → `jira-comment`, `jira-transition`, `jira-create`; push, draft PR, PR body,
-review reply, browser upload, force-with-lease → the matching `git-*` / `pr-*` rows; staging,
-reindex, `specs-it/`, worktree, branch rows → the same-named local rows. Every row with no 1.x
-equivalent (merge, feedback-first, undraft, auto-merge, update-branch, conflicts, CI rerun, codex, Done on
-your own merge, all autopilot rows, Figma, Vercel, Slack draft) is asked. 1.x's Gmail, Calendar, Slack DMs and local
-transcripts map to `read-calendar`, `read-slack-own` and `read-transcripts`. List what was dropped: Drive/Sheets,
-work-log directory, check-out channel. 1.x's "never merge" does
-not carry across; `pr-merge-green` is asked.
 
 ## Red flags — stop
 
-- About to write a `yes` the user did not choose in this conversation
+- About to write a `yes` the user did not choose in this conversation, or copy one from another repo
 - Offering an accept-all instead of one question per row
 - Filling a field from detection without showing it
+- Asking the user to paste a token into the conversation
 - Calling a connector tool to "check" it
-- Writing an `allow` rule for an `ask` or `no` row, or offering allows before the deny-only plan
-  is in place
-- Touching `settings.json` without a backup, or without recording the rules in §3c
-- Merging permission rules by hand instead of through `harness-rules.py`, or recording a rule the
-  user already had as setup's
+- Writing an `allow` rule to `~/.claude/settings.json`, or to a `settings.local.json` git tracks
+- Writing an allow for an `ask` or `no` row, or offering allows before the deny-only plan is in place
+- Touching a settings file without a backup, or without recording the rules in §3c
 - Explaining why they should grant something after they declined it

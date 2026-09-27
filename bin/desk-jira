@@ -1,35 +1,70 @@
 #!/usr/bin/env bash
-# Direct Jira Cloud REST access for the Studia SV project.
+# Direct Jira Cloud REST access for the desk-* skills, configured PER REPO.
 # Replaces the claude.ai Atlassian connector for scripted/agent use: one hop, no proxy.
 #
-# Setup, once:
-#   export JIRA_EMAIL=you@studia.io          # or: printf %s you@studia.io > ~/.config/studia/jira-email
-#   mkdir -p ~/.config/studia
-#   printf %s '<your atlassian api token>' > ~/.config/studia/atlassian-token
-#   chmod 600 ~/.config/studia/atlassian-token
+# Which Jira: the repo you run it in. Its slug (`owner__name` of the origin remote) picks
+#   ~/.config/desk/repos/<slug>/config.md         §4 Jira site, Jira project, Priority
+#   ~/.config/desk/repos/<slug>/jira-email        your Atlassian login email for that site
+#   ~/.config/desk/repos/<slug>/atlassian-token   an API token (chmod 600)
+# so two repos can use two Atlassian sites with two logins. `desk-jira where` shows what it resolved.
+#
+# Setup, once per repo (or let /desk-setup do it):
+#   d="$(desk-jira where --dir)"; mkdir -p "$d"
+#   printf %s you@example.com > "$d/jira-email"
+#   printf %s '<your atlassian api token>' > "$d/atlassian-token" && chmod 600 "$d/atlassian-token"
 # Create a token at https://id.atlassian.com/manage-profile/security/api-tokens
 # The token is never stored in this script and must never be committed.
 #
-# Auth: Basic (email + API token). Token read from JIRA_TOKEN or the token file below.
-# Text-bearing calls use API v2, which accepts plain strings on Cloud; v3 would demand ADF JSON.
-# Search uses /rest/api/3/search/jql, because Cloud has removed the old /search endpoints.
+# Auth: Basic (email + API token). Text-bearing calls use API v2, which accepts plain strings on
+# Cloud; v3 would demand ADF JSON. Search uses /rest/api/3/search/jql, because Cloud has removed the
+# old /search endpoints.
 #
-# Written for bash 3.2 as well as 4+/5, so it runs on stock macOS. Needs curl and jq.
+# Written for bash 3.2 as well as 4+/5, so it runs on stock macOS. Needs curl, jq and git; node to
+# read the repo config.
 
 set -euo pipefail
 
-SITE="${JIRA_SITE:-studia-team-gdndoc1i.atlassian.net}"
-TOKEN_FILE="${JIRA_TOKEN_FILE:-$HOME/.config/studia/atlassian-token}"
-EMAIL_FILE="${JIRA_EMAIL_FILE:-$HOME/.config/studia/jira-email}"
-PROJECT="${JIRA_PROJECT:-SV}"
+DESK_ENV_MJS="${DESK_ENV_MJS:-$HOME/.claude/desk/bin/desk-env.mjs}"
 
-# Agent shells often skip the login profile, so the email can also live in a file.
+# owner__name of the origin remote, else local__<main checkout name>, else empty.
+repo_slug() {
+  local url common re='github\.com[:/]+([^/]+)/([^/]+)$'
+  url=$(git remote get-url origin 2>/dev/null || true)
+  if [[ "$url" =~ $re ]]; then
+    printf '%s__%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}"; return
+  fi
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  if [[ -n "$common" ]]; then printf 'local__%s' "$(basename "$(dirname "$common")")"; fi
+}
+
+SLUG="${DESK_SLUG:-$(repo_slug)}"
+REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/$SLUG"
+
+# One row of this repo's config, or empty. desk-env.mjs reads it, so there is one parser.
+cfg() {
+  [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
+  DESK_CONFIG="${DESK_CONFIG:-$REPO_DIR/config.md}" node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
+}
+# First word of a row ('KAN "Voice PA"; Task, Bug' -> KAN); `none` reads as empty.
+first_word() {
+  local v; v=$(printf '%s' "$1" | awk '{print $1}' | tr -d '`,;')
+  if [[ "$v" != none ]]; then printf '%s' "$v"; fi
+}
+
+SITE="${JIRA_SITE:-$(first_word "$(cfg jira-site)")}"
+PROJECT="${JIRA_PROJECT:-$(first_word "$(cfg jira-project)")}"
+TOKEN_FILE="${JIRA_TOKEN_FILE:-$REPO_DIR/atlassian-token}"
+EMAIL_FILE="${JIRA_EMAIL_FILE:-$REPO_DIR/jira-email}"
+
+# Agent shells often skip the login profile, so the email lives in a file per repo.
 EMAIL="${JIRA_EMAIL:-}"
 if [[ -z "$EMAIL" && -r "$EMAIL_FILE" ]]; then EMAIL=$(tr -d ' \t\r\n' < "$EMAIL_FILE"); fi
 
-# Launch Priority, Size, Impact, Repository, Sprint. Requested explicitly because search
-# otherwise returns null for every custom field, which reads as "nothing is set".
-SEARCH_FIELDS='["key","summary","status","assignee","reporter","labels","priority","issuetype","customfield_10159","customfield_10511","customfield_10512","customfield_10513","customfield_10020"]'
+# A custom priority field (e.g. a "Launch Priority" select) named in §4 Priority, if any.
+# Requested explicitly because search otherwise returns null for every custom field.
+PRIORITY_FIELD="${JIRA_PRIORITY_FIELD:-$(cfg jira-priority | grep -oE 'customfield_[0-9]+' | head -n1 || true)}"
+SEARCH_FIELDS=$(jq -cn --arg p "$PRIORITY_FIELD" \
+  '["key","summary","status","assignee","reporter","labels","priority","issuetype","customfield_10020"] + (if $p == "" then [] else [$p] end)')
 
 # jq helper: render any Jira field value as one short string.
 JQ_VAL='def val: if . == null then "-"
@@ -119,7 +154,7 @@ body_of() {  # file path (optionally @path), or the literal string
   if [[ -f "$1" ]]; then cat "$1"; return; fi
   if [[ "$1" == @* && -f "${1#@}" ]]; then cat "${1#@}"; return; fi
   # Without this, a mistyped invocation posts the mistake as the body:
-  # `comment SV-1 --file b.txt` would set the comment to the literal "--file".
+  # `comment KEY-1 --file b.txt` would set the comment to the literal "--file".
   case "$1" in
     --*)  echo "desk-jira: '$1' looks like a flag - the body is positional: <body-file|text>" >&2; return 2 ;;
     @*|*.md|*.txt|*.json|*.adf)
@@ -132,6 +167,7 @@ usage() {
   cat <<'EOF'
 desk-jira <command> [args]
 
+  where [--dir]                   which repo, site, project, email and token it resolved
   whoami                          confirm auth
   search <jql> [max] [--json]     key / status / launch priority / summary
   get <KEY> [--json]              issue detail, custom fields included
@@ -153,9 +189,11 @@ desk-jira <command> [args]
   api <path>                      read-only GET of /rest/<path>, raw JSON (e.g. api/3/myself)
 
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
-               (customfield_10159=P1 -> {"value":"P1"}, assignee=me -> your accountId)
+               (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId)
 
+Config:        this repo's ~/.config/desk/repos/<slug>/ (see `desk-jira where`)
 Env overrides: JIRA_SITE JIRA_EMAIL JIRA_EMAIL_FILE JIRA_PROJECT JIRA_TOKEN JIRA_TOKEN_FILE
+               JIRA_PRIORITY_FIELD DESK_SLUG DESK_CONFIG
 EOF
 }
 
@@ -167,11 +205,25 @@ command -v curl >/dev/null || die "curl is required"
 # Fail loudly here rather than inside a subshell, where an exit would be swallowed
 # and the call would go out unauthenticated and come back 401.
 case "$cmd" in
-  -h|--help|help) ;;
-  *) [[ -n "$EMAIL" ]] || die "no email: set JIRA_EMAIL (or write it to $EMAIL_FILE) - see the setup notes at the top of this script" ;;
+  -h|--help|help|where) ;;
+  *) [[ -n "$SLUG" ]] || die "not inside a git repo, so there is no repo to take the Jira site from (set DESK_SLUG, or JIRA_SITE and JIRA_PROJECT)"
+     [[ -n "$SITE" ]] || die "no Jira site for $SLUG: set §4 Jira site in $REPO_DIR/config.md (/desk-setup), or JIRA_SITE"
+     [[ -n "$EMAIL" ]] || die "no email for $SLUG: write it to $EMAIL_FILE (or set JIRA_EMAIL) - see the setup notes at the top of this script" ;;
 esac
 
 case "$cmd" in
+  where)
+    if [[ "${1:-}" == --dir ]]; then [[ -n "$SLUG" ]] || die "not inside a git repo"; printf '%s\n' "$REPO_DIR"; exit 0; fi
+    echo "repo    : ${SLUG:-(not in a git repo)}"
+    echo "site    : ${SITE:-(unset)}"
+    echo "project : ${PROJECT:-(unset: create needs it)}"
+    echo "email   : ${EMAIL:-(unset)}  <- $EMAIL_FILE"
+    if [[ -n "${JIRA_TOKEN:-}" ]]; then echo "token   : from JIRA_TOKEN"
+    elif [[ -r "$TOKEN_FILE" ]]; then echo "token   : $TOKEN_FILE"
+    else echo "token   : (missing) $TOKEN_FILE"; fi
+    echo "priority: ${PRIORITY_FIELD:-built-in priority}"
+    ;;
+
   whoami)
     api GET 'api/3/myself' | jq -r '"\(.displayName) <\(.emailAddress)>  accountId=\(.accountId)"'
     ;;
@@ -187,9 +239,9 @@ case "$cmd" in
       '{jql:$jql, maxResults:$max, fields:$f}')
     res=$(json POST 'api/3/search/jql' -d "$payload")
     if (( raw )); then printf '%s\n' "$res"; else
-      printf '%s' "$res" | jq -r "$JQ_VAL"'
+      printf '%s' "$res" | jq -r --arg pf "$PRIORITY_FIELD" "$JQ_VAL"'
         if (.issues | length) == 0 then "no issues"
-        else (.issues[] | "\(.key)\t\(.fields.status.name)\t\(.fields.customfield_10159 | val)\t\(.fields.summary)") end'
+        else (.issues[] | "\(.key)\t\(.fields.status.name)\t\((if $pf != "" then .fields[$pf] else null end) // .fields.priority | val)\t\(.fields.summary)") end'
       if [[ "$(printf '%s' "$res" | jq -r '.nextPageToken // empty')" != "" ]]; then
         echo "(more results: raise max)" >&2
       fi
@@ -199,7 +251,7 @@ case "$cmd" in
   get)
     [[ $# -ge 1 ]] || die 'usage: desk-jira get <KEY> [--json]'
     key="$1"; shift
-    res=$(api GET "api/2/issue/$key")
+    res=$(api GET "api/2/issue/$key?expand=names")
     if [[ "${1:-}" == '--json' ]]; then printf '%s\n' "$res"; else
       printf '%s' "$res" | jq -r "$JQ_VAL"'
         "key      : \(.key)",
@@ -210,11 +262,9 @@ case "$cmd" in
         "reporter : \(.fields.reporter | val)",
         "labels   : \(.fields.labels | val)",
         "priority : \(.fields.priority | val)",
-        "launch   : \(.fields.customfield_10159 | val)",
-        "size     : \(.fields.customfield_10511 | val)",
-        "impact   : \(.fields.customfield_10512 | val)",
-        "repo     : \(.fields.customfield_10513 | val)",
-        "sprint   : \(.fields.customfield_10020 | val)",
+        (.names as $n | .fields | to_entries[]
+          | select((.key | startswith("customfield_")) and .value != null and .value != [])
+          | "\($n[.key] // .key) : \(.value | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end)"),
         "",
         (.fields.description // "(no description)")'
     fi
@@ -231,6 +281,7 @@ case "$cmd" in
     ;;
 
   meta)
+    [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
     res=$(api GET "api/2/issue/createmeta?projectKeys=$PROJECT&expand=projects.issuetypes.fields")
     printf '%s' "$res" | jq -r --arg t "${1:-}" '
       .projects[0].issuetypes[]
@@ -243,6 +294,7 @@ case "$cmd" in
     ;;
 
   create)
+    [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
     [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...]'
     type="$1"; summary="$2"; desc=$(body_of "$3") || exit 2; shift 3
     extra=$(fields_from_args "$@") || exit 2

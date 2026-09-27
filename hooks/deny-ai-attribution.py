@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """PreToolUse(Bash) hook: refuse AI attribution in commits, PR text, GitHub API bodies and Jira text.
 
-Studia history and team-facing text must come from a human author alone. This is a backstop
-for a mistake that is permanent (git history) or seen by the whole team.
+PER REPO. It acts only where the repo's desk config says so: §5 "AI attribution" set to `forbidden`
+in ~/.config/desk/repos/<owner__name>/config.md, found from the origin remote of the call's cwd.
+Any other value, no config, or no git repo means the hook allows the call. Where it is forbidden,
+history and team-facing text must come from a human author alone, and this is a backstop for a
+mistake that is permanent (git history) or seen by the whole team.
 
 A compound command is split on `&&`, `||`, `;`, `|`, `&` and newlines (outside quotes and `$(...)`),
 and only these subcommands are checked:
@@ -31,7 +34,43 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+
+CONFIG_ROOT = os.path.expanduser(os.environ.get("DESK_CONFIG_ROOT", "~/.config/desk"))
+REMOTE = re.compile(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+ROW = re.compile(r"^\|\s*AI attribution\s*\|\s*`([^`]*)`", re.I | re.M)
+
+
+def repo_config(cwd):
+    """This repo's desk config path, or None. Slug rule matches desk-env.mjs."""
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                                  timeout=3).stdout.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+    m = REMOTE.search(git("remote", "get-url", "origin"))
+    if m:
+        slug = f"{m.group(1)}__{m.group(2)}"
+    else:
+        common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
+        if not common:
+            return None
+        slug = "local__" + os.path.basename(os.path.dirname(common))
+    return os.environ.get("DESK_CONFIG") or os.path.join(CONFIG_ROOT, "repos", slug, "config.md")
+
+
+def attribution_forbidden(cwd):
+    path = repo_config(cwd)
+    if not path:
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            m = ROW.search(f.read())
+    except OSError:
+        return False
+    return bool(m) and m.group(1).strip().lower().startswith("forbidden")
 
 BANNED = (
     re.compile(r"co-authored-by\s*[:=][^\n\"']*(claude|anthropic)", re.I),
@@ -361,6 +400,8 @@ def main() -> int:
     cwd = payload.get("cwd") or os.getcwd()
     if not re.search(r"\b(?:git|gh|desk-jira)\b", command):
         return 0
+    if not attribution_forbidden(cwd):
+        return 0
     try:
         hit = find_hit(command, cwd)
     except Exception:  # noqa: BLE001 - a parser bug fails closed on the whole command text
@@ -375,7 +416,7 @@ def main() -> int:
                 "permissionDecision": "deny",
                 "permissionDecisionReason": (
                     f"The {hit[0]} in {hit[1]} carries AI attribution, which must never reach "
-                    "Studia's git history, PRs or Jira. Remove any Co-Authored-By trailer, "
+                    "this repo's git history, PRs or Jira (desk config §5 AI attribution: forbidden). Remove any Co-Authored-By trailer, "
                     "Claude-Session line, noreply@anthropic.com, claude.ai/code/session_ link, "
                     "'Generated with Claude Code' line and the robot emoji, then run it again."
                 ),
