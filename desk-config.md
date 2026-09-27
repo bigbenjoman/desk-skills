@@ -277,6 +277,7 @@ such thing.
 | Lint | `TODO` |
 | Unit tests | `TODO` (and how to run one file) |
 | E2E tests | `TODO` (or `none`) |
+| Integration tests | `TODO` (database-backed suite, and whether it needs its own database; or `none`) |
 | Build | `TODO` |
 | Env files | `TODO` (which `.env*` files a new worktree needs copied from the primary checkout, or `none`) |
 
@@ -285,6 +286,7 @@ such thing.
 | Field | Value |
 |---|---|
 | Local database | `TODO` (e.g. Postgres in docker container `<name>` on :5432, how to create one per ticket; or `none`) |
+| Seed | `TODO` (command that loads local data into a fresh database, or `none`) |
 | Local services | `TODO` (search, mail catcher, queues, with ports; or `none`) |
 | Staging | `TODO` (URL, and how access is protected; or `none`) |
 | Staging bypass token location | `TODO` (a file only you read, e.g. `~/.config/desk/repos/<slug>/vercel-staging-bypass`: the path, never the token) |

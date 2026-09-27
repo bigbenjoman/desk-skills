@@ -64,7 +64,7 @@ if [[ -z "$EMAIL" && -r "$EMAIL_FILE" ]]; then EMAIL=$(tr -d ' \t\r\n' < "$EMAIL
 # Requested explicitly because search otherwise returns null for every custom field.
 PRIORITY_FIELD="${JIRA_PRIORITY_FIELD:-$(cfg jira-priority | grep -oE 'customfield_[0-9]+' | head -n1 || true)}"
 SEARCH_FIELDS=$(jq -cn --arg p "$PRIORITY_FIELD" \
-  '["key","summary","status","assignee","reporter","labels","priority","issuetype","customfield_10020"] + (if $p == "" then [] else [$p] end)')
+  '["key","summary","status","assignee","reporter","labels","priority","issuetype"] + (if $p == "" then [] else [$p] end)')
 
 # jq helper: render any Jira field value as one short string.
 JQ_VAL='def val: if . == null then "-"
@@ -169,7 +169,7 @@ desk-jira <command> [args]
 
   where [--dir]                   which repo, site, project, email and token it resolved
   whoami                          confirm auth
-  search <jql> [max] [--json]     key / status / launch priority / summary
+  search <jql> [max] [--json]     key / status / priority (§4 Priority field if set) / summary
   get <KEY> [--json]              issue detail, custom fields included
   fields [filter]                 field ids and names (find custom fields)
   meta [issuetype]                createmeta: required fields + allowed values
