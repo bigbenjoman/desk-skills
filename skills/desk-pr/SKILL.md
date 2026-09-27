@@ -361,7 +361,12 @@ by.
 images somewhere to land. Then follow §5 PR lifecycle; the usual order is: upload the images, post
 the Stage 4b self-review (`desk-ticket` Stage 7), and — if §3 `pr-ready`, `pr-auto-merge` and
 `pr-merge-green` all allow, and §4 Repo merge settings allow auto-merge — `gh pr ready <n> &&
-gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>`. Merging needs the head
+gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>`. **Arm auto-merge only
+when GitHub's gate and ours coincide**: every check that runs on this repo's PRs is either in §4
+Required checks (which GitHub enforces) or in §4 Advisory checks. GitHub's auto-merge waits only for
+the checks branch protection requires, so where another check runs (a path-filtered API suite, say)
+it would merge past that check failing. Otherwise do not arm it: undraft, and merge when the head is
+green by the definition below. Merging needs the head
 **green** as the config defines it (desk-config "Green": every §4 Required checks entry completed
 with success, skipped not counting; nothing else failed, errored, timed out or still running unless
 §4 Advisory checks names it; at least one success), and is always pinned to that head with
