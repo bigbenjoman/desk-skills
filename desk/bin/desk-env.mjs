@@ -285,7 +285,9 @@ function parseConfig() {
     let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1;
     if (col < 0) col = 1;
     const keyCol = header.indexOf('key');
-    const cell = cells[col] ?? '';
+    // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
+    // copied into a value, the doubled backticks are display only.
+    const cell = (cells[col] ?? '').replace(/``\s?/g, '').replace(/\s?``/g, '');
     const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
     const items = spans.length ? spans : [cell.trim()];
     const s = cache.sections[section];

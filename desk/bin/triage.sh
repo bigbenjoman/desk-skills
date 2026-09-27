@@ -138,7 +138,8 @@ desk_timeout 600 claude -p "$PROMPT" \
   --setting-sources "" --strict-mcp-config \
   --settings "$SETTINGS" \
   --permission-mode dontAsk \
-  --allowedTools "Read,Grep,Glob,Bash,Write" \
+  # No --allowedTools: it would grant every Bash command and Write outright, overriding the
+  # read-only triage settings. The settings file alone decides what triage may run.
   --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
   --max-budget-usd "${AUTOPILOT_TRIAGE_BUDGET_USD:-3}" \
   --output-format text > /dev/null 2>&1 < /dev/null || true
@@ -211,7 +212,6 @@ CHALLENGE_END
     --setting-sources "" --strict-mcp-config \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
-    --allowedTools "Read,Grep,Glob,Bash,Write" \
     --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
     --max-budget-usd "${AUTOPILOT_CHALLENGE_BUDGET_USD:-2}" \
     --output-format text > /dev/null 2>&1 < /dev/null || true

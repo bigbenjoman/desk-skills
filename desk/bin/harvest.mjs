@@ -5,7 +5,8 @@
 import { readFileSync } from 'node:fs';
 
 const log = process.argv[2];
-if (!log) { console.error('usage: harvest.mjs <worker.log>'); process.exit(1); }
+const wantBody = process.argv.includes('--pr-body');
+if (!log) { console.error('usage: harvest.mjs <worker.log> [--pr-body]'); process.exit(1); }
 
 // Workers wrap markers in backticks, bullets or headings often enough that a strict
 // line-start grep silently finds nothing. Be tolerant about the decoration, strict
@@ -24,6 +25,18 @@ for (const line of readFileSync(log, 'utf8').split('\n')) {
     result = d;
     if (typeof d.result === 'string') texts.push(d.result);
   }
+}
+
+// --pr-body prints only the last body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and
+// AUTOPILOT_PR_BODY_END:, verbatim, and exits 3 when there is none.
+if (wantBody) {
+  const all = texts.join('\n');
+  const re = /AUTOPILOT_PR_BODY_BEGIN:[^\n]*\n([\s\S]*?)\n[\s`>*#-]*AUTOPILOT_PR_BODY_END:/g;
+  let body = null;
+  for (const m of all.matchAll(re)) body = m[1];
+  if (body == null) { console.error('no AUTOPILOT_PR_BODY_BEGIN:/END: block in the log'); process.exit(3); }
+  process.stdout.write(`${body.replace(/^```[a-z]*\n/, '').replace(/\n```\s*$/, '')}\n`);
+  process.exit(0);
 }
 
 const markers = [];

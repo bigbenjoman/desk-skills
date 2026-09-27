@@ -200,7 +200,9 @@ const READ_DENY = [
 const GIT_READ = [' status', ' diff', ' log', ' show', ' rev-parse', ' rev-list', ' merge-base', ' merge-tree', ' ls-files',
   ' grep', ' blame', ' describe', ' cat-file', ' branch --show-current', ' branch -a', ' branch -r', ' branch --list',
   ' worktree list', ' remote -v', ' remote get-url'];
-const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' rebase', ' merge', ' fetch', ' clean'];
+const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean'];
+// `rebase` takes bundled short flags (`-qx cmd` runs cmd), so it is allowed only in these exact forms.
+const GIT_REBASE = [' rebase --continue', ' rebase --abort', ' rebase --skip', ` rebase origin/${E.defaultBranch()}`];
 // The ways a permitted git subcommand could reach outside it: another repo or config, an external
 // program, an output file anywhere.
 const GIT_DENY = [
@@ -229,7 +231,7 @@ if (mode === 'triage') {
   );
   deny.push(
     ...READ_DENY,
-    ...bash('git', ...GIT_DENY, ...GIT_LOCAL, ' push', ' worktree'),
+    ...bash('git', ...GIT_DENY, ...GIT_LOCAL, ' rebase', ' push', ' worktree'),
     ...bash('gh', ...GH_DENY, ' pr create', ' pr edit', ' pr comment', ' pr review', ' issue comment', ' run rerun'),
     ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels'),
     ...[...new Set([PM, ...FORBIDDEN])].filter(Boolean).flatMap((b) => bash(b)),
@@ -257,7 +259,7 @@ if (mode === 'triage') {
   allow.push(
     ...READS.flatMap((b) => bash(b)),
     'Bash(mkdir:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
-    ...bash('git', ...GIT_READ, ...GIT_LOCAL),
+    ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...GIT_REBASE.flatMap((t) => exact('git', t)),
     ...bash('gh', ...GH_READ),
     ...bash('desk-jira', ...JIRA_READ),
     // desk-env is read-only (where, get, list, perm, mem, heavy, port-in-use): the shim on PATH, its

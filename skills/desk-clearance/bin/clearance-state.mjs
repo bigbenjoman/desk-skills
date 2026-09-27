@@ -350,7 +350,16 @@ async function derive({ withGit }) {
   const advisory = cfgList('advisory-checks') || []
   const holdItems = E.configValues('merge-holds')
   const holds = G.parseHolds(holdItems)
-  const prs = nodes.map((p) => classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base: base.branch }))
+  // Workflow runs still queued or running, by head SHA, fetched once: gate.mjs counts them as not
+  // green, exactly as merge-driver.sh does, so clearance never says SUCCESS where the driver waits.
+  const runsByHead = {}
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    let list = []
+    try { list = await gh(['run', 'list', '--repo', GH.full, '--status', status, '--limit', '200', '--json', 'headSha,name,workflowName,status,conclusion']) }
+    catch { list = [{ headSha: '*', name: `gh run list --status ${status} (unreadable)`, status: 'unknown' }] }
+    for (const r of list) (runsByHead[r.headSha] ??= []).push(r)
+  }
+  const prs = nodes.map((p) => classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base: base.branch, runsByHead }))
 
   if (withGit) await annotateGit(prs, REPO, base.branch)
   await annotateRest(prs)
@@ -400,7 +409,7 @@ function checkState(checks, name) {
 }
 const GATE_WORD = { pass: 'SUCCESS', pending: 'PENDING', absent: 'ABSENT', fail: 'FAILURE' }
 
-function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base }) {
+function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base, runsByHead = {} }) {
   const isHuman = (a) => a && !isBot(a) && a.login !== AUTHOR
   const head = p.commits?.nodes?.[0]?.commit
   if (!head) die(`#${p.number}: no head commit in response`)
@@ -439,7 +448,8 @@ function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base }) {
   // all is ABSENT - an empty set is never vacuously green.
   const checks = G.normaliseRollup(ctx)
   const names = required.names
-  const green = G.evaluateGate(checks, { required: names, advisory })
+  const runs = [...(runsByHead[head.oid] || []), ...(runsByHead['*'] || [])]
+  const green = G.evaluateGate(checks, { required: names, advisory, runs })
   const gates = Object.fromEntries(names.map((n) => [n, checkState(checks, n)]))
   const gate = GATE_WORD[green.state]
   const advisoryFailing = checks

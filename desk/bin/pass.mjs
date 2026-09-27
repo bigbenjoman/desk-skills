@@ -127,7 +127,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
         .find((a) => a.sessionId === t.session_id) ?? {}).pid;
       if (pid) sh('kill', [String(pid)], { tolerant: true });
-      q('park', t.key, `wedged — no output for ${idle} passes, worker stopped. Resume with: claude -p --resume ${t.session_id}`);
+      q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it as desk-autopilot's orchestrator-recovery.md describes; never resume the session by hand, which would run it without the worker sandbox`);
       report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
     } else if (idle >= 3) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
   }

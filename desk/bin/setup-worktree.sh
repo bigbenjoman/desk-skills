@@ -198,7 +198,9 @@ const files = filesRaw.split('\n').filter(Boolean);
 const LOCAL = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', 'host.docker.internal', container].filter(Boolean).map((h) => h.toLowerCase()));
 const URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([^@/]*)@)?(\[[^\]]*\]|[^/:?#]*)(:\d+)?(\/[^?#]*)?(\?[^#]*)?$/i;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const lineRe = new RegExp(`^(\\s*(?:export\\s+)?)(${vars.map(esc).join('|')})(\\s*=\\s*)(.*)$`);
+// `(.*)` cannot match a trailing \r, so a CRLF file (common on WSL) would skip every line and keep
+// its production URL. Lines are matched with the \r removed; a rewritten or blanked line is written back with a plain \n.
+const lineRe = new RegExp(`^(\\s*(?:export\\s+)?)(${vars.map(esc).join('|')})(\\s*=\\s*)(.*?)\\r?$`);
 let bad = 0;
 let touched = 0;
 function target(value) {
