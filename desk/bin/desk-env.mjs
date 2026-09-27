@@ -16,6 +16,7 @@
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS), exit 3 if unset
+//   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
@@ -195,6 +196,7 @@ export const CONFIG_ROWS = Object.freeze({
   'staging-bypass': { section: '4', row: 'Staging bypass token location' },
   'slack-channels': { section: '4', row: 'Slack channels' },
   'repo-instructions': { section: '5', row: 'Repo instructions' },
+  'subagents-without-asking': { section: '3b', row: 'Subagents that may run without asking' },
   'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
   'spawn-gate': { section: '3b', row: 'Spawn gate (available memory)' },
   'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
@@ -292,6 +294,15 @@ export function permission(id) {
   const v = parseConfig().sections['3']?.byKey[norm(key)];
   if (unset(v)) return 'no';
   return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
+}
+// Tri-state for guard rows, where "unset" must mean the strict default rather than `no`:
+// returns yes|ask|no|never|stop, or null when the row is missing, blank or TODO.
+export function permissionOrUnset(id) {
+  const key = PERMISSION_KEYS[id];
+  if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
+  const v = parseConfig().sections['3']?.byKey[norm(key)];
+  if (unset(v)) return null;
+  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? null;
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
@@ -471,6 +482,12 @@ if (isMain) {
         const v = configValue(args[0]);
         if (v == null) process.exit(3);
         console.log(expandHome(v));
+        break;
+      }
+      case 'perm-or-unset': {
+        const v = permissionOrUnset(args[0]);
+        if (v == null) process.exit(3);
+        console.log(v);
         break;
       }
       case 'perm':

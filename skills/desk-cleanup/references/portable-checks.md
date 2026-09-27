@@ -2,12 +2,12 @@
 
 Every snippet here runs on macOS and Linux/WSL unless a heading says otherwise. `lsof` ships with
 macOS; on Linux install it if `command -v lsof` is empty rather than falling back to `/proc`
-scraping in a skill run.
+scraping in a skill run. §-references are to this repo's config (`desk-env where`, then Read it).
 
 ## Processes inside a worktree (by prefix)
 
-A dev server's cwd is usually `<worktree>/packages/studia-web`, so match the prefix, never the
-exact path.
+In a monorepo a dev server's cwd is usually a package subdirectory of the worktree, so match the
+prefix, never the exact path.
 
 ```bash
 WT=<absolute worktree path>
@@ -20,10 +20,17 @@ Open files too (slower; background it on WSL): `lsof -nP +D "$WT" 2>/dev/null | 
 
 ## Listening ports and who holds them
 
+Build the port list from config: the §3b Preferred dev-server port and the range above it that
+autopilot workers take (a hundred ports up is a safe span), plus every port §4 Dev server and §4
+Local services name. Pass them as a regex alternation:
+
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | awk 'NR==1 || $9 ~ /:(3[0-9][0-9][0-9]|6006|8288)$/'
+PORTS='3[0-9][0-9][0-9]|<each port §4 Local services and §4 Dev server name, |-separated>'
+lsof -nP -iTCP -sTCP:LISTEN | awk -v re=":($PORTS)\$" 'NR==1 || $9 ~ re'
 ps -o pid=,rss=,etime=,args= -p <pid>     # rss is KiB on both platforms
 ```
+
+(`3[0-9][0-9][0-9]` above assumes the dev-server port is in the 3000s; widen it to match §3b.)
 
 ## Largest processes
 
@@ -47,15 +54,18 @@ p=<pid>; while [ "${p:-1}" -gt 1 ]; do ps -o pid=,ppid=,args= -p "$p"; p=$(ps -o
 
 `pgrep -f '[j]est-worker'` defeats the inner self-match but not Claude Code's own `bash -c`
 wrapper, whose command line carries the pattern verbatim, brackets and all. **Why:** on a cleanup
-run `pgrep -f '[v]itest'` returned one pid, read as the portal's runaway vitest, and
-it was the wrapper. Match on the executable instead, which a shell wrapper can never satisfy:
+run `pgrep -f '[v]itest'` returned one pid, read as a runaway vitest, and it was the wrapper. Match
+on the executable instead, which a shell wrapper can never satisfy:
 
 ```bash
 ps -Ao pid=,rss=,etime=,args= | awk '$4 ~ /(^|\/)node$/ && /jest-worker|vitest/'
 ```
 
+Adjust the pattern to this repo's test runners (§4 Unit tests, §4 E2E tests); a non-Node runner
+matches on its own executable instead of `node`.
+
 An autopilot worker carries its whole briefing in argv, so the words "jest" and "vitest" appear in
-`claude` command lines too — the `node` test on the executable excludes those as well.
+`claude` command lines too — the test on the executable excludes those as well.
 
 ## Memory totals
 
@@ -82,14 +92,15 @@ of it. **Why:** swap has sat at 6.0/6.0 GiB with 207 MB attributable to processe
 `/tmp/jest_rs` (3.8 GB Jest cache), `/tmp/node-compile-cache` (1.7 GB) and a stray 250 MB vitest
 log. Deleting them freed the swap with no root.
 
-They are regenerable caches, so they may go in the plan as `[delete]` — after confirming no Jest
-or vitest run is in flight (check above) and nothing holds them open
+They are regenerable caches, so they may go in the plan as `[delete]` — after confirming no test
+run is in flight (check above) and nothing holds them open
 (`lsof +D /tmp/jest_rs 2>/dev/null | head`). Still never `swapoff`.
 
 ## Disk: one `du` on the containing directory, never per worktree
 
-bun installs `node_modules` by linking into its global cache (`~/.bun/install/cache`), so the same
-data appears in every worktree.
+Some package managers install `node_modules` by linking into a global store (pnpm's content-addressed
+store, and others that hardlink from a global cache), so the same data appears in every worktree.
+Check which one §4 Package manager names.
 
 - `du -sh <one worktree>` charges it for all the shared inodes — ~3.6 GB each on one machine,
   where twenty of them would have exceeded the filesystem's total usage.
@@ -103,9 +114,9 @@ The honest figure is one `du` on the parent (`-x` stays on one filesystem on bot
 du -shx <worktrees dir>      # 18G for 20 worktrees — marginal cost ~1 GB each
 ```
 
-On macOS bun defaults to APFS clones rather than hardlinks, which `du` cannot dedupe at all, so even
-the parent figure overstates. There, quote the `df -h` free-space change after removal instead of a
-`du` prediction. `du` over these trees is slow on WSL; background it.
+On macOS some package managers default to APFS clones rather than hardlinks, which `du` cannot
+dedupe at all, so even the parent figure overstates. There, quote the `df -h` free-space change after
+removal instead of a `du` prediction. `du` over these trees is slow on WSL; background it.
 
 ## Orphaned worktree directories
 
@@ -132,19 +143,20 @@ git --git-dir=<repo root>/.git --work-tree=<orphan> diff --stat <branch>        
 git --git-dir=<repo root>/.git --work-tree=<orphan> status --porcelain | grep '^??'  # untracked files
 ```
 
-Check each untracked file against `origin/main` (typically every one is a superseded original of
-an asset main has since replaced). Copy out any `.claude/desk-ticket-SV-*.json` as
-for a normal removal.
+Check each untracked file against `origin/<default branch>` (typically every one is a superseded
+original of an asset the default branch has since replaced). Copy out any
+`.claude/desk-ticket-<TICKET>.json` as for a normal removal.
 
 ## Cache sizes, for scale
 
 Measured on one Linux/WSL machine. **Only worth touching if `df` shows under ~15%
-free.**
+free.** Global caches are shared by **every** repo on the machine, so "dead" means no repo uses it —
+check the §4 Package manager of each repo you have a desk config for (`ls ~/.config/desk/repos/`)
+before calling a package manager's cache dead, and even then, report it rather than delete it.
 
 | Path (Linux / macOS) | Size seen | Live? |
 |---|---|---|
-| `<primary repo root>/.turbo` | 7.1 GB | live — largest single cache, main checkout only |
-| `~/.npm/_cacache` | 6.1 GB | **dead** — the repo is bun-only and npm is hook-blocked |
-| `~/.bun/install/cache` | 5.1 GB | live — every worktree links into it |
-| `~/.cache/ms-playwright*` / `~/Library/Caches/ms-playwright` | 3.2 GB | live — browser binaries |
-| `~/.cache/pnpm` / `~/Library/Caches/pnpm` | 509 MB | **dead** — pnpm is not used |
+| a build-system cache in the primary repo root (e.g. `.turbo`, `.nx/cache`) | 7.1 GB | live — often the largest single cache, primary checkout only |
+| the global store of §4 Package manager (e.g. `~/.local/share/pnpm/store`, `~/.npm/_cacache`) | 5-6 GB | live — every worktree installs from it |
+| the global store of a package manager no configured repo uses | up to 6 GB | **dead** for these repos — report only |
+| `~/.cache/ms-playwright*` / `~/Library/Caches/ms-playwright` | 3.2 GB | live wherever a repo runs browser tests |

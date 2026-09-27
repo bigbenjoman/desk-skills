@@ -15,7 +15,8 @@ other way mid-run, so a subagent never waits on a reply.
 Everything sent that way must arrive **as a question with drafted options and a recommendation**,
 because the parent turns it straight into a carousel question.
 
-Fill `<§3 limits>` from config §3 before sending: if `git-push` or `pr-reply` is not `yes`, the
+Fill the `<>` fields from this repo's config (`desk-env where`, then Read it) — the subagent reads
+the same file, so pass it the `CONFIG` path too. Fill `<§3 limits>` from config §3 before sending: if `git-push` or `pr-reply` is not `yes`, the
 IMPLEMENT subagent stops before that step and returns what it would have
 pushed or posted, and the parent asks.
 
@@ -25,13 +26,13 @@ pushed or posted, and the parent asks.
 
 Read-only. No worktree, no branch checkout, no dev server.
 
-> You are assessing review feedback on studia-web PR **#\<n>** (\<title>), authored by the user
-> (GitHub `<handle>`). **Read-only: do not edit, commit, push, reply, or resolve anything. Do not
+> You are assessing review feedback on \<§0 GitHub repo> PR **#\<n>** (\<title>), authored by the
+> user (GitHub `<handle>`). **Read-only: do not edit, commit, push, reply, or resolve anything. Do not
 > run typecheck, lint or the spec suite.**
 >
 > Load the **desk-review-response** skill first and follow it, including `references/voice.md` —
-> every reply you draft posts publicly as the user. Read `~/.claude/desk-config.md` §4 and §5, and
-> `desk-clearance/references/reviewer-patterns.md`.
+> every reply you draft posts publicly as the user. Read the repo config at `<CONFIG path>`: §4
+> (including "What review here consistently asks for" and People) and §5.
 >
 > Gather the feedback from three places, not one: unresolved review threads, review bodies, and
 > issue comments. Ignore anything authored by a bot. Paginate every `gh api` list. Read the PR diff
@@ -80,12 +81,14 @@ Read-only. No worktree, no branch checkout, no dev server.
 Owns a worktree and pushes. Run as many as `clearance-state.mjs capacity` allows. Never give one PR
 to two subagents, and never give two PRs that share a source file to subagents running at once.
 
-> You are working the agreed review fixes on studia-web PR **#\<n>** in the worktree at
-> **\<config §2 worktrees dir>/SV-XXX** (branch `\<branch>`).
+> You are working the agreed review fixes on \<§0 GitHub repo> PR **#\<n>** in the worktree at
+> **\<config §2 worktrees dir>/\<TICKET>** (branch `\<branch>`). The repo config is at
+> `<CONFIG path>`.
 >
-> Load **desk-review-response** and follow it, including `references/voice.md`. Read
-> `desk-clearance/references/reviewer-patterns.md` and run it against your own diff before you
-> push — fixing one of those now saves a round trip.
+> Load **desk-review-response** and follow it, including `references/voice.md`. Read config §4
+> "What review here consistently asks for" and run it against your own diff before you push —
+> fixing one of those now saves a round trip. (Empty or `TODO`: there is no recorded house bar yet;
+> say so in your return rather than inventing one.)
 >
 > **Do exactly these and nothing else:**
 > \<the GREEN items, plus any AMBER items the user approved, verbatim from the batch round>
@@ -99,27 +102,32 @@ to two subagents, and never give two PRs that share a source file to subagents r
 > 1. Confirm the worktree is yours and clean, and that `HEAD` matches the PR head. If it does not,
 >    stop and report — do not reset, rebuild or stash. `git stash` is shared across every worktree.
 > 2. Make the changes. Commit with the repository's own identity — never pass `-c user.name` or
->    `-c user.email`, and never add AI attribution.
-> 3. `bun run typecheck`, `bun run --filter studia-web lint`, and the specs covering what you touched,
->    each behind `~/.claude/desk/bin/with-lock.sh test …` with Jest at the §3b `--maxWorkers` cap. A new tRPC procedure also
->    needs `bun run --filter studia-web test:integration -- specs-it/impersonation-mutation-classification.itest.ts`.
+>    `-c user.email`. AI attribution follows config §5 AI attribution: where `forbidden`, none
+>    anywhere.
+> 3. Config §4 Typecheck, §4 Lint, and the §4 Unit tests covering what you touched, each with §4
+>    Command prefix and using only §4 Package manager, the tests behind
+>    `~/.claude/desk/bin/with-lock.sh test …` at the §3b "Test worker cap under the test lock". Any
+>    row that is `none`: skip that step and say so in your return. Anything §5 Repo instructions
+>    requires for the kind of change you made (an extra test suite, a generator, a check script)
+>    runs too.
 > 4. If the fix changes anything on screen, capture before/after per **desk-pr** into the config §2
 >    handoff directory. Print `CLEARANCE_IMAGES: <dir>` and **stop there** — the parent uploads.
 > 5. `git fetch --prune`, and bring the branch up to date only if behind. On any conflict: **do not
 >    resolve it, and do not stop at "there is a conflict".** Probe without touching the tree
->    (`git merge-tree --write-tree --name-only origin/main origin/<branch>`; on a stacked PR, against the
->    base too), then report the conflicting files, the competing hunks, and the resolution you would
+>    (`git merge-tree --write-tree --name-only origin/<§0 Default branch> origin/<branch>`; on a
+>    stacked PR, against the base too), then report the conflicting files, the competing hunks, and the resolution you would
 >    propose and why. Never apply one the user has not approved.
-> 6. After any merge of main or of the base, conflicted or not: `bun run typecheck` again; audit any
->    removed `src/i18n/messages/**` key against `src/`; and if the branch renamed a directory, check
->    nothing main added was stranded at the old path.
+> 6. After any merge of the default branch or of the base, conflicted or not: §4 Typecheck again;
+>    audit any key removed from a message catalog (i18n JSON and the like) against the source that
+>    reads it; and if the branch renamed a directory, check nothing the default branch added was
+>    stranded at the old path.
 > 7. Push. Then reply to each thread and resolve it — including the ones where you pushed back rather
->    than changed code. Reply in the register `voice.md` and config §5 set: short, no thanks-for-the-
->    review preamble. Replies and resolves are GraphQL (`references/repo-facts.md`).
+>    than changed code. Reply in the register `voice.md` and config §5 "Messages to colleagues" set:
+>    short, no thanks-for-the-review preamble. Replies and resolves are GraphQL (`references/repo-facts.md`).
 > 8. If the fix materially changed behaviour or UI, update the PR description via **desk-pr**.
 >
 > **Never** merge, enable auto-merge, change a base branch, alter an assignee, request a review,
-> rerun CI, transition a Jira ticket, or force-push. Those are the parent's.
+> rerun CI, transition a ticket, or force-push. Those are the parent's.
 >
 > **Raise a question the moment you have it — do not save it for your return.** `SendMessage` to
 > `"main"`. It reaches the parent while you are still working, and the parent puts it to the user.
@@ -160,7 +168,8 @@ to two subagents, and never give two PRs that share a source file to subagents r
 
 ## Also worth delegating
 
-- **CI failure diagnosis** — read-only, returns the failing upstream job of the gate, the assertion,
+- **CI failure diagnosis** — read-only, returns the failing required check (or, for an aggregate
+  gate job, the failing upstream job), the assertion,
   whether it matches a known flake signature, and whether your own rerun or push cancelled it. Never
   lets it rerun anything.
 - **Park report gathering** — read-only, turns a park reason into something actionable.
@@ -168,6 +177,6 @@ to two subagents, and never give two PRs that share a source file to subagents r
 ## Never delegated
 
 Merging (including arming auto-merge), updating a PR that is next to merge, base-branch changes,
-assignee and re-review changes, CI reruns, Jira transitions, image uploads. Not because a subagent
+assignee and re-review changes, CI reruns, ticket transitions, image uploads. Not because a subagent
 would do them badly, but because they are irreversible or cancel something in flight, and must happen
 in one place, in a known order, against state re-derived seconds earlier.

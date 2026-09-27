@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Derives the full state of every open studia-web PR authored by the user in one GraphQL call,
-// classifies each into a lane, and writes ~/.desk-clearance/state.json. The traps live here,
-// not in prose.
+// Derives the full state of every open PR the user authored in this repo (config §0 GitHub repo) in
+// one GraphQL call, classifies each into a lane, and writes ~/.desk-clearance/<slug>/state.json. The
+// traps live here, not in prose.
 //
 //   node clearance-state.mjs derive [--no-git] [--author <h>] [--repo <path>] [--merge-bar approved|gate]
 //   node clearance-state.mjs render              re-render from disk
@@ -10,21 +10,20 @@
 //   node clearance-state.mjs corpus              every open human review comment, for theme mining
 //   node clearance-state.mjs json                the raw state file path
 //
+// Run it from inside the repo (any worktree): the repo, and so the config, come from the origin
+// remote via desk-env. DESK_CONFIG, DESK_GH_REPO and DESK_REPO_DIR override that, as for every desk
+// script; DESK_CLEARANCE_DIR overrides where state is written.
+//
 // Every failure is loud. Nothing here ever defaults to a clean state, or to someone's identity.
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { homedir, cpus, freemem, totalmem, loadavg, platform } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const exec = promisify(execFile)
-const OWNER = 'Sophos-Education'
-const NAME = 'studia-web'
-const DIR = join(homedir(), '.desk-clearance')
-const STATE = join(DIR, 'state.json')
-const PREV = join(DIR, 'state.prev.json')
-const CONFIG = process.env.DESK_CONFIG || join(homedir(), '.claude', 'desk-config.md')
 
 function die(msg) {
   console.error(`clearance-state: ${msg}`)
@@ -40,43 +39,99 @@ const argOf = (flag) => {
 }
 
 // ---- config ---------------------------------------------------------------------------------
-// Reads one row of a markdown table in desk-config.md by its first cell. `col` is the cell
-// index to return; -1 means the last cell (section 3's "Your setting"). TODO reads as unset.
-let configText = null
-function configRow(label, col = 1) {
-  if (configText === null) {
-    try { configText = readFileSync(CONFIG, 'utf8') } catch { configText = '' }
-  }
-  // Section 3 rows are keyed (`pr-merge-green`); other sections by field name. An exact key wins over
-  // a prefix, so `jira-close` never reads `jira-close-own-merged`.
-  const want = label.toLowerCase()
-  const cellValue = (cells) => {
-    const raw = cells[col < 0 ? cells.length + col : col] ?? ''
-    const value = raw.replace(/`/g, '').trim().split(/\s+[—-]\s+/)[0].trim()
-    return !value || /^todo\b/i.test(value) ? null : value
-  }
-  let prefix
-  for (const line of configText.split('\n')) {
-    if (!line.trim().startsWith('|')) continue
-    const cells = line.split('|').slice(1, -1).map((c) => c.trim())
-    if (cells.length < 2) continue
-    const first = cells[0].replace(/\*\*/g, '').replace(/`/g, '').toLowerCase()
-    if (first === want) return cellValue(cells)
-    if (prefix === undefined && first.startsWith(want)) prefix = cellValue(cells)
-  }
-  return prefix ?? null
+// Every repo fact comes from desk-env.mjs, which resolves this repo's config
+// (~/.config/desk/repos/<owner__name>/config.md). Installed at ~/.claude/desk/bin by install.sh;
+// DESK_ENV_MJS or DESK_HOME point elsewhere, and a source checkout of desk-skills finds its own copy.
+async function loadDeskEnv() {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    process.env.DESK_ENV_MJS,
+    process.env.DESK_HOME && join(process.env.DESK_HOME, 'bin', 'desk-env.mjs'),
+    join(homedir(), '.claude', 'desk', 'bin', 'desk-env.mjs'),
+    join(here, '..', '..', '..', 'desk', 'bin', 'desk-env.mjs'),
+  ].filter(Boolean)
+  for (const c of candidates) if (existsSync(c)) return import(pathToFileURL(c).href)
+  die(`desk-env.mjs not found (tried ${candidates.join(', ')}). Run install.sh from desk-skills.`)
 }
-const expandHome = (p) => (p && p.startsWith('~') ? join(homedir(), p.slice(1)) : p)
+const E = await loadDeskEnv()
+
+const CONFIG = E.configPathOrNull()
+const cmdName = process.argv[2] || 'derive'
+if (cmdName !== 'json' && (!CONFIG || !existsSync(CONFIG))) {
+  const r = E.currentRepo()
+  die(`no desk config for ${r.slug ?? 'this directory (not inside a repo with an origin remote)'} at ${CONFIG ?? '(none)'} - run /desk-setup in the repo first. Refusing to guess.`)
+}
+
+// Rows desk-env's CONFIG_ROWS does not (yet) name are read by section and row name, with the same
+// rules desk-env uses: the value column, the first backtick span, TODO reads as unset. configValue
+// is tried first so a row added to CONFIG_ROWS later is picked up without touching this file.
+function rawRow(section, rowName) {
+  let text = ''
+  try { text = readFileSync(CONFIG, 'utf8') } catch { return null }
+  const norm = (x) => x.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+  let sec = null
+  let header = null
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line)
+    if (h) { sec = h[1].toLowerCase(); header = null; continue }
+    if (sec !== section) continue
+    if (!line.startsWith('|')) { header = null; continue }
+    const cells = line.replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue
+    if (!header) { header = cells.map(norm); continue }
+    let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1
+    if (col < 0) col = 1
+    const keyCol = header.indexOf('key')
+    const id = norm(cells[keyCol >= 0 ? keyCol : 0] ?? '')
+    if (id !== norm(rowName)) continue
+    const cell = cells[col] ?? ''
+    const tick = /`([^`]*)`/.exec(cell)
+    const v = (tick ? tick[1] : cell).trim()
+    return !v || /^todo\b/i.test(v) ? null : v
+  }
+  return null
+}
+function cfg(id, section, rowName) {
+  try { return E.configValue(id) } catch { return rawRow(section, rowName) }
+}
+const isNone = (v) => /^none\b/i.test(String(v ?? '').trim())
+
+// ---- the repo -------------------------------------------------------------------------------
+// owner/name: the origin remote (desk-env), else config §0 GitHub repo. Never a default.
+function resolveGhRepo() {
+  let full
+  try { full = E.ghRepo() } catch (e) { die(e.message) }
+  const m = /^([^/\s]+)\/([^/\s]+)$/.exec(full || '')
+  if (!m) die(`GitHub repo "${full}" is not owner/name - check config §0 GitHub repo`)
+  return { owner: m[1], name: m[2], full }
+}
+const GH = resolveGhRepo()
+const SLUG = E.currentRepo().slug || GH.full.replace('/', '__')
+const DIR = E.expandHome(process.env.DESK_CLEARANCE_DIR || join(homedir(), '.desk-clearance', SLUG))
+const STATE = join(DIR, 'state.json')
+const PREV = join(DIR, 'state.prev.json')
+
+// The branch every PR should target: config §0 Default branch, else GitHub's own answer. Never an
+// assumed name.
+async function resolveDefaultBranch() {
+  const v = cfg('default-branch', '0', 'Default branch')
+  if (v) return { branch: v, source: 'config §0 Default branch' }
+  const b = (await gh(['repo', 'view', GH.full, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name'], { json: false })).trim()
+  if (!b) die(`cannot resolve the default branch: config §0 Default branch is unset and gh returned nothing for ${GH.full}`)
+  return { branch: b, source: 'gh repo view (config §0 Default branch unset - run /desk-setup)' }
+}
 
 // ---- identity -------------------------------------------------------------------------------
-// --author -> DESK_GH_HANDLE -> config section 1 "GitHub handle" -> `gh api user`. Never a
-// default: an empty or wrong handle turns "my PRs" into everyone's, and this script's whole
+// --author -> DESK_GITHUB_HANDLE / DESK_GH_HANDLE -> config §1 "GitHub handle" -> `gh api user`.
+// Never a default: an empty or wrong handle turns "my PRs" into everyone's, and this script's whole
 // ownership boundary rests on it.
 async function resolveAuthor() {
   const sources = [
     ['--author', argOf('--author')],
+    ['DESK_GITHUB_HANDLE', process.env.DESK_GITHUB_HANDLE],
     ['DESK_GH_HANDLE', process.env.DESK_GH_HANDLE],
-    [`${CONFIG} section 1 "GitHub handle"`, configRow('GitHub handle')],
+    [`${CONFIG} §1 "GitHub handle"`, cfg('github-handle', '1', 'GitHub handle')],
   ]
   for (const [src, v] of sources) {
     if (v && v.trim()) return validHandle(v.trim(), src)
@@ -85,7 +140,7 @@ async function resolveAuthor() {
     const { stdout } = await exec('gh', ['api', 'user', '--jq', '.login'])
     return validHandle(stdout.trim(), 'gh api user')
   } catch (e) {
-    die(`cannot resolve the PR author: no --author, no DESK_GH_HANDLE, no GitHub handle in ${CONFIG}, and gh api user failed (${(e.stderr || e.message).slice(0, 200)}). Run /desk-setup.`)
+    die(`cannot resolve the PR author: no --author, no DESK_GITHUB_HANDLE, no GitHub handle in ${CONFIG}, and gh api user failed (${(e.stderr || e.message).slice(0, 200)}). Run /desk-setup.`)
   }
 }
 function validHandle(h, src) {
@@ -93,41 +148,60 @@ function validHandle(h, src) {
   return h
 }
 
-// git behind-counts and ancestry need a checkout: --repo -> config section 2 "Primary repo root".
+// git behind-counts and ancestry need a checkout: --repo -> config §2 "Primary repo root".
 function resolveRepo() {
-  const v = argOf('--repo') || configRow('Primary repo root')
-  const p = expandHome(v)
-  if (!p) die(`no repo path: pass --repo <studia-web checkout>, set "Primary repo root" in ${CONFIG}, or use --no-git`)
-  if (!existsSync(join(p, '.git'))) die(`${p} is not a git checkout (from --repo or config section 2)`)
+  const v = argOf('--repo') || cfg('repo-root', '2', 'Primary repo root')
+  const p = E.expandHome(v)
+  if (!p) die(`no repo path: pass --repo <checkout of ${GH.full}>, set §2 "Primary repo root" in ${CONFIG}, or use --no-git`)
+  if (!existsSync(join(p, '.git'))) die(`${p} is not a git checkout (from --repo or config §2)`)
   return p
 }
 
-// Which bar a merge must clear, beyond the ruleset. Config section 3 `pr-merge-green`: `yes` or
+// §3 is an allowlist read by exact key through desk-env. desk-env reads an unset row as `no`, which
+// is right for a grant and WRONG for merge-feedback-first, where unset must mean the strict default.
+// So that one also checks the row is really there.
+const perm = (id) => E.permission(id)
+const rowIsSet = (key) => rawRow('3', key) != null
+
+// Which bar a merge must clear, beyond the platform's own rules. §3 `pr-merge-green`: `yes` or
 // `ask` means the green required checks are the bar; anything else, TODO included, means a formal
-// APPROVED review is required too and nothing is merged. The ruleset itself is never loosened.
+// APPROVED review is required too and nothing is merged. The platform's rules are never loosened.
 function resolveMergeBar() {
   const flag = argOf('--merge-bar')
   if (flag) {
     if (!['approved', 'gate'].includes(flag)) die('--merge-bar must be approved or gate')
     return { bar: flag, source: '--merge-bar' }
   }
-  const row = configRow('pr-merge-green', -1)?.toLowerCase()
-  return /^(yes|ask)\b/.test(row || '')
-    ? { bar: 'gate', source: 'config section 3 pr-merge-green' }
-    : { bar: 'approved', source: row ? 'config section 3 pr-merge-green' : 'config section 3 pr-merge-green unset - strict default' }
+  const p = perm('pr-merge-green')
+  return ['yes', 'ask'].includes(p)
+    ? { bar: 'gate', source: '§3 pr-merge-green' }
+    : { bar: 'approved', source: rowIsSet('pr-merge-green') ? '§3 pr-merge-green' : '§3 pr-merge-green unset - strict default' }
 }
 function mergePermission() {
-  const row = (configRow('pr-merge-green', -1) || '').toLowerCase()
-  return /^(yes|ask)\b/.exec(row)?.[1] ?? 'no'
+  const p = perm('pr-merge-green')
+  return ['yes', 'ask'].includes(p) ? p : 'no'
 }
-// Config section 3 `merge-feedback-first`: only an explicit `no` lets a PR merge with feedback
-// outstanding. TODO or missing is the strict default.
+// §3 `merge-feedback-first`: only an explicit `no` lets a PR merge with feedback outstanding. TODO
+// or missing is the strict default.
 function feedbackFirst() {
-  const row = (configRow('merge-feedback-first', -1) || '').toLowerCase()
-  return { required: !/^no\b/.test(row), source: row ? 'config section 3 merge-feedback-first' : 'config section 3 merge-feedback-first unset - strict default' }
+  const set = rowIsSet('merge-feedback-first')
+  const explicitNo = set && perm('merge-feedback-first') === 'no'
+  return { required: !explicitNo, source: set ? '§3 merge-feedback-first' : '§3 merge-feedback-first unset - strict default' }
 }
 
-const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'pullbot', 'dependabot'])
+// §4 Merge method: what `gh pr merge` and merge-async are given. Checked against what the ruleset
+// allows, when a ruleset says. Unset is reported, never guessed: the skill does not merge without it.
+function resolveMergeMethod(allowed) {
+  const raw = (cfg('merge-method', '4', 'Merge method') || '').toLowerCase()
+  const m = /^(squash|merge|rebase)\b/.exec(raw)?.[1] ?? null
+  const warn = m && allowed?.length && !allowed.includes(m)
+    ? `config §4 Merge method is ${m} but the ruleset allows only ${allowed.join(', ')} - re-run /desk-setup`
+    : null
+  if (m) return { method: m, source: 'config §4 Merge method', warn }
+  return { method: null, source: 'config §4 Merge method unset - run /desk-setup; nothing is merged until it is set', warn: null }
+}
+
+const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate'])
 const isBot = (a) =>
   !a || a.__typename === 'Bot' || /\[bot\]$/.test(a.login || '') || BOT_LOGINS.has(a.login || '')
 
@@ -139,19 +213,72 @@ async function gh(args, { json = true } = {}) {
     die(`gh ${args.slice(0, 2).join(' ')} failed: ${(e.stderr || e.message).slice(0, 400)}`)
   }
 }
+// A 404 is an answer ("no such protection"), anything else is a failure.
+async function ghMaybe404(args) {
+  try {
+    const { stdout } = await exec('gh', args, { maxBuffer: 16 * 1024 * 1024 })
+    return JSON.parse(stdout)
+  } catch (e) {
+    const err = `${e.stderr || ''} ${e.stdout || ''} ${e.message || ''}`
+    if (/\b404\b|Not Found/i.test(err)) return null
+    die(`gh ${args.slice(0, 2).join(' ')} failed: ${err.slice(0, 400)}`)
+  }
+}
 
-// The required contexts come from the ruleset, never from a name remembered here. Check names
-// change, and a stale name reads as "never green".
-async function requiredChecks() {
-  const rules = await gh(['api', `repos/${OWNER}/${NAME}/rules/branches/main`])
-  if (!Array.isArray(rules)) die('rules/branches/main did not return a list')
-  const names = rules
+// The required contexts come from the platform, never from a name remembered here or in config.
+// Check names change, and a stale name reads as "never green". Two places can require a check: a
+// ruleset (rules/branches/<b>, readable by anyone with read access) and classic branch protection
+// (the branch's own `protection` summary). The union is the bar. Config §4 Required checks is
+// compared against it and any drift is printed; the live answer wins.
+//
+// With nothing required anywhere, config §4 Required checks decides: `none` means every check that
+// reports on the PR must be green ("all" mode); unset or a list the platform does not enforce is a
+// disagreement to resolve by hand, never a clean state.
+async function requiredChecks(base) {
+  const rules = await gh(['api', `repos/${GH.full}/rules/branches/${encodeURIComponent(base)}`])
+  if (!Array.isArray(rules)) die(`rules/branches/${base} did not return a list`)
+  const fromRules = rules
     .filter((r) => r.type === 'required_status_checks')
     .flatMap((r) => r.parameters?.required_status_checks || [])
     .map((c) => c.context)
     .filter(Boolean)
-  if (!names.length) die('the main ruleset lists no required status check - verify by hand before trusting any "green"')
-  return names
+  const allowed = [...new Set(rules
+    .filter((r) => r.type === 'pull_request')
+    .flatMap((r) => r.parameters?.allowed_merge_methods || []))]
+  const branch = await ghMaybe404(['api', `repos/${GH.full}/branches/${encodeURIComponent(base)}`])
+  if (!branch) die(`the default branch ${base} does not exist on ${GH.full} - check config §0 Default branch`)
+  const bp = branch.protection?.required_status_checks
+  const fromProtection = [
+    ...(bp?.contexts || []),
+    ...((bp?.checks || []).map((c) => c.context)),
+  ].filter(Boolean)
+  const live = [...new Set([...fromRules, ...fromProtection])]
+
+  const cfgRaw = cfg('required-checks', '4', 'Required checks')
+  const cfgNames = cfgRaw && !isNone(cfgRaw)
+    ? cfgRaw.split(/\s*[,;]\s*/).map((s) => s.trim()).filter(Boolean)
+    : []
+  const sourceOf = [fromRules.length && 'ruleset', fromProtection.length && 'branch protection'].filter(Boolean).join(' + ')
+
+  if (live.length) {
+    const missing = cfgNames.filter((n) => !live.includes(n))
+    const extra = cfgNames.length ? live.filter((n) => !cfgNames.includes(n)) : []
+    const drift = !cfgRaw
+      ? 'config §4 Required checks is unset - run /desk-setup'
+      : isNone(cfgRaw)
+        ? `config §4 Required checks says none, but the ${sourceOf} requires some - re-run /desk-setup`
+        : missing.length || extra.length
+          ? `config §4 Required checks differs from the ${sourceOf} (config only: ${missing.join(', ') || '-'}; live only: ${extra.join(', ') || '-'}) - re-run /desk-setup`
+          : null
+    return { mode: 'named', names: live, source: sourceOf, drift, allowedMergeMethods: allowed }
+  }
+  if (cfgRaw && isNone(cfgRaw)) {
+    return { mode: 'all', names: [], source: 'config §4 Required checks none, and nothing on the platform requires one - every check on the PR must be green', drift: null, allowedMergeMethods: allowed }
+  }
+  if (cfgNames.length) {
+    die(`config §4 Required checks lists ${cfgNames.join(', ')}, but neither a ruleset nor branch protection on ${base} requires any check. Verify by hand and re-run /desk-setup before trusting any "green".`)
+  }
+  die(`nothing on ${base} requires a check and config §4 Required checks is unset - run /desk-setup (write none if every check on a PR is the bar). Refusing to guess.`)
 }
 
 const QUERY = `query($q:String!){
@@ -182,11 +309,13 @@ async function derive({ withGit }) {
   const AUTHOR = await resolveAuthor()
   const REPO = withGit ? resolveRepo() : null
   const mergeBar = resolveMergeBar()
-  const required = await requiredChecks()
+  const base = await resolveDefaultBranch()
+  const required = await requiredChecks(base.branch)
+  const mergeMethod = resolveMergeMethod(required.allowedMergeMethods)
 
   const data = await gh([
     'api', 'graphql',
-    '-F', `q=repo:${OWNER}/${NAME} is:pr is:open author:${AUTHOR}`,
+    '-F', `q=repo:${GH.full} is:pr is:open author:${AUTHOR}`,
     '-f', `query=${QUERY}`,
   ])
   if (data.errors?.length) die(`GraphQL errors: ${JSON.stringify(data.errors).slice(0, 400)}`)
@@ -199,14 +328,14 @@ async function derive({ withGit }) {
 
   // Open PRs by anyone, so a stacked base can be identified as someone else's PR.
   const allOpen = await gh([
-    'pr', 'list', '--repo', `${OWNER}/${NAME}`, '--state', 'open', '--limit', '500',
+    'pr', 'list', '--repo', GH.full, '--state', 'open', '--limit', '500',
     '--json', 'number,headRefName,author',
   ])
   const byHead = new Map(allOpen.map((p) => [p.headRefName, p]))
 
-  const prs = nodes.map((p) => classify(p, byHead, { AUTHOR, required, mergeBar }))
+  const prs = nodes.map((p) => classify(p, byHead, { AUTHOR, required, mergeBar, base: base.branch }))
 
-  if (withGit) await annotateGit(prs, REPO)
+  if (withGit) await annotateGit(prs, REPO, base.branch)
   await annotateRest(prs)
   overlaps(prs)
   await order(prs, withGit, REPO)
@@ -215,8 +344,8 @@ async function derive({ withGit }) {
   // Keep the last derive so a loop can ask what actually changed rather than re-reading a table.
   if (existsSync(STATE)) writeFileSync(PREV, readFileSync(STATE, 'utf8'))
   const out = {
-    derivedAt: new Date().toISOString(), repo: `${OWNER}/${NAME}`, author: AUTHOR,
-    required, mergeBar, mergePermission: mergePermission(), feedbackFirst: feedbackFirst(), prs,
+    derivedAt: new Date().toISOString(), repo: GH.full, author: AUTHOR, base,
+    required, mergeMethod, mergeBar, mergePermission: mergePermission(), feedbackFirst: feedbackFirst(), prs,
   }
   writeFileSync(STATE, JSON.stringify(out, null, 2))
   return out
@@ -252,7 +381,7 @@ function checkState(ctx, name) {
   return norm.find((s) => s !== 'SUCCESS')
 }
 
-function classify(p, byHead, { AUTHOR, required, mergeBar }) {
+function classify(p, byHead, { AUTHOR, required, mergeBar, base }) {
   const isHuman = (a) => a && !isBot(a) && a.login !== AUTHOR
   const head = p.commits?.nodes?.[0]?.commit
   if (!head) die(`#${p.number}: no head commit in response`)
@@ -285,18 +414,25 @@ function classify(p, byHead, { AUTHOR, required, mergeBar }) {
   const rollup = head.statusCheckRollup
   const ctx = rollup?.contexts?.nodes || []
   const contextsTruncated = !!rollup?.contexts?.pageInfo?.hasNextPage
-  const gates = Object.fromEntries(required.map((n) => [n, checkState(ctx, n)]))
+  // "named": the platform's required contexts, each asserted positively. "all" (config §4 Required
+  // checks `none`, nothing required on the platform): every context on the head is the bar, and a
+  // head with no checks at all is ABSENT - an empty set is never vacuously green.
+  const names = required.mode === 'all'
+    ? [...new Set(ctx.map((c) => c.name || c.context).filter(Boolean))]
+    : required.names
+  const gates = Object.fromEntries(names.map((n) => [n, checkState(ctx, n)]))
   const states = Object.values(gates)
-  const gate = states.every((s) => s === 'SUCCESS') ? 'SUCCESS'
+  const gate = !states.length ? 'ABSENT'
+    : states.every((s) => s === 'SUCCESS') ? 'SUCCESS'
     : states.includes('ABSENT') ? 'ABSENT'
     : states.includes('PENDING') ? 'PENDING'
     : states.find((s) => s !== 'SUCCESS')
   const advisoryFailing = ctx
-    .filter((c) => !required.includes(c.name || c.context))
+    .filter((c) => !names.includes(c.name || c.context))
     .filter((c) => ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT'].includes(c.conclusion || c.state))
     .map((c) => `${c.name || c.context}:${c.conclusion || c.state}`)
 
-  const baseIsMain = p.baseRefName === 'main'
+  const baseIsDefault = p.baseRefName === base
   const basePR = byHead.get(p.baseRefName) || null
   const baseForeign = basePR && basePR.author?.login !== AUTHOR ? basePR.author.login : null
 
@@ -304,7 +440,7 @@ function classify(p, byHead, { AUTHOR, required, mergeBar }) {
     number: p.number, title: p.title, url: p.url,
     head: head.oid, headAt: head.committedDate,
     isDraft: p.isDraft, base: p.baseRefName, headRef: p.headRefName,
-    baseIsMain, basePR: basePR?.number || null, baseForeignAuthor: baseForeign,
+    baseIsDefault, basePR: basePR?.number || null, baseForeignAuthor: baseForeign,
     mergeable: p.mergeable, mergeState: p.mergeStateStatus,
     autoMerge: !!p.autoMergeRequest,
     verdict, verdictBy, verdictAt: last?.submittedAt || null,
@@ -327,39 +463,45 @@ function classify(p, byHead, { AUTHOR, required, mergeBar }) {
   pr.waitingOn = pr.handedBack
     ? [...new Set([...pr.assignees.filter((a) => a !== AUTHOR), ...pr.pendingReviewers])].join(', ')
     : null
-  Object.assign(pr, lane(pr, mergeBar.bar))
+  Object.assign(pr, lane(pr, mergeBar.bar, base, required.mode))
   return pr
 }
 
-function lane(pr, bar) {
+function lane(pr, bar, base, mode) {
   const park = []
   if (pr.isDraft) park.push('draft')
-  if (!pr.baseIsMain) {
+  if (!pr.baseIsDefault) {
     park.push(
       pr.baseForeignAuthor
         ? `base is ${pr.baseForeignAuthor}'s PR #${pr.basePR} - not ours to land`
-        : `base ${pr.base} is not main (no ruleset, no required check, ships nothing)`,
+        : `base ${pr.base} is not ${base} (no required check guards it, and it ships nothing)`,
     )
   }
   if (pr.mergeable === 'CONFLICTING' || pr.mergeState === 'DIRTY') park.push('conflict')
-  if (pr.gate === 'ABSENT') park.push('a required check never reported on head - check refs/pull/N/merge exists')
+  if (pr.gate === 'ABSENT') {
+    park.push(mode === 'all'
+      ? 'no check reported on head at all - nothing proves it green; check refs/pull/N/merge exists'
+      : 'a required check never reported on head - check refs/pull/N/merge exists')
+  }
   if (!['SUCCESS', 'PENDING', 'ABSENT'].includes(pr.gate)) park.push(`required check ${pr.gate} - read it before any rerun`)
   if (pr.rdConflict) park.push('reviewDecision says CHANGES_REQUESTED but /reviews disagrees')
   if (pr.threadsTruncated) park.push('review thread list truncated - count by hand')
   if (pr.contextsTruncated) park.push('check list truncated - read required checks by hand')
 
-  // A standing CHANGES_REQUESTED is refused by the ruleset whatever the bar: only the reviewer
-  // clears it, by approving or dismissing.
+  // A standing CHANGES_REQUESTED parks whatever the bar: only the reviewer clears it, by approving
+  // or dismissing. Where the platform enforces it (config §4 Branch protection) the merge is refused
+  // anyway; where it does not, clearance refuses it itself - an unprotected repo is not a licence.
   if (pr.verdict === 'CHANGES_REQUESTED') {
-    park.push('CHANGES_REQUESTED standing - the ruleset refuses this, only the reviewer can clear it')
+    park.push('CHANGES_REQUESTED standing - never merged past, only the reviewer can clear it')
   } else if (bar === 'approved' && pr.verdict !== 'APPROVED') {
     // Strict bar. A COMMENTED review counts as a changes-request however warmly it reads: PRs
     // merged on that reading have had to be reverted, and nothing on the platform refuses it.
     park.push('no APPROVED review - a COMMENTED review is not an approval, work it and hand it back')
   }
-  // Deliberately NOT a park reason: an approval that predates the current head. The ruleset has
-  // dismiss_stale_reviews_on_push: false, and fixing that reviewer's own comments does not
-  // invalidate their approval - merge rather than re-request review.
+  // Deliberately NOT a park reason: an approval that predates the current head. Where the platform
+  // keeps approvals across pushes (config §4 Branch protection: no dismiss_stale_reviews_on_push),
+  // fixing that reviewer's own comments does not invalidate their approval - merge rather than
+  // re-request review. Where it dismisses them, GitHub has already turned the verdict back to NONE.
 
   const feedback = pr.feedback > 0
   const approved = pr.verdict === 'APPROVED'
@@ -369,7 +511,7 @@ function lane(pr, bar) {
   return { lane, mergeBlocked: park.length > 0, parkReasons: park, worksComments: feedback }
 }
 
-async function annotateGit(prs, REPO) {
+async function annotateGit(prs, REPO, base) {
   try {
     await exec('git', ['fetch', '--prune', 'origin'], { cwd: REPO })
   } catch {
@@ -379,7 +521,7 @@ async function annotateGit(prs, REPO) {
   await Promise.all(prs.map(async (pr) => {
     try {
       const { stdout } = await exec('git', [
-        'rev-list', '--count', `origin/${pr.headRef}..origin/main`,
+        'rev-list', '--count', `origin/${pr.headRef}..origin/${base}`,
       ], { cwd: REPO })
       pr.behind = Number(stdout.trim())
     } catch { pr.behind = null }
@@ -392,14 +534,14 @@ async function annotateRest(prs) {
   await Promise.all(prs.map(async (pr) => {
     try {
       const { stdout } = await exec('gh', [
-        'api', '--paginate', `repos/${OWNER}/${NAME}/pulls/${pr.number}/files?per_page=100`,
+        'api', '--paginate', `repos/${GH.full}/pulls/${pr.number}/files?per_page=100`,
         '--jq', '.[].filename',
       ], { maxBuffer: 16 * 1024 * 1024 })
       pr.files = stdout.trim().split('\n').filter(Boolean)
     } catch { pr.files = null }
     try {
       const { stdout } = await exec('gh', [
-        'api', `repos/${OWNER}/${NAME}/pulls/${pr.number}`, '--jq', '.stack // null',
+        'api', `repos/${GH.full}/pulls/${pr.number}`, '--jq', '.stack // null',
       ])
       const s = stdout.trim()
       pr.stacked = s && s !== 'null' ? JSON.parse(s) : false
@@ -412,9 +554,12 @@ async function annotateRest(prs) {
 // not make A and C conflict, and chaining through registry files (i18n messages, barrel index,
 // .env.example) merges the whole batch into one useless blob. Only the pair matters: before
 // merging X, anything in overlaps[X] that landed since X's checks ran means update and re-run.
+// Lockfiles are skipped (every dependency PR touches them and they regenerate), plus anything
+// matching DESK_CLEARANCE_OVERLAP_SKIP, a regex for this repo's generated or content-only paths.
+const LOCKFILE = /(^|\/)([^/]+\.lockb?|[^/]+-lock\.(json|ya?ml)|go\.sum)$/
+const EXTRA_SKIP = process.env.DESK_CLEARANCE_OVERLAP_SKIP ? new RegExp(process.env.DESK_CLEARANCE_OVERLAP_SKIP) : null
 function overlaps(prs) {
-  const skip = (f) =>
-    f.startsWith('apps/studia-docs/content/') || f.endsWith('.mdx') || f === 'bun.lock'
+  const skip = (f) => LOCKFILE.test(f) || (EXTRA_SKIP ? EXTRA_SKIP.test(f) : false)
   const src = new Map(prs.map((p) => [p.number, new Set(p.files.filter((f) => !skip(f)))]))
   for (const p of prs) {
     p.overlaps = prs
@@ -427,7 +572,7 @@ function overlaps(prs) {
 }
 
 // Merge order. A base relationship is NOT the only way one PR swallows another: a branch can
-// contain another PR's commits while being based on a third. Merging the container squashes the contained PR into main and GitHub auto-closes it,
+// contain another PR's commits while being based on a third. Merging the container lands the contained PR's code on the default branch and GitHub auto-closes it,
 // orphaning its unresolved threads on a closed PR. Detect by ancestry, not by base alone.
 async function order(prs, withGit, REPO) {
   for (const p of prs) p.contains = []
@@ -458,10 +603,18 @@ function render(state) {
     ? 'required checks green at head, no standing changes-request'
     : 'formal APPROVED review + required checks green at head'
   console.log(`# desk-clearance  ${state.derivedAt}  ${prs.length} open PRs by ${state.author}`)
-  console.log(`  required checks (from the ruleset): ${state.required.join(', ')}`)
+  const req = Array.isArray(state.required) ? { mode: 'named', names: state.required, source: 'ruleset' } : state.required
+  console.log(`  repo ${state.repo}  base ${state.base?.branch ?? '?'}  [${state.base?.source ?? 'state predates the field'}]`)
+  console.log(req.mode === 'all'
+    ? `  required checks: every check on the PR  [${req.source}]`
+    : `  required checks (live, from the ${req.source}): ${req.names.join(', ')}`)
+  if (req.drift) console.log(`  WARNING ${req.drift}`)
+  const mm = state.mergeMethod ?? { method: null, source: 'state predates the field' }
+  console.log(`  merge method: ${mm.method ?? 'UNSET - do not merge'}  [${mm.source}]`)
+  if (mm.warn) console.log(`  WARNING ${mm.warn}`)
   console.log(`  merge bar: ${barText}  [${state.mergeBar.source}]`)
   const ff = state.feedbackFirst ?? { required: true, source: 'state predates the row - strict default' }
-  console.log(`  merging permitted: ${state.mergePermission}  [config section 3 pr-merge-green]`)
+  console.log(`  merging permitted: ${state.mergePermission}  [§3 pr-merge-green]`)
   console.log(`  feedback before merging: ${ff.required ? 'required' : 'not required'}  [${ff.source}]\n`)
   console.log(`  ${pad('PR', 6)}${pad('LANE', 5)}${pad('VERDICT', 24)}${pad('T/RB/IC', 9)}${pad('GATE', 9)}${pad('BHND', 5)}${pad('MERGE', 10)}NOTE`)
   console.log('  ' + '-'.repeat(112))
@@ -494,9 +647,11 @@ function render(state) {
   // The merge list: nothing parked, no feedback left to work, required checks green at head,
   // and not waiting on another PR in the set.
   const ready = prs.filter((p) => !p.mergeBlocked && (!p.worksComments || state.feedbackFirst?.required === false) && p.gate === 'SUCCESS' && !p.blockedBy.length && !p.wouldOrphan.length)
-  const mergeLabel = ['yes', 'ask'].includes(state.mergePermission)
+  const mergeLabel = ['yes', 'ask'].includes(state.mergePermission) && state.mergeMethod?.method
     ? `MERGE NOW (serial lane${state.mergePermission === 'ask' ? ', ask first' : ''})`
-    : 'READY - merging not permitted by config, report only'
+    : ['yes', 'ask'].includes(state.mergePermission)
+      ? 'READY - §4 Merge method unset, report only'
+      : 'READY - merging not permitted by config, report only'
   console.log('  WORK COMMENTS (fan out)  ' + list(prs.filter((p) => p.worksComments).map((p) => p.number)))
   console.log(`  ${mergeLabel.padEnd(24)} ` + list(ready.map((p) => p.number)))
   console.log('  PARK MERGE ONLY          ' + list(prs.filter((p) => p.mergeBlocked).map((p) => p.number)))
@@ -531,7 +686,7 @@ function render(state) {
 }
 
 // What changed since the previous derive. This is the loop's wake-up test: act on a moved verdict
-// or new feedback, never on `mergeable`, which flaps to UNKNOWN every time main moves.
+// or new feedback, never on `mergeable`, which flaps to UNKNOWN every time the default branch moves.
 function diff() {
   if (!existsSync(PREV)) die('no previous state - run derive twice before diffing')
   const prev = JSON.parse(readFileSync(PREV, 'utf8'))
@@ -564,8 +719,8 @@ function diff() {
   console.log('  feedback or threads is worth a pass; a lone gate or head change usually is not.')
 }
 
-// What one subagent of each kind actually costs. Measured on this monorepo: BUILD is tsc + lint +
-// specs, BROWSER a Chromium upload/screenshot profile, LIGHT an agent told to skip the build.
+// What one subagent of each kind actually costs. Measured on one large TypeScript monorepo: BUILD is
+// the §4 Toolchain typecheck + lint + unit tests, BROWSER a Chromium upload/screenshot profile, LIGHT an agent told to skip the build.
 const AGENT_GB = { build: 3, browser: 1, light: 0.3 }
 
 // Memory a new process can actually get. Linux: MemAvailable (MemFree ignores reclaimable page
@@ -593,10 +748,10 @@ async function availableGB() {
 // On WSL2 the guest advertises whatever .wslconfig granted, but VmmemWSL cannot grow past what the
 // Windows host will give it, and the guest cannot see that limit. Sizing against the guest total
 // has OOMed the whole VM and killed five running agents. The ceiling is declared on
-// every platform: DESK_CLEARANCE_MEM_GB -> config section 3b "Memory ceiling for parallel work
+// every platform: DESK_CLEARANCE_MEM_GB -> config §3b "Memory ceiling for parallel work
 // (GB)" -> 16 on WSL, physical RAM minus 8 elsewhere.
 function isWsl() {
-  const row = configRow('Running on WSL?')
+  const row = cfg('wsl', '2', 'Running on WSL?')
   if (row) return row.toLowerCase() === 'yes'
   if (platform() !== 'linux') return false
   try { return /microsoft/i.test(readFileSync('/proc/version', 'utf8')) } catch { return false }
@@ -605,14 +760,14 @@ const WSL_DEFAULT_CEILING_GB = 16
 function ceilingGB() {
   const declared = Number(process.env.DESK_CLEARANCE_MEM_GB)
   if (Number.isFinite(declared) && declared > 0) return { gb: declared, source: 'DESK_CLEARANCE_MEM_GB' }
-  const cfg = Number((configRow('Memory ceiling for parallel work', -1) || '').match(/\d+(\.\d+)?/)?.[0])
-  if (Number.isFinite(cfg) && cfg > 0) return { gb: cfg, source: 'config section 3b memory ceiling for parallel work' }
-  if (isWsl()) return { gb: WSL_DEFAULT_CEILING_GB, source: 'WSL default ceiling - set it in config section 3b' }
-  return { gb: Math.max(2, totalmem() / 1024 ** 3 - 8), source: 'physical RAM minus 8G - set it in config section 3b' }
+  const fromCfg = Number((cfg('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)') || '').match(/\d+(\.\d+)?/)?.[0])
+  if (Number.isFinite(fromCfg) && fromCfg > 0) return { gb: fromCfg, source: 'config §3b Memory ceiling for parallel work (GB)' }
+  if (isWsl()) return { gb: WSL_DEFAULT_CEILING_GB, source: 'WSL default ceiling - set it in config §3b' }
+  return { gb: Math.max(2, totalmem() / 1024 ** 3 - 8), source: 'physical RAM minus 8G - set it in config §3b' }
 }
 
 // Recommend fan-out from what the box can do right now. ASSESS holds nothing local and scales
-// with the queue; IMPLEMENT is bounded by tsc + lint + specs per worktree.
+// with the queue; IMPLEMENT is bounded by typecheck + lint + tests per worktree.
 async function capacity(prs) {
   const cores = cpus().length
   const cap = ceilingGB()
@@ -625,19 +780,19 @@ async function capacity(prs) {
   const byCpu = Math.floor((cores - Math.ceil(load) - 2) / 2)
   const implement = Math.max(1, Math.min(byMem, byCpu, 12))
   const servers = Math.max(1, Math.min(Math.floor(budgetGB / 4), 4))
-  const configured = configRow('Subagents that may run without asking', -1)
+  const configured = cfg('subagents-without-asking', '3b', 'Subagents that may run without asking')
 
   const assess = prs ? prs.filter((p) => p.worksComments).length : 0
   console.log(`# capacity  ${cores} cores, ${usedGB.toFixed(1)}G used of ${cap.gb.toFixed(0)}G ceiling (${cap.source}), ${budgetGB.toFixed(1)}G to spend after a ${RESERVE_GB}G reserve, load ${load.toFixed(2)}\n`)
   console.log(`  ASSESS      ${assess || 'all of them'}   read-only, holds nothing local`)
-  console.log(`  IMPLEMENT   ${implement}   min(mem ${byMem}, cpu ${byCpu}) - each runs tsc + lint + specs in its own worktree`)
+  console.log(`  IMPLEMENT   ${implement}   min(mem ${byMem}, cpu ${byCpu}) - each runs typecheck + lint + tests in its own worktree`)
   console.log(`  DEV SERVERS ${servers}   for screenshots; skip any port already bound`)
   console.log(`  UPLOADS     1   one shared Chromium profile`)
-  console.log(`  MERGES      1   each fires a staging deploy and a db:migrate`)
-  console.log(`\n  config section 3b "Subagents that may run without asking": ${configured || 'unset'} - launching more than that needs the user's yes`)
+  console.log(`  MERGES      1   each moves the default branch, and deploys wherever §4 Staging deploys on merge`)
+  console.log(`\n  config §3b "Subagents that may run without asking": ${configured || 'unset'} - launching more than that needs the user's yes`)
   console.log(`\n  peak cost per agent   build ${AGENT_GB.build}G · browser ${AGENT_GB.browser}G · light ${AGENT_GB.light}G`)
   console.log(`  An agent that only replies, resolves or reports is LIGHT - say "do not run typecheck,`)
-  console.log(`  lint or the spec suite" in its brief. Count what is ALREADY running before launching more:`)
+  console.log(`  lint or the test suite" in its brief. Count what is ALREADY running before launching more:`)
   console.log(`  this figure is a snapshot and cannot see agents started seconds ago.`)
   if (implement < 3) console.log(`\n  NOTE box is busy - if that is another clearance or autopilot run, do not start a second.`)
 }
@@ -648,7 +803,7 @@ async function corpus() {
   const AUTHOR = await resolveAuthor()
   const isHuman = (a) => a && !isBot(a) && a.login !== AUTHOR
   const data = await gh(['api', 'graphql',
-    '-F', `q=repo:${OWNER}/${NAME} is:pr is:open author:${AUTHOR}`,
+    '-F', `q=repo:${GH.full} is:pr is:open author:${AUTHOR}`,
     '-f', `query=${QUERY}`])
   const nodes = data?.data?.search?.nodes
   if (!Array.isArray(nodes) || !nodes.length) die('empty corpus - treat as failure')
