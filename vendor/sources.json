@@ -579,6 +579,262 @@
       "license": null,
       "notes": "SKILL.md blob first appears at d65b69e0be (2026-01-23) but local AGENTS.md only matches e1f1e7b0 (2026-01-25, 'update build script'); at e1f1e7b all 59 local files (SKILL.md, AGENTS.md, 57 rules/*) are byte-identical. Upstream dir name is react-best-practices; installed under the name vercel-react-b",
       "tree_sha256": "14f2d93484fd85e230d935c813f31cec0d0521481d414d762a3919ec07bd39c2"
+    },
+    "energy-trader": {
+      "source": {
+        "type": "checkout",
+        "repo": "bigbenjoman/energy-trader",
+        "branch": "main"
+      },
+      "license": null,
+      "notes": "Your own skill. Split from bigbenjoman/forewatt .claude/skills/energy-trader with its history (2026-09-27)."
+    },
+    "property-expert": {
+      "source": {
+        "type": "checkout",
+        "repo": "bigbenjoman/property-expert",
+        "branch": "main"
+      },
+      "license": null,
+      "notes": "Your own skill. Split from bigbenjoman/yield-index .claude/skills/property-expert with its history (2026-09-27). Its library/ holds paid standards (RICS Red Book, IVS): keep the repo private."
+    },
+    "ai-seo": {
+      "source": {
+        "type": "github",
+        "repo": "coreyhaines31/marketingskills",
+        "path": "skills/ai-seo/"
+      },
+      "pin": {
+        "commit": "5b2c00077",
+        "date": "2026-09-04"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit is the one that introduced this blob; it is also upstream HEAD.",
+      "tree_sha256": "b4d1e5166dec8f275fdbf66faf0954f970f1f3e1cd1fb2eb6dc54331f67fc7a2"
+    },
+    "async-python-patterns": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/python-development/skills/async-python-patterns/"
+      },
+      "pin": {
+        "commit": "cbb60494b",
+        "date": "2026-01-30"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "117abc8ea16d8cb4cb0a5a2601379a67eb25458057c56aa5f1824edfc7907af5"
+    },
+    "data-quality-frameworks": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/data-engineering/skills/data-quality-frameworks/"
+      },
+      "pin": {
+        "commit": "56848874a",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "128bfee23608a0cd2964f8c4dda10d7952929f755de15e32c35aa9dab1943f1f"
+    },
+    "deployment-pipeline-design": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/cicd-automation/skills/deployment-pipeline-design/"
+      },
+      "pin": {
+        "commit": "56848874a",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (5 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "69771369281dad227c832fdfbe5458c0faba2bcd45b595bc8b468ca99e8de86c"
+    },
+    "e2e-testing-patterns": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/developer-essentials/skills/e2e-testing-patterns/"
+      },
+      "pin": {
+        "commit": "56848874a",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "95d09e71a9573f346699df36f5a326b2c344748207d6ec1fec7d52e3555d2cc1"
+    },
+    "fastapi-templates": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/api-scaffolding/skills/fastapi-templates/"
+      },
+      "pin": {
+        "commit": "f662524f9",
+        "date": "2026-01-15"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "1b27e4fa537a1998ade39a92bb3cecb972d8ae97abfe8bff6ee1560b2c444724"
+    },
+    "gcp-cloud-run": {
+      "source": {
+        "type": "github",
+        "repo": "sickn33/antigravity-awesome-skills",
+        "path": "skills/gcp-cloud-run/"
+      },
+      "pin": {
+        "commit": "b5675d55c",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13. Tree == lock skillFolderHash dd1788e; SKILL.md changed 9 times since (latest e69f4f0, 2026-09-05) - local behind. sickn33 is an aggregator repo; the skill may itself be copied from elsewhere, but it is the install source. Repo also has LICENSE-CONTENT.",
+      "tree_sha256": "92971ed1326f3dd90c789d8a1677456373f10ad709b78cfce2d0c9006ffbb56e"
+    },
+    "ml-pipeline-workflow": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/machine-learning-ops/skills/ml-pipeline-workflow/"
+      },
+      "pin": {
+        "commit": "56848874a",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (1 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "9e917654dd45800be59cc84bd2afb4b055cc5e5bd2f001b0868d948b7c23d406"
+    },
+    "neon-postgres": {
+      "source": {
+        "type": "github",
+        "repo": "neondatabase/agent-skills",
+        "path": "skills/neon-postgres/"
+      },
+      "pin": {
+        "commit": "ca7821ea5",
+        "date": "2026-09-04"
+      },
+      "license": "Apache-2.0",
+      "notes": "Listed in ~/skills-lock.json (source neondatabase/agent-skills). SKILL.md + all 3 references byte-identical at ca7821e; SKILL.md changed 4 times since (latest dd290a9, 2026-09-23) - local behind.",
+      "tree_sha256": "7ea8b7b3e6d9eb55e849ba05287b6d965c4ab512d9cfebca9566fed160e81d9d"
+    },
+    "openapi-spec-generation": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/documentation-generation/skills/openapi-spec-generation/"
+      },
+      "pin": {
+        "commit": "56848874a",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (4 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "75d631036b75eef917f4f5aad9b3f8fd253ccedbc218d2e58a7cb928a5981ebf"
+    },
+    "programmatic-seo": {
+      "source": {
+        "type": "github",
+        "repo": "coreyhaines31/marketingskills",
+        "path": "skills/programmatic-seo/"
+      },
+      "pin": {
+        "commit": "30f9b9a72",
+        "date": "2026-05-13"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
+      "tree_sha256": "cda32945eb694cee1576dc380abd6529e486080f46192ab57b6f2de2816dc322"
+    },
+    "python-observability": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/python-development/skills/python-observability/"
+      },
+      "pin": {
+        "commit": "cbb60494b",
+        "date": "2026-01-30"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (1 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "21fb70c3d3abaa8821c2e048b52cfba0cd8bba9f379fc3a6def28468fbeaf0e8"
+    },
+    "react-state-management": {
+      "source": {
+        "type": "github",
+        "repo": "wshobson/agents",
+        "path": "plugins/frontend-mobile-development/skills/react-state-management/"
+      },
+      "pin": {
+        "commit": "56848874a",
+        "date": "2026-01-19"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
+      "tree_sha256": "2a693f66ffba9c7693488a38a12dfac5d1a05b838bcc0b7dcb9659887ccdf3e1"
+    },
+    "schema": {
+      "source": {
+        "type": "github",
+        "repo": "coreyhaines31/marketingskills",
+        "path": "skills/schema/"
+      },
+      "pin": {
+        "commit": "30f9b9a72",
+        "date": "2026-05-13"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Upstream renamed skills/schema-markup -> skills/schema in 30f9b9a. Commit shown is when this exact SKILL.md was introduced; un",
+      "tree_sha256": "178e72caadb788515afb2c9995051bbb55cef54d0020cb315d793174201afd59"
+    },
+    "site-architecture": {
+      "source": {
+        "type": "github",
+        "repo": "coreyhaines31/marketingskills",
+        "path": "skills/site-architecture/"
+      },
+      "pin": {
+        "commit": "30f9b9a72",
+        "date": "2026-05-13"
+      },
+      "license": "MIT",
+      "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
+      "tree_sha256": "1407e9fcdde2ef2f1347c0b803e9ad8ee402f880704ecee0274bfdf54264330e"
+    },
+    "supabase-postgres-best-practices": {
+      "source": {
+        "type": "github",
+        "repo": "supabase/agent-skills",
+        "path": "skills/supabase-postgres-best-practices/"
+      },
+      "pin": {
+        "commit": "9b236f3eb",
+        "date": "2026-02-10"
+      },
+      "license": "MIT",
+      "notes": "Folder tree at 9b236f3 == lock skillFolderHash 3285697. SKILL.md blob first appeared at a3b8151 (2026-01-27) but references differed then. Local CLAUDE.md is a materialised copy of an upstream symlink to AGENTS.md (content identical); installer omitted README.md and references/_*.md. SKILL.md change",
+      "tree_sha256": "ff617448a99c3ec541c680cf5f2a36f7d9dde4d1cc6b0d54567895631bb72a5c"
+    },
+    "web-design-guidelines": {
+      "source": {
+        "type": "github",
+        "repo": "vercel-labs/agent-skills",
+        "path": "skills/web-design-guidelines/"
+      },
+      "pin": {
+        "commit": "ba4693888",
+        "date": "2026-01-16"
+      },
+      "license": null,
+      "notes": "Installed via `npx skills` 2026-02-04. Tree == lock hash 3116f3e; unchanged at upstream HEAD. Repo has no LICENSE file (GitHub reports none). The SKILL.md fetches its guideline text from a URL at runtime, so content can change without a repo commit.",
+      "tree_sha256": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
     }
   }
 }

@@ -14,6 +14,9 @@ Sources (vendor/sources.json):
   github  {repo, path}                 newest commit touching <path> vs pin.commit (via `gh`)
   drive   {folder_id, file_name, ...}  the public folder's file list vs pin.drive_modified and file name;
                                        a changed zip is downloaded and its sha256 compared with the pin
+  checkout {repo, branch}              your own skills: ~/.agents/skills/<name> IS a git clone of the repo
+                                       (no copy in vendor/); outdated = commits on origin/<branch> not yet
+                                       pulled; upgrade = `git pull --ff-only` after showing them
 
 `upgrade` only changes files inside vendor/ (review them with `git diff`); installing them is
 install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify`, which only reads.
@@ -190,8 +193,31 @@ def drive_extract(zip_bytes, src, dest):
 
 
 # ---- commands ----------------------------------------------------------------------------------
+def checkout_dir(name):
+    return os.path.join(INSTALLED, name)
+
+
+def git(d, *args):
+    r = subprocess.run(["git", "-C", d, *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:300])
+    return r.stdout.strip()
+
+
 def check_one(name, entry):
-    src, pin = entry["source"], entry["pin"]
+    src, pin = entry["source"], entry.get("pin", {})
+    if src["type"] == "checkout":
+        d = checkout_dir(name)
+        if not os.path.isdir(os.path.join(d, ".git")):
+            raise RuntimeError(f"~/.agents/skills/{name} is not a clone of {src['repo']} (run ./install.sh)")
+        branch = src.get("branch", "main")
+        git(d, "fetch", "-q", "origin", branch)
+        new = git(d, "log", "--format=%h %ad %s", "--date=short", f"HEAD..origin/{branch}").splitlines()
+        dirty = git(d, "status", "--porcelain")
+        head = git(d, "log", "-1", "--format=%h %ad", "--date=short")
+        return {"name": name, "outdated": bool(new), "pinned": f"{head} (local checkout{', UNCOMMITTED CHANGES' if dirty else ''})",
+                "latest": "; ".join(new[:5]) + (" …" if len(new) > 5 else ""), "behind": len(new),
+                "source": f"checkout:{src['repo']}"}
     if src["type"] == "github":
         latest = github_latest(src)
         behind = github_count_since(src, pin["commit"])
@@ -216,9 +242,10 @@ def check_one(name, entry):
 
 def cmd_list(data):
     for name, e in sorted(data["skills"].items()):
-        s, p = e["source"], e["pin"]
-        where = f"{s['repo']}/{s['path']}" if s["type"] == "github" else f"Drive {s['file_name']} ({s.get('publisher', '')})"
-        ver = p.get("commit") or p.get("version")
+        s, p = e["source"], e.get("pin", {})
+        where = (f"{s['repo']}/{s['path']}" if s["type"] == "github" else s["repo"] if s["type"] == "checkout"
+                 else f"Drive {s['file_name']} ({s.get('publisher', '')})")
+        ver = p.get("commit") or p.get("version") or f"git checkout ({s.get('branch', 'main')})"
         print(f"{name:22} {s['type']:7} {where}  @ {ver}")
 
 
@@ -260,7 +287,13 @@ def cmd_upgrade(data, names):
         if name not in data["skills"]:
             die(f"{name} is not in vendor/sources.json (see `skills-upstream list`)")
         e = data["skills"][name]
-        src, pin = e["source"], e["pin"]
+        src, pin = e["source"], e.get("pin", {})
+        if src["type"] == "checkout":
+            d = checkout_dir(name)
+            before = git(d, "rev-parse", "--short", "HEAD")
+            print(git(d, "pull", "--ff-only", "-q", "origin", src.get("branch", "main")) or f"{name}: pulled")
+            print(f"{name}: {before} -> {git(d, 'rev-parse', '--short', 'HEAD')} (git checkout; nothing to commit in desk-skills)")
+            continue
         tmp = tempfile.mkdtemp(prefix=f"skills-upstream-{name}-")
         try:
             if src["type"] == "github":
@@ -370,6 +403,18 @@ def cmd_plugins(as_json=False):
 def cmd_verify(data):
     bad = 0
     for name, e in sorted(data["skills"].items()):
+        if e["source"]["type"] == "checkout":
+            d = checkout_dir(name)
+            try:
+                url = git(d, "remote", "get-url", "origin")
+                ok = e["source"]["repo"].lower() in url.lower()
+                dirty = git(d, "status", "--porcelain")
+                print(("ok       " if ok and not dirty else "CHANGED  ") + f"{name} (git checkout of {e['source']['repo']}{'' if ok else ', WRONG REMOTE ' + url}{', has uncommitted changes' if dirty else ''})")
+                bad |= int(not ok or bool(dirty))
+            except RuntimeError:
+                print(f"NOT INSTALLED  ~/.agents/skills/{name} (run ./install.sh)")
+                bad = 1
+            continue
         v = os.path.join(VENDOR, name)
         if not os.path.isdir(v):
             print(f"MISSING  vendor/{name}")
@@ -411,8 +456,9 @@ def main(argv):
     if cmd == "plugins":
         return cmd_plugins("--json" in rest)
     if cmd == "rehash":
-        for name in data["skills"]:
-            data["skills"][name]["tree_sha256"] = tree_sha256(os.path.join(VENDOR, name))
+        for name, e in data["skills"].items():
+            if e["source"]["type"] != "checkout":
+                e["tree_sha256"] = tree_sha256(os.path.join(VENDOR, name))
         save(data)
         print(f"recorded {len(data['skills'])} tree hashes")
         return 0

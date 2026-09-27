@@ -324,6 +324,41 @@ for kind in agents commands; do
 done
 
 # ---------------------------------------------------------------------------------------------
+section "Your own skills  -> git clones in ~/.agents/skills, linked into ~/.claude/skills"
+
+# vendor/sources.json entries of type "checkout" are skills you own: the one real copy is a git clone
+# of that skill's repo (no copy in vendor/). This clones what is missing and never pulls; pulling is
+# /desk-update's job, after showing what is incoming. A plain folder in the way is moved to the backup.
+checkouts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("\n".join(f"{n}\t{e['"'"'source'"'"']['"'"'repo'"'"']}" for n,e in d["skills"].items() if e["source"]["type"]=="checkout"))' "$SRC/vendor/sources.json" 2>/dev/null || true)"
+while IFS="$(printf '\t')" read -r name repo; do
+  [ -n "$name" ] || continue
+  dest="$AGENTS/$name"
+  if [ -d "$dest/.git" ] && git -C "$dest" remote get-url origin 2>/dev/null | grep -qi "$repo"; then
+    ok "$name (clone of $repo; /desk-update pulls it)"
+  else
+    if [ -e "$dest" ]; then
+      mkdir -p "$BACKUP/.agents/skills"; mv "$dest" "$BACKUP/.agents/skills/$name"
+      note "~/.agents/skills/$name was not a clone of $repo; moved to $BACKUP/.agents/skills/"
+      wrote "moved    ~/.agents/skills/$name -> $BACKUP/.agents/skills/$name"
+    fi
+    if out="$(gh repo clone "$repo" "$dest" -- -q 2>&1)"; then ok "$name cloned from $repo"; wrote "clone    ~/.agents/skills/$name <- $repo"
+    else warn "could not clone $repo (gh auth? repo access?)"; show_err "$out"; continue; fi
+  fi
+  if [ "$LINK_MODE" = each ]; then
+    link="$SKILLS_LINK/$name"
+    if [ "$(resolved "$link")" != "$(resolved "$dest")" ]; then
+      if [ -e "$link" ] && [ ! -L "$link" ]; then
+        mkdir -p "$BACKUP/.claude/skills"; mv "$link" "$BACKUP/.claude/skills/$name"
+        wrote "moved    ~/.claude/skills/$name (a real directory) -> $BACKUP/.claude/skills/$name"
+      fi
+      ln -sfn "$dest" "$link"
+    fi
+  fi
+done <<EOF
+$checkouts
+EOF
+
+# ---------------------------------------------------------------------------------------------
 section "Autopilot and clearance tooling  -> ~/.claude/desk/bin"
 
 if [ -d "$SRC/desk/bin" ]; then
