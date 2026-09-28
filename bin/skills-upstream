@@ -5,9 +5,15 @@
   skills-upstream outdated [--json]    compare each pin with its source; exit 10 if any is outdated
   skills-upstream upgrade <name>...    pull the newest upstream into vendor/<name> and update the pin
   skills-upstream upgrade --all        ...for every outdated skill
-  skills-upstream verify               vendor/ matches sources.json, and ~/.agents/skills matches vendor/
+  skills-upstream verify               vendor/ matches sources.json, ~/.agents/skills matches vendor/, and links
+  skills-upstream links                every skill install.sh installs is reachable as ~/.claude/skills/<name>
+                                       and lands on the installed copy;
+                                       exit 1 if any is not, with the one-line fix for each
   skills-upstream plugins [--json]     installed Claude Code plugins vs the version their marketplace pins
                                        (run `claude plugin marketplace update` first); exit 10 if any is behind
+  skills-upstream is-clone-of <dir> <owner/repo>
+                                       exit 0 if <dir> is a git clone whose origin IS github.com/<owner/repo>,
+                                       1 if not; install.sh uses it, so both agree
   skills-upstream rehash               record each vendor/<name> tree hash in sources.json (after a hand edit)
 
 Sources (vendor/sources.json):
@@ -19,7 +25,8 @@ Sources (vendor/sources.json):
                                        pulled; upgrade = `git pull --ff-only` after showing them
 
 `upgrade` only changes files inside vendor/ (review them with `git diff`); installing them is
-install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify`, which only reads.
+install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify` and `links`, which only
+read.
 Last successful `outdated` run is stamped in ~/.claude/desk/skills-upstream.last.
 """
 
@@ -41,6 +48,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 VENDOR = os.path.join(ROOT, "vendor")
 SOURCES = os.path.join(VENDOR, "sources.json")
 INSTALLED = os.path.expanduser("~/.agents/skills")
+CLAUDE_SKILLS = os.path.expanduser("~/.claude/skills")
 STAMP = os.path.expanduser("~/.claude/desk/skills-upstream.last")
 UA = {"User-Agent": "Mozilla/5.0 (desk-skills skills-upstream)"}
 
@@ -410,18 +418,24 @@ def cmd_plugins(as_json=False):
 
 def cmd_verify(data):
     bad = 0
+    missing = set()   # origins reported NOT INSTALLED here, so cmd_links does not repeat them
     for name, e in sorted(data["skills"].items()):
         if e["source"]["type"] == "checkout":
             d = checkout_dir(name, e)
             try:
-                url = git(d, "remote", "get-url", "origin")
-                ok = e["source"]["repo"].lower() in url.lower()
-                dirty = git(d, "status", "--porcelain")
-                print(("ok       " if ok and not dirty else "CHANGED  ") + f"{name} (git checkout of {e['source']['repo']}{'' if ok else ', WRONG REMOTE ' + url}{', has uncommitted changes' if dirty else ''})")
-                bad |= int(not ok or bool(dirty))
-            except RuntimeError:
-                print(f"NOT INSTALLED  ~/.agents/skills/{name} (run ./install.sh)")
-                bad = 1
+                url = origin_url(d)
+                if url is None:
+                    print(f"NOT INSTALLED  {tilde(d)} (run ./install.sh)")
+                else:
+                    ok = same_repo(url, e["source"]["repo"])
+                    dirty = git(d, "status", "--porcelain")
+                    print(("ok       " if ok and not dirty else "CHANGED  ") + f"{name} (git checkout of {e['source']['repo']}{'' if ok else ', WRONG REMOTE ' + url}{', has uncommitted changes' if dirty else ''})")
+                    bad |= int(not ok or bool(dirty))
+                    continue
+            except (Unverified, RuntimeError) as ex:
+                print(f"UNVERIFIED  {tilde(d)}: git could not read it ({str(ex).splitlines()[0] if str(ex) else ex})")
+            missing.add(name)   # links counts it but does not report it twice
+            bad = 1
             continue
         v = os.path.join(VENDOR, name)
         if not os.path.isdir(v):
@@ -435,21 +449,251 @@ def cmd_verify(data):
         inst = os.path.join(INSTALLED, name)
         if not os.path.isdir(inst):
             print(f"NOT INSTALLED  ~/.agents/skills/{name} (run ./install.sh)")
+            missing.add(name)
             bad = 1
         elif tree_sha256(inst) != vh:
             print(f"DRIFTED  ~/.agents/skills/{name} differs from vendor/{name} (run ./install.sh)")
             bad = 1
         else:
             print(f"ok       {name}")
+    print()
+    bad |= cmd_links(data, missing)
     return bad
+
+
+def expected_skills(data):
+    """Every skill install.sh puts in ~/.agents/skills, in the order it installs them: desk's own
+    skills/desk-*, every vendor/<name> folder (dot-folders skipped, as the installer's glob skips
+    them), then the checkout entries (one per listed sub-skill, named by its basename, when the entry
+    has `subskills`). Each is (name, origin, kind, checkout): origin is the sources.json key or folder
+    it came from; checkout is None, or for a checkout entry {repo, branch, clone, sub, path}, where
+    path is the folder ~/.agents/skills/<name> must resolve to: the sub-skill's folder in the clone,
+    or for a single-skill checkout the clone itself (sub None)."""
+    out = []
+    for folder, kind in ((os.path.join(ROOT, "skills"), "desk"), (VENDOR, "vendor")):
+        for d in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+            if d.startswith(".") or not os.path.isdir(os.path.join(folder, d)):
+                continue
+            if kind == "vendor" or d.startswith("desk-"):
+                out.append((d, d, kind, None))
+    for name, e in sorted(data["skills"].items()):
+        src = e["source"]
+        if src["type"] != "checkout":
+            continue
+        subs = [s.rstrip("/") for s in src.get("subskills") or []]
+        co = {"repo": src["repo"], "branch": src.get("branch", "main"),
+              "clone": checkout_dir(name, e)}
+        out += ([(os.path.basename(s), name, f"checkout {name}", {**co, "sub": s, "path": os.path.join(co["clone"], s)})
+                 for s in subs]
+                or [(name, name, f"checkout {name}", {**co, "sub": None, "path": co["clone"]})])
+    return out
+
+
+def tilde(path):
+    """~/... for a path under HOME, checked against HOME's real path too (macOS /var -> /private/var)."""
+    for home in (os.path.expanduser("~"), os.path.realpath(os.path.expanduser("~"))):
+        if path == home or path.startswith(home + os.sep):
+            return "~" + path[len(home):]
+    return path
+
+
+def agents_side(name, kind, co, inst):
+    """What is wrong with ~/.agents/skills/<name> itself, as the lines to print, or None. For a
+    checkout it must be the clone (a single skill) or resolve into it (a sub-skill), as install.sh's
+    link_skill leaves it: any other folder with a SKILL.md would pass a SKILL.md test while Claude Code
+    loads the wrong copy. Local git only; never fetches."""
+    if co and co["sub"] and os.path.isdir(co["clone"]) and not os.path.isfile(os.path.join(co["path"], "SKILL.md")):
+        ref = f"origin/{co['branch']}"
+        upstream_has = subprocess.run(["git", "-C", co["clone"], "cat-file", "-e", f"{ref}:{co['sub']}/SKILL.md"],
+                                      capture_output=True).returncode == 0
+        origin = kind.split(" ", 1)[1]
+        lines = [f"NOT IN CLONE  {co['sub']} is missing from your local clone {tilde(co['clone'])} ({kind})"]
+        if upstream_has:
+            lines += [f"         it is in {ref} as last fetched; the clone was never pulled (install.sh never pulls)",
+                      f"         fix: skills-upstream upgrade {origin}"]
+        else:
+            lines += [f"         fix: skills-upstream upgrade {origin} (it fetches and pulls); if it is still missing,",
+                      f"         it is gone from {co['repo']}: remove it from `subskills` for {origin} in vendor/sources.json"]
+        return lines
+    if not os.path.isfile(os.path.join(inst, "SKILL.md")):
+        return [f"NOT INSTALLED  ~/.agents/skills/{name} has no SKILL.md ({kind})", "         fix: run ./install.sh"]
+    if co and co["sub"] and os.path.realpath(inst) != os.path.realpath(co["path"]):
+        where = f"resolves to {tilde(os.path.realpath(inst))}" if os.path.islink(inst) else "is a real folder"
+        return [f"WRONG COPY  ~/.agents/skills/{name} {where}, not {tilde(co['path'])} in the {co['repo']} clone ({kind})",
+                f"         fix: ln -sfn {tilde(co['path'])} ~/.agents/skills/{name}" if os.path.islink(inst)
+                else "         fix: run ./install.sh (it moves that aside to a backup, then links)"]
+    if co and not co["sub"]:
+        try:
+            clone = is_clone_of(inst, co["repo"])
+        except Unverified as ex:
+            return [f"UNVERIFIED  ~/.agents/skills/{name}: git could not read its origin ({ex}) ({kind})",
+                    f"         check it by hand: git -C ~/.agents/skills/{name} remote get-url origin"]
+    if co and not co["sub"] and not clone:
+        return [f"WRONG COPY  ~/.agents/skills/{name} is not a git clone of {co['repo']} ({kind})",
+                f"         fix: run ./install.sh (it moves that aside to a backup, then clones {co['repo']})"]
+    return None
+
+
+def origin_slug(url):
+    """(host, owner/repo) from a git remote URL, lower-cased (GitHub names are case-insensitive), or
+    None. Takes https://[user[:token]@]host[:port]/o/r[.git][/], ssh://[user@]host[:port]/o/r[.git]
+    and scp-style [user@]host:o/r[.git]; a path of anything but exactly two parts is None, so
+    o/r-fork, a/o/r and a local path never pass as o/r."""
+    u = url.strip()
+    m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:@]+)(?::\d*)?/(.*)$", u, re.I) \
+        or re.match(r"^(?:[^@/:]+@)?([^/:@]+):(?!/)(.*)$", u)
+    if not m:
+        return None
+    host, path = m.group(1), m.group(2).strip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    parts = path.split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return host.lower(), path.lower()
+
+
+def same_repo(url, repo):
+    """The ONE remote test, used by links, verify and (via `is-clone-of`) install.sh: the origin
+    names exactly github.com/<repo>. Only github.com, because install.sh clones a missing or wrong
+    checkout with `gh repo clone owner/repo`; see unsupported_hosts()."""
+    return origin_slug(url) == ("github.com", repo.strip().strip("/").lower())
+
+
+def unsupported_hosts(data):
+    """Error lines for any checkout that records a source.host. install.sh can only clone from
+    github.com, so honouring another host here would let install.sh replace a valid clone with a
+    GitHub one that links then rejects."""
+    return [f"ERROR    {n}: source.host is not supported; checkouts are cloned from github.com with gh"
+            for n, e in sorted(data["skills"].items()) if e["source"].get("host")]
+
+
+class Unverified(Exception):
+    """git could not say what a folder's origin is (dubious ownership, an unreadable or corrupt
+    config): neither a clone nor a non-clone, so nothing may be moved aside on its account."""
+
+
+def origin_url(d):
+    """The origin URL of the clone at d, or None when d is CONFIRMED not a clone: no .git of its own
+    (so a parent repo never answers for it), or no origin remote (`git remote get-url` exits 2,
+    "No such remote"). Any other git failure raises Unverified with git's first line. No fetch."""
+    if not os.path.isdir(os.path.join(d, ".git")):
+        return None
+    r = subprocess.run(["git", "-C", d, "remote", "get-url", "origin"], capture_output=True, text=True)
+    if r.returncode == 0:
+        return r.stdout.strip()
+    if r.returncode == 2:
+        return None
+    raise Unverified(((r.stderr or r.stdout).strip().splitlines() or [f"git exit {r.returncode}"])[0])
+
+
+def is_clone_of(d, repo):
+    """install.sh's own test that a checkout folder is the clone it wants: an origin that is exactly
+    the repo. True or False only when git can say; raises Unverified when it cannot."""
+    url = origin_url(d)
+    return url is not None and same_repo(url, repo)
+
+
+def cmd_links(data, already=()):
+    """Claude Code loads a skill only from ~/.claude/skills/<name>/SKILL.md, so a skill installed in
+    ~/.agents/skills with no link there is "Unknown skill" (seen 2026-09-28: three of 68, cause never
+    reproduced), and one whose link lands on some other copy runs that copy, stale, while everything
+    looks fine. This finds both, whatever caused them. Same rules as install.sh: in LINK_MODE=each,
+    ~/.claude/skills/<name> must resolve to the same folder as ~/.agents/skills/<name> (the test its
+    linking loop uses); when ~/.claude/skills itself resolves to ~/.agents/skills there are no per-skill
+    links, so a gap there means the skill is not installed. `already` holds origins the caller has
+    reported as not installed, counted here but not printed twice. Only reads."""
+    skills = expected_skills(data)
+    errors = unsupported_hosts(data)
+    for line in errors:
+        print(line)
+    agents = os.path.realpath(INSTALLED) if os.path.isdir(INSTALLED) else None
+    if not os.path.isdir(CLAUDE_SKILLS):
+        if os.path.islink(CLAUDE_SKILLS):
+            print("UNLINKED ~/.claude/skills is a broken link, so no skill is reachable")
+            print("         fix: repair or remove ~/.claude/skills, then run ./install.sh")
+        elif not os.path.lexists(CLAUDE_SKILLS):
+            print("UNLINKED ~/.claude/skills is not created yet, so no skill is reachable")
+            print("         fix: run ./install.sh (it creates it)")
+        else:
+            print("UNLINKED ~/.claude/skills is a file, not a directory, so no skill is reachable")
+            print("         fix: move it aside, then run ./install.sh")
+        print(f"{len(skills)} skills: 0 reachable from ~/.claude/skills, {len(skills)} not")
+        return 1
+    same = os.path.realpath(CLAUDE_SKILLS) == agents
+    bad = 0
+    clones = {}   # origin -> "ok", "wrong" or "unverified" for its multi-skill clone, checked once each
+    for name, origin, kind, co in skills:
+        link, inst = os.path.join(CLAUDE_SKILLS, name), os.path.join(INSTALLED, name)
+        # A multi-skill checkout's aliases are only as good as the clone they point into: a stale copied
+        # tree or another repo's clone would pass every per-alias test. Reported once per checkout.
+        if co and co["sub"] and os.path.isdir(co["clone"]):
+            if origin not in clones:
+                try:
+                    clones[origin] = "ok" if is_clone_of(co["clone"], co["repo"]) else "wrong"
+                except Unverified as ex:
+                    clones[origin] = "unverified"
+                    if origin not in already:
+                        print(f"UNVERIFIED  {tilde(co['clone'])}: git could not read its origin ({ex}) ({kind}; "
+                              f"none of its sub-skills counts as reachable)")
+                        print(f"         check it by hand: git -C {tilde(co['clone'])} remote get-url origin")
+                if clones[origin] == "wrong" and origin not in already:
+                    print(f"WRONG COPY  {tilde(co['clone'])} is not a git clone of {co['repo']} ({kind}; "
+                          f"none of its sub-skills counts as reachable)")
+                    print(f"         fix: run ./install.sh (it moves that aside to a backup, then clones {co['repo']})")
+            if clones[origin] != "ok":
+                bad += 1
+                continue
+        problem = agents_side(name, kind, co, inst)
+        if problem:
+            bad += 1
+            if origin not in already:
+                print("\n".join(problem))
+            continue
+        if same:
+            continue   # ~/.claude/skills/<name> IS ~/.agents/skills/<name>
+        if os.path.isfile(os.path.join(link, "SKILL.md")) and os.path.realpath(link) == os.path.realpath(inst):
+            continue
+        bad += 1
+        fix_ln = f"         fix: ln -sfn ~/.agents/skills/{name} ~/.claude/skills/{name}"
+        fix_install = "         fix: run ./install.sh (it moves that aside to a backup, then links)"
+        if os.path.isfile(os.path.join(link, "SKILL.md")):
+            where = (f"resolves to {tilde(os.path.realpath(link))}" if os.path.islink(link)
+                     else "is a real folder with its own SKILL.md")
+            print(f"SHADOWED ~/.claude/skills/{name} {where}, not ~/.agents/skills/{name}, "
+                  f"so Claude Code runs that copy ({kind})")
+            print(fix_ln if os.path.islink(link) else fix_install)
+        elif os.path.islink(link) or not os.path.lexists(link):
+            state = "is a link that reaches no SKILL.md" if os.path.islink(link) else "does not exist"
+            print(f"UNLINKED ~/.claude/skills/{name} {state} ({kind})")
+            print(fix_ln)
+        else:
+            print(f"UNLINKED ~/.claude/skills/{name} is a real {'folder' if os.path.isdir(link) else 'file'} "
+                  f"with no SKILL.md, not a link ({kind})")
+            print(fix_install)
+    mode = "; ~/.claude/skills resolves to ~/.agents/skills, so no per-skill links are needed" if same else ""
+    print(f"{len(skills)} skills: {len(skills) - bad} reachable from ~/.claude/skills, {bad} not{mode}"
+          + (f"; {len(errors)} sources.json error(s)" if errors else ""))
+    return int(bad > 0 or bool(errors))
 
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
-    data = load()
     cmd, rest = argv[0], argv[1:]
+    if cmd == "is-clone-of":   # needs no sources.json; install.sh passes the entry's repo
+        if len(rest) != 2:
+            die("usage: skills-upstream is-clone-of <dir> <owner/repo>")
+        try:
+            return 0 if is_clone_of(rest[0], rest[1]) else 1
+        except Unverified as ex:   # inconclusive: install.sh WARNs and leaves the folder alone
+            print(f"skills-upstream: is-clone-of: git could not read the origin of {rest[0]}: {ex}", file=sys.stderr)
+            return 2
+        except Exception as ex:  # noqa: BLE001 - exit 1 means "not the clone" and install.sh moves it aside
+            print(f"skills-upstream: is-clone-of: {ex}", file=sys.stderr)
+            return 2
+    data = load()
     if cmd == "list":
         cmd_list(data)
         return 0
@@ -461,6 +705,8 @@ def main(argv):
         return cmd_upgrade(data, rest)
     if cmd == "verify":
         return cmd_verify(data)
+    if cmd == "links":
+        return cmd_links(data)
     if cmd == "plugins":
         return cmd_plugins("--json" in rest)
     if cmd == "rehash":
