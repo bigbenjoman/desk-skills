@@ -4,7 +4,7 @@
 #
 #   ./install.sh           asks before settings.json, plugins, a foreign desk-jira, the Playwright patch
 #   ./install.sh --yes     accepts those prompts too, except large downloads (scripted re-install)
-#   ./install.sh --check   reports dependencies only, changes nothing
+#   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
@@ -92,6 +92,24 @@ PY
 )"
 export DESK_WRITE_JSON_PY
 pick()    { if [ "$OS" = mac ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
+# check_links — every skill this installs must be reachable as ~/.claude/skills/<name>/SKILL.md, or
+# Claude Code says "Unknown skill". The loops below link each one, yet on 2026-09-28 three were found
+# unlinked, cause never reproduced, and nothing noticed; so the result is checked, not assumed.
+# Read-only: `skills-upstream links` names each gap and its one-line fix. A gap is a WARN, like the
+# unusable ~/.claude/skills case in "Skills": every other skill still works.
+check_links() {
+  section "Skill links  ~/.claude/skills -> ~/.agents/skills"
+  if ! has python3 || [ ! -f "$SRC/vendor/sources.json" ]; then note "python3 or vendor/sources.json missing; not checked"; return 0; fi
+  local out rc=0
+  out="$(python3 "$SRC/bin/skills-upstream" links 2>&1)" || rc=$?
+  if [ "$rc" = 0 ]; then
+    ok "$(printf '%s\n' "$out" | tail -n 1)"
+  else
+    printf '%s\n' "$out" | sed '$d' | sed 's/^/        /'
+    warn "$(printf '%s\n' "$out" | tail -n 1)"
+  fi
+}
 
 have_tty() { { : </dev/tty; } 2>/dev/null; }
 
@@ -220,6 +238,7 @@ fi
 need lsof 0 "ships with macOS" "sudo apt install lsof" "cleanup and dev find port and worktree owners with it" || true
 
 if [ "$CHECK_ONLY" = 1 ]; then
+  check_links
   printf '\n%s missing, %s warnings. Nothing was changed (--check).\n' "$MISSING" "$WARNINGS"
   exit 0
 fi
@@ -378,6 +397,8 @@ while IFS="$(printf '\t')" read -r name repo subs; do
 done <<EOF
 $checkouts
 EOF
+
+check_links
 
 # ---------------------------------------------------------------------------------------------
 section "Autopilot and clearance tooling  -> ~/.claude/desk/bin"

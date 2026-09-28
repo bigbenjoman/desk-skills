@@ -51,7 +51,8 @@ merge for the user).
 
 ```bash
 skills-upstream outdated                  # pinned third-party skills; exit 10 = something is outdated
-skills-upstream verify                    # installed copies match vendor/ (catches drift and hand edits)
+skills-upstream verify                    # installed copies match vendor/ (drift, hand edits), and every
+                                          # skill is reachable from ~/.claude/skills (else "Unknown skill")
 claude plugin marketplace update          # refresh the marketplaces' copies (installs nothing)
 skills-upstream plugins                   # each installed plugin vs its refreshed marketplace; exit 10 = behind
 ```
@@ -73,6 +74,7 @@ OUTDATED      plugin vercel     1.4.0 -> 1.5.1
 ok            ux-designer, ui-designer, ux-copywriter, <plugins…>
 UNREACHABLE   <name>: <error>
 DRIFTED       <name>: ~/.agents/skills copy differs from vendor/ (run ./install.sh)
+UNLINKED      <name>: not reachable from ~/.claude/skills; fix: <the line verify printed>
 UNTRACKED     <names>: no recorded source, so no update check
 ```
 
@@ -98,7 +100,8 @@ git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the use
 
 Commit in desk-skills: `chore(vendor): upgrade <name> to <new pin>` (one commit per skill), then
 ask before `git push`. Install: `(cd "$D" && ./install.sh </dev/null)`, which installs files and
-skips every settings prompt, then `skills-upstream verify` must print `ok` for each upgraded skill.
+skips every settings prompt, then `skills-upstream verify` must print `ok` for each upgraded skill
+and report no UNLINKED or NOT INSTALLED skill.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show
 the new version. Say that plugin and skill changes load in the **next** Claude Code session.

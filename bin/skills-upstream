@@ -5,7 +5,9 @@
   skills-upstream outdated [--json]    compare each pin with its source; exit 10 if any is outdated
   skills-upstream upgrade <name>...    pull the newest upstream into vendor/<name> and update the pin
   skills-upstream upgrade --all        ...for every outdated skill
-  skills-upstream verify               vendor/ matches sources.json, and ~/.agents/skills matches vendor/
+  skills-upstream verify               vendor/ matches sources.json, ~/.agents/skills matches vendor/, and links
+  skills-upstream links                every skill install.sh installs is reachable as ~/.claude/skills/<name>;
+                                       exit 1 if any is not, with the one-line fix for each
   skills-upstream plugins [--json]     installed Claude Code plugins vs the version their marketplace pins
                                        (run `claude plugin marketplace update` first); exit 10 if any is behind
   skills-upstream rehash               record each vendor/<name> tree hash in sources.json (after a hand edit)
@@ -19,7 +21,8 @@ Sources (vendor/sources.json):
                                        pulled; upgrade = `git pull --ff-only` after showing them
 
 `upgrade` only changes files inside vendor/ (review them with `git diff`); installing them is
-install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify`, which only reads.
+install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify` and `links`, which only
+read.
 Last successful `outdated` run is stamped in ~/.claude/desk/skills-upstream.last.
 """
 
@@ -41,6 +44,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 VENDOR = os.path.join(ROOT, "vendor")
 SOURCES = os.path.join(VENDOR, "sources.json")
 INSTALLED = os.path.expanduser("~/.agents/skills")
+CLAUDE_SKILLS = os.path.expanduser("~/.claude/skills")
 STAMP = os.path.expanduser("~/.claude/desk/skills-upstream.last")
 UA = {"User-Agent": "Mozilla/5.0 (desk-skills skills-upstream)"}
 
@@ -441,7 +445,63 @@ def cmd_verify(data):
             bad = 1
         else:
             print(f"ok       {name}")
+    print()
+    bad |= cmd_links(data)
     return bad
+
+
+def expected_skills(data):
+    """Every skill install.sh puts in ~/.agents/skills, as (name, origin), in the order it installs
+    them: desk's own skills/desk-*, every vendor/<name> folder, then the checkout entries (one per
+    listed sub-skill, named by its basename, when the entry has `subskills`)."""
+    out = []
+    for folder, kind in ((os.path.join(ROOT, "skills"), "desk"), (VENDOR, "vendor")):
+        for d in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+            if os.path.isdir(os.path.join(folder, d)) and (kind == "vendor" or d.startswith("desk-")):
+                out.append((d, kind))
+    for name, e in sorted(data["skills"].items()):
+        src = e["source"]
+        if src["type"] != "checkout":
+            continue
+        subs = src.get("subskills") or []
+        out += [(os.path.basename(s.rstrip("/")), f"checkout {name}") for s in subs] or [(name, f"checkout {name}")]
+    return out
+
+
+def cmd_links(data):
+    """Claude Code loads a skill only from ~/.claude/skills/<name>/SKILL.md, so a skill installed in
+    ~/.agents/skills with no link there is "Unknown skill" (seen 2026-09-28: three of 68, cause never
+    reproduced). This finds every one, whatever left it unlinked. Same LINK_MODE as install.sh: when
+    ~/.claude/skills itself resolves to ~/.agents/skills, there are no per-skill links to miss, so a
+    gap there means the skill is not installed. Only reads."""
+    skills = expected_skills(data)
+    agents = os.path.realpath(INSTALLED) if os.path.isdir(INSTALLED) else None
+    if not os.path.isdir(CLAUDE_SKILLS):
+        print("UNLINKED ~/.claude/skills is not a directory (a broken link?), so no skill is reachable")
+        print("         fix: repair or remove ~/.claude/skills, then run ./install.sh")
+        print(f"{len(skills)} skills: 0 reachable from ~/.claude/skills, {len(skills)} not")
+        return 1
+    same = os.path.realpath(CLAUDE_SKILLS) == agents
+    bad = 0
+    for name, kind in skills:
+        link = os.path.join(CLAUDE_SKILLS, name)
+        if os.path.isfile(os.path.join(link, "SKILL.md")):
+            continue
+        bad += 1
+        if same or not os.path.isfile(os.path.join(INSTALLED, name, "SKILL.md")):
+            print(f"NOT INSTALLED  ~/.agents/skills/{name} has no SKILL.md ({kind})")
+            print("         fix: run ./install.sh")
+        elif os.path.islink(link) or not os.path.lexists(link):
+            state = "is a link that reaches no SKILL.md" if os.path.islink(link) else "does not exist"
+            print(f"UNLINKED ~/.claude/skills/{name} {state} ({kind})")
+            print(f"         fix: ln -sfn ~/.agents/skills/{name} ~/.claude/skills/{name}")
+        else:
+            print(f"UNLINKED ~/.claude/skills/{name} is a real {'folder' if os.path.isdir(link) else 'file'} "
+                  f"with no SKILL.md, not a link ({kind})")
+            print("         fix: run ./install.sh (it moves that aside to a backup, then links)")
+    mode = "; ~/.claude/skills resolves to ~/.agents/skills, so no per-skill links are needed" if same else ""
+    print(f"{len(skills)} skills: {len(skills) - bad} reachable from ~/.claude/skills, {bad} not{mode}")
+    return int(bad > 0)
 
 
 def main(argv):
@@ -461,6 +521,8 @@ def main(argv):
         return cmd_upgrade(data, rest)
     if cmd == "verify":
         return cmd_verify(data)
+    if cmd == "links":
+        return cmd_links(data)
     if cmd == "plugins":
         return cmd_plugins("--json" in rest)
     if cmd == "rehash":

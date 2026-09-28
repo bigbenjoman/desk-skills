@@ -89,6 +89,13 @@ which version is installed, as one of three source types:
 `skills-upstream verify`. A local change belongs upstream, or in a repo-level override
 (`<repo>/.claude/skills/<name>`, which Claude Code prefers).
 
+Claude Code only sees a skill through `~/.claude/skills/<name>/SKILL.md`; an installed copy with no
+link there is "Unknown skill". `skills-upstream links` checks every skill desk installs (`desk-*`,
+`vendor/*` and each `checkout` and its `subskills`) and prints the fix for each gap, usually
+`ln -sfn ~/.agents/skills/<name> ~/.claude/skills/<name>`. When `~/.claude/skills` is itself a link
+to `~/.agents/skills` there are no per-skill links, and a gap means the skill is not installed.
+`install.sh` runs it after linking and under `--check`, and `verify` includes it.
+
 `skills-upstream` (installed to `~/.local/bin`, runs from this checkout) manages them:
 
 ```bash
@@ -96,7 +103,8 @@ skills-upstream list                  # every tracked skill, its source and pin
 skills-upstream outdated              # compare each pin with its source; exit 10 if any is behind
 skills-upstream upgrade <name>...     # pull the newest upstream into vendor/ (or git pull a checkout)
 skills-upstream upgrade --all
-skills-upstream verify                # vendor/ matches sources.json, installed copies match vendor/
+skills-upstream verify                # vendor/ matches sources.json, installed copies match vendor/, and links
+skills-upstream links                 # every installed skill is reachable as ~/.claude/skills/<name>
 skills-upstream plugins               # installed plugins vs their marketplaces
 skills-upstream rehash                # re-record tree hashes after adding an entry
 ```
@@ -110,7 +118,7 @@ installed copy first; a skill whose source cannot be proven stays untracked and 
 
 ```bash
 ./install.sh            # install or update
-./install.sh --check    # report missing tools, change nothing
+./install.sh --check    # report missing tools and unreachable skills, change nothing
 ./install.sh --yes      # accept the prompts (not large downloads)
 ```
 
@@ -303,8 +311,8 @@ asks only those. Re-run `./install.sh` after a Playwright plugin update, which u
 
 **`/desk-update`** does all of it brew-style, from any directory: pulls desk-skills, runs
 `skills-upstream outdated`, `verify` and `plugins`, reports one table (outdated, drifted,
-unreachable, untracked), says what changed upstream for each, and upgrades only what you pick, after
-showing the diff. It never pushes the desk-skills commit without asking.
+unlinked, unreachable, untracked), says what changed upstream for each, and upgrades only what you
+pick, after showing the diff. It never pushes the desk-skills commit without asking.
 
 ## Changing things
 
