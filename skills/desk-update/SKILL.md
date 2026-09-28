@@ -79,7 +79,8 @@ SHADOWED      <name>: ~/.claude/skills/<name> lands on another copy, so that sta
 NOT INSTALLED <name>: no SKILL.md in ~/.agents/skills (run ./install.sh)
 NOT IN CLONE  <name>: a checkout sub-skill missing from the local clone; `skills-upstream upgrade <origin>`
               first, and only if it is still missing is it gone upstream (then remove it from `subskills`)
-WRONG COPY    <name>: ~/.agents/skills/<name> is not the checkout's clone, or does not resolve into it
+WRONG COPY    <name>: ~/.agents/skills/<name> is not the checkout's clone, or does not resolve into it,
+              or ~/.agents/sources/<name> is not a clone of its repo (once per checkout; all its sub-skills fail)
 UNTRACKED     <names>: no recorded source, so no update check
 ```
 

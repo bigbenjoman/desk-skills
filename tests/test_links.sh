@@ -130,6 +130,15 @@ rm -rf "$A/solo"; git init -q "$A/solo"; git -C "$A/solo" remote add origin http
 U links
 check "a clone of the wrong repo is WRONG COPY" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/skills/solo is not a git clone of acme/solo"* ]]'
 rm -rf "$A/solo"; mv "$T/solo.bak" "$A/solo"
+# A multi-skill checkout's source folder must itself be a clone of its repo, or every alias into it
+# would pass while pointing at a copied or foreign tree. Reported once, all its sub-skills counted.
+mv "$M/.git" "$T/multi.git"
+U links
+check "a multi-skill source that is not a git clone: WRONG COPY once, both sub-skills unreachable" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/sources/multi is not a git clone of acme/multi"* ]] && [ "$(printf "%s\n" "$out" | grep -c "WRONG COPY")" = 1 ] && [[ "$out" == *"3 reachable"*"2 not"* ]] && [[ "$out" == *"fix: run ./install.sh"* ]]'
+mv "$T/multi.git" "$M/.git"; git -C "$M" remote set-url origin https://github.com/acme/elsewhere
+U links
+check "a multi-skill source cloned from another repo: WRONG COPY once" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/sources/multi is not a git clone of acme/multi"* ]] && [ "$(printf "%s\n" "$out" | grep -c "WRONG COPY")" = 1 ] && [[ "$out" == *"2 not"* ]]'
+git -C "$M" remote set-url origin https://github.com/acme/multi
 U links
 check "all restored: exit 0" '[ $rc -eq 0 ] && [[ "$out" == *"5 skills: 5 reachable"* ]]'
 
