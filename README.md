@@ -93,7 +93,8 @@ Claude Code only sees a skill through `~/.claude/skills/<name>/SKILL.md`; an ins
 link there is "Unknown skill". `skills-upstream links` checks every skill desk installs (`desk-*`,
 `vendor/*` and each `checkout` and its `subskills`) and prints the fix for each gap, usually
 `ln -sfn ~/.agents/skills/<name> ~/.claude/skills/<name>`. A link or folder there that lands on any
-other copy is reported too (SHADOWED), since Claude Code would run that stale copy. When `~/.claude/skills` is itself a link
+other copy is reported too (SHADOWED), since Claude Code would run that stale copy. A `checkout`'s
+`~/.agents/skills/<name>` must be its clone, or resolve into it for a sub-skill (WRONG COPY otherwise). When `~/.claude/skills` is itself a link
 to `~/.agents/skills` there are no per-skill links, and a gap means the skill is not installed.
 `install.sh` runs it after linking and under `--check`, and `verify` includes it.
 

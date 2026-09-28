@@ -87,11 +87,51 @@ U links
 check "a vendor/.cache folder is not a skill" '[ $rc -eq 0 ] && [[ "$out" == *"5 skills: 5 reachable"* ]]'
 rmdir "$R/vendor/.cache"
 
-# A sub-skill its repo no longer ships: install.sh cannot fix that, sources.json can.
+# A sub-skill missing from the local clone. With no fetched origin/<branch> to say otherwise, the
+# advice is upgrade first (it pulls), and only if it is still missing, drop it from `subskills`.
 mv "$M/skills/two" "$T/two.bak"
 U links
-check "a sub-skill gone upstream says remove it from subskills" '[ $rc -eq 1 ] && [[ "$out" == *"GONE     two is no longer in acme/multi"* ]] && [[ "$out" == *"remove it from \`subskills\` for multi"* ]] && [[ "$out" != *"NOT INSTALLED  ~/.agents/skills/two"* ]]'
+check "missing from the clone, origin unknown: upgrade first, then remove" '[ $rc -eq 1 ] && [[ "$out" == *"NOT IN CLONE  skills/two is missing from your local clone ~/.agents/sources/multi"* ]] && [[ "$out" == *"fix: skills-upstream upgrade multi (it fetches and pulls); if it is still missing"* ]] && [[ "$out" == *"remove it from \`subskills\` for multi"* ]] && [[ "$out" != *"NOT INSTALLED  ~/.agents/skills/two"* ]]'
 mv "$T/two.bak" "$M/skills/two"
+# A sub-skill added to `subskills` that the last fetch of origin/main has but the clone was never
+# pulled for (install.sh never pulls an existing clone): upgrade supplies it, so never "remove it".
+mkdir -p "$M/skills/three"; echo "# three" > "$M/skills/three/SKILL.md"; git -C "$M" add -A; git -C "$M" commit -qm three
+git -C "$M" update-ref refs/remotes/origin/main HEAD; git -C "$M" reset -q --hard HEAD~1; ln -s "$M/skills/three" "$A/three"
+subskill(){ python3 - "$R/vendor/sources.json" "$1" "$2" <<'P'
+import json, sys
+path, op, sub = sys.argv[1:]
+d = json.load(open(path)); subs = d["skills"]["multi"]["source"]["subskills"]
+subs.append(sub) if op == "add" else subs.remove(sub)
+json.dump(d, open(path, "w"))
+P
+}
+subskill add skills/three
+U links
+check "in origin/main but not pulled: upgrade, never remove" '[ $rc -eq 1 ] && [[ "$out" == *"NOT IN CLONE  skills/three"* ]] && [[ "$out" == *"it is in origin/main as last fetched"* ]] && [[ "$out" == *"fix: skills-upstream upgrade multi"* ]] && [[ "$out" != *"remove it from"* ]]'
+subskill remove skills/three
+rm "$A/three"
+
+# ~/.agents/skills/<sub> must resolve into the clone. A repointed alias, followed faithfully by the
+# ~/.claude/skills link, reaches a SKILL.md, but Claude Code loads the wrong copy.
+mkdir -p "$T/other/one"; echo "# other one" > "$T/other/one/SKILL.md"; ln -sfn "$T/other/one" "$A/one"
+U links
+check "a sub-skill alias pointing outside its clone is WRONG COPY, fix relinks it" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/skills/one resolves to "*"/other/one, not ~/.agents/sources/multi/skills/one"* ]] && [[ "$out" == *"fix: ln -sfn ~/.agents/sources/multi/skills/one ~/.agents/skills/one"* ]]'
+U verify
+check "verify fails on the wrong sub-skill copy" '[ $rc -ne 0 ] && [[ "$out" == *"WRONG COPY  ~/.agents/skills/one"* ]]'
+rm "$A/one"; mkdir "$A/one"; echo "# copy" > "$A/one/SKILL.md"
+U links
+check "a real folder where the sub-skill alias belongs: install.sh" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/skills/one is a real folder"* ]] && [[ "$out" == *"fix: run ./install.sh"* ]]'
+rm -rf "$A/one"; ln -s "$M/skills/one" "$A/one"
+# A single-skill checkout must BE a clone of its repo.
+mv "$A/solo" "$T/solo.bak"; mkdir "$A/solo"; echo "# plain" > "$A/solo/SKILL.md"
+U links
+check "a plain folder where a checkout belongs is WRONG COPY" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/skills/solo is not a git clone of acme/solo"* ]]'
+rm -rf "$A/solo"; git init -q "$A/solo"; git -C "$A/solo" remote add origin https://github.com/acme/other; echo x > "$A/solo/SKILL.md"
+U links
+check "a clone of the wrong repo is WRONG COPY" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/skills/solo is not a git clone of acme/solo"* ]]'
+rm -rf "$A/solo"; mv "$T/solo.bak" "$A/solo"
+U links
+check "all restored: exit 0" '[ $rc -eq 0 ] && [[ "$out" == *"5 skills: 5 reachable"* ]]'
 
 # LINK_MODE=same: ~/.claude/skills IS ~/.agents/skills, so no per-skill links exist or are needed.
 rm -rf "$C"; ln -s "$A" "$C"

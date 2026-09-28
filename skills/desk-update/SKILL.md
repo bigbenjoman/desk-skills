@@ -77,7 +77,9 @@ DRIFTED       <name>: ~/.agents/skills copy differs from vendor/ (run ./install.
 UNLINKED      <name>: not reachable from ~/.claude/skills; fix: <the line verify printed>
 SHADOWED      <name>: ~/.claude/skills/<name> lands on another copy, so that stale copy runs; fix: <the line verify printed>
 NOT INSTALLED <name>: no SKILL.md in ~/.agents/skills (run ./install.sh)
-GONE          <name>: a checkout sub-skill its repo no longer ships (remove it from `subskills`)
+NOT IN CLONE  <name>: a checkout sub-skill missing from the local clone; `skills-upstream upgrade <origin>`
+              first, and only if it is still missing is it gone upstream (then remove it from `subskills`)
+WRONG COPY    <name>: ~/.agents/skills/<name> is not the checkout's clone, or does not resolve into it
 UNTRACKED     <names>: no recorded source, so no update check
 ```
 
@@ -104,7 +106,7 @@ git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the use
 Commit in desk-skills: `chore(vendor): upgrade <name> to <new pin>` (one commit per skill), then
 ask before `git push`. Install: `(cd "$D" && ./install.sh </dev/null)`, which installs files and
 skips every settings prompt, then `skills-upstream verify` must print `ok` for each upgraded skill
-and report no UNLINKED, SHADOWED, NOT INSTALLED or GONE skill.
+and report no UNLINKED, SHADOWED, NOT INSTALLED, NOT IN CLONE or WRONG COPY skill.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show
 the new version. Say that plugin and skill changes load in the **next** Claude Code session.
