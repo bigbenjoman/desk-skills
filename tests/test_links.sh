@@ -148,7 +148,7 @@ check "the same repo over ssh, different case, is the clone" '[ $rc -eq 0 ]'
 git -C "$M" remote set-url origin https://github.com/acme/multi
 
 # The origin test itself, through `is-clone-of`, the entry point install.sh calls, so the installer
-# and links/verify share one rule: the origin must name exactly owner/repo on the host.
+# and links/verify share one rule: the origin must name exactly github.com/owner/repo.
 O="$T/origin-probe"; git init -q "$O"; git -C "$O" remote add origin x
 is_clone(){ git -C "$O" remote set-url origin "$1"; python3 "$R/bin/skills-upstream" is-clone-of "$O" "${@:2}" >/dev/null 2>&1; }
 for url in https://github.com/clerk/skills https://github.com/clerk/skills.git https://github.com/clerk/skills/ \
@@ -166,10 +166,19 @@ for url in https://github.com/clerk/skills-fork.git https://github.com/acme/cler
 done
 is_clone https://github.com/clerk/skillsXv2 clerk/skills.v2; rc=$?; out="regex dot"
 check "a . in the repo name is literal, not any character" '[ $rc -eq 1 ]'
-is_clone https://gitlab.com/clerk/skills.git clerk/skills gitlab.com; rc=$?; out="host given"
-check "a host recorded in sources.json is honoured" '[ $rc -eq 0 ]'
-is_clone https://github.com/clerk/skills.git clerk/skills gitlab.com; rc=$?; out="host mismatch"
-check "the right repo on the wrong host is NOT it" '[ $rc -eq 1 ]'
+python3 "$R/bin/skills-upstream" is-clone-of "$O" clerk/skills gitlab.com >/dev/null 2>&1; rc=$?; out="host arg"
+check "is-clone-of takes no host (exit 2, never a yes or a no)" '[ $rc -eq 2 ]'
+# A source.host in sources.json is refused, not honoured: install.sh can only clone from github.com.
+cp "$R/vendor/sources.json" "$T/sources.bak"
+python3 - "$R/vendor/sources.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); d["skills"]["multi"]["source"]["host"] = "gitlab.com"; json.dump(d, open(sys.argv[1], "w"))
+P
+U links
+check "a configured source.host fails links with a clear error" '[ $rc -eq 1 ] && [[ "$out" == *"ERROR    multi: source.host is not supported; checkouts are cloned from github.com with gh"* ]] && [[ "$out" == *"1 sources.json error(s)"* ]]'
+U verify
+check "and fails verify" '[ $rc -ne 0 ] && [[ "$out" == *"source.host is not supported"* ]]'
+cp "$T/sources.bak" "$R/vendor/sources.json"
 python3 "$R/bin/skills-upstream" is-clone-of "$T/no-such-dir" clerk/skills; rc=$?; out=""
 check "a missing folder is a definite no (exit 1), so install.sh clones it" '[ $rc -eq 1 ]'
 python3 "$R/bin/skills-upstream" is-clone-of "$O" >/dev/null 2>&1; rc=$?

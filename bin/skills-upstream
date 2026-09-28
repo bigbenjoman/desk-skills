@@ -11,9 +11,9 @@
                                        exit 1 if any is not, with the one-line fix for each
   skills-upstream plugins [--json]     installed Claude Code plugins vs the version their marketplace pins
                                        (run `claude plugin marketplace update` first); exit 10 if any is behind
-  skills-upstream is-clone-of <dir> <owner/repo> [<host>]
-                                       exit 0 if <dir> is a git clone whose origin IS that repo (host
-                                       default github.com), 1 if not; install.sh uses it, so both agree
+  skills-upstream is-clone-of <dir> <owner/repo>
+                                       exit 0 if <dir> is a git clone whose origin IS github.com/<owner/repo>,
+                                       1 if not; install.sh uses it, so both agree
   skills-upstream rehash               record each vendor/<name> tree hash in sources.json (after a hand edit)
 
 Sources (vendor/sources.json):
@@ -424,7 +424,7 @@ def cmd_verify(data):
             d = checkout_dir(name, e)
             try:
                 url = git(d, "remote", "get-url", "origin")
-                ok = same_repo(url, e["source"]["repo"], e["source"].get("host"))
+                ok = same_repo(url, e["source"]["repo"])
                 dirty = git(d, "status", "--porcelain")
                 print(("ok       " if ok and not dirty else "CHANGED  ") + f"{name} (git checkout of {e['source']['repo']}{'' if ok else ', WRONG REMOTE ' + url}{', has uncommitted changes' if dirty else ''})")
                 bad |= int(not ok or bool(dirty))
@@ -477,7 +477,7 @@ def expected_skills(data):
         if src["type"] != "checkout":
             continue
         subs = [s.rstrip("/") for s in src.get("subskills") or []]
-        co = {"repo": src["repo"], "host": src.get("host"), "branch": src.get("branch", "main"),
+        co = {"repo": src["repo"], "branch": src.get("branch", "main"),
               "clone": checkout_dir(name, e)}
         out += ([(os.path.basename(s), name, f"checkout {name}", {**co, "sub": s, "path": os.path.join(co["clone"], s)})
                  for s in subs]
@@ -518,7 +518,7 @@ def agents_side(name, kind, co, inst):
         return [f"WRONG COPY  ~/.agents/skills/{name} {where}, not {tilde(co['path'])} in the {co['repo']} clone ({kind})",
                 f"         fix: ln -sfn {tilde(co['path'])} ~/.agents/skills/{name}" if os.path.islink(inst)
                 else "         fix: run ./install.sh (it moves that aside to a backup, then links)"]
-    if co and not co["sub"] and not is_clone_of(inst, co["repo"], co["host"]):
+    if co and not co["sub"] and not is_clone_of(inst, co["repo"]):
         return [f"WRONG COPY  ~/.agents/skills/{name} is not a git clone of {co['repo']} ({kind})",
                 f"         fix: run ./install.sh (it moves that aside to a backup, then clones {co['repo']})"]
     return None
@@ -543,21 +543,29 @@ def origin_slug(url):
     return host.lower(), path.lower()
 
 
-def same_repo(url, repo, host=None):
+def same_repo(url, repo):
     """The ONE remote test, used by links, verify and (via `is-clone-of`) install.sh: the origin
-    names exactly <repo> on <host>. Host defaults to github.com, which is what `gh repo clone
-    owner/repo` in install.sh clones from; sources.json may record another as source.host."""
-    return origin_slug(url) == ((host or "github.com").lower(), repo.strip().strip("/").lower())
+    names exactly github.com/<repo>. Only github.com, because install.sh clones a missing or wrong
+    checkout with `gh repo clone owner/repo`; see unsupported_hosts()."""
+    return origin_slug(url) == ("github.com", repo.strip().strip("/").lower())
 
 
-def is_clone_of(d, repo, host=None):
+def unsupported_hosts(data):
+    """Error lines for any checkout that records a source.host. install.sh can only clone from
+    github.com, so honouring another host here would let install.sh replace a valid clone with a
+    GitHub one that links then rejects."""
+    return [f"ERROR    {n}: source.host is not supported; checkouts are cloned from github.com with gh"
+            for n, e in sorted(data["skills"].items()) if e["source"].get("host")]
+
+
+def is_clone_of(d, repo):
     """install.sh's own test that a checkout folder is the clone it wants: a .git of its own (so a
     parent repo never answers for it) and an origin that is exactly the repo. Read from git config;
     no fetch."""
     if not os.path.isdir(os.path.join(d, ".git")):
         return False
     try:
-        return same_repo(git(d, "remote", "get-url", "origin"), repo, host)
+        return same_repo(git(d, "remote", "get-url", "origin"), repo)
     except RuntimeError:
         return False
 
@@ -572,6 +580,9 @@ def cmd_links(data, already=()):
     links, so a gap there means the skill is not installed. `already` holds origins the caller has
     reported as not installed, counted here but not printed twice. Only reads."""
     skills = expected_skills(data)
+    errors = unsupported_hosts(data)
+    for line in errors:
+        print(line)
     agents = os.path.realpath(INSTALLED) if os.path.isdir(INSTALLED) else None
     if not os.path.isdir(CLAUDE_SKILLS):
         if os.path.islink(CLAUDE_SKILLS):
@@ -594,7 +605,7 @@ def cmd_links(data, already=()):
         # tree or another repo's clone would pass every per-alias test. Reported once per checkout.
         if co and co["sub"] and os.path.isdir(co["clone"]):
             if origin not in bad_clones:
-                bad_clones[origin] = not is_clone_of(co["clone"], co["repo"], co["host"])
+                bad_clones[origin] = not is_clone_of(co["clone"], co["repo"])
                 if bad_clones[origin] and origin not in already:
                     print(f"WRONG COPY  {tilde(co['clone'])} is not a git clone of {co['repo']} ({kind}; "
                           f"none of its sub-skills counts as reachable)")
@@ -630,8 +641,9 @@ def cmd_links(data, already=()):
                   f"with no SKILL.md, not a link ({kind})")
             print(fix_install)
     mode = "; ~/.claude/skills resolves to ~/.agents/skills, so no per-skill links are needed" if same else ""
-    print(f"{len(skills)} skills: {len(skills) - bad} reachable from ~/.claude/skills, {bad} not{mode}")
-    return int(bad > 0)
+    print(f"{len(skills)} skills: {len(skills) - bad} reachable from ~/.claude/skills, {bad} not{mode}"
+          + (f"; {len(errors)} sources.json error(s)" if errors else ""))
+    return int(bad > 0 or bool(errors))
 
 
 def main(argv):
@@ -639,11 +651,11 @@ def main(argv):
         print(__doc__.strip())
         return 0
     cmd, rest = argv[0], argv[1:]
-    if cmd == "is-clone-of":   # needs no sources.json; install.sh passes the entry's repo and host
-        if len(rest) not in (2, 3):
-            die("usage: skills-upstream is-clone-of <dir> <owner/repo> [<host>]")
+    if cmd == "is-clone-of":   # needs no sources.json; install.sh passes the entry's repo
+        if len(rest) != 2:
+            die("usage: skills-upstream is-clone-of <dir> <owner/repo>")
         try:
-            return 0 if is_clone_of(rest[0], rest[1], rest[2] if len(rest) == 3 else None) else 1
+            return 0 if is_clone_of(rest[0], rest[1]) else 1
         except Exception as ex:  # noqa: BLE001 - exit 1 means "not the clone" and install.sh moves it aside
             print(f"skills-upstream: is-clone-of: {ex}", file=sys.stderr)
             return 2
