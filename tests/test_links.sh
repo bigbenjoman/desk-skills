@@ -63,7 +63,35 @@ check "a real folder in the way sends you to install.sh, not ln" '[ $rc -eq 1 ] 
 rmdir "$C/two"; ln -sfn "$A/two" "$C/two"; rm -rf "$A/solo"; ln -sfn "$A/solo" "$C/solo"
 U links
 check "not installed at all: install.sh, not a link fix" '[ $rc -eq 1 ] && [[ "$out" == *"NOT INSTALLED  ~/.agents/skills/solo"* ]] && [[ "$out" != *"ln -sfn ~/.agents/skills/solo"* ]]'
+U verify
+check "verify says NOT INSTALLED once for an uninstalled checkout" '[ $rc -ne 0 ] && [ "$(printf "%s\n" "$out" | grep -c "NOT INSTALLED")" = 1 ] && [[ "$out" == *"4 reachable"*"1 not"* ]]'
 clone "$A/solo" acme/solo .
+
+# A stale copy that Claude Code would load instead of the installed one: reachable, but SHADOWED.
+rm "$C/vend"; mkdir "$C/vend"; echo "# old vend" > "$C/vend/SKILL.md"
+U links
+check "a real folder WITH a SKILL.md is SHADOWED, fix is install.sh" '[ $rc -eq 1 ] && [[ "$out" == *"SHADOWED ~/.claude/skills/vend is a real folder with its own SKILL.md, not ~/.agents/skills/vend"* ]] && [[ "$out" == *"fix: run ./install.sh"* ]] && [[ "$out" != *"ln -sfn"* ]]'
+U verify
+check "verify fails on the shadowed copy" '[ $rc -ne 0 ] && [[ "$out" == *"SHADOWED ~/.claude/skills/vend"* ]]'
+rm -rf "$C/vend"; mkdir -p "$T/old/vend"; echo "# old vend" > "$T/old/vend/SKILL.md"; ln -s "$T/old/vend" "$C/vend"
+U links
+check "a link to a copy outside ~/.agents/skills is SHADOWED, fix is ln -sfn" '[ $rc -eq 1 ] && [[ "$out" == *"SHADOWED ~/.claude/skills/vend resolves to "*"/old/vend, not ~/.agents/skills/vend"* ]] && [[ "$out" == *"fix: ln -sfn ~/.agents/skills/vend ~/.claude/skills/vend"* ]]'
+rm "$C/vend"; (cd "$C" && ln -s ../../.agents/skills/vend vend)
+U links
+check "a relative link that lands on the installed copy is fine" '[ $rc -eq 0 ]'
+ln -sfn "$A/vend" "$C/vend"
+
+# Dot-folders in vendor/ are skipped, as install.sh's glob skips them.
+mkdir "$R/vendor/.cache"
+U links
+check "a vendor/.cache folder is not a skill" '[ $rc -eq 0 ] && [[ "$out" == *"5 skills: 5 reachable"* ]]'
+rmdir "$R/vendor/.cache"
+
+# A sub-skill its repo no longer ships: install.sh cannot fix that, sources.json can.
+mv "$M/skills/two" "$T/two.bak"
+U links
+check "a sub-skill gone upstream says remove it from subskills" '[ $rc -eq 1 ] && [[ "$out" == *"GONE     two is no longer in acme/multi"* ]] && [[ "$out" == *"remove it from \`subskills\` for multi"* ]] && [[ "$out" != *"NOT INSTALLED  ~/.agents/skills/two"* ]]'
+mv "$T/two.bak" "$M/skills/two"
 
 # LINK_MODE=same: ~/.claude/skills IS ~/.agents/skills, so no per-skill links exist or are needed.
 rm -rf "$C"; ln -s "$A" "$C"
@@ -77,7 +105,10 @@ ln -s "$M/skills/one" "$A/one"
 # LINK_MODE=none: ~/.claude/skills does not resolve to a directory.
 rm "$C"; ln -s "$T/nowhere" "$C"
 U links
-check "broken ~/.claude/skills: every skill unreachable, exit 1" '[ $rc -eq 1 ] && [[ "$out" == *"is not a directory"* ]] && [[ "$out" == *"0 reachable"*"5 not"* ]]'
+check "broken ~/.claude/skills link: every skill unreachable, exit 1" '[ $rc -eq 1 ] && [[ "$out" == *"is a broken link"* ]] && [[ "$out" == *"0 reachable"*"5 not"* ]]'
+rm "$C"
+out=$(cd "$R" && ./install.sh --check 2>&1); rc=$?
+check "fresh machine --check: not created yet, not a broken link" '[ $rc -eq 0 ] && [[ "$out" == *"not created yet"* ]] && [[ "$out" == *"./install.sh (it creates it)"* ]] && [[ "$out" != *"broken link"* ]]'
 
 rm -rf "$T"
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]
