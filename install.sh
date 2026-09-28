@@ -348,7 +348,7 @@ section "Your own skills  -> git clones in ~/.agents/skills, linked into ~/.clau
 # vendor/sources.json entries of type "checkout" are skills you own: the one real copy is a git clone
 # of that skill's repo (no copy in vendor/). This clones what is missing and never pulls; pulling is
 # /desk-update's job, after showing what is incoming. A plain folder in the way is moved to the backup.
-checkouts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("\n".join(n+"\t"+e["source"]["repo"]+"\t"+",".join(e["source"].get("subskills",[])) for n,e in d["skills"].items() if e["source"]["type"]=="checkout"))' "$SRC/vendor/sources.json" 2>/dev/null || true)"
+checkouts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("\n".join(n+"\t"+e["source"]["repo"]+"\t"+(e["source"].get("host") or "-")+"\t"+",".join(e["source"].get("subskills",[])) for n,e in d["skills"].items() if e["source"]["type"]=="checkout"))' "$SRC/vendor/sources.json" 2>/dev/null || true)"
 # link_skill <name> <real folder>: ~/.agents/skills/<name> and ~/.claude/skills/<name> end up pointing at it
 link_skill() {
   local name="$1" real="$2" a="$AGENTS/$1"
@@ -370,11 +370,18 @@ link_skill() {
     fi
   fi
 }
-while IFS="$(printf '\t')" read -r name repo subs; do
+while IFS="$(printf '\t')" read -r name repo host subs; do
   [ -n "$name" ] || continue
   if [ -n "$subs" ]; then dest="$HOME/.agents/sources/$name"; else dest="$AGENTS/$name"; fi
-  if [ -d "$dest/.git" ] && git -C "$dest" remote get-url origin 2>/dev/null | grep -qi "$repo"; then
+  # Is it already the clone? The same exact owner/repo (and host) test `skills-upstream links` and
+  # `verify` use, so the three can never disagree. Only a definite no (exit 1) moves a folder aside:
+  # if the helper itself fails, leave the folder alone and say so.
+  rc=0; python3 "$SRC/bin/skills-upstream" is-clone-of "$dest" "$repo" ${host#-} || rc=$?
+  if [ "$rc" = 0 ]; then
     ok "$name (clone of $repo; /desk-update pulls it)"
+  elif [ "$rc" != 1 ]; then
+    warn "$name: could not tell whether ${dest/#$HOME/~} is a clone of $repo (skills-upstream is-clone-of exit $rc); left alone"
+    continue
   else
     if [ -e "$dest" ] && [ ! -L "$dest" ]; then
       mkdir -p "$BACKUP/clones"; mv "$dest" "$BACKUP/clones/$name"

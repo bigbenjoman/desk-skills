@@ -139,6 +139,43 @@ mv "$T/multi.git" "$M/.git"; git -C "$M" remote set-url origin https://github.co
 U links
 check "a multi-skill source cloned from another repo: WRONG COPY once" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/sources/multi is not a git clone of acme/multi"* ]] && [ "$(printf "%s\n" "$out" | grep -c "WRONG COPY")" = 1 ] && [[ "$out" == *"2 not"* ]]'
 git -C "$M" remote set-url origin https://github.com/acme/multi
+git -C "$M" remote set-url origin https://github.com/acme/multi-fork.git
+U links
+check "a fork whose name merely contains the repo is WRONG COPY" '[ $rc -eq 1 ] && [[ "$out" == *"WRONG COPY  ~/.agents/sources/multi is not a git clone of acme/multi"* ]]'
+git -C "$M" remote set-url origin git@github.com:Acme/Multi.git
+U links
+check "the same repo over ssh, different case, is the clone" '[ $rc -eq 0 ]'
+git -C "$M" remote set-url origin https://github.com/acme/multi
+
+# The origin test itself, through `is-clone-of`, the entry point install.sh calls, so the installer
+# and links/verify share one rule: the origin must name exactly owner/repo on the host.
+O="$T/origin-probe"; git init -q "$O"; git -C "$O" remote add origin x
+is_clone(){ git -C "$O" remote set-url origin "$1"; python3 "$R/bin/skills-upstream" is-clone-of "$O" "${@:2}" >/dev/null 2>&1; }
+for url in https://github.com/clerk/skills https://github.com/clerk/skills.git https://github.com/clerk/skills/ \
+    https://github.com/clerk/skills.git/ https://github.com/Clerk/Skills.git git@github.com:clerk/skills.git \
+    git@github.com:clerk/skills ssh://git@github.com/clerk/skills.git ssh://git@github.com:22/clerk/skills.git \
+    https://user:tok3n@github.com/clerk/skills.git https://github.com:443/clerk/skills.git; do
+  is_clone "$url" clerk/skills; rc=$?; out="$url"
+  check "origin $url is clerk/skills" '[ $rc -eq 0 ]'
+done
+for url in https://github.com/clerk/skills-fork.git https://github.com/acme/clerk/skills https://github.com/clerk/skills/extra \
+    https://github.com/xclerk/skills https://gitlab.com/clerk/skills.git git@gitlab.com:clerk/skills.git /tmp/clerk/skills \
+    https://github.com/clerk/skills.git.bak; do
+  is_clone "$url" clerk/skills; rc=$?; out="$url"
+  check "origin $url is NOT clerk/skills" '[ $rc -eq 1 ]'
+done
+is_clone https://github.com/clerk/skillsXv2 clerk/skills.v2; rc=$?; out="regex dot"
+check "a . in the repo name is literal, not any character" '[ $rc -eq 1 ]'
+is_clone https://gitlab.com/clerk/skills.git clerk/skills gitlab.com; rc=$?; out="host given"
+check "a host recorded in sources.json is honoured" '[ $rc -eq 0 ]'
+is_clone https://github.com/clerk/skills.git clerk/skills gitlab.com; rc=$?; out="host mismatch"
+check "the right repo on the wrong host is NOT it" '[ $rc -eq 1 ]'
+python3 "$R/bin/skills-upstream" is-clone-of "$T/no-such-dir" clerk/skills; rc=$?; out=""
+check "a missing folder is a definite no (exit 1), so install.sh clones it" '[ $rc -eq 1 ]'
+python3 "$R/bin/skills-upstream" is-clone-of "$O" >/dev/null 2>&1; rc=$?
+check "a usage error is not a no (exit 2), so install.sh leaves the folder alone" '[ $rc -eq 2 ]'
+out=$(grep -n 'remote get-url\|grep -qi "$repo"\|is-clone-of' "$R/install.sh"); rc=0
+check "install.sh decides \"is it the clone\" only through skills-upstream is-clone-of" '[[ "$out" == *"is-clone-of \"\$dest\" \"\$repo\""* ]] && [[ "$out" != *"remote get-url"* ]] && [[ "$out" != *"grep -qi"* ]]'
 U links
 check "all restored: exit 0" '[ $rc -eq 0 ] && [[ "$out" == *"5 skills: 5 reachable"* ]]'
 

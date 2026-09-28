@@ -107,6 +107,7 @@ skills-upstream upgrade <name>...     # pull the newest upstream into vendor/ (o
 skills-upstream upgrade --all
 skills-upstream verify                # vendor/ matches sources.json, installed copies match vendor/, and links
 skills-upstream links                 # every installed skill is reachable as ~/.claude/skills/<name>
+skills-upstream is-clone-of <dir> <owner/repo>   # exact origin test install.sh and links share
 skills-upstream plugins               # installed plugins vs their marketplaces
 skills-upstream rehash                # re-record tree hashes after adding an entry
 ```
