@@ -9,11 +9,11 @@ is a modifier, `?`/`*` glob in unquoted args — use `bash -c '…' _ args` or q
 
 - **desk-skills** `~/desk-skills` → `bigbenjoman/desk-skills` (private). Per-repo config at
   `~/.config/desk/repos/<owner__name>/config.md`; `desk-env where`. Installed on this Mac.
-  Adversarial review record: `docs/review-2026-09-27.md`; tests: `bash tests/run.sh` (148 checks).
+  Adversarial review record: `docs/review-2026-09-27.md`; tests: `bash tests/run.sh` (211 checks as of 2026-09-28).
 - **Skills, one copy each**: `~/.agents/skills/<name>` is the only real copy, `~/.claude/skills/<name>`
   links to it. Sources in `vendor/sources.json` (types `github`, `drive`, `checkout`).
   `skills-upstream list|outdated|upgrade|verify|plugins|rehash`; `/desk-update` is the brew-style skill.
-  - 59 pinned third-party skills (byte-identical to a proven upstream commit / Drive zip).
+  - 58 pinned third-party skills (byte-identical to a proven upstream commit / Drive zip).
   - `checkout` type: `clerk` → `clerk/skills` cloned in `~/.agents/sources/clerk` with 11 sub-skills linked.
   - Backups of everything moved: `~/.agents/desk-backup/20260927-*`.
 - **pullbot** `~/pullbot` → `bigbenjoman/pullbot`, PR #1 merged (generic per-repo config).
@@ -24,11 +24,12 @@ is a modifier, `?`/`*` glob in unquoted args — use `bash -c '…' _ args` or q
    `bin/skills-upstream` and `install.sh`, and the `clerk` entry). Then update README "Skills,
    one copy each" + `/desk-update` sections to describe `vendor/`, the three source types and
    `skills-upstream`.
-2. **ux-motion, interactive-prototype**: Yummy Design skills still loose in `~/.claude/skills`. Ask
-   Ben for their Google Drive folder links (like the UX/UI ones), list the folder via
-   `https://drive.google.com/embeddedfolderview?id=<id>`, download, confirm byte-identical, add as
-   `drive` entries (see ux-designer's entry), `skills-upstream rehash`, `./install.sh </dev/null`.
-   `learned` and `synced` are not skills (ECC data dir, claude.ai skill cache): leave them.
+2. **interactive-prototype**: a Yummy Design skill still loose in `~/.claude/skills`. Ask Ben for its Google Drive
+   folder link, list it via `https://drive.google.com/embeddedfolderview?id=<id>`, download, confirm byte-identical,
+   add a `drive` entry (see ux-motion's, a zip with the folder at its root), `skills-upstream rehash`, then Ben runs
+   `./install.sh`. `learned` and `synced` are not skills (ECC data dir, claude.ai skill cache): leave them.
+   ✅ **ux-motion done 2026-09-28**: vendored from its own Drive folder, byte-identical to the loose copy; the loose
+   copy is replaced by the ~/.agents link the next time Ben runs `./install.sh`.
 3. ~~Submodules~~ **Dropped 2026-09-27 (Ben's call).** energy-trader is used only by forewatt and
    property-expert only by yield-index, so each lives in its own repo's `.claude/skills/` and nowhere
    else: no user-level copy, no `sources.json` entry, no sync. (A private submodule would also have

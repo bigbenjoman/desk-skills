@@ -41,6 +41,26 @@
       "notes": "Ships with ux-designer in one zip.",
       "tree_sha256": "abc4ba2bd6427f0027b87be5739963e3269b549ab24ff911105ae98237f5ca29"
     },
+    "ux-motion": {
+      "source": {
+        "type": "drive",
+        "publisher": "Yummy Design",
+        "page": "https://drive.google.com/drive/folders/1gYrK4aT4A-LYr4GbM88-PaKu0wYyY4C6",
+        "folder_id": "1gYrK4aT4A-LYr4GbM88-PaKu0wYyY4C6",
+        "file_id": "12cgsDuT4eY2AtoQoZ2rXKMC4MuUXWNR6",
+        "file_name": "ux-motion.zip",
+        "zip_path": "",
+        "skill_subdir": "ux-motion"
+      },
+      "pin": {
+        "version": "March 2026",
+        "drive_modified": "Mar 17",
+        "zip_sha256": "7d4bfba15c2d561d83b3516cdd58d316d488a6df0c10af46c2e8258f869a3cc8"
+      },
+      "license": null,
+      "notes": "Its own Drive folder (Ben, 2026-09-28), separate from the ux/ui-designer zip. The zip holds the skill folder directly (no inner .skill file), plus __MACOSX metadata that is not vendored. Byte-identical to the loose ~/.claude/skills/ux-motion it replaces.",
+      "tree_sha256": "7965bdbf721bf78d9605174ef49bbaaccc603df5bf89173fc7bed67f22f20aa3"
+    },
     "ux-copywriter": {
       "source": {
         "type": "drive",
