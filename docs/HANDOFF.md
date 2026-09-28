@@ -9,11 +9,11 @@ is a modifier, `?`/`*` glob in unquoted args — use `bash -c '…' _ args` or q
 
 - **desk-skills** `~/desk-skills` → `bigbenjoman/desk-skills` (private). Per-repo config at
   `~/.config/desk/repos/<owner__name>/config.md`; `desk-env where`. Installed on this Mac.
-  Adversarial review record: `docs/review-2026-09-27.md`; tests: `bash tests/run.sh` (148 checks).
+  Adversarial review record: `docs/review-2026-09-27.md`; tests: `bash tests/run.sh` (211 checks as of 2026-09-28).
 - **Skills, one copy each**: `~/.agents/skills/<name>` is the only real copy, `~/.claude/skills/<name>`
   links to it. Sources in `vendor/sources.json` (types `github`, `drive`, `checkout`).
   `skills-upstream list|outdated|upgrade|verify|plugins|rehash`; `/desk-update` is the brew-style skill.
-  - 59 pinned third-party skills (byte-identical to a proven upstream commit / Drive zip).
+  - 58 pinned third-party skills (byte-identical to a proven upstream commit / Drive zip).
   - `checkout` type: `clerk` → `clerk/skills` cloned in `~/.agents/sources/clerk` with 11 sub-skills linked.
   - Backups of everything moved: `~/.agents/desk-backup/20260927-*`.
 - **pullbot** `~/pullbot` → `bigbenjoman/pullbot`, PR #1 merged (generic per-repo config).
