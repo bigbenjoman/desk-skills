@@ -146,6 +146,23 @@ git -C "$M" remote set-url origin git@github.com:Acme/Multi.git
 U links
 check "the same repo over ssh, different case, is the clone" '[ $rc -eq 0 ]'
 git -C "$M" remote set-url origin https://github.com/acme/multi
+# git failing for any other reason (here a config it cannot parse; dubious ownership is the same)
+# is not a "no": nothing may be moved aside on it, so it is UNVERIFIED and never sent to install.sh.
+cp "$M/.git/config" "$T/multi.config"; printf '[core\n' >> "$M/.git/config"
+U links
+check "an unreadable multi-skill clone is UNVERIFIED once, never WRONG COPY or install.sh" '[ $rc -eq 1 ] && [[ "$out" == *"UNVERIFIED  ~/.agents/sources/multi: git could not read its origin (fatal: bad config"* ]] && [ "$(printf "%s\n" "$out" | grep -c UNVERIFIED)" = 1 ] && [[ "$out" != *"WRONG COPY"* ]] && [[ "$out" != *"install.sh"* ]] && [[ "$out" == *"2 not"* ]]'
+U verify
+check "verify says UNVERIFIED, not NOT INSTALLED" '[ $rc -ne 0 ] && [[ "$out" == *"UNVERIFIED  ~/.agents/sources/multi"* ]] && [[ "$out" != *"NOT INSTALLED"* ]]'
+python3 "$R/bin/skills-upstream" is-clone-of "$M" acme/multi >/dev/null 2>&1; rc=$?
+check "is-clone-of on an unreadable clone exits 2, so install.sh leaves it alone" '[ $rc -eq 2 ]'
+cp "$T/multi.config" "$M/.git/config"
+cp "$A/solo/.git/config" "$T/solo.config"; printf '[core\n' >> "$A/solo/.git/config"
+U links
+check "an unreadable single-skill checkout is UNVERIFIED, not WRONG COPY" '[ $rc -eq 1 ] && [[ "$out" == *"UNVERIFIED  ~/.agents/skills/solo: git could not read its origin"* ]] && [[ "$out" != *"WRONG COPY"* ]] && [[ "$out" != *"install.sh"* ]]'
+cp "$T/solo.config" "$A/solo/.git/config"
+git init -q "$T/no-origin"
+python3 "$R/bin/skills-upstream" is-clone-of "$T/no-origin" acme/multi; rc=$?
+check "a clone with no origin remote is a confirmed no (exit 1)" '[ $rc -eq 1 ]'
 
 # The origin test itself, through `is-clone-of`, the entry point install.sh calls, so the installer
 # and links/verify share one rule: the origin must name exactly github.com/owner/repo.
