@@ -24,12 +24,13 @@ is a modifier, `?`/`*` glob in unquoted args — use `bash -c '…' _ args` or q
    `bin/skills-upstream` and `install.sh`, and the `clerk` entry). Then update README "Skills,
    one copy each" + `/desk-update` sections to describe `vendor/`, the three source types and
    `skills-upstream`.
-2. **interactive-prototype**: a Yummy Design skill still loose in `~/.claude/skills`. Ask Ben for its Google Drive
-   folder link, list it via `https://drive.google.com/embeddedfolderview?id=<id>`, download, confirm byte-identical,
-   add a `drive` entry (see ux-motion's, a zip with the folder at its root), `skills-upstream rehash`, then Ben runs
-   `./install.sh`. `learned` and `synced` are not skills (ECC data dir, claude.ai skill cache): leave them.
-   ✅ **ux-motion done 2026-09-28**: vendored from its own Drive folder, byte-identical to the loose copy; the loose
-   copy is replaced by the ~/.agents link the next time Ben runs `./install.sh`.
+2. ~~**interactive-prototype**~~ **Stays loose by decision (2026-09-28).** Its SKILL.md says `author: Yummy Labs`,
+   `version: 4.0.0`; it was installed at the same second as ux-motion (6 Aug 10:32:12), so both came from Yummy.
+   Ben doesn't remember the source, the original download is gone, and no public copy was found (Yummy Labs
+   sells a design course; this is likely its material). With no upstream to pin against it stays a loose real
+   folder in `~/.claude/skills`, and `skills-upstream links` ignores it because desk does not install it. If a
+   Drive/Notion link turns up, add a `drive` entry like ux-motion's. `learned` and `synced` are not skills
+   (ECC data dir, claude.ai skill cache): leave them. ✅ ux-motion done 2026-09-28 (#2).
 3. ~~Submodules~~ **Dropped 2026-09-27 (Ben's call).** energy-trader is used only by forewatt and
    property-expert only by yield-index, so each lives in its own repo's `.claude/skills/` and nowhere
    else: no user-level copy, no `sources.json` entry, no sync. (A private submodule would also have
