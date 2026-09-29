@@ -509,12 +509,12 @@
         "path": "plugins/python-development/skills/python-configuration"
       },
       "pin": {
-        "commit": "cbb60494b",
-        "date": "2026-01-30"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 2 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 1). Installed via `npx ski",
-      "tree_sha256": "6b4caceb0e07a9116acb16313c2e1b54b96df7e2e76daa62bc4948c1cd788ead"
+      "tree_sha256": "6c91728661cc3868e7f0288f1c049d19fb06428e885235e7a6319761e124e789"
     },
     "python-resilience": {
       "source": {
