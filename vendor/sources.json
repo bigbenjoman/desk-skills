@@ -89,12 +89,12 @@
         "install": "npx skills@latest add Vesely/skills/context-audit"
       },
       "pin": {
-        "commit": "8560b4f2d",
+        "commit": "89285609f",
         "date": "2026-04-13"
       },
       "license": null,
       "notes": "The repo has no licence file. A Codex-reworded variant existed in voicepa's .agents/skills; this is the upstream Claude Code version.",
-      "tree_sha256": "6570bad1023212ba9b64da6584b991a468e47b2e7c636b0f17fd35ef92b8e091"
+      "tree_sha256": "526aabb17992f948a2ebf399a7423053b3149a96652ad4f6dcdeecd7d55b2993"
     },
     "api-design-principles": {
       "source": {
