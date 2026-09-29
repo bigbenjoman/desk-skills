@@ -677,12 +677,12 @@
         "path": "plugins/api-scaffolding/skills/fastapi-templates/"
       },
       "pin": {
-        "commit": "f662524f9",
-        "date": "2026-01-15"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "1b27e4fa537a1998ade39a92bb3cecb972d8ae97abfe8bff6ee1560b2c444724"
+      "tree_sha256": "0caf4fcd52dc44bd0541d49e6167c07b8d63739b995023b597f3383c4d13080a"
     },
     "gcp-cloud-run": {
       "source": {
