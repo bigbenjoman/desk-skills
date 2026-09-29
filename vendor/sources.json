@@ -271,12 +271,12 @@
         "path": "plugins/python-development/skills/python-performance-optimization"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "51b6e0b50",
+        "date": "2026-09-28"
       },
       "license": "MIT",
       "notes": "Whole skill folder git-tree-identical to upstream at this commit (tree hash also equals ~/.agents/.skill-lock.json skillFolderHash; installed via npx skills). Newer upstream commits touch this folder; latest wshobson change is be57c0b2e 2026-05-22 (multi-harness marketplace) plus 47a5dbc3f 2026-03-0",
-      "tree_sha256": "45adcf218670f825c15039073ca3d36f8a62a0675db824041106efa585abab65"
+      "tree_sha256": "27c83db70e27a685ebd7b4276eb7ddbd5445843cf2b439cf7651ea2206cc9901"
     },
     "secrets-management": {
       "source": {
