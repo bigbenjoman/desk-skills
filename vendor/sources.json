@@ -103,12 +103,12 @@
         "path": "plugins/backend-development/skills/api-design-principles"
       },
       "pin": {
-        "commit": "f662524f9",
-        "date": "2026-01-15"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Whole skill folder git-tree-identical to upstream at this commit (tree hash also equals ~/.agents/.skill-lock.json skillFolderHash; installed via npx skills). Newer upstream commits touch this folder; latest wshobson change is be57c0b2e 2026-05-22 (multi-harness marketplace) plus 47a5dbc3f 2026-03-0",
-      "tree_sha256": "6e4c6182a25f4e38d11982821e460fe38bca33014affd63d42b892ad27159e76"
+      "tree_sha256": "c6a7d9a6d6820b7e21b1bd0b5cfd43c4917fdbde2025e7a331b1934fd341c4b4"
     },
     "auth-implementation-patterns": {
       "source": {
