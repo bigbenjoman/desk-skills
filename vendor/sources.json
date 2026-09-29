@@ -467,12 +467,12 @@
         "path": "skills/neon"
       },
       "pin": {
-        "commit": "4d02514f8",
-        "date": "2026-09-02"
+        "commit": "b4016a349",
+        "date": "2026-09-18"
       },
       "license": "Apache-2.0",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 47 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 11). Listed in ~/skills-l",
-      "tree_sha256": "fc4f0652cd5ce690e4ad170853a5fe044bc74062a1e30dfd4d7db3461f49004a"
+      "tree_sha256": "70e999c2e48b71454138770b0568388e1e9677bdb340c11dc357f445ede61e7a"
     },
     "nextjs-app-router-patterns": {
       "source": {
