@@ -719,12 +719,12 @@
         "path": "skills/neon-postgres/"
       },
       "pin": {
-        "commit": "ca7821ea5",
-        "date": "2026-09-04"
+        "commit": "dd290a9d9",
+        "date": "2026-09-23"
       },
       "license": "Apache-2.0",
       "notes": "Listed in ~/skills-lock.json (source neondatabase/agent-skills). SKILL.md + all 3 references byte-identical at ca7821e; SKILL.md changed 4 times since (latest dd290a9, 2026-09-23) - local behind.",
-      "tree_sha256": "7ea8b7b3e6d9eb55e849ba05287b6d965c4ab512d9cfebca9566fed160e81d9d"
+      "tree_sha256": "e73892d19b7fa1c148eaeb0b236e59ac3d69501ae347c43838ac6d82b3188861"
     },
     "openapi-spec-generation": {
       "source": {
