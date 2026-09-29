@@ -565,12 +565,12 @@
         "path": "plugins/payment-processing/skills/stripe-integration"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 11 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 9). Installed via `npx sk",
-      "tree_sha256": "b7b5770df5f3741f5673c62510669ac7d725544b794f8c7897f4ed0f2eed6525"
+      "tree_sha256": "8f95a9ae28768b9d1370b284e2f10cdf5fb09569ff9a6a884a45403d0ef2aba9"
     },
     "tailwind-design-system": {
       "source": {
