@@ -733,12 +733,12 @@
         "path": "plugins/documentation-generation/skills/openapi-spec-generation/"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "51b6e0b50",
+        "date": "2026-09-28"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (4 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "75d631036b75eef917f4f5aad9b3f8fd253ccedbc218d2e58a7cb928a5981ebf"
+      "tree_sha256": "e40d86b4591349333d43aa8f12555ae593490f03ed732d639e68b34d102414a0"
     },
     "programmatic-seo": {
       "source": {
