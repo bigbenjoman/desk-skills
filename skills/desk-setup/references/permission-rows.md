@@ -60,7 +60,7 @@ a row changes, say which of these applies.
 
 | Script | Rows it reads |
 |---|---|
-| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment`, `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
+| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
 | `pass.mjs` | `autopilot-workers`, `pr-images` |
@@ -126,7 +126,8 @@ rows).
 |---|---|---|---|---|---|
 | `pr-edit` | yes | body and title kept current, image table filled | text reviewers read. _Reach_: `gh pr edit` also adds reviewers and reaches any PR, so its rule needs `pr-request-review` too | ask | owners `pr-edit` + `pr-request-review`: `Bash(gh pr edit *)` · `ask: Bash(gh pr edit *--base*)` |
 | `pr-images` | yes | before/after images uploaded without a pause | drives a browser signed in to GitHub as you; never submits a comment | ask (every run) · no (placeholders) | `Bash(node ~/.claude/desk/bin/upload-images.mjs *)` |
-| `pr-self-review-comment` | yes | the clean §4 Local review command sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
+| `pr-review-others` | ask | `/desk-review` on a colleague's PR, or a sweep of the queue, posts where the author reads it | a `COMMENTED` review under your name on someone else's PR. Never approves or requests changes. Workers never review others' PRs; **known gap**: a worker's `pr-self-review-comment` grant allows `gh pr review` on any PR number, so that is the skill's rule, not the harness's | yes · no (report only) | — (`gh pr review` can approve, so it is never allow-listed; each post prompts) |
+| `pr-self-review-comment` | yes | the clean §4 Local review command sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR. The review itself goes up with `gh pr review --comment` or, from `/desk-review`, `gh api …/reviews` with event `COMMENT`; neither is allow-listed (both can approve), so each post still prompts in an interactive session | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
 | `pr-reply` | yes | clearance works, replies to and resolves review threads | replies under your name; resolving hides a thread. **Autopilot workers never get `gh api`, even at `yes`**: a worker replies only with `gh pr comment`, and resolving threads stays with you or the orchestrator | ask | — (`gh api graphql` cannot be scoped; `Bash(gh api *)` would also allow merges and deletions) |
 
 ## Round 7 — PR to merge

@@ -226,8 +226,16 @@ How to turn what you find into rows:
   files hold a database URL, warn plainly**: that URL is shared (often staging or production), and
   autopilot workers will get every §4 Database URL variable **blanked**, so they cannot run
   database-backed tests or migrations at all.
-- **Local review command.** Offer what the repo ships (a skill in `.agents/skills` or
-  `.claude/skills`, a `.pullbot.yml`), then `/code-review`, then `none`.
+- **Local review command.** Offer what the repo ships first (a review skill in `.agents/skills` or
+  `.claude/skills`), then `/desk-review`, then `/code-review`, then `none`. With `/desk-review`,
+  propose §4 Clean review verdict `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
+- **Review bar.** `default` unless the repo has its own bar file (search `review-bar`, `REVIEW.md`,
+  a review section in `CLAUDE.md`); then its path. Offer to copy desk-review's
+  `references/review-bar.md` into the repo as a starting point only if the user asks.
+- **Review domain experts.** List the repo's own skills (`.claude/skills`, `.agents/skills`) whose
+  description is domain knowledge rather than tooling (pricing, trading, property, regulation), and
+  propose a `` `<glob>: <skill>` `` for each, the glob being the code that domain lives in (find it
+  with `git ls-files | grep -i <domain word>`). The user confirms each; `none` is a fine answer.
 - **People.** For a solo repo propose `you` in every role and say so. For a team repo, propose from
   collaborators and CODEOWNERS; the user names the roles.
 - **AI attribution.** Propose `allowed` if recent commits already carry a Claude trailer (the repo's

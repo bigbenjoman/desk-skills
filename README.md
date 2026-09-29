@@ -36,6 +36,7 @@ Then `/desk-ticket <TICKET>` for one ticket, or `/desk-autopilot <TICKET> <TICKE
 | `desk-checkout` | Drafts your end-of-day check-out from calendar, meeting notes, Jira, GitHub, Slack and Claude Code; never sends it | `/desk-checkout` |
 | `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
 | `desk-jira` | Ticket comments, edits, transitions | loads itself |
+| `desk-review` | Reviews a branch, a PR or the open queue at this repo's bar: read-only finders, codex refutation, ticket checked both ways, posted as a verdict where allowed | `/desk-review`, `/desk-review 460` |
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
