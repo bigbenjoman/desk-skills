@@ -145,12 +145,12 @@
         "path": "skills/context7-mcp"
       },
       "pin": {
-        "commit": "1aa3430bf",
-        "date": "2026-05-04"
+        "commit": "1c081df0b",
+        "date": "2026-07-25"
       },
       "license": "MIT",
       "notes": "Single-file skill. Same blob is mirrored under plugins/{claude,codex,cursor,copilot}/context7/skills/context7-mcp at the same commit; canonical path is skills/context7-mcp. 2 newer commits; current HEAD blob 90542d4e differs.",
-      "tree_sha256": "7d0ea5c0074554b017ed7113129e7a5dce69be090d89ad7802d1bfadb01fbb97"
+      "tree_sha256": "47070338ffc8d697a5d4d0b278df9a0c3a9a0118182896e0e58720f11cbd5711"
     },
     "database-migration": {
       "source": {
