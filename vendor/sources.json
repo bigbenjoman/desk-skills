@@ -817,12 +817,12 @@
         "path": "skills/supabase-postgres-best-practices/"
       },
       "pin": {
-        "commit": "9b236f3eb",
-        "date": "2026-02-10"
+        "commit": "120776738",
+        "date": "2026-07-30"
       },
       "license": "MIT",
       "notes": "Folder tree at 9b236f3 == lock skillFolderHash 3285697. SKILL.md blob first appeared at a3b8151 (2026-01-27) but references differed then. Local CLAUDE.md is a materialised copy of an upstream symlink to AGENTS.md (content identical); installer omitted README.md and references/_*.md. SKILL.md change",
-      "tree_sha256": "ff617448a99c3ec541c680cf5f2a36f7d9dde4d1cc6b0d54567895631bb72a5c"
+      "tree_sha256": "a714d433362542f2d52e8b7958d1691c49fa4f43c9645c9a647895fb3ca85f92"
     },
     "web-design-guidelines": {
       "source": {
