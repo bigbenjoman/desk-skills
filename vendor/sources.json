@@ -257,12 +257,12 @@
         "path": "plugins/database-design/skills/postgresql-table-design"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "c80732de6",
+        "date": "2026-09-01"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (b4117b0e). Upstream folder was RENAMED plugins/database-design/skills/postgresql -> .../postgresql-table-design in c80732de6 (2026-09-01); check the new path for updates. 2 commits after match (b6a3da4aa 2026-03-26 trigger phrases, c80732de6 rename).",
-      "tree_sha256": "23a2fc2d5a3640b02a90f1445cd6e920a5c0a1f2f673257c101580dc23bca1a2"
+      "tree_sha256": "e5a4cc6b150fc21b69ce71d98bffbccbbee705b4dfd1aa6e4d4f6fd1c7cb63a8"
     },
     "python-performance-optimization": {
       "source": {
