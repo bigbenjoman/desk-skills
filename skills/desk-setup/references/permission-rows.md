@@ -60,7 +60,7 @@ a row changes, say which of these applies.
 
 | Script | Rows it reads |
 |---|---|
-| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment`, `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
+| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
 | `pass.mjs` | `autopilot-workers`, `pr-images` |

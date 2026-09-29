@@ -57,8 +57,8 @@ the rows. Every other missing row follows the config's rule 7: a §3 row missing
 | --- | --- |
 | `/desk-review` | **Default.** The current branch against its PR base, else `origin/<default>` |
 | `/desk-review 460` | One PR (number, `#460` or URL) |
-| `/desk-review <base>...<branch>` | A ref range |
-| `/desk-review path/to/file` | One file in full |
+| `/desk-review <base>...<branch>` | A ref range: `git diff <base>...<branch>`, reviewed SHA `git rev-parse <branch>`, report only |
+| `/desk-review path/to/file` | One file in full at `HEAD`, every line treated as changed; report only, no scope check, no verdict |
 | `/desk-review --sweep` | Every open non-draft PR not yet reviewed at its head |
 | `/desk-review --no-comment` | Report only: nothing reaches GitHub |
 | `/desk-review --limit N` | Cap the sweep (default 30) |
@@ -143,8 +143,25 @@ is empty and the run would report clean on a branch it never read.
 
 **An empty diff is a stated stop, never a clean review.**
 
-**A PR.** `gh pr view <n> --repo <owner>/<repo> --json number,author,baseRefName,headRefOid,title,body,isDraft,files`.
+**A PR.** `gh pr view <n> --repo <owner>/<repo> --json number,author,baseRefName,headRefOid,title,body,isDraft,files,additions,deletions,closingIssuesReferences`.
+(`additions` and `deletions` feed the >300-line tier rule; without them it is `null` and never fires.)
 Someone else's PR needs §3 `read-others`; without it, stop and say so.
+
+**A PR is reviewed in its own detached worktree**, never the current checkout: finders read callers
+and codex reads the cited files, and the current checkout is some other revision, so both would judge
+code the PR does not contain. Fetch into a per-PR ref (never the shared `FETCH_HEAD`, which parallel
+sweep fetches overwrite):
+
+```bash
+git fetch --quiet origin "+pull/<n>/head:refs/desk-review/pr-<n>"
+git worktree add --detach <scratchpad>/desk-review-pr-<n> refs/desk-review/pr-<n>
+```
+
+Confirm `git -C <that worktree> rev-parse HEAD` equals `headRefOid`; that SHA is the reviewed SHA
+and `<TIP>`. Finders get the worktree path as their working directory, and codex gets
+`--cd <that worktree>`. Remove it at the end (`git worktree remove --force <path>`, then
+`git update-ref -d refs/desk-review/pr-<n>`). If the fetch fails the PR is `ERRORED`, never reviewed
+from the wrong tree.
 
 **A sweep** (interactive only) is one GraphQL query for the whole queue, then a filter that skips
 every PR already carrying our review at its current head. `references/gotchas.md#the-sweep-query`
@@ -230,7 +247,9 @@ Each prompt carries, in order:
    win, and the `FINDING` block is the output format**: not Lena's `## Review Summary`, not
    Nadia's CRITICAL/HIGH (map them per the bar), and never `P3`.
 3. The diff command, substituted literally: branch `git diff "origin/<base>...HEAD"`; PR
-   `gh pr diff <n> --repo <owner>/<repo>`. Agents run it themselves. Never paste a diff into a prompt.
+   `git diff "origin/<base>...refs/desk-review/pr-<n>"` after `git fetch --quiet origin <base>`.
+   Agents run it themselves. Never paste a diff into a prompt. Not `gh pr diff`: GitHub refuses any
+   diff over 20,000 lines (`HTTP 406 … too_large`), so a big PR's finders would all error.
 4. The changed-file list, and the paths of §5 Repo instructions files (paths, not contents).
 5. One paragraph of intent: the PR title and the author-written description, or the branch name.
 6. The round, and on round 2+ the re-review rules below.
@@ -250,9 +269,8 @@ suggested_fix: <specific change, or "none">
 
 **Finders read the changed files and their direct callers, with two exceptions**, both for claims
 about code the diff does not contain. Both search the **reviewed revision**, `<TIP>`: `HEAD` on a
-branch; on a PR, `git fetch --quiet origin "pull/<n>/head"` then `FETCH_HEAD`, because a sweep's
-working tree is none of the PRs and searching it finds zero, which is a confident false verdict. If
-the fetch fails the search could not run: no finding, and say so.
+branch, `refs/desk-review/pr-<n>` on a PR (Phase 1). Searching any other tree finds zero, which is a
+confident false verdict. If the ref is missing the search could not run: no finding, and say so.
 
 - **Proving duplication.** Before raising one, search for the original **twice**, by likely name and
   by mechanism, because the existing copy is often named differently:
@@ -309,6 +327,8 @@ never paste a diff or ask it to run git. Independent calls may run in parallel.
 codex exec --sandbox read-only 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
 ```
 
+- **On a PR, add `--cd <the PR's worktree>`** after `--sandbox read-only`, so codex reads the PR's
+  files. The long form, never `-C`, which sits next to the denied `-c`.
 - **Single quotes, and plain words inside them.** In double quotes a backtick or `$` in the
   mechanism is command substitution, which makes the call compound and a worker refuses it. The
   worker's deny rules also match the prompt text, so ` -c `, ` -s `, `danger` or `--config` written
@@ -360,7 +380,7 @@ silently never fires on a branch. Then fetch:
 | --- | --- |
 | §4 Ticket key pattern, Tracker `jira` | `desk-jira get <KEY>` (needs §3 `read-own-work`, or `read-others` for someone else's ticket) |
 | §4 Other work id patterns | `$DESK_STATE/tickets/<KEY>.md` (`desk-env paths` prints `DESK_STATE`) |
-| Tracker `none` | the GitHub issue the PR body closes or links, `gh issue view <n> --repo <owner>/<repo>` |
+| Tracker `none` | the PR's `closingIssuesReferences` (Phase 1), each read with `gh issue view <issue number> --repo <owner>/<repo>`; never the PR's own number |
 
 If nothing matches, or the ticket cannot be read, say so in one line and continue: Direction 1 is
 skipped, Direction 2 still runs if there is a description.
@@ -541,9 +561,12 @@ A `gh` exit code is not evidence. Count our marker reviews **at the reviewed SHA
 and again after; the second count must be one higher:
 
 ```bash
-gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --paginate \
-  --jq '[.[] | select(.user.login=="<me>") | select(.commit_id=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
+gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --paginate --slurp | jq '[add[] | select(.user.login=="<me>") | select(.commit_id=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
 ```
+
+**`--paginate --slurp` piped to `jq`, never `--paginate --jq`**: `gh` runs `--jq` once per page, so
+a PR with more than one page of reviews prints several counts, and the before/after comparison reads
+the wrong one. `--slurp` refuses `--jq`, hence the pipe.
 
 A worker has no `gh api`. It reads the GraphQL shape, whose field names differ (`author.login`,
 `commit.oid`), and a copy of the REST filter there counts zero every time and double-posts:

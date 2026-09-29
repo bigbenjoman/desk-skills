@@ -16,6 +16,7 @@ gh api graphql -f owner=<owner> -f name=<repo> -f query='
 query($owner:String!, $name:String!) {
   repository(owner:$owner, name:$name) {
     pullRequests(states:OPEN, first:100, orderBy:{field:UPDATED_AT, direction:DESC}) {
+      pageInfo { hasNextPage }
       nodes { number title isDraft headRefOid baseRefName additions deletions
         author { login }
         files(first:100) { nodes { path } pageInfo { hasNextPage } }
@@ -23,7 +24,8 @@ query($owner:String!, $name:String!) {
     }
   }
 }' | jq --arg me '<me>' '
-  .data.repository.pullRequests.nodes
+  .data.repository.pullRequests.pageInfo.hasNextPage                as $pr_page_truncated
+  | .data.repository.pullRequests.nodes
   | map(select(.isDraft | not))                                    as $nd
   | ($nd | map(. as $pr
       | ([$pr.reviews.nodes[]
@@ -36,7 +38,8 @@ query($owner:String!, $name:String!) {
           rounds:          ($mine | length),
           mine:            ($pr.author.login == $me),
           filesTruncated:  $pr.files.pageInfo.hasNextPage }))       as $tagged
-  | { queued:        ($tagged | map(select(.reviewedAt == null))),
+  | { queueTruncated: $pr_page_truncated,
+      queued:        ($tagged | map(select(.reviewedAt == null))),
       skipped:       ($tagged | map(select(.reviewedAt != null)) | map({number, title, reviewedAt})),
       totalNonDraft: ($nd | length) }'
 ```
@@ -57,18 +60,25 @@ query($owner:String!, $name:String!) {
 - **`mine`** decides which §3 row governs posting (`pr-self-review-comment` or `pr-review-others`).
 - **`filesTruncated`** means over 100 files: the path list is short, the PR under-tiers, and files
   are hidden from the finders. Treat it as oversized and say so.
+- **`queueTruncated`** means more than 100 open PRs: the queue read is the 100 most recently updated.
+  Say so in the header (`queue truncated at 100`); never present it as the whole queue.
 - `first:100` is fetch depth, not `--limit`. Apply `--limit` after filtering and say when it
   truncated the queue.
+- **A PR with `filesTruncated`** gets its full list before routing, so the tier and the finders see
+  every file: once its worktree is fetched (SKILL.md Phase 1),
+  `git diff --name-only "origin/<base>...refs/desk-review/pr-<n>"`. Not `gh pr diff --name-only`,
+  which fails with `HTTP 406` on any PR over 20,000 diff lines, exactly the PRs this is for.
 
 ## Base merges
 
 For each queued PR with a `lastReviewedAt`:
 
 ```bash
-gh api "repos/<owner>/<repo>/pulls/<n>/commits" --paginate \
-  --jq '[.[] | select(.commit.committer.date > "<lastReviewedAt>") | select(.parents | length < 2)] | length'
+gh api "repos/<owner>/<repo>/pulls/<n>/commits" --paginate --slurp | jq '[add[] | select(.commit.committer.date > "<lastReviewedAt>") | select(.parents | length < 2)] | length'
 ```
 
+- **`--slurp` piped to `jq`, never `--paginate --jq`.** `gh` runs `--jq` once per page and prints a
+  count per page, so a real commit on page two sits behind a `0` from page one and the PR is skipped.
 - **`--paginate` is not optional.** The endpoint pages at 30 and caps at 250; unpaginated, it reads
   the oldest 30 and concludes nothing changed. That is a false skip.
 - A merge plus one real commit is a real push. The test is "were they all merges".
