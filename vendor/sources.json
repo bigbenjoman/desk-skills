@@ -341,12 +341,12 @@
         "path": "skills/api-security-best-practices"
       },
       "pin": {
-        "commit": "ebdc51708",
-        "date": "2026-01-22"
+        "commit": "ff782b590",
+        "date": "2026-09-05"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 7 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 6). Installed via `npx ski",
-      "tree_sha256": "3a7d4ad882bca0091230ae230aa3302a06dcc55403103d4168ca96008a888b2e"
+      "tree_sha256": "e5b5b0627900f87521e7d5199e23f97fc8ac2e8b9babf2bfbf88c8fab98bee19"
     },
     "backtesting-frameworks": {
       "source": {
