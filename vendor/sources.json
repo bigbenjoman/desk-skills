@@ -481,12 +481,12 @@
         "path": "plugins/frontend-mobile-development/skills/nextjs-app-router-patterns"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 4 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 2). Installed via `npx ski",
-      "tree_sha256": "bffd1ab24a55bd356ed8ec3a7ca2795ec91afced235f9aa6fa59bab07a0c2a67"
+      "tree_sha256": "33d98c836feebf8966c213873ad2cb06cc570e29e7937565258070959cb796d1"
     },
     "product-marketing": {
       "source": {
