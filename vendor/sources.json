@@ -383,12 +383,12 @@
         "path": "skills/data-engineer"
       },
       "pin": {
-        "commit": "0ffee4482",
-        "date": "2026-01-28"
+        "commit": "df08c3f9c",
+        "date": "2026-07-29"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 8 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 7). Installed via `npx ski",
-      "tree_sha256": "dfabf2fe370b0fab38d6ed0b7c438c0b2fe631897c47522df853c37b62ef8085"
+      "tree_sha256": "b210573200571e0e63021ae82a8cbe3b8a9b922fd4ba26461b5690516fe9f0d0"
     },
     "dbt-transformation-patterns": {
       "source": {
