@@ -537,12 +537,12 @@
         "path": "plugins/quantitative-trading/skills/risk-metrics-calculation"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 4 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 2). Installed via `npx ski",
-      "tree_sha256": "ae7250b91e3661ee68b6ed0cdf518dd47ad3e2a93b1c6d83591ad6cea54152fc"
+      "tree_sha256": "f2541b9497b45c0a232d998302faa7597bd52f705eb6fd3ed3b3198e541e4992"
     },
     "seo-audit": {
       "source": {
