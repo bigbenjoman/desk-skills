@@ -705,12 +705,12 @@
         "path": "plugins/machine-learning-ops/skills/ml-pipeline-workflow/"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "24df16297",
+        "date": "2026-03-16"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (1 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "9e917654dd45800be59cc84bd2afb4b055cc5e5bd2f001b0868d948b7c23d406"
+      "tree_sha256": "15fb40fc0bfd8813f878bc29ed368e73753709bf1194c985ca50380e37ae9bf3"
     },
     "neon-postgres": {
       "source": {
