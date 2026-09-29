@@ -59,12 +59,10 @@ jobs:
         run: npm test
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           files: ./coverage/lcov.info
 ```
-
-**Reference:** See `assets/test-workflow.yml`
 
 ### Pattern 2: Build and Push Docker Image
 
@@ -118,8 +116,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 ```
-
-**Reference:** See `assets/deploy-workflow.yml`
 
 ### Pattern 3: Deploy to Kubernetes
 
@@ -193,8 +189,6 @@ jobs:
         run: pytest
 ```
 
-**Reference:** See `assets/matrix-build.yml`
-
 ## Workflow Best Practices
 
 1. **Use specific action versions** (@v4, not @latest)
@@ -267,7 +261,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: "fs"
           scan-ref: "."
@@ -275,12 +269,12 @@ jobs:
           output: "trivy-results.sarif"
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: "trivy-results.sarif"
 
       - name: Run Snyk Security Scan
-        uses: snyk/actions/node@master
+        uses: snyk/actions/node@0.4.0
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 ```
@@ -320,12 +314,6 @@ jobs:
             }
 ```
 
-## Reference Files
-
-- `assets/test-workflow.yml` - Testing workflow template
-- `assets/deploy-workflow.yml` - Deployment workflow template
-- `assets/matrix-build.yml` - Matrix build template
-- `references/common-workflows.md` - Common workflow patterns
 
 ## Related Skills
 

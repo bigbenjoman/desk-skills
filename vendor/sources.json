@@ -453,12 +453,12 @@
         "path": "plugins/cicd-automation/skills/github-actions-templates"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "156b7a5e7",
+        "date": "2026-09-29"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 4 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 2). Installed via `npx ski",
-      "tree_sha256": "d1b43bd000e1f307ecf701c77726ca2d2da612bb7cc2b0cddc443c5652965664"
+      "tree_sha256": "1333e048feba98203574cad3d85e45bceaca2be8f407dd02a07fea45bdf4f132"
     },
     "neon": {
       "source": {
