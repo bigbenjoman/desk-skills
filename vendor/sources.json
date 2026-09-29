@@ -201,12 +201,12 @@
         "path": "skills/find-skills"
       },
       "pin": {
-        "commit": "66a7b901a",
-        "date": "2026-01-26"
+        "commit": "773fb2c7b",
+        "date": "2026-07-06"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (c2f31172). 3 newer commits on the path, latest 773fb2c7b 2026-07-10.",
-      "tree_sha256": "c1720ff6ac18832a05d91cd913eee8781310e9f376ce77b8d5fc25a32e530a89"
+      "tree_sha256": "b146008599c31057cef1c145774cea5d5afb30e8f43fa802e47a4b461419aaaf"
     },
     "gdpr-data-handling": {
       "source": {
