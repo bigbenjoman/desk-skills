@@ -775,12 +775,12 @@
         "path": "plugins/frontend-mobile-development/skills/react-state-management/"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "2a693f66ffba9c7693488a38a12dfac5d1a05b838bcc0b7dcb9659887ccdf3e1"
+      "tree_sha256": "d292c331733399d9ce7725749a21fd4900f575de22db1c2ca2f80fc1f11be133"
     },
     "schema": {
       "source": {
