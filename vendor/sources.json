@@ -579,12 +579,12 @@
         "path": "plugins/frontend-mobile-development/skills/tailwind-design-system"
       },
       "pin": {
-        "commit": "3ed95e608",
-        "date": "2026-02-01"
+        "commit": "51b6e0b50",
+        "date": "2026-09-28"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 6 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 3). Installed via `npx ski",
-      "tree_sha256": "dd505862c61cbb7a430dbba867b900e8441cd7d207fe0f770b072533ae357b7e"
+      "tree_sha256": "9d936fc75216bc992917448e0c4983fd99d5fb14a88aceeb32e49aac2bc818c2"
     },
     "vercel-react-best-practices": {
       "source": {
