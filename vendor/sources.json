@@ -285,12 +285,12 @@
         "path": "plugins/cicd-automation/skills/secrets-management"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "156b7a5e7",
+        "date": "2026-09-29"
       },
       "license": "MIT",
       "notes": "Whole skill folder git-tree-identical to upstream at this commit (tree hash also equals ~/.agents/.skill-lock.json skillFolderHash; installed via npx skills). Newer upstream commits touch this folder; latest wshobson change is be57c0b2e 2026-05-22 (multi-harness marketplace) plus 47a5dbc3f 2026-03-0",
-      "tree_sha256": "f96f069d040a31e611a5015590cce2035b540095020601f021f0795556aa41df"
+      "tree_sha256": "c496d67574a77849534b4dfb6f701c96fef96d68a78a7d184d7a331bd9900149"
     },
     "sql-optimization-patterns": {
       "source": {
