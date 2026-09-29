@@ -635,12 +635,12 @@
         "path": "plugins/data-engineering/skills/data-quality-frameworks/"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "128bfee23608a0cd2964f8c4dda10d7952929f755de15e32c35aa9dab1943f1f"
+      "tree_sha256": "fc4b7f76e7b6ab6de7b58082adfcdb9e03840baf36ce73052e73f1b8a0853893"
     },
     "deployment-pipeline-design": {
       "source": {
