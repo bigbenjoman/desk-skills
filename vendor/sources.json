@@ -397,12 +397,12 @@
         "path": "plugins/data-engineering/skills/dbt-transformation-patterns"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 4 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 2). Installed via `npx ski",
-      "tree_sha256": "87eefec34dafc7f46cca24066d73ff72b2fc99647ccf4f08f761a7db4da9716d"
+      "tree_sha256": "d61a91900a3ffc599e5112fb8bcd9c73e8b98854fd54ff4353db26c75b44b201"
     },
     "docker-expert": {
       "source": {
