@@ -159,12 +159,12 @@
         "path": "plugins/framework-migration/skills/database-migration"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Whole skill folder git-tree-identical to upstream at this commit (tree hash also equals ~/.agents/.skill-lock.json skillFolderHash; installed via npx skills). Newer upstream commits touch this folder; latest wshobson change is be57c0b2e 2026-05-22 (multi-harness marketplace) plus 47a5dbc3f 2026-03-0",
-      "tree_sha256": "0d4059fc322ed6ac5e9acea7a5172be217b2149afb1835fcaa143f791059ecac"
+      "tree_sha256": "78e769c35017a05fae85a0785d0f82fe6368a3d783939d231b34774187c15f7f"
     },
     "directory-submissions": {
       "source": {
