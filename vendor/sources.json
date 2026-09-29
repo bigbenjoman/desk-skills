@@ -691,12 +691,12 @@
         "path": "skills/gcp-cloud-run/"
       },
       "pin": {
-        "commit": "b5675d55c",
-        "date": "2026-01-19"
+        "commit": "e69f4f039",
+        "date": "2026-09-05"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13. Tree == lock skillFolderHash dd1788e; SKILL.md changed 9 times since (latest e69f4f0, 2026-09-05) - local behind. sickn33 is an aggregator repo; the skill may itself be copied from elsewhere, but it is the install source. Repo also has LICENSE-CONTENT.",
-      "tree_sha256": "92971ed1326f3dd90c789d8a1677456373f10ad709b78cfce2d0c9006ffbb56e"
+      "tree_sha256": "1ba8f61335f1e856cf0bd4e2779beb028ae59331be21cf5098f9dd6bb9b95913"
     },
     "ml-pipeline-workflow": {
       "source": {
