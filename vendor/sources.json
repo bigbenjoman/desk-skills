@@ -425,12 +425,12 @@
         "path": "skills/fastapi-pro"
       },
       "pin": {
-        "commit": "0ffee4482",
-        "date": "2026-01-28"
+        "commit": "c31a80c6b",
+        "date": "2026-09-05"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 8 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 7). Installed via `npx ski",
-      "tree_sha256": "244841d5548b57fdb3a317fb153ed5d08bf47cb2db059ffa1dfbd3507d3be521"
+      "tree_sha256": "23d65b2f53b8439a9c976f33cd76e699c41c9b959462af79a5c61c7ef3cdc66c"
     },
     "frontend-design": {
       "source": {
