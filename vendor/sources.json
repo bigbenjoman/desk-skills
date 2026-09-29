@@ -215,12 +215,12 @@
         "path": "plugins/hr-legal-compliance/skills/gdpr-data-handling"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Whole skill folder git-tree-identical to upstream at this commit (tree hash also equals ~/.agents/.skill-lock.json skillFolderHash; installed via npx skills). Newer upstream commits touch this folder; latest wshobson change is be57c0b2e 2026-05-22 (multi-harness marketplace) plus 47a5dbc3f 2026-03-0",
-      "tree_sha256": "431ac5a034a05ac18ba25474e5325e18daa46d53e2334120e2fc1f8e38b9b79d"
+      "tree_sha256": "2dc145ac70d7bd2293e003e7455f4b8c11c4943f7c73fba54752571f5d71dce6"
     },
     "kpi-dashboard-design": {
       "source": {
