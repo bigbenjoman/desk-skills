@@ -33,7 +33,8 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
 Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer
-`/desk-setup`. A `TODO` in a row this skill needs is not a gap to guess: stop, ask, offer
+`/desk-setup`. A `TODO` in a §3 row is a `no` (config rule 4), so it makes the run report-only,
+never stops it. A `TODO` in any other row this skill needs is not a gap to guess: stop, ask, offer
 `/desk-setup`. Then take:
 
 - §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`).
@@ -72,14 +73,15 @@ below marks its worker form. A sweep, or a review of someone else's PR, is never
 
 ## Phase 0: preflight
 
-Three checks, **before any agent is dispatched**. Record the run start at the same time; Phase 7
-needs it to prove the review landed:
+Four checks, **before any agent is dispatched**.
 
-```bash
-date -u +%Y-%m-%dT%H:%M:%SZ      # substitute the result literally into Phase 7
-```
+**0. A clean tree** (branch target only). `git status --porcelain` must print nothing. The finders
+read committed diffs, so an uncommitted fix is never reviewed, and the round-end check below cannot
+tell it from a finder's stray edit. Anything listed: stop with "commit first, then re-run". Never
+stash or discard it for the author.
 
-**1. Which GitHub account.** `gh auth status --active` and read the account line. It must be §1
+**1. Which GitHub account** (interactive; a worker skips this, since `gh auth` is denied to it and
+its `gh` is already the user's). `gh auth status --active` and read the account line. It must be §1
 GitHub handle. If it is not, stop and tell the user to switch it themselves
 (`! gh auth switch --user <me>`). Never run `gh auth switch` for them: it changes their global
 state, and a review posted under the wrong account is public. Never use a `GH_TOKEN=… gh` prefix:
@@ -87,8 +89,9 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
 
 **2. Whether codex may and can answer.** §3 `codex-review`:
 
-- `yes`: probe it. `ask`: ask once for this run, then probe on a yes. `no`: skip the probe; the run
-  is same-vendor (below).
+- `yes`: probe it. `ask`: ask before this run sends anything to codex (the whole run's
+  refutations are one use: one diff, one question), then probe on a yes. `no`: skip the probe; the
+  run is same-vendor (below).
 - The probe, as **one `codex`-prefixed command**, bounded by your tool timeout (~120s), never by
   `timeout` (absent on stock macOS) and never grown a pipe, `if` or `$(…)` (a worker's `dontAsk`
   refuses a compound command before the shell runs, printing nothing):
@@ -130,7 +133,10 @@ gh pr view --json number,baseRefName,headRefOid,title,body
 git diff --stat "origin/<base>...HEAD"
 ```
 
-`<base>` is the PR's `baseRefName`, or §0 Default branch when there is no PR. `gh pr view` with no
+`<base>` is the PR's `baseRefName`, or §0 Default branch when there is no PR. **The reviewed SHA
+is `git rev-parse HEAD`**, not the PR's `headRefOid`: a review run before a push (desk-ticket
+Stage 4b, desk-review-response's fix round) reads commits the PR does not have yet. Phase 7 posts
+only when the two are equal. `gh pr view` with no
 argument resolves the current branch's PR; **do not add `--repo`** there, or it demands a PR
 argument. Once a branch is pushed its upstream is its *own* remote branch, so `@{upstream}...HEAD`
 is empty and the run would report clean on a branch it never read.
@@ -159,7 +165,8 @@ has the query, the jq, and why each part is written as it is. The two rules that
 is that count + 1; a branch with no PR is round 1. Phase 3 needs it.
 
 **Oversized** (>2,000 changed lines, >80 files, or a file list the API truncated): review the
-highest-risk files and **name the ones skipped**. Never cap silently. Always skip generated files,
+highest-risk files and **name the ones skipped**. Never cap silently. The count of skipped
+reviewable files is the verdict's `partial`, and a partial review is never clean. Always skip generated files,
 lockfiles, snapshots, vendored code and build output.
 
 ## Phase 2: route
@@ -272,9 +279,9 @@ the fetch fails the search could not run: no finding, and say so.
   arrival*; one, where the abstraction exists to serve it, is *Speculative generality*; two or more
   is not a finding. **Cite the census** ("one consumer: `apps/web/x.ts:14`"). No census, no finding.
 
-**After the round, `git status --porcelain`.** A dirty tree means a finder edited something: save the
-stray diff to the scratchpad, restore with `git checkout -- <paths>`, re-run that finder, and say in
-the report that a round was discarded. Otherwise the refutation confirms findings about code nobody
+**After the round, `git status --porcelain`.** The tree was clean at Phase 0, so anything listed now
+is a finder's edit: save the stray diff to the scratchpad, restore with `git checkout -- <paths>`,
+re-run that finder, and say in the report that a round was discarded. Otherwise the refutation confirms findings about code nobody
 pushed.
 
 ### Re-reviews (round 2 and above)
@@ -286,7 +293,9 @@ watches "do X" become "do Y" and back. So on round 2+, every finder prompt adds:
    they said (`gh pr view <n> --comments`).
 2. **An addressed finding is settled**, even if a different fix would also have worked.
 3. **Raise no new P2s.** Confirm the P0s and P1s are fixed and catch what the fixes broke. A P0 an
-   earlier round missed still counts.
+   earlier round missed still counts. **Earlier findings the author has neither fixed nor answered
+   are carried forward** and stay in this round's counts: the verdict counts what is outstanding at
+   this head, not only what this round found.
 4. **`NO FINDINGS` is the expected ending.** If the history shows the same ground covered round after
    round, say so in the report: that needs a human, not another lap.
 
@@ -297,14 +306,23 @@ under ~800 characters, `file:line` named and the mechanism stated flat. Codex re
 never paste a diff or ask it to run git. Independent calls may run in parallel.
 
 ```bash
-codex exec --sandbox read-only "Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>"
+codex exec --sandbox read-only 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
 ```
 
+- **Single quotes, and plain words inside them.** In double quotes a backtick or `$` in the
+  mechanism is command substitution, which makes the call compound and a worker refuses it. The
+  worker's deny rules also match the prompt text, so ` -c `, ` -s `, `danger` or `--config` written
+  literally (a finding about `bash -c`, or `dangerouslySetInnerHTML`) gets the call denied. Describe
+  flags and API names in words: "runs its input through a shell", "sets raw HTML". An apostrophe is
+  written as a typographic ’, never `'`.
 - **No `-c`, `--config`, `-m` or `-p`.** Desk's harness asks on every one of them and a worker
   denies them. Reasoning effort is set in the user's `~/.codex/config.toml`, not per call.
 - **Never offer a benign alternative** ("or is this deliberate?"). Codex rejects when uncertain, so
   the clause flips real findings to REJECTED with no change in the code.
-- An empty or useless reply is **REJECTED, refutation did not run**, not a pass.
+- **An empty, denied or useless reply is `UNREFUTED`**, never REJECTED and never a pass. Retry it
+  once with the prompt reworded. Still nothing: the finding stays in the report under its severity,
+  tagged `UNREFUTED`, and is counted in the verdict's `unrefuted`. A run with any `UNREFUTED`
+  finding is not clean. Dropping it would turn a refuter outage into a clean verdict.
 - Same-vendor (agreed in Phase 0): the same prompt to `ada-devils-advocate`, else `general-purpose`,
   every verdict tagged `(same-vendor)`.
 
@@ -313,7 +331,7 @@ already handles it, or when the repo already records it as known (per the bar's 
 the diff leaves the anchored code untouched. **When genuinely uncertain, reject**: a missed issue
 costs less than a false positive that burns the author's time.
 
-Only `CONFIRMED` findings reach the report. Duplicates merge: keep the clearest write-up and the
+`CONFIRMED` and `UNREFUTED` findings reach the report; `REJECTED` ones do not. Duplicates merge: keep the clearest write-up and the
 union of the evidence. Requirement gaps never enter this phase (Phase 5 owns them).
 
 **Existing bot comments** (interactive, on a PR): tag any surviving finding an automated reviewer
@@ -352,11 +370,14 @@ skipped, Direction 2 still runs if there is a description.
 first, then test what is left:
 
 ```bash
-gh pr view <n> --repo <owner>/<repo> --json body --jq .body > <scratchpad>/body.md
-perl -0pe 's{<!--\s*([\w:.-]+)\s*-->.*?<!--\s*/\1\s*-->}{}gs; s{<!--.*?-->}{}gs' <scratchpad>/body.md
+gh pr view <n> --repo <owner>/<repo> --json body --jq '(.body // "") | gsub("(?s)<!--\\s*[\\w:.-]+\\s*-->.*?<!--\\s*/[\\w:.-]+\\s*-->"; "") | gsub("(?s)<!--.*?-->"; "") | test("\\S")'
 ```
 
-Nothing but whitespace left means no author-written intent. With no ticket as well, **Direction 2
+`false` means no author-written intent (paired generated blocks and every other HTML comment
+stripped, only whitespace left). It is one `gh` command, so it runs in a worker too. `gh --jq` is
+gojq on Go's RE2, which has **no backreferences**: an opening block is closed by the next
+`<!-- /name -->` of any name, never `\k<name>`, which errors. With no PR yet
+(Stage 4b runs before one opens) there is no description: intent is the ticket or the branch. With no ticket as well, **Direction 2
 does not run**: say "scope not checked: no ticket and no author-written description". Never infer
 intent from the diff and mark the diff against it; that always returns clean.
 
@@ -452,11 +473,14 @@ and one line on what was checked.
 
 | The PR is | Row | `yes` | `ask` | `no` or missing |
 | --- | --- | --- | --- | --- |
-| yours (author is `<me>`) | `pr-self-review-comment` | post | ask once for this run | report only, and say so |
-| someone else's | `pr-review-others` | post | ask once, listing the PRs | report only, and say so |
+| yours (author is `<me>`) | `pr-self-review-comment` | post | ask before posting | report only, and say so |
+| someone else's | `pr-review-others` | post | ask before each post (a sweep asks one question listing every PR, answered per PR) | report only, and say so |
 
 `--no-comment`, or nowhere to land (a range, a file, a branch with no PR), also means report only;
-say which. **Before posting to more than 3 PRs in one run, print the list and ask**, whatever §3
+say which. So does **a reviewed SHA that is not the PR's head** (`git rev-parse HEAD` ≠
+`headRefOid`, usually because the fix is not pushed yet): print the report, and post it after the
+push, once `headRefOid` equals the reviewed SHA. Never stamp a verdict on a commit the finders did
+not read. **Before posting to more than 3 PRs in one run, print the list and ask**, whatever §3
 says: the row settles whether to post, this settles how many. **Never `--approve`, never
 `--request-changes`, never an `APPROVE` or `REQUEST_CHANGES` event.**
 
@@ -464,19 +488,22 @@ says: the row settles whether to post, this settles how many. **Never `--approve
 
 ```
 <!-- desk-review:local -->
-<!-- desk-review:verdict v=1 sha=<full headRefOid> p0=0 p1=0 p2=0 deferred=0 gaps=0 vendor=codex-cross round=1 -->
+<!-- desk-review:verdict v=1 sha=<full reviewed SHA> p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=1 -->
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `sha` | The full head SHA the finders read. It attests that commit and no other |
+| `sha` | The full SHA the finders read, equal to the PR head when posted. It attests that commit and no other |
 | `p0` `p1` `p2` | Findings **outstanding at this head**. One raised and already fixed in this SHA is `0` |
 | `deferred` | Findings deliberately left unfixed, any severity. A body reading "clean" that defers one is `deferred=1` |
 | `gaps` | Open requirement gaps, excluding `UNVERIFIED CODE CLAIM` ones (never posted) |
+| `unrefuted` | Findings whose refutation did not run (also counted in their `p` field) |
+| `partial` | Reviewable files skipped by the oversized cap; non-zero is never clean |
 | `vendor` | `codex-cross` only when every refutation really ran on codex; else `same-vendor` |
 | `round` | The round this review is |
 
-With these markers §4 Clean review verdict for this skill is `p0=0 p1=0 p2=0 deferred=0 gaps=0`.
+With these markers §4 Clean review verdict for this skill is
+`p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
 `deferred` earns its place: prose that opens "no findings" and defers one further down reads as clean
 to a human skimming and to any regex over the summary.
 
@@ -497,11 +524,12 @@ of a review then means *not reviewed*, unambiguously, and the next sweep's skip 
 - **`UNVERIFIED CODE CLAIM` gaps never reach GitHub** in any form.
 
 Interactive: one call posts the body and its inline comments as a single review
-(`references/gotchas.md#posting` has the JSON). In a worker, which has no `gh api`, everything goes
-in the body:
+(`references/gotchas.md#posting` has the JSON). In a worker, which has no `gh api` and writes only
+inside its worktree, everything goes in the body, written to `desk-review.md` at the worktree root
+after the finders are done, and removed afterwards with `git clean -f desk-review.md`:
 
 ```bash
-gh pr review <n> --repo <owner>/<repo> --comment --body-file <scratchpad>/review.md
+gh pr review <n> --repo <owner>/<repo> --comment --body-file desk-review.md
 ```
 
 Every placeholder is substituted **literally**, never a shell variable: `gh pr review ""` does not
@@ -509,17 +537,26 @@ fail, it resolves the PR for the current branch and posts the review on an unrel
 
 ### Confirm it landed
 
-A `gh` exit code is not evidence. Count what came back, with the Phase 0 run start:
+A `gh` exit code is not evidence. Count our marker reviews **at the reviewed SHA**, before posting
+and again after; the second count must be one higher:
 
 ```bash
 gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --paginate \
-  --jq '[.[] | select(.user.login=="<me>") | select(.submitted_at > "<run start>")] | length'
+  --jq '[.[] | select(.user.login=="<me>") | select(.commit_id=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
 ```
 
-A worker uses `gh pr view <n> --repo <owner>/<repo> --json reviews` and counts the same way. **Zero
-means nothing landed**: post once more and say it took two attempts. `--paginate` is not optional
-(without it the newest reviews fall off and you re-post a review that landed), and compare a count
-to zero, never `.[-1]` to a string (null on an empty array, so the check passes quietly). On a sweep,
+A worker has no `gh api`. It reads the GraphQL shape, whose field names differ (`author.login`,
+`commit.oid`), and a copy of the REST filter there counts zero every time and double-posts:
+
+```bash
+gh pr view <n> --repo <owner>/<repo> --json reviews --jq '[.reviews[] | select(.author.login=="<me>") | select(.commit.oid=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
+```
+
+**No increase means nothing landed**: post once more and say it took two attempts. A count that was
+already non-zero before posting means this SHA has a verdict: do not post a second one with
+different counts (above). `--paginate` is not optional (without it the newest reviews fall off and
+you re-post a review that landed), and compare counts, never `.[-1]` to a string (null on an empty
+array, so the check passes quietly). On a sweep,
 confirm every PR in one loop before writing the report; a PR still at zero is named, never counted
 as posted.
 
@@ -557,6 +594,8 @@ gh run rerun <run id> --repo <owner>/<repo> --failed
 | Duplication or dead-code finding with no citation | No original or census at `file:line`, no finding |
 | Several findings in one codex prompt, or `-c` on the call | One finding per call, under ~800 chars, no config flags |
 | `CONFIRMED` from a same-vendor pass left untagged | `(same-vendor)` on every finding and `vendor=same-vendor` |
+| An empty codex reply treated as REJECTED | `UNREFUTED`, reported and counted, never clean |
+| Reviewing with uncommitted changes, or stamping `headRefOid` on a local-only commit | Clean tree first; post only when HEAD is the PR head |
 | P2 or a scope finding posted inline | Body only |
 | Posting an `UNVERIFIED CODE CLAIM` | Terminal only |
 | `GH_TOKEN=… gh …` or `$N` in a posting command | Plain `gh` as §1 GitHub handle, values substituted literally |

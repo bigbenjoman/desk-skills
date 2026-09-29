@@ -228,7 +228,7 @@ How to turn what you find into rows:
   database-backed tests or migrations at all.
 - **Local review command.** Offer what the repo ships first (a review skill in `.agents/skills` or
   `.claude/skills`), then `/desk-review`, then `/code-review`, then `none`. With `/desk-review`,
-  propose §4 Clean review verdict `p0=0 p1=0 p2=0 deferred=0 gaps=0`.
+  propose §4 Clean review verdict `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
 - **Review bar.** `default` unless the repo has its own bar file (search `review-bar`, `REVIEW.md`,
   a review section in `CLAUDE.md`); then its path. Offer to copy desk-review's
   `references/review-bar.md` into the repo as a starting point only if the user asks.

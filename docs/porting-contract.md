@@ -114,8 +114,8 @@ the repo it is in rather than assume one. A repo that needs a tailored agent add
 
 ## desk-review, ported from pullbot
 
-`skills/desk-review` is studia-web's `/pullbot` skill made repo-generic. Its behaviour and every false-clean
-rail stay (base not `@{upstream}`, marker `startswith`, base-merge skip, cited duplication and consumer
+`skills/desk-review` is studia-web's `/pullbot` skill made repo-generic. Its behaviour and its false-clean
+rails stay, and it adds more (see the table) (base not `@{upstream}`, marker `startswith`, base-merge skip, cited duplication and consumer
 census, cross-vendor refutation asked-for not assumed, read-back of the posted review, `--failed`
 reruns). What changed, and why:
 
@@ -131,3 +131,6 @@ reruns). What changed, and why:
 | Stripping the `studia-preview-links` block | stripping any paired HTML-comment block and remaining comments |
 | `pullbot-gate` rerun | only where a `§4 Required check` reads the verdict, under `§3 ci-rerun` |
 | `<!-- pullbot:local -->`, `pullbot:verdict … rounds=`, `pullbot:reply` | `<!-- desk-review:local -->`, `desk-review:verdict … round=`, `desk-review:reply` |
+| Unverified refutation reads as REJECTED | `UNREFUTED`: kept, counted in `unrefuted=`, never clean |
+| Oversized review can still read clean | `partial=` counts skipped files; non-zero is never clean |
+| Verdict stamped with `headRefOid` | the SHA the finders read (`git rev-parse HEAD`), posted only when it is the PR head; clean tree required first |

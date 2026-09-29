@@ -281,7 +281,7 @@ such thing.
 | `gh` token scopes | `TODO` (needs `repo` and `workflow`) |
 | Codex answers a real call? | `TODO` (`codex exec`, never `codex login status`) |
 | Local review command | `TODO` (run before opening a PR and posted with `pr-self-review-comment`: `/desk-review`, a review skill the repo ships, `/code-review`; `none` to skip) |
-| Clean review verdict | `TODO` (how the local review says clean: for `/desk-review`, `p0=0 p1=0 p2=0 deferred=0 gaps=0`; or e.g. `no findings`) |
+| Clean review verdict | `TODO` (how the local review says clean: for `/desk-review`, `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`; or e.g. `no findings`) |
 | Review bar | `TODO` (`default` for desk-review's built-in bar, or the repo path of this repo's own, e.g. `docs/review-bar.md`) |
 | Review domain experts | `TODO` (skills a `/desk-review` finder loads for matching paths, one span each as `` `<glob>: <skill>` ``, e.g. `` `apps/api/pricing/**: energy-trader` ``; or `none`) |
 | Project subagents sync | `TODO` (command a fresh worktree needs to link `.claude/agents`, or `none`) |
