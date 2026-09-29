@@ -126,6 +126,7 @@ rows).
 |---|---|---|---|---|---|
 | `pr-edit` | yes | body and title kept current, image table filled | text reviewers read. _Reach_: `gh pr edit` also adds reviewers and reaches any PR, so its rule needs `pr-request-review` too | ask | owners `pr-edit` + `pr-request-review`: `Bash(gh pr edit *)` · `ask: Bash(gh pr edit *--base*)` |
 | `pr-images` | yes | before/after images uploaded without a pause | drives a browser signed in to GitHub as you; never submits a comment | ask (every run) · no (placeholders) | `Bash(node ~/.claude/desk/bin/upload-images.mjs *)` |
+| `pr-review-others` | ask | `/desk-review` on a colleague's PR, or a sweep of the queue, posts where the author reads it | a `COMMENTED` review under your name on someone else's PR. Never approves or requests changes. Workers never review others' PRs | yes · no (report only) | — (`gh pr review` can approve, so it is never allow-listed; each post prompts) |
 | `pr-self-review-comment` | yes | the clean §4 Local review command sweep posted where the reviewer reads it | a comment under your name. _Reach_: any PR | ask | `Bash(gh pr comment *)` (never `gh pr review`, which can approve) |
 | `pr-reply` | yes | clearance works, replies to and resolves review threads | replies under your name; resolving hides a thread. **Autopilot workers never get `gh api`, even at `yes`**: a worker replies only with `gh pr comment`, and resolving threads stays with you or the orchestrator | ask | — (`gh api graphql` cannot be scoped; `Bash(gh api *)` would also allow merges and deletions) |
 

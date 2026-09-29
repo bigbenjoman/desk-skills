@@ -43,7 +43,7 @@ from shell, `desk_cfg` / `desk_perm` / `desk_load_paths` in `desk-env.sh`.
 | `🏁 CI gate` and its list of checks, Protect Main ruleset | `§4 Required checks`, `§4 Advisory checks`, `§4 Branch protection`, and the one definition of "green" in the config's Rules (required checks succeeded at the exact head, skipped not counting; nothing else red or pending unless advisory; merges pinned with `--match-head-commit`) |
 | "build the Lambda images before merging backend changes" and similar manual steps | `§4 Merge holds` (`` `<glob>: <why>` ``): skills never merge such a PR and report the reason |
 | `--squash` | `§4 Merge method` |
-| `/pullbot`, `pullbot-gate`, `review-bar`, `p0=0 p1=0 p2=0` | `§4 Local review command`, `§4 Clean review verdict` |
+| `/pullbot`, `pullbot-gate`, `review-bar`, `p0=0 p1=0 p2=0` | `§4 Local review command`, `§4 Clean review verdict`; desk now ships its own, `desk-review` (below) |
 | bun only, `mise exec -- bun`, npm/pnpm/npx blocked | `§4 Package manager`, `§4 Command prefix`, and the `§4 Toolchain` command rows |
 | `bun run agents:sync` | `§4 Project subagents sync` |
 | Postgres `studia-web-postgres-1`, Typesense, Mailpit, `specs-it/` | `§4 Local database`, `§4 Local services`; permission keys `local-reindex`, `tests-shared-db` |
@@ -111,3 +111,23 @@ the repo it is in rather than assume one. A repo that needs a tailored agent add
    Studia's user roles.
 5. **Tickets**: Bea writes to the tracker in §4 via `desk-jira`; with Tracker `none` she drafts a
    GitHub issue (`gh issue create`). Neither is created without the user's approval.
+
+## desk-review, ported from pullbot
+
+`skills/desk-review` is studia-web's `/pullbot` skill made repo-generic. Its behaviour and every false-clean
+rail stay (base not `@{upstream}`, marker `startswith`, base-merge skip, cited duplication and consumer
+census, cross-vendor refutation asked-for not assumed, read-back of the posted review, `--failed`
+reruns). What changed, and why:
+
+| pullbot | desk-review |
+|---|---|
+| `review-bar` skill in the repo | `§4 Review bar` (`default` = `references/review-bar.md`, or a repo path) plus `§4 What review here consistently asks for` |
+| `knowledge:check` and `.agents/knowledge` domain files | the bar's *Never report* for known issues the repo records, and `§4 Review domain experts` (`<glob>: <skill>`), which also replaces `.pullbot.yml`'s skill list |
+| Studia's `src/…` tier and routing regexes | stack-neutral patterns (TypeScript and Python layouts, docs and planning excluded), plus `§4 Infra and security owner` paths and `§4 Merge holds` |
+| `GH_TOKEN=$(gh auth token -u …) gh …` account resolution | plain `gh` as `§1 GitHub handle`, checked in preflight; workers deny `VAR=value` prefixes |
+| Posts by default, without asking | `§3 pr-self-review-comment` for your PRs, new `§3 pr-review-others` for colleagues' |
+| Codex batches of ~5 with `-c model_reasoning_effort` | one finding per call, no `-c`/`-m`: the desk harness asks on config flags and workers deny them |
+| `SV-` from branch or title, Atlassian MCP | `§4 Ticket key pattern` via `desk-jira get`, other ids from `$DESK_STATE/tickets`, GitHub issues with Tracker `none` |
+| Stripping the `studia-preview-links` block | stripping any paired HTML-comment block and remaining comments |
+| `pullbot-gate` rerun | only where a `§4 Required check` reads the verdict, under `§3 ci-rerun` |
+| `<!-- pullbot:local -->`, `pullbot:verdict … rounds=`, `pullbot:reply` | `<!-- desk-review:local -->`, `desk-review:verdict … round=`, `desk-review:reply` |
