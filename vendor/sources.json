@@ -649,12 +649,12 @@
         "path": "plugins/cicd-automation/skills/deployment-pipeline-design/"
       },
       "pin": {
-        "commit": "56848874a",
-        "date": "2026-01-19"
+        "commit": "be57c0b2e",
+        "date": "2026-05-22"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (5 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "69771369281dad227c832fdfbe5458c0faba2bcd45b595bc8b468ca99e8de86c"
+      "tree_sha256": "791dbf6eb26565669b989a039292c10d9dc1a447c5e988c645058c2222b7624e"
     },
     "e2e-testing-patterns": {
       "source": {
