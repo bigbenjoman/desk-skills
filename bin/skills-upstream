@@ -873,7 +873,9 @@ def cmd_index(quiet=False, only_names=None):
             "change `desk/skill-areas.json` in desk-skills and re-run.\n\n"
             "1. Pick the area below that fits the request. If none fits, no skill applies: say so and carry on.\n"
             "2. Read only that area's file (the path is relative to this skill's directory).\n"
-            "3. Load the one skill whose description matches, by its exact name. A skill a rule or the user names is loaded regardless.\n\n"
+            "3. Load the one skill whose description matches, by its exact name. A skill a rule or the user names is loaded regardless.\n"
+            "4. This index is machine-wide; a repo can switch plugins off (`/desk-setup` step 4b). A skill that is not in your\n"
+            "   skill listing is off here: take the next best match from the same area file, or none.\n\n"
             "| Area | Covers | Read | Skills |\n|---|---|---|---|\n" + "\n".join(table) + "\n")
     shutil.rmtree(INDEX, ignore_errors=True)
     os.replace(tmp, INDEX)
