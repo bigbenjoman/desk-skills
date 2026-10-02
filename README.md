@@ -118,6 +118,27 @@ skills-upstream rehash                # re-record tree hashes after adding an en
 track a skill that has no entry yet, prove a specific upstream version is byte-identical to the
 installed copy first; a skill whose source cannot be proven stays untracked and is reported as such.
 
+## Skill index: listing skills by name only
+
+Claude Code resends every installed skill's description on every turn and cuts descriptions to fit
+its budget (about 30,000 characters on a machine with ~170 skills, desk's own among those cut). So
+`install.sh` builds a two-level catalogue and, if you agree, lists skills by name only:
+
+- `skills-upstream index` writes `~/.agents/skills/skill-index`: a short map of areas (desk
+  workflow, security and privacy, UX and design, ...) and `areas/<area>.md` with each skill's full
+  description. Claude reads the map, then one area file. Areas come from
+  [`desk/skill-areas.json`](desk/skill-areas.json); a skill no glob matches is reported, so add it there.
+- `skills-upstream index --name-only` (asked by `install.sh`) sets your own and claude.ai skills to
+  `name-only`, lowers `skillListingBudgetFraction` to 0.003, and adds
+  `~/.claude/rules/desk-skill-index.md` pointing at the index. Entries you set yourself are kept.
+- Plugin skills cannot be set name-only, so `/desk-setup` step 4b switches off, **per repo**, the
+  plugins that repo does not need (from its own files, confirmed by you).
+
+Measured 2026-10-02: the listing went from 29,954 to 9,648 characters; 29 of 30 test prompts loaded
+the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo: delete the
+`skillOverrides` entries listed in `~/.claude/desk/skill-index.name-only.json` and
+`skillListingBudgetFraction` from `~/.claude/settings.json`, and the rule file.
+
 ## Install
 
 ```bash

@@ -381,6 +381,38 @@ repo in `$DESK_STATE/workers/`.
 Say plainly: a harness rule removes the prompt, not the skill's own gate. Autopilot workers never
 use these rules.
 
+## 4b. Plugins this repo needs
+
+Every enabled plugin's skills are listed to Claude on every turn, and plugin skills cannot be
+listed by name only, so a repo pays for plugins it never uses, and look-alike skills (37
+`vercel:*`) are the main cause of wrong picks. Settings precedence is user < project < local, so a
+`false` in this repo's `settings.local.json` switches a plugin off **here only**. Measured
+2026-09-30: switching off five plugins took a session's listing from 172 skills to 86.
+
+```bash
+P=~/.agents/skills/desk-setup/bin/repo-plugins.py
+python3 $P --root "$ROOT" suggest          # JSON: plugin, skills, suggest keep/off, evidence, now
+```
+
+It only covers plugins whose relevance this repo's own files can show (Vercel, Stripe, Figma, the
+two legal plugins, Atlassian, TypeSafe). General ones are never offered here: codex (desk-review's
+refutation), playwright (screenshots), review and process plugins.
+
+1. Show each row as `keep`/`off`, its skill count and the evidence in one line, then **one**
+   `AskUserQuestion` (multiSelect): "Switch these plugins off in this repo?", every suggested `off`
+   pre-listed first and marked (Recommended), the evidence as each description. The suggestion is a
+   starting point: the user knows what the repo touches outside its files (a Stripe dashboard, a
+   contract they review here).
+2. Apply what they pick, and only that, to this repo:
+
+```bash
+python3 $P --root "$ROOT" apply --off <id,id,…>     # --on <id,…> undoes an earlier off
+```
+
+It refuses (exit 2, nothing written) when `.claude/settings.local.json` is tracked or not
+git-ignored here, the same rule as §4; pass that on with the `.gitignore` line as the user's action.
+It backs the file up first. Autopilot workers are unaffected: they load no plugins at all.
+
 ## 5. Write it, then show every row
 
 `mkdir -p` the config folder (`chmod 700`), then write `CONFIG` from the template
@@ -424,6 +456,7 @@ conventions: branches <…> · PR title <…> · attribution <forbidden/allowed>
 connectors: Atlassian <present/missing/not needed> · Slack <…> · Figma <…> · Vercel <…> · Playwright <…>
 harness   : deny-only plan <already there / n NEW> (user-level) · <n> NEW allow · <n> ask · <n> guards removed ·
             <n> yours (untouched) → <root>/.claude/settings.local.json · backup <path>
+plugins   : off here <ids / none> · kept <ids> (skills listed <before> → <after>)
 still TODO: <rows>
 ```
 

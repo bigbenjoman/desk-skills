@@ -421,6 +421,14 @@ if (mode === 'triage') {
 }
 
 const settings = { permissions: { allow: [...new Set(allow)], deny: [...new Set(deny)], additionalDirectories: [...dirs] } };
+// Claude Code's bundled skills are the only ones in a worker's skill listing (--setting-sources ""
+// drops the user's), and that listing is resent every turn: 13 skills, ~6,200 characters, measured
+// 2026-09-30. Hide the ones no worker uses, but keep any the §4 Local review command names (e.g.
+// `/code-review`), which the worker runs at Stage 4b. A bundled skill added later is listed until named here.
+const BUNDLED_UNUSED = ['dataviz', 'update-config', 'keybindings-help', 'code-review', 'simplify', 'fewer-permission-prompts',
+  'loop', 'schedule', 'claude-api', 'workflow-authoring', 'run', 'init', 'security-review'];
+const reviewSkills = new Set(cfgList('local-review').map((v) => /^\/([A-Za-z0-9:_-]+)/.exec(String(v).trim())?.[1]).filter(Boolean));
+settings.skillOverrides = Object.fromEntries(BUNDLED_UNUSED.filter((n) => !reviewSkills.has(n)).map((n) => [n, 'user-invocable-only']));
 // The attribution hook normally lives in the user's settings, which workers do not load.
 const HOOK = join(E.HOME, '.claude', 'hooks', 'deny-ai-attribution.py');
 if (existsSync(HOOK)) {
