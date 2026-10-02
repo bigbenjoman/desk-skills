@@ -3,10 +3,12 @@ name: desk-update
 description: >-
   Use when the user wants their skills brought up to date, brew-style — "update my skills",
   "desk update", "are my skills outdated", "check for skill updates", "upgrade the Yummy skills",
-  "is there a new version of <skill>", "brew update for skills". Updates desk-skills itself, checks
-  every pinned third-party skill against where it came from (GitHub, Google Drive), checks Claude
-  Code plugins and their marketplaces, and upgrades only what the user picks, after showing what
-  changed. Not per repo: it runs from anywhere.
+  "is there a new version of <skill>", "brew update for skills", "update desk". Pulls and installs
+  desk-skills itself (no separate ./install.sh), checks every pinned third-party skill against where
+  it came from (GitHub, Google Drive), checks Claude Code plugins and their marketplaces, offers any
+  new desk setting (skills listed by name only) and, inside a configured repo, the plugins that repo
+  does not need; upgrades and changes only what the user picks, after showing what changed. Runs
+  from anywhere.
 argument-hint: "[outdated | <skill>... | --all]"
 ---
 
@@ -47,6 +49,16 @@ If there are incoming commits and the tree is clean, `git -C "$D" pull --ff-only
 one line each. A dirty tree or a diverged branch: say so and skip the pull (never stash, reset or
 merge for the user).
 
+**Then install them, in the same run.** A pull alone changes nothing the user runs: the skills,
+agents, scripts and the skill index are copies made by `install.sh`. After any pull (and whenever
+`skills-upstream verify` reports DRIFTED below), run:
+
+```bash
+(cd "$D" && ./install.sh </dev/null)       # files only: with no terminal every settings prompt is skipped
+```
+
+and report its warning count. The settings it skipped are offered in §3, never applied silently.
+
 ## 2. Check everything
 
 ```bash
@@ -55,6 +67,13 @@ skills-upstream verify                    # installed copies match vendor/ (drif
                                           # skill is reachable from ~/.claude/skills (else "Unknown skill")
 claude plugin marketplace update          # refresh the marketplaces' copies (installs nothing)
 skills-upstream plugins                   # each installed plugin vs its refreshed marketplace; exit 10 = behind
+```
+
+```bash
+skills-upstream index --quiet --name-only --check   # exit 1: skills still listed in full every turn
+eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a configured repo
+python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" suggest
+                                                    # only when EXISTS=yes: rows with suggest off, now on
 ```
 
 `skills-upstream plugins` compares the installed plugin folder with the marketplace's copy (or the
@@ -84,6 +103,8 @@ WRONG COPY    <name>: ~/.agents/skills/<name> is not the checkout's clone, or do
 UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt config); check it by hand,
               never ./install.sh, which would move it aside
 UNTRACKED     <names>: no recorded source, so no update check
+SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
+PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills listed every turn
 ```
 
 For each OUTDATED pinned skill, say in one or two lines **what changed upstream** (GitHub: the
@@ -93,7 +114,8 @@ release notes).
 
 ## 3. Ask, then upgrade
 
-One `AskUserQuestion` (multi-select): which to upgrade. First option "All outdated (Recommended)"
+One `AskUserQuestion` (multi-select): which to upgrade, plus one option per SETTING and PLUGINS line
+(so a run that finds nothing outdated can still offer them). First option "All outdated (Recommended)"
 only when every change reads as routine; otherwise recommend the specific ones and say why a
 particular upgrade deserves a look first (a rewritten SKILL.md, a new tool it asks to use, a
 licence change).
@@ -110,6 +132,10 @@ Commit in desk-skills: `chore(vendor): upgrade <name> to <new pin>` (one commit 
 ask before `git push`. Install: `(cd "$D" && ./install.sh </dev/null)`, which installs files and
 skips every settings prompt, then `skills-upstream verify` must print `ok` for each upgraded skill
 and report no UNLINKED, SHADOWED, NOT INSTALLED, NOT IN CLONE, WRONG COPY or UNVERIFIED skill.
+
+For a chosen SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
+copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` first). For a chosen
+PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show
 the new version. Say that plugin and skill changes load in the **next** Claude Code session.

@@ -6,7 +6,7 @@ description: >-
   repo", "run desk setup", "grant/revoke a desk permission", "let autopilot merge", "stop it
   merging", "why does it keep asking me", "use my voicepa settings for this repo", or when another
   desk-* skill reports that this repo has no desk config, or a TODO or missing row.
-argument-hint: "[permissions | from <owner__name> | list]"
+argument-hint: "[permissions | plugins | from <owner__name> | list]"
 ---
 
 # desk-setup
@@ -64,6 +64,7 @@ first option, and the user still answers every row. A row the user has not answe
 |---|---|
 | `/desk-setup` | where → start point → detect → interview → connectors → harness rules → write → summary |
 | `/desk-setup permissions` | reads this repo's config, then straight to the interview |
+| `/desk-setup plugins` | reads this repo's config, then only §4b (which plugins this repo needs); changes nothing else. `/desk-update` offers it too |
 | `/desk-setup from <owner__name>` | as `/desk-setup`, starting from that repo's §1, §3 and §3b answers |
 | `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`; changes nothing |
 | config already exists | re-run: current values are the starting point; ask what to change |
