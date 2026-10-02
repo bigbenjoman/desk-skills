@@ -71,6 +71,8 @@ skills-upstream plugins                   # each installed plugin vs its refresh
 
 ```bash
 skills-upstream index --quiet --name-only --check   # exit 1: skills still listed in full every turn
+jq -e '[.hooks.SessionStart[]?.hooks[]?.command] | any(test("desk-update-check"))' ~/.claude/settings.json
+                                                    # false: no once-a-day update notice at session start
 eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a configured repo
 python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" suggest
                                                     # only when EXISTS=yes: rows with suggest off, now on
@@ -104,6 +106,7 @@ UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt
               never ./install.sh, which would move it aside
 UNTRACKED     <names>: no recorded source, so no update check
 SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
+SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
 PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills listed every turn
 ```
 
@@ -133,7 +136,9 @@ ask before `git push`. Install: `(cd "$D" && ./install.sh </dev/null)`, which in
 skips every settings prompt, then `skills-upstream verify` must print `ok` for each upgraded skill
 and report no UNLINKED, SHADOWED, NOT INSTALLED, NOT IN CLONE, WRONG COPY or UNVERIFIED skill.
 
-For a chosen SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
+For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
+`SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
+first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
 copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` first). For a chosen
 PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
 

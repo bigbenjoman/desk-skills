@@ -530,6 +530,47 @@ esac
 # acts only in repos whose config says `forbidden`, so registering it changes nothing elsewhere.
 note "AI attribution is decided per repo by /desk-setup; nothing is changed at user level here"
 
+# Update notice: a SessionStart hook that, at most once a day, says when this checkout has new
+# commits upstream. It only notifies; /desk-update shows what changed and installs it.
+UPDATE_HOOK="$CLAUDE_DIR/hooks/desk-update-check.sh"
+install_file "$SRC/hooks/desk-update-check.sh" "$UPDATE_HOOK"
+chmod +x "$UPDATE_HOOK"
+wrote "hook     ~/.claude/hooks/desk-update-check.sh (script only; registering it is asked)"
+rc=0; python3 - "$SETTINGS" "$UPDATE_HOOK" check <<'PY' || rc=$?
+import json, os, sys
+path, cmd, mode = sys.argv[1:4]
+try:
+    data = json.load(open(path)) if os.path.exists(path) else {}
+except Exception:
+    sys.exit(2)
+ss = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+present = any("desk-update-check.sh" in (h.get("command") or "") for e in ss for h in (e.get("hooks") or []))
+sys.exit(0 if present else 1)
+PY
+case "$rc" in
+  0) ok "update notice already registered (SessionStart)" ;;
+  2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the update notice" ;;
+  *)
+    note "Registers a SessionStart hook: once a day it fetches this checkout (killed after 5 seconds)"
+    note "and, if there are new commits, shows one line telling you to run /desk-update. Nothing is installed."
+    if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
+      backup_settings
+      if python3 - "$SETTINGS" "$UPDATE_HOOK" <<'PY'
+import json, os, sys
+path, cmd = sys.argv[1:3]
+data = json.load(open(path)) if os.path.exists(path) else {}
+data.setdefault("hooks", {}).setdefault("SessionStart", []).append(
+    {"hooks": [{"type": "command", "command": f'bash "{cmd}"', "timeout": 15}]})
+exec(os.environ["DESK_WRITE_JSON_PY"])
+write_json(path, data)
+PY
+      then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
+    else
+      note "not registered. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+    fi
+    ;;
+esac
+
 # The deny-only plan (skills/desk-setup/references/baseline-deny.json): Slack send and write
 # tools, gh pr merge --admin, and best-effort force, delete and mirror pushes. It only takes
 # capability away, whatever /desk-setup is later answered.
