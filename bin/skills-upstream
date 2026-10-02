@@ -15,6 +15,13 @@
                                        exit 0 if <dir> is a git clone whose origin IS github.com/<owner/repo>,
                                        1 if not; install.sh uses it, so both agree
   skills-upstream rehash               record each vendor/<name> tree hash in sources.json (after a hand edit)
+  skills-upstream index                write ~/.agents/skills/skill-index (linked into ~/.claude/skills): a short
+                                       map of areas plus areas/<area>.md with every visible skill's full
+                                       description, sorted by desk/skill-areas.json
+  skills-upstream index --name-only [--check] [--settings <file>]
+                                       ...then list every indexed personal and claude.ai skill to Claude
+                                       by name only (skillOverrides), leaving any entry already set alone;
+                                       --check only reports (exit 1 if any is missing)
 
 Sources (vendor/sources.json):
   github  {repo, path}                 newest commit touching <path> vs pin.commit (via `gh`)
@@ -26,7 +33,8 @@ Sources (vendor/sources.json):
 
 `upgrade` only changes files inside vendor/ (review them with `git diff`); installing them is
 install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify` and `links`, which only
-read.
+read, and `index`, which writes only the skill-index skill and its link (and, with --name-only,
+skillOverrides in settings.json, which install.sh asks before running).
 Last successful `outdated` run is stamped in ~/.claude/desk/skills-upstream.last.
 """
 
@@ -677,11 +685,221 @@ def cmd_links(data, already=()):
     return int(bad > 0 or bool(errors))
 
 
+AREAS = os.path.join(ROOT, "desk", "skill-areas.json")
+INDEX = os.path.join(INSTALLED, "skill-index")
+RULE = os.path.expanduser("~/.claude/rules/desk-skill-index.md")
+BUDGET = 0.003   # of the context window, for the skill listing; Claude Code's default is 0.01
+
+
+def frontmatter(path):
+    """name, description, when_to_use and disable-model-invocation from a SKILL.md, or None."""
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return None
+    out, key, buf = {}, None, []
+
+    def flush():
+        if key:
+            out[key] = " ".join(x.strip() for x in buf if x.strip()).strip().strip("\"'")
+
+    for line in m.group(1).splitlines():
+        km = re.match(r"^([A-Za-z_-]+):\s*(.*)$", line)
+        if km:
+            flush()
+            key, first = km.group(1), km.group(2)
+            buf = [] if re.fullmatch(r"[>|][-+]?", first.strip()) else [first]
+        elif key:
+            buf.append(line)
+    flush()
+    return out
+
+
+def overrides():
+    """skillOverrides from user settings: which skills Claude is not shown at all."""
+    try:
+        s = json.load(open(os.path.expanduser("~/.claude/settings.json")))
+    except (OSError, ValueError):
+        return {}, {}
+    return s.get("skillOverrides") or {}, s.get("enabledPlugins") or {}
+
+
+def installed_skills():
+    """(name, source, SKILL.md path) for every skill Claude Code would list to the model."""
+    found = {}
+    if os.path.isdir(CLAUDE_SKILLS):
+        for d in sorted(os.listdir(CLAUDE_SKILLS)):
+            p = os.path.join(CLAUDE_SKILLS, d, "SKILL.md")
+            if d.startswith(".") or d in ("synced", "skill-index") or not os.path.isfile(p):
+                continue
+            found.setdefault(d, ("personal", p))
+    synced = os.path.join(CLAUDE_SKILLS, "synced")
+    if os.path.isdir(synced):
+        for d in sorted(os.listdir(synced)):
+            p = os.path.join(synced, d, "SKILL.md")
+            fm = frontmatter(p)
+            if fm and fm.get("name"):
+                found.setdefault(f"anthropic-skills:{fm['name']}", ("claude.ai", p))
+    _, enabled = overrides()
+    try:
+        plugins = json.load(open(os.path.expanduser("~/.claude/plugins/installed_plugins.json")))["plugins"]
+    except (OSError, ValueError, KeyError):
+        plugins = {}
+    for pid, installs in sorted(plugins.items()):
+        if enabled.get(pid) in (None, False) or not installs:
+            continue
+        root = os.path.join(installs[0].get("installPath", ""), "skills")
+        if not os.path.isdir(root):
+            continue
+        for d in sorted(os.listdir(root)):
+            p = os.path.join(root, d, "SKILL.md")
+            if os.path.isfile(p):
+                fm = frontmatter(p) or {}
+                found.setdefault(f"{pid.split('@')[0]}:{fm.get('name') or d}", (f"plugin {pid.split('@')[0]}", p))
+    return found
+
+
+def write_json(path, data):
+    """Replace the file path resolves to (a symlinked settings.json stays a symlink), keeping its mode."""
+    real = os.path.realpath(path)
+    fd, tmp = tempfile.mkstemp(prefix=".desk-", suffix=".tmp", dir=os.path.dirname(real))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        if os.path.exists(real):
+            shutil.copymode(real, tmp)
+        os.replace(tmp, real)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def name_only(names, settings, check):
+    """List each of names to Claude by name only (skillOverrides), never changing an entry the user set.
+    Plugin skills are skipped: skillOverrides does not reach them. Exit 0 all set, 1 some missing
+    (--check) or added, 2 unreadable settings."""
+    try:
+        with open(settings) as f:
+            raw = f.read()
+        data = json.loads(raw) if raw.strip() else {}
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        print(f"skill-index: {tilde(settings)} is not valid JSON", file=sys.stderr)
+        return 2
+    ov = data.get("skillOverrides") or {}
+    missing = sorted(n for n in names if n not in ov)
+    rule_ok = os.path.isfile(RULE)
+    if check or (not missing and rule_ok and "skillListingBudgetFraction" in data):
+        print(f"skill-index: {len(names) - len(missing)}/{len(names)} skills already have a listing override")
+        return 1 if (missing or not rule_ok) else 0
+    ov.update({n: "name-only" for n in missing})
+    data["skillOverrides"] = ov
+    # Plugin skills cannot be set name-only, and Claude Code fills whatever listing budget it has, so
+    # the saving comes from a smaller budget: at 1% (the default) plugin descriptions grew to fill the
+    # room the name-only skills freed (measured 2026-09-30: ~30,000 characters either way). A value the
+    # user set is kept.
+    data.setdefault("skillListingBudgetFraction", BUDGET)
+    write_json(settings, data)
+    # The listing drops descriptions from the least-invoked skills first, which could include
+    # skill-index itself, so the pointer to it also lives in an always-loaded rule file.
+    os.makedirs(os.path.dirname(RULE), exist_ok=True)
+    with open(RULE, "w") as f:
+        f.write("Installed by desk-skills (`skills-upstream index --name-only`); re-run install.sh to refresh.\n\n"
+                "Most skills are listed to you by name only. When a request might need a skill and its name alone "
+                "does not settle which, invoke the `skill-index` skill first: it maps each area to one file of full "
+                "descriptions. Read only that area file, then load the skill by its exact name.\n")
+    rec = os.path.expanduser("~/.claude/desk/skill-index.name-only.json")
+    os.makedirs(os.path.dirname(rec), exist_ok=True)
+    prev = json.load(open(rec)) if os.path.exists(rec) else []
+    json.dump(sorted(set(prev) | set(missing)), open(rec, "w"), indent=1)
+    print(f"skill-index: {len(missing)} skills now listed by name only (recorded in {tilde(rec)})")
+    return 0
+
+
+def cmd_index(quiet=False, only_names=None):
+    """Write ~/.agents/skills/skill-index: a short map of areas plus one file of full descriptions per area."""
+    import fnmatch
+    spec = json.load(open(AREAS))
+    areas, exclude = spec["areas"], spec.get("exclude", [])
+    hidden, _ = overrides()
+    rows = {a["id"]: [] for a in areas}
+    rows["other"] = []
+    for name, (source, path) in installed_skills().items():
+        fm = frontmatter(path) or {}
+        if hidden.get(name) in ("off", "user-invocable-only") or fm.get("disable-model-invocation", "").lower() == "true" \
+                or any(fnmatch.fnmatchcase(name, g) for g in exclude):
+            continue
+        area = next((a["id"] for a in areas if any(fnmatch.fnmatchcase(name, g) for g in a["match"])), "other")
+        desc = fm.get("description") or "(no description in its SKILL.md)"
+        if fm.get("when_to_use"):
+            desc += f" When to use: {fm['when_to_use']}"
+        rows[area].append((name, source, desc))
+    titles = {a["id"]: (a["title"], a["summary"]) for a in areas}
+    titles["other"] = ("Other", "Skills no area in desk/skill-areas.json matches yet.")
+
+    tmp = INDEX + ".tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(os.path.join(tmp, "areas"))
+    today = time.strftime("%Y-%m-%d")
+    total = sum(len(v) for v in rows.values())
+    table = []
+    for aid, skills in rows.items():
+        if not skills:
+            continue
+        title, summary = titles[aid]
+        table.append(f"| {title} | {summary} | `areas/{aid}.md` | {', '.join(n for n, _, _ in sorted(skills))} |")
+        with open(os.path.join(tmp, "areas", f"{aid}.md"), "w") as f:
+            f.write(f"# {title}\n\n{summary}\n\nLoad a skill with the Skill tool by its exact name.\n")
+            for n, source, desc in sorted(skills):
+                f.write(f"\n## {n}\n\n_{source}_\n\n{desc}\n")
+    with open(os.path.join(tmp, "SKILL.md"), "w") as f:
+        f.write(
+            "---\nname: skill-index\ndescription: >-\n"
+            "  The catalogue of every installed skill, sorted into areas (desk workflow, security and privacy,\n"
+            "  legal, domain experts, UX and design, frontend, auth and payments, backend and data, infrastructure,\n"
+            "  testing and review, process, marketing and SEO, documents and browser, Claude tooling). Most skills\n"
+            "  are listed to you by name only: read this before choosing a skill whose name does not settle it, or\n"
+            "  to check whether any skill covers the request. It points to one area file with full descriptions.\n"
+            "---\n\n"
+            f"# Skill index\n\nGenerated by `skills-upstream index` on {today} from {total} skills. Do not edit: "
+            "change `desk/skill-areas.json` in desk-skills and re-run.\n\n"
+            "1. Pick the area below that fits the request. If none fits, no skill applies: say so and carry on.\n"
+            "2. Read only that area's file (the path is relative to this skill's directory).\n"
+            "3. Load the one skill whose description matches, by its exact name. A skill a rule or the user names is loaded regardless.\n\n"
+            "| Area | Covers | Read | Skills |\n|---|---|---|---|\n" + "\n".join(table) + "\n")
+    shutil.rmtree(INDEX, ignore_errors=True)
+    os.replace(tmp, INDEX)
+    link = os.path.join(CLAUDE_SKILLS, "skill-index")
+    if not os.path.islink(link) and not os.path.exists(link):
+        os.symlink(INDEX, link)
+    if not quiet:
+        print(f"skill-index: {total} skills in {sum(1 for v in rows.values() if v)} areas -> {tilde(INDEX)}")
+    if only_names is not None:
+        # personal and claude.ai skills; plugin skills cannot be overridden, and skill-index stays described
+        names = [n for aid, v in rows.items() for n, src, _ in v if src in ("personal", "claude.ai")]
+        return name_only(names, only_names["settings"], only_names["check"])
+    if rows["other"]:
+        print(f"skill-index: no area for {', '.join(n for n, _, _ in rows['other'])} (add a glob to desk/skill-areas.json)")
+    return 0
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
     cmd, rest = argv[0], argv[1:]
+    if cmd == "index":   # needs no sources.json: it reads what is installed
+        settings = os.path.expanduser("~/.claude/settings.json")
+        if "--settings" in rest:
+            settings = rest[rest.index("--settings") + 1]
+        mode = {"settings": settings, "check": "--check" in rest} if "--name-only" in rest else None
+        return cmd_index("--quiet" in rest, mode)
     if cmd == "is-clone-of":   # needs no sources.json; install.sh passes the entry's repo
         if len(rest) != 2:
             die("usage: skills-upstream is-clone-of <dir> <owner/repo>")

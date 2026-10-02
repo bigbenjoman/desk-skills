@@ -1,0 +1,219 @@
+{
+  "_about": "Areas for `skills-upstream index`. Each installed skill goes in the FIRST area with a matching glob (plugin skills are `plugin:skill`), so put narrow areas before broad ones. A skill matching none lands in `other` and the command names it: add a glob here, then re-run.",
+  "exclude_about": "Enabled plugins whose skills Claude Code does not list (checked 2026-09-30 in a fresh session), so the index must not point at them.",
+  "exclude": [
+    "everything-claude-code:*"
+  ],
+  "areas": [
+    {
+      "id": "desk",
+      "title": "Desk workflow",
+      "summary": "Tickets to merged PRs, batches, reviews, PR hygiene, Jira, check-out, repo setup.",
+      "match": [
+        "desk-*",
+        "userflow"
+      ]
+    },
+    {
+      "id": "security-privacy",
+      "title": "Security and privacy",
+      "summary": "Security review, API security, GDPR, DPAs, DSARs, PIAs, privacy policy.",
+      "match": [
+        "security-review",
+        "api-security-best-practices",
+        "auth-implementation-patterns",
+        "secrets-management",
+        "gdpr-data-handling",
+        "privacy-legal:*"
+      ]
+    },
+    {
+      "id": "legal",
+      "title": "Legal and contracts",
+      "summary": "NDAs, MSAs, vendor agreements, renewals, contract review, escalations.",
+      "match": [
+        "commercial-legal:*",
+        "legal:*"
+      ]
+    },
+    {
+      "id": "domain",
+      "title": "Domain experts",
+      "summary": "Energy trading, UK property investment, music industry.",
+      "match": [
+        "energy-trader",
+        "property-expert",
+        "music-industry-expert",
+        "backtesting-frameworks",
+        "risk-metrics-calculation"
+      ]
+    },
+    {
+      "id": "ux-design",
+      "title": "UX, UI and design",
+      "summary": "UX flows, UI polish, microcopy, motion, Figma, prototypes, charts, artifacts.",
+      "match": [
+        "ux-*",
+        "ui-designer",
+        "frontend-design",
+        "frontend-design:*",
+        "web-design-guidelines",
+        "interactive-prototype",
+        "figma:*",
+        "tailwind-design-system",
+        "dataviz",
+        "kpi-dashboard-design",
+        "artifact-*"
+      ]
+    },
+    {
+      "id": "frontend",
+      "title": "Frontend (React / Next.js)",
+      "summary": "React and Next.js patterns, state, composition, performance, shadcn, Turbopack.",
+      "match": [
+        "react-*",
+        "nextjs-*",
+        "vercel-react-best-practices",
+        "vercel-composition-patterns",
+        "vercel:nextjs",
+        "vercel:next-*",
+        "vercel:react-best-practices",
+        "vercel:shadcn",
+        "vercel:turbopack"
+      ]
+    },
+    {
+      "id": "auth-payments",
+      "title": "Auth and payments",
+      "summary": "Clerk auth, users and orgs; Stripe payments, Connect, billing.",
+      "match": [
+        "clerk",
+        "clerk-*",
+        "stripe-integration",
+        "stripe:*",
+        "vercel:auth"
+      ]
+    },
+    {
+      "id": "backend-data",
+      "title": "Backend, APIs and data",
+      "summary": "API design, FastAPI and Python, Postgres and SQL, migrations, data pipelines, ML pipelines.",
+      "match": [
+        "api-*",
+        "openapi-*",
+        "fastapi-*",
+        "async-python-patterns",
+        "python-*",
+        "error-handling-patterns",
+        "database-migration",
+        "postgresql-*",
+        "sql-*",
+        "neon",
+        "neon-*",
+        "supabase-*",
+        "data-*",
+        "dbt-*",
+        "ml-pipeline-workflow",
+        "vercel:vercel-storage",
+        "vercel:queues",
+        "vercel:workflow",
+        "vercel:create-a-backend",
+        "vercel:vercel-functions",
+        "vercel:ai-*",
+        "vercel:chat-sdk",
+        "vercel:build-agents",
+        "vercel:eve"
+      ]
+    },
+    {
+      "id": "infra-deploy",
+      "title": "Infrastructure and deployment",
+      "summary": "Vercel deploys, env vars, caching, firewall; Docker, Cloud Run, CI/CD, monorepos.",
+      "match": [
+        "vercel:*",
+        "docker-expert",
+        "gcp-cloud-run",
+        "deployment-pipeline-design",
+        "github-actions-templates",
+        "monorepo-management"
+      ]
+    },
+    {
+      "id": "testing-review",
+      "title": "Testing and code review",
+      "summary": "E2E tests, TDD, code review, CodeRabbit, Codex second opinions.",
+      "match": [
+        "e2e-testing-patterns",
+        "code-review",
+        "code-review:*",
+        "coderabbit:*",
+        "codex:*",
+        "superpowers:test-driven-development",
+        "superpowers:*code-review",
+        "superpowers:verification-before-completion"
+      ]
+    },
+    {
+      "id": "process",
+      "title": "Planning, debugging and process",
+      "summary": "Brainstorming, plans, debugging, worktrees, feature development, working backwards.",
+      "match": [
+        "superpowers:*",
+        "feature-dev:*",
+        "working-backwards",
+        "code-simplifier:*"
+      ]
+    },
+    {
+      "id": "marketing-seo",
+      "title": "Marketing and SEO",
+      "summary": "SEO audits, AI search, schema markup, site architecture, content, positioning, competitors.",
+      "match": [
+        "seo-audit",
+        "ai-seo",
+        "programmatic-seo",
+        "schema",
+        "site-architecture",
+        "content-strategy",
+        "product-marketing",
+        "competitors",
+        "directory-submissions"
+      ]
+    },
+    {
+      "id": "documents-browser",
+      "title": "Documents, browser and apps",
+      "summary": "Word, PDF, Excel, PowerPoint, docs; driving Chrome and the desktop; Atlassian and Google Workspace.",
+      "match": [
+        "anthropic-skills:*",
+        "claude-in-chrome",
+        "atlassian:*",
+        "playwright:*"
+      ]
+    },
+    {
+      "id": "claude-tooling",
+      "title": "Claude Code and AI tooling",
+      "summary": "Claude API, Claude Code config and hooks, skills, context, library docs, TypeSafe/Jev.",
+      "match": [
+        "claude-api",
+        "update-config",
+        "keybindings-help",
+        "context-audit",
+        "context7-mcp",
+        "find-skills",
+        "workflow-authoring",
+        "loop",
+        "schedule",
+        "fewer-permission-prompts",
+        "init",
+        "run",
+        "simplify",
+        "chirp",
+        "typesafe:*",
+        "claude-md-management:*",
+        "claude-code-setup:*"
+      ]
+    }
+  ]
+}

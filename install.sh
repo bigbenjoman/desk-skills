@@ -713,6 +713,37 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------------------------
+section "Skill index  -> ~/.agents/skills/skill-index"
+
+# After the plugins, so their skills are indexed too. The index is desk-owned and rebuilt every run;
+# listing skills by name only changes settings.json, so that part is asked.
+if out="$(python3 "$SRC/bin/skills-upstream" index 2>&1)"; then
+  printf '%s\n' "$out" | while IFS= read -r l; do case "$l" in *"no area for"*) warn "${l#skill-index: }" ;; *) ok "${l#skill-index: }" ;; esac; done
+  wrote "skill    ~/.agents/skills/skill-index (areas map + one description file per area)"
+  rc=0; python3 "$SRC/bin/skills-upstream" index --quiet --name-only --check >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) ok "skills are listed to Claude by name only, full descriptions in skill-index" ;;
+    2) warn "$SETTINGS is not valid JSON; fix it, then re-run to list skills by name only" ;;
+    *)
+      note "Claude Code resends every skill's description on every turn (~30,000 characters here, measured"
+      note "2026-09-30) and cuts descriptions to fit. This lists your own and claude.ai skills by name only,"
+      note "shrinks the listing budget to 0.3% of the context window (plugin skills cannot be set name-only),"
+      note "and adds ~/.claude/rules/desk-skill-index.md pointing Claude at skill-index, whose area files hold"
+      note "every full description. Entries you already set in skillOverrides are kept."
+      if confirm "List skills by name only in ~/.claude/settings.json (backed up first)?"; then
+        backup_settings
+        if out="$(python3 "$SRC/bin/skills-upstream" index --quiet --name-only 2>&1)"; then ok "${out#skill-index: }"
+        else warn "could not update ~/.claude/settings.json"; show_err "$out"; fi
+      else
+        note "not changed. To do it later, re-run ./install.sh"
+      fi
+      ;;
+  esac
+else
+  warn "could not build the skill index"; show_err "$out"
+fi
+
+# ---------------------------------------------------------------------------------------------
 section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
 mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
