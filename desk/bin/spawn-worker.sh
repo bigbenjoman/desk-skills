@@ -195,6 +195,17 @@ else
 fi
 
 SYSTEM="$(cat "$CONTRACT")"
+# A batch base (queue.mjs set-batch base=…) arrives as DESK_DEFAULT_BRANCH. The skills read
+# <default> from config §0, which still names the repo default, so the worker is told outright.
+CFG_DEFAULT="$(node "$DESK_ENV_MJS" get default-branch 2>/dev/null </dev/null; true)"
+CFG_ROW="$(DESK_DEFAULT_BRANCH= node "$DESK_ENV_MJS" get default-branch 2>/dev/null; true)"
+if [ -n "$CFG_DEFAULT" ] && [ "$CFG_DEFAULT" != "$CFG_ROW" ]; then
+  SYSTEM="$SYSTEM
+
+# This batch's base branch: $CFG_DEFAULT
+
+This batch targets \`$CFG_DEFAULT\`, not config §0 Default branch (\`$CFG_ROW\`). Everywhere this contract or a skill says \`<default>\`, the default branch, or §0 Default branch, it means \`$CFG_DEFAULT\`: your worktree is based on \`origin/$CFG_DEFAULT\`, you rebase onto it, and your PR is \`gh pr create … --base $CFG_DEFAULT\`. \`desk-env get default-branch\` prints it. A PR opened against \`$CFG_ROW\` is the wrong PR: the merge driver will not see it."
+fi
 [ -n "$BRIEFING" ] && [ -f "$BRIEFING" ] && SYSTEM="$SYSTEM
 
 # Briefing for this ticket

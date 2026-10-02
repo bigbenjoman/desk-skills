@@ -47,7 +47,7 @@ Placeholders used below:
 | Placeholder | Means |
 |---|---|
 | `<TICKET>` | the ticket's key (examples use `ABC-123`): a tracker key, a work id, or with no tracker `issue-<n>` or a slug (below) |
-| `<default>` | §0 Default branch |
+| `<default>` | `desk-env get default-branch`: §0 Default branch, or the batch's base when an autopilot batch sets one |
 | `<repo>` | §0 GitHub repo (`owner/name`) |
 | a §4 Toolchain row, e.g. "§4 Typecheck" | that command, with §4 Command prefix in front unless the prefix is `none` |
 

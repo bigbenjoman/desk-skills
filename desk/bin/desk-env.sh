@@ -26,6 +26,23 @@ desk_where() {
   [ "$EXISTS" = yes ] || { echo "desk: no config for $SLUG at $CONFIG. Run /desk-setup in this repo." >&2; return 1; }
 }
 
+# Autopilot entry points only (triage.sh, merge-driver.sh; pass.mjs does the same in node): export
+# the queue's batch base as DESK_DEFAULT_BRANCH before desk_load_paths, so this process and every
+# child targets it. No base set is a no-op. An unreadable base, or one contradicting an
+# already-exported DESK_DEFAULT_BRANCH, fails: falling back to the config's default would send the
+# batch's work to the wrong branch silently. See batchBase() in desk-env.mjs.
+desk_apply_batch_base() {
+  local b rc
+  b="$(node "$DESK_ENV_MJS" batch-base)"; rc=$?
+  [ "$rc" = 3 ] && return 0
+  [ "$rc" = 0 ] && [ -n "$b" ] || { echo "desk: could not read the batch base from the queue (exit $rc)" >&2; return 1; }
+  if [ -n "${DESK_DEFAULT_BRANCH:-}" ] && [ "$DESK_DEFAULT_BRANCH" != "$b" ]; then
+    echo "desk: DESK_DEFAULT_BRANCH=$DESK_DEFAULT_BRANCH contradicts the batch base $b. Unset one; refusing to guess." >&2
+    return 1
+  fi
+  export DESK_DEFAULT_BRANCH="$b"
+}
+
 # Exports DESK_REPO_ROOT, DESK_WORKTREES_DIR, DESK_HOME, DESK_SLUG, DESK_REPO_CONFIG_DIR,
 # DESK_DEFAULT_BRANCH, DESK_BIN, DESK_STATE, DESK_QUEUE,
 # DESK_SKILLS_DIR, DESK_LOCK_DIR, DESK_MEMORY_DIR, DESK_GH_REPO, DESK_PG_CONTAINER,

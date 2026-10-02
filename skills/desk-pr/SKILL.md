@@ -24,7 +24,8 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
 A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`. Then:
 
-- §0 for the GitHub repo and default branch (written `<default>` below), §1 for the GitHub handle,
+- §0 for the GitHub repo and default branch (written `<default>` below; read it with
+  `desk-env get default-branch`, which returns an autopilot batch's base when one is set), §1 for the GitHub handle,
   §2 for the handoff directory screenshots go to.
 - §3 for whether you may push (`git-push`), open a PR (`pr-open`), edit its body (`pr-edit`), upload
   images (`pr-images`), undraft (`pr-ready`) or arm auto-merge (`pr-auto-merge`).

@@ -15,7 +15,9 @@
 //
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
-//   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset
+//   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
+//                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH)
+//   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
@@ -415,6 +417,36 @@ export const binDir = () => join(deskHome(), 'bin');
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue.
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? join(HOME, '.desk-autopilot', repoSlug()));
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHome(), 'repos', repoSlug(), 'queue.json'));
+
+// A batch may target a branch other than §0 Default branch: a feature branch that ships as one merge.
+// It is the queue's top-level `base` (`queue.mjs set-batch base=<branch>`), and it reaches the code
+// as DESK_DEFAULT_BRANCH, which defaultBranch() already reads first. Only the autopilot's own entry
+// points (pass.mjs, triage.sh, merge-driver.sh) call applyBatchBase(), and every child they start
+// (setup-worktree, spawn-worker, worker-settings, the worker itself) inherits the variable. An
+// interactive session never reads the queue, so a batch's base can never redirect its PRs.
+export const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+export function batchBase() {
+  let q;
+  try { q = JSON.parse(readFileSync(queueFile(), 'utf8')); } catch { return null; }
+  const b = typeof q?.base === 'string' ? q.base.trim() : '';
+  if (!b) return null;
+  if (!BRANCH_NAME.test(b) || b.includes('..') || b.endsWith('.lock')) {
+    throw new DeskConfigError(`desk: queue base "${b}" is not a valid branch name. Fix it with queue.mjs set-batch base=<branch> (or base= to clear).`);
+  }
+  return b;
+}
+// Exports the batch's base for this process and its children. A DESK_DEFAULT_BRANCH already set to
+// something else is a contradiction, not a preference: refuse rather than pick one.
+export function applyBatchBase() {
+  const b = batchBase();
+  if (!b) return null;
+  const env = process.env.DESK_DEFAULT_BRANCH;
+  if (!unset(env) && env !== b) {
+    throw new DeskConfigError(`desk: DESK_DEFAULT_BRANCH=${env} contradicts the batch base ${b} in ${queueFile()}. Unset one; refusing to guess.`);
+  }
+  process.env.DESK_DEFAULT_BRANCH = b;
+  return b;
+}
 export const skillsDir = () => expandHome(process.env.DESK_SKILLS_DIR ?? join(HOME, '.agents', 'skills'));
 export const lockDir = () => expandHome(process.env.DESK_LOCK_DIR ?? '/tmp');
 // Claude Code keys a project's memory dir by the absolute cwd with every non-alphanumeric char as `-`.
@@ -608,9 +640,17 @@ if (isMain) {
         break;
       }
       case 'get': {
-        const v = configValue(args[0]);
+        // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that
+        // asks for <default> gets the branch its batch targets, not the config row.
+        const v = args[0] === 'default-branch' ? defaultBranch() : configValue(args[0]);
         if (v == null) process.exit(3);
         console.log(expandHome(v));
+        break;
+      }
+      case 'batch-base': {
+        const b = batchBase();
+        if (!b) process.exit(3);
+        console.log(b);
         break;
       }
       case 'ticket-kind': {
@@ -674,7 +714,7 @@ if (isMain) {
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
       default:
-        console.error('usage: desk-env.mjs where|get|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
         process.exit(2);
     }
   } catch (e) {

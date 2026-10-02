@@ -22,6 +22,7 @@ TICKET="${1:?usage: triage.sh <TICKET>}"
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
 KIND="$(node "$DESK_ENV_MJS" ticket-kind "$TICKET")" || exit 2
+desk_apply_batch_base || exit 1
 desk_load_paths || exit 1
 # Read-only and foreground, so `ask` does not block it: the batch is confirmed once, at Stage 3, and
 # that one question round needs triage's output to exist. `no` still refuses.

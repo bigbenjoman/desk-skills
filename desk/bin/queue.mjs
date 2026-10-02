@@ -6,7 +6,24 @@
 // logs plus `claude agents --json`. Created on first use; never shipped.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID } from './desk-env.mjs';
+import { execFileSync } from 'node:child_process';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot } from './desk-env.mjs';
+
+// The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
+// real branch on origin, never the config's default (that is no override) and never a production
+// branch: a batch merges into its base, and production only ever takes promotion PRs.
+function setBase(q, v) {
+  if (!v || /^none$/i.test(v)) { delete q.base; return; }
+  if (!BRANCH_NAME.test(v) || v.includes('..') || v.endsWith('.lock')) throw new Error(`base: "${v}" is not a valid branch name`);
+  if (/^(production|prod|release)$/i.test(v)) throw new Error(`base: refusing "${v}" — a batch never merges into a production branch`);
+  const def = configValue('default-branch');
+  if (def && v === def) { delete q.base; return; }
+  let found = '';
+  try { found = execFileSync('git', ['-C', repoRoot(), 'ls-remote', '--heads', 'origin', `refs/heads/${v}`], { encoding: 'utf8' }).trim(); }
+  catch (e) { throw new Error(`base: could not ask origin for ${v} (${e.message.split('\n')[0]})`); }
+  if (!found) throw new Error(`base: ${v} does not exist on origin — push it first`);
+  q.base = v;
+}
 
 const QUEUE = queueFile();
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
@@ -163,7 +180,9 @@ switch (cmd) {
     for (const pair of args) {
       const i = pair.indexOf('=');
       if (i < 0) throw new Error(`expected key=value, got: ${pair}`);
-      setPath(q, pair.slice(0, i), coerce(pair.slice(i + 1)));
+      const k = pair.slice(0, i); const v = pair.slice(i + 1).trim();
+      if (k === 'base') { setBase(q, v); continue; }
+      setPath(q, k, coerce(v));
     }
     save(q);
     console.log(`batch: ${args.join(' ')}`);
@@ -203,7 +222,7 @@ switch (cmd) {
     if (!rows.length) { console.log('queue is empty'); break; }
     const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
     rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
-    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}\n`);
+    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.base ? `   base ${q.base}` : ''}\n`);
     for (const t of rows) {
       const tail = t.state === 'parked' ? t.park?.question ?? ''
         : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}`

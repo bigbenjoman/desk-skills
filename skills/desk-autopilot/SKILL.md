@@ -120,7 +120,7 @@ the refusal.
 **The branch is recorded, and the merge driver finds the PR by it.** Triage proposes a branch name
 from §5 Branch names; `setup-worktree.sh` creates the worktree on it and the queue records it as the
 ticket's `branch`. The merge driver takes a PR as the ticket's only when its head branch is **exactly**
-that recorded branch and its base is §0 Default branch, so a promotion PR (default → production), a
+that recorded branch and its base is §0 Default branch (or the batch's base: see *A batch that targets a feature branch*), so a promotion PR (default → production), a
 PR for a longer id that starts with this one (`BUG-119-5` vs `BUG-119`) and a colleague's PR on the
 same key are never merged by it. Never rename a worker's branch or open its PR from another one: the
 driver will not see it.
@@ -264,6 +264,28 @@ with a `held by orchestrator: … starts once <TICKET>'s PR merges` reason, and 
 merge driver as `--deps`, which releases it (`state=triaged`, moved to the front) once that PR has
 merged. Tickets that share no files run in parallel lanes up to the concurrency cap, and each lane
 stays serial.
+
+## A batch that targets a feature branch
+
+Some work ships as one merge from a long-lived branch (a release with no feature flag), so its PRs
+must base on that branch, not on §0 Default branch. Set it once per batch, **after `init` and before
+triage**:
+
+```bash
+node ~/.claude/desk/bin/queue.mjs set-batch base=feat/<branch>   # base= clears it; init clears it too
+```
+
+- It refuses a branch that is not on origin, and any production branch. Push the branch first.
+- `pass.mjs`, `triage.sh` and `merge-driver.sh` export it as `DESK_DEFAULT_BRANCH`. Worktrees then
+  branch from it, workers rebase onto it and open their PRs against it (their system prompt names
+  it), and the merge driver merges only PRs based on it.
+- Interactive sessions in the same repo never read the queue, so they keep §0 Default branch.
+- `queue.mjs render` shows `base <branch>`. Say it in the Stage 2 report.
+
+**Check before the first spawn that CI runs on PRs into that branch.** A workflow filtered to
+`branches: [<default>]` reports nothing on such a PR, so every required check reads "has not
+reported" and nothing ever merges. Also bring `<default>` into the branch before the batch starts,
+so the workers are not based on a stale tree.
 
 ## Merge each PR the moment it goes green
 
