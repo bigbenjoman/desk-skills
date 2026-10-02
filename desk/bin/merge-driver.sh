@@ -110,6 +110,7 @@ UPDATE_PERM="$(desk_perm pr-update-branch)"
 FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
 if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 
+desk_apply_batch_base || exit 1
 desk_load_paths || exit 1
 desk_load_identity || exit 1
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }

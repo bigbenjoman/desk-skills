@@ -11,6 +11,7 @@ run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --
 run "gate (one definition of green)" node "$T/test_gate.mjs"
 run "desk-jira against a local stub" bash "$T/test_jira.sh"
 run "harness-rules" bash "$T/test_harness.sh"
+run "batch base (one batch targets a feature branch)" bash "$T/test_batch_base.sh"
 run "skill links (skills-upstream links)" bash "$T/test_links.sh"
 [ "$fail" = 0 ] && echo && echo "all passed" || { echo; echo "FAILURES above"; }
 exit $fail

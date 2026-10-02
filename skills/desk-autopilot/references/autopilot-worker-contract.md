@@ -17,7 +17,8 @@ file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage (i
 says whether it came from the user, a GitHub issue or a planning file); read it at Stage 0 and skip
 every Jira step below. Your branch is the one your worktree was created on, recorded in the queue:
 never rename it and never open your PR from another branch, or the merge driver cannot find it.
-`<default>` is §0 Default branch, `<repo>` §0 GitHub repo, and a §4 Toolchain row means that command
+`<default>` is what `desk-env get default-branch` prints: §0 Default branch, unless your batch
+targets another base, in which case your system prompt names it and that branch wins. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that command
 with §4 Command prefix in front unless the prefix is `none`. List rows hold one backtick span per
 item, and a command item may name its directory (`` `apps/api: uv run pytest` ``): read them with
 `desk-env cmds <id>`, which prints `DIR<TAB>CMD` per item.

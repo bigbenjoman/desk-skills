@@ -10,7 +10,9 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 
 let MAIN; let WORKTREES;
-try { MAIN = E.repoRoot(); WORKTREES = E.worktreesDir(); } catch (e) { console.error(e.message); process.exit(4); }
+// Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
+// DESK_DEFAULT_BRANCH here, and setup-worktree, spawn-worker and the worker all inherit it.
+try { E.applyBatchBase(); MAIN = E.repoRoot(); WORKTREES = E.worktreesDir(); } catch (e) { console.error(e.message); process.exit(4); }
 const BIN = E.binDir();
 const STATE = E.stateDir();
 const QUEUE_FILE = E.queueFile();
