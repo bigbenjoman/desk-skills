@@ -737,12 +737,14 @@ def installed_skills():
                 continue
             found.setdefault(d, ("personal", p))
     synced = os.path.join(CLAUDE_SKILLS, "synced")
-    if os.path.isdir(synced):
-        for d in sorted(os.listdir(synced)):
-            p = os.path.join(synced, d, "SKILL.md")
-            fm = frontmatter(p)
-            if fm and fm.get("name"):
-                found.setdefault(f"anthropic-skills:{fm['name']}", ("claude.ai", p))
+    if os.path.isdir(synced):   # synced/<account>/<skill>/SKILL.md; two accounts can carry the same skill
+        for acct in sorted(os.listdir(synced)):
+            base = os.path.join(synced, acct)
+            for d in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+                p = os.path.join(base, d, "SKILL.md")
+                fm = frontmatter(p)
+                if fm:
+                    found.setdefault(f"anthropic-skills:{fm.get('name') or d}", ("claude.ai", p))
     _, enabled = overrides()
     try:
         plugins = json.load(open(os.path.expanduser("~/.claude/plugins/installed_plugins.json")))["plugins"]
