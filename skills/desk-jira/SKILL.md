@@ -94,9 +94,9 @@ What the CLI does for you, and the traps it still has:
   - links `[text|https://…]`, not `[text](https://…)`;
   - tables `||head||head||` then `|cell|cell|`, with no `---` separator row.
 
-  Plain text is rewritten as well: `--` becomes an en dash and `---` an em dash (so a `--flag`
-  outside `{{ }}` is mangled), `-x-` is strikethrough, and a stray `{word}` is read as a macro.
-  Escape with `\`. A `.md` body file is not converted; the text is sent exactly as written.
+  Some plain text is markup too: `-x-` is strikethrough and a stray `{word}` is read as a macro,
+  so escape them with `\`. A `--flag` mid-sentence is left alone (measured), but `{{ }}` is still
+  the clearer way to write one. A `.md` body file is not converted; the text is sent exactly as written.
 
   Check a new body once by counting headings in the rendered HTML:
   `desk-jira api "api/2/issue/<KEY>?fields=description&expand=renderedFields" | jq -r .renderedFields.description | grep -c '<h2'`,
