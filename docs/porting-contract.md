@@ -134,3 +134,18 @@ reruns). What changed, and why:
 | Unverified refutation reads as REJECTED | `UNREFUTED`: kept, counted in `unrefuted=`, never clean |
 | Oversized review can still read clean | `partial=` counts skipped files; non-zero is never clean |
 | Verdict stamped with `headRefOid` | the SHA the finders read (`git rev-parse HEAD`), posted only when it is the PR head; clean tree required first |
+
+## desk-kiss, ported from kiss
+
+`skills/desk-kiss` is studia-web's `/kiss` deep pass made repo-generic. The phases, the false-clean
+rails (no `@{upstream}`, searches at `$TIP`, every band printed) and the per-finding fix offer stay.
+
+| kiss | desk-kiss |
+|---|---|
+| `/pullbot`, `review-bar` in the repo | `desk-review`, and `§4 Review bar` (default `~/.agents/skills/desk-review/references/review-bar.md`) |
+| `SV-` key, Atlassian MCP | `§4 Ticket key pattern` via `desk-jira get`, other ids from `$DESK_STATE/tickets`, GitHub issues with Tracker `none` |
+| Narrative pattern read only from `.pullbot.yml` | `.pullbot.yml`'s `debt:narrative-comment` rule when present, else a pattern built from `§4 Ticket key pattern` |
+| `bun run knowledge:check where` justification gate | the bar's *Never report*, and the known-issues records the repo's instructions point to |
+| `CLAUDE.md` rule 4 (extract at the third use) | the repo's own instructions where they set it, else the third use |
+| Studia paths (`packages/studia-web/src`, `prisma/generated/`, `.agents/knowledge/**`) | stack-neutral: generated files and clients, and docs the repo requires to move with the code |
+| PR read through `gh pr diff` | `refs/desk-kiss/pr-<n>` fetched without a checkout, deleted after |
