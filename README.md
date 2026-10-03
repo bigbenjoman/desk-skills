@@ -14,7 +14,7 @@ gh repo clone bigbenjoman/desk-skills ~/desk-skills
 cd ~/desk-skills && ./install.sh     # once per machine; asks before touching your settings
 ```
 
-1. **Restart Claude Code**, so it loads the skills, agents and hook.
+1. **Restart Claude Code**, so it loads the skills, agents and hooks.
 2. **`cd` into a repo and run `/desk-setup`.** It detects what it can, you confirm it, and it asks
    every permission for that repo, one question at a time. Allow 15–20 minutes the first time.
 3. **Repeat step 2 in each repo.** From the second repo on, setup can start from an earlier repo's
@@ -47,6 +47,143 @@ A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), anoth
 setup (a planning id such as `P1-M14-FIX-1`, a bug id such as `BUG-119-5`), or, in a repo with no
 tracker, a GitHub issue URL or a plain description.
 
+"Loads itself" means there is no command to remember: say what you want ("open the PR", "move it to
+review", "reply to the review") and Claude loads the skill. Every skill can also be started by name.
+All of them read this repo's config first, and do only what its §3 permissions allow: anything not
+`yes` is asked before each use.
+
+## Using the skills
+
+### The ticket workflow
+
+**`/desk-ticket <TICKET>`** takes one ticket from triage to a merged PR. It reads the ticket, routes
+the work to the cheapest path that can solve it, then runs the same tail every time: diff hygiene, a
+self-review with §4 Local review command (at most three rounds), screenshots where a picture helps,
+the PR, the ticket transition, and the merge if you allowed it. Anything with consequences (product
+or design calls, a fix that grows beyond the ticket) stops and asks.
+
+```
+/desk-ticket ABC-123                      a tracker key
+/desk-ticket P1-M14-FIX-1                 another work id from §4 Other work id patterns
+/desk-ticket https://github.com/o/r/issues/42   or "#42", in a repo with no tracker
+/desk-ticket "the export button is greyed out for admins"
+/desk-ticket ABC-123 --tail               resume an interrupted run from Stage 4 (verify, self-review, PR…)
+```
+
+It also applies mid-ticket to a single step: "just push it", "give me the PR body".
+
+**`/desk-autopilot`** runs a batch unattended, one detached headless worker per ticket, each in its
+own worktree and port (see [Using autopilot](#using-autopilot)). Give it several tickets, or one epic
+key to run the epic's open children. Come back to it ("how's the batch going?", "pick the batch
+back up") to check progress, answer a parked question or resume.
+
+**`desk-pr`** (loads itself) owns the pull request: a diff-hygiene block before any prose, the body
+in the sections §5 PR body names (plus *Not migrated* when equivalent code was left on the old
+pattern), before/after screenshots uploaded through a signed-in browser where §3 `pr-images`
+allows, and stacked PRs. Ask for "the PR body" to get only the markdown.
+
+**`desk-jira`** (loads itself) is every tracker write: create, edit, comment, assign, link, transition,
+and a sweep that reconciles your in-review tickets against GitHub ("which of my tickets have
+merged?"). It uses the per-repo `desk-jira` CLI, never the Atlassian MCP, and each write is gated
+by its own §3 row (`jira-comment`, `jira-transition`, `jira-close`…). The CLI works on its own too:
+
+```bash
+desk-jira get ABC-123                          # the ticket, custom fields included
+desk-jira search 'assignee = currentUser()'    # any JQL
+desk-jira transitions ABC-123                  # where it can move next
+```
+
+**`desk-dev`** (loads itself) runs the app locally, and against a copy of staging data when the work
+depends on real records (§3 `db-clone-staging`). It will not say "it's up with staging data" without
+a filled-in proof block from live output, and it never writes to real staging without §3
+`staging-write`, a backup and an independent review.
+
+### Reviews
+
+**`/desk-review`** reviews a branch, a PR or the open queue before a human does. It reports P0, P1
+and P2 only, against this repo's review bar (§4 Review bar, else the default in
+[`skills/desk-review/references/review-bar.md`](skills/desk-review/references/review-bar.md)).
+Read-only finder subagents are routed by path (Lena always; Nadia, Theo, Mira, Jim, Suki or a §4
+Review domain experts skill when their paths change), codex refutes each finding from a different
+vendor, and Bea checks the diff against its ticket in both directions. Where §3 allows, it posts one
+`COMMENTED` review with a machine-readable verdict a required check can read. It never approves or
+blocks.
+
+```
+/desk-review                     the current branch against its PR base
+/desk-review 460                 one PR (number, #460 or URL); someone else's needs §3 read-others
+/desk-review main...feat/x       a ref range, report only
+/desk-review path/to/file.ts     one file in full, report only
+/desk-review --sweep             every open PR not yet reviewed at its head (--limit N, default 30)
+/desk-review --no-comment        report only, nothing reaches GitHub
+```
+
+It is also what desk-ticket and autopilot workers run as their self-review. Codex is optional: when
+it is missing, desk-review asks before falling back to Claude checking Claude, and says so.
+
+**`/desk-kiss`** is the deep pass on one question: should this change be smaller? It holds the diff
+against its stated intent (the ticket, else the PR body, else the commits, and names which) and looks
+for scope creep, abstractions with exactly one consumer, and comments that narrate history or
+restate the code. A justification gate and a refutation that argues the author's case run before
+anything is reported. When the target is your checked-out `HEAD` on a clean tree, it then offers
+each mechanical fix one at a time, showing the exact diff, and never commits. desk-review already
+checks the same rules on every run; reach for desk-kiss when its scope findings look like the tip of
+something.
+
+```
+/desk-kiss        /desk-kiss 460        /desk-kiss main...feat/x
+```
+
+**`desk-review-response`** (loads itself) works a reviewer's comments: assess every comment first
+and agree what to change, fix only that, self-review the fixes, then reply in two or three sentences
+in this repo's review register and resolve the threads (§3 `pr-reply`). It also answers "is this
+reviewer right?".
+
+### Your open work
+
+**`/desk-clearance`** takes your reviewed PRs the rest of the way in: works the comments (through
+desk-review-response, one subagent per PR), resolves threads, updates branches, watches CI, merges
+by the repo's method where §3 allows, and transitions the tickets. It only ever touches your own PRs.
+One run is one pass; for repeats use `/loop desk-clearance` (while the session is open) or the
+`schedule` skill (survives closing the terminal).
+
+**`/desk-cleanup`** tidies up after a batch: it reconciles ticket statuses that drifted from GitHub,
+removes worktrees whose PRs merged (§3 `worktree-remove`), reports local branches and PRs behind the
+default branch, and finds leaked dev servers eating memory. It acts only on tickets assigned to you
+**and** PRs you authored, and needs two independent signals before removing anything.
+
+**`/desk-checkout`** drafts your end-of-day update from what actually happened: calendar meetings and
+their Gemini notes, Jira changes, GitHub PRs, your Claude Code sessions and your own Slack messages.
+It covers every desk repo that posts to the same §4 Check-out destination, and each source needs its
+own §3 row (`read-calendar`, `read-transcripts`, `read-slack-public`…); a skipped source is listed in
+the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
+
+```
+/desk-checkout                   today (before 10:00, yesterday)
+/desk-checkout yesterday         also a weekday name ("friday") or a date (2026-09-23)
+```
+
+### This machine and this repo
+
+**`/desk-setup`** configures desk for the repo you are in (see [Setting up a repo](#setting-up-a-repo)).
+
+```
+/desk-setup                          first run, or change anything
+/desk-setup permissions              straight to the permission interview
+/desk-setup plugins                  only which plugins this repo needs; changes nothing else
+/desk-setup from bigbenjoman__voicepa    start from another repo's §1, §3 and §3b answers
+/desk-setup list                     every configured repo; changes nothing
+```
+
+**`/desk-update`** brings everything on the machine up to date (see [Updating](#updating)).
+
+```
+/desk-update                 report everything, then upgrade only what you pick
+/desk-update outdated        report only
+/desk-update ux-designer     check and upgrade named skills
+/desk-update --all           upgrade everything that is behind, still after showing the diff
+```
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
@@ -71,6 +208,35 @@ by first name ("Hello Bea", "ask Nadia").
 `/userflow` (in `commands/`) maps the product's information architecture: one Otto per role.
 A repo that wants a tailored agent adds its own `.claude/agents/<name>.md`; Claude Code prefers
 the project copy over the user-level one.
+
+The reviewers among them (Lena, Nadia, Theo, Mira, Jim, Suki, Bea) are also desk-review's finders.
+There they report on the review bar's P0–P3 scale, which Lena, Nadia and Suki use natively.
+
+## Third-party skills and plugins
+
+`install.sh` also installs 59 skills other people publish, pinned in
+[`vendor/sources.json`](vendor/sources.json) (how that works: [Skills, one copy each](#skills-one-copy-each)).
+They load themselves when a request matches; `skills-upstream list` prints them with their sources.
+
+| Area | Skills |
+|---|---|
+| UX, UI and design | `ux-designer`, `ui-designer`, `ux-copywriter`, `ux-motion` (Yummy Labs), `frontend-design`, `web-design-guidelines` (UI review against the Web Interface Guidelines), `tailwind-design-system`, `kpi-dashboard-design` |
+| Frontend (React / Next.js) | `nextjs-app-router-patterns`, `react-state-management`, `vercel-react-best-practices`, `vercel-composition-patterns` |
+| Backend, APIs and data | `api-design-principles`, `openapi-spec-generation`, `error-handling-patterns`, `fastapi-pro`, `fastapi-templates`, `async-python-patterns`, `python-configuration`, `python-observability`, `python-performance-optimization`, `python-resilience`, `postgresql-table-design`, `supabase-postgres-best-practices`, `sql-optimization-patterns`, `database-migration`, `neon`, `neon-postgres`, `data-engineer`, `data-quality-frameworks`, `dbt-transformation-patterns`, `ml-pipeline-workflow` |
+| Auth and payments | `clerk` (a live checkout of `clerk/skills` with its sub-skills), `stripe-integration` |
+| Security and privacy | `api-security-best-practices`, `auth-implementation-patterns`, `secrets-management`, `gdpr-data-handling` |
+| Infrastructure and deployment | `deployment-pipeline-design`, `github-actions-templates`, `docker-expert`, `gcp-cloud-run`, `monorepo-management` |
+| Testing | `e2e-testing-patterns` (Playwright and Cypress) |
+| Marketing and SEO | `seo-audit`, `ai-seo` (citation by AI answer engines), `schema` (JSON-LD), `site-architecture`, `programmatic-seo`, `competitors` (vs and alternative pages), `content-strategy`, `directory-submissions`, `product-marketing` |
+| Domain | `backtesting-frameworks`, `risk-metrics-calculation` |
+| Planning | `working-backwards` (Amazon-style PR/FAQ) |
+| Claude Code tooling | `context-audit` (token waste in your setup), `context7-mcp` (current library docs), `find-skills` (discover and install more skills) |
+
+And these plugins, each asked before installing: `superpowers` (brainstorming, plans, TDD,
+debugging and other process skills), `code-review`, `code-simplifier`, `frontend-design`, `vercel`,
+`playwright` (the browser MCP desk-pr and desk-dev drive, patched to run from inside a monorepo) and
+`codex` (the OpenAI CLI bridge desk-review refutes with). `/desk-setup plugins` switches off, per repo,
+the ones that repo does not need.
 
 ## Skills, one copy each
 
@@ -154,11 +320,15 @@ What it does:
 - **Writes without asking** (desk's own files; a copy you edited is backed up first):
   the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
   `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
-  up), the scripts (`~/.claude/desk/bin`), `desk-env` and `desk-jira` (`~/.local/bin`), and the
-  attribution hook script.
-- **Asks first** before changing `~/.claude/settings.json` (registering the hook, adding the
-  always-on deny rules), installing plugins, replacing a `desk-jira` it didn't install, or patching
-  the Playwright MCP.
+  up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-jira` and
+  `skills-upstream` (`~/.local/bin`), and the two hook scripts.
+- **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
+  always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
+  didn't install, or patching the Playwright MCP.
+
+The two hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
+repo whose §5 AI attribution is `forbidden`, and **`desk-update-check.sh`** (at session start, at
+most once a day) says when this checkout has new commits for `/desk-update` to install.
 - **Never** writes a repo config. That is `/desk-setup`'s job, per repo.
 
 Requirements (`./install.sh --check` names anything missing):
@@ -190,10 +360,11 @@ What setup does, in order:
 | 2. Permissions | One question per capability, four at a time, each with a recommended answer and what it unlocks and exposes. | Answer every row; anything unanswered is `no` |
 | 3. Connectors | Checks that the tools a granted row needs are present (Atlassian, Slack, Figma, Vercel, Playwright). Never calls them. | Connect any that are missing |
 | 4. Harness rules | Adds the always-on deny rules to `~/.claude/settings.json`, then offers allow rules for your `yes` rows, written **only** to this repo's `.claude/settings.local.json` (refused unless git ignores it). | Approve the plan |
+| 4b. Plugins | Works out from the repo's own files which installed plugins it does not need, and switches those off for this repo only. | Confirm the list |
 | 5. Write | Writes the config and prints every row back. | Check the summary |
 
-Re-running `/desk-setup` in a configured repo changes only what you ask to change. `/desk-setup
-permissions` jumps straight to the permissions; `/desk-setup list` shows every configured repo.
+Re-running `/desk-setup` in a configured repo changes only what you ask to change. Its other forms
+are listed under [This machine and this repo](#this-machine-and-this-repo).
 
 ### Jira login, per repo
 
@@ -238,7 +409,7 @@ What each section holds (template and full rules: [`desk-config.md`](desk-config
 | §2 Paths | main checkout, worktrees, handoff and backup folders |
 | §3 Permissions | the allowlist: every capability `yes`, `ask` or `no`, answered by you |
 | §3b Cost and autonomy | budgets, concurrency, memory gates, dev-server port |
-| §4 Tracker, tools and team | Jira (or `none`), work id patterns, required and advisory checks, merge holds, merge method, local review, toolchain commands, databases, staging, Vercel, Slack, people by role |
+| §4 Tracker, tools and team | Jira (or `none`), work id patterns, required and advisory checks, merge holds, merge method, local review command, review bar, review domain experts, clean review verdict, toolchain commands, databases, staging, Vercel, Slack, check-out destination, people by role |
 | §5 Conventions | branch and PR title format, PR body, AI attribution, ticket format, the repo's own instruction files |
 
 ### How values are written
@@ -342,6 +513,9 @@ cd ~/desk-skills && git pull && ./install.sh
 Restart Claude Code. Repo configs are kept; if the template gained rows, `/desk-setup` in that repo
 asks only those. Re-run `./install.sh` after a Playwright plugin update, which undoes its patch.
 
+You don't need to remember to check: once a day, the first session you start says when desk-skills
+has new commits.
+
 **`/desk-update`** does all of it brew-style, from any directory: pulls desk-skills, runs
 `skills-upstream outdated`, `verify` and `plugins`, reports one table (outdated, drifted,
 unlinked, unreachable, untracked), says what changed upstream for each, and upgrades only what you
@@ -374,4 +548,7 @@ pick, after showing the diff. It never pushes the desk-skills commit without ask
 
 desk-skills began as a copy of studia-skills 2.3, with every company-specific fact moved into the
 per-repo config. The workflow and its safety rails are unchanged, and were hardened by the review in
-`docs/`.
+`docs/`. `desk-review` and `desk-kiss` are studia-web's `/pullbot` and `/kiss` made repo-generic,
+and the subagents began as studia-web's. Upstream changes are checked from time to time and brought
+back where they are not company-specific; the last check was 3 October 2026.
+[`docs/porting-contract.md`](docs/porting-contract.md) records each mapping.
