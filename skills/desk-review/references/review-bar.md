@@ -47,10 +47,16 @@ is why it is here.
 | **Prose that outranks the linter** | A rule added to a `.md` file that the linter enforces at `warn`, or not at all. Stated severity and configured severity must agree. |
 | **Speculative generality** | An abstraction with exactly **one** consumer: an interface, factory, config object, generic parameter or options bag introduced for a caller that does not exist yet. *Dead on arrival* is the zero-consumer case; this is the one-consumer case, and the more common one. |
 | **Scope creep with no consumer** | A hunk that traces to no line of stated intent **and** whose product nothing live calls. Out of scope on its own is P2 below; out of scope *and* serving no consumer is this. |
+| **Extracted, callers not migrated** | A new or changed shared helper that leaves equivalent inline copies alive, where the PR description does not list them under *Not migrated*. Cite each surviving copy as `path#symbol`. Listed copies are a decision on record, not a finding. With no PR description to read, report every surviving copy. |
 
 **The cheapest signal.** A comment near the top of a file saying *"mirrors"*, *"copied from"*,
 *"structurally identical to"* or *"same shape as"* plus a path is the author having already found
 the duplication. Report it.
+
+**Extract first, then drop the comment.** Those comments, and "must match" comments like them, are
+how twins get found. The finding is to extract the shared code and then delete the comment, in that
+order. Never report the comment alone, and never accept a fix that deletes it while both copies
+survive: that hides the duplication and leaves the code unchanged.
 
 **Calibration.** Two approval flows that are structural clones, one carrying a comment "mirrors the
 other's steps 7–9", both encoding the same age and consent rules. Not broken, but the second copy is
@@ -74,7 +80,8 @@ a dead subsystem. Real, mechanical, worth knowing, and never ranked beside a P0.
 | **Local duplication** | A helper, type, mapping or constant restated in a second place inside one module or package. |
 | **Transcription** | One shape declared more than once (a schema, a type, a mapping, a model) where one declaration could derive the rest. Adding a field means editing every copy. |
 | **Dead weight** | A single unused export, a story-only component, a dependency declared and never imported. |
-| **A test that cannot fail** | An assertion that a mock returns what the mock was told to return, a suite under `continue-on-error`, or a mock that re-implements the logic under test. |
+| **A test that cannot fail** | An assertion that a mock returns what the mock was told to return, a suite under `continue-on-error`, or a mock that re-implements the logic under test. Source-text tests belong here too: reading a source file as text (`readFileSync`, `open(...).read()`), slicing markup with `indexOf`, a regex over class names, or a hand-rolled evaluator of a query filter. Each one checks how the code is written, not what it does. |
+| **Narrative comment** | An added comment that carries a ticket ID, a review-finding number, a person's name, a date, "previously", or an account of a failed attempt. That history belongs in the commit and the PR. Also reportable: an added comment that contradicts the code beside it. A *"mirrors"* or "must match" twin annotation is not narrative; see *Extract first, then drop the comment* under P1. Nor is the expiry on a skip, a lint suppression or a `continue-on-error`: the ticket ID or date saying when it comes out is what *Advisory by accretion* asks for. |
 | **Out of scope** | A hunk that traces to no line of stated intent but does have a live consumer. Worth naming; the author judges whether it stays in this PR. |
 
 **The boy-scout exemption, and it is not optional.** Many repos' instructions ask an author who
@@ -97,14 +104,14 @@ P2 to justify having found something. An empty report is the expected result for
 
 ## How this maps to the agents' own scales
 
-P0–P3 is the vocabulary `lena-code-reviewer` and `suki-frontend-architect` already use. Lena's
+P0–P3 is the vocabulary `lena-code-reviewer`, `nadia-security-auditor` and `suki-frontend-architect`
+already use, so nothing needs translating. Lena's
 "Critical" is P0 or P1 by the tables above, her "Important" is P2, her "Minor" is P3 and dropped.
 Her *Scope Discipline* rule is live here as *Speculative generality*, *Scope creep with no consumer*
 and *Out of scope*.
 
-**`nadia-security-auditor` must be mapped explicitly.** She rates `CRITICAL/HIGH/MEDIUM/LOW` and her
-top levels say "Block merge". Map CRITICAL→P0 and HIGH→P1, judge MEDIUM against the P2 table, drop
-LOW, and ignore "block merge": findings here never approve or block anything.
+Nadia's P3 hardening notes are not reported, and her *Verdict* line is ignored: findings here never
+approve or block anything.
 
 A domain-expert finder (§4 Review domain experts) reports in this scale too. A domain error that
 moves money, a trade, a valuation or a regulated decision is P0 under **Money** or **Contract**; the
