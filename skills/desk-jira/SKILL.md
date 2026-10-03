@@ -86,10 +86,22 @@ What the CLI does for you, and the traps it still has:
   confirm with `desk-jira get <KEY>`, which prints every set custom field by name (`--json` for raw).
 - **Text calls use API v2, which takes Jira wiki markup, not markdown.** Write a heading as
   `h2. Summary`. A markdown `## Summary` does **not** render as a heading: `#` is wiki markup's
-  numbered-list marker, so it becomes a nested numbered list. Lists are `* item` and `# item`, bold
-  is `*bold*`, code is `{{code}}`. Check a new body once with
-  `desk-jira api "api/2/issue/<KEY>?fields=description&expand=renderedFields"`: the rendered HTML
-  should contain `<h2>`.
+  numbered-list marker, so it becomes a nested numbered list. The rest, wiki form first:
+  - lists `* item` and `# item` (nest with `**`, `##`), not `- item` / `1. item`;
+  - bold `*bold*`, not `**bold**`;
+  - inline code, flags and paths `{{--flag}}`, not backticks; a code block `{code}…{code}`, not
+    fences;
+  - links `[text|https://…]`, not `[text](https://…)`;
+  - tables `||head||head||` then `|cell|cell|`, with no `---` separator row.
+
+  Plain text is rewritten as well: `--` becomes an en dash and `---` an em dash (so a `--flag`
+  outside `{{ }}` is mangled), `-x-` is strikethrough, and a stray `{word}` is read as a macro.
+  Escape with `\`. A `.md` body file is not converted; the text is sent exactly as written.
+
+  Check a new body once by counting headings in the rendered HTML:
+  `desk-jira api "api/2/issue/<KEY>?fields=description&expand=renderedFields" | jq -r .renderedFields.description | grep -c '<h2'`,
+  or for a comment,
+  `desk-jira api "api/2/issue/<KEY>/comment/<ID>?expand=renderedBody" | jq -r .renderedBody | grep -c '<h2'`.
 - **Screenshots go on the ticket**, not only the PR: `desk-jira attach ABC-123 before.png after.png`.
 
 For anything the CLI has no command for, read **`references/jira-rest-recipes.md`**. That covers
@@ -330,7 +342,7 @@ ambiguous, say so at that ticket, not in a footnote.
 | Source labels (audit, design QA) on a ticket that didn't come from there | They say where the finding came from |
 | A per-finding id label, or a new label slipped in | Use §4 Labels; announce a genuinely new one |
 | `comment ABC-1 --file body.md` | The body is positional: `comment ABC-1 body.md` |
-| `## Summary` in a ticket or comment body | Wiki markup: `h2. Summary`. `##` renders as a nested numbered list |
+| Markdown (`## Summary`, `**bold**`, fences, `[text](url)`) in a ticket or comment body | Wiki markup (see *Transport*): `h2. Summary`. `##` renders as a nested numbered list |
 | Adding a Subtask to a sprint | Put the parent in the sprint |
 | Posting an issue link by hand with the obvious inward/outward mapping | It lands backwards and still returns 201. Use `desk-jira link` |
 | A dependency written in a description ("needs ABC-1 first") | Autopilot reads links only: `desk-jira link` it |
