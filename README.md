@@ -22,7 +22,8 @@ cd ~/desk-skills && ./install.sh     # once per machine; asks before touching yo
 4. **Before the first autopilot batch in a repo**, run its preflight once (see
    [Checking a repo's setup](#checking-a-repos-setup)).
 
-Then `/desk-ticket <TICKET>` for one ticket, or `/desk-autopilot <TICKET> <TICKET> …` for a batch.
+Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> …` for a batch, or
+`/desk-autopilot <EPIC>` for a large feature written as an epic.
 
 ## Skills
 
@@ -30,7 +31,7 @@ Then `/desk-ticket <TICKET>` for one ticket, or `/desk-autopilot <TICKET> <TICKE
 |---|---|---|
 | `desk-setup` | Detects this repo's Jira, checks, toolchain and conventions, asks what the skills may do here, then writes this repo's config | `/desk-setup` |
 | `desk-ticket` | One ticket, from triage to merged PR | `/desk-ticket ABC-123` |
-| `desk-autopilot` | A batch of tickets, one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2` |
+| `desk-autopilot` | A batch of tickets (or an epic's children), one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2`, `/desk-autopilot ABC-900` |
 | `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
 | `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub | `/desk-cleanup` |
 | `desk-checkout` | Drafts your end-of-day check-out from calendar, meeting notes, Jira, GitHub, Slack and Claude Code; never sends it | `/desk-checkout` |
@@ -317,6 +318,12 @@ bash tests/run.sh
    are always left for you. The recommended settings leave merging to you, so green PRs are
    reported instead.
 6. **Park**: anything that needs a person waits, and you get a notification.
+
+**An epic** runs as its open children (`/desk-autopilot ABC-900`). Jira "is blocked by" links are
+honoured: a blocked ticket waits until its blocker's PR merges. Tickets sized L or XL are parked to
+be split. When the last child merges, the epic's own criteria are checked; the epic's status is
+left to you. Bea writes epics in this shape ("Hello Bea, this is an epic"), with an adversarial
+readiness review before you approve them.
 
 Run `/desk-autopilot` again to check progress, answer a parked question or resume. Batch state is
 kept per repo, so two repos can run batches at once. Workers keep going if you close the session.

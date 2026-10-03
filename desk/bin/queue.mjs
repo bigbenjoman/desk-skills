@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { isHeld, waitingOnMerge } from './batch-state.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot } from './desk-env.mjs';
 
 // The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
@@ -149,6 +150,69 @@ switch (cmd) {
     break;
   }
 
+  // Hold a ticket behind blockers (a dependency added mid-batch, or a collision chain), recorded so
+  // pass.mjs keeps the batch alive and the merge driver releases it once every blocker has merged.
+  case 'hold': {
+    const [key, ...blockers] = args;
+    const preds = blockers.flatMap((b) => b.split(/[,|]/)).filter(Boolean);
+    if (!key || !preds.length) throw new Error('usage: queue.mjs hold <TICKET> <BLOCKER> [<BLOCKER> ...]');
+    const t = ticket(q, key);
+    for (const p of preds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
+    if (t.state === 'parked' && !isHeld(t)) throw new Error(`${key} is parked for its own reason (${t.park?.question ?? '?'}): a hold would let a release send it to a worker`);
+    if (['running', 'done', 'failed'].includes(t.state)) throw new Error(`${key} is ${t.state}: too late to hold it`);
+    // A release sets state=triaged, so only a ticket that is triaged (or already held) may be held.
+    if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it before holding it`);
+    const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
+    t.held_by = all.join('|');
+    t.state = 'parked';
+    t.park = { question: `held by orchestrator: blocked by ${all.join(', ')} — starts once their PRs merge`, since: new Date().toISOString() };
+    t.updated_at = new Date().toISOString();
+    save(q);
+    console.log(`${key} held behind ${all.join(', ')}`);
+    break;
+  }
+
+  // Add one triaged ticket mid-batch, from its triage record, the way plan-batch seeds one: a blocker
+  // the user asked to add, a split-off child. Never re-run plan-batch with AUTOPILOT_WRITE_QUEUE for
+  // this: it resets every ticket's state.
+  case 'admit': {
+    const [key] = args;
+    if (!key || !SAFE_ID.test(key) || key.includes('..')) throw new Error('usage: queue.mjs admit <TICKET>   (after triage.sh <TICKET>)');
+    if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
+    const recPath = join(stateDir(), 'triage', `${key}.json`);
+    if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
+    const r = JSON.parse(readFileSync(recPath, 'utf8'));
+    const size = String(r.size ?? '').toUpperCase();
+    const park = ['C', 'D'].includes(r.lane) ? `lane ${r.lane} — ${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`
+      : ['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null;
+    const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
+    // The collision check plan-batch makes, against every ticket still to finish: two tickets that
+    // touch one file never run at once.
+    const mine = new Set(r.files_in_scope ?? []);
+    const collides = [];
+    for (const [k, other] of Object.entries(q.tickets)) {
+      if (['done', 'failed'].includes(other.state)) continue;
+      const op = join(stateDir(), 'triage', `${k}.json`);
+      if (!existsSync(op)) continue;
+      const files = JSON.parse(readFileSync(op, 'utf8')).files_in_scope ?? [];
+      if (files.some((f) => mine.has(f))) {
+        collides.push(k);
+        other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
+      }
+    }
+    q.tickets[key] = {
+      key, type: r.type ?? 'Bug', lane: r.lane, state: park ? 'parked' : 'triaged',
+      worktree: null, branch: r.branch ?? null, database: null, port: null,
+      session_id: null, pid: null, base_sha: null, stage: null,
+      park: park ? { question: park, since: new Date().toISOString() } : null, log: null, result: null,
+      collides_with: collides.join('|') || null, open_questions: unknowns, held_by: null,
+      added_at: new Date().toISOString(),
+    };
+    save(q);
+    console.log(`admitted ${key}: ${park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${r.blockers?.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    break;
+  }
+
   case 'set': {
     const [key, ...pairs] = args;
     const t = ticket(q, key);
@@ -222,21 +286,25 @@ switch (cmd) {
     if (!rows.length) { console.log('queue is empty'); break; }
     const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
     rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
-    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.base ? `   base ${q.base}` : ''}\n`);
+    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
     for (const t of rows) {
-      const tail = t.state === 'parked' ? t.park?.question ?? ''
+      const stuck = isHeld(t) && !waitingOnMerge(q, t);
+      const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();
+      const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (failed or parked): decide what happens to it`
+        : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
+        : t.state === 'parked' ? t.park?.question ?? ''
         : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}`
         : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}` : '')
         : '';
-      console.log(`  ${t.state.toUpperCase().padEnd(8)} ${t.key.padEnd(9)} ${tail}`);
+      console.log(`  ${label.padEnd(8)} ${t.key.padEnd(9)} ${tail}`);
     }
-    const parked = rows.filter((t) => t.state === 'parked').length;
+    const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && waitingOnMerge(q, t))).length;
     if (parked) console.log(`\n${parked} ticket(s) waiting on you.`);
     break;
   }
 
   default:
-    console.log('usage: queue.mjs init|add|set|set-batch|park|front|drop|get|list|render');
+    console.log('usage: queue.mjs init|add|admit|hold|set|set-batch|park|front|drop|get|list|render');
     process.exit(cmd ? 1 : 0);
 }
 } catch (e) {

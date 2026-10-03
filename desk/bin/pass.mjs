@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, st
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
+import { batchIdle, waitingOnMerge, isHeld } from './batch-state.mjs';
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
@@ -430,6 +431,34 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 }
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);
 if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
+// Held tickets. Each finished blocker's PR is looked up once per pass, so a hold behind a PR that was
+// closed unmerged, or a blocker that finished with no PR, surfaces instead of waiting for ever.
+const qNow = queue();
+const heldNow = Object.values(qNow.tickets).filter(isHeld);
+const prStates = {};
+for (const t of heldNow) {
+  for (const p of String(t.held_by ?? '').split('|').filter(Boolean)) {
+    const n = qNow.tickets[p]?.state === 'done' ? qNow.tickets[p]?.result?.pr : null;
+    if (n != null && !(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
+  }
+}
+const prState = (n) => prStates[n] ?? null;
+const predsOf = (t) => String(t.held_by ?? '').split('|').filter(Boolean);
+const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every((p) => qNow.tickets[p]?.state === 'done' && prState(qNow.tickets[p]?.result?.pr) === 'MERGED'));
+const onMerge = heldNow.filter((t) => waitingOnMerge(qNow, t, prState) && !releaseDue.includes(t));
+const stuck = heldNow.filter((t) => !waitingOnMerge(qNow, t, prState));
+if (onMerge.length) out.push(`WAITING ON MERGE: ${onMerge.map((t) => `${t.key} (${predsOf(t).join(', ')})`).join(', ')}`);
+// The merge driver releases these on its next loop. Where it is not running, the release is yours:
+// queue.mjs set <TICKET> state=triaged park=null held_by=null, then queue.mjs front <TICKET>.
+// A live merge driver releases these on its next loop, so they only need you when it is not running.
+const driverPid = Number((() => { try { return readFileSync(join(STATE, 'merge-driver.lock.d', 'pid'), 'utf8').trim(); } catch { return ''; } })());
+const driverLive = (() => { if (!driverPid) return false; try { process.kill(driverPid, 0); return true; } catch { return false; } })();
+for (const t of releaseDue) {
+  if (driverLive) out.push(`release due: ${t.key} (every blocker merged; the merge driver releases it on its next loop)`);
+  else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running: release it (queue.mjs set ${t.key} state=triaged park=null held_by=null, then queue.mjs front ${t.key})`);
+}
+for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (failed, parked, no PR, or a closed PR): decide whether it waits, is released, or is dropped`);
+
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 
 // Blocked-on-questions must be visible, or "no change this pass" reads as "idle" when it
@@ -440,7 +469,6 @@ const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ??
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
-
 const needsHuman = [...report.waiting, ...report.parked];
 if (needsHuman.length) console.log(`NOTIFY: ${needsHuman.length} ticket(s) need you — ${needsHuman.map((x) => x.split(':')[0]).join(', ')}`);
 console.log(out.length ? out.join('\n') : 'no change this pass');
@@ -448,5 +476,5 @@ console.log(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)
 console.log('');
 console.log(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 
-const idle = Object.values(queue().tickets).every((t) => ['done', 'parked', 'failed'].includes(t.state));
-if (idle) console.log('\nIDLE — every ticket is done, parked, or failed. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+const idle = batchIdle(queue(), prState);
+if (idle) console.log('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');

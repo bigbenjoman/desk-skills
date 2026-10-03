@@ -32,7 +32,8 @@ A 2xx is not proof. Past failures all returned success:
 
 ## Issue links — the direction is inverted
 
-`desk-jira` has no `link` command. The usual link types are `Blocks`, `Duplicate` and `Relates`; ids vary by site. List them with `GET /rest/api/3/issueLinkType`.
+Use `desk-jira link <KEY> blocked-by|blocks <OTHER>` for Blocks links: it handles all of this. The
+recipe below is for another link type, or for deleting a wrong link. The usual link types are `Blocks`, `Duplicate` and `Relates`; ids vary by site. List them with `GET /rest/api/3/issueLinkType`.
 
 `inwardIssue` is the **subject that performs the outward verb** on `outwardIssue`. To record
 "ABC-1 is blocked by ABC-2", send `inwardIssue: ABC-2, outwardIssue: ABC-1`. The reading the field

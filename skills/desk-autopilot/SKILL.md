@@ -2,8 +2,8 @@
 name: desk-autopilot
 description: >-
   Use when the user hands over a batch of tickets in this repo to work unattended: "run ABC-1005
-  ABC-1008 ABC-763", "work through these tickets", "do these issues while I'm out", "pick the batch
-  back up". Tickets are keys matching the repo's ticket key pattern or, where the repo has no
+  ABC-1008 ABC-763", "work through these tickets", "do these issues while I'm out", "run epic
+  ABC-900", "pick the batch back up". Tickets are keys matching the repo's ticket key pattern or, where the repo has no
   tracker, GitHub issue URLs or short descriptions. Drives each ticket in its own worktree in a
   detached headless worker and, where config allows, merges each PR as soon as it is green, parking
   anything that needs a human rather than guessing. Also when checking on a running batch, answering
@@ -78,6 +78,7 @@ directory. There are three kinds, the same ones `desk-ticket` accepts:
 | Argument | Key | Where its text comes from |
 |---|---|---|
 | a tracker key matching §4 Ticket key pattern (Tracker `jira`) | the key as given | Jira, read by `triage.sh` with `desk-jira` |
+| an **epic** key (Tracker `jira`) | never a key itself: it expands to its children (see *An epic as a batch*) | Jira |
 | an id matching §4 Other work id patterns (any tracker), e.g. a planning-tool id `P1-M14-FIX-1` or `BUG-119-5` | the id exactly as given, case kept | the ticket file you write (below), never Jira |
 | with Tracker `none`: a GitHub issue URL or `#<n>` on §0 GitHub repo | `issue-<n>` | the ticket file you write, from the issue |
 | with Tracker `none`: a short description the user typed | a lowercase kebab slug of it, stated back at Stage 2 | the ticket file you write, from the user's words |
@@ -175,7 +176,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | `pr-self-review-comment` | worker posts the §4 Local review command's report (`gh pr review`, `gh pr comment`) | worker parks with the report; you ask, then post it |
 | `pr-reply` | a worker may reply with `gh pr comment`; resolving threads (GraphQL, `gh api`) is yours, since workers never get `gh api` whatever this row says | the worker parks with its replies; you post them or report the threads to the user |
 | `pr-update-branch`, `ci-rerun` | worker may `gh pr update-branch` / `gh run rerun`; the merge driver reruns completed red runs | denied to the worker; the driver logs the red run and leaves it for you |
-| `jira-comment`, `jira-transition`, `jira-create`, `jira-edit` (Tracker `jira` only) | worker posts / moves / creates / edits (`edit`, `labels`, `attach`) itself | worker parks with `desk-jira`'s block; relay it verbatim (Stage 6c) |
+| `jira-comment`, `jira-transition`, `jira-create`, `jira-edit` (Tracker `jira` only) | worker posts / moves / creates / edits (`edit`, `labels`, `attach`) itself; `desk-jira link` is never a worker's | worker parks with `desk-jira`'s block; relay it verbatim (Stage 6c) |
 | `codex-review` | workers get `codex`; the preflight asserts `CODEX=OK` (fails if codex is missing, unless `AUTOPILOT_ALLOW_NO_CODEX=1`) | `codex` is denied and the preflight asserts `CODEX=BLOCKED`; refutations are same-vendor, and where a required check demands a cross-vendor verdict those PRs cannot pass it: say so |
 | `pr-images` | `pass.mjs` uploads automatically | `pass.mjs` reports the directory; ask, then run the uploader with `DESK_UPLOAD_APPROVED=1` |
 | `read-figma` | workers get the Figma read tools | a ticket needing the frame parks |
@@ -200,7 +201,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 |---|---|---|
 | 0 | Claim | `queue.mjs init`. `pass.mjs` takes an exclusive lock at `<state>/orchestrator.lock` and refuses to run if a live orchestrator holds it; a lock from a dead process is taken over automatically. Each pass also writes a heartbeat under `<state>/orchestrators/`, so another batch's `init` sees this one between passes (fresh = under 15 minutes). `init` backs up and re-seeds `batch-notes.md`: **check the `## MEMORY` heading is there**. See *Sharing the machine*. |
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
-| 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
+| 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs`: ownership, admission, collisions, and the question batch. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
@@ -212,15 +213,17 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
 
-Idle = every ticket merged, parked or failed. Say so and stop. Do not invent work. **Never
+Idle = every ticket merged, parked or failed, and none held waiting on a merge (`pass.mjs` prints
+IDLE only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
 transition a ticket to §4 Done state** (and with no tracker, never close an issue), and never treat
 a triage "already fixed" as grounds to close one: a per-criterion check once overturned four of six
 such verdicts.
 
 ## Order the batch by blast radius
 
-`plan-batch` finds collisions; it does not decide sequence. **You do, at Stage 2, from the
-`files_in_scope` triage already gave you**, and the order is a merge order, not just a spawn order.
+`plan-batch` finds collisions and orders by Jira Blocks links (*Dependencies from Jira links*); the
+rest of the sequence is yours. **Set it at Stage 2, from the `files_in_scope` triage already gave
+you**, and the order is a merge order, not just a spawn order.
 
 **Largest blast radius first.** A ticket that *moves, renames or deletes* files must land before any
 ticket that *edits* them. Rank by how much of the tree a ticket disturbs:
@@ -259,11 +262,112 @@ clear the entry too if you release it early.
 
 **Colliding tickets are serial to the merge, not to the worker** (§5 Batches): as soon as a PR is
 done it gets merged, and then work starts on the next ticket. `pass.mjs` only holds a
-collider back while the other one's *worker* is running. So chain them yourself: park each successor
-with a `held by orchestrator: … starts once <TICKET>'s PR merges` reason, and pass the chain to the
-merge driver as `--deps`, which releases it (`state=triaged`, moved to the front) once that PR has
+collider back while the other one's *worker* is running. So chain them yourself: hold each successor with
+`queue.mjs hold <SUCCESSOR> <TICKET>` (it records the blocker, so the batch stays alive while it
+waits), and pass the chain to the merge driver as `--deps`, which releases it (`state=triaged`, moved to the front) once that PR has
 merged. Tickets that share no files run in parallel lanes up to the concurrency cap, and each lane
 stays serial.
+
+## An epic as a batch
+
+A large feature runs as an epic: one key whose children are the tickets. **Expand it at Stage 0,
+before triage**, and never triage, build, transition or edit the epic itself:
+
+```bash
+node ~/.claude/desk/bin/expand-parent.mjs ABC-900 > <state>/epic-keys.txt   # report on stderr
+node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
+```
+
+- It keeps the epic's children that are this repo's keys and not started, in Jira rank order. A
+  child story that has open subtasks is replaced by them (one level), and its Blocks links pass to
+  them (`<state>/expansion.json`, read by `plan-batch`). Done children are dropped; **in-progress
+  children are dropped** too (one may already have a PR): include one only if the user names it.
+- Exit 4 means the key is not an epic: run it as an ordinary ticket. A story runs as its subtasks
+  only when the user asks for exactly that (`--subtasks`); a bug or story named on its own with QA
+  or checklist subtasks runs as itself, as it always has. Exit 3: nothing open under it; say so.
+- **State the expanded list and every drop with its reason in the Stage 2 report.** A child the
+  user named alongside the epic is one key, not two.
+- **Half an epic on the default branch: ask now, at Stage 0, before triage.** With no batch base,
+  each child merges to §0 Default branch as it goes green, so production carries a half-built feature
+  until the last one lands. Ask this one question straight after expansion (an `AskUserQuestion`,
+  recommending `set-batch base=<feature branch>` unless each child is invisible or flagged until the
+  feature is complete), because the base must be set before triage reads prior art against it
+  (*A batch that targets a feature branch*). Everything else waits for Stage 3.
+- Triage reads the epic's description for context; each child's own criteria are its scope.
+- Tickets filed during the batch (an L split into children, a close-out follow-up) join it one at a
+  time: `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
+  ticket in the batch), or they wait for the next batch.
+
+### Dependencies from Jira links
+
+`triage.sh` records each ticket's "is blocked by" (Blocks) links and size from Jira, and
+`plan-batch` acts on them. Only Blocks is honoured; it reports any other link type it ignored.
+
+| Blocker | What `plan-batch` does |
+|---|---|
+| in the batch, admitted | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
+| outside the batch and done | nothing (noted) |
+| outside the batch and not done; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
+| on a cycle | parks every ticket on it: the links need fixing |
+
+A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
+those parks win, so a release can never send one to a headless worker. `plan-batch` seeds the queue
+blockers first. Join its `--deps` with your collision chains (one entry per successor,
+predecessors unioned) for the merge driver.
+
+**A held ticket is in flight, not idle.** While every blocker is still on its way (running, waiting
+to spawn, or done with an open PR), `pass.mjs` reports it under `WAITING ON MERGE` and does not print
+IDLE: keep the loop going. Two states come to you under `WAITING ON YOU`, with a notification:
+
+- **RELEASE DUE**: every blocker's PR has merged. The merge driver releases it on its next loop (it
+  reads both `--deps` and the queue's `held_by`, so a blocker added mid-batch counts). **Where the
+  driver is not running** (no merge grants), you release it: `queue.mjs set <TICKET> state=triaged
+  park=null held_by=null`, then `queue.mjs front <TICKET>`. That is the one manual release, and only
+  once GitHub shows every blocker merged: never because "it probably does not really depend on it".
+- **STUCK**: a blocker can no longer merge on its own (it failed, is parked for its own reason,
+  finished with no PR, or its PR was closed unmerged). The user decides: re-run or finish the
+  blocker, release the ticket anyway, or drop it.
+
+Answering a held ticket's question (`answer.mjs`) keeps the hold.
+
+**"Add the blocker to the batch"** as an answer: `triage.sh <B>`, `queue.mjs admit <B>`,
+`queue.mjs hold <S> <B>`, then restart the merge driver with `<B>` added to `--tickets` (so it merges
+B's PR). Never re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch: it resets every ticket's
+state.
+
+### Size
+
+Every ticket should carry a size (desk-jira's scale: XS, S, M, L, XL), from the project's `Size`
+field or a first description line `Size: M`. **L and XL park** (`size L — split it before
+batching`): they are split into smaller tickets, not run. A ticket with no size is reported
+`! no size` and runs on its lane as before.
+
+### Epic close-out
+
+When the batch is idle with no held ticket left:
+
+1. If any child is parked or failed, list them and stop: the epic is not complete, and nothing is
+   verified.
+2. Otherwise, if the epic has acceptance criteria or a definition of done (and likewise for each
+   story that was expanded into its subtasks, whose own criteria no worker checked), check each one against
+   `origin/<base>` with desk-jira's *"Already fixed"* method (one read-only verifier per criterion,
+   file:line or NOT MET, defaulting to NOT MET) and report MET / NOT MET. Each NOT MET is proposed
+   as a new child under the epic through `desk-jira`'s gate, never appended to the epic. With no
+   criteria, say "epic has no criteria — not verified".
+3. With a batch base, the promotion PR (base → default) is the user's. Title it with the epic key
+   so `/desk-review` checks the epic's criteria against the whole feature, and say so.
+4. **Never transition the epic**, whatever the result.
+
+### A design in Claude Design
+
+Workers have no Artifact tool, so a ticket whose design is a Claude Design artifact gets a
+snapshot **at Stage 1, before its triage**, taken by you: list the artifact's files
+(`Artifact action:list scope:files`), then read `project/canvas.json` and every `project/*.dc.html`
+with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under `<state>/designs/<TICKET>/project/`;
+triage and workers can read `<state>`). `canvas.json` names each board and its
+width; each board holds the exact copy, colours and sizes. Triage and the worker read the snapshot.
+An artifact the user does not own returns a summary, not the files: that, or one that will not
+read, is a Stage 3 question. A worker never builds from a summary or a guess.
 
 ## A batch that targets a feature branch
 
@@ -633,12 +737,15 @@ after `init`. The rules also live in the worker contract, which is never truncat
 # prompt: `node ~/.claude/desk/bin/<x>.mjs`, `~/.claude/desk/bin/<x>.sh`, `desk-env`. Never via a
 # shell variable such as $B: no allow rule matches a variable path. <state> is DESK_STATE from
 # `desk-env paths`, written out in full.
+node ~/.claude/desk/bin/expand-parent.mjs ABC-900                     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
 AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
 node ~/.claude/desk/bin/pass.mjs                                      # one pass; drive with /loop
 node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order
+node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
+node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
 node ~/.claude/desk/bin/harvest.mjs <state>/logs/ABC-123.log
 AUTOPILOT_DRY_RUN=1 …                                                 # no push, no PR, no review post, no Jira writes
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
@@ -687,12 +794,18 @@ that one field between passes: never by hand-spawning, and never by holding tick
 - About to kill a port, dev server or process another session owns
 - A worker quiet for 6+ passes: park it, do not wait
 - Answered a parked ticket and assumed a worker will pick it up
-- A ticket in the batch the user did not name
+- A ticket in the batch the user did not name (an epic names its expanded children; nothing else does)
 - Reporting a lane-C/D park as settled when its challenge line says the pass did not run
 - About to merge with branch protection `none` because GitHub would allow it
 - About to merge a PR under a §4 Merge holds glob, or without `--match-head-commit`
 - About to triage a non-tracker key without having written its ticket file
 - About to rename a slug into a fake ticket key because a script refused it
+- About to run an epic's children without having stated the expanded list and what was dropped
+- About to transition, close or edit the epic itself
+- About to release a held ticket before GitHub shows every blocker's PR merged
+- About to re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch
+- About to stop the loop while `pass.mjs` reports `WAITING ON MERGE`
+- About to hold a ticket by hand-writing a park reason instead of `queue.mjs hold` (no `held_by`, so nothing keeps the batch alive or releases it)
 
 ## Rationalizations
 
@@ -718,3 +831,6 @@ that one field between passes: never by hand-spawning, and never by holding tick
 | "That idle dev server is wasting 1.2GB" | It is probably a peer's. Ask over `SendMessage`; killing another session's server has already cost someone a ticket. |
 | "No branch protection, so it can merge now" | Protection `none` means the rule is yours to enforce. Green is the config's definition, at the head you pin. |
 | "The hold is for backend deploys and this change is tiny" | A §4 Merge holds entry is a person's merge whatever the size. Report it with the reason. |
+| "It's only blocked on paper, release it" | The link is the user's statement of order. Release on the blocker's merge, or ask them to remove the link. |
+| "All the children merged, so the epic is done" | Check the epic's own criteria (close-out), and leave its status to the user. |
+| "The size says L but it looks small" | Then the size is wrong: say so and ask for it to be re-sized. An L is never run whole. |

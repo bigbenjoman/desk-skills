@@ -218,7 +218,10 @@ const GH_DENY = [' api', ' alias', ' extension', ' ext', ' pr merge', ' pr ready
   ' secret', ' variable', ' workflow', ' release', ' repo edit', ' repo delete', ' repo create', ' repo fork', ' auth',
   ' pr review *--approve*', ' pr review *--request-changes*', ...shortFlag(' pr review', '-a'), ...shortFlag(' pr review', '-r'),
   ' pr create *--draft=*'];
-const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields'];
+const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children'];
+// Issue links are Bea's, filed interactively after the user approves an epic: never a worker's or a
+// triage pass's, whatever config §3 jira-edit says.
+const JIRA_NEVER = [' link'];
 
 if (mode === 'triage') {
   // Read-only by construction: no Edit, Write only to this ticket's triage records.
@@ -233,7 +236,7 @@ if (mode === 'triage') {
     ...READ_DENY,
     ...bash('git', ...GIT_DENY, ...GIT_LOCAL, ' rebase', ' push', ' worktree'),
     ...bash('gh', ...GH_DENY, ' pr create', ' pr edit', ' pr comment', ' pr review', ' issue comment', ' run rerun'),
-    ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels'),
+    ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels', ...JIRA_NEVER),
     ...[...new Set([PM, ...FORBIDDEN])].filter(Boolean).flatMap((b) => bash(b)),
   );
 } else {
@@ -372,6 +375,7 @@ if (mode === 'triage') {
   grant('jira-transition', bash('desk-jira', ' transition'));
   grant('jira-create', bash('desk-jira', ' create'));
   grant('jira-edit', bash('desk-jira', ' edit', ' labels'));
+  deny.push(...bash('desk-jira', ...JIRA_NEVER));
   if (!(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));
   else allow.push(...bash('desk-jira', ' attach'));
 
@@ -399,7 +403,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun'),
-      ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels'),
+      ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels', ...JIRA_NEVER),
     );
   }
 

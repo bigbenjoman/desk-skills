@@ -90,6 +90,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
    - **Technical Notes**: relevant constraints or architectural considerations
    - **Out of Scope**: what this ticket explicitly does NOT include
    - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank
+   - **Size**: XS, S, M, L or XL on desk-jira's scale (its *Epics* section), in the project's `Size` field where there is one (`desk-jira fields size`), otherwise as the description's first line `Size: M`. Anything L or bigger is split: see *Epic Mode*
    - **Other fields**: every field §4 Other fields lists, filled in the same create — a blank one is never flagged later
    - **Labels / Links**: from §4 Labels, plus any blocking or related issues
 
@@ -122,6 +123,36 @@ If the user volunteers an implementation idiom during the interview, record it a
 
 **Never write a task whose body is "run the checks the harness already runs."** Tickets called "Run tests", "Responsive QA" or "Final verification" are an anti-pattern — the criteria belong inside the feature ticket they verify. The exception is work that builds *new* test capability ("add a visual-regression harness", "configure end-to-end tests for the checkout journey") — that is real engineering and deserves its own ticket.
 
+## Epic Mode
+
+For a feature that is bigger than one ticket, or when the user asks for an epic. The aim is a set
+that desk-autopilot can run unattended, child by child, and that desk-review can check criterion by
+criterion. Read desk-jira's *Epics* section for the commands and the size scale.
+
+**The epic** carries: the outcome (who, and what changes for them); a **definition of done** as
+numbered Given / When / Then criteria for the feature end to end; out of scope; decisions, each
+dated and naming its owner; and the children in the order they are built.
+
+**Each child** carries: one line of context naming the epic; acceptance criteria `AC1`, `AC2`, …,
+each Given / When / Then and checkable on its own; out of scope; decisions (none open: settle it in
+the interview or do not file that child); what it builds on (existing modules or patterns to
+extend, not file trees or skeleton code); its design link (Figma or Claude Design) or "no UI"; and
+a size of **M or smaller**. Slice by user-visible behaviour, so each child can merge and ship before
+the next (invisible or behind a flag), or say the epic needs a feature branch.
+
+**Dependencies are Jira links, never prose.** Wherever one child calls, reads or renders what another
+adds, plan a Blocks link: autopilot reads only the links.
+
+**Readiness review before approval.** When the draft is complete, hand it back marked
+`READINESS REVIEW PENDING` with the epic, every child and the planned links. The main session runs
+desk-jira's `references/epic-readiness.md` checklist through `ada-devils-advocate` and returns the
+findings; fix them, then present the set with the verdict. If you are running in the main session
+yourself, dispatch Ada directly.
+
+**Filing**, after an explicit yes for the whole set: the epic, then each child with `parent=<EPIC>`
+and its size, then `desk-jira link <CHILD> blocked-by <OTHER>` for each planned link, then read it
+back with `desk-jira children <EPIC>` and report every key. The One Hard Rule covers each write.
+
 ## Communication Style
 
 - Conversational and encouraging — make the user feel heard
@@ -135,7 +166,7 @@ If the user volunteers an implementation idiom during the interview, record it a
 - Never write a ticket without understanding the 'why' behind it
 - Acceptance criteria must be specific and measurable — "works well" is not a criterion
 - Flag any ambiguities or assumptions you're making, in the ticket itself
-- If the request is too large for one ticket, say so and propose a split, with the slices named
+- If the request is too large for one ticket (size L or more), say so and switch to *Epic Mode*
 - Always consider user experience and technical feasibility
 - Write for the developer who picks this up cold in three weeks with no memory of the conversation
 

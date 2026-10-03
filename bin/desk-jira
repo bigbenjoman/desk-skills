@@ -234,6 +234,11 @@ fields_from_args() {
   for pair in "$@"; do
     [[ "$pair" == *=* ]] || die "expected field=value, got: $pair"
     k="${pair%%=*}"; v="${pair#*=}"
+    if [[ "$k" == parent ]]; then   # only a key: a file, a JSON number or object here is a mistake
+      [[ "$v" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: parent must be an issue key (e.g. ABC-12), got: $v"
+      obj=$(printf '%s' "$obj" | jq --arg v "$v" '.parent={key:$v}')
+      continue
+    fi
     if [[ "$v" == @* ]]; then
       [[ -f "${v#@}" ]] || die "desk-jira: file not found for $k: ${v#@}"
       check_outgoing_file "${v#@}"
@@ -285,12 +290,14 @@ desk-jira <command> [args]
   whoami                          confirm auth
   search <jql> [max] [--json]     key / status / priority (§4 Priority field if set) / summary
   get <KEY> [--json]              issue detail, custom fields included
+  children <KEY> [--json]         an epic's children or a story's subtasks, in rank order (paged)
   fields [filter]                 field ids and names (find custom fields)
   meta [issuetype]                createmeta: required fields + allowed values
 
   create <type> <summary> <desc-file|text> [field=value ...]
   edit <KEY> <field=value ...>    prints each field read back from Jira after the write
   labels <KEY> add|remove <label ...>
+  link <KEY> blocked-by|blocks <OTHER>   a Blocks link, direction handled, read back
 
   comment <KEY> <body-file|text>
   comments <KEY>                  existing comments (check idempotency markers)
@@ -304,6 +311,7 @@ desk-jira <command> [args]
 
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
                (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId)
+               parent=ABC-12 files the new issue under that epic or story
 
 Config:        this repo's ~/.config/desk/repos/<slug>/ (see `desk-jira where`)
 Env overrides: JIRA_SITE JIRA_EMAIL JIRA_EMAIL_FILE JIRA_PROJECT JIRA_TOKEN JIRA_TOKEN_FILE
@@ -394,6 +402,70 @@ case "$cmd" in
         "",
         (.fields.description // "(no description)")'
     fi
+    ;;
+
+  children)
+    [[ $# -ge 1 ]] || die 'usage: desk-jira children <KEY> [--json]'
+    key="$1"; shift
+    [[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: not an issue key: $key"
+    ensure_auth   # an anonymous search returns 200 and no issues, which would read as "no children"
+    # `parent =` is an epic's children and a story's subtasks alike (team- and company-managed).
+    # Paged to the end: a batch built from a truncated list silently drops work.
+    all='[]'; token=''
+    while :; do
+      payload=$(jq -n --arg jql "parent = $key ORDER BY rank ASC" --arg t "$token" \
+        '{jql:$jql, maxResults:100, fields:["summary","status","issuetype","assignee","issuelinks"]}
+         + (if $t == "" then {} else {nextPageToken:$t} end)')
+      res=$(json POST 'api/3/search/jql' -d "$payload") || exit 1
+      # On stdin, never argv: a page of real issues passes Linux's 128 KB cap on one argument.
+      all=$(printf '%s\n%s' "$all" "$res" | jq -cs '.[0] + (.[1].issues // [])')
+      token=$(printf '%s' "$res" | jq -r 'if .isLast == true then "" else (.nextPageToken // "") end')
+      [[ -n "$token" ]] || break
+    done
+    if [[ "${1:-}" == '--json' ]]; then printf '%s\n' "$all"
+    else
+      printf '%s' "$all" | jq -r "$JQ_VAL"'
+        if length == 0 then "no children"
+        else .[] | "\(.key)\t\(.fields.issuetype.name // "-")\t\(.fields.status.name // "-")\t\(.fields.status.statusCategory.key // "-")\t\(.fields.assignee | val)\t\(.fields.summary // "")" end'
+    fi
+    ;;
+
+  link)
+    [[ $# -eq 3 ]] || die 'usage: desk-jira link <KEY> blocked-by|blocks <OTHER>'
+    key="$1"; verb="$2"; other="$3"
+    for k in "$key" "$other"; do [[ "$k" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: not an issue key: $k"; done
+    [[ "$key" != "$other" ]] || die "desk-jira: an issue cannot block itself ($key)"
+    # Jira's inwardIssue is the one that performs the outward verb ("inward blocks outward"), the
+    # reverse of what the field names suggest; a link posted the obvious way lands backwards and
+    # still returns 201. So the direction is decided here, once.
+    case "$verb" in
+      blocked-by) blocker="$other"; blocked="$key" ;;
+      blocks)     blocker="$key";   blocked="$other" ;;
+      *) die "desk-jira: the verb is blocked-by or blocks, not '$verb'" ;;
+    esac
+    ensure_auth
+    # From the blocked issue's side, "blocked by X" is a Blocks entry whose inwardIssue is X, and
+    # "blocks X" one whose outwardIssue is X.
+    links_of() { api GET "api/2/issue/$1?fields=issuelinks" | jq -c '[.fields.issuelinks[]? | select(.type.name == "Blocks")
+      | if .inwardIssue then {rel:"blocked-by", key:.inwardIssue.key} else {rel:"blocks", key:.outwardIssue.key} end]'; }
+    have=$(links_of "$blocked") || exit 1
+    if printf '%s' "$have" | jq -e --arg o "$blocker" 'any(.[]; .rel == "blocked-by" and .key == $o)' >/dev/null; then
+      echo "already linked: $blocked is blocked by $blocker"; exit 0
+    fi
+    if printf '%s' "$have" | jq -e --arg o "$blocker" 'any(.[]; .rel == "blocks" and .key == $o)' >/dev/null; then
+      die "desk-jira: refusing: $blocked already blocks $blocker, so this link would be the reverse of it and make a cycle"
+    fi
+    payload=$(jq -n --arg in "$blocker" --arg out "$blocked" \
+      '{type:{name:"Blocks"}, inwardIssue:{key:$in}, outwardIssue:{key:$out}}')
+    json POST 'api/2/issueLink' -d "$payload" >/dev/null || exit 1
+    back=$(links_of "$blocked") || exit 1
+    if ! printf '%s' "$back" | jq -e --arg o "$blocker" 'any(.[]; .rel == "blocked-by" and .key == $o)' >/dev/null; then
+      echo "desk-jira: the link was posted but the read-back of $blocked does not show 'is blocked by $blocker'." >&2
+      echo "  $blocked's Blocks links now: $(printf '%s' "$back" | jq -r 'map("\(.rel) \(.key)") | join(", ") | if . == "" then "none" else . end')" >&2
+      echo "  A link that landed backwards is deleted with DELETE /rest/api/3/issueLink/<id> (references/jira-rest-recipes.md), then re-run this." >&2
+      exit 1
+    fi
+    echo "linked: $blocked is blocked by $blocker (read back)"
     ;;
 
   fields)
