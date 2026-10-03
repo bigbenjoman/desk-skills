@@ -38,6 +38,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
 | `desk-jira` | Ticket comments, edits, transitions | loads itself |
 | `desk-review` | Reviews a branch, a PR or the open queue at this repo's bar: read-only finders, codex refutation, ticket checked both ways, posted as a verdict where allowed | `/desk-review`, `/desk-review 460` |
+| `desk-kiss` | The deep "should this be smaller?" pass: scope creep, one-consumer abstractions and narrating comments against the ticket, with a per-finding fix offer | `/desk-kiss`, `/desk-kiss 460` |
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
