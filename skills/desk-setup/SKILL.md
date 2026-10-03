@@ -134,6 +134,8 @@ desk-jira whoami                                        # display name, email, a
 desk-jira api 'api/3/project/search?maxResults=50' | jq -r '.values[] | "\(.key)\t\(.name)"'
 desk-jira api 'api/3/project/<KEY>/statuses' | jq -r '[.[].statuses[].name] | unique | join(", ")'
 desk-jira fields priority                               # a custom priority field, if any
+desk-jira fields size                                   # a Size field (XS-XL); none: tell the user it is a manual
+                                                        # per-project UI step (desk-jira Epics), record it in §4 Other fields if found
 # §4 people
 gh api repos/{owner}/{repo}/collaborators --jq '.[].login' 2>/dev/null
 cat .github/CODEOWNERS CODEOWNERS 2>/dev/null | head -20

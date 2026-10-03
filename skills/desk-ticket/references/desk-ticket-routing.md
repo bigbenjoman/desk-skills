@@ -23,12 +23,12 @@ When Stage 2 contradicts the Stage-0 guess, say so and re-state the lane before 
 | **A** | the change is mechanical once the cause is known · no product or design decision · repro reproduced or the change is cosmetic | direct minimal change | 0 |
 | **B** | the ticket is a bug (Jira type Bug, or with no tracker the type Stage 0 settled) · repro confirmed · cause not identified after reading the code | `superpowers:systematic-debugging`, then `superpowers:test-driven-development` | 0–1 |
 | **C** | new feature spanning more than one sitting · or spans more than one app or package of a monorepo · or the bug is intermittent · or the ticket's stated behaviour looks wrong rather than the code | **agree first**: a plan or the evidence at the end of Stage 2, then wait (below) | the area experts' design consults |
-| **D** | the deliverable is a screen, section or component built from a design (a Figma frame or similar) | the project's design-build agent builds it, following whatever design-to-code skill the repo provides; Stages 4–9 stay here (below) | 1 |
+| **D** | the deliverable is a screen, section or component built from a design (a Figma frame, a Claude Design artifact, or similar) | the project's design-build agent builds it, following whatever design-to-code skill the repo provides; Stages 4–9 stay here (below) | 1 |
 | **E** | data, catalog or staging-DB work · little or no application code · deliverable may be a one-off script rather than a PR | staging-write runbook (`desk-dev`, §3 `staging-write`) | 1 reviewer |
 
 Ties break toward the cheaper lane, then state the doubt.
 
-**A design frame on its own is not lane D.** In a repo whose UI tickets routinely link one, most
+**A design on its own is not lane D** (a Figma frame or a Claude Design artifact). In a repo whose UI tickets routinely link one, most
 tickets carry a frame. A change to an existing screen that happens to carry a frame is lane A: load
 the repo's design-to-code skill (if it has one) for the token mapping and build it here. D is for
 when the design is the specification for something new.
@@ -100,6 +100,15 @@ When a design is the specification:
 3. Placeholder copy in the design does not block the build (working-style reference).
 4. Reading the frame needs §3 `read-figma` (or the equivalent read for the design tool); without it,
    ask the user for the frame's content rather than guessing it.
+5. **A Claude Design artifact** is read with the Artifact tool (`action:list scope:files`, then the
+   files under `project/`), or, in an autopilot batch, from the snapshot the orchestrator saved in
+   `$DESK_STATE/designs/<TICKET>/project/`. `canvas.json` names each board and its width; each
+   `project/*.dc.html` board states the exact copy, colours and sizes. An artifact the user does not
+   own reads as a summary, not the files: ask for access or an export rather than building from it.
+   Verify against it at **every board width**: capture the build at each, and check every string,
+   colour and size the board states (or its copy key). Boards render only inside the canvas, so a
+   pixel diff is `UNVERIFIABLE` unless you rendered the board yourself, never `PASS`. Figma frames
+   keep the procedure above.
 
 The build goes to that agent rather than being written here because a design node carries its own
 specification, so little of the context a handoff usually loses is at risk.

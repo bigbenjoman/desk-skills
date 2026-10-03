@@ -10,6 +10,7 @@ import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } fr
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, SAFE_ID } from './desk-env.mjs';
+import { isHeld, HELD_PREFIX } from './batch-state.mjs';
 
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
@@ -64,7 +65,7 @@ if (waiting) {
       ? `(worker for ${ticket} has EXITED — nothing received this answer)`
       : `(no worker running for ${ticket} — recorded in the briefing, not the mailbox)`,
   );
-  if (parkedReason) {
+  if (parkedReason && !parkedReason.startsWith(HELD_PREFIX)) {   // a held ticket releases by itself
     console.log(
       `\n!! ${ticket} is parked and no worker will act on this answer.\n` +
         '   THE ORCHESTRATOR MUST COMPLETE THE PARKED STEP ITSELF, or requeue the ticket\n' +
@@ -88,7 +89,12 @@ try {
   const Q = existsSync(queueFile()) ? JSON.parse(readFileSync(queueFile(), 'utf8')) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
     const st = Q.tickets[ticket].state;
-    if (st === 'triaged' || st === 'queued') {
+    if (isHeld(Q.tickets[ticket])) {
+      // Held behind a Jira blocker: the answer settles its questions, and the hold stays, so it
+      // still starts only once the blocker's PR has merged (release_chain, or the sanctioned release).
+      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
+      console.log(`${ticket}: answered. It is held — it releases when ${String(Q.tickets[ticket].held_by ?? '?').split('|').join(', ')} merge${String(Q.tickets[ticket].held_by ?? '').includes('|') ? '' : 's'}.`);
+    } else if (st === 'triaged' || st === 'queued') {
       execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
       console.log(`${ticket}: answered.`);
     } else if (st === 'parked') {

@@ -88,8 +88,8 @@ What the CLI does for you, and the traps it still has:
 - **Screenshots go on the ticket**, not only the PR: `desk-jira attach ABC-123 before.png after.png`.
 
 For anything the CLI has no command for, read **`references/jira-rest-recipes.md`**. That covers
-issue links (the direction is inverted), deleting a mistaken comment, editing a description that
-holds inline images, and subtasks with sprints.
+deleting a mistaken comment, editing a description that holds inline images, and subtasks with
+sprints. Issue links have a command now: `desk-jira link` (see *Epics*).
 
 ## Gate — which writes post, which wait
 
@@ -110,6 +110,7 @@ Find the config §3 row for the write:
 | Comment, or edit your own comment | `jira-comment` |
 | New ticket | `jira-create` |
 | Description or field edit (§4 Priority, labels, §4 Other fields) | `jira-edit` |
+| Blocks link (`desk-jira link`) | `jira-edit` |
 | Status change between working states (§4 In-progress state, Review state, and any other non-closing state in §4 Workflow) | `jira-transition` |
 | §4 Done state once the user's own last PR on the key has merged | `jira-close-own-merged` |
 | Any other close: duplicate, not-a-bug, out of scope, already fixed | `jira-close` |
@@ -212,6 +213,44 @@ there so someone can filter on it later, and one that goes on everything filters
 described behaviour as observed, not alleged. QA filers `none` means every report is weighed on its
 own evidence.
 
+## Epics
+
+A large feature is an epic whose children are each one sitting, so `desk-autopilot <EPIC>` can run
+them as a batch. The commands:
+
+```bash
+desk-jira children ABC-900                         # its children (or a story's subtasks), rank order
+desk-jira create Story "<summary>" body.md parent=ABC-900 <size field>=M
+desk-jira link ABC-903 blocked-by ABC-901          # ABC-903 cannot start until ABC-901 merges
+```
+
+`link` owns Jira's inverted direction, refuses a self link or the reverse of an existing one,
+skips one that exists, and reads the link back. Dependencies go in links, never in prose: autopilot
+reads only the links.
+
+**Size every ticket**, epic children included:
+
+| Size | Means | Autopilot |
+|---|---|---|
+| XS | a few lines in one place | runs |
+| S | one area, one PR, under half a day | runs |
+| M | one PR in one sitting: several areas, or a new piece in an existing pattern | runs |
+| L | more than one sitting, or more than one PR | parked: split it first |
+| XL | several independently mergeable parts | parked: make it an epic |
+
+Put it in the project's `Size` field where there is one (`desk-jira fields size` finds its id; set
+it in the `create`), otherwise as the description's first line, `Size: M`. Jira's API cannot add the
+field to a team-managed project: it is a manual step in the project (Project settings → Issue types
+→ add a Dropdown field `Size` with XS, S, M, L, XL to each type). Say so once if it is missing.
+
+**Writing an epic** (usually Bea): an epic body with the outcome, a definition of done as numbered
+Given/When/Then criteria for the feature end to end, out of scope, and decisions (dated, with the
+owner); children of size M or less, each with its own Given/When/Then criteria, out of scope, no open
+decisions, what to build on, and its design link or "no UI". **Before the user approves the set,
+run the readiness review in `references/epic-readiness.md`.** File in this order: the epic, the
+children (`parent=`), the links, then read it all back (`desk-jira children <EPIC>`). Every write
+goes through the gate above.
+
 ## Transitions — read them, don't hardcode
 
 §4 Workflow gives the states in order, and §4 In-progress state, Review state and Done state name
@@ -287,7 +326,9 @@ ambiguous, say so at that ticket, not in a footnote.
 | A per-finding id label, or a new label slipped in | Use §4 Labels; announce a genuinely new one |
 | `comment ABC-1 --file body.md` | The body is positional: `comment ABC-1 body.md` |
 | Adding a Subtask to a sprint | Put the parent in the sprint |
-| Posting an issue link with the obvious inward/outward mapping | It lands backwards and still returns 201. See the reference |
+| Posting an issue link by hand with the obvious inward/outward mapping | It lands backwards and still returns 201. Use `desk-jira link` |
+| A dependency written in a description ("needs ABC-1 first") | Autopilot reads links only: `desk-jira link` it |
+| A ticket with no size, or an L in an epic | Size it from the scale; split anything above M |
 | Hardcoding a transition name or id | Fetch the list; names change and vary by issue type |
 | Transitioning to the in-progress state at the very start | Once the cause is understood, so a crash doesn't leave a claimed ticket with no branch |
 | Inventing acceptance criteria to fill the template | Ask for the real behaviour |

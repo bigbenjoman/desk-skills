@@ -1,0 +1,37 @@
+// What a batch's queue says about itself, shared by pass.mjs and queue.mjs. Pure: takes the parsed
+// queue, reads nothing.
+
+export const HELD_PREFIX = 'held by orchestrator';
+
+// Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
+// the one sanctioned manual release once every predecessor's PR has merged).
+export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
+
+// A held ticket is still going somewhere only while it can still be released: every predecessor is
+// either progressing (running, waiting to spawn, done with a PR that is open, or itself held and
+// going somewhere) or merged (done with a merged PR: the release is due). One predecessor that cannot
+// get there (failed, parked for a reason of its own, finished with no PR, a PR closed unmerged, never
+// admitted, missing) means it waits on a person, and so does a hold with no recorded blocker.
+// `prState(n)` gives a PR's state when the caller looked it up ('OPEN' | 'MERGED' | 'CLOSED'); unknown
+// counts as open.
+export function waitingOnMerge(q, t, prState = () => null, seen = new Set()) {
+  // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
+  // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
+  if (!isHeld(t) || seen.has(t)) return false;
+  seen.add(t);
+  const preds = String(t.held_by ?? '').split('|').filter(Boolean);
+  const ok = preds.length > 0 && preds.every((p) => {
+    const pt = q.tickets?.[p];
+    if (!pt) return false;
+    if (['running', 'triaged'].includes(pt.state)) return true;
+    if (pt.state === 'done') return pt.result?.pr != null && prState(pt.result.pr) !== 'CLOSED';
+    return waitingOnMerge(q, pt, prState, seen);
+  });
+  seen.delete(t);
+  return ok;
+}
+
+// Idle: nothing running, nothing left to spawn, nothing waiting on a merge to be released.
+export function batchIdle(q, prState) {
+  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState));
+}

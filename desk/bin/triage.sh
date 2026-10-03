@@ -57,7 +57,7 @@ if [ "$KIND" = work-id ] || [ "$KIND" = slug ] || [ "$KIND" = issue ]; then
   TYPE_HINT="Bug|Feature|Chore, your reading of the ticket"
 else
   [ "$TRACKER" != none ] || { echo "FAIL: '$TICKET' reads as a tracker key but config §4 Tracker is none" >&2; exit 2; }
-  READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for)"
+  READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for). If it has a parent (an epic or a story), read the parent's description with \`desk-jira get <parent>\` for context only: this ticket's own criteria are its scope"
   RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\` and \`unknowns\` (which base to use)"
   TYPE_HINT="Jira issue type"
   STATUS_JSON='"<Jira status>"'
@@ -90,9 +90,11 @@ Things that are not in that file and matter here:
   owner's or the reviewer's call (config §4) — if so say whose call it is. Would any reasonable
   engineer just pick one and note it in the PR? Then pick it. Two well-aimed questions beat five.
 - **A design attached to a ticket is not by itself lane D.** Where UI tickets routinely carry a
-  design frame, treating one as sufficient on its own parks most of the board. D is for a new
-  screen, section or component the design specifies; a change to an existing screen that links a
-  frame, implemented across a handful of files, is lane A.
+  design (a Figma frame, or a Claude Design artifact), treating one as sufficient on its own parks
+  most of the board. D is for a new screen, section or component the design specifies; a change to
+  an existing screen that links a design, implemented across a handful of files, is lane A. A Claude
+  Design artifact's boards are saved under $STATE/designs/$TICKET/project/ when the orchestrator could read
+  it (\`canvas.json\` lists the boards and their widths); read them there, never guess a design.
 - **Labels are a hint, not a verdict.** An effort label encodes the estimate made when the ticket was
   written, and a waiting-on-design label means just that. Read the body anyway: a ticket labelled
   small can really be a redesign, or not a code fix at all.
@@ -180,8 +182,9 @@ confirm with the doubt written down.
 
 The ones that have actually been got wrong, all toward over-escalation:
 
-- **A design frame read as lane D on its own.** UI tickets routinely link one. The question
-  is whether the design specifies something new to build, not whether a design exists.
+- **A design read as lane D on its own** (a Figma frame or a Claude Design artifact). UI tickets
+  routinely link one. The question is whether the design specifies something new to build, not
+  whether a design exists.
 - **An unanswered question read as complexity.** Missing information belongs in \`unknowns\`. Judge
   the lane as if every unknown were already answered.
 - **\`spans more than one sitting\` sized from the description instead of the code.** The most common
@@ -251,5 +254,10 @@ console.log(d.lane_original
   : `[challenge] ${d.ticket}  lane ${d.lane} ${ch.verdict ?? ''}`);
 MERGE_END
 fi
+
+# Jira facts plan-batch needs (Blocks links, size), read deterministically rather than taken from the
+# model: a read failure is recorded as facts_error, which plan-batch turns into a question.
+node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
+  || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
 
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`[triage] ${d.ticket}  lane ${d.lane}  ${(d.files_in_scope??[]).length} files  ${(d.unknowns??[]).length} unknowns`)' "$OUT"

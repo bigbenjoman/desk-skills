@@ -146,8 +146,8 @@ GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
 # A recorded branch is matched exactly; only an id with none falls back to the bounded regex.
-ticket_map(){
-  node - "$DESK_QUEUE" "${KEY_LIST[@]}" <<'NODE'
+ticket_map(){   # ticket_map <key>...
+  node - "$DESK_QUEUE" "$@" <<'NODE'
 const fs = require('fs');
 const [qf, ...keys] = process.argv.slice(2);
 let q = {};
@@ -163,10 +163,12 @@ const re = (k) => {
 console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: re(k) }))));
 NODE
 }
-# prs <state> -> lines `<number>\t<isDraft>\t<key>` for the batch's PRs based on the default branch.
+# prs <state> [<key>...] -> lines `<number>\t<isDraft>\t<key>` for the batch's PRs (or those keys')
+# based on the default branch.
 prs(){
-  local map; map="$(ticket_map)" || return 1
-  gh pr list --repo "$REPO" --state "$1" --author "$AUTHOR" --base "$BASE_BRANCH" --limit 100 \
+  local st="$1"; shift
+  local map; if [ "$#" -gt 0 ]; then map="$(ticket_map "$@")"; else map="$(ticket_map "${KEY_LIST[@]}")"; fi || return 1
+  gh pr list --repo "$REPO" --state "$st" --author "$AUTHOR" --base "$BASE_BRANCH" --limit 100 \
       --json number,title,headRefName,baseRefName,isDraft 2>/dev/null \
     | jq -r --argjson m "$map" --arg base "$BASE_BRANCH" '
         .[] | select(.baseRefName == $base) | . as $p
@@ -175,7 +177,6 @@ prs(){
         | select(($k | length) > 0)
         | "\($p.number)\t\($p.isDraft)\t\($k[0])"' 2>/dev/null | sort -n
 }
-merged_for(){ prs merged | awk -F'\t' -v k="$1" '$3 == k { print $1; exit }'; }
 # Prints "<reviewDecision> <unresolved thread count>". An empty reviewDecision is not an approval.
 feedback(){
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query='
@@ -185,23 +186,43 @@ feedback(){
 }
 queue_note(){ node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; }
 
+# Release a held ticket once EVERY predecessor has merged. Its predecessors are the union of all its
+# --deps entries (a successor named twice, e.g. a collision chain and a Jira chain, waits for both) and
+# the queue's held_by (so a blocker added mid-batch counts without a restart). Only a ticket still
+# parked "held by orchestrator" is ever released.
 release_chain(){
-  local pair succ preds st all got pred n
-  for pair in ${DEP_LIST[@]+"${DEP_LIST[@]}"}; do
-    succ=${pair%%:*}; preds=${pair##*:}
-    st=$(node "$Q" get "$succ" 2>/dev/null | jq -r '.state + "|" + (.park.question // "")')
-    case "$st" in
-      "parked|held by orchestrator"*)
-        all=1; got=""
-        for pred in ${preds//,/ }; do
-          n=$(merged_for "$pred"); [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
-        done
-        if [ "$all" = 1 ]; then
-          node "$Q" set "$succ" state=triaged park=null collides_with=null >/dev/null \
-            && node "$Q" front "$succ" >/dev/null && log "merged:$got -> RELEASED $succ (moved to front)"
-        fi ;;
-    esac
-  done
+  local plan succ preds got n pred all
+  plan=$(node - "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
+const fs = require('fs');
+const [qf, ...pairs] = process.argv.slice(2);
+let q = {};
+try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: nothing is held */ }
+const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
+const m = {};
+const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
+for (const pair of pairs) { const i = pair.indexOf(':'); add(pair.slice(0, i), pair.slice(i + 1).split(',')); }
+for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && ps.size) console.log(`${s} ${[...ps].join(',')}`);
+NODE
+) || return 0
+  [ -n "$plan" ] || return 0
+  # One merged-PR listing for every predecessor at once, not one per predecessor per loop.
+  local merged
+  merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || return 0
+  while read -r succ preds; do
+    [ -n "$succ" ] || continue
+    all=1; got=""
+    for pred in ${preds//,/ }; do
+      n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }')
+      [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
+    done
+    if [ "$all" = 1 ]; then
+      node "$Q" set "$succ" state=triaged park=null held_by=null >/dev/null </dev/null \
+        && node "$Q" front "$succ" >/dev/null </dev/null && log "merged:$got -> RELEASED $succ (moved to front)"
+    fi
+  done <<EOF_PLAN
+$plan
+EOF_PLAN
 }
 
 backed_off(){ local f="$SD/backoff-$1"; [ -f "$f" ] && [ "$(date +%s)" -lt "$(cat "$f" 2>/dev/null || echo 0)" ]; }
@@ -296,6 +317,8 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
 }
 
 log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW"
+# One release pass and out: for tests, and for checking by hand what would be released now.
+if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
 while true; do
   release_chain
 

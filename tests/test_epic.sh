@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+# Epics as autopilot batches (docs/design-epic-batches.md): desk-jira children/link/parent against a
+# local stub, expand-parent.mjs, ticket-facts.mjs, plan-batch.mjs dependency handling, the held-ticket
+# idle rule, answer.mjs on a held ticket, and worker-settings for `link`. Scratch HOME only.
+set -u
+S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
+T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
+export HOME="$T/home" DESK_CONFIG_ROOT="$T/home/.config/desk" DESK_ENV_MJS="$B/desk-env.mjs"
+export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
+git config --global user.email t@example.com; git config --global user.name t
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH
+export PATH="$SRC/bin:$PATH" DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_JIRA_NAME=Me
+PASS=0; FAIL=0
+check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
+
+# ---------------------------------------------------------------------------------------------------
+# Fixture: an epic with children of every kind, a bug with a QA subtask, and link targets.
+cat > "$T/fixture.json" <<'EOF'
+{
+  "page_size": 3,
+  "issues": {
+    "KAN-10": {"summary": "Epic", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1}},
+    "KAN-11": {"summary": "first"},
+    "KAN-12": {"summary": "finished", "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+    "KAN-13": {"summary": "under way", "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-14": {"summary": "container", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0},
+               "issuelinks": [{"id": "1", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                               "inwardIssue": {"key": "KAN-11", "fields": {"status": {"name": "To Do", "statusCategory": {"key": "new"}}}}}]},
+    "KAN-15": {"summary": "open subtask", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1}},
+    "KAN-16": {"summary": "done subtask", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
+               "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+    "KAN-17": {"summary": "story, subtasks all done", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0}},
+    "KAN-18": {"summary": "done subtask", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
+               "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+    "OTH-1":  {"summary": "another project"},
+    "KAN-19": {"summary": "last"},
+    "KAN-60": {"summary": "epic with a bug child", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1}},
+    "KAN-61": {"summary": "bug with QA", "issuetype": {"name": "Bug", "subtask": false, "hierarchyLevel": 0}},
+    "KAN-62": {"summary": "QA", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1}},
+    "KAN-63": {"summary": "story, subtasks under way", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0}},
+    "KAN-64": {"summary": "under way", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
+               "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-20": {"summary": "empty epic", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1}},
+    "KAN-30": {"summary": "a bug", "issuetype": {"name": "Bug", "subtask": false, "hierarchyLevel": 0}},
+    "KAN-31": {"summary": "QA", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1}},
+    "KAN-40": {}, "KAN-41": {},
+    "KAN-42": {"issuelinks": [{"id": "9", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                               "outwardIssue": {"key": "KAN-43"}}]},
+    "KAN-43": {"issuelinks": [{"id": "9", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                               "inwardIssue": {"key": "KAN-42"}}]},
+    "KAN-50": {"_names": {"customfield_10500": "Size"}, "customfield_10500": {"value": "L"},
+               "issuelinks": [
+                 {"id": "21", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                  "inwardIssue": {"key": "KAN-51", "fields": {"status": {"name": "Done", "statusCategory": {"key": "done"}}}}},
+                 {"id": "22", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                  "outwardIssue": {"key": "KAN-52", "fields": {"status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
+                 {"id": "23", "type": {"name": "Duplicate", "inward": "is duplicated by", "outward": "duplicates"},
+                  "inwardIssue": {"key": "KAN-54"}},
+                 {"id": "24", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+                  "outwardIssue": {"key": "KAN-55"}}]},
+    "KAN-53": {"description": "Size: M\nThe rest of the body."}
+  },
+  "children": {
+    "KAN-10": ["KAN-11", "KAN-12", "KAN-13", "KAN-14", "KAN-17", "OTH-1", "KAN-19"],
+    "KAN-14": ["KAN-15", "KAN-16"],
+    "KAN-17": ["KAN-18"],
+    "KAN-30": ["KAN-31"],
+    "KAN-60": ["KAN-61", "KAN-63"],
+    "KAN-61": ["KAN-62"],
+    "KAN-63": ["KAN-64"]
+  }
+}
+EOF
+sed 's/"page_size": 3/"page_size": 3, "link_readback": "drop"/' "$T/fixture.json" > "$T/fixture-drop.json"
+
+PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
+python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!
+DPORT=$((PORT + 1)); python3 "$S/stub_jira.py" "$DPORT" "$T/drop.log" "" "$T/fixture-drop.json" & DROP=$!
+trap 'kill $STUB $DROP 2>/dev/null; rm -rf "$T"' EXIT
+sleep 0.6
+
+# A repo whose desk config points at the stub.
+git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
+git -C "$T/repo" remote add origin "git@github.com:acme/epic.git"
+SLUG=$(cd "$T/repo" && node "$DESK_ENV_MJS" where | sed -n "s/^SLUG='\(.*\)'$/\1/p")
+CD="$DESK_CONFIG_ROOT/repos/$SLUG"; mkdir -p "$CD"
+mkcfg(){  # site edit-perm
+  cat > "$CD/config.md" <<EOF
+## 0. Repo
+| Field | Value |
+|---|---|
+| GitHub repo | \`acme/epic\` |
+| Default branch | \`main\` |
+
+## 1. Identity
+| Field | Value |
+|---|---|
+| GitHub handle | \`me\` |
+| Jira display name | \`Me\` |
+
+## 2. Paths
+| Field | Value |
+|---|---|
+| Primary repo root | \`$T/repo\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| \`jira-edit\` | edit | \`yes\` | \`$2\` |
+| \`jira-create\` | create | \`yes\` | \`yes\` |
+| \`autopilot-merge\` | merge | \`no\` | \`yes\` |
+| \`pr-merge-green\` | merge | \`no\` | \`yes\` |
+
+## 4. Tracker
+| Field | Value |
+|---|---|
+| Tracker | \`jira\` |
+| Jira site | \`$1\` |
+| Jira project | \`KAN\` "x" |
+| Ticket key pattern | \`KAN-[0-9]+\` |
+| Other work id patterns | \`P[0-9]+-[0-9]+\` |
+| Local database | \`none\` |
+| Package manager | \`pnpm\` |
+| Merge method | \`squash\` |
+| Required checks | \`none\` |
+| Merge holds | \`none\` |
+| Unit tests | \`pnpm test\` |
+EOF
+}
+mkcfg "http://127.0.0.1:$PORT" yes
+printf 'me@example.com' > "$CD/jira-email"; printf good-token > "$CD/atlassian-token"; chmod 600 "$CD/atlassian-token"
+cd "$T/repo" || exit 1
+J(){ out=$(desk-jira "$@" 2>&1); rc=$?; }
+
+# ---------------------------------------------------------------------------------------------------
+# A1 children
+J children KAN-10
+check "children lists every child, across pages, in rank order" \
+  '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | cut -f1 | tr "\n" " ")" = "KAN-11 KAN-12 KAN-13 KAN-14 KAN-17 OTH-1 KAN-19 " ]'
+check "children paged (more than one search call)" '[ "$(grep -c search/jql "$LOG")" -ge 3 ]'
+check "children prints the status category" 'printf "%s\n" "$out" | grep -q "^KAN-12	.*	done	"'
+J children KAN-10 --json
+check "children --json is one merged array" '[ $rc -eq 0 ] && [ "$(printf "%s" "$out" | jq length)" = 7 ]'
+J children KAN-40
+check "no children says so, exit 0" '[ $rc -eq 0 ] && [ "$out" = "no children" ]'
+printf bad-token > "$T/bad"
+out=$(JIRA_TOKEN_FILE="$T/bad" desk-jira children KAN-10 2>&1); rc=$?
+check "children with a bad token fails, never 'no children'" '[ $rc -ne 0 ] && ! printf "%s" "$out" | grep -q "no children"'
+
+# A page far bigger than one argv string may hold (Linux caps one argument at 128 KB).
+python3 - "$T/fixture.json" <<'PY'
+import json, sys
+p = sys.argv[1]; f = json.load(open(p))
+pad = "x" * 12000
+f["issues"]["KAN-500"] = {"summary": "big epic", "issuetype": {"name": "Epic", "subtask": False, "hierarchyLevel": 1}}
+kids = []
+for n in range(501, 621):
+    k = f"KAN-{n}"; kids.append(k)
+    f["issues"][k] = {"summary": pad}
+f["children"]["KAN-500"] = kids
+json.dump(f, open(p, "w"))
+PY
+kill $STUB 2>/dev/null; sleep 0.2; python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!; sleep 0.5
+J children KAN-500 --json
+check "children survives pages bigger than an argv string (120 x 12 KB, over 1 MB)" '[ $rc -eq 0 ] && [ "$(printf "%s" "$out" | jq length)" = 120 ]'
+
+# A2 link
+: > "$LOG"; J link KAN-40 blocked-by KAN-41
+body=$(grep issueLink "$LOG" | grep POST | jq -r .body)
+check "link blocked-by sends inward=OTHER outward=KEY" \
+  '[ $rc -eq 0 ] && [ "$(printf "%s" "$body" | jq -r ".inwardIssue.key+\" \"+.outwardIssue.key+\" \"+.type.name")" = "KAN-41 KAN-40 Blocks" ]'
+check "link reads back and says so" 'printf "%s" "$out" | grep -q "KAN-40 is blocked by KAN-41"'
+: > "$LOG"; J link KAN-40 blocked-by KAN-41
+check "an identical link is skipped" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "already linked" && ! grep -q "\"POST\".*issueLink\|issueLink.*\"POST\"" "$LOG"'
+J link KAN-41 blocked-by KAN-40
+check "the reverse of an existing link is refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -qi "reverse"'
+: > "$LOG"; J link KAN-11 blocks KAN-19
+body=$(grep issueLink "$LOG" | grep POST | jq -r .body)
+check "link blocks sends inward=KEY outward=OTHER" '[ $rc -eq 0 ] && [ "$(printf "%s" "$body" | jq -r ".inwardIssue.key+\" \"+.outwardIssue.key")" = "KAN-11 KAN-19" ]'
+J link KAN-40 blocked-by KAN-40
+check "a self link is refused" '[ $rc -ne 0 ]'
+J link KAN-40 relates KAN-41
+check "an unknown verb is a usage error" '[ $rc -ne 0 ]'
+out=$(JIRA_SITE="http://127.0.0.1:$DPORT" desk-jira link KAN-40 blocked-by KAN-41 2>&1); rc=$?
+check "a read-back that does not show the link fails" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -qi "read.back"'
+
+# A3 parent=
+: > "$LOG"; printf 'body' > "$T/repo/b.md"; J create Story "s" b.md parent=KAN-10
+check "create parent=KEY sends {key}" '[ $rc -eq 0 ] && [ "$(grep "\"/rest/api/2/issue\"" "$LOG" | jq -r .body | jq -c .fields.parent)" = "{\"key\":\"KAN-10\"}" ]'
+J create Story "s" b.md parent=not-a-key
+check "parent= that is not a key is refused" '[ $rc -ne 0 ]'
+printf 'KAN-10' > "$T/repo/p.txt"; J create Story "s" b.md parent=@p.txt
+check "parent=@file is refused too (a key only)" '[ $rc -ne 0 ]'
+
+# ---------------------------------------------------------------------------------------------------
+# B expand-parent
+E(){ out=$(node "$B/expand-parent.mjs" "$@" 2>"$T/err"); rc=$?; err=$(cat "$T/err"); }
+E KAN-10
+check "epic expands to open, in-repo children, containers replaced by open subtasks, rank kept" \
+  '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | paste -sd " " -)" = "KAN-11 KAN-15 KAN-17 KAN-19" ]'
+check "the report names each drop and why" 'printf "%s" "$err" | grep -q "KAN-12.*done" && printf "%s" "$err" | grep -q "KAN-13.*in progress" && printf "%s" "$err" | grep -q "OTH-1.*not this repo" && printf "%s" "$err" | grep -q "KAN-14.*KAN-15"'
+check "expansion.json records the container, its subtasks and its blockers" \
+  '[ "$(jq -c ".containers[\"KAN-14\"]" "$T/state/expansion.json")" = "{\"subtasks\":[\"KAN-15\"],\"blocked_by\":[{\"key\":\"KAN-11\",\"category\":\"new\"}]}" ] && [ "$(jq -r .parent "$T/state/expansion.json")" = KAN-10 ]'
+E KAN-30
+check "a bug with subtasks is not expanded (exit 4)" '[ $rc -eq 4 ] && [ -z "$out" ]'
+check "a run that expands nothing leaves no expansion.json behind" '[ ! -e "$T/state/expansion.json" ]'
+E KAN-60
+check "an epic's Bug child with a QA subtask runs as itself, not as the subtask" '[ $rc -eq 0 ] && [ "$out" = KAN-61 ]'
+check "a story whose subtasks are all under way is dropped, with the reason" 'printf "%s" "$err" | grep -q "KAN-63.*under way\|KAN-63.*in progress"'
+E KAN-30 --subtasks
+check "--subtasks refuses a bug (stories only)" '[ $rc -eq 4 ] && [ -z "$out" ]'
+E KAN-14 --subtasks
+check "a story expands with --subtasks" '[ $rc -eq 0 ] && [ "$out" = KAN-15 ]'
+E KAN-20
+check "an epic with nothing open exits 3" '[ $rc -eq 3 ] && [ -z "$out" ]'
+E KAN-999
+check "an unreadable parent fails, never an empty batch" '[ $rc -ne 0 ] && [ $rc -ne 3 ] && [ -z "$out" ]'
+E "bad key"
+check "a non-key argument is refused" '[ $rc -ne 0 ] && [ -z "$out" ]'
+
+# ---------------------------------------------------------------------------------------------------
+# C ticket-facts
+mkdir -p "$T/state/triage"
+rec(){ printf '%s' "$2" > "$T/state/triage/$1.json"; }
+rec KAN-50 '{"ticket":"KAN-50","lane":"A","branch":"b"}'
+out=$(node "$B/ticket-facts.mjs" KAN-50 2>&1); rc=$?
+check "facts: Blocks blockers from the inward side only, with category" \
+  '[ $rc -eq 0 ] && [ "$(jq -c .blockers "$T/state/triage/KAN-50.json")" = "[{\"key\":\"KAN-51\",\"category\":\"done\"}]" ]'
+check "facts: other link types counted, Relates not" '[ "$(jq .other_links "$T/state/triage/KAN-50.json")" = 1 ]'
+check "facts: size from the field named Size" '[ "$(jq -r .size "$T/state/triage/KAN-50.json")" = L ]'
+check "facts: the model-written fields survive" '[ "$(jq -r .lane "$T/state/triage/KAN-50.json")" = A ]'
+rec KAN-53 '{"ticket":"KAN-53","lane":"A","branch":"b"}'
+node "$B/ticket-facts.mjs" KAN-53 >/dev/null 2>&1
+check "facts: size from the body's first line" '[ "$(jq -r .size "$T/state/triage/KAN-53.json")" = M ] && [ "$(jq -c .blockers "$T/state/triage/KAN-53.json")" = "[]" ]'
+rec KAN-404 '{"ticket":"KAN-404","lane":"A","branch":"b"}'
+out=$(node "$B/ticket-facts.mjs" KAN-404 2>&1); rc=$?
+check "facts: a failed read is recorded, not empty blockers" '[ "$(jq -r ".facts_error|type" "$T/state/triage/KAN-404.json")" = string ] && [ "$(jq -r ".blockers|type" "$T/state/triage/KAN-404.json")" = null ]'
+rec P1-1 '{"ticket":"P1-1","lane":"A","branch":"b"}'
+node "$B/ticket-facts.mjs" P1-1 >/dev/null 2>&1
+check "facts: a non-tracker key records links n/a" '[ "$(jq -r .links "$T/state/triage/P1-1.json")" = n/a ]'
+
+# ---------------------------------------------------------------------------------------------------
+# D plan-batch (offline: triage records and expansion.json only)
+export DESK_CONFIG="$CD/config.md"
+rm -f "$T/state/triage/"*.json "$T/state/expansion.json" "$DESK_QUEUE"
+r(){ # key lane blockers-json [extra-json]
+  printf '{"ticket":"%s","type":"Task","lane":"%s","lane_reason":"r","summary":"s","branch":"feat/%s","files_in_scope":["f/%s"],"unknowns":[],"blockers":%s%s}' \
+    "$1" "$2" "$1" "$1" "$3" "${4:+,$4}" > "$T/state/triage/$1.json"; }
+nb(){ printf '{"key":"%s","category":"%s"}' "$1" "${2:-new}"; }
+r KAN-101 A '[]'
+r KAN-102 A "[$(nb KAN-101)]"
+r KAN-103 A "[$(nb KAN-101),$(nb KAN-102)]"
+r KAN-104 C "[$(nb KAN-101)]"
+r KAN-105 A "[$(nb KAN-101)]" '"size":"L"'
+r KAN-106 A "[$(nb KAN-900)]"
+r KAN-107 A "[$(nb KAN-901 done)]"
+printf '{"ticket":"KAN-108","type":"Task","lane":"A","summary":"s","branch":"feat/KAN-108","files_in_scope":[],"unknowns":[],"facts_error":"HTTP 500"}' > "$T/state/triage/KAN-108.json"
+r KAN-109 A "[$(nb KAN-104)]"
+r KAN-110 A "[$(nb KAN-111)]"
+r KAN-111 A "[$(nb KAN-110)]"
+r KAN-131 A "[$(nb KAN-132)]"
+r KAN-132 A "[$(nb KAN-133),$(nb KAN-134)]"
+r KAN-133 A "[$(nb KAN-131)]"
+r KAN-134 A "[$(nb KAN-133)]"
+r KAN-121 A '[]'
+r KAN-122 A '[]'
+r KAN-123 A "[$(nb KAN-120)]"
+printf '{"ticket":"KAN-124","type":"Task","lane":"A","summary":"s","branch":"feat/KAN-124","files_in_scope":[],"unknowns":[]}' > "$T/state/triage/KAN-124.json"
+printf '{"parent":"KAN-100","containers":{"KAN-120":{"subtasks":["KAN-121","KAN-122"],"blocked_by":[{"key":"KAN-101","category":"new"}]}}}' > "$T/state/expansion.json"
+node "$B/queue.mjs" init t >/dev/null; node "$B/queue.mjs" set-batch epic=KAN-100 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-103 KAN-102 KAN-101 KAN-104 KAN-105 KAN-106 KAN-107 KAN-108 KAN-109 KAN-110 KAN-111 KAN-131 KAN-132 KAN-133 KAN-134 KAN-121 KAN-122 KAN-123 KAN-124 2>&1); rc=$?
+qg(){ jq -r ".tickets[\"$1\"]$2" "$DESK_QUEUE"; }
+check "plan-batch ran" '[ $rc -eq 0 ]'
+check "in-batch blocker: successor held with release_chain's prefix" \
+  '[ "$(qg KAN-102 .state)" = parked ] && [[ "$(qg KAN-102 .park.question)" == "held by orchestrator"* ]] && [ "$(qg KAN-102 .held_by)" = KAN-101 ]'
+check "held_by unions every in-batch blocker" '[ "$(qg KAN-103 .held_by)" = "KAN-101|KAN-102" ]'
+check "--deps printed, one entry per successor, predecessors unioned" \
+  'printf "%s" "$out" | grep -q -- "--deps \".*KAN-103:KAN-101,KAN-102.*\"" && printf "%s" "$out" | grep -q -- "KAN-102:KAN-101"'
+check "a lane C successor is parked by its lane, never held, no --deps entry" \
+  '[[ "$(qg KAN-104 .park.question)" == "lane C"* ]] && [ "$(qg KAN-104 .held_by)" = null ] && ! printf "%s" "$out" | grep -- "^--deps" | grep -q "KAN-104:"'
+check "size L is parked, never held" '[[ "$(qg KAN-105 .park.question)" == "size L"* ]] && [ "$(qg KAN-105 .held_by)" = null ]'
+check "an open blocker outside the batch is a question" \
+  '[ "$(qg KAN-106 .state)" = triaged ] && [ "$(qg KAN-106 .open_questions)" = 1 ] && printf "%s" "$out" | grep -q "\[KAN-106\].*KAN-900"'
+check "a done blocker outside the batch is ignored" '[ "$(qg KAN-107 .state)" = triaged ] && [ "$(qg KAN-107 .open_questions)" = 0 ]'
+check "unreadable links are a question (fail closed)" '[ "$(qg KAN-108 .open_questions)" = 1 ] && printf "%s" "$out" | grep -q "\[KAN-108\].*could not be read"'
+check "a missing facts record is a question too" '[ "$(qg KAN-124 .open_questions)" = 1 ]'
+check "a blocker parked by its lane makes the successor a question, not held" \
+  '[ "$(qg KAN-109 .state)" = triaged ] && [ "$(qg KAN-109 .open_questions)" = 1 ] && [ "$(qg KAN-109 .held_by)" = null ]'
+check "a cycle parks both, no --deps" \
+  '[[ "$(qg KAN-110 .park.question)" == "dependency cycle"* ]] && [[ "$(qg KAN-111 .park.question)" == "dependency cycle"* ]] && ! printf "%s" "$out" | grep -- "^--deps" | grep -q "KAN-110:\|KAN-111:"'
+check "every ticket on a longer cycle is parked (strongly connected)" \
+  '[[ "$(qg KAN-131 .park.question)" == "dependency cycle"* ]] && [[ "$(qg KAN-132 .park.question)" == "dependency cycle"* ]] && [[ "$(qg KAN-133 .park.question)" == "dependency cycle"* ]] && [[ "$(qg KAN-134 .park.question)" == "dependency cycle"* ]]'
+check "a subtask inherits its container's blocker" '[ "$(qg KAN-121 .held_by)" = KAN-101 ] && [ "$(qg KAN-122 .held_by)" = KAN-101 ]'
+check "blocked by a container means blocked by its subtasks in the batch" '[ "$(qg KAN-123 .held_by)" = "KAN-121|KAN-122" ]'
+order=$(jq -r '.tickets | keys_unsorted | join(" ")' "$DESK_QUEUE")
+check "queue seeded in topological order (blockers before successors)" \
+  '[[ "$order" == *KAN-101*KAN-102*KAN-103* ]] && [[ "$order" == *KAN-101*KAN-121*KAN-123* ]]'
+
+# Regression: records with no links at all seed exactly as before.
+rm -f "$T/state/triage/"*.json
+r KAN-201 A '[]'; r KAN-202 B '[]'
+# a leftover expansion from another epic must not touch this batch
+printf '{"parent":"KAN-100","containers":{"KAN-120":{"subtasks":["KAN-201"],"blocked_by":[{"key":"KAN-202","category":"new"}]}}}' > "$T/state/expansion.json"
+printf '{"ticket":"P1-5","type":"Bug","lane":"A","summary":"s","branch":"fix/P1-5","files_in_scope":["x"],"unknowns":[],"links":"n/a"}' > "$T/state/triage/P1-5.json"
+node "$B/queue.mjs" init t2 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-202 KAN-201 P1-5 2>&1); rc=$?
+check "regression: no links -> all triaged, argument order kept, no deps" \
+  '[ $rc -eq 0 ] && [ "$(jq -r ".tickets|keys_unsorted|join(\" \")" "$DESK_QUEUE")" = "KAN-202 KAN-201 P1-5" ] && [ "$(jq -r "[.tickets[].state]|unique|join(\",\")" "$DESK_QUEUE")" = triaged ] && ! printf "%s" "$out" | grep -q -- "--deps"'
+
+# ---------------------------------------------------------------------------------------------------
+# E idle rule and answer.mjs on a held ticket
+idle(){ node --input-type=module -e "import {batchIdle} from '$B/batch-state.mjs'; console.log(batchIdle(JSON.parse(process.argv[1])) ? 'idle' : 'busy')" "$1"; }
+H='{"state":"parked","park":{"question":"held by orchestrator: blocked by A"},"held_by":"A"}'
+check "held behind a running predecessor: not idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"running\"},\"S\":$H}}")" = busy ]'
+check "held behind a done predecessor with a PR: not idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"S\":$H}}")" = busy ]'
+check "held behind a done predecessor with NO PR: idle (it will never merge)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"done\"},\"S\":$H}}")" = idle ]'
+H2='{"state":"parked","park":{"question":"held by orchestrator: blocked by S"},"held_by":"S"}'
+check "held behind a held ticket that is waiting: not idle (transitive)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"running\"},\"S\":$H,\"T\":$H2}}")" = busy ]'
+HAX='{"state":"parked","park":{"question":"held by orchestrator: blocked by A, X"},"held_by":"A|X"}'
+idlep(){ node --input-type=module -e "import {batchIdle} from '$B/batch-state.mjs'; const st=JSON.parse(process.argv[2]); console.log(batchIdle(JSON.parse(process.argv[1]), (n)=>st[n]??null) ? 'idle' : 'busy')" "$1" "$2"; }
+check "held behind one merged and one failed blocker: idle (it can never release)" '[ "$(idlep "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"X\":{\"state\":\"failed\"},\"S\":$HAX}}" "{\"7\":\"MERGED\"}")" = idle ]'
+check "held behind a blocker whose PR was closed unmerged: idle" '[ "$(idlep "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"S\":$H}}" "{\"7\":\"CLOSED\"}")" = idle ]'
+check "held behind a merged blocker (release due): not idle" '[ "$(idlep "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"S\":$H}}" "{\"7\":\"MERGED\"}")" = busy ]'
+wom(){ node --input-type=module -e "import {waitingOnMerge} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); console.log(waitingOnMerge(q, q.tickets.S) ? 'waiting' : 'stuck')" "$1"; }
+HZ='{"state":"parked","park":{"question":"held by orchestrator: z"},"held_by":"Z"}'
+HA='{"state":"parked","park":{"question":"held by orchestrator: a"},"held_by":"A"}'
+HD='{"state":"parked","park":{"question":"held by orchestrator: b c"},"held_by":"B|C"}'
+womk(){ node --input-type=module -e "import {waitingOnMerge} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); console.log(waitingOnMerge(q, q.tickets[process.argv[2]]) ? 'waiting' : 'stuck')" "$1" "$2"; }
+check "a diamond of holds (Z <- A <- B,C <- D) is waiting, not stuck" '[ "$(womk "{\"tickets\":{\"Z\":{\"state\":\"running\"},\"A\":$HZ,\"B\":$HA,\"C\":$HA,\"D\":$HD}}" D)" = waiting ]'
+check "held behind a queued blocker (never spawns by itself): stuck, not waiting" '[ "$(wom "{\"tickets\":{\"A\":{\"state\":\"queued\"},\"S\":$H}}")" = stuck ]'
+check "a hold with no recorded blocker: idle, never silently waiting" '[ "$(idle "{\"tickets\":{\"S\":{\"state\":\"parked\",\"park\":{\"question\":\"held by orchestrator: starts once A merges\"}}}}")" = idle ]'
+check "held behind a failed predecessor: idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"failed\"},\"S\":$H}}")" = idle ]'
+check "held behind a predecessor parked for another reason: idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"parked\",\"park\":{\"question\":\"lane C\"}},\"S\":$H}}")" = idle ]'
+node "$B/queue.mjs" init t4 >/dev/null; node "$B/queue.mjs" add KAN-401 Task A >/dev/null; node "$B/queue.mjs" add KAN-402 Task A >/dev/null
+node "$B/queue.mjs" set KAN-401 state=failed >/dev/null; node "$B/queue.mjs" set KAN-402 held_by=KAN-401 >/dev/null
+node "$B/queue.mjs" park KAN-402 "held by orchestrator: blocked by KAN-401 (Jira link) — starts once their PRs merge" >/dev/null
+out=$(node "$B/queue.mjs" render 2>&1)
+check "held behind a failed blocker is surfaced as stuck and waiting on you" 'printf "%s" "$out" | grep -q "STUCK" && printf "%s" "$out" | grep -q "waiting on you"'
+check "everything done or parked: idle (unchanged)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"done\"},\"B\":{\"state\":\"parked\",\"park\":{\"question\":\"x\"}}}}")" = idle ]'
+check "a triaged ticket: not idle (unchanged)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"triaged\"}}}")" = busy ]'
+
+node "$B/queue.mjs" init t3 >/dev/null; node "$B/queue.mjs" add KAN-301 Task A >/dev/null; node "$B/queue.mjs" add KAN-302 Task A >/dev/null
+node "$B/queue.mjs" set KAN-301 state=triaged >/dev/null
+node "$B/queue.mjs" set KAN-302 open_questions=1 held_by=KAN-301 >/dev/null
+node "$B/queue.mjs" park KAN-302 "held by orchestrator: blocked by KAN-301 (Jira link) — starts once their PRs merge" >/dev/null
+out=$(node "$B/answer.mjs" KAN-302 "start it anyway" 2>&1)
+check "answer on a held ticket keeps the hold and clears the count" \
+  '[ "$(qg KAN-302 .state)" = parked ] && [ "$(qg KAN-302 .open_questions)" = 0 ] && printf "%s" "$out" | grep -q "held"'
+out=$(node "$B/queue.mjs" render 2>&1)
+check "render shows a held ticket as HELD, not waiting on you" 'printf "%s" "$out" | grep -q "HELD" && ! printf "%s" "$out" | grep -q "waiting on you"'
+node "$B/queue.mjs" set-batch epic=KAN-300 >/dev/null; out=$(node "$B/queue.mjs" render 2>&1)
+check "render shows the epic" 'printf "%s" "$out" | grep -q "epic KAN-300"'
+
+# queue.mjs hold / admit: the mid-batch procedures as single commands
+node "$B/queue.mjs" init t6 >/dev/null
+for k in KAN-801 KAN-802 KAN-803; do node "$B/queue.mjs" add $k Task A >/dev/null; node "$B/queue.mjs" set $k state=triaged >/dev/null; done
+node "$B/queue.mjs" hold KAN-803 KAN-801 >/dev/null; node "$B/queue.mjs" hold KAN-803 KAN-802 >/dev/null
+check "hold records every blocker (unioned) with the release prefix" \
+  '[ "$(qg KAN-803 .held_by)" = "KAN-801|KAN-802" ] && [[ "$(qg KAN-803 .park.question)" == "held by orchestrator"* ]]'
+node "$B/queue.mjs" park KAN-802 "lane C — needs a plan" >/dev/null
+out=$(node "$B/queue.mjs" hold KAN-802 KAN-801 2>&1); rc=$?
+check "hold refuses a ticket parked for its own reason" '[ $rc -ne 0 ] && [[ "$(qg KAN-802 .park.question)" == "lane C"* ]]'
+out=$(node "$B/queue.mjs" hold KAN-801 KAN-801 2>&1); rc=$?
+check "hold refuses a self hold" '[ $rc -ne 0 ]'
+node "$B/queue.mjs" add KAN-804 Task A >/dev/null
+out=$(node "$B/queue.mjs" hold KAN-804 KAN-801 2>&1); rc=$?
+check "hold refuses a ticket never triaged (a release would send it to a worker untriaged)" '[ $rc -ne 0 ] && [ "$(qg KAN-804 .state)" = queued ]'
+mkdir -p "$T/state/triage"
+printf '{"ticket":"KAN-801","type":"Task","lane":"A","branch":"feat/KAN-801","files_in_scope":["src/a.ts","src/b.ts"],"unknowns":[]}' > "$T/state/triage/KAN-801.json"
+printf '{"ticket":"KAN-810","type":"Task","lane":"A","branch":"feat/KAN-810","files_in_scope":["src/b.ts"],"unknowns":[],"blockers":[]}' > "$T/state/triage/KAN-810.json"
+printf '{"ticket":"KAN-811","type":"Task","lane":"C","lane_reason":"big","branch":"feat/KAN-811","unknowns":[]}' > "$T/state/triage/KAN-811.json"
+printf '{"ticket":"KAN-812","type":"Task","lane":"A","branch":"feat/KAN-812","unknowns":[],"size":"XL"}' > "$T/state/triage/KAN-812.json"
+node "$B/queue.mjs" admit KAN-810 >/dev/null; node "$B/queue.mjs" admit KAN-811 >/dev/null; node "$B/queue.mjs" admit KAN-812 >/dev/null
+check "admit: a lane A ticket is triaged with its branch" '[ "$(qg KAN-810 .state)" = triaged ] && [ "$(qg KAN-810 .branch)" = feat/KAN-810 ]'
+check "admit records collisions both ways from files in scope" '[ "$(qg KAN-810 .collides_with)" = KAN-801 ] && [[ "$(qg KAN-801 .collides_with)" == *KAN-810* ]]'
+check "admit: lane C and size XL are parked for their own reason" '[[ "$(qg KAN-811 .park.question)" == "lane C"* ]] && [[ "$(qg KAN-812 .park.question)" == "size XL"* ]]'
+out=$(node "$B/queue.mjs" admit KAN-813 2>&1); rc=$?
+check "admit refuses a ticket with no triage record" '[ $rc -ne 0 ]'
+
+# ---------------------------------------------------------------------------------------------------
+# worker-settings: link is never a worker's or triage's; children is a read
+ws(){ node "$B/worker-settings.mjs" "$@" >/dev/null 2>&1; }
+ws triage --ticket KAN-1 --out "$T/tri.json"
+check "triage: link denied" 'jq -r ".permissions.deny[]" "$T/tri.json" | grep -q "^Bash(desk-jira link"'
+check "triage: children allowed" 'jq -r ".permissions.allow[]" "$T/tri.json" | grep -q "^Bash(desk-jira children"'
+ws worker --ticket KAN-1 --wt "$T/repo" --out "$T/wk.json"
+check "worker with jira-edit yes: link still denied, edit granted" \
+  'jq -r ".permissions.deny[]" "$T/wk.json" | grep -q "^Bash(desk-jira link" && ! jq -r ".permissions.allow[]" "$T/wk.json" | grep -q "desk-jira link" && jq -r ".permissions.allow[]" "$T/wk.json" | grep -q "^Bash(desk-jira edit"'
+check "worker: children allowed" 'jq -r ".permissions.allow[]" "$T/wk.json" | grep -q "^Bash(desk-jira children"'
+
+ws worker --ticket KAN-1 --wt "$T/repo" --out "$T/dry.json" --dry
+check "dry run: link denied" 'jq -r ".permissions.deny[]" "$T/dry.json" | grep -q "^Bash(desk-jira link"'
+
+# merge-driver release_chain: every predecessor, from --deps (a successor named twice) and held_by.
+mkdir -p "$T/fakebin"; printf '%s\n' feat/KAN-701 > "$T/merged"
+cat > "$T/fakebin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "pr list" ]; then
+  st=""; prev=""; for a in "$@"; do [ "$prev" = --state ] && st="$a"; prev="$a"; done
+  if [ "$st" = merged ]; then n=100; sep=""; printf '['
+    for b in $(cat "$FAKE_MERGED"); do n=$((n+1)); printf '%s{"number":%d,"title":"t","headRefName":"%s","baseRefName":"main","isDraft":false}' "$sep" "$n" "$b"; sep=,; done
+    printf ']\n'; else echo '[]'; fi
+  exit 0
+fi
+echo '{}'
+GH
+chmod +x "$T/fakebin/gh"
+node "$B/queue.mjs" init t5 >/dev/null
+for k in KAN-701 KAN-702 KAN-703 KAN-704; do node "$B/queue.mjs" add $k Task A >/dev/null; node "$B/queue.mjs" set $k branch=feat/$k >/dev/null; done
+node "$B/queue.mjs" set KAN-701 state=done >/dev/null; node "$B/queue.mjs" set KAN-702 state=done >/dev/null
+node "$B/queue.mjs" set KAN-703 held_by=KAN-701 >/dev/null; node "$B/queue.mjs" park KAN-703 "held by orchestrator: blocked by KAN-701 (Jira link)" >/dev/null
+node "$B/queue.mjs" set KAN-704 held_by=KAN-702 >/dev/null; node "$B/queue.mjs" park KAN-704 "held by orchestrator: blocked by KAN-702 (Jira link)" >/dev/null
+md(){ out=$(PATH="$T/fakebin:$PATH" FAKE_MERGED="$T/merged" MERGE_DRIVER_RELEASE_ONLY=1 bash "$B/merge-driver.sh" --tickets "KAN-701 KAN-703" --deps "KAN-703:KAN-701 KAN-703:KAN-702" 2>&1); rc=$?; }
+md
+check "driver: a successor named twice in --deps waits for both predecessors" '[ $rc -eq 0 ] && [ "$(qg KAN-703 .state)" = parked ]'
+check "driver: a queue-held ticket outside --deps/--tickets waits for its held_by" '[ "$(qg KAN-704 .state)" = parked ]'
+printf '%s\n' feat/KAN-701 feat/KAN-702 > "$T/merged"; md
+check "driver: released once every predecessor merged; held_by cleared; moved to front" \
+  '[ "$(qg KAN-703 .state)" = triaged ] && [ "$(qg KAN-703 .held_by)" = null ] && [ "$(qg KAN-703 .park)" = null ] && [ "$(jq -r ".tickets|keys_unsorted|.[0]" "$DESK_QUEUE")" != KAN-701 ]'
+check "driver: a queue-held ticket is released from held_by alone" '[ "$(qg KAN-704 .state)" = triaged ]'
+
+check "pass.mjs still reports base drift (regression guard)" 'grep -q "out.push(\`base drift:" "$B/pass.mjs"'
+
+echo "epic: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
