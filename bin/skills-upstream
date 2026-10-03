@@ -398,15 +398,31 @@ def cmd_plugins(as_json=False):
         elif isinstance(src, str) and src.startswith("./"):
             # The plugin lives inside the marketplace itself. `claude plugin marketplace update`
             # refreshes that copy, so the installed plugin is current exactly when its folder
-            # matches the marketplace's folder for it.
+            # matches the marketplace's folder for it. But `claude plugin update` acts on the version
+            # alone: a folder that changed under an unchanged version cannot be updated (measured
+            # 2026-10-03: three plugins at 1.0.0 gained a LICENSE, update said "already at the latest
+            # version"), so that is reported as unbumped, never as outdated.
             mdir = os.path.join(PLUGINS_DIR, "marketplaces", market, src[2:])
             inst_dir = p.get("installPath") or ""
             if os.path.isdir(mdir) and os.path.isdir(inst_dir):
                 same = tree_sha256(mdir) == tree_sha256(inst_dir)
                 row["latest"] = "marketplace copy"
-                row["status"] = "ok" if same else "outdated"
+                row["status"] = "ok"
                 if not same:
-                    row["note"] = "changed: " + ", ".join(tree_changes(mdir, inst_dir)[:6])
+                    try:
+                        ver = json.load(open(os.path.join(mdir, ".claude-plugin", "plugin.json"))).get("version")
+                    except Exception:  # noqa: BLE001
+                        ver = None
+                    ver = ver or entry.get("version")
+                    changes = ", ".join(tree_changes(mdir, inst_dir)[:6])
+                    if ver and ver == p.get("version"):
+                        row["status"] = "unbumped"
+                        row["note"] = (f"changed under the same version {ver}, so `claude plugin update` "
+                                       f"will not apply it until upstream bumps it: {changes}")
+                    else:
+                        row["status"] = "outdated"
+                        row["latest"] = ver or "marketplace copy"
+                        row["note"] = "changed: " + changes
             else:
                 row["note"] = "marketplace or installed folder not found"
         elif entry.get("version"):
@@ -419,7 +435,7 @@ def cmd_plugins(as_json=False):
         print(json.dumps(rows, indent=2))
     else:
         for r in rows:
-            mark = {"ok": "ok      ", "outdated": "OUTDATED", "unknown": "UNKNOWN "}[r["status"]]
+            mark = {"ok": "ok      ", "outdated": "OUTDATED", "unbumped": "UNBUMPED", "unknown": "UNKNOWN "}[r["status"]]
             print(f"{mark} {r['plugin']:48} installed {r['installed']}" + (f" -> {r['latest']}" if r["status"] == "outdated" else "") + (f"  ({r['note']})" if r["note"] else ""))
     return 10 if any(r["status"] == "outdated" for r in rows) else 0
 

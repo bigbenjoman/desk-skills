@@ -82,6 +82,11 @@ python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse 
 version the marketplace pins) and lists what changed, e.g. `+LICENSE`, `~skills/x/SKILL.md`. Say
 plainly when a change is trivial (a licence file only) versus a changed skill.
 
+`UNBUMPED` means the marketplace copy changed but kept the installed version number.
+`claude plugin update` goes by version only, so it will answer "already at the latest version" and
+change nothing. Report these rows separately and never offer them as upgrades. They do not set
+exit 10, and they clear on their own once upstream bumps the version.
+
 Untracked skills: every real folder in `~/.agents/skills` (and any real folder left in
 `~/.claude/skills`) whose name is neither `desk-*` nor a key in `vendor/sources.json`.
 
@@ -92,6 +97,7 @@ DESK UPDATE — <date>
 desk-skills   <n> new commits pulled | up to date | skipped: <reason>
 OUTDATED      context-audit     8560b4f (2026-04-13) -> 8928560 (2026-04-13)  Vesely/skills  2 commits: "Add README…", "…"
 OUTDATED      plugin vercel     1.4.0 -> 1.5.1
+UNBUMPED      plugin code-simplifier  1.0.0: +LICENSE (no version bump, so nothing to update yet)
 ok            ux-designer, ui-designer, ux-copywriter, <plugins…>
 UNREACHABLE   <name>: <error>
 DRIFTED       <name>: ~/.agents/skills copy differs from vendor/ (run ./install.sh)
