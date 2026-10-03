@@ -245,13 +245,16 @@ Each prompt carries, in order:
 2. The review bar **verbatim**: §4 Review bar's file, else `references/review-bar.md`. Then §4
    *What review here consistently asks for*, as this repo's house asks. **The bar's definitions
    win, and the `FINDING` block is the output format**: not Lena's `## Review Summary`, not
-   Nadia's CRITICAL/HIGH (map them per the bar), and never `P3`.
+   Nadia's findings table or verdict, and never `P3`.
 3. The diff command, substituted literally: branch `git diff "origin/<base>...HEAD"`; PR
    `git diff "origin/<base>...refs/desk-review/pr-<n>"` after `git fetch --quiet origin <base>`.
    Agents run it themselves. Never paste a diff into a prompt. Not `gh pr diff`: GitHub refuses any
    diff over 20,000 lines (`HTTP 406 … too_large`), so a big PR's finders would all error.
 4. The changed-file list, and the paths of §5 Repo instructions files (paths, not contents).
 5. One paragraph of intent: the PR title and the author-written description, or the branch name.
+   Then any copies the description lists under *Not migrated*, quoted, for the bar's *Extracted,
+   callers not migrated*. With no author-written description, say so, so the finder reports every
+   surviving copy.
 6. The round, and on round 2+ the re-review rules below.
 
 **Every behavioural claim needs a `file:line` in real code.** An inference from a name is not
