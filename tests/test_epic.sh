@@ -40,6 +40,26 @@ cat > "$T/fixture.json" <<'EOF'
     "KAN-63": {"summary": "story, subtasks under way", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0}},
     "KAN-64": {"summary": "under way", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
                "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-70": {"summary": "epic, in-progress stories", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1}},
+    "KAN-71": {"summary": "story under way, some subtasks open", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0},
+               "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+               "issuelinks": [{"id": "31", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                               "inwardIssue": {"key": "KAN-11", "fields": {"status": {"name": "To Do", "statusCategory": {"key": "new"}}}}}]},
+    "KAN-72": {"summary": "open subtask of an in-progress story", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1}},
+    "KAN-73": {"summary": "subtask under way", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
+               "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-74": {"summary": "subtask done", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
+               "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+    "KAN-75": {"summary": "story under way, subtasks all done", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0},
+               "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-76": {"summary": "subtask done", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1},
+               "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+    "KAN-77": {"summary": "story under way, no subtasks", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0},
+               "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-78": {"summary": "task under way", "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+    "KAN-79": {"summary": "done story with an open subtask", "issuetype": {"name": "Story", "subtask": false, "hierarchyLevel": 0},
+               "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+    "KAN-80": {"summary": "open subtask of a done story", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1}},
     "KAN-20": {"summary": "empty epic", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1}},
     "KAN-30": {"summary": "a bug", "issuetype": {"name": "Bug", "subtask": false, "hierarchyLevel": 0}},
     "KAN-31": {"summary": "QA", "issuetype": {"name": "Subtask", "subtask": true, "hierarchyLevel": -1}},
@@ -67,7 +87,11 @@ cat > "$T/fixture.json" <<'EOF'
     "KAN-30": ["KAN-31"],
     "KAN-60": ["KAN-61", "KAN-63"],
     "KAN-61": ["KAN-62"],
-    "KAN-63": ["KAN-64"]
+    "KAN-63": ["KAN-64"],
+    "KAN-70": ["KAN-71", "KAN-75", "KAN-77", "KAN-78", "KAN-79"],
+    "KAN-71": ["KAN-72", "KAN-73", "KAN-74"],
+    "KAN-75": ["KAN-76"],
+    "KAN-79": ["KAN-80"]
   }
 }
 EOF
@@ -207,6 +231,15 @@ check "a run that expands nothing leaves no expansion.json behind" '[ ! -e "$T/s
 E KAN-60
 check "an epic's Bug child with a QA subtask runs as itself, not as the subtask" '[ $rc -eq 0 ] && [ "$out" = KAN-61 ]'
 check "a story whose subtasks are all under way is dropped, with the reason" 'printf "%s" "$err" | grep -q "KAN-63.*under way\|KAN-63.*in progress"'
+E KAN-70
+check "an In Progress story is replaced by its open subtasks, not dropped whole" '[ $rc -eq 0 ] && [ "$out" = KAN-72 ]'
+check "the report marks the in-progress story and names its replacement" 'printf "%s" "$err" | grep -q "KAN-71 (in progress) → KAN-72"'
+check "its in-progress and done subtasks are still dropped, with reasons" 'printf "%s" "$err" | grep -q "KAN-73 (subtask of KAN-71): in progress" && printf "%s" "$err" | grep -q "KAN-74 (subtask of KAN-71): done"'
+check "an In Progress story with no open subtask is dropped as in progress" 'printf "%s" "$err" | grep -q "drop KAN-75: in progress" && printf "%s" "$err" | grep -q "drop KAN-77: in progress"'
+check "an In Progress non-story child is still dropped as in progress" 'printf "%s" "$err" | grep -q "drop KAN-78: in progress"'
+check "a Done story is dropped, its open subtask not pulled in" 'printf "%s" "$err" | grep -q "drop KAN-79: done" && ! printf "%s\n" "$out" | grep -qx KAN-80'
+check "expansion.json carries the in-progress story's subtasks and blockers" \
+  '[ "$(jq -c ".containers[\"KAN-71\"]" "$T/state/expansion.json")" = "{\"subtasks\":[\"KAN-72\"],\"blocked_by\":[{\"key\":\"KAN-11\",\"category\":\"new\"}]}" ]'
 E KAN-30 --subtasks
 check "--subtasks refuses a bug (stories only)" '[ $rc -eq 4 ] && [ -z "$out" ]'
 E KAN-14 --subtasks

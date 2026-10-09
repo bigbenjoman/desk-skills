@@ -58,8 +58,11 @@ for (const c of jira('children', key, '--json')) {
   const k = ticketKind(c.key);
   if (!k.ok || k.kind !== 'tracker') { say(`  drop ${c.key}: not this repo's key`); continue; }
   const cat = category(c);
+  const inProgress = `  drop ${c.key}: in progress (it may already have a PR) — name it explicitly to include it`;
   if (cat === 'done') { say(`  drop ${c.key}: done`); continue; }
-  if (cat === 'indeterminate') { say(`  drop ${c.key}: in progress (it may already have a PR) — name it explicitly to include it`); continue; }
+  // A story is read for its subtasks whatever its own status. An In Progress story is the usual
+  // home of open subtasks (some of its work under way, the rest not started), and dropping it
+  // before this read made every one of them vanish from the batch without a line in the report.
   if (!subtasks && isStory(c)) {
     const subs = jira('children', c.key, '--json');
     const open = [];
@@ -72,16 +75,19 @@ for (const c of jira('children', key, '--json')) {
     }
     if (open.length) {
       containers[c.key] = { subtasks: open.map((s) => s.key), blocked_by: blockersOf(c) };
-      say(`  ${c.key} → ${open.map((s) => s.key).join(' ')} (its open subtasks)`);
+      say(`  ${c.key}${cat === 'indeterminate' ? ' (in progress)' : ''} → ${open.map((s) => s.key).join(' ')} (its open subtasks)`);
       keys.push(...open.map((s) => s.key));
       continue;
     }
+    // No open subtask: an In Progress story is dropped as before (it may already have a PR).
+    if (cat === 'indeterminate') { say(inProgress); continue; }
     if (subs.some((s) => category(s) === 'indeterminate')) {
       // Running the story whole would rebuild what its subtasks are already building.
       say(`  drop ${c.key}: its subtasks are under way and none is open — finish those first`);
       continue;
     }
   }
+  if (cat === 'indeterminate') { say(inProgress); continue; }
   keys.push(c.key);
 }
 
