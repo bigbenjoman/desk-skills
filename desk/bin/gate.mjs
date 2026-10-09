@@ -51,9 +51,34 @@ export function normaliseCheck(c) {
   if (status && status !== 'completed') return { name, status: status === 'queued' ? 'queued' : 'in_progress', conclusion: null, runId };
   return { name, status: 'completed', conclusion: lc(c.conclusion) || null, runId };
 }
-export const normaliseRollup = (nodes) => (nodes || []).filter((n) => n && (n.name || n.context)).map(normaliseCheck);
+export const normaliseRollup = (nodes) => (nodes || []).filter((n) => n && (n.name || n.context)).map((n) => ({
+  ...normaliseCheck(n), workflow: n.workflowName ?? null, startedAt: n.startedAt ?? null,
+}));
 
-export function evaluateGate(checks, { required = [], advisory = [], runs = [] } = {}) {
+// The latest run of each check, as GitHub's own `gh pr checks` and branch protection read it.
+// statusCheckRollup keeps EVERY check run on the head commit, so a check that failed and then passed
+// in a later workflow run (a PR closed and reopened, a new pull_request event) appears twice. Counting
+// the old failure kept a green PR red, and listed the superseded run for a rerun, which replays the
+// old event payload and fails again. Grouped by workflow and name; the newest start wins, and a
+// check not yet started (queued) is newer than any that has; ties go to the higher run id. Checks
+// with no run id (status contexts, external apps) are kept as they are: GitHub already reports only
+// the latest state of a status context.
+export function latestPerCheck(checks) {
+  const keep = [];
+  const best = new Map();
+  const when = (c) => (c.status === 'queued' && !c.startedAt ? Infinity : Date.parse(c.startedAt ?? '') || 0);
+  const newer = (a, b) => when(a) !== when(b) ? when(a) > when(b) : Number(a.runId) > Number(b.runId);
+  for (const c of checks) {
+    if (!c.runId) { keep.push(c); continue; }
+    const k = `${c.workflow ?? ''}\u0000${c.name}`;
+    const cur = best.get(k);
+    if (!cur || newer(c, cur)) best.set(k, c);
+  }
+  return [...keep, ...best.values()];
+}
+
+export function evaluateGate(allChecks, { required = [], advisory = [], runs = [] } = {}) {
+  const checks = latestPerCheck(allChecks);
   const adv = new Set(advisory);
   const reasons = [];
   const failing = [];
@@ -169,7 +194,10 @@ if (isMain) {
       // failed completed runs for this commit.
       const ids = new Set(gate.failing.map((f) => f.runId).filter(Boolean));
       if (gate.failing.some((f) => !f.runId)) {
-        for (const r of runs) if (lc(r.status) === 'completed' && FAILED.has(lc(r.conclusion)) && !advisory.includes(r.name) && !advisory.includes(r.workflowName)) ids.add(String(r.databaseId));
+        // Only the latest run of each workflow: rerunning a superseded one replays its old payload.
+        const latest = new Map();
+        for (const r of runs) { const k = r.workflowName || r.name; if (!latest.has(k) || Number(r.databaseId) > Number(latest.get(k).databaseId)) latest.set(k, r); }
+        for (const r of latest.values()) if (lc(r.status) === 'completed' && FAILED.has(lc(r.conclusion)) && !advisory.includes(r.name) && !advisory.includes(r.workflowName)) ids.add(String(r.databaseId));
       }
       let files = [];
       let filesOk = true;

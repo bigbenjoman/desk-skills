@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld } from './batch-state.mjs';
+import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
@@ -346,18 +347,13 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
   mkdirSync(join(STATE, 'briefings'), { recursive: true });
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const prior = existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '';
-  // Slice ONLY the answers, not the rest of the file. Running to end-of-file swallowed the
-  // sibling-notes block appended below it, so every respawn folded another copy in; one briefing
+  // Keep ONLY the answers, not the rest of the file, but keep EVERY answer section: answer.mjs
+  // appends after the sibling-notes block, so a requeue's answer sits below it (collectAnswers).
+  // Running to end-of-file swallowed the notes, so every respawn folded another copy in; one briefing
   // reached 194KB and, riding in --append-system-prompt, blew Linux's 128KB single-argument cap
   // (MAX_ARG_STRLEN): "Argument list too long", and every new worker died instantly.
-  const ANSWER_HEAD = '## Answer from the user';
-  const sliceAnswers = (txt) => {
-    const a = txt.slice(txt.indexOf(ANSWER_HEAD));
-    const cut = a.indexOf('## What sibling workers');
-    return cut > 0 ? a.slice(0, cut).trimEnd() : a.trimEnd();
-  };
   const priorAnswers = prior.includes(ANSWER_HEAD)
-    ? sliceAnswers(prior)
+    ? collectAnswers(prior)
     : existsSync(answerFile)
       ? `${ANSWER_HEAD}\n\n${readFileSync(answerFile, 'utf8')}`
       : '';
