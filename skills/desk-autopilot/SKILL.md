@@ -279,9 +279,12 @@ node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
 ```
 
 - It keeps the epic's children that are this repo's keys and not started, in Jira rank order. A
-  child story that has open subtasks is replaced by them (one level), and its Blocks links pass to
-  them (`<state>/expansion.json`, read by `plan-batch`). Done children are dropped; **in-progress
-  children are dropped** too (one may already have a PR): include one only if the user names it.
+  child story that has open subtasks is replaced by them (one level), **whether the story itself is
+  To Do or In Progress**, and its Blocks links pass to them (`<state>/expansion.json`, read by
+  `plan-batch`). Done children are dropped; **in-progress children are dropped** too (one may
+  already have a PR), and so is an In Progress story with no open subtask: include one only if the
+  user names it. The subtasks of a story are read before its own status is, because an In Progress
+  story is where open subtasks usually sit, and dropping it first made them vanish unreported.
 - Exit 4 means the key is not an epic: run it as an ordinary ticket. A story runs as its subtasks
   only when the user asks for exactly that (`--subtasks`); a bug or story named on its own with QA
   or checklist subtasks runs as itself, as it always has. Exit 3: nothing open under it; say so.

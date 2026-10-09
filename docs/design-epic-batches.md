@@ -85,7 +85,9 @@ for plan-batch.
 2. `desk-jira children <KEY> --json`; any failure exits non-zero, never an empty batch.
 3. Keep only children whose key `desk-env ticket-kind` calls `tracker` (others reported
    `not this repo's key`). Drop `statusCategory` `done` (reported `done`) and `indeterminate`
-   (reported `in progress — name it explicitly to include it`: it may already have a PR).
+   (reported `in progress — name it explicitly to include it`: it may already have a PR), except
+   that an `indeterminate` story is read for its subtasks first (step 4): an In Progress story with
+   open subtasks is replaced by them, and only one with none open is dropped as in progress.
 4. A kept child that is not a subtask (`issuetype.subtask` false) and has open subtasks is a
    **container**: it is replaced by its open (`new`) subtasks in rank order, and recorded in
    `expansion.json` with its own `Blocks` blockers. A container whose subtasks are all done or in
