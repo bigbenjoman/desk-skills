@@ -23,13 +23,15 @@
 //   0 uploaded, every placeholder replaced      3 uploaded, but no `_drag <file>_` placeholder matched (tags on stderr)
 //   1 bad arguments, no such dir, no images     4 uploaded, but placeholder(s) are still left in the body
 //   2 the shared profile is in use (retry)      5 not permitted: config §3 pr-images is not yes and no DESK_UPLOAD_APPROVED
-//   6 setup or config: browser profile unset or missing, playwright not installed
-import { readdirSync, existsSync } from 'node:fs';
+//   6 setup or config: browser profile unset or missing, playwright not installed, or the profile
+//     is not signed in to GitHub (run github-signin.mjs: GitHub's login is a session cookie the
+//     profile drops on exit, so it is kept in <profile>.github-session.json instead)
+import { readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
-import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { HOME, permission, permissionKey, browserProfile, repoRoot, ghRepo, DeskConfigError } from './desk-env.mjs';
+import { HOME, permission, permissionKey, browserProfile, ghRepo, DeskConfigError } from './desk-env.mjs';
+import { findPlaywright, sessionFile } from './find-playwright.mjs';
 
 const [pr, dir] = process.argv.slice(2);
 if (!pr || !dir) { console.error('usage: upload-images.mjs <pr-number> <image-dir>'); process.exit(1); }
@@ -57,22 +59,6 @@ try {
 if (!existsSync(PROFILE)) { console.error(`[upload] browser profile does not exist: ${PROFILE}`); process.exit(6); }
 
 const REPO = ghRepo();
-// Playwright is not ours to install: use the one this repo already has (its node_modules, or wherever
-// node resolves it from the repo root, which covers hoisted workspaces), else DESK_PLAYWRIGHT
-// (a path to playwright's index.mjs, for a repo that is not a JS project).
-function findPlaywright() {
-  const tried = [];
-  const candidates = [];
-  if (process.env.DESK_PLAYWRIGHT) candidates.push(process.env.DESK_PLAYWRIGHT);
-  const root = repoRoot();
-  candidates.push(join(root, 'node_modules', 'playwright', 'index.mjs'));
-  try {
-    const req = createRequire(join(root, 'package.json'));
-    candidates.push(join(dirname(req.resolve('playwright/package.json')), 'index.mjs'));
-  } catch { /* not resolvable from the repo */ }
-  for (const c of candidates) { tried.push(c); if (existsSync(c)) return { entry: c, tried }; }
-  return { entry: null, tried };
-}
 const { entry: playwrightEntry, tried } = findPlaywright();
 if (!playwrightEntry) {
   console.error(`[upload] playwright not found (tried: ${tried.join(', ')}). Install the repo's dependencies ` +
@@ -95,8 +81,21 @@ if (holders) { console.error(`[upload] the shared profile is in use — refusing
 
 const ctx = await chromium.launchPersistentContext(PROFILE, { headless: true, viewport: { width: 1400, height: 1200 } });
 try {
+  // The profile drops GitHub's session cookies on exit; github-signin.mjs saved them alongside it.
+  const saved = sessionFile(PROFILE);
+  if (existsSync(saved)) await ctx.addCookies(JSON.parse(readFileSync(saved, 'utf8')).cookies ?? []);
+
   const page = ctx.pages()[0] ?? await ctx.newPage();
   await page.goto(`https://github.com/${REPO}/pull/${pr}`, { waitUntil: 'domcontentloaded' });
+
+  // Signed out, a private repo's PR is a 404 with no comment box: say so rather than time out on it.
+  const user = await page.evaluate(() => document.querySelector('meta[name="user-login"]')?.content || '');
+  if (!user) {
+    console.error(`[upload] the browser profile is not signed in to GitHub (${existsSync(saved) ? 'saved session expired' : `no ${saved}`}).`);
+    console.error('[upload] sign in once with: node ~/.claude/desk/bin/github-signin.mjs  (opens a window; run it where there is a screen)');
+    await ctx.close();
+    process.exit(6);
+  }
 
   const ta = page.locator('textarea#new_comment_field');
   await ta.waitFor({ state: 'attached', timeout: 30000 });
@@ -147,6 +146,13 @@ try {
   const left = (after.match(/_drag /g) ?? []).length;
   console.log(`[upload] done: ${live} image(s) in the body, ${left} placeholder(s) left`);
   if (left) process.exitCode = 4;
+
+  // Roll the saved login forward with whatever GitHub refreshed during this run, so a session
+  // that is used keeps working and nobody has to sign in again while uploads keep happening.
+  const fresh = (await ctx.cookies()).filter((c) => /(^|\.)github\.com$/.test(c.domain.replace(/^\./, '')));
+  if (fresh.some((c) => c.name === 'user_session')) {
+    writeFileSync(saved, JSON.stringify({ user, savedAt: new Date().toISOString(), cookies: fresh }, null, 1), { mode: 0o600 });
+  }
 } finally {
   await ctx.close();
 }
