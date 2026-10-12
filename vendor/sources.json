@@ -803,12 +803,12 @@
         "path": "skills/site-architecture/"
       },
       "pin": {
-        "commit": "30f9b9a72",
-        "date": "2026-05-13"
+        "commit": "759933ed7",
+        "date": "2026-10-02"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
-      "tree_sha256": "1407e9fcdde2ef2f1347c0b803e9ad8ee402f880704ecee0274bfdf54264330e"
+      "tree_sha256": "ffedde0f08e8661ea7ca38842373c6d57b4c871b7c2cb1af0df319dd296a1748"
     },
     "supabase-postgres-best-practices": {
       "source": {
