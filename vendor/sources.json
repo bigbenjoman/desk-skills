@@ -173,12 +173,12 @@
         "path": "skills/directory-submissions"
       },
       "pin": {
-        "commit": "2ebbff3d8",
-        "date": "2026-10-02"
+        "commit": "d7a1c7a45",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (2b12b936); current upstream HEAD version (metadata.version 2.0.0). Installed 2026-09-27.",
-      "tree_sha256": "fc94f5383acad5b2a9d17b1c8389d862b4e75addfd6d4dc88a30150deb9780af"
+      "tree_sha256": "c98d8691f5816164c488300dae7374afc7d6d673a4ccd2f7254c073530ab5d86"
     },
     "error-handling-patterns": {
       "source": {
