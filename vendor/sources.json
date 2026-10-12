@@ -551,12 +551,12 @@
         "path": "skills/seo-audit"
       },
       "pin": {
-        "commit": "2d4b091d1",
-        "date": "2026-08-19"
+        "commit": "24f6bc7b2",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 18 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "2741176411f522d48bab888776f7b6fb55622306b9488aed1a222d35557921c6"
+      "tree_sha256": "d956ce8f3b802ac6da77fa25e5d4b7137509cefeecf332db631b4fb0ea6686a3"
     },
     "stripe-integration": {
       "source": {
