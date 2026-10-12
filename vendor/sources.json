@@ -844,17 +844,17 @@
         "repo": "clerk/skills",
         "branch": "main",
         "subskills": [
-          "skills/core/clerk",
-          "skills/core/clerk-cli",
-          "skills/core/clerk-setup",
-          "skills/core/clerk-backend-api",
-          "skills/core/clerk-custom-ui",
-          "skills/frameworks/clerk-nextjs-patterns",
-          "skills/frameworks/clerk-react-patterns",
-          "skills/features/clerk-webhooks",
-          "skills/features/clerk-orgs",
-          "skills/features/clerk-billing",
-          "skills/features/clerk-testing"
+          "skills/clerk",
+          "skills/clerk-cli",
+          "skills/clerk-setup",
+          "skills/clerk-backend-api",
+          "skills/clerk-custom-ui",
+          "skills/clerk-nextjs-patterns",
+          "skills/clerk-react-patterns",
+          "skills/clerk-webhooks",
+          "skills/clerk-orgs",
+          "skills/clerk-billing",
+          "skills/clerk-testing"
         ]
       },
       "license": null,
