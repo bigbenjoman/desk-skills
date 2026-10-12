@@ -369,12 +369,12 @@
         "path": "skills/content-strategy"
       },
       "pin": {
-        "commit": "a798b7faf",
-        "date": "2026-10-02"
+        "commit": "4ca2d4c62",
+        "date": "2026-10-07"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 14 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "988aaa0118503ecccdce3cdfcdd91a3a421287dcddae5f1ad432a7034634c799"
+      "tree_sha256": "1512d2f1409ab644fde38354ed0f946ea46da95dde6ee579c504a629ca62c7eb"
     },
     "data-engineer": {
       "source": {
