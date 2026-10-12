@@ -789,12 +789,12 @@
         "path": "skills/schema/"
       },
       "pin": {
-        "commit": "30f9b9a72",
-        "date": "2026-05-13"
+        "commit": "7716acefd",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Upstream renamed skills/schema-markup -> skills/schema in 30f9b9a. Commit shown is when this exact SKILL.md was introduced; un",
-      "tree_sha256": "178e72caadb788515afb2c9995051bbb55cef54d0020cb315d793174201afd59"
+      "tree_sha256": "e50bc4bb09efbfab52b6fe5ba34f8980032a2046be9760e4ac87bdaa4085dfbc"
     },
     "site-architecture": {
       "source": {
