@@ -80,11 +80,12 @@ You already have the memory index and the desk-* skills. **Read $ROUTING and app
 rules as written** — do not work from a summary of them. $READ_TICKET, then read enough of the code
 to judge the lane. Enough to judge it, not to fix it.
 
-You are running in $MAIN, the primary checkout. Run git there as plain \`git <subcommand>\`, never
-\`git -C <dir>\`: that form is refused, and so is anything that writes, \`git fetch\` included. The
-orchestrator fetched before triage, so $BASE is current; the working tree may not be. Read code as it
-is on $BASE: \`git ls-tree -r --name-only $BASE -- <dir>\`, \`git show $BASE:<path>\`,
-\`git grep -n <pattern> $BASE -- <path>\`.
+You are running in $MAIN, the primary checkout. Run git there as plain \`git <subcommand>\`: pointing
+git at a directory with its -C option is refused, and so is anything that writes, fetching included.
+The orchestrator fetches before triage, so $BASE should be current; the working tree may not be. Read
+code as it is on $BASE: \`git ls-tree -r --name-only $BASE -- <dir>\`, \`git show $BASE:<path>\`,
+\`git grep -n <pattern> $BASE -- <path>\`. If $BASE looks stale, say so rather than claiming
+something does not exist.
 
 Things that are not in that file and matter here:
 
@@ -178,8 +179,8 @@ worked by hand rather than run. Your job is to check that call before it costs a
 Read-only: change nothing.
 
 Read $STATE/triage/$TICKET.json for the first pass's reasoning, read $ROUTING, and read enough of
-the code to judge it yourself. You are in $MAIN: run plain \`git <subcommand>\`, never
-\`git -C <dir>\` or \`git fetch\` (both refused), and read code as it is on $BASE
+the code to judge it yourself. You are in $MAIN: run plain \`git <subcommand>\` (its -C option and
+fetching are both refused), and read code as it is on $BASE
 (\`git show $BASE:<path>\`, \`git grep -n <pattern> $BASE -- <path>\`).
 
 **Confirm unless you can name the specific C or D trigger that does not in fact fire.** Doubt means

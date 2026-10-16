@@ -298,7 +298,7 @@ node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
   (*A batch that targets a feature branch*). Everything else waits for Stage 3.
 - Triage reads the epic's description for context; each child's own criteria are its scope.
 - Tickets filed during the batch (an L split into children, a close-out follow-up) join it one at a
-  time: `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
+  time: fetch as at Stage 1, `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
   ticket in the batch), or they wait for the next batch.
 
 ### Dependencies from Jira links
@@ -333,7 +333,7 @@ IDLE: keep the loop going. Two states come to you under `WAITING ON YOU`, with a
 
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 
-**"Add the blocker to the batch"** as an answer: `triage.sh <B>`, `queue.mjs admit <B>`,
+**"Add the blocker to the batch"** as an answer: fetch as at Stage 1, `triage.sh <B>`, `queue.mjs admit <B>`,
 `queue.mjs hold <S> <B>`, then restart the merge driver with `<B>` added to `--tickets` (so it merges
 B's PR). Never re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch: it resets every ticket's
 state.
