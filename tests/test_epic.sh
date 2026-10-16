@@ -470,6 +470,37 @@ check "driver: released once every predecessor merged; held_by cleared; moved to
   '[ "$(qg KAN-703 .state)" = triaged ] && [ "$(qg KAN-703 .held_by)" = null ] && [ "$(qg KAN-703 .park)" = null ] && [ "$(jq -r ".tickets|keys_unsorted|.[0]" "$DESK_QUEUE")" != KAN-701 ]'
 check "driver: a queue-held ticket is released from held_by alone" '[ "$(qg KAN-704 .state)" = triaged ]'
 
+# merge-driver main loop: a ticket admitted to the queue after the driver started joins its PR set.
+# The fake gh admits KAN-802 on its first open-PR listing; the fake sleep stops the driver after two loops.
+mkdir -p "$T/loopbin"
+cat > "$T/loopbin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "pr list" ]; then
+  if [ ! -f "$FAKE_DIR/admitted" ]; then
+    : > "$FAKE_DIR/admitted"
+    node "$FAKE_Q" add KAN-802 Task A >/dev/null; node "$FAKE_Q" set KAN-802 branch=feat/KAN-802 >/dev/null
+  fi
+  echo '[{"number":201,"title":"t","headRefName":"feat/KAN-801","baseRefName":"main","isDraft":true},{"number":202,"title":"t","headRefName":"feat/KAN-802","baseRefName":"main","isDraft":true}]'
+  exit 0
+fi
+echo '{}'
+GH
+cat > "$T/loopbin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+echo x >> "$FAKE_DIR/sleeps"
+[ "$(wc -l < "$FAKE_DIR/sleeps")" -ge 2 ] && kill -TERM "$PPID"
+exit 0
+SLEEP
+chmod +x "$T/loopbin/gh" "$T/loopbin/sleep"
+node "$B/queue.mjs" init t6 >/dev/null
+node "$B/queue.mjs" add KAN-801 Task A >/dev/null; node "$B/queue.mjs" set KAN-801 branch=feat/KAN-801 >/dev/null
+out=$(PATH="$T/loopbin:$PATH" FAKE_DIR="$T" FAKE_Q="$B/queue.mjs" bash "$B/merge-driver.sh" --tickets "KAN-801" 2>&1)
+first=$(printf '%s\n' "$out" | grep 'draft (still reviewing)' | head -1)
+last=$(printf '%s\n' "$out" | grep 'draft (still reviewing)' | tail -1)
+check "driver loop: a ticket not yet in the queue is not the batch's" '[ -n "$first" ] && ! printf "%s" "$first" | grep -q "#202"'
+check "driver loop: a ticket admitted mid-run joins on the next loop, no restart" \
+  'printf "%s" "$out" | grep -q "KAN-802 joined the batch" && printf "%s" "$last" | grep -q "#201 #202"'
+
 check "pass.mjs still reports base drift (regression guard)" 'grep -q "out.push(\`base drift:" "$B/pass.mjs"'
 
 echo "epic: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
