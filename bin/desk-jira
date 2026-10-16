@@ -99,11 +99,24 @@ first_word() {
 
 SITE="${JIRA_SITE:-$(first_word "$(cfg jira-site)")}"
 # The base URL: https://<site>. A site written with a scheme is kept as is, but plain http is only
-# accepted for a local host (a test stub), so credentials never cross the network unencrypted.
+# accepted for a local host (a test stub), so credentials never cross the network unencrypted. The
+# host is parsed, not prefix-matched: http://localhost@evil.com and http://127.0.0.1.evil.com are
+# remote hosts. A local site also bypasses any proxy, which would otherwise receive the token.
+LOCAL_HTTP=0
 case "$SITE" in
   https://*) BASE="${SITE%/}" ;;
-  http://127.0.0.1*|http://localhost*|http://\[::1\]*) BASE="${SITE%/}" ;;
-  http://*) printf 'desk-jira: refusing plain http for %s: use https\n' "$SITE" >&2; exit 1 ;;
+  http://*)
+    authority="${SITE#http://}"; authority="${authority%%[/?#]*}"
+    case "$authority" in
+      \[*) host="${authority%%]*}]" ;;
+      *) host="${authority%%:*}" ;;
+    esac
+    port="${authority#"$host"}"
+    case "$host" in 127.0.0.1|localhost|'[::1]') ;; *) host="" ;; esac
+    if [[ -z "$host" ]] || ! [[ -z "$port" || "$port" =~ ^:[0-9]+$ ]]; then
+      printf 'desk-jira: refusing plain http for %s: use https\n' "$SITE" >&2; exit 1
+    fi
+    BASE="${SITE%/}"; LOCAL_HTTP=1 ;;
   "") BASE="" ;;
   *) BASE="https://${SITE%/}" ;;
 esac
@@ -141,7 +154,8 @@ curl_auth() {
   local xt=0 tok rc=0
   case $- in *x*) xt=1; set +x ;; esac
   if [[ -n "${JIRA_TOKEN:-}" ]]; then tok="$JIRA_TOKEN"; else tok=$(tr -d ' \t\r\n' < "$TOKEN_FILE"); fi
-  printf 'user = "%s:%s"\n' "$(cfgq "$EMAIL")" "$(cfgq "$tok")" | curl -sS -K - "$@" || rc=$?
+  printf 'user = "%s:%s"\n' "$(cfgq "$EMAIL")" "$(cfgq "$tok")" \
+    | if (( LOCAL_HTTP )); then curl -sS --noproxy '*' -K - "$@"; else curl -sS -K - "$@"; fi || rc=$?
   tok=""
   if (( xt )); then set -x; fi
   return $rc
@@ -183,7 +197,7 @@ api() {
 
 realpath_of() {
   if command -v realpath >/dev/null 2>&1; then realpath "$1" 2>/dev/null
-  else python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
+  else python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
 }
 
 # A file whose contents leave this machine (a body, a field=@file, an attachment) must be inside

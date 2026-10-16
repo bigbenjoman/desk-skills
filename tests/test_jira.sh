@@ -80,6 +80,17 @@ err=$(cd "$A" && JIRA_SITE=nonexistent.invalid "$J" search x 2>&1); rc=$?
 check "unreachable site fails loudly" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "could not reach"'
 err=$(cd "$A" && JIRA_SITE=http://example.com "$J" search x 2>&1); rc=$?
 check "plain http to a remote host refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing plain http"'
+for site in "http://localhost@127.0.0.1:$PORT" "http://127.0.0.1:$PORT@127.0.0.1:$PORT" "http://127.0.0.1.example.com" \
+            "http://localhostevil.com" "http://[::1].example.com" "http://127.0.0.1:x@example.com" "http://127.0.0.1:"; do
+  n0=$(wc -l < "$LOG")
+  err=$(cd "$A" && JIRA_SITE="$site" "$J" whoami 2>&1); rc=$?
+  check "plain http to look-alike $site refused, nothing sent" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing plain http" && [ "$(wc -l < "$LOG")" -eq "$n0" ]'
+done
+out=$(cd "$A" && JIRA_SITE="http://localhost:$PORT/" "$J" whoami 2>&1); rc=$?
+check "plain http to localhost:<port> accepted" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "Me <me@example.com>"'
+out=$(cd "$A" && http_proxy=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 \
+  NO_PROXY= no_proxy= "$J" whoami 2>&1); rc=$?
+check "a local http site bypasses the proxy" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "Me <me@example.com>"'
 
 # H4: body files
 printf 'hello from the repo' > "$A/body.md"
