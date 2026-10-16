@@ -4,7 +4,7 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
@@ -143,7 +143,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // The worker prints an absolute path, but a `~/...` one must still work: node does not expand ~,
   // and an unexpanded path made the uploader exit on every pass.
   const imgDir = E.expandHome([...h.matchAll(/AUTOPILOT_IMAGES:\s*(\S+)/g)].pop()?.[1]);
-  const prNo = t.result?.pr ?? [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1];
+  // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
+  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? t.result?.pr;
   if (imgDir && prNo && !t.images_uploaded) {
     if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
       const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
@@ -289,9 +290,20 @@ const runningKeys = new Set(running.map((r) => r.key));
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
 // un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
 // completed ticket. This is a guard, not the cure: markers are never consumed.
-// Deliberate re-runs stay possible — rotate the log, or name the ticket:
+// Deliberate re-runs stay possible — name the ticket, and the spawn rotates its log:
 //   AUTOPILOT_RERUN=<TICKET> node pass.mjs
 const rerunAllowed = new Set((process.env.AUTOPILOT_RERUN ?? '').split(/[,\s]+/).filter(Boolean));
+
+// Every spawn is a fresh session, so it starts a fresh log: <TICKET>.log moves to the next free
+// <TICKET>.log.round<n>. spawn-worker.sh appends, and the image upload reads its directory and PR
+// from the log, so a kept log would send the last round's screenshots to the last round's PR.
+const rotateLog = (key) => {
+  const log = join(STATE, 'logs', `${key}.log`);
+  if (!existsSync(log) || statSync(log).size === 0) return;
+  let n = 1;
+  while (existsSync(`${log}.round${n}`)) n += 1;
+  renameSync(log, `${log}.round${n}`);
+};
 
 const alreadyFinished = (r) => {
   if (rerunAllowed.has(r.key)) return false;
@@ -397,8 +409,12 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
 
   // Reset the stall counters: a respawn after a log rotation starts a smaller log than the stored
   // size, and without this the stall killer shoots each fresh worker within a pass or two.
+  // Clear the previous round's PR and image flags too: a stale result.pr sent this round's
+  // screenshots to the last round's PR, and a stale images_uploaded=true stopped them uploading.
+  rotateLog(t.key);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
-    `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0');
+    `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
+    'result=null', 'images_uploaded=null', 'images_reported=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
