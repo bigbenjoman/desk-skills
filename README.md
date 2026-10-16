@@ -472,6 +472,10 @@ The desk-skills test suite runs against throwaway homes and repos, never yours:
 bash tests/run.sh
 ```
 
+It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
+every shell script when shellcheck is installed (it says when it is not). On macOS,
+`/bin/bash tests/run.sh` tests bash 3.2. CI runs it on Linux and macOS for every pull request.
+
 ## Using autopilot
 
 ```

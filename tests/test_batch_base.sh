@@ -2,6 +2,8 @@
 # A batch base (queue.mjs set-batch base=<branch>) must redirect the autopilot's processes, and only
 # them: set-batch validates it, desk-env get/batch-base report it, desk_apply_batch_base exports it
 # (and refuses a contradiction), and a process that never applies it still sees §0 Default branch.
+# check() evals its condition string, so the variables it reads look unused to shellcheck.
+# shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(mktemp -d)"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mkdir -p "$HOME"

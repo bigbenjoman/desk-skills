@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# check() evals its condition string, so the variables it reads look unused to shellcheck.
+# shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"; mkdir -p "$T/home" "$T/xdg"
 H="$S/../"skills/desk-setup/bin/harness-rules.py
@@ -32,6 +34,8 @@ run --ledger "$L" baseline
 check "baseline to user level allowed" '[ $rc -eq 0 ] && grep -q "gh pr merge" "$HOME/.claude/settings.json"'
 git init -q "$HOME"; mkdir -p "$HOME/.claude"
 run --ledger "$L" --settings "$HOME/.claude/settings.local.json" add "$T/allow.json"
+# A check name, not a path.
+# shellcheck disable=SC2088
 check "~/.claude is user-level even when HOME is a git repo" '[ $rc -eq 2 ] && [[ "$out" == *"user-level"* ]]'
 rm -rf "$HOME/.git"
 

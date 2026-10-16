@@ -9,12 +9,56 @@ permissions:
   contents: read
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  suite:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: bash tests/run.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - name: Warm up Python
+        # The first launch of a freshly installed Python on macOS is scanned and can take seconds;
+        # do it here so a stub's start-up wait measures the stub, not the scan.
+        run: python3 -c 'import http.server, json, urllib.parse; print("python ok")'
+      - name: Ensure jq
+        run: |
+          if ! command -v jq >/dev/null; then
+            if [ "$RUNNER_OS" = macOS ]; then brew install jq; else sudo apt-get update && sudo apt-get install -y jq; fi
+          fi
+          jq --version
+      # The macOS leg exists to catch bash 3.2 regressions, so it must run the system /bin/bash
+      # (3.2.57), not a Homebrew bash 5 the runner may put first on PATH. Scripts with
+      # `#!/usr/bin/env bash` follow PATH, so /bin/bash goes first there too.
+      - name: Use the system bash on macOS
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysbash"
+          ln -sf /bin/bash "$RUNNER_TEMP/sysbash/bash"
+          echo "$RUNNER_TEMP/sysbash" >> "$GITHUB_PATH"
+      # shellcheck's findings do not depend on the OS, so Linux (where it is preinstalled) requires it.
+      - name: Require shellcheck on Linux
+        if: runner.os == 'Linux'
+        run: |
+          shellcheck --version | head -2
+          echo DESK_REQUIRE_SHELLCHECK=1 >> "$GITHUB_ENV"
+      - name: Run tests
+        run: |
+          bash --version | head -1
+          bash tests/run.sh
+
+  # The one check named `tests`, which the merge gate requires: green only when every OS leg is.
+  tests:
+    needs: suite
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[ "${{ needs.suite.result }}" = success ]'

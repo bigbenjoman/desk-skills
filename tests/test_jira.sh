@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Tests for bin/desk-jira against a local stub. Scratch HOME only.
+# check() evals its condition string, so the variables it reads look unused to shellcheck.
+# shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"
 SRC="$(cd "$S/.." && pwd)"
@@ -60,7 +62,7 @@ check "bash -x trace does not contain the token" '! printf "%s" "$trace" | grep 
 check "curl is never given -u" '! printf "%s" "$trace" | grep -qE "curl .* -u "'
 ( cd "$A" && JIRA_SITE="http://127.0.0.1:$SLOWPORT" JIRA_TOKEN=good-token "$J" whoami >/dev/null ) & BG=$!
 seen=""
-for i in $(seq 1 100); do seen="$seen$(ps -axww -o args= | grep '[c]url' || true)"; done
+for _ in $(seq 1 100); do seen="$seen$(ps -axww -o args= | grep '[c]url' || true)"; done
 wait $BG
 check "ps actually saw the curl call (control)" 'printf "%s" "$seen" | grep -q "127.0.0.1:$SLOWPORT"' 
 printf '%s\n' "$seen" | grep good-token | sort -u | cut -c1-240 | sed 's/^/  ps: /'
@@ -89,7 +91,7 @@ done
 out=$(cd "$A" && JIRA_SITE="http://localhost:$PORT/" "$J" whoami 2>&1); rc=$?
 check "plain http to localhost:<port> accepted" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "Me <me@example.com>"'
 out=$(cd "$A" && http_proxy=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 \
-  NO_PROXY= no_proxy= "$J" whoami 2>&1); rc=$?
+  NO_PROXY='' no_proxy='' "$J" whoami 2>&1); rc=$?
 check "a local http site bypasses the proxy" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "Me <me@example.com>"'
 
 # H4: body files
