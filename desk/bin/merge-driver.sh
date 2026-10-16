@@ -6,7 +6,9 @@
 #
 # --tickets  the batch's ids (whitespace- or comma-separated), each one `desk-env ticket-kind` accepts:
 #            a §4 Ticket key pattern key, a §4 Other work id patterns id, or with §4 Tracker `none`
-#            `issue-<n>` or a lower-case kebab slug. Case-sensitive as written.
+#            `issue-<n>` or a lower-case kebab slug. Case-sensitive as written. These are the starting
+#            set: every loop also takes in each ticket in the queue (`queue.mjs admit`, a requeue), so a
+#            ticket that joins the batch mid-run is merged with no restart.
 # --deps     space-separated succ:pred[,pred] — succ is released (state=triaged, moved to the front of
 #            the spawn order) once EVERY pred's PR has merged. Chain only real file collisions.
 #
@@ -186,6 +188,26 @@ feedback(){
 }
 queue_note(){ node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; }
 
+# Tickets join the batch after the driver starts, so each loop adds every queue ticket not yet in
+# KEY_LIST, checked as a --tickets entry is. A refused id is logged once and never retried.
+REFUSED_KEYS=" "
+join_queue_tickets(){
+  local k keys known=" ${KEY_LIST[*]} "
+  keys=$(node - "$DESK_QUEUE" <<'NODE'
+const fs = require('fs');
+try { for (const k of Object.keys(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).tickets || {})) console.log(k); }
+catch { /* no queue yet: nothing to join */ }
+NODE
+) || return 0
+  set -f
+  for k in $keys; do
+    case "$known$REFUSED_KEYS" in *" $k "*) continue ;; esac
+    if is_key "$k"; then KEY_LIST+=("$k"); known="$known$k "; log "$k joined the batch in the queue — its PR is merged with the rest"
+    else REFUSED_KEYS="$REFUSED_KEYS$k "; log "queue ticket $k is not merged by this driver: $(key_error "$k")"; fi
+  done
+  set +f
+}
+
 # Release a held ticket once EVERY predecessor has merged. Its predecessors are the union of all its
 # --deps entries (a successor named twice, e.g. a collision chain and a Jira chain, waits for both) and
 # the queue's held_by (so a blocker added mid-batch counts without a restart). Only a ticket still
@@ -322,6 +344,7 @@ log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
 while true; do
+  join_queue_tickets
   release_chain
 
   list=$(prs open) || { log "could not list PRs"; sleep 120; continue; }

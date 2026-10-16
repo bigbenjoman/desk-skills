@@ -334,8 +334,8 @@ IDLE: keep the loop going. Two states come to you under `WAITING ON YOU`, with a
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 
 **"Add the blocker to the batch"** as an answer: fetch as at Stage 1, `triage.sh <B>`, `queue.mjs admit <B>`,
-`queue.mjs hold <S> <B>`, then restart the merge driver with `<B>` added to `--tickets` (so it merges
-B's PR). Never re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch: it resets every ticket's
+`queue.mjs hold <S> <B>`. A running merge driver picks B up from the queue on its next loop and
+merges B's PR; do not restart it. Never re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch: it resets every ticket's
 state.
 
 ### Size
@@ -443,8 +443,9 @@ and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only onc
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
 `merge_blocked=` (a hold, or behind without `pr-update-branch`), which `queue.mjs render` shows. It
-matches a ticket's PR by the recorded branch and base (above). `--tickets` takes whitespace- or
-comma-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket
+matches a ticket's PR by the recorded branch and base (above). `--tickets` is the starting set:
+every loop also takes in each ticket in the queue, so a ticket admitted or requeued mid-batch is
+merged with no restart. `--tickets` takes whitespace- or comma-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket
 key pattern, §4 Other work id patterns, or the Tracker-`none` forms), and `--deps` anything not
 `<key>:<key>[,<key>…]`. Only one driver runs at a time (`<state>/merge-driver.lock.d`); a second
 exits 1 naming the holder's pid. Two things it must get right or it makes the problem worse: **never

@@ -158,7 +158,8 @@ DEPENDENCIES — from Jira links
   That is the one sanctioned manual release.
 - **Adding a blocker mid-batch** (the answer was "add B"): triage B, `queue.mjs add B …` alone
   (never re-run plan-batch with `AUTOPILOT_WRITE_QUEUE`: it resets every ticket's state), hold the
-  successor, and restart the merge driver with the new `--deps`.
+  successor. A running merge driver takes B in from the queue on its next loop, and the hold's
+  `held_by` releases the successor, so it needs no restart.
 
 ## F. desk-autopilot SKILL.md
 
