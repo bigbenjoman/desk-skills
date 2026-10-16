@@ -120,6 +120,9 @@ const BIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 // have their own rules.
 const NO_EXACT = new Set(['rm', 'sudo', 'doas', 'curl', 'wget', 'eval', 'exec', 'xargs', 'env', 'git', 'gh', 'docker',
   'cd', 'source', '.', 'sh', 'bash', 'zsh', 'dash', 'fish', 'nohup', 'time', 'timeout', 'npx', 'pnpx', 'bunx', 'uvx']);
+// The one shell form a toolchain item may take: `bash|sh <repo-relative .sh path>`, no flags. It runs a
+// file in the worktree, the same exposure as `pnpm test`; a flag or command string (`bash -c`) never matches.
+const SHELL_SCRIPT = /^(bash|sh) (?![-/])(?!(.*\/)?\.\.(\/|$))[A-Za-z0-9._/-]+\.sh$/;
 // Words never probed with `--version` (not toolchain binaries).
 const NOT_A_TOOL = new Set(['cd', 'source', '.', 'env', 'exec', 'time', 'nohup']);
 // Porting check: `bun` below is one entry in a generic list of package managers §4 may name as
@@ -157,7 +160,7 @@ for (const id of TOOL_IDS) {
       continue;
     }
     const bin = cmd.split(/\s+/)[0];
-    if (NO_EXACT.has(bin)) { warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" starts with ${bin}, which is never allow-listed`); continue; }
+    if (NO_EXACT.has(bin) && !SHELL_SCRIPT.test(cmd)) { warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" starts with ${bin}, which is never allow-listed`); continue; }
     items.push({ id, dir, cmd, bin });
   }
 }
