@@ -73,12 +73,54 @@ flags_ok(){ local n="$1" budget="$2"
     && has "$n" --add-dir "$T/state" && has "$n" --add-dir "$T/skills" \
     && has "$n" --max-budget-usd "$budget" && has "$n" --output-format text; }
 
+# The rendered triage settings decide every git call a prompt names. permits <settings> <command>:
+# each `|` stage matches an allow rule and no deny rule, read the way the harness reads them (a
+# trailing `:*` is a prefix, any other `*` a glob, neither an exact string). `match.js prompt <argv>`
+# prints each backticked `git …` span of that call's -p prompt, one per line, placeholders as `x`.
+cat > "$T/match.js" <<'EOF'
+const fs = require('fs');
+const [mode, a, b] = process.argv.slice(2);
+if (mode === 'prompt') {
+  const argv = fs.readFileSync(a, 'utf8').split('\0');
+  const prompt = argv[argv.indexOf('-p') + 1] || '';
+  for (const m of prompt.matchAll(/`(git [^`]*)`/g)) console.log(m[1].replace(/<[^<>]*>/g, 'x'));
+  process.exit(0);
+}
+const perms = JSON.parse(fs.readFileSync(a, 'utf8')).permissions;
+const body = (r) => (/^Bash\((.*)\)$/s.exec(r) || [])[1];
+const hit = (r, cmd) => {
+  const p = body(r);
+  if (p === undefined) return false;
+  if (p.endsWith(':*')) { const pre = p.slice(0, -2); return cmd === pre || cmd.startsWith(`${pre} `); }
+  if (p.includes('*')) return new RegExp(`^${p.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 's').test(cmd);
+  return cmd === p;
+};
+const ok = b.split(' | ').every((c) => perms.allow.some((r) => hit(r, c.trim())) && !perms.deny.some((r) => hit(r, c.trim())));
+process.exit(ok ? 0 : 1);
+EOF
+TS="$T/state/workers/fix-thing.triage.settings.json"
+permits(){ node "$T/match.js" allow "$TS" "$1"; }
+# Every git command call n names is permitted (`git <subcommand>` is the generic form, not one).
+prompt_git_ok(){ local n="$1" cmd bad=0 seen=0
+  while IFS= read -r cmd; do
+    [ "$cmd" = "git x" ] && continue
+    seen=$((seen+1))
+    if ! permits "$cmd"; then echo "     refused: $cmd"; bad=1; fi
+  done < <(node "$T/match.js" prompt "$STUB_LOG.$n")
+  [ "$seen" -ge 2 ] && [ "$bad" -eq 0 ]; }
+
 cd "$T/repo" || exit 1
 out=$(bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "lane A: triage succeeds though claude exits non-zero (|| true)" '[ $rc -eq 0 ]'
 check "lane A: one claude call, no challenge"                           '[ -f "$STUB_LOG.0" ] && [ ! -f "$STUB_LOG.1" ]'
 check "first pass receives every flag"                                  'flags_ok 0 3'
 check "first pass output goes to /dev/null"                             '[ -f "$STUB_LOG.0" ] && [[ "$out" != *STUB-* ]]'
+check "first pass: every git command it names runs under triage settings" 'prompt_git_ok 0'
+check "first pass: names no git -C or fetch"                            '! node "$T/match.js" prompt "$STUB_LOG.0" | grep -qE "^git (-C|fetch)"'
+check "triage settings: git ls-tree on any ref"                         'permits "git ls-tree -r --name-only origin/main -- desk" && permits "git ls-tree HEAD"'
+check "triage settings: branch listing allowed"                         'permits "git branch -a" && permits "git branch -r" && permits "git branch --list -r"'
+check "triage settings: branch -r/-a cannot delete"                     '! permits "git branch -r -d origin/x" && ! permits "git branch -a -D x" && ! permits "git branch -rd origin/x"'
+check "triage settings: fetch and -C refused"                           '! permits "git fetch" && ! permits "git fetch origin" && ! permits "git -C /x log"'
 
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 export STUB_LANE=C
@@ -86,6 +128,8 @@ out=$(bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "lane C: triage succeeds and challenges"                          '[ $rc -eq 0 ] && [ -f "$STUB_LOG.1" ]'
 check "challenge receives every flag"                                   'flags_ok 1 2'
 check "challenge output goes to /dev/null"                              '[ -f "$STUB_LOG.1" ] && [[ "$out" != *STUB-* ]]'
+check "challenge: every git command it names runs under triage settings"  'prompt_git_ok 1'
+check "challenge: names no git -C or fetch"                             '! node "$T/match.js" prompt "$STUB_LOG.1" | grep -qE "^git (-C|fetch)"'
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'

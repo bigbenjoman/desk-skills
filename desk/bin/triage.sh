@@ -78,7 +78,14 @@ no branch or worktree.
 
 You already have the memory index and the desk-* skills. **Read $ROUTING and apply its lane
 rules as written** — do not work from a summary of them. $READ_TICKET, then read enough of the code
-in $MAIN to judge the lane. Enough to judge it, not to fix it.
+to judge the lane. Enough to judge it, not to fix it.
+
+You are running in $MAIN, the primary checkout. Run git there as plain \`git <subcommand>\`: pointing
+git at a directory with its -C option is refused, and so is anything that writes, fetching included.
+The orchestrator fetches before triage, so $BASE should be current; the working tree may not be. Read
+code as it is on $BASE: \`git ls-tree -r --name-only $BASE -- <dir>\`, \`git show $BASE:<path>\`,
+\`git grep -n <pattern> $BASE -- <path>\`. If $BASE looks stale, say so rather than claiming
+something does not exist.
 
 Things that are not in that file and matter here:
 
@@ -100,10 +107,9 @@ Things that are not in that file and matter here:
   small can really be a redesign, or not a code fix at all.
 - **Look for prior art before sizing the ticket.** Another branch may already have done part of
   this, or done it the opposite way — that changes the lane and the scope more than anything in the
-  description does. \`git branch -a --sort=-committerdate | head -40\`, then for any branch whose
-  name or ticket looks related, \`git diff --stat $BASE...<branch>\` and check whether it
-  touches your \`files_in_scope\`. $RELATED.
-  Remote-tracking refs may be a little stale; say so rather than claiming none exists.
+  description does. \`git for-each-ref --sort=-committerdate --count=40 --format='%(refname:short)' refs/heads refs/remotes\`,
+  then for any branch whose name or ticket looks related, \`git diff --stat $BASE...<branch>\` and
+  check whether it touches your \`files_in_scope\`. $RELATED.
 - **Size the ticket AFTER prior art, not before.** This is the step that gets skipped: prior art is
   researched, written into \`prior_art\`, and then the lane is chosen from the ticket description as
   though nothing had been found. Half-built is the common case here — a builder, route, model or
@@ -173,7 +179,9 @@ worked by hand rather than run. Your job is to check that call before it costs a
 Read-only: change nothing.
 
 Read $STATE/triage/$TICKET.json for the first pass's reasoning, read $ROUTING, and read enough of
-the code in $MAIN to judge it yourself.
+the code to judge it yourself. You are in $MAIN: run plain \`git <subcommand>\` (its -C option and
+fetching are both refused), and read code as it is on $BASE
+(\`git show $BASE:<path>\`, \`git grep -n <pattern> $BASE -- <path>\`).
 
 **Confirm unless you can name the specific C or D trigger that does not in fact fire.** Doubt means
 confirm. You are looking for clear over-escalation, not an argument — the routing file's own rule is

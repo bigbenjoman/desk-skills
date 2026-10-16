@@ -201,7 +201,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 |---|---|---|
 | 0 | Claim | `queue.mjs init`. `pass.mjs` takes an exclusive lock at `<state>/orchestrator.lock` and refuses to run if a live orchestrator holds it; a lock from a dead process is taken over automatically. Each pass also writes a heartbeat under `<state>/orchestrators/`, so another batch's `init` sees this one between passes (fresh = under 15 minutes). `init` backs up and re-seeds `batch-notes.md`: **check the `## MEMORY` heading is there**. See *Sharing the machine*. |
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
-| 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
+| 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs`: ownership, admission, collisions, and the question batch. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
@@ -298,7 +298,7 @@ node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
   (*A batch that targets a feature branch*). Everything else waits for Stage 3.
 - Triage reads the epic's description for context; each child's own criteria are its scope.
 - Tickets filed during the batch (an L split into children, a close-out follow-up) join it one at a
-  time: `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
+  time: fetch as at Stage 1, `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
   ticket in the batch), or they wait for the next batch.
 
 ### Dependencies from Jira links
@@ -333,7 +333,7 @@ IDLE: keep the loop going. Two states come to you under `WAITING ON YOU`, with a
 
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 
-**"Add the blocker to the batch"** as an answer: `triage.sh <B>`, `queue.mjs admit <B>`,
+**"Add the blocker to the batch"** as an answer: fetch as at Stage 1, `triage.sh <B>`, `queue.mjs admit <B>`,
 `queue.mjs hold <S> <B>`, then restart the merge driver with `<B>` added to `--tickets` (so it merges
 B's PR). Never re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch: it resets every ticket's
 state.
