@@ -199,10 +199,13 @@ const READ_DENY = [
 ];
 
 // git subcommands that read, or write only inside this worktree. Anything else, including an alias,
-// matches no allow rule and is refused.
+// matches no allow rule and is refused. `branch` is a writer with listing modes: `--show-current` and
+// `--list` refuse a delete, rename or copy beside them, but `-r -d origin/x` deletes, so `-a` and `-r`
+// are exact rules and anything wider goes through `for-each-ref`.
 const GIT_READ = [' status', ' diff', ' log', ' show', ' rev-parse', ' rev-list', ' merge-base', ' merge-tree', ' ls-files',
-  ' grep', ' blame', ' describe', ' cat-file', ' branch --show-current', ' branch -a', ' branch -r', ' branch --list',
+  ' ls-tree', ' for-each-ref', ' grep', ' blame', ' describe', ' cat-file', ' branch --show-current', ' branch --list',
   ' worktree list', ' remote -v', ' remote get-url'];
+const GIT_READ_EXACT = [' branch -a', ' branch -r'];
 const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean'];
 // `rebase` takes bundled short flags (`-qx cmd` runs cmd), so it is allowed only in these exact forms.
 const GIT_REBASE = [' rebase --continue', ' rebase --abort', ' rebase --skip', ` rebase origin/${E.defaultBranch()}`];
@@ -229,7 +232,7 @@ const JIRA_NEVER = [' link'];
 if (mode === 'triage') {
   // Read-only by construction: no Edit, Write only to this ticket's triage records.
   allow.push(
-    ...bash('git', ...GIT_READ),
+    ...bash('git', ...GIT_READ), ...GIT_READ_EXACT.flatMap((t) => exact('git', t)),
     ...READS.flatMap((b) => bash(b)),
     ...bash('desk-jira', ...JIRA_READ),
     ...bash('gh', ' pr list', ' pr view', ' issue view'),
@@ -265,7 +268,7 @@ if (mode === 'triage') {
   allow.push(
     ...READS.flatMap((b) => bash(b)),
     'Bash(mkdir:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
-    ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...GIT_REBASE.flatMap((t) => exact('git', t)),
+    ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...[...GIT_READ_EXACT, ...GIT_REBASE].flatMap((t) => exact('git', t)),
     ...bash('gh', ...GH_READ),
     ...bash('desk-jira', ...JIRA_READ),
     // desk-env is read-only (where, get, list, perm, mem, heavy, port-in-use): the shim on PATH, its
