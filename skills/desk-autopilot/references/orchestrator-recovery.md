@@ -67,14 +67,16 @@ A requeue is several fields, not one, and each missing one fails silently:
 
 ```bash
 # <state> written out in full: no allow rule matches a variable path
-mv <state>/logs/<TICKET>.log <state>/logs/<TICKET>.log.round1        # else alreadyFinished() blocks it
+mv <state>/logs/<TICKET>.log <state>/logs/<TICKET>.log.round<n>     # next free <n>; else alreadyFinished() blocks it
 node ~/.claude/desk/bin/queue.mjs set <TICKET> state=triaged open_questions=0 park=null session_id=null pid=null idle_passes=0 log_bytes=0
 node ~/.claude/desk/bin/queue.mjs front <TICKET>                      # spawn order is .tickets key order
 ```
 
 `pass.mjs` resets `log_bytes`/`idle_passes` at spawn, because a rotated log makes the byte count go
 backwards and the stall killer then shoots each fresh worker. A climbing `idle_passes` across
-respawns is the tell.
+respawns is the tell. It also clears `result`, `images_uploaded` and `images_reported`, and moves
+any log still at `<TICKET>.log` to the next free `.round<n>`, so the new round's screenshots go to
+the new round's PR rather than the last one's.
 
 Remove the old worktree first (`git worktree remove --force`, under §3 `worktree-remove`) if the
 follow-up needs a fresh branch off current `<default>` (§0 Default branch); otherwise
