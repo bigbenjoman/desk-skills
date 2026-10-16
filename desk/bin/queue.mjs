@@ -67,7 +67,14 @@ function setPath(obj, path, value) {
   node[parts.at(-1)] = value;
 }
 
-const coerce = (v) => (v === 'null' ? null : v === 'true' ? true : v === 'false' ? false : /^-?\d+$/.test(v) ? Number(v) : v);
+// A value opening with { or [ is JSON: stored as a string, a later `result.pr=…` would replace it with
+// an empty object and lose the rest. Invalid JSON is an error rather than that string.
+function coerce(v) {
+  if (/^\s*[[{]/.test(v)) {
+    try { return JSON.parse(v); } catch (e) { throw new Error(`not valid JSON: ${v} (${e.message})`); }
+  }
+  return v === 'null' ? null : v === 'true' ? true : v === 'false' ? false : /^-?\d+$/.test(v) ? Number(v) : v;
+}
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
 // The pass lock only covers the seconds a pass runs, so also read the heartbeats pass.mjs writes per
