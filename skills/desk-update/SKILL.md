@@ -50,7 +50,7 @@ git -C "$D" fetch -q && git -C "$D" log --oneline HEAD..origin/main
 HEAD), skip the pull and every `./install.sh` in this run, and say which branch is checked out and
 how to get back: `git -C "$D" switch main`, once that branch's work is committed. A feature branch's
 upstream is not desk's release, and installing its files puts unmerged work in every session. §2
-still reports; §3 cuts its own branch from `origin/main`.
+still reports, and §3 still commits upgrades on its own branch cut from `origin/main`.
 
 On `main`, if there are incoming commits and the tree is clean, `git -C "$D" pull --ff-only` and
 list them in one line each. A dirty tree or a diverged branch: say so and skip the pull (never
@@ -65,8 +65,6 @@ agents, scripts and the skill index are copies made by `install.sh`. After any p
 ```
 
 and report its warning count. The settings it skipped are offered in §3, never applied silently.
-A skill that is DRIFTED only because its upgrade sits on an unmerged `chore/vendor-*` branch (§3)
-is reported as that, not reinstalled over: `main` has not caught up yet.
 
 ## 2. Check everything
 
@@ -142,20 +140,19 @@ Then, for the chosen pinned skills, **on a new branch cut from `origin/main`**, 
 that is checked out (the tree must be clean; if it is not, say so and upgrade nothing):
 
 ```bash
-P="$(git -C "$D" branch --show-current)"; P="${P:-$(git -C "$D" rev-parse HEAD)}"   # to return to
 git -C "$D" fetch -q origin
-git -C "$D" switch -c "chore/vendor-$(date +%F)" origin/main   # exists already: say so and stop
+git -C "$D" switch --no-track -c "chore/vendor-$(date +%F)" origin/main   # exists already: say so and stop
 skills-upstream upgrade <name>...          # writes vendor/<name> and the pin; nothing is installed yet
 git -C "$D" diff --stat -- vendor/
 git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the user
 ```
 
-Commit on that branch: `chore(vendor): upgrade <name> to <new pin>` (one commit per skill), then
-ask before `git push`. Install: `(cd "$D" && ./install.sh </dev/null)`, which installs files and
-skips every settings prompt, then `skills-upstream verify` must print `ok` for each upgraded skill
-and report no UNLINKED, SHADOWED, NOT INSTALLED, NOT IN CLONE, WRONG COPY or UNVERIFIED skill.
-Then `git -C "$D" checkout -q "$P"` and report the branch name and its commits. The previous branch gains nothing: the upgrade reaches
-`main` only by merging `chore/vendor-<date>`.
+Commit on that branch: `chore(vendor): upgrade <name> to <new pin>` (one commit per skill). Then
+go back to where the run started, with `git -C "$D" checkout -q -` (it returns to the previous
+branch, or the detached commit, without needing a variable from an earlier call), and report the
+new branch and its commits. The previous branch gains nothing. **Install nothing from
+`chore/vendor-<date>`**: it is not `main`, so the upgrade is installed by §1 of the first run after
+it merges. Ask before pushing it, and push with `git -C "$D" push -u origin chore/vendor-<date>`.
 
 For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up

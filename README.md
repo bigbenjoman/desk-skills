@@ -521,7 +521,8 @@ checkout is on `main`), runs `skills-upstream outdated`, `verify` and `plugins`,
 (outdated, drifted, unlinked, unreachable, untracked), says what changed upstream for each, and
 upgrades only what you pick, after showing the diff. Upgrades are committed on a new
 `chore/vendor-<date>` branch cut from `origin/main`, never on the branch you have checked out, and
-it never pushes that branch without asking.
+installed by the first `/desk-update` after that branch merges. It never pushes the branch without
+asking.
 
 ## Changing things
 
