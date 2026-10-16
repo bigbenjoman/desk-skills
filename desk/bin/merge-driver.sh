@@ -9,7 +9,7 @@
 #            `issue-<n>` or a lower-case kebab slug. Case-sensitive as written. These are the starting
 #            set: every loop also takes in each ticket in the queue (`queue.mjs admit`, a requeue), so a
 #            ticket that joins the batch mid-run is merged with no restart.
-# --deps    space-separated succ:pred[,pred] — succ is released (state=triaged, moved to the front of
+# --deps     space-separated succ:pred[,pred] — succ is released (state=triaged, moved to the front of
 #            the spawn order) once EVERY pred's PR has merged. Chain only real file collisions.
 #
 # Which PRs are the batch's: open, authored by config §1's GitHub handle, based on §0 Default branch
