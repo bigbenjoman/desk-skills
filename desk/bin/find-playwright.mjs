@@ -3,7 +3,7 @@
 // node resolves it from the repo root, which covers hoisted workspaces, or pnpm's store when a
 // workspace package depends on it and nothing hoists it), else DESK_PLAYWRIGHT (a path to
 // playwright's index.mjs, for a repo that is not a JS project).
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { repoRoot } from './desk-env.mjs';
@@ -31,3 +31,18 @@ export function findPlaywright(root = repoRoot()) {
 // so a signed-in profile reads as signed out on its next launch. github-signin.mjs saves them
 // here (owner-only); upload-images.mjs adds them back to each run's context.
 export const sessionFile = (profile) => `${profile.replace(/\/+$/, '')}.github-session.json`;
+
+export const githubCookies = async (ctx) =>
+  (await ctx.cookies()).filter((c) => /(^|\.)github\.com$/.test(c.domain.replace(/^\./, '')));
+
+export function saveSession(profile, user, cookies) {
+  const file = sessionFile(profile);
+  writeFileSync(file, JSON.stringify({ user, savedAt: new Date().toISOString(), cookies }, null, 1), { mode: 0o600 });
+  chmodSync(file, 0o600);
+  return file;
+}
+
+export function loadSessionCookies(profile) {
+  const file = sessionFile(profile);
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).cookies ?? [] : [];
+}

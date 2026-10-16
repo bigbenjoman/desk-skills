@@ -13,10 +13,10 @@
 // profile: it is a live GitHub session until GitHub expires it. Delete it to sign out.
 //
 // Exit codes: 0 signed in and saved · 1 no sign-in within the wait · 6 setup or config
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { browserProfile, DeskConfigError } from './desk-env.mjs';
-import { findPlaywright, sessionFile } from './find-playwright.mjs';
+import { findPlaywright, githubCookies, saveSession } from './find-playwright.mjs';
 
 let PROFILE;
 try {
@@ -51,10 +51,8 @@ if (!user) {
   process.exit(1);
 }
 
-const cookies = (await ctx.cookies()).filter((c) => /(^|\.)github\.com$/.test(c.domain.replace(/^\./, '')));
-const file = sessionFile(PROFILE);
-writeFileSync(file, JSON.stringify({ user, savedAt: new Date().toISOString(), cookies }, null, 1), { mode: 0o600 });
-chmodSync(file, 0o600);
+const cookies = await githubCookies(ctx);
+const file = saveSession(PROFILE, user, cookies);
 console.log(`[signin] signed in as ${user}; saved ${cookies.length} GitHub cookie(s) to ${file}. Closing the window.`);
 await page.waitForTimeout(1500);
 await ctx.close();

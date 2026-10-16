@@ -26,12 +26,12 @@
 //   6 setup or config: browser profile unset or missing, playwright not installed, or the profile
 //     is not signed in to GitHub (run github-signin.mjs: GitHub's login is a session cookie the
 //     profile drops on exit, so it is kept in <profile>.github-session.json instead)
-import { readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { HOME, permission, permissionKey, browserProfile, ghRepo, DeskConfigError } from './desk-env.mjs';
-import { findPlaywright, sessionFile } from './find-playwright.mjs';
+import { findPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies } from './find-playwright.mjs';
 
 const [pr, dir] = process.argv.slice(2);
 if (!pr || !dir) { console.error('usage: upload-images.mjs <pr-number> <image-dir>'); process.exit(1); }
@@ -83,7 +83,7 @@ const ctx = await chromium.launchPersistentContext(PROFILE, { headless: true, vi
 try {
   // The profile drops GitHub's session cookies on exit; github-signin.mjs saved them alongside it.
   const saved = sessionFile(PROFILE);
-  if (existsSync(saved)) await ctx.addCookies(JSON.parse(readFileSync(saved, 'utf8')).cookies ?? []);
+  await ctx.addCookies(loadSessionCookies(PROFILE));
 
   const page = ctx.pages()[0] ?? await ctx.newPage();
   await page.goto(`https://github.com/${REPO}/pull/${pr}`, { waitUntil: 'domcontentloaded' });
@@ -149,10 +149,8 @@ try {
 
   // Roll the saved login forward with whatever GitHub refreshed during this run, so a session
   // that is used keeps working and nobody has to sign in again while uploads keep happening.
-  const fresh = (await ctx.cookies()).filter((c) => /(^|\.)github\.com$/.test(c.domain.replace(/^\./, '')));
-  if (fresh.some((c) => c.name === 'user_session')) {
-    writeFileSync(saved, JSON.stringify({ user, savedAt: new Date().toISOString(), cookies: fresh }, null, 1), { mode: 0o600 });
-  }
+  const fresh = await githubCookies(ctx);
+  if (fresh.some((c) => c.name === 'user_session')) saveSession(PROFILE, user, fresh);
 } finally {
   await ctx.close();
 }
