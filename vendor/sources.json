@@ -173,12 +173,12 @@
         "path": "skills/directory-submissions"
       },
       "pin": {
-        "commit": "2ebbff3d8",
-        "date": "2026-10-02"
+        "commit": "d7a1c7a45",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (2b12b936); current upstream HEAD version (metadata.version 2.0.0). Installed 2026-09-27.",
-      "tree_sha256": "fc94f5383acad5b2a9d17b1c8389d862b4e75addfd6d4dc88a30150deb9780af"
+      "tree_sha256": "c98d8691f5816164c488300dae7374afc7d6d673a4ccd2f7254c073530ab5d86"
     },
     "error-handling-patterns": {
       "source": {
@@ -369,12 +369,12 @@
         "path": "skills/content-strategy"
       },
       "pin": {
-        "commit": "a798b7faf",
-        "date": "2026-10-02"
+        "commit": "4ca2d4c62",
+        "date": "2026-10-07"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 14 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "988aaa0118503ecccdce3cdfcdd91a3a421287dcddae5f1ad432a7034634c799"
+      "tree_sha256": "1512d2f1409ab644fde38354ed0f946ea46da95dde6ee579c504a629ca62c7eb"
     },
     "data-engineer": {
       "source": {
@@ -551,12 +551,12 @@
         "path": "skills/seo-audit"
       },
       "pin": {
-        "commit": "2d4b091d1",
-        "date": "2026-08-19"
+        "commit": "24f6bc7b2",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 18 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "2741176411f522d48bab888776f7b6fb55622306b9488aed1a222d35557921c6"
+      "tree_sha256": "d956ce8f3b802ac6da77fa25e5d4b7137509cefeecf332db631b4fb0ea6686a3"
     },
     "stripe-integration": {
       "source": {
@@ -607,12 +607,12 @@
         "path": "skills/ai-seo/"
       },
       "pin": {
-        "commit": "d76f41331",
-        "date": "2026-10-03"
+        "commit": "ac69fe6c8",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit is the one that introduced this blob; it is also upstream HEAD.",
-      "tree_sha256": "56a9c5638ee8ac5eb99186a6cef149c4202594fc8514070f683f31fb745e4b5b"
+      "tree_sha256": "3e0a18e11e90973ab9f0d176c4db8e00dfd125963eb6b785493ff8dc91aef080"
     },
     "async-python-patterns": {
       "source": {
@@ -747,12 +747,12 @@
         "path": "skills/programmatic-seo/"
       },
       "pin": {
-        "commit": "30f9b9a72",
-        "date": "2026-05-13"
+        "commit": "759933ed7",
+        "date": "2026-10-02"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
-      "tree_sha256": "cda32945eb694cee1576dc380abd6529e486080f46192ab57b6f2de2816dc322"
+      "tree_sha256": "397a2a3c0a9261c030afb55677b43a6105678354109819261bc4ccb7e4c541b5"
     },
     "python-observability": {
       "source": {
@@ -789,12 +789,12 @@
         "path": "skills/schema/"
       },
       "pin": {
-        "commit": "30f9b9a72",
-        "date": "2026-05-13"
+        "commit": "7716acefd",
+        "date": "2026-10-08"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Upstream renamed skills/schema-markup -> skills/schema in 30f9b9a. Commit shown is when this exact SKILL.md was introduced; un",
-      "tree_sha256": "178e72caadb788515afb2c9995051bbb55cef54d0020cb315d793174201afd59"
+      "tree_sha256": "e50bc4bb09efbfab52b6fe5ba34f8980032a2046be9760e4ac87bdaa4085dfbc"
     },
     "site-architecture": {
       "source": {
@@ -803,12 +803,12 @@
         "path": "skills/site-architecture/"
       },
       "pin": {
-        "commit": "30f9b9a72",
-        "date": "2026-05-13"
+        "commit": "759933ed7",
+        "date": "2026-10-02"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
-      "tree_sha256": "1407e9fcdde2ef2f1347c0b803e9ad8ee402f880704ecee0274bfdf54264330e"
+      "tree_sha256": "ffedde0f08e8661ea7ca38842373c6d57b4c871b7c2cb1af0df319dd296a1748"
     },
     "supabase-postgres-best-practices": {
       "source": {
@@ -844,17 +844,17 @@
         "repo": "clerk/skills",
         "branch": "main",
         "subskills": [
-          "skills/core/clerk",
-          "skills/core/clerk-cli",
-          "skills/core/clerk-setup",
-          "skills/core/clerk-backend-api",
-          "skills/core/clerk-custom-ui",
-          "skills/frameworks/clerk-nextjs-patterns",
-          "skills/frameworks/clerk-react-patterns",
-          "skills/features/clerk-webhooks",
-          "skills/features/clerk-orgs",
-          "skills/features/clerk-billing",
-          "skills/features/clerk-testing"
+          "skills/clerk",
+          "skills/clerk-cli",
+          "skills/clerk-setup",
+          "skills/clerk-backend-api",
+          "skills/clerk-custom-ui",
+          "skills/clerk-nextjs-patterns",
+          "skills/clerk-react-patterns",
+          "skills/clerk-webhooks",
+          "skills/clerk-orgs",
+          "skills/clerk-billing",
+          "skills/clerk-testing"
         ]
       },
       "license": null,
