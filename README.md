@@ -507,8 +507,11 @@ cannot merge, undraft, run git config or aliases, use `gh api`, or write outside
 ## Updating
 
 ```bash
-cd ~/desk-skills && git pull && ./install.sh
+cd ~/desk-skills && git switch main && git pull --ff-only && ./install.sh
 ```
+
+Pull and install only on `main`: a feature branch's files would put unmerged work in every session.
+`main` is protected, so changes to desk-skills go through a PR, never a push to `main`.
 
 Restart Claude Code. Repo configs are kept; if the template gained rows, `/desk-setup` in that repo
 asks only those. Re-run `./install.sh` after a Playwright plugin update, which undoes its patch.
@@ -522,7 +525,7 @@ checkout is on `main`), runs `skills-upstream outdated`, `verify` and `plugins`,
 upgrades only what you pick, after showing the diff. Upgrades are committed on a new
 `chore/vendor-<date>` branch cut from `origin/main`, never on the branch you have checked out, and
 installed by the first `/desk-update` after that branch merges. It never pushes the branch without
-asking.
+asking; when you agree, it pushes `chore/vendor-<date>`, opens a PR into `main` and prints its URL.
 
 ## Changing things
 

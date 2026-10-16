@@ -34,7 +34,8 @@ recorded, so it cannot be checked. Report those; never guess a source for one.
   and the substance of the SKILL.md diff) before it is installed.
 - **Never edit a vendored skill by hand** to "fix" it. Local changes belong in the upstream, or in a
   repo-level override (`<repo>/.claude/skills/<name>`), and are said out loud.
-- **Never push** the desk-skills commit without asking; it is the user's repo.
+- **Never push** the desk-skills commit without asking; it is the user's repo. **Never push to
+  `main`**: it takes changes only through a PR (§3).
 - A source that cannot be reached is **reported**, not treated as "up to date".
 
 ## 1. Update desk itself
@@ -152,7 +153,19 @@ go back to where the run started, with `git -C "$D" checkout -q -` (it returns t
 branch, or the detached commit, without needing a variable from an earlier call), and report the
 new branch and its commits. The previous branch gains nothing. **Install nothing from
 `chore/vendor-<date>`**: it is not `main`, so the upgrade is installed by §1 of the first run after
-it merges. Ask before pushing it, and push with `git -C "$D" push -u origin chore/vendor-<date>`.
+it merges.
+
+Ask before pushing it. On yes, push that branch and open a PR from it into `main`:
+
+```bash
+git -C "$D" push -u origin chore/vendor-<date>
+(cd "$D" && gh pr create --base main --head chore/vendor-<date> \
+  --title "chore(vendor): upgrade <name>..." --body "<one line per skill: old pin -> new pin, what changed>")
+```
+
+Report the PR URL `gh pr create` prints. Nothing is pushed to `main`: CI and the user merge the PR.
+If the push or the PR fails, report the error and the branch name, and leave it there; never retry
+by pushing to `main`. On no, report the branch as local only.
 
 For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
