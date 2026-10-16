@@ -516,10 +516,12 @@ asks only those. Re-run `./install.sh` after a Playwright plugin update, which u
 You don't need to remember to check: once a day, the first session you start says when desk-skills
 has new commits.
 
-**`/desk-update`** does all of it brew-style, from any directory: pulls desk-skills, runs
-`skills-upstream outdated`, `verify` and `plugins`, reports one table (outdated, drifted,
-unlinked, unreachable, untracked), says what changed upstream for each, and upgrades only what you
-pick, after showing the diff. It never pushes the desk-skills commit without asking.
+**`/desk-update`** does all of it brew-style, from any directory: pulls desk-skills (only when the
+checkout is on `main`), runs `skills-upstream outdated`, `verify` and `plugins`, reports one table
+(outdated, drifted, unlinked, unreachable, untracked), says what changed upstream for each, and
+upgrades only what you pick, after showing the diff. Upgrades are committed on a new
+`chore/vendor-<date>` branch cut from `origin/main`, never on the branch you have checked out, and
+it never pushes that branch without asking.
 
 ## Changing things
 
