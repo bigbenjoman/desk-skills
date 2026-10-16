@@ -2,6 +2,8 @@
 # worker-settings.mjs and a shell-script toolchain: `bash|sh <repo-relative .sh path>` is allowed exactly
 # and probed with `<shell> --version`; any other shell item (flags, a command string, an absolute or
 # parent path, another shell) is still refused. Scratch HOME and repo only.
+# check() evals its condition string, so the variables it reads look unused to shellcheck.
+# shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"

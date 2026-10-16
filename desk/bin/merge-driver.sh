@@ -208,6 +208,8 @@ NODE
   [ -n "$plan" ] || return 0
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop.
   local merged
+  # Each predecessor key is its own argument: ticket keys hold no spaces or glob characters.
+  # shellcheck disable=SC2046
   merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || return 0
   while read -r succ preds; do
     [ -n "$succ" ] || continue

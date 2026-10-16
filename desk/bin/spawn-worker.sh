@@ -198,7 +198,7 @@ SYSTEM="$(cat "$CONTRACT")"
 # A batch base (queue.mjs set-batch base=…) arrives as DESK_DEFAULT_BRANCH. The skills read
 # <default> from config §0, which still names the repo default, so the worker is told outright.
 CFG_DEFAULT="$(node "$DESK_ENV_MJS" get default-branch 2>/dev/null </dev/null; true)"
-CFG_ROW="$(DESK_DEFAULT_BRANCH= node "$DESK_ENV_MJS" get default-branch 2>/dev/null; true)"
+CFG_ROW="$(DESK_DEFAULT_BRANCH='' node "$DESK_ENV_MJS" get default-branch 2>/dev/null; true)"
 if [ -n "$CFG_DEFAULT" ] && [ "$CFG_DEFAULT" != "$CFG_ROW" ]; then
   SYSTEM="$SYSTEM
 

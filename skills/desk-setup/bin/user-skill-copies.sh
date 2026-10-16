@@ -23,6 +23,8 @@ for repo_dir in "$REPO/.agents/skills" "$REPO/.claude/skills"; do
       # A user-level link that lands on the repo's own copy is not a shadow.
       [ "$(cd -P "$path" 2>/dev/null && pwd)" = "$(cd -P "$skill" 2>/dev/null && pwd)" ] && continue
       found=$((found + 1))
+      # A display path: the tilde is printed, not expanded.
+      # shellcheck disable=SC2088
       shown="~/${path#"$HOME"/}"
       [ -L "$path" ] && shown="$shown -> $(readlink "$path")"
       printf '  WARN  user-level %s shadows the repo copy at %s\n' "$shown" "${skill#"$REPO"/}"

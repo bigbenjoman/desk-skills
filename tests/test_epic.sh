@@ -2,6 +2,8 @@
 # Epics as autopilot batches (docs/design-epic-batches.md): desk-jira children/link/parent against a
 # local stub, expand-parent.mjs, ticket-facts.mjs, plan-batch.mjs dependency handling, the held-ticket
 # idle rule, answer.mjs on a held ticket, and worker-settings for `link`. Scratch HOME only.
+# check() evals its condition string, so the variables it reads look unused to shellcheck.
+# shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
@@ -11,6 +13,8 @@ git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH
 export PATH="$SRC/bin:$PATH" DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_JIRA_NAME=Me
 PASS=0; FAIL=0
+# bash 3.2 misparses JSON written inline with \" escapes inside a check's "$(...)": build it in a
+# variable first and pass "$q".
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 # ---------------------------------------------------------------------------------------------------
@@ -286,7 +290,7 @@ r KAN-103 A "[$(nb KAN-101),$(nb KAN-102)]"
 r KAN-104 C "[$(nb KAN-101)]"
 r KAN-105 A "[$(nb KAN-101)]" '"size":"L"'
 r KAN-106 A "[$(nb KAN-900)]"
-r KAN-107 A "[$(nb KAN-901 done)]"
+r KAN-107 A "[$(nb KAN-901 'done')]"
 printf '{"ticket":"KAN-108","type":"Task","lane":"A","summary":"s","branch":"feat/KAN-108","files_in_scope":[],"unknowns":[],"facts_error":"HTTP 500"}' > "$T/state/triage/KAN-108.json"
 r KAN-109 A "[$(nb KAN-104)]"
 r KAN-110 A "[$(nb KAN-111)]"
@@ -344,33 +348,47 @@ check "regression: no links -> all triaged, argument order kept, no deps" \
 # E idle rule and answer.mjs on a held ticket
 idle(){ node --input-type=module -e "import {batchIdle} from '$B/batch-state.mjs'; console.log(batchIdle(JSON.parse(process.argv[1])) ? 'idle' : 'busy')" "$1"; }
 H='{"state":"parked","park":{"question":"held by orchestrator: blocked by A"},"held_by":"A"}'
-check "held behind a running predecessor: not idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"running\"},\"S\":$H}}")" = busy ]'
-check "held behind a done predecessor with a PR: not idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"S\":$H}}")" = busy ]'
-check "held behind a done predecessor with NO PR: idle (it will never merge)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"done\"},\"S\":$H}}")" = idle ]'
+q='{"tickets":{"A":{"state":"running"},"S":'"$H"'}}'
+check "held behind a running predecessor: not idle" '[ "$(idle "$q")" = busy ]'
+q='{"tickets":{"A":{"state":"done","result":{"pr":7}},"S":'"$H"'}}'
+check "held behind a done predecessor with a PR: not idle" '[ "$(idle "$q")" = busy ]'
+q='{"tickets":{"A":{"state":"done"},"S":'"$H"'}}'
+check "held behind a done predecessor with NO PR: idle (it will never merge)" '[ "$(idle "$q")" = idle ]'
 H2='{"state":"parked","park":{"question":"held by orchestrator: blocked by S"},"held_by":"S"}'
-check "held behind a held ticket that is waiting: not idle (transitive)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"running\"},\"S\":$H,\"T\":$H2}}")" = busy ]'
+q='{"tickets":{"A":{"state":"running"},"S":'"$H"',"T":'"$H2"'}}'
+check "held behind a held ticket that is waiting: not idle (transitive)" '[ "$(idle "$q")" = busy ]'
 HAX='{"state":"parked","park":{"question":"held by orchestrator: blocked by A, X"},"held_by":"A|X"}'
 idlep(){ node --input-type=module -e "import {batchIdle} from '$B/batch-state.mjs'; const st=JSON.parse(process.argv[2]); console.log(batchIdle(JSON.parse(process.argv[1]), (n)=>st[n]??null) ? 'idle' : 'busy')" "$1" "$2"; }
-check "held behind one merged and one failed blocker: idle (it can never release)" '[ "$(idlep "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"X\":{\"state\":\"failed\"},\"S\":$HAX}}" "{\"7\":\"MERGED\"}")" = idle ]'
-check "held behind a blocker whose PR was closed unmerged: idle" '[ "$(idlep "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"S\":$H}}" "{\"7\":\"CLOSED\"}")" = idle ]'
-check "held behind a merged blocker (release due): not idle" '[ "$(idlep "{\"tickets\":{\"A\":{\"state\":\"done\",\"result\":{\"pr\":7}},\"S\":$H}}" "{\"7\":\"MERGED\"}")" = busy ]'
+merged='{"7":"MERGED"}'; closed='{"7":"CLOSED"}'
+q='{"tickets":{"A":{"state":"done","result":{"pr":7}},"X":{"state":"failed"},"S":'"$HAX"'}}'
+check "held behind one merged and one failed blocker: idle (it can never release)" '[ "$(idlep "$q" "$merged")" = idle ]'
+q='{"tickets":{"A":{"state":"done","result":{"pr":7}},"S":'"$H"'}}'
+check "held behind a blocker whose PR was closed unmerged: idle" '[ "$(idlep "$q" "$closed")" = idle ]'
+check "held behind a merged blocker (release due): not idle" '[ "$(idlep "$q" "$merged")" = busy ]'
 wom(){ node --input-type=module -e "import {waitingOnMerge} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); console.log(waitingOnMerge(q, q.tickets.S) ? 'waiting' : 'stuck')" "$1"; }
 HZ='{"state":"parked","park":{"question":"held by orchestrator: z"},"held_by":"Z"}'
 HA='{"state":"parked","park":{"question":"held by orchestrator: a"},"held_by":"A"}'
 HD='{"state":"parked","park":{"question":"held by orchestrator: b c"},"held_by":"B|C"}'
 womk(){ node --input-type=module -e "import {waitingOnMerge} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); console.log(waitingOnMerge(q, q.tickets[process.argv[2]]) ? 'waiting' : 'stuck')" "$1" "$2"; }
-check "a diamond of holds (Z <- A <- B,C <- D) is waiting, not stuck" '[ "$(womk "{\"tickets\":{\"Z\":{\"state\":\"running\"},\"A\":$HZ,\"B\":$HA,\"C\":$HA,\"D\":$HD}}" D)" = waiting ]'
-check "held behind a queued blocker (never spawns by itself): stuck, not waiting" '[ "$(wom "{\"tickets\":{\"A\":{\"state\":\"queued\"},\"S\":$H}}")" = stuck ]'
-check "a hold with no recorded blocker: idle, never silently waiting" '[ "$(idle "{\"tickets\":{\"S\":{\"state\":\"parked\",\"park\":{\"question\":\"held by orchestrator: starts once A merges\"}}}}")" = idle ]'
-check "held behind a failed predecessor: idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"failed\"},\"S\":$H}}")" = idle ]'
-check "held behind a predecessor parked for another reason: idle" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"parked\",\"park\":{\"question\":\"lane C\"}},\"S\":$H}}")" = idle ]'
+q='{"tickets":{"Z":{"state":"running"},"A":'"$HZ"',"B":'"$HA"',"C":'"$HA"',"D":'"$HD"'}}'
+check "a diamond of holds (Z <- A <- B,C <- D) is waiting, not stuck" '[ "$(womk "$q" D)" = waiting ]'
+q='{"tickets":{"A":{"state":"queued"},"S":'"$H"'}}'
+check "held behind a queued blocker (never spawns by itself): stuck, not waiting" '[ "$(wom "$q")" = stuck ]'
+q='{"tickets":{"S":{"state":"parked","park":{"question":"held by orchestrator: starts once A merges"}}}}'
+check "a hold with no recorded blocker: idle, never silently waiting" '[ "$(idle "$q")" = idle ]'
+q='{"tickets":{"A":{"state":"failed"},"S":'"$H"'}}'
+check "held behind a failed predecessor: idle" '[ "$(idle "$q")" = idle ]'
+q='{"tickets":{"A":{"state":"parked","park":{"question":"lane C"}},"S":'"$H"'}}'
+check "held behind a predecessor parked for another reason: idle" '[ "$(idle "$q")" = idle ]'
 node "$B/queue.mjs" init t4 >/dev/null; node "$B/queue.mjs" add KAN-401 Task A >/dev/null; node "$B/queue.mjs" add KAN-402 Task A >/dev/null
 node "$B/queue.mjs" set KAN-401 state=failed >/dev/null; node "$B/queue.mjs" set KAN-402 held_by=KAN-401 >/dev/null
 node "$B/queue.mjs" park KAN-402 "held by orchestrator: blocked by KAN-401 (Jira link) — starts once their PRs merge" >/dev/null
 out=$(node "$B/queue.mjs" render 2>&1)
 check "held behind a failed blocker is surfaced as stuck and waiting on you" 'printf "%s" "$out" | grep -q "STUCK" && printf "%s" "$out" | grep -q "waiting on you"'
-check "everything done or parked: idle (unchanged)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"done\"},\"B\":{\"state\":\"parked\",\"park\":{\"question\":\"x\"}}}}")" = idle ]'
-check "a triaged ticket: not idle (unchanged)" '[ "$(idle "{\"tickets\":{\"A\":{\"state\":\"triaged\"}}}")" = busy ]'
+q='{"tickets":{"A":{"state":"done"},"B":{"state":"parked","park":{"question":"x"}}}}'
+check "everything done or parked: idle (unchanged)" '[ "$(idle "$q")" = idle ]'
+q='{"tickets":{"A":{"state":"triaged"}}}'
+check "a triaged ticket: not idle (unchanged)" '[ "$(idle "$q")" = busy ]'
 
 node "$B/queue.mjs" init t3 >/dev/null; node "$B/queue.mjs" add KAN-301 Task A >/dev/null; node "$B/queue.mjs" add KAN-302 Task A >/dev/null
 node "$B/queue.mjs" set KAN-301 state=triaged >/dev/null
