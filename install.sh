@@ -147,7 +147,12 @@ install_file() {
     fi
   fi
   mkdir -p "$(dirname "$dest")" "$(dirname "$pristine")"
-  cp "$src" "$dest"
+  # Written beside <dest> and renamed over it, so a script running from the old file keeps its
+  # inode; copying the old file first keeps its mode.
+  local tmp="$dest.desk-tmp.$$"
+  if [ -f "$dest" ]; then cp -p "$dest" "$tmp"; fi
+  cp "$src" "$tmp"
+  mv -f "$tmp" "$dest"
   cp "$src" "$pristine"
 }
 
