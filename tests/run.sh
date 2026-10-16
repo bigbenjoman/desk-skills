@@ -15,5 +15,6 @@ run "batch base (one batch targets a feature branch)" bash "$T/test_batch_base.s
 run "epics (expansion, Jira links, held tickets)" bash "$T/test_epic.sh"
 run "skill links (skills-upstream links)" bash "$T/test_links.sh"
 run "plugins (unbumped vs outdated)" bash "$T/test_plugins.sh"
+run "playwright lookup (hoisted, pnpm store, env)" node "$T/test_playwright.mjs"
 [ "$fail" = 0 ] && echo && echo "all passed" || { echo; echo "FAILURES above"; }
 exit $fail
