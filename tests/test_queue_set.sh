@@ -30,7 +30,7 @@ r result;                   check "nested set keeps the other keys"       '[ "$o
 q set T-1 'deps=["T-2","T-3"]'
 r deps;                     check "array is stored as JSON"               '[ $rc -eq 0 ] && [ "$out" = "[\"T-2\",\"T-3\"]" ]'
 
-q set T-1 'result={"pr":' state=done
+q set T-1 state=done 'result={"pr":'
 check "invalid JSON is an error"                                          '[ $rc -ne 0 ] && [[ "$out" == *"not valid JSON"* ]]'
 r result.pr;                check "invalid JSON writes nothing"           '[ "$out" = 13 ]'
 r state;                    check "nor the other pairs"                   '[ "$out" != "\"done\"" ]'
