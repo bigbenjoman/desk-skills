@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Every tracked desk script, one file at a time: `bash -n` on each shell script (by extension or
-# shebang), `node --check` on each .mjs, and `shellcheck -S warning` on each shell script when
-# shellcheck is installed. DESK_REQUIRE_SHELLCHECK=1 (CI) makes a missing shellcheck a failure.
+# shebang), `node --check` on each .mjs, and, when it is installed, `shellcheck -S warning` on each
+# shell script. DESK_REQUIRE_SHELLCHECK=1 (CI) makes a missing shellcheck a failure.
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"
 SH="${BASH:-bash}"

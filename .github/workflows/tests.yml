@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  tests:
+  suite:
     name: tests (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -54,3 +54,11 @@ jobs:
         run: |
           bash --version | head -1
           bash tests/run.sh
+
+  # The one check named `tests`, which the merge gate requires: green only when every OS leg is.
+  tests:
+    needs: suite
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[ "${{ needs.suite.result }}" = success ]'
