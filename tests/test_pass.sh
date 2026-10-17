@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # pass.mjs after a requeue: screenshots go to the PR the current log names, not the one an earlier
 # round stored, and a respawn clears the stored PR and image flags and starts a fresh log and park
-# record. queue.mjs requeue moves a finished round's files aside so it respawns. Runs the
+# record. queue.mjs requeue moves a finished round's files aside so it respawns. A worker whose log
+# says DONE is recorded done even while its session hangs, and is never parked as wedged. Runs the
 # real pass.mjs with stub claude, gh, upload-images, setup-worktree and spawn-worker. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -144,5 +145,27 @@ node "$B/answer.mjs" T-9 "use the existing helper" >/dev/null 2>&1
 check "an answer clears a parked ticket's questions and leaves it parked" '[ "$(field T-9 open_questions)" = 0 ] && [ "$(field T-9 state)" = "\"parked\"" ]'
 out=$(node "$B/queue.mjs" requeue T-9 2>&1)
 check "a re-laned, answered ticket requeues"            '[ "$(field T-9 state)" = "\"triaged\"" ]'
+
+# T-10: a worker that printed AUTOPILOT_DONE but whose session hangs on. The stand-in session is a
+# detached sleep, so its pid is reaped once killed and kill -0 can see it gone.
+SPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}, {\"sessionId\": \"hung-1\", \"pid\": $SPID}]'" > "$T/stub/claude"
+q add T-10; q set T-10 state=running branch=fix/T-10 session_id=hung-1
+say "AUTOPILOT_STAGE: 9/9 cleanup" "AUTOPILOT_DONE: pr=10 jira=none" > "$T/state/logs/T-10.log"
+out=$(node "$B/pass.mjs" 2>&1)
+gone=no; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SPID" 2>/dev/null || { gone=yes; break; }; sleep 0.2; done
+check "a DONE log with a live session records the ticket done" '[ "$(field T-10 state)" = "\"done\"" ] && [ "$(field T-10 result.pr)" = 10 ]'
+check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: pr=10 jira=none (session still live after DONE — stopped pid $SPID)"'
+kill "$SPID" 2>/dev/null
+
+# T-11: a finished worker that has gone quiet long enough for the stall killer: done, never wedged.
+# T-12 is the same without the marker, which the stall killer still parks.
+q add T-11; say "AUTOPILOT_DONE: pr=11 jira=none" > "$T/state/logs/T-11.log"
+q set T-11 state=running branch=fix/T-11 session_id=live-1 idle_passes=5 "log_bytes=$(wc -c < "$T/state/logs/T-11.log" | tr -d ' ')"
+q add T-12; say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state/logs/T-12.log"
+q set T-12 state=running branch=fix/T-12 session_id=live-1 idle_passes=5 "log_bytes=$(wc -c < "$T/state/logs/T-12.log" | tr -d ' ')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "the stall killer does not park a ticket whose log has DONE" '[ "$(field T-11 state)" = "\"done\"" ] && [ "$(field T-11 result.pr)" = 11 ] && ! echo "$out" | grep -q "T-11: no output"'
+check "the stall killer still parks a quiet ticket with no DONE" '[ "$(field T-12 state)" = "\"parked\"" ] && field T-12 park | grep -q wedged'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

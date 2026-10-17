@@ -116,6 +116,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   const stage = [...h.matchAll(/AUTOPILOT_STAGE:\s*(\S+)/g)].pop()?.[1];
   if (stage && stage !== t.stage) { q('set', t.key, `stage=${stage}`); report.advanced.push(`${t.key} → ${stage}`); }
 
+  // ORDER MATTERS, and getting it wrong re-parks finished tickets. A worker that parks, gets
+  // answered, posts and exits leaves BOTH markers in the log. Taking the last PARK unconditionally
+  // re-parks a completed ticket — the log is append-only and this function has no
+  // notion of which markers it has already actioned, so a spent PARK reads exactly like a live one.
+  // Whichever marker appears LAST is the one that describes how the worker actually ended.
+  const lastPark = [...h.matchAll(/AUTOPILOT_PARK:\s*(.+)/g)].pop();
+  const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
+  const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
+  const park = parkSupersededByDone ? undefined : lastPark?.[1];
+  // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
+  // hangs after printing it must be recorded done, never left running and then parked as wedged.
+  const done = park ? undefined : lastDone?.[1];
+
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
   // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
@@ -125,7 +138,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= 6) {
+    if (idle >= 6 && !done) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
@@ -177,7 +190,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   }
 
   const stillLive = registryOk && t.session_id && liveSids.has(t.session_id);
-  if (stillLive) {
+  let stopped = '';
+  if (stillLive && done) {
+    // Finished but hung: stop the session (it has nothing left to do) and record it below.
+    const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
+    if (pid) sh('kill', [String(pid)], { tolerant: true });
+    stopped = pid ? ` (session still live after DONE — stopped pid ${pid})` : ` (session still live after DONE, no pid to stop: session ${t.session_id})`;
+  } else if (stillLive) {
     // A worker sitting on an unanswered question is waiting, not working.
     const parkFile = join(STATE, 'parks', `${t.key}.json`);
     if (existsSync(parkFile) && !existsSync(join(STATE, 'answers', `${t.key}.txt`))) {
@@ -190,25 +209,14 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   }
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess
 
-  // Exited. Decide what it was.
-  //
-  // ORDER MATTERS, and getting it wrong re-parks finished tickets. A worker that parks, gets
-  // answered, posts and exits leaves BOTH markers in the log. Taking the last PARK unconditionally
-  // re-parks a completed ticket — the log is append-only and this function has no
-  // notion of which markers it has already actioned, so a spent PARK reads exactly like a live one.
-  // Whichever marker appears LAST is the one that describes how the worker actually ended.
-  const lastPark = [...h.matchAll(/AUTOPILOT_PARK:\s*(.+)/g)].pop();
-  const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
-  const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
-  const park = parkSupersededByDone ? undefined : lastPark?.[1];
-  const done = lastDone?.[1];
+  // Exited, or finished and stopped above. Decide what it was, from the markers read above.
   if (park) { q('park', t.key, park.trim()); report.parked.push(`${t.key}: ${park.trim()}`); }
   else if (done) {
     const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
     if (cost) q('set', t.key, `cost=${cost}`);
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
     q('set', t.key, 'state=done', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
-    report.done.push(`${t.key}: ${done.trim()}`);
+    report.done.push(`${t.key}: ${done.trim()}${stopped}`);
   } else {
     // No marker is not evidence of failure. A worker can do everything and exit without
     // announcing it. Ask GitHub what actually exists before believing the silence. An open PR
