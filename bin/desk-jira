@@ -18,7 +18,9 @@
 #
 # Auth: Basic (email + API token). Text-bearing calls use API v2, which accepts plain strings on
 # Cloud; v3 would demand ADF JSON. Search uses /rest/api/3/search/jql, because Cloud has removed the
-# old /search endpoints.
+# old /search endpoints. A .md body (create's description, comment, edit description=@file.md) is
+# converted from markdown to wiki markup, because v2 reads `## x` as a numbered list; a .md file that
+# is already wiki markup, and every other body, is sent unchanged.
 #
 # Credentials reach curl as a config on stdin (curl -K -), never on argv. Files it sends must be
 # inside the repo, $DESK_STATE or a temp dir. search/get/comments prove the login first, because
@@ -26,7 +28,8 @@
 #
 # Written for bash 3.2 as well as 4+/5, so it runs on stock macOS. Needs curl, jq and git; node to
 # resolve the repo and read its config through desk-env.mjs (a built-in fallback resolves the repo
-# by the same rules when desk-env.mjs is missing, but then there is no config to read).
+# by the same rules when desk-env.mjs is missing, but then there is no config to read); python3,
+# standard library only, to convert a .md body.
 
 set -euo pipefail
 
@@ -344,7 +347,7 @@ split_approved() {
 #                   ("me" resolves to your own account), priority/issuetype -> {"name"},
 #                   a select custom field -> {"value"}, a user custom field -> {"accountId"}
 fields_from_args() {
-  local obj='{}' pair k v t
+  local obj='{}' pair k v t w
   for pair in "$@"; do
     [[ "$pair" == *=* ]] || die "expected field=value, got: $pair"
     k="${pair%%=*}"; v="${pair#*=}"
@@ -356,7 +359,13 @@ fields_from_args() {
     if [[ "$v" == @* ]]; then
       [[ -f "${v#@}" ]] || die "desk-jira: file not found for $k: ${v#@}"
       check_outgoing_file "${v#@}"
-      obj=$(printf '%s' "$obj" | jq --arg k "$k" --rawfile v "${v#@}" '.[$k]=$v')
+      if [[ "$k" == description && "$v" == *.md ]]; then
+        # The sentinel keeps the trailing newline that $(...) would strip.
+        w=$(md_to_wiki < "${v#@}" && printf x) || die "desk-jira: could not convert ${v#@} to wiki markup"
+        obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "${w%x}" '.[$k]=$v')
+      else
+        obj=$(printf '%s' "$obj" | jq --arg k "$k" --rawfile v "${v#@}" '.[$k]=$v')
+      fi
       continue
     fi
     if [[ -n "$v" ]] && printf '%s' "$v" | jq . >/dev/null 2>&1; then
@@ -390,10 +399,444 @@ body_of() {  # file path (optionally @path), or the literal string
   # `comment KEY-1 --file b.txt` would set the comment to the literal "--file".
   case "$1" in
     --*)  echo "desk-jira: '$1' looks like a flag - the body is positional: <body-file|text>" >&2; return 2 ;;
-    @*|*.md|*.txt|*.json|*.adf)
+    @*|*.md|*.txt|*.json|*.adf|*.wiki)
           echo "desk-jira: file not found: ${1#@}" >&2; return 2 ;;
   esac
   printf '%s' "$1"
+}
+
+# A markdown body on stdin -> Jira wiki markup on stdout; a body that is not markdown comes back
+# byte for byte. API v2 reads wiki markup, where `## Summary` is a nested numbered list and
+# backticks print literally. The converter is ported from Sophos-Education/studia-skills#13 and
+# embedded because install.sh installs this one file.
+#
+# Which bodies convert: no wiki-only construct (an h2. heading, a {code} or {noformat} block, bq.,
+# a || table header, a [text|url] link), and at least one markdown-only one (a fence, a backtick
+# span, **bold**, [text](url), a numbered `1.` item, a `|---|` table rule, or a `#` heading standing
+# on its own after a blank line). `- ` items count only when there is no {{monospace}} or run of `#`
+# list lines, which wiki markup also writes. So a .md file of wiki markup, as the skills wrote until
+# DS-31, still goes as is. Once converting, a line starting `#` and a space is a heading.
+md_to_wiki() {
+  command -v python3 >/dev/null 2>&1 || die "desk-jira: python3 is needed to convert a .md body (send it as a .wiki or .txt file to post it unchanged)"
+  local py
+  IFS= read -r -d '' py <<'PY' || true
+import re, sys
+
+# Inside {{...}} the renderer still parses effects, so every effect character is escaped there.
+CODE_SPECIAL = re.compile(r'([{}\[\]*_+^~|!#-])')
+# Fence languages Jira's {code} macro knows; anything else goes as {noformat}.
+LANGS = {'bash': 'bash', 'sh': 'bash', 'shell': 'bash', 'zsh': 'bash', 'console': 'bash',
+         'c': 'c', 'cpp': 'cpp', 'c++': 'cpp', 'csharp': 'c#', 'cs': 'c#', 'css': 'css',
+         'go': 'go', 'html': 'html', 'java': 'java', 'javascript': 'javascript', 'js': 'javascript',
+         'jsx': 'javascript', 'json': 'json', 'php': 'php', 'python': 'python', 'py': 'python',
+         'ruby': 'ruby', 'rb': 'ruby', 'sql': 'sql', 'swift': 'swift', 'xml': 'xml',
+         'yaml': 'yaml', 'yml': 'yaml'}
+URL_IN_PARENS = r'(?:[^()\s]|\([^()\s]*\))+'   # a link target, balanced parentheses allowed
+INLINE = re.compile(
+    r'``\s?(?P<c2>.+?)\s?``'
+    r'|`(?P<c1>[^`]+)`'
+    r'|!\[(?P<it>[^\]]*)\]\((?P<iu>' + URL_IN_PARENS + r')(?:\s+"[^"]*")?\)'
+    r'|\[(?P<lt>[^\]]+)\]\((?P<lu>' + URL_IN_PARENS + r')(?:\s+"[^"]*")?\)'
+    r'|<(?P<au>https?://[^>\s]+)>'
+    r'|(?P<url>https?://[^\s<>()\[\]|`]*[^\s<>()\[\]|`.,;:!?\'"])'
+    r'|\*\*\*(?P<bi>[^*]+?)\*\*\*'
+    r'|\*\*(?P<b1>[^*]+?)\*\*'
+    r'|(?<![\w_])__(?P<b2>[^_]+?)__(?![\w_])'
+    r'|(?<![\w*\\])\*(?P<i1>[^*\s](?:[^*]*?[^*\s])?)\*(?![\w*])'
+    r'|(?<![\w_\\])_(?P<i2>[^_\s](?:[^_]*?[^_\s])?)_(?![\w_])'
+    r'|~~(?P<s>[^~]+?)~~')
+BS = '\x02'      # a literal backslash, sent as an entity
+LP = '\x03'      # the ( of an emoticon, sent as \(
+SMILE = '\x04'   # the : or ; of a smiley, sent with a backslash before it
+ZWSP = '\u200b'
+WORD = re.compile(r'\w')
+# Jira turns these into icons, in code spans too: (x) (i) (on) ... and :) :( :P :D ;)
+EMOTICON = re.compile(r'\((?=(?:x|n|y|i|/|!|\?|on|off|\*[rgby]?|\+|-|flag|flagoff|in|ok|sad)\))', re.I)
+SMILEY = re.compile(r'([:;])(?=[()PD](?!\w))')
+# A markdown backslash escape (\ + ASCII punctuation) stands for the character itself. It is held as
+# a private-use character while the inline markers are matched, so \* or \` start nothing.
+# Code spans come first and are left alone: a backslash inside one is literal (`C:\`).
+MD_ESC = re.compile(r'(`+)[^`].*?(?<!`)\1(?!`)|\\([!-/:-@\[-`{-~])')
+HELD = 0xE000
+# Of those characters, the ones wiki markup needs escaped as text, and what each one becomes.
+WIKI_LITERAL = {c: '\\' + c for c in '{}[]|*_+^~-!(?#'}
+WIKI_LITERAL['\\'] = '&#92;'
+
+
+def hold(s):
+    return MD_ESC.sub(lambda m: m.group(0) if m.group(1) else chr(HELD + ord(m.group(2))), s)
+
+
+def unhold_raw(s):
+    # Back to the source text, for code spans and link targets, where markdown escapes do not apply.
+    return re.sub('[\ue000-\ue07f]', lambda m: '\\' + chr(ord(m.group(0)) - HELD), s)
+
+
+def emoticons(s):
+    return SMILEY.sub(SMILE + r'\1', EMOTICON.sub(LP, s))
+
+
+def unmark(s):
+    return s.replace(LP, '\\(').replace(SMILE, '\\').replace(BS, '&#92;')
+
+
+def esc_code(s):
+    # A backslash before punctuation or at the end would escape what follows (and two make a line
+    # break), so it goes as an entity. So does a brace at either end: the renderer pairs the braces
+    # of {{\{ and \}}} wrongly and drops the code span.
+    s = re.sub(r'\\(?=[^A-Za-z0-9\s]|$)', BS, s)
+    s = emoticons(s)
+    s = CODE_SPECIAL.sub(r'\\\1', s)
+    if s.startswith('\\{'):
+        s = '&#123;' + s[2:]
+    if s.endswith('\\}'):
+        s = s[:-2] + '&#125;'
+    return unmark(s)
+
+
+def esc_plain(s):
+    s = s.replace('\\', BS)  # a backslash left after markdown escapes is literal
+    s = emoticons(s)
+    s = re.sub(r'([{}\[\]|])', r'\\\1', s)
+    # A * _ + ^ ~ touching a word on one side only could pair up into an effect.
+    s = re.sub(r'(?<![\w\\])([*_+^~])(?=\w)', r'\\\1', s)
+    s = re.sub(r'(?<=\w)([*_+^~])(?!\w)', r'\\\1', s)
+    s = re.sub(r'(?<![\w\\-])-(?=\w)', r'\\-', s)
+    s = s.replace('--', r'\-\-')
+    s = re.sub('[\ue000-\ue07f]', lambda m: WIKI_LITERAL.get(chr(ord(m.group(0)) - HELD), chr(ord(m.group(0)) - HELD)), s)
+    return unmark(s)
+
+
+def inline(s):
+    return inline_held(hold(s))
+
+
+def inline_held(s):
+    out, i = [], 0
+    for m in INLINE.finditer(s):
+        out.append(esc_plain(s[i:m.start()]))
+        g = m.groupdict()
+        code = g['c2'] if g['c2'] is not None else g['c1']
+        if g['iu'] is not None:
+            # an image becomes a plain link: an embedded one would need the file attached
+            alt = inline_held(g['it'])
+            out.append('[' + (alt + '|' if alt else '') + unhold_raw(g['iu']) + ']')
+        elif g['lt'] is not None:
+            out.append('[' + inline_held(g['lt']) + '|' + unhold_raw(g['lu']) + ']')
+        elif g['au'] is not None:
+            out.append('[' + unhold_raw(g['au']) + ']')
+        elif g['url'] is not None:
+            out.append(unhold_raw(g['url']))
+        else:
+            if code is not None:
+                tok = '{{' + esc_code(unhold_raw(code).strip()) + '}}'
+            elif g['bi'] is not None:
+                tok = '*_' + inline_held(g['bi']) + '_*'
+            elif g['b1'] is not None or g['b2'] is not None:
+                tok = '*' + inline_held(g['b1'] if g['b1'] is not None else g['b2']) + '*'
+            elif g['i1'] is not None or g['i2'] is not None:
+                tok = '_' + inline_held(g['i1'] if g['i1'] is not None else g['i2']) + '_'
+            else:
+                tok = '-' + inline_held(g['s']) + '-'
+            # An effect touching a letter (`<dc-import>`ed) is not parsed as one; a zero-width
+            # space between them lets it render.
+            if m.start() > 0 and WORD.match(s[m.start() - 1]):
+                tok = ZWSP + tok
+            if m.end() < len(s) and WORD.match(s[m.end()]):
+                tok += ZWSP
+            out.append(tok)
+        i = m.end()
+    out.append(esc_plain(s[i:]))
+    return ''.join(out)
+
+
+def cell(c):
+    # A <br> in a table cell is a line break inside the cell.
+    return ' \\\\ '.join(inline(p.strip()) for p in re.split(r'(?i)<br\s*/?>', c)) or ' '
+
+
+def cells(row):
+    # Split a pipe row on | that is outside backticks and not escaped as \|.
+    row = row.strip()
+    if row.startswith('|'):
+        row = row[1:]
+    if row.endswith('|') and not row.endswith('\\|'):
+        row = row[:-1]
+    out, cur, tick, i = [], '', False, 0
+    while i < len(row):
+        ch = row[i]
+        if ch == '\\' and i + 1 < len(row) and row[i + 1] == '|':
+            cur += '|'; i += 2; continue
+        if ch == '`':
+            tick = not tick
+        if ch == '|' and not tick:
+            out.append(cur.strip()); cur = ''
+        else:
+            cur += ch
+        i += 1
+    out.append(cur.strip())
+    return out
+
+
+def code_block(body, lang):
+    # {noformat} and {code} end at the first closing tag, even one inside the block, so pick a macro
+    # the body does not contain. A backslash inside the block prints literally, so when the body has
+    # both, a zero-width space breaks up each {noformat} in it.
+    text = '\n'.join(body)
+    has_nf, has_code = '{noformat}' in text, '{code' in text
+    if lang in LANGS and not has_code:
+        return ['{code:' + LANGS[lang] + '}'] + body + ['{code}']
+    if not has_nf:
+        return ['{noformat}'] + body + ['{noformat}']
+    if not has_code:
+        return ['{code:none}'] + body + ['{code}']
+    return ['{noformat}'] + [l.replace('{noformat}', '{' + ZWSP + 'noformat}') for l in body] + ['{noformat}']
+
+
+FENCE = re.compile(r'^(\s*)(`{3,}|~{3,})\s*([^\s`]*)')
+HEADING = re.compile(r'^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$')
+HR = re.compile(r'^\s{0,3}([-*_])(?:\s*\1){2,}\s*$')
+ITEM = re.compile(r'^(\s*)(\d+[.)]|[*+-])\s+(.*)$')
+SEP = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$')
+QUOTE = re.compile(r'^\s{0,3}>\s?(.*)$')
+MACRO_END = ('{noformat}', '{code}')
+
+def indent_of(line):
+    return len(re.match(r'^[ \t]*', line).group(0).replace('\t', '    '))
+
+
+def convert(md):
+    lines = md.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    out = []
+    stack = []      # open list levels: (indent, '#' or '*')
+    block = None    # [prefix, raw text] of the paragraph or list item being collected
+    n, i = len(lines), 0
+
+    def flush():
+        nonlocal block
+        if block is not None:
+            out.append(block[0] + inline(block[1]))
+            block = None
+
+    def next_nonblank(j):
+        while j < n and not lines[j].strip():
+            j += 1
+        return lines[j] if j < n else None
+
+    def in_item(l):
+        # indented under the open list, so it belongs to the last item
+        return bool(stack) and indent_of(l) > stack[0][0]
+
+    while i < n:
+        line = lines[i]
+        st = line.strip()
+
+        m = FENCE.match(line)
+        if m:
+            flush()
+            if not in_item(line):
+                stack = []
+            # Inside a list the block follows its item's line directly, which keeps the list (and
+            # its numbering) going.
+            fence, ind, lang = m.group(2), len(m.group(1)), m.group(3).lower()
+            close = re.compile(r'^\s*' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}\s*$')
+            body, j = [], i + 1
+            while j < n and not close.match(lines[j]):
+                body.append(re.sub(r'^ {0,%d}' % ind, '', lines[j])); j += 1
+            out.extend(code_block(body, lang))
+            i = j + 1
+            continue
+
+        if not st:
+            flush()
+            nxt = next_nonblank(i + 1)
+            if stack and nxt is not None:
+                if ITEM.match(nxt) and not HR.match(nxt):
+                    i += 1; continue           # a loose list stays one list
+                if FENCE.match(nxt) and in_item(nxt):
+                    i += 1; continue           # a code block inside an item
+                if in_item(nxt) and out and out[-1] not in MACRO_END:
+                    # a further paragraph inside the item: a line break in the same item
+                    j = i + 1
+                    while not lines[j].strip():
+                        j += 1
+                    out[-1] += ' \\\\ ' + inline(lines[j].strip())
+                    i = j + 1
+                    continue
+            stack = []
+            if out and out[-1] != '':
+                out.append('')
+            i += 1
+            continue
+
+        m = HEADING.match(line)
+        if m:
+            flush(); stack = []
+            out.append('h%d. ' % len(m.group(1)) + inline(m.group(2)))
+            i += 1; continue
+
+        if HR.match(line):
+            flush(); stack = []
+            out.append('----')
+            i += 1; continue
+
+        if '|' in st and i + 1 < n and SEP.match(lines[i + 1]):
+            flush(); stack = []
+            out.append('||' + '||'.join(cell(c) for c in cells(line)) + '||')
+            i += 2
+            while i < n and lines[i].strip() and '|' in lines[i]:
+                out.append('|' + '|'.join(cell(c) for c in cells(lines[i])) + '|')
+                i += 1
+            continue
+
+        if st.startswith('|') and st.endswith('|') and len(st) > 1 and block is None:
+            # already a wiki table row: convert the markdown inside each cell
+            stack = []
+            if st.startswith('||'):
+                out.append('||' + '||'.join(cell(c.strip()) for c in st[2:-2].split('||')) + '||')
+            else:
+                out.append('|' + '|'.join(cell(c.strip()) for c in st[1:-1].split('|')) + '|')
+            i += 1; continue
+
+        m = QUOTE.match(line)
+        if m and not stack:
+            flush()
+            paras, cur = [], []
+            while i < n and QUOTE.match(lines[i]):
+                t = QUOTE.match(lines[i]).group(1).strip()
+                if t:
+                    cur.append(t)
+                elif cur:
+                    paras.append(' '.join(cur)); cur = []
+                i += 1
+            if cur:
+                paras.append(' '.join(cur))
+            if len(paras) == 1:
+                out.append('bq. ' + inline(paras[0]))
+            elif paras:
+                out.append('{quote}'); out.append('\n\n'.join(inline(p) for p in paras)); out.append('{quote}')
+            continue
+
+        m = ITEM.match(line)
+        if m:
+            flush()
+            ind = indent_of(m.group(1))
+            mark = '#' if m.group(2)[0].isdigit() else '*'
+            while stack and stack[-1][0] > ind:
+                stack.pop()
+            if stack and stack[-1][0] == ind:
+                if len(stack) == 1 and stack[0][1] != mark:
+                    out.append('')     # a different top-level list: keep them apart
+                stack[-1] = (ind, mark)
+            else:
+                stack.append((ind, mark))
+            block = [''.join(k for _, k in stack) + ' ', m.group(3).strip()]
+            i += 1; continue
+
+        if block is not None:
+            # a soft-wrapped line (or lazy continuation of a list item): one line in wiki markup
+            block[1] += ' ' + st
+            i += 1; continue
+
+        if in_item(line) and out and out[-1] not in MACRO_END:
+            out[-1] += ' ' + inline(st)
+            i += 1; continue
+
+        stack = []
+        block = ['', st]
+        i += 1
+
+    flush()
+    while out and out[-1] == '':
+        out.pop()
+    return '\n'.join(out) + '\n'
+
+
+WIKI_BLOCK = re.compile(r'^\s*(?:h[1-6]\.\s|bq\.\s|\|\||\{(?:code|noformat|quote|panel)[:}])')
+WIKI_LINK = re.compile(r'\[[^\]\n|]*\|(?:https?://|mailto:)[^\]\s]*\]')
+CODE_SPAN = re.compile(r'`[^`\n]+`')
+MD_SURE = re.compile(r'`[^`\n]+`|\*\*[^*\s](?:[^*\n]*[^*\s])?\*\*|\]\([^)\s]+\)|^\s*\d+[.)]\s+\S|^\s*\|?\s*:?-{3,}:?\s*\|')
+MD_DASH = re.compile(r'^\s*[-+]\s+\S')
+HASH_LINE = re.compile(r'^\s{0,3}#{1,6}\s+\S')
+
+
+def is_markdown(md):
+    lines = md.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    sure = dash = wikiish = False
+    fence = None
+    for idx, line in enumerate(lines):
+        m = FENCE.match(line)
+        if fence is not None:
+            # what a fence holds is code, so nothing in it says which markup the body is
+            if m and m.group(2)[0] == fence[0] and len(m.group(2)) >= len(fence) and not m.group(3):
+                fence = None
+            continue
+        if m:
+            fence, sure = m.group(2), True
+            continue
+        bare = CODE_SPAN.sub('', line)
+        if WIKI_BLOCK.match(line) or WIKI_LINK.search(bare):
+            return False
+        if MD_SURE.search(line):
+            sure = True
+        if MD_DASH.match(line):
+            dash = True
+        if '{{' in bare:
+            wikiish = True
+        if HASH_LINE.match(line):
+            prev = lines[idx - 1].strip() if idx else ''
+            nxt = lines[idx + 1].strip() if idx + 1 < len(lines) else ''
+            # A wiki list item follows text or another item; a heading stands after a blank line.
+            if not prev and not nxt.startswith('#'):
+                sure = True
+            else:
+                wikiish = True
+    return sure or (dash and not wikiish)
+
+
+def main():
+    raw = sys.stdin.buffer.read()
+    data = raw.decode('utf-8', 'replace')
+    if is_markdown(data):
+        sys.stdout.buffer.write(convert(data).encode('utf-8'))
+    else:
+        sys.stdout.buffer.write(raw)
+    sys.stdout.buffer.flush()
+
+
+main()
+PY
+  # -I (isolated): no current directory or script directory on sys.path, no PYTHON* variables and no
+  # user site-packages, so a re.py where desk-jira is run cannot execute with the Jira token in the
+  # environment. The converter needs only the standard library.
+  python3 -I -c "$py"
+}
+
+# body_of, converted from markdown when the source is a .md file; anything else goes byte for byte.
+# Callers append a sentinel inside $(...) and strip it, so trailing newlines survive too.
+text_of() {
+  case "$1" in
+    *.md) [[ -f "${1#@}" ]] || { body_of "$1"; return; }   # (and @*.md) a missing file: body_of says so
+          body_of "$1" | md_to_wiki ;;
+    *)    body_of "$1" ;;
+  esac
+}
+
+# A description carries no Status, Priority, P0-P4 or Size line: those live in fields, and a copy in
+# the body goes stale the day the field moves. The one exception is the Size fallback, `Size: <X>`
+# as the first line, for a project whose config names no §4 Size field. One refusal per line.
+FACT_LEAD='^[[:space:]]*(([*#>|+-]|h[1-6]\.|bq\.)[[:space:]]*)*[*_]*'
+desc_errors() {  # description text
+  load_rules
+  local first hits hit n text
+  first=$(printf '%s\n' "$1" | grep -n '[^[:space:]]' | head -n1 | cut -d: -f1) || true
+  hits=$(printf '%s\n' "$1" | grep -inE "${FACT_LEAD}"'((status|([a-z]+ )?priority|size)[*_]*[[:space:]]*[:=]|p[0-4][*_]*[[:space:]]*($|[:=]|[\\]?-))') || return 0
+  while IFS= read -r hit; do
+    n="${hit%%:*}"; text="${hit#*:}"
+    if [[ "$n" == "$first" && -z "$RULES_SIZE" ]] \
+      && printf '%s' "$text" | grep -qiE "${FACT_LEAD}"'size[*_]*[[:space:]]*[:=]'; then continue; fi
+    printf 'desk-jira: refusing line %s of the description, "%s": status, priority and size live in their fields, never in the body (the one exception is a first line `Size: <X>` where config names no §4 Size field)\n' "$n" "$text"
+  done <<<"$hits"
 }
 
 usage() {
@@ -427,7 +870,14 @@ desk-jira <command> [args]
   attach <KEY> <file ...>
 
   api <path>                      read-only GET of /rest/<path>, raw JSON (e.g. api/3/myself)
+  md2wiki <file|->                print the body a file is sent as (no credentials; - is a .md on stdin)
 
+Bodies:        a .md file (create's description, comment, edit description=@file.md) is converted
+               from markdown to Jira wiki markup, unless it is already wiki markup; any other file
+               (.wiki, .txt) and literal text go unchanged. Once converting, "# " starts a heading,
+               so text from get or comments (wiki markup) goes back as .wiki. A description with a
+               Status, Priority, P0-P4 or Size line is refused: those are fields (only a first line
+               "Size: <X>" passes, where config names no §4 Size field)
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
                (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId)
                parent=ABC-12 files the new issue under that epic or story
@@ -454,7 +904,7 @@ command -v curl >/dev/null || die "curl is required"
 # Fail loudly here rather than inside a subshell, where an exit would be swallowed
 # and the call would go out unauthenticated and come back 401.
 case "$cmd" in
-  -h|--help|help|where) ;;
+  -h|--help|help|where|md2wiki) ;;
   *) [[ -n "$SLUG" || -n "${JIRA_SITE:-}" ]] || die "not inside a git repo, so there is no repo to take the Jira site from (run it inside the repo, or set JIRA_SITE and JIRA_PROJECT)"
      if [[ -z "$SITE" ]]; then
        [[ "$(first_word_raw "$(cfg tracker)")" == none ]] && die "Tracker is none for $SLUG: this repo has no Jira (config §4 Tracker in $CONFIG_PATH)"
@@ -650,7 +1100,9 @@ case "$cmd" in
   create)
     [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
     [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...] [--route]'
-    type="$1"; summary="$2"; desc=$(body_of "$3") || exit 2; shift 3
+    type="$1"; summary="$2"; desc=$(text_of "$3" && printf x) || exit 2; desc="${desc%x}"; shift 3
+    errs=$(desc_errors "$desc") || die "desk-jira: could not check the description"
+    [[ -z "$errs" ]] || die "$errs"
     split_approved "$@"
     route=0; pairs=()
     for a in ${REST[@]+"${REST[@]}"}; do if [[ "$a" == --route ]]; then route=1; else pairs+=("$a"); fi; done
@@ -712,6 +1164,10 @@ case "$cmd" in
     fi
     errs=$(rule_errors edit "${type:--}" "$f" "$APPROVED") || die "desk-jira: could not check the field rules"
     [[ -z "$errs" ]] || die "$errs"
+    if printf '%s' "$f" | jq -e '.description | type == "string"' >/dev/null; then
+      errs=$(desc_errors "$(printf '%s' "$f" | jq -r '.description')") || die "desk-jira: could not check the description"
+      [[ -z "$errs" ]] || die "$errs"
+    fi
     payload=$(jq -n --argjson f "$f" '{fields:$f}')
     json PUT "api/2/issue/$key" -d "$payload" >/dev/null
     # A 204 is not proof the value landed (a bare accountId can no-op), so read it back.
@@ -744,7 +1200,7 @@ case "$cmd" in
 
   comment)
     [[ $# -ge 2 ]] || die 'usage: desk-jira comment <KEY> <body-file|text>'
-    key="$1"; body=$(body_of "$2") || exit 2
+    key="$1"; body=$(text_of "$2" && printf x) || exit 2; body="${body%x}"
     payload=$(jq -n --arg b "$body" '{body:$b}')
     json POST "api/2/issue/$key/comment" -d "$payload" \
       | jq -r '"commented on '"$key"' (id \(.id))"'
@@ -793,6 +1249,15 @@ case "$cmd" in
   api)
     [[ $# -eq 1 ]] || die 'usage: desk-jira api <path>   (GET only; the path is everything after /rest/)'
     api GET "$1"; echo
+    ;;
+
+  md2wiki)
+    # Read-only preview: nothing is sent, so the file may live anywhere.
+    [[ $# -eq 1 ]] || die 'usage: desk-jira md2wiki <file|->   (prints the body create, comment and edit would send)'
+    if [[ "$1" == - ]]; then md_to_wiki
+    elif [[ -f "$1" ]]; then
+      case "$1" in *.md) md_to_wiki < "$1" ;; *) cat "$1" ;; esac
+    else die "desk-jira: file not found: $1"; fi
     ;;
 
   -h|--help|help) usage ;;

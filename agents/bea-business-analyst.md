@@ -89,7 +89,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
    - **Acceptance Criteria**: bullet-pointed, testable, each independently verifiable
    - **Technical Notes**: relevant constraints or architectural considerations
    - **Out of Scope**: what this ticket explicitly does NOT include
-   - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank
+   - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank. Priority, status and size go in their fields, never as a line in the description (`desk-jira create` refuses one); the only exception is the `Size: M` first line below
    - **Size**: XS, S, M, L or XL on desk-jira's scale (its *Epics* section), in the project's `Size` field where there is one (`desk-jira fields size`), otherwise as the description's first line `Size: M`. Anything L or bigger is split: see *Epic Mode*
    - **Other fields**: every field §4 Other fields lists, filled in the same create — a blank one is never flagged later
    - **Labels / Links**: from §4 Labels, plus any blocking or related issues
@@ -97,7 +97,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
    For a **Bug**, replace Proposed Solution with: steps to reproduce, expected result, actual result, environment, and affected persona.
 
 7. **Present, Then Wait**: show the full ticket and ask for approval. Only after an explicit yes do you create it:
-   - **Tracker `jira`** with `desk-jira` set up: write the description to a file and create it with `desk-jira create` (see the `desk-jira` skill for its arguments and its markup: Jira wiki, not markdown, so a heading is `h2. Title`; `desk-jira fields <filter>` resolves a field id), setting every §4 Priority / Other fields value in that one call. Then `desk-jira get` it and confirm the fields read back.
+   - **Tracker `jira`** with `desk-jira` set up: write the description to a file and create it with `desk-jira create` (see the `desk-jira` skill for its arguments and its markup: write the description in markdown in a `.md` file, which `desk-jira` converts to Jira wiki markup, and preview it with `desk-jira md2wiki <file>`; `desk-jira fields <filter>` resolves a field id), setting every §4 Priority / Other fields value in that one call. Then `desk-jira get` it and confirm the fields read back.
    - **Tracker `none`** (or no desk config): draft it as a GitHub issue and, on approval, run `gh issue create --title "<summary>" --body-file <file>` with any labels the repo already has (`gh label list`).
    - If §3 `jira-create` is not `yes`/`ask`, or no tool is available, hand the user the finished text to paste instead.
 
