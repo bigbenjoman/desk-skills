@@ -457,17 +457,24 @@ case "$cmd" in
     [[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: not an issue key: $key"
     ensure_auth   # an anonymous search returns 200 and no issues, which would read as "no children"
     # `parent =` is an epic's children and a story's subtasks alike (team- and company-managed).
-    # Paged to the end: a batch built from a truncated list silently drops work.
-    all='[]'; token=''
+    # Paged to the end: a batch built from a truncated list silently drops work. So a page that is
+    # not the last but has no token, a token Jira already sent, or more than 200 pages is an error,
+    # never a short list or an endless loop.
+    all='[]'; token=''; seen=''; pages=0
     while :; do
+      (( pages < 200 )) || die "desk-jira: children of $key: no last page after $pages pages; refusing a list that may be truncated"
       payload=$(jq -n --arg jql "parent = $key ORDER BY rank ASC" --arg t "$token" \
         '{jql:$jql, maxResults:100, fields:["summary","status","issuetype","assignee","issuelinks"]}
          + (if $t == "" then {} else {nextPageToken:$t} end)')
       res=$(json POST 'api/3/search/jql' -d "$payload") || exit 1
+      pages=$((pages + 1))
       # On stdin, never argv: a page of real issues passes Linux's 128 KB cap on one argument.
       all=$(printf '%s\n%s' "$all" "$res" | jq -cs '.[0] + (.[1].issues // [])')
-      token=$(printf '%s' "$res" | jq -r 'if .isLast == true then "" else (.nextPageToken // "") end')
-      [[ -n "$token" ]] || break
+      [[ "$(printf '%s' "$res" | jq -r '.isLast == true')" == true ]] && break
+      token=$(printf '%s' "$res" | jq -r '.nextPageToken // ""')
+      [[ -n "$token" ]] || die "desk-jira: children of $key: page $pages is not the last but has no nextPageToken; refusing a partial list"
+      ! grep -qxF -- "$token" <<<"$seen" || die "desk-jira: children of $key: page $pages repeats page token '$token'; stopping rather than looping"
+      seen+="$token"$'\n'
     done
     if [[ "${1:-}" == '--json' ]]; then printf '%s\n' "$all"
     else
@@ -592,6 +599,12 @@ case "$cmd" in
       | if $v == null and $sent[$k] != null then "  \($k): (empty - the write did not stick)"
         else "  \($k): " + ($v | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end)
         end'
+    # A parent that does not stick files the issue under the wrong epic or none, so it fails.
+    want=$(printf '%s' "$f" | jq -r '.parent.key // empty')
+    if [[ -n "$want" ]]; then
+      got=$(printf '%s' "$back" | jq -r '.fields.parent.key // empty')
+      [[ "$got" == "$want" ]] || die "desk-jira: the parent of $key reads back as ${got:--}, not $want: the parent did not stick"
+    fi
     ;;
 
   labels)

@@ -2,7 +2,8 @@ import base64, json, re, sys, time
 from urllib.parse import urlparse, parse_qs
 DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
-# "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY]}. Issue links posted are kept in memory, on both
+# "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
+# "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field]}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view.
 FIX = {"issues": {}, "children": {}}
 if len(sys.argv) > 4:
@@ -58,6 +59,14 @@ class H(BaseHTTPRequestHandler):
                 res = {"issues": page, "isLast": start + size >= len(kids)}
                 if not res["isLast"]:
                     res["nextPageToken"] = str(start + size)
+                # Paging faults: the first token again, no token before the last page, or never last.
+                fault = FIX.get("page_fault", {}).get(m.group(1))
+                if fault == "repeat" and start > 0:
+                    res = {"issues": page, "isLast": False, "nextPageToken": str(size)}
+                elif fault == "missing" and not res["isLast"]:
+                    del res["nextPageToken"]
+                elif fault == "endless":
+                    res = {"issues": [], "isLast": False, "nextPageToken": str(start + 1)}
                 return self._send(200, res)
             return self._send(200, {"issues": [{"key": "KAN-1", "fields": {"summary": "s", "status": {"name": "To Do"}, "priority": {"name": "High"}}}]})
         m = re.match(r"/rest/api/[23]/issue/([A-Z][A-Z0-9]*-[0-9]+)/remotelink$", path)
@@ -71,6 +80,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send(404, {"errorMessages": ["nope"]})
             i = issue(m.group(1))
             return self._send(200, i) if i else self._send(404, {"errorMessages": ["Issue does not exist"]})
+        if m and self.command == "PUT":
+            # Kept so a read-back sees it, except fields named in "edit_drop", which a project ignores.
+            fields = json.loads(data or "{}").get("fields", {})
+            i = FIX["issues"].setdefault(m.group(1), {})
+            i.update({k: v for k, v in fields.items() if k not in FIX.get("edit_drop", [])})
+            return self._send(204, {})
         if path in ("/rest/api/3/issueLink", "/rest/api/2/issueLink") and self.command == "POST":
             body = json.loads(data or "{}")
             inward, outward = body["inwardIssue"]["key"], body["outwardIssue"]["key"]

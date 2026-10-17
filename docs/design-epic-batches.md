@@ -57,7 +57,9 @@ desk-ticket's stages, to Figma lane D, or to Muriel's Figma procedure. No Jira f
 
 **A1. `desk-jira children <KEY> [--json]`** (read). Proves auth, then JQL
 `parent = <KEY> ORDER BY rank ASC` with fields `summary,status,issuetype,assignee,issuelinks`,
-paging with `nextPageToken` in the POST body until it is absent or `isLast` is true. Plain output:
+paging with `nextPageToken` in the POST body until `isLast` is true. A page that is not the last but
+has no token, a token already seen, or more than 200 pages exits non-zero with the page count, never
+a short list or a loop. Plain output:
 `KEY<TAB>type<TAB>status<TAB>statusCategory<TAB>assignee<TAB>summary`, or `no children`. `--json`
 prints the merged `issues` array. Added to `JIRA_READ` (triage and workers may read).
 
