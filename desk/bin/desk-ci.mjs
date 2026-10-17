@@ -377,8 +377,28 @@ export function sampleWeights(runs, readIds) {
   return w;
 }
 
+// A run is red only as GitHub shows it. The latest attempt takes the run's own conclusion, which a
+// continue-on-error job's failure never turns red, and where the default branch requires checks, a
+// failure in none of them is not red either. The API keeps no conclusion for an earlier attempt, so
+// that is read from its jobs: a failure counts only in a job that blocks, which is a required check
+// where any are set, and never a job that has failed in a run GitHub concluded success.
+const jobKey = (run, job) => `${workflowOf(run)}\u0000${job.name}`;
+
+function nonBlockingJobs(runs, jobs) {
+  const out = new Set();
+  for (const r of runs) {
+    if (!PASSING.has(r.conclusion)) continue;
+    const last = r.run_attempt ?? 1;
+    for (const j of jobs.get(r.id) ?? []) if ((j.run_attempt ?? 1) === last && RED.has(j.conclusion)) out.add(jobKey(r, j));
+  }
+  return out;
+}
+
 // One record per attempt of a run. Without its jobs only the latest attempt is known.
-function attemptsOf(run, jobs, estimate) {
+function attemptsOf(run, jobs, estimate, { required = new Set(), nonBlocking = new Set() } = {}) {
+  const isRequired = (j) => !required.size || required.has(j.name);
+  const blocks = (j) => isRequired(j) && !nonBlocking.has(jobKey(run, j));
+  const latest = run.run_attempt ?? 1;
   const byAttempt = new Map();
   for (const j of jobs ?? []) {
     const a = j.run_attempt ?? 1;
@@ -386,19 +406,32 @@ function attemptsOf(run, jobs, estimate) {
     byAttempt.get(a).push(j);
   }
   if (!byAttempt.size) {
-    return [{ run, attempt: run.run_attempt ?? 1, sha: run.head_sha, created: ms(run.run_started_at ?? run.created_at), completed: ms(run.updated_at),
+    return [{ run, attempt: latest, sha: run.head_sha, created: ms(run.run_started_at ?? run.created_at), completed: ms(run.updated_at),
       red: RED.has(run.conclusion), decided: DECIDED.has(run.conclusion), passed: PASSING.has(run.conclusion),
-      done: run.status === 'completed', minutes: estimate, jobs: [] }];
+      done: run.status === 'completed', minutes: estimate, jobs: [], failing: [] }];
   }
   return [...byAttempt.entries()].sort((a, b) => a[0] - b[0]).map(([attempt, js]) => {
-    const red = js.some((j) => RED.has(j.conclusion));
+    const failed = js.filter((j) => RED.has(j.conclusion));
+    let red;
+    let passed;
+    let decided;
+    if (attempt === latest) {
+      red = RED.has(run.conclusion) && (!failed.length || failed.some(isRequired));
+      passed = PASSING.has(run.conclusion) || (RED.has(run.conclusion) && !red);
+      decided = DECIDED.has(run.conclusion);
+    } else {
+      red = failed.some(blocks);
+      passed = !red && js.every((j) => PASSING.has(j.conclusion) || RED.has(j.conclusion));
+      decided = red || js.some((j) => j.conclusion === 'success');
+    }
     return {
       run, attempt, sha: run.head_sha,
       created: Math.min(...finite(js.map((j) => ms(j.created_at ?? j.started_at)))),
       completed: Math.max(...finite(js.map((j) => ms(j.completed_at)))),
-      red, decided: red || js.some((j) => j.conclusion === 'success'), passed: js.every((j) => PASSING.has(j.conclusion)),
+      red, decided, passed,
       done: js.every((j) => j.status === 'completed'),
       minutes: js.reduce((t, j) => t + jobMinutes(j) * (isSelfHosted(j) ? 1 : osMultiplier(j)), 0), jobs: js,
+      failing: red ? failed.filter(attempt === latest ? isRequired : blocks) : [],
     };
   });
 }
@@ -412,19 +445,23 @@ function prOfRun(run, prs, byNumber) {
     && ms(p.created_at) <= t && t <= (ms(p.merged_at ?? p.closed_at) || Infinity)) ?? null;
 }
 
-// A PR's CI history in push order. A head commit is green once every run on it has a final attempt
-// that passed. A round trip runs from the first red to the next green, by re-run or by a new push.
+// A PR's CI history in push order. A head commit is green at the first moment every run on it has an
+// attempt that passed. A round trip runs from the first red to the next green, by re-run or by a new push.
 export function prTimeline(atts) {
   const shas = new Map();
   for (const a of atts) { if (!shas.has(a.sha)) shas.set(a.sha, []); shas.get(a.sha).push(a); }
   const order = [...shas.values()].map((as) => {
-    const finals = new Map();
-    for (const a of as) { const f = finals.get(a.run.id); if (!f || a.attempt > f.attempt) finals.set(a.run.id, a); }
-    const fin = [...finals.values()];
+    const passes = new Map();
+    for (const a of as) {
+      if (!passes.has(a.run.id)) passes.set(a.run.id, null);
+      const p = passes.get(a.run.id);
+      if (a.done && a.passed && (!p || a.completed < p.completed)) passes.set(a.run.id, a);
+    }
+    const pass = [...passes.values()];
     const reds = as.filter((a) => a.red).map((a) => a.completed);
     return {
       first: Math.min(...as.map((a) => a.created)),
-      greenAt: fin.every((a) => a.done && a.passed) && fin.some((a) => a.decided) ? Math.max(...fin.map((a) => a.completed)) : null,
+      greenAt: pass.every(Boolean) && pass.some((a) => a.decided) ? Math.max(...pass.map((a) => a.completed)) : null,
       redAt: reds.length ? Math.min(...reds) : null,
     };
   }).sort((a, b) => a.first - b.first);
@@ -444,9 +481,12 @@ export function prTimeline(atts) {
   return { red: order.some((s) => s.redAt !== null), trips, unresolved: open !== null, timeToGreen: greens.length ? Math.min(...greens) - start : null };
 }
 
-export function measure({ runs: listed, jobs = new Map(), prs = [], since, until, coveredSince = since }) {
+export function measure({ runs: listed, jobs = new Map(), prs = [], required = [], since, until, coveredSince = since }) {
   const runs = listed.filter((r) => r.status === 'completed');
   const readIds = new Set(runs.filter((r) => jobs.has(r.id)).map((r) => r.id));
+  // A required check that no Actions job carries (another app's status) cannot gate a run here.
+  const names = new Set([...readIds].flatMap((id) => jobs.get(id).map((j) => j.name)));
+  const blocking = { required: new Set(required.filter((c) => names.has(c))), nonBlocking: nonBlockingJobs(runs, jobs) };
   const weight = sampleWeights(runs, readIds);
 
   const runMin = new Map();
@@ -477,7 +517,7 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], since, until
     const name = workflowOf(r);
     if (!workflows.has(name)) workflows.set(name, { workflow: name, runs: 0, attempts: 0, decided: 0, failed: 0, billed: 0, self: 0, firstFailing: {} });
     const w = workflows.get(name);
-    const atts = attemptsOf(r, jobs.get(r.id), estimate(r));
+    const atts = attemptsOf(r, jobs.get(r.id), estimate(r), blocking);
     attemptsByRun.set(r.id, atts);
     w.runs++;
     for (const a of atts) {
@@ -486,7 +526,7 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], since, until
       if (!a.red) continue;
       w.failed++;
       if (!readIds.has(r.id)) continue;
-      const first = a.jobs.filter((j) => RED.has(j.conclusion)).sort((x, y) => ms(x.completed_at) - ms(y.completed_at))[0];
+      const first = a.failing.slice().sort((x, y) => ms(x.completed_at) - ms(y.completed_at))[0];
       const label = first?.name ?? '(no job ran)';
       w.firstFailing[label] = (w.firstFailing[label] ?? 0) + 1;
     }
@@ -534,7 +574,7 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], since, until
   const wfs = [...workflows.values()].sort((a, b) => b.billed + b.self - (a.billed + a.self));
 
   return {
-    since, until, coveredSince,
+    since, until, coveredSince, required: [...blocking.required].sort(),
     runs: { listed: listed.length, completed: runs.length, read: readIds.size, mustRead: runs.filter(mustRead).length,
       mustReadRead: runs.filter((r) => mustRead(r) && readIds.has(r.id)).length, unmeasured },
     totals: {
@@ -599,6 +639,27 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
     return api(path);
   };
 
+  // The checks the default branch requires, from its rulesets and its branch protection. Reading
+  // protection needs admin rights, so a refusal there only narrows what is known.
+  const required = new Set();
+  let branch = null;
+  try { branch = get(`repos/${repo}`)?.default_branch ?? null; } catch { /* named in the note below */ }
+  if (branch) {
+    try {
+      for (const rule of get(`repos/${repo}/rules/branches/${encodeURIComponent(branch)}`) ?? []) {
+        if (rule.type === 'required_status_checks') for (const c of rule.parameters?.required_status_checks ?? []) required.add(c.context);
+      }
+    } catch { /* no rulesets readable */ }
+    try {
+      const p = get(`repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
+      for (const c of p?.contexts ?? []) required.add(c);
+      for (const c of p?.checks ?? []) required.add(c.context);
+    } catch { /* unprotected, or not readable without admin */ }
+  }
+  notes.push(required.size
+    ? `required checks on ${branch}: ${[...required].sort().join(', ')}; a failure in any other job does not make a run red`
+    : `no required checks found${branch ? ` on ${branch}` : ''}: a run is red by its own conclusion`);
+
   const runs = new Map();
   let coveredSince = since;
   let truncated = false;
@@ -654,7 +715,7 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
     if (whole) jobs.set(r.id, js);
     else if (calls >= allowance) break;
   }
-  return { repo, since, until, coveredSince, runs: [...runs.values()], jobs, prs, calls, budget, allowance, reserve, rate: start, notes };
+  return { repo, since, until, coveredSince, runs: [...runs.values()], jobs, prs, required: [...required], calls, budget, allowance, reserve, rate: start, notes };
 }
 
 // ---- measure: the report ------------------------------------------------------------------------
@@ -685,6 +746,9 @@ export function report(m, c, measuredAt) {
     '',
     `- billed minutes${est}: ${int(m.totals.billed)} (each job rounded up to the minute; macOS ×10, Windows ×2)`,
     `- self-hosted minutes${est}: ${int(m.totals.self)}`,
+    m.required.length
+      ? `- red as GitHub shows it: by the run's conclusion, and only for a failure in a required check (${m.required.map(cell).join(', ')}); a continue-on-error job never makes a run red`
+      : '- red as GitHub shows it: by the run\'s conclusion (no required check matches a job here); a continue-on-error job never makes a run red',
     `- attempts: ${m.totals.attempts}, red ${m.totals.failed} (${pct(m.totals.failed, m.totals.decided)} of ${m.totals.decided} that passed or failed)`,
     '',
     '## By workflow',

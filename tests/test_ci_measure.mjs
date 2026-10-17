@@ -95,6 +95,33 @@ const cm = measure({ runs: cancelled, prs: [{ number: 4, created_at: T3, head: {
 t('a cancelled push does not end a round trip', cm.prs.roundTrips.medianWait, 940 * 1000);
 t('nor count as time to green', cm.prs.timeToGreen.median, 1000 * 1000);
 
+// ---- red as GitHub shows it: a continue-on-error job or a check the branch does not require
+const T4 = '2026-09-25T10:00:00Z';
+const pr5 = [{ number: 5, created_at: T4, head: { ref: 'feat/five' } }];
+const coe = (o) => run({ head_sha: 'p', head_branch: 'feat/five', pull_requests: [{ number: 5 }], created_at: T4, updated_at: iso(T4, 300), ...o });
+// The e2e job is continue-on-error: it fails, and GitHub concludes the run success.
+const om = measure({ runs: [coe({ id: 30, conclusion: 'success' })], prs: pr5, since: '2026-07-20', until: '2026-10-17',
+  jobs: new Map([[30, [job(T4, { name: 'test', conclusion: 'success', start: 0, end: 120 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 300 })]]]) });
+t('a run whose only failed job is continue-on-error counts green', `${om.totals.failed} ${om.prs.red} ${om.prs.roundTrips.n} ${om.prs.roundTrips.unresolved}`, '0 0 0 0');
+t('and its PR has a time to green', om.prs.timeToGreen.median, 300 * 1000);
+t('and it names no first failing job', JSON.stringify(om.workflows[0].firstFailing), '{}');
+// A re-run's earlier attempt keeps no conclusion of its own: a failure in the continue-on-error job
+// alone does not make it red, while a failure in another job does.
+const rerun = (attempt1) => measure({ runs: [coe({ id: 31, conclusion: 'success', run_attempt: 2 })], prs: pr5, since: '2026-07-20', until: '2026-10-17',
+  jobs: new Map([[31, [...attempt1, job(T4, { name: 'test', run_attempt: 2, conclusion: 'success', created: 200, start: 200, end: 260 }),
+    job(T4, { name: 'e2e', run_attempt: 2, conclusion: 'failure', created: 200, start: 200, end: 300 })]]]) });
+const quiet = rerun([job(T4, { name: 'test', conclusion: 'success', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 100 })]);
+t('an earlier attempt failing only a continue-on-error job is green', `${quiet.totals.failed} ${quiet.prs.red} ${quiet.prs.timeToGreen.median}`, `0 0 ${100 * 1000}`);
+const loud = rerun([job(T4, { name: 'test', conclusion: 'failure', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 100 })]);
+t('an earlier attempt failing a blocking job is red', `${loud.totals.failed} ${loud.prs.red} ${loud.prs.roundTrips.n}`, '1 1 1');
+t('and its first failing job is the blocking one', JSON.stringify(loud.workflows[0].firstFailing), '{"test":1}');
+// Where the default branch requires checks, a failure in a job that is not one is not red.
+const req = (failing, required) => measure({ runs: [coe({ id: 32, conclusion: 'failure' })], prs: pr5, required, since: '2026-07-20', until: '2026-10-17',
+  jobs: new Map([[32, ['test', 'lint'].map((n) => job(T4, { name: n, conclusion: n === failing ? 'failure' : 'success', start: 0, end: 60 }))]]) });
+t('a failed job that is not a required check does not make a run red', `${req('lint', ['test']).totals.failed} ${req('lint', ['test']).prs.red}`, '0 0');
+t('a failed required check does', `${req('test', ['test']).totals.failed} ${req('test', ['test']).prs.red}`, '1 1');
+t('a required check no job carries is ignored', `${req('lint', ['Vercel']).totals.failed} ${req('lint', ['Vercel']).required.length}`, '1 0');
+
 // ---- sampling: red and re-run runs are read first, the rest scale back up
 const nightly = Array.from({ length: 11 }, (_, i) => run({ id: 100 + i, name: 'Nightly', event: 'schedule', head_sha: `n${i}`, head_branch: 'main',
   conclusion: i === 7 ? 'failure' : 'success', created_at: iso(T0, i * 86400), updated_at: iso(T0, i * 86400 + 61) }));
@@ -109,13 +136,16 @@ t('the report marks sampled figures', /sampled: jobs read for 3 of 11/.test(repo
 // ---- the call budget, against a stubbed API
 const SINCE = '2026-07-20';
 const UNTIL = '2026-10-17';
-function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity, redId = 0, jobPages = 1 }) {
+function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity, redId = 0, jobPages = 1, rules = [], protection = null }) {
   const all = Array.from({ length: count }, (_, i) => run({ id: i + 1, head_sha: `s${i}`, head_branch: 'b', conclusion: i + 1 === redId ? 'failure' : 'success',
     created_at: iso(`${SINCE}T12:00:00Z`, Math.floor((i * 89 * 86400) / count)), updated_at: iso(`${SINCE}T12:00:00Z`, 60) }));
   const s = { calls: 0, maxDays: 0, all };
   s.api = (path) => {
     if (path === 'rate_limit') return { resources: { core: { limit, remaining: remaining - spend * s.calls, reset: 0 } } };
     s.calls++;
+    if (path === 'repos/o/r') return { default_branch: 'main' };
+    if (path === 'repos/o/r/rules/branches/main') return rules;
+    if (path === 'repos/o/r/branches/main/protection/required_status_checks') { if (!protection) throw new Error('HTTP 404'); return protection; }
     let mm = /actions\/runs\?created=([\d-]+)\.\.([\d-]+)&per_page=100&page=(\d+)/.exec(path);
     if (mm) {
       const [, from, to, page] = mm;
@@ -144,7 +174,7 @@ t('a rate limit under the reserve stops before any call', `${/too low/.test(thre
 let s = stub({ remaining: 5000 });
 let c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 20, api: s.api });
 t('calls stay within the budget', c.calls <= 20 && s.calls === c.calls, true);
-t('what the lists leave reads jobs, as a sample', `${c.jobs.size} of ${c.runs.length}`, '16 of 50');
+t('what the lists leave reads jobs, as a sample', `${c.jobs.size} of ${c.runs.length}`, '13 of 50');
 t('all runs are listed', c.coveredSince, SINCE);
 
 s = stub({ remaining: 700, count: 300 });
@@ -167,6 +197,14 @@ t('a range over the 1000-run listing cap is split', `${c.runs.length} ${c.covere
 s = stub({ remaining: 5000, count: 20, redId: 20, jobPages: 2 });
 c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 14, api: s.api });
 t('a red run last in the list is still read when job pages run the budget out', `${c.jobs.has(20)} ${c.jobs.size < 10}`, 'true true');
+
+s = stub({ remaining: 5000, count: 5, rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'tests (aggregate)' }] } }, { type: 'pull_request' }],
+  protection: { contexts: ['lint'], checks: [{ context: 'lint' }] } });
+c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 100, api: s.api });
+t('required checks are read from rulesets and branch protection', c.required.sort().join(','), 'lint,tests (aggregate)');
+s = stub({ remaining: 5000, count: 5 });
+c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 100, api: s.api });
+t('unreadable branch protection leaves none required, and says so', `${c.required.length} ${c.notes.some((n) => /no required checks found on main/.test(n))}`, '0 true');
 
 console.log(fails ? `${fails} FAILED` : 'all measure checks passed');
 process.exit(fails ? 1 : 0);
