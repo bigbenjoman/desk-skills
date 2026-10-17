@@ -437,9 +437,17 @@ each push: no allow rule is written, because git's abbreviations mean no pattern
 dangerous spelling.
 
 **Then §3b** (three rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
-spawn gate; test worker cap, preferred dev-server port (propose one no other configured repo uses,
-so two repos' servers never collide), park-after minutes, per-worker budget; batch budget, stage
-reports, push notification. Then confirm **§4 People** (one round) and the staging bypass token
+spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
+budget, stage reports, push notification.
+
+**The dev-server port is read, not recalled.** Run `desk-env ports --cap <the worker cap just
+answered>`: it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block
+(`REPO`: the port and one port per worker above it, up to its concurrency cap), every block this
+repo's port meets (`CLASH`), and the lowest free port whose own block meets none (`PROPOSE`).
+Recommend the `PROPOSE` port, or keep this repo's current port when there is no `CLASH`. **A `CLASH`
+line is said plainly in the question** ("3400 is also gygg-platform's port") and the current port is
+not offered as the Recommended option; changing the other repo's config is the user's call, not this
+run's. Then confirm **§4 People** (one round) and the staging bypass token
 location: a path only, never the token.
 
 ## 3. Connector checklist
