@@ -91,7 +91,7 @@ What the CLI does for you, and the traps it still has:
   - bold `*bold*`, not `**bold**`;
   - inline code, flags and paths `{{\-\-add\-dir}}`, not backticks, **with every hyphen inside the
     braces escaped `\-`**: monospace does not stop the renderer, so an unescaped `{{--add-dir}}`
-    renders as one hyphen and a strikethrough running to the next flag (measured on DS-2). A code
+    renders as one hyphen and a strikethrough running to the next flag (measured). A code
     block `{code}…{code}`, not fences;
   - links `[text|https://…]`, not `[text](https://…)`;
   - tables `||head||head||` then `|cell|cell|`, with no `---` separator row.
