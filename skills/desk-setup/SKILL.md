@@ -254,6 +254,10 @@ How to turn what you find into rows:
   command items in its directory, e.g. `` `apps/api: uv run pytest` ``, and its `alembic.ini` a
   §4 Database migrate candidate. Propose, then confirm; a guessed test command that does not exist
   wastes a worker's whole run.
+- **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
+  needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
+  `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
+  wider, with no lock. `none` is a fine answer, and changes nothing.
 - **Pre-push checks.** From the steps the CI workflows run on a pull request, take the fast,
   local ones (code generation, format, lint, typecheck) and map each onto the repo's own command
   (a `package.json` script, a Makefile target), one span each in the Unit tests form, generate steps
@@ -569,7 +573,7 @@ tracker   : <jira site / none> · project <key> · keys <pattern> · other ids <
 github    : protection <summary (classic / ruleset <name>) / none> · required <checks / none> ·
             advisory <checks / none> · holds <glob: why / none> · merge <method> · auto-merge <on/off> ·
             gh scopes <scopes> · codex <yes date / no> · review <command> (clean = <verdict>)
-toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build ·
+toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build · codegen ·
             env files <names>          (each list item as its own backtick span, `dir: cmd` where it has one)
 pre-push  : checks <items / none> · pr-body <command / none> · hook <committed in #<n> / declined / not offered> ·
             hooksPath <.githooks / <other>, left alone / unset> · first run <n>s
