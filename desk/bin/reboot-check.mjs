@@ -38,13 +38,14 @@ function worktrees(root) {
   });
 }
 
-function treeState(path) {
+function treeState(path, hasRemote) {
   if (!existsSync(path)) return { missing: true };
   const st = git(path, 'status', '--porcelain');
   if (!st.ok) return { error: 'git status failed' };
   const lines = st.out.split('\n').filter(Boolean);
   // Commits on no remote at all, so a branch that was never pushed counts every commit of its own.
-  const up = git(path, 'rev-list', '--count', 'HEAD', '--not', '--remotes');
+  // A repo with no remote has nothing to push to, so it has no unpushed count.
+  const up = hasRemote ? git(path, 'rev-list', '--count', 'HEAD', '--not', '--remotes') : { ok: false };
   return {
     changed: lines.length,
     untracked: lines.filter((l) => l.startsWith('??')).length,
@@ -65,10 +66,11 @@ for (const { slug, config } of configs) {
   if (!root) { lines.push(`  ${slug}: §2 Primary repo root is unset; not checked`); continue; }
   const wts = existsSync(root) ? worktrees(root) : null;
   if (!wts) { lines.push(`  ${slug}: ${tilde(root)} is not a git checkout here; not checked`); continue; }
+  const hasRemote = git(root, 'remote').out.trim() !== '';
   const rows = [];
   for (const w of wts) {
     total++;
-    const s = treeState(w.path);
+    const s = treeState(w.path, hasRemote);
     if (s.missing) { rows.push(`    ${tilde(w.path)}  ${w.branch}  directory missing (git worktree prune clears it)`); continue; }
     if (s.error) { rows.push(`    ${tilde(w.path)}  ${w.branch}  ${s.error}`); continue; }
     if (!s.changed && !s.unpushed) { clean++; continue; }
@@ -77,7 +79,7 @@ for (const { slug, config } of configs) {
     if (s.unpushed) { unpushed++; parts.push(`${s.unpushed} unpushed`); }
     rows.push(`    ${tilde(w.path)}  ${w.branch}  ${parts.join(' · ')}`);
   }
-  lines.push(`  ${slug}  ${tilde(root)}  (${wts.length} worktree${wts.length === 1 ? '' : 's'})`, ...rows);
+  lines.push(`  ${slug}  ${tilde(root)}  (${wts.length} worktree${wts.length === 1 ? '' : 's'}${hasRemote ? '' : '; no remote, so nothing counts as unpushed'})`, ...rows);
 }
 console.log(`worktrees: ${configs.length} configured repo${configs.length === 1 ? '' : 's'}, ${total} worktrees; ${dirty} with uncommitted changes, ${unpushed} with unpushed commits, ${clean} clean`);
 for (const l of lines) console.log(l);

@@ -30,11 +30,15 @@ git init -q -b main "$T/gadgets"; git -C "$T/gadgets" commit -q --allow-empty -m
 git -C "$T/gadgets" remote add origin "$T/origin.git"; git -C "$T/gadgets" push -q origin main:gadgets
 config acme__gadgets "| Primary repo root | \`$T/gadgets\` |"
 config acme__nope "| Worktrees directory | \`$T/wt\` |"
+# solo: commits but no remote, so nothing in it counts as unpushed.
+git init -q -b main "$T/solo"; git -C "$T/solo" commit -q --allow-empty -m one; git -C "$T/solo" commit -q --allow-empty -m two
+config local__solo "| Primary repo root | \`$T/solo\` |"
 config acme__gone "| Primary repo root | \`$T/gone\` |"
 
 out=$(cd "$T" && node "$B/reboot-check.mjs" 2>&1); rc=$?
 check "exits 0" '[ $rc -eq 0 ]'
-check "header counts repos, worktrees, dirty, unpushed and clean" 'grep -q "^worktrees: 4 configured repos, 5 worktrees; 1 with uncommitted changes, 1 with unpushed commits, 2 clean$" <<< "$out"'
+check "header counts repos, worktrees, dirty, unpushed and clean" 'grep -q "^worktrees: 5 configured repos, 6 worktrees; 1 with uncommitted changes, 1 with unpushed commits, 3 clean$" <<< "$out"'
+check "a repo with no remote says so and counts nothing unpushed" 'grep -qE "local__solo  .*solo  \(1 worktree; no remote, so nothing counts as unpushed\)$" <<< "$out" && ! grep -qE "solo  main" <<< "$out"'
 check "dirty worktree named with its counts" 'grep -qE "wt/a  feat/a  2 uncommitted \(1 untracked\)$" <<< "$out"'
 check "unpushed worktree named with its count" 'grep -qE "wt/b  feat/b  2 unpushed$" <<< "$out"'
 check "a registered worktree whose directory is gone is reported" 'grep -qE "wt/c  feat/c  directory missing" <<< "$out"'
