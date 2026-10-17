@@ -210,12 +210,27 @@ sweeps for blanks. `desk-jira meta <type>` lists the fields Jira itself requires
 
 Resolve anything else with `desk-jira fields <filter>` rather than guessing an id.
 
+**The CLI enforces §4's field rules** before `create` or `edit` sends anything, and names the field
+it refuses:
+
+- §4 Required fields: a `create` missing a field its type needs is refused, and so is an `edit`
+  that clears one (`null`, empty, or an empty option).
+- §4 Size field: an XL is refused on every type but Epic. Split the ticket into ones of L or smaller.
+- §4 Priorities only you set: these values need the user. Ask, then pass
+  `--approved "<their decision, in a sentence>"`; the CLI writes the field and posts that decision
+  to the ticket as a comment. A headless autopilot worker is refused even with the flag: it sets a
+  lower value and parks with the case for the higher one.
+
+Pass these options by name (`customfield_10208=L`, or `{"value":"L"}`). An option id is refused,
+because the rules cannot read it.
+
 **Priority: assign it yourself, don't ask.** Judge it from the ticket against the §4 Priority
 values (and the meaning §4 gives each, where it does) and put the value in the gate block. Keep a
 high bar for the top values: "production broken or losing data now" and "cannot ship without it"
 are rare. Don't inflate it. Calibrate against the ticket it came from and a couple of neighbours
 (`desk-jira get <KEY>`). A follow-up rarely outranks its parent. If §4 Priority names values with
-no way to tell them apart, ask once and suggest `/desk-setup` record the meanings.
+no way to tell them apart, ask once and suggest `/desk-setup` record the meanings. The exception is
+a value in §4 Priorities only you set: that one is the user's call (above).
 
 **Assignee.** The user, by default. With §3 `jira-assign-self` `yes`, `create` assigns the new
 ticket to the user when no `assignee=` is given; otherwise pass `assignee=me` (which waits on that

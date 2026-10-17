@@ -101,6 +101,9 @@ index. Plus, specific to running unattended:
 - **A merge conflict.** Any. Never resolve one.
 - **A lane demotion to C or D.** Both need a person before code: C an agreed plan or a product
   answer, D a design build checked against its frame.
+- **A priority in config §4 Priorities only you set.** `desk-jira` refuses it to you, with or
+  without `--approved`. Set the next value down, finish the ticket's other steps, then park last
+  with the case for the higher one; the user decides, and their decision goes on the ticket.
 - **Anything the user's config does not grant.** Your prompt lists the config §3 keys that are not
   `yes`; their commands are denied by your settings in every spelling: bare name, absolute path and
   `git -C <dir> …` (`gh api` is refused to every worker whatever §3 says). When your work reaches one, do not look for another

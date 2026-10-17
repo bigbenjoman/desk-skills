@@ -242,6 +242,101 @@ field_type() {  # schema.type of a field id (option, user, array, string...), em
 
 my_account_id() { api GET 'api/3/myself' | jq -r '.accountId'; }
 
+# A list row of this repo's config, as a JSON array of its items; `none` and unset are [].
+cfg_list() {
+  [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '[]'; return 0; }
+  { node "$DESK_ENV_MJS" list "$1" 2>/dev/null || true; } | jq -Rsc 'split("\n") | map(select(length > 0 and (ascii_downcase != "none")))'
+}
+
+# Field rules from config §4, checked before create or edit sends anything:
+#   Required fields          one item per rule, `<Type>[, <Type>…]: <field>[, <field>…]`: what a type must carry
+#   Size field               the size field: an XL is refused on every type but Epic, which is split instead
+#   Priorities only you set  values of the §4 Priority field a headless autopilot worker may never set
+#                            (spawn-worker.sh exports DESK_AUTOPILOT_WORKER), and an interactive session
+#                            sets only with --approved, which is recorded on the ticket as a comment
+RULES_LOADED=0 RULES_REQ='[]' RULES_TOP='[]' RULES_SIZE=''
+load_rules() {
+  (( RULES_LOADED )) && return 0
+  RULES_REQ=$(cfg_list jira-required-fields)
+  RULES_TOP=$(cfg_list jira-priority-user-only)
+  RULES_SIZE=$(cfg jira-size-field | grep -oE 'customfield_[0-9]+' | head -n1 || true)
+  RULES_LOADED=1
+}
+PRIORITY_KEY="${PRIORITY_FIELD:-priority}"
+
+# rule_errors <create|edit> <issue type> <fields json> <approved text>: one refusal per line, none
+# when the write may go. An option is read by name only: a bare name, or an object whose one key is
+# "value" or "name". Any other object (an id, both keys, anything extra) is refused, because Jira
+# may write a key the rules did not read: an id over a name, or a name over a value.
+rule_errors() {
+  load_rules
+  jq -rn --arg mode "$1" --arg type "$2" --argjson f "$3" --arg approved "$4" \
+    --argjson req "$RULES_REQ" --argjson top "$RULES_TOP" --arg size "$RULES_SIZE" \
+    --arg pf "$PRIORITY_KEY" --arg headless "${DESK_AUTOPILOT_WORKER:-}" '
+    def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
+    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));
+    def oname: if type == "string" then . elif byname then (.value // .name) else null end;
+    def trim: gsub("^\\s+|\\s+$"; "");
+    ($type | ascii_downcase) as $t
+    | ([$req[] | capture("^(?<types>[^:]+):(?<fields>.+)$")?
+        | select([.types | split(",")[] | trim | ascii_downcase] | index($t))
+        | .fields | split("[,\\s]+"; null)[] | select(length > 0)] | unique) as $need
+    | ($req[] | select(test("^[^:]+:.*[^\\s]") | not)
+        | "desk-jira: config §4 Required fields item \"\(.)\" is not <Type>: <field>, so the rules cannot be checked"),
+      ($need[] as $k
+        | if $mode == "create" then
+            (if ($f | has($k) | not) or ($f[$k] | blank)
+             then "desk-jira: a \($type) needs \($k) (config §4 Required fields): add \($k)=<value>" else empty end)
+          elif ($f | has($k)) and ($f[$k] | blank)
+            then "desk-jira: refusing to clear \($k): a \($type) needs it (config §4 Required fields)"
+          else empty end),
+      (if $size != "" and ($f | has($size)) and ($f[$size] | blank | not) then
+         ($f[$size] | oname) as $n
+         | if $n == null then "desk-jira: pass \($size) by its option name (e.g. \($size)=L), not an id"
+           elif ($n | ascii_upcase) == "XL" and $t != "epic"
+             then "desk-jira: refusing \($size)=XL on a \($type): split it into tickets of L or smaller (only an Epic may be XL)"
+           else empty end
+       else empty end),
+      ((($top | length) > 0 and ($f | has($pf)) and ($f[$pf] | blank | not)) as $sets
+       | (if $sets then ($f[$pf] | oname) else null end) as $n
+       | ($sets and $n != null and any($top[]; ascii_downcase == ($n | ascii_downcase))) as $topset
+       | if $sets and $n == null then "desk-jira: pass \($pf) by its name (e.g. \($pf)=P2), not an id"
+         elif $topset and $headless != "" then
+           "desk-jira: refusing \($pf)=\($n): only the user sets it (config §4 Priorities only you set), and this is a headless autopilot worker. Set a lower value and park with the case for \($n); the user decides, and their decision is recorded on the ticket"
+         elif $topset and $approved == "" then
+           "desk-jira: refusing \($pf)=\($n): only the user sets it (config §4 Priorities only you set). Ask them, then pass --approved \"<their decision, in a sentence>\" and it is recorded on the ticket"
+         elif $approved != "" and ($topset | not) then
+           "desk-jira: --approved is only for setting a value in config §4 Priorities only you set, and this write sets none"
+         else empty end)'
+}
+
+# After a write that set a priority under --approved: the user's decision goes on the ticket.
+record_approval() {  # key fields-json approved
+  local n who body
+  n=$(printf '%s' "$2" | jq -r --arg pf "$PRIORITY_KEY" '.[$pf] | if type == "string" then . else (.value // .name) end')
+  who=$(api GET 'api/3/myself' | jq -r '.displayName // .accountId') || who="the user"
+  body=$(printf '%s set to %s by %s: %s\n(%s/desk-jira priority)' "$PRIORITY_KEY" "$n" "$who" "$3" "$1")
+  json POST "api/2/issue/$1/comment" -d "$(jq -n --arg b "$body" '{body:$b}')" >/dev/null \
+    || die "desk-jira: $1 now has $PRIORITY_KEY=$n, but recording the decision on the ticket failed: comment it by hand"
+  echo "  recorded on $1: $PRIORITY_KEY=$n approved by $who"
+}
+
+# The approved text from a trailing --approved <text> or --approved=<text>, kept apart from the field
+# pairs. Sets APPROVED and REST (the other arguments, one per line in an array).
+APPROVED='' REST=()
+split_approved() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --approved) [[ $# -ge 2 && -n "$2" ]] || die "desk-jira: --approved needs the user's decision as its value"
+                  APPROVED="$2"; shift 2 ;;
+      --approved=*) APPROVED="${1#--approved=}"; shift
+                  [[ -n "$APPROVED" ]] || die "desk-jira: --approved needs the user's decision as its value" ;;
+      *) REST+=("$1"); shift ;;
+    esac
+  done
+  return 0
+}
+
 # Turn a key=value list into a fields object.
 #   key=@path       the file's contents, as a string (a missing file is an error, never the literal)
 #   key=<json>      kept as JSON, so '{"value":"P1"}', 266 and null pass straight through
@@ -315,10 +410,11 @@ desk-jira <command> [args]
   fields [filter]                 field ids and names (find custom fields)
   meta [issuetype]                createmeta: required fields + allowed values
 
-  create <type> <summary> <desc-file|text> [field=value ...] [--route]
+  create <type> <summary> <desc-file|text> [field=value ...] [--route] [--approved <text>]
                                   assigned to you when §3 jira-assign-self is yes and no assignee
                                   is given; anyone else needs --route; the assignee is read back
-  edit <KEY> <field=value ...>    prints each field read back from Jira after the write
+  edit <KEY> <field=value ...> [--approved <text>]
+                                  prints each field read back from Jira after the write
   labels <KEY> add|remove <label ...>
   link <KEY> blocked-by|blocks <OTHER>   a Blocks link, direction handled, read back
 
@@ -335,6 +431,12 @@ desk-jira <command> [args]
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
                (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId)
                parent=ABC-12 files the new issue under that epic or story
+
+Field rules:   config §4, checked before create or edit sends anything. A create missing a §4
+               Required fields field for its type is refused, and so is an edit clearing one. §4 Size
+               field XL is refused on all but an Epic: split it. A §4 Priorities only you set value
+               needs --approved "<the user's decision>", posted to the ticket as a comment, and is
+               always refused to a headless autopilot worker
 
 Config:        this repo's ~/.config/desk/repos/<slug>/ (see `desk-jira where`)
 Env overrides: JIRA_SITE JIRA_EMAIL JIRA_EMAIL_FILE JIRA_PROJECT JIRA_TOKEN JIRA_TOKEN_FILE
@@ -549,9 +651,17 @@ case "$cmd" in
     [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
     [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...] [--route]'
     type="$1"; summary="$2"; desc=$(body_of "$3") || exit 2; shift 3
+    split_approved "$@"
     route=0; pairs=()
-    for a in "$@"; do if [[ "$a" == --route ]]; then route=1; else pairs+=("$a"); fi; done
+    for a in ${REST[@]+"${REST[@]}"}; do if [[ "$a" == --route ]]; then route=1; else pairs+=("$a"); fi; done
     extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+    # An issuetype among the fields replaces <type> in the payload, so the rules read that one.
+    # Only {"name"}: Jira resolves an id before a name, so an id would bypass the type read here.
+    type=$(printf '%s' "$extra" | jq -r --arg t "$type" 'if has("issuetype") then
+      (.issuetype | if type == "object" and keys == ["name"] and (.name | type) == "string" then .name else empty end) else $t end')
+    [[ -n "$type" ]] || die "desk-jira: pass issuetype by its name, so the field rules know the type"
+    errs=$(rule_errors create "$type" "$extra" "$APPROVED") || die "desk-jira: could not check the field rules"
+    [[ -z "$errs" ]] || die "$errs"
     # An assignee other than you is routing (§3 jira-route), and needs --route spelt out so a harness
     # rule can prompt on it while assignee=me goes through. With §3 jira-assign-self yes and no
     # assignee given, the new ticket is yours: autopilot only picks up tickets assigned to you.
@@ -581,12 +691,27 @@ case "$cmd" in
     else
       echo "  assignee: (could not read back)"
     fi
+    if [[ -n "$APPROVED" ]]; then record_approval "$key" "$extra" "$APPROVED"; fi
     ;;
 
   edit)
-    [[ $# -ge 2 ]] || die 'usage: desk-jira edit <KEY> <field=value ...>'
+    [[ $# -ge 2 ]] || die 'usage: desk-jira edit <KEY> <field=value ...> [--approved <text>]'
     key="$1"; shift
-    f=$(fields_from_args "$@") || exit 2
+    [[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: not an issue key: $key"
+    split_approved "$@"
+    [[ ${#REST[@]} -ge 1 ]] || die 'usage: desk-jira edit <KEY> <field=value ...> [--approved <text>]'
+    f=$(fields_from_args "${REST[@]}") || exit 2
+    # The rules depend on the issue type, so read it unless the edit sets it (by name) itself.
+    type=$(printf '%s' "$f" | jq -r 'if has("issuetype") then
+      (.issuetype | if type == "object" and keys == ["name"] and (.name | type) == "string" and .name != "" then .name else "?" end) else empty end')
+    [[ "$type" != '?' ]] || die "desk-jira: pass issuetype by its name, so the field rules know the type"
+    load_rules
+    if [[ -z "$type" && ( "$RULES_REQ" != '[]' || -n "$RULES_SIZE" ) ]]; then
+      type=$(api GET "api/2/issue/$key?fields=issuetype" | jq -r '.fields.issuetype.name // empty') || true
+      [[ -n "$type" ]] || die "desk-jira: could not read the issue type of $key, so its field rules cannot be checked"
+    fi
+    errs=$(rule_errors edit "${type:--}" "$f" "$APPROVED") || die "desk-jira: could not check the field rules"
+    [[ -z "$errs" ]] || die "$errs"
     payload=$(jq -n --argjson f "$f" '{fields:$f}')
     json PUT "api/2/issue/$key" -d "$payload" >/dev/null
     # A 204 is not proof the value landed (a bare accountId can no-op), so read it back.
@@ -605,6 +730,7 @@ case "$cmd" in
       got=$(printf '%s' "$back" | jq -r '.fields.parent.key // empty')
       [[ "$got" == "$want" ]] || die "desk-jira: the parent of $key reads back as ${got:--}, not $want: the parent did not stick"
     fi
+    if [[ -n "$APPROVED" ]]; then record_approval "$key" "$f" "$APPROVED"; fi
     ;;
 
   labels)

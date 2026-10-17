@@ -8,7 +8,7 @@ SRC="$(cd "$S/.." && pwd)"
 J="$SRC/bin/desk-jira"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/repos" "$T/state"
 export HOME="$T/home" DESK_CONFIG_ROOT="$T/home/.config/desk" DESK_ENV_MJS="$SRC/desk/bin/desk-env.mjs"
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_AUTOPILOT_WORKER
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf 'ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf 'FAIL %s\n' "$1"; }
@@ -35,7 +35,10 @@ cat > "$T/fixture.json" <<EOF
       "content": "https://example.atlassian.net/rest/api/2/attachment/content/10"}],
     "description": "Run {{desk\\\\-jira get KAN\\\\-5}} and *read\\\\_it*.\\n{code}grep -c '\\\\[x\\\\]' f{code}"},
   "KAN-6": {"summary": "bare"},
-  "KAN-7": {"summary": "links down"}},
+  "KAN-7": {"summary": "links down"},
+  "KAN-20": {"summary": "a story", "issuetype": {"name": "Story"}, "customfield_10208": {"value": "M"}}},
+ "fields": [{"id": "customfield_10207", "name": "Launch Priority", "custom": true, "schema": {"type": "option"}},
+            {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}],
  "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
    "object": {"url": "https://github.com/acme/alpha/pull/7", "title": "PR 7"}}]},
  "remotelink_fail": ["KAN-7"]}
@@ -195,6 +198,97 @@ out=$(cd "$A" && "$J" create Task s body.md assignee=xyz --route 2>&1); rc=$?
 check "create for someone else with --route sends them" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"xyz\"}" ] && printf "%s" "$out" | grep -q "^  assignee: xyz$"'
 out=$(cd "$B" && "$J" create Task s body.md 2>&1); rc=$?
 check "create without assign-self sends no assignee" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "\"absent\"" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
+
+# Field rules from config §4: required fields per type, no XL outside an Epic, and the top
+# priorities only the user sets (never a headless autopilot worker), recorded on the ticket.
+SLUG_C=$(mkrepo c "https://github.com/acme/gamma" jira "http://127.0.0.1:$PORT"); C="$T/repos/c"
+printf '| Priority | `customfield_10207` |\n| Required fields | `Epic, Story, Task, Bug: customfield_10208, customfield_10207` |\n| Size field | `customfield_10208` |\n| Priorities only you set | `P0` `P1` |\n' \
+  >> "$DESK_CONFIG_ROOT/repos/$SLUG_C/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_C/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_C/atlassian-token"
+printf 'a body' > "$C/body.md"
+sent_fields() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields | {s: .customfield_10208, p: .customfield_10207}' "$LOG"; }
+puts() { jq -s '[.[] | select(.method == "PUT")] | length' "$LOG"; }
+comments_sent() { jq -s '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | length' "$LOG"; }
+last_comment() { jq -sr '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
+
+n0=$(creates)
+err=$(cd "$C" && "$J" create Story s body.md customfield_10207=P2 2>&1); rc=$?
+check "create without a required field is refused and names it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Story needs customfield_10208 (config §4 Required fields)" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" create bug s body.md 2>&1); rc=$?
+check "create names every missing field, type matched in any case" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "needs customfield_10207" && printf "%s" "$err" | grep -q "needs customfield_10208" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" create Task s body.md customfield_10208= customfield_10207=P2 2>&1); rc=$?
+check "create with a required field empty is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "needs customfield_10208" && [ "$(creates)" -eq "$n0" ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 2>&1); rc=$?
+check "create with every required field goes, options wrapped by name" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"M\"},\"p\":{\"value\":\"P2\"}}" ]'
+out=$(cd "$C" && "$J" create Subtask s body.md 2>&1); rc=$?
+check "a type with no rule needs no fields" '[ $rc -eq 0 ]'
+
+n0=$(creates)
+err=$(cd "$C" && "$J" create Task s body.md customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
+check "create with Size XL on a Task is refused and says to split it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "split it into tickets of L or smaller" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" create Story s body.md 'customfield_10208={"value":"xl"}' customfield_10207=P2 2>&1); rc=$?
+check "create with Size xl as JSON on a Story is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "split it" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" create Story s body.md 'customfield_10208={"id":"10301"}' customfield_10207=P2 2>&1); rc=$?
+check "create with Size as an option id is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "by its option name" && [ "$(creates)" -eq "$n0" ]'
+out=$(cd "$C" && "$J" create Epic s body.md customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
+check "an Epic may be XL" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"XL\"},\"p\":{\"value\":\"P2\"}}" ]'
+n0=$(creates)
+err=$(cd "$C" && "$J" create Epic s body.md issuetype=Task customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
+check "an issuetype field overrides the type the rules read" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "XL on a Task" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" create Epic s body.md 'issuetype={"id":"10001","name":"Epic"}' customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
+check "create refuses an issuetype carrying an id beside its name" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "pass issuetype by its name" && [ "$(creates)" -eq "$n0" ]'
+
+p0=$(puts)
+err=$(cd "$C" && "$J" edit KAN-20 customfield_10208=null 2>&1); rc=$?
+check "edit clearing a required field is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing to clear customfield_10208: a Story needs it" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && "$J" edit KAN-20 customfield_10207= 2>&1); rc=$?
+check "edit setting a required field empty is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing to clear customfield_10207" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && "$J" edit KAN-20 customfield_10208=XL 2>&1); rc=$?
+check "edit setting XL on a Story is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "XL on a Story" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && "$J" edit KAN-20 'issuetype={"id":"10000","name":"Epic"}' customfield_10208=XL 2>&1); rc=$?
+check "edit refuses an issuetype carrying an id beside its name" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "pass issuetype by its name" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && "$J" edit 'KAN-20?x=1' customfield_10208=XL 2>&1); rc=$?
+check "edit refuses a key that is not a key" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "not an issue key" && [ "$(puts)" -eq "$p0" ]'
+out=$(cd "$C" && "$J" edit KAN-20 customfield_10208=L 2>&1); rc=$?
+check "edit to another size goes" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 1)) ] && printf "%s" "$out" | grep -q "customfield_10208: L"'
+out=$(cd "$C" && "$J" edit KAN-6 'labels=["x"]' 2>&1); rc=$?
+check "edit leaving the required fields alone goes" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 2)) ]'
+
+n0=$(creates); p0=$(puts); c0=$(comments_sent)
+err=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P1 2>&1); rc=$?
+check "create at a top priority without --approved is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--approved" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" edit KAN-20 customfield_10207=p0 2>&1); rc=$?
+check "edit to a top priority without --approved is refused, any case" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--approved" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && DESK_AUTOPILOT_WORKER=1 "$J" create Story s body.md customfield_10208=M customfield_10207=P1 --approved "the user said so" 2>&1); rc=$?
+check "a headless worker cannot create at a top priority, even with --approved" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "headless autopilot worker" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 customfield_10207=P0 2>&1); rc=$?
+check "a headless worker cannot edit to a top priority" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "headless autopilot worker" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 'customfield_10207={"id":"10400"}' 2>&1); rc=$?
+check "a priority passed as an option id is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "by its name" && [ "$(puts)" -eq "$p0" ]'
+out=$(cd "$C" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 customfield_10207=P2 2>&1); rc=$?
+check "a headless worker may set a lower priority" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 1)) ]'
+check "nothing refused posted a comment" '[ "$(comments_sent)" -eq "$c0" ]'
+err=$(cd "$C" && "$J" edit KAN-20 customfield_10207=P2 --approved "not needed" 2>&1); rc=$?
+check "--approved on a lower priority is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--approved is only for" && [ "$(puts)" -eq $((p0 + 1)) ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P1 --approved "Launch blocks on it, per the user" 2>&1); rc=$?
+check "create at a top priority with --approved goes" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"M\"},\"p\":{\"value\":\"P1\"}}" ]'
+check "the decision is recorded on the new ticket" '[ "$(comments_sent)" -eq $((c0 + 1)) ] && last_comment | grep -qxF "customfield_10207 set to P1 by Me: Launch blocks on it, per the user" &&
+  last_comment | grep -qxF "(KAN-99/desk-jira priority)" && printf "%s" "$out" | grep -q "recorded on KAN-99"'
+out=$(cd "$C" && "$J" edit KAN-20 customfield_10207=P0 --approved="the user: live harm" 2>&1); rc=$?
+check "edit to a top priority with --approved= goes and is recorded" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 2)) ] && [ "$(comments_sent)" -eq $((c0 + 2)) ] &&
+  last_comment | grep -qxF "customfield_10207 set to P0 by Me: the user: live harm"'
+
+# With the built-in priority, Jira reads an option's name, so a decoy value beside it must not pass.
+SLUG_D=$(mkrepo d "https://github.com/acme/delta" jira "http://127.0.0.1:$PORT"); D="$T/repos/d"
+printf '| Priorities only you set | `Highest` `High` |\n' >> "$DESK_CONFIG_ROOT/repos/$SLUG_D/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_D/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_D/atlassian-token"
+p0=$(puts)
+for v in 'priority=Highest' 'priority={"value":"","name":"Highest"}' 'priority={"value":"Low","name":"Highest"}' 'priority={"name":"high"}'; do
+  err=$(cd "$D" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 "$v" 2>&1); rc=$?
+  check "a headless worker cannot set the built-in priority with $v" '[ $rc -ne 0 ] && [ "$(puts)" -eq "$p0" ]'
+done
+out=$(cd "$D" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 priority=Low 2>&1); rc=$?
+check "a headless worker may set the built-in priority lower" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 1)) ]'
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
