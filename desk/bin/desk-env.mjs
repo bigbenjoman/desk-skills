@@ -34,12 +34,15 @@
 //                                             with nothing heavy running
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
+//   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
+//                                             one this repo's block meets (CLASH), and a free port (PROPOSE);
+//                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs machine detect          print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose [--runner]  print the sizes the rules propose, with the arithmetic;
 //                                             --runner sizes a runner on a computer with a battery
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
-import { readFileSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -268,15 +271,20 @@ const { splitRow } = M;
 
 function parseConfig() {
   if (cache) return cache;
-  const path = configPathOrNull();
-  cache = { path, exists: !!path && existsSync(path), sections: {} };
-  if (!cache.exists) return cache;
+  cache = parseConfigFile(configPathOrNull());
+  return cache;
+}
+
+// Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
+function parseConfigFile(path) {
+  const parsed = { path, exists: !!path && existsSync(path), sections: {} };
+  if (!parsed.exists) return parsed;
   let section = null;
   let header = null;
   for (const raw of readFileSync(path, 'utf8').split('\n')) {
     const line = raw.trim();
     const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) { section = h[1].toLowerCase(); header = null; cache.sections[section] ??= { byKey: {}, byName: {} }; continue; }
+    if (h) { section = h[1].toLowerCase(); header = null; parsed.sections[section] ??= { byKey: {}, byName: {} }; continue; }
     if (!section) continue;
     if (!line.startsWith('|')) { header = null; continue; }
     const cells = splitRow(line);
@@ -290,13 +298,13 @@ function parseConfig() {
     const cell = (cells[col] ?? '').replace(/``\s?/g, '').replace(/\s?``/g, '');
     const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
     const items = spans.length ? spans : [cell.trim()];
-    const s = cache.sections[section];
+    const s = parsed.sections[section];
     // `value` is the first item (what every single-valued row means); `items` is every backtick span.
     const entry = { value: items[0], items };
     if (keyCol >= 0) { const k = norm(cells[keyCol] ?? ''); if (k) s.byKey[k] = entry; }
     else { const n = norm(cells[0] ?? ''); if (n) s.byName[n] = entry; }
   }
-  return cache;
+  return parsed;
 }
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
@@ -337,8 +345,12 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
+  return configValueIn(parseConfig(), id);
+}
+
+function configValueIn(parsed, id) {
   const { section, row } = rowFor(id);
-  const e = parseConfig().sections[section]?.byName[norm(row)];
+  const e = parsed.sections[section]?.byName[norm(row)];
   if (!unset(e?.value)) return expandSlug(e.value);
   return MACHINE_FALLBACK[id] ? machineValue(MACHINE_FALLBACK[id]) : null;
 }
@@ -495,23 +507,51 @@ export function isWSL() {
   return platform() === 'linux' && /microsoft/i.test(release());
 }
 
+const DEFAULT_DEV_PORT = 3000;
+const positiveInt = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 export function devPort() {
-  const v = Number(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: '3000' }));
-  return Number.isInteger(v) && v > 0 ? v : 3000;
+  return positiveInt(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: String(DEFAULT_DEV_PORT) })) ?? DEFAULT_DEV_PORT;
 }
 
 // Worker ports start one above the user's dev port and skip anything taken. One definition, used
 // by pass.mjs (the real path) and spawn-worker.sh's standalone fallback alike.
 export function workerPortFloor() {
-  const v = Number(process.env.AUTOPILOT_PORT_FLOOR ?? devPort() + 1);
-  return Number.isInteger(v) && v > 0 ? v : devPort() + 1;
+  return positiveInt(process.env.AUTOPILOT_PORT_FLOOR ?? devPort() + 1) ?? devPort() + 1;
 }
 
 // `<default> / <cap>` from §3b, default 2 / 3.
-export function concurrencyLimits() {
-  const nums = (configValue('concurrency') ?? '').match(/\d+/g)?.map(Number) ?? [];
+export function concurrencyLimits(row = configValue('concurrency')) {
+  const nums = (row ?? '').match(/\d+/g)?.map(Number) ?? [];
   const def = nums[0] ?? 2;
   return { def, cap: nums[1] ?? Math.max(def, 3) };
+}
+
+// ---- dev ports across repos ----------------------------------------------------------------
+// A repo holds its §3b dev port and the worker ports above it: workers start one above the dev
+// port (workerPortFloor), so a repo at P with a worker cap of N holds P..P+N. /desk-setup proposes
+// a port whose block meets no other repo's, and flags this repo's when it already does. A config
+// that leaves the port unset runs on devPort()'s default, so it claims that.
+export function repoPortClaims(root = deskConfigRoot()) {
+  const dir = join(root, 'repos');
+  let slugs = [];
+  try { slugs = readdirSync(dir).sort(); } catch { return []; }
+  return slugs.flatMap((slug) => {
+    const parsed = parseConfigFile(join(dir, slug, 'config.md'));
+    if (!parsed.exists) return [];
+    const port = positiveInt(configValueIn(parsed, 'dev-port')) ?? DEFAULT_DEV_PORT;
+    return [{ slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap }];
+  });
+}
+
+const blocksMeet = (a, b) => a.port <= b.last && b.port <= a.last;
+export const portClashes = (self, claims) => claims.filter((c) => c.slug !== self.slug && blocksMeet(self, c));
+
+// The lowest port from `from`, in steps of `step`, whose block of `cap` workers meets no claim.
+export function proposePort(cap, claims, { from = 3000, step = 100 } = {}) {
+  for (let port = from; port + cap <= 65535; port += step) {
+    if (!claims.some((c) => blocksMeet({ port, last: port + cap }, c))) return port;
+  }
+  return null;
 }
 
 // §3b "Spawn gate (available memory)", e.g. `start work > 8 GiB · hold 4–8 · drop to 1 below 4`:
@@ -784,6 +824,23 @@ if (isMain) {
       case 'port-in-use':
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
+      case 'ports': {
+        // --cap: the worker cap /desk-setup has just been told, before it is written to the config.
+        const slug = currentRepo().slug;
+        const i = args.indexOf('--cap');
+        const cap = (i >= 0 ? positiveInt(args[i + 1]) : null) ?? concurrencyLimits().cap;
+        const others = repoPortClaims().filter((c) => c.slug !== slug);
+        const port = positiveInt(configValue('dev-port'));
+        const self = port ? { slug, port, last: port + cap } : null;
+        for (const c of [...others, ...(self ? [self] : [])]) {
+          console.log(`REPO\t${c.slug}\t${c.port}\tworkers ${c.port + 1}-${c.last}${c === self ? '\t(this repo)' : ''}`);
+        }
+        for (const c of self ? portClashes(self, others) : []) {
+          console.log(`CLASH\t${c.slug}\t${c.port}\tworkers ${c.port + 1}-${c.last}`);
+        }
+        console.log(`PROPOSE\t${proposePort(cap, others) ?? 'none'}`);
+        break;
+      }
       case 'machine': {
         // The subcommand is always the first word, so a worker's `machine write` deny rule holds.
         const [sub, ...rest] = args;
@@ -833,7 +890,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|machine');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|machine');
         process.exit(2);
     }
   } catch (e) {
