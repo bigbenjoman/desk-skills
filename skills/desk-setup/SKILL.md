@@ -610,7 +610,8 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.
 - Check the credential files' modes on every re-run: `ls -l <CREDS>/jira-email
-  <CREDS>/atlassian-token`. Either one not `-rw-------` (600): name the file and its mode, say you
+  <CREDS>/atlassian-token`. Either one not `-rw-------` (600; a trailing `@`, `+` or `.` is an
+  attribute marker, not part of the mode): name the file and its mode, say you
   are fixing it, then `chmod 600` it and show `ls -l` again. A missing file is the *Jira
   credentials* step above, not this one.
 - **Before/after for every changed row**; never reset one quietly.
