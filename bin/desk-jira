@@ -308,7 +308,9 @@ desk-jira <command> [args]
   where [--dir]                   which repo, site, project, email and token it resolved
   whoami                          confirm auth
   search <jql> [max] [--json]     key / status / priority (§4 Priority field if set) / summary
-  get <KEY> [--json]              issue detail, custom fields included
+  get <KEY> [--json]              the whole issue: parent, custom fields in full, links, subtasks,
+                                  attachments, web links, description with wiki escapes removed
+                                  (--json: the raw issue)
   children <KEY> [--json]         an epic's children or a story's subtasks, in rank order (paged)
   fields [filter]                 field ids and names (find custom fields)
   meta [issuetype]                createmeta: required fields + allowed values
@@ -408,20 +410,40 @@ case "$cmd" in
     ensure_auth   # anonymous gets a 404 that reads like a missing issue
     res=$(api GET "api/2/issue/$key?expand=names")
     if [[ "${1:-}" == '--json' ]]; then printf '%s\n' "$res"; else
-      printf '%s' "$res" | jq -r "$JQ_VAL"'
-        "key      : \(.key)",
-        "type     : \(.fields.issuetype.name)",
-        "status   : \(.fields.status.name)",
-        "summary  : \(.fields.summary)",
-        "assignee : \(.fields.assignee | val)",
-        "reporter : \(.fields.reporter | val)",
-        "labels   : \(.fields.labels | val)",
-        "priority : \(.fields.priority | val)",
-        (.names as $n | .fields | to_entries[]
+      # Web links are not issue fields: they have their own endpoint. An unreadable list says so
+      # rather than reading as "none".
+      remote=$(api GET "api/2/issue/$key/remotelink") || remote='null'
+      # The text form is for reading and copying, so wiki-markup escapes are dropped (`\-` prints as
+      # `-`) and no field is cut short. --json above stays the raw issue.
+      printf '%s\n%s' "$res" "$remote" | jq -rs "$JQ_VAL"'
+        def unwiki: if type == "string" then gsub("\\\\(?<c>[-_*+^~?#{}\\[\\]|!])"; .c) else . end;
+        def brief: "\(.key) (\(.fields.issuetype.name // "-"), \(.fields.status.name // "-")) \(.fields.summary // "")";
+        def section($name; $rows): if ($rows | length) == 0 then "\($name): none" else "\($name):", ($rows[] | "  \(.)") end;
+        .[0] as $i | .[1] as $remote | $i.fields as $f |
+        "key      : \($i.key)",
+        "type     : \($f.issuetype.name)",
+        "parent   : \(if $f.parent then "\($f.parent.key) (\($f.parent.fields.issuetype.name // "-")) \($f.parent.fields.summary // "")" else "-" end)",
+        "status   : \($f.status.name)",
+        "summary  : \($f.summary)",
+        "assignee : \($f.assignee | val)",
+        "reporter : \($f.reporter | val)",
+        "labels   : \($f.labels | val)",
+        "priority : \($f.priority | val)",
+        ($i.names as $n | $f | to_entries[]
           | select((.key | startswith("customfield_")) and .value != null and .value != [])
-          | "\($n[.key] // .key) : \(.value | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end)"),
+          | "\($n[.key] // .key) : \(.value | unwiki | val | gsub("\n"; " "))"),
         "",
-        (.fields.description // "(no description)")'
+        section("links"; [($f.issuelinks // [])[]
+          | if .inwardIssue then "\(.type.inward // .type.name) \(.inwardIssue | brief)"
+            else "\(.type.outward // .type.name) \(.outwardIssue | brief)" end]),
+        section("subtasks"; [($f.subtasks // [])[] | brief]),
+        section("attachments"; [($f.attachment // [])[]
+          | "\(.filename) (\(.mimeType // "-"), \(.size // "?") bytes) \(.content // "")"]),
+        (if $remote == null then "web links: (could not read them)"
+         else section("web links"; [$remote[]
+          | "\(.object.title // .object.url) \(.object.url)\(if .relationship then " (\(.relationship))" else "" end)"]) end),
+        "",
+        ($f.description // "(no description)" | unwiki)'
     fi
     ;;
 

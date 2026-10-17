@@ -57,7 +57,7 @@ if [ "$KIND" = work-id ] || [ "$KIND" = slug ] || [ "$KIND" = issue ]; then
   TYPE_HINT="Bug|Feature|Chore, your reading of the ticket"
 else
   [ "$TRACKER" != none ] || { echo "FAIL: '$TICKET' reads as a tracker key but config §4 Tracker is none" >&2; exit 2; }
-  READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for). If it has a parent (an epic or a story), read the parent's description with \`desk-jira get <parent>\` for context only: this ticket's own criteria are its scope"
+  READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for). Its \`parent\` line names the parent and its type (\`-\` when it has none); if it has one (an epic or a story), read the parent's description with \`desk-jira get <that key>\` for context only: this ticket's own criteria are its scope"
   RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\` and \`unknowns\` (which base to use)"
   TYPE_HINT="Jira issue type"
   STATUS_JSON='"<Jira status>"'
