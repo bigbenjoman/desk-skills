@@ -5,13 +5,13 @@
 # Which Jira: the repo you run it in. Its slug, as `desk-env where` resolves it (lower-case
 # `owner__name` of the origin remote from any host; `local__<name>-<hash>` without one), picks
 #   ~/.config/desk/repos/<slug>/config.md         §4 Jira site, Jira project, Priority
-#   ~/.config/desk/repos/<slug>/jira-email        your Atlassian login email for that site
+#   ~/.config/desk/repos/<slug>/jira-email        your Atlassian login email for that site (chmod 600)
 #   ~/.config/desk/repos/<slug>/atlassian-token   an API token (chmod 600)
 # so two repos can use two Atlassian sites with two logins. `desk-jira where` shows what it resolved.
 #
 # Setup, once per repo (or let /desk-setup do it):
-#   d="$(desk-jira where --dir)"; mkdir -p "$d"
-#   printf %s you@example.com > "$d/jira-email"
+#   d="$(desk-jira where --dir)"; mkdir -p "$d" && chmod 700 "$d"
+#   printf %s you@example.com > "$d/jira-email" && chmod 600 "$d/jira-email"
 #   printf %s '<your atlassian api token>' > "$d/atlassian-token" && chmod 600 "$d/atlassian-token"
 # Create a token at https://id.atlassian.com/manage-profile/security/api-tokens
 # The token is never stored in this script and must never be committed.

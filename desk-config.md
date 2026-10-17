@@ -12,7 +12,7 @@ the repo, so nothing here reaches git. `DESK_CONFIG=/path/to/config.md` override
 directory.
 
 Credentials sit beside it and are only ever referenced by path:
-`~/.config/desk/repos/<slug>/jira-email`, `atlassian-token` (chmod 600), and anything §4 names.
+`~/.config/desk/repos/<slug>/jira-email` and `atlassian-token` (both chmod 600), and anything §4 names.
 
 **You do not fill this in by hand.** Run `/desk-setup` inside the repo: it detects what it can, has
 you confirm it, and asks every permission. It can start from another repo's answers so a second repo
