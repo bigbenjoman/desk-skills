@@ -160,7 +160,7 @@ git log -n 40 --format='%s%n%b' | grep -ciE 'co-authored-by: *claude|generated w
 git branch -r --sort=-committerdate | head -30
 # §2 and §5 design: where canvases live, the widths the code already uses, the design system's files
 git ls-files | grep -iE '(^|/)(docs/)?design/' | head -20                          # canvases already committed?
-git grep -nE 'MOBILE_BREAKPOINT|use-?mobile|viewport[^;]*width|width.?[[:space:]]*[:=][[:space:]]*[0-9]{3,4}([^0-9]|$)|setViewportSize|--breakpoint-|screens[[:space:]]*:|@media[^{]*(min|max)-width' \
+git grep -nE 'MOBILE_BREAKPOINT|use-?mobile|viewport[^;]*width|width.?[[:space:]]*:[[:space:]]*[0-9]{3,4}[[:space:]]*[,}]|setViewportSize|--breakpoint-|screens[[:space:]]*:|@media[^{]*(min|max)-width' \
   -- ':!*.lock' ':!*-lock.*' ':!*.min.*' | head -60                                 # use-mobile hooks, e2e viewports, Tailwind screens
 git ls-files | grep -iE '(^|/)(tokens?([.-][a-z]+)*\.(css|scss|json|ts|js)|theme\.(css|scss|json|ts|js)|tailwind\.config\.[cm]?[jt]s|design\.md)$'
 git grep -lE '^@theme' -- '*.css'                                                   # Tailwind v4 tokens in CSS
