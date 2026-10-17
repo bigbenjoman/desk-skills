@@ -198,10 +198,12 @@ desk-runner down               stop the VM and check nothing is left running for
 
 The VM has no Mac folders and no forwarded ports, and Softnet blocks every private, shared and
 link-local IPv4 range, the Mac's own address on the VM network included, so the guest resolves names
-through public resolvers. `verify-isolation` proves it each time: from the VM's root shell and from a
-container, nothing on the Mac (any address, any listening port, a test service on loopback and one
-on every interface), the router, 169.254.169.254 or a VM tool's host alias answers, and
-registry.npmjs.org does. Softnet's defaults alone leave the Mac's address on the VM network open.
+through public resolvers. `verify-isolation` proves it each time, from the VM's root shell and from
+a container: no port of the Mac's address on the VM network answers (the root shell sweeps all
+65,535), nor DNS there or at the router; nothing answers at the Mac's other addresses (their low
+ports, your listening ports, and a test service on loopback and one on every interface), the router,
+169.254.169.254 or a VM tool's host alias; and registry.npmjs.org and 1.1.1.1 do. Softnet's defaults
+alone leave the Mac's address on the VM network open. It takes about a minute and a half.
 
 ## Subagents
 

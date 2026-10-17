@@ -35,6 +35,10 @@ vm_exists() { vm_info >/dev/null; }
 vm_running() { [ "$(vm_info | json_field Running)" = true ]; }
 guest() { tart exec "$VM" "$@"; }
 guest_stdin() { tart exec -i "$VM" "$@"; }
+# `<pid> <args>` of the `tart run <VM>` process, however tart was invoked (a path, or a wrapper's interpreter).
+run_process() {
+  ps -axo pid=,args= | awk -v vm="$VM" '{for (i = 2; i < NF - 1; i++) if ($i ~ /(^|\/)tart$/ && $(i + 1) == "run" && $(i + 2) == vm) {print; next}}'
+}
 
 # ---- the machine profile ---------------------------------------------------------------------
 require_runner_possible() {
@@ -49,10 +53,14 @@ require_runner_possible() {
     die "the machine profile says no runner on this computer${why:+: $why}" 3
   fi
 }
-profile_size() { # profile_size <key>: a whole number from the profile, or die naming the key
-  local v; v=$(machine get "$1") || die "the machine profile has no $1: run /desk-setup"
-  case $v in ''|*[!0-9]*) die "the machine profile's $1 is '$v', not a whole number" ;; esac
-  echo "$v"
+read_sizes() { # sets CPUS, MEM_GB, DISK_GB from the profile, or dies naming the key; never in a $(…)
+  local key v
+  for key in runner-vm-cpus runner-vm-memory-gb runner-vm-disk-gb; do
+    v=$(machine get "$key") || die "the machine profile has no $key: run /desk-setup"
+    case $v in ''|*[!0-9]*) die "the machine profile's $key is '$v', not a whole number" ;; esac
+    [ "$v" -gt 0 ] || die "the machine profile's $key is 0"
+    case $key in runner-vm-cpus) CPUS=$v ;; runner-vm-memory-gb) MEM_GB=$v ;; *) DISK_GB=$v ;; esac
+  done
 }
 
 # ---- the VM tool -----------------------------------------------------------------------------
@@ -71,8 +79,8 @@ require_tart() {
 
 ensure_vm() { # create the VM sized from the profile; a VM already at those sizes is left alone
   local cpus mem_gb disk_gb mem_mb info cur_cpu cur_mem cur_disk
-  cpus=$(profile_size runner-vm-cpus); mem_gb=$(profile_size runner-vm-memory-gb); disk_gb=$(profile_size runner-vm-disk-gb)
-  mem_mb=$((mem_gb * 1024))
+  read_sizes
+  cpus=$CPUS; mem_gb=$MEM_GB; disk_gb=$DISK_GB; mem_mb=$((mem_gb * 1024))
   if ! vm_exists; then
     say "creating $VM from $IMAGE ($cpus CPUs, $mem_gb GB memory, $disk_gb GB disk; no shared folders, no forwarded ports)"
     tart clone "$IMAGE" "$VM" || die "tart clone $IMAGE failed"
@@ -128,6 +136,9 @@ GUEST
 
 # ---- isolation -------------------------------------------------------------------------------
 host_ipv4() { ifconfig | awk '$1 == "inet" && $2 !~ /^127\./ {print $2}' | sort -u; }
+# This user's listening ports. Without root, lsof does not show other users' (root's screen
+# sharing, say), and netstat run under Homebrew bash leaves TCP out altogether, so the gateway is
+# swept on every port rather than trusting any list.
 host_listen_ports() { lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {n = split($9, a, ":"); print a[n]}' | sort -un; }
 host_router() { route -n get default 2>/dev/null | awk '/gateway:/ {print $2}'; }
 
@@ -137,9 +148,16 @@ record() { # record <pass|fail> <detail>: the last result, read by status and by
 }
 
 verify_isolation() {
+  # Until every probe has finished clean, the recorded result is a failure.
+  record fail "verification did not complete"
   vm_running || die "$VM is not running: desk-runner up"
-  mkdir -p "$STATE"
-  local out="$STATE/isolation.last" services svc_pid lo_port any_port gw router ports listening targets ip p h rc
+  # A VM started some other way (a plain tart run) is refused: probes alone cannot always tell, as the
+  # macOS firewall can hide a Mac service from the VM that Softnet would not have blocked.
+  case " $(run_process) " in
+    *" --net-softnet-block=$BLOCK "*) ;;
+    *) die "$VM is not running behind the Softnet block desk-runner starts it with: desk-runner down, then up" ;;
+  esac
+  local out="$STATE/isolation.last" services svc_pid lo_port any_port gw router ports listening targets guest_targets container_targets ip p h rc
   # Two test services on the Mac, one on loopback and one on every interface. Each must answer the
   # Mac itself, or failing to reach it from the VM would prove nothing.
   services=$(mktemp)
@@ -165,11 +183,15 @@ threading.Event().wait()' > "$services" 2>/dev/null &
     python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 2).close()' "$p" \
       || die "the Mac cannot reach its own test service on port $p, so the probes would prove nothing"
   done
+  say "test services on 127.0.0.1:$lo_port and every interface:$any_port"
 
   gw=$(guest ip -4 route show default | awk '{print $3; exit}')
   [ -n "$gw" ] || die "could not read the VM's gateway"
   router=$(host_router)
   listening=$(host_listen_ports)
+  # The test service on every interface is listening now, so a list without it is a broken listing.
+  printf '%s\n' $listening | grep -qx "$any_port" \
+    || die "could not list the Mac's listening sockets (lsof did not show the test service on port $any_port)"
   # shellcheck disable=SC2086
   ports=$(printf '%s\n' "$lo_port" "$any_port" 22 80 443 $listening | sort -un | tr '\n' ' ')
   targets=()
@@ -177,20 +199,25 @@ threading.Event().wait()' > "$services" 2>/dev/null &
     [ "$ip" = "$gw" ] && continue
     for p in $ports; do targets+=("deny:$ip:$p"); done
   done
-  # The gateway is the Mac. The guest resolves through public resolvers, so no port of it is needed.
-  targets+=("deny:$gw:1-1024")
-  for p in $ports; do [ "$p" -gt 1024 ] && targets+=("deny:$gw:$p"); done
-  if [ -n "$router" ]; then for p in 53 80 443; do targets+=("deny:$router:$p"); done; fi
+  targets+=("deny:$gw:53/udp")
+  if [ -n "$router" ]; then for p in 53 80 443 53/udp; do targets+=("deny:$router:$p"); done; fi
   targets+=("deny:169.254.169.254:80" "deny:100.100.100.100:53")
   for h in $HOST_ALIASES; do targets+=("deny:$h:$any_port" "deny:$h:22"); done
-  targets+=("allow:registry.npmjs.org:443")
+  # The controls: if these fail, the probe itself is broken, not the boundary.
+  targets+=("allow:registry.npmjs.org:443" "allow:1.1.1.1:53/udp")
+  # The gateway is the Mac, and the address Softnet's defaults leave open. The guest resolves through
+  # public resolvers, so no port of it is needed: the guest sweeps every one (about a minute); the
+  # container, which has no python3 for that, sweeps the low ports and the known ones.
+  guest_targets=("${targets[@]}" "deny:$gw:1-65535")
+  container_targets=("${targets[@]}" "deny:$gw:1-1024")
+  for p in $ports; do [ "$p" -gt 1024 ] && container_targets+=("deny:$gw:$p"); done
 
   guest_stdin sudo -n sh -c 'mkdir -p /var/lib/desk-runner && cat > /var/lib/desk-runner/probe.sh' < "$HERE/runner-probe.sh" \
     || die "could not copy the probe into $VM"
-  say "probing ${#targets[@]} targets from the VM's root shell and from a container in it"
+  say "probing ${#guest_targets[@]} targets from the VM's root shell (every port of the gateway) and ${#container_targets[@]} from a container in it"
   {
-    guest sudo -n bash /var/lib/desk-runner/probe.sh guest "${targets[@]}"
-    guest sudo -n docker run --rm -v /var/lib/desk-runner/probe.sh:/probe.sh:ro ubuntu:24.04 bash /probe.sh container "${targets[@]}"
+    guest sudo -n sh -c 'ulimit -n 8192; exec bash /var/lib/desk-runner/probe.sh "$@"' probe guest "${guest_targets[@]}"
+    guest sudo -n docker run --rm -v /var/lib/desk-runner/probe.sh:/probe.sh:ro ubuntu:24.04 bash /probe.sh container "${container_targets[@]}"
   } > "$out" 2>&1
   kill "$svc_pid" 2>/dev/null
 
@@ -253,8 +280,9 @@ cmd_down() {
     say "$VM is not running"
   fi
   local waited=0 left
-  while left=$(ps -axo pid=,args= | awk -v vm="$VM" '$2 ~ /(^|\/)tart$/ && $3 == "run" && $4 == vm {print $1}') && [ -n "$left" ]; do
-    [ $waited -ge 30 ] && die "tart run $VM is still running (pid $left)"
+  while left=$(run_process | awk '{print $1}') && [ -n "$left" ]; do
+    # tart stop shuts the guest down cleanly first, which can take well over 30 seconds.
+    [ $waited -ge 120 ] && die "tart run $VM is still running (pid $left) two minutes after it was stopped"
     sleep 1; waited=$((waited + 1))
   done
   say "nothing is left running for $VM"
