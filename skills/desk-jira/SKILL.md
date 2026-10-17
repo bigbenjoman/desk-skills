@@ -89,19 +89,24 @@ What the CLI does for you, and the traps it still has:
   numbered-list marker, so it becomes a nested numbered list. The rest, wiki form first:
   - lists `* item` and `# item` (nest with `**`, `##`), not `- item` / `1. item`;
   - bold `*bold*`, not `**bold**`;
-  - inline code, flags and paths `{{--flag}}`, not backticks; a code block `{code}…{code}`, not
-    fences;
+  - inline code, flags and paths `{{\-\-add\-dir}}`, not backticks, **with every hyphen inside the
+    braces escaped `\-`**: monospace does not stop the renderer, so an unescaped `{{--add-dir}}`
+    renders as one hyphen and a strikethrough running to the next flag (measured). A code
+    block `{code}…{code}`, not fences;
   - links `[text|https://…]`, not `[text](https://…)`;
   - tables `||head||head||` then `|cell|cell|`, with no `---` separator row.
 
   Some plain text is markup too: `-x-` is strikethrough and a stray `{word}` is read as a macro,
-  so escape them with `\`. A `--flag` mid-sentence is left alone (measured), but `{{ }}` is still
-  the clearer way to write one. A `.md` body file is not converted; the text is sent exactly as written.
+  so escape them with `\`. A `--flag` mid-sentence is left alone (measured), but `{{\-\-flag}}` is
+  still the clearer way to write one. A `.md` body file is not converted; the text is sent exactly as written.
 
-  Check a new body once by counting headings in the rendered HTML:
-  `desk-jira api "api/2/issue/<KEY>?fields=description&expand=renderedFields" | jq -r .renderedFields.description | grep -c '<h2'`,
+  Check a new body once in the rendered HTML with two counts. `grep -c '<h2'` should match the
+  `h2.` headings you wrote. `grep -c '<del'` must print `0`: any `<del` is a failure (a hyphen
+  read as strikethrough), so escape it and edit the body again:
+  `desk-jira api "api/2/issue/<KEY>?fields=description&expand=renderedFields" | jq -r .renderedFields.description | grep -c '<del'`,
   or for a comment,
-  `desk-jira api "api/2/issue/<KEY>/comment/<ID>?expand=renderedBody" | jq -r .renderedBody | grep -c '<h2'`.
+  `desk-jira api "api/2/issue/<KEY>/comment/<ID>?expand=renderedBody" | jq -r .renderedBody | grep -c '<del'`,
+  and the same with `'<h2'`.
 - **Screenshots go on the ticket**, not only the PR: `desk-jira attach ABC-123 before.png after.png`.
 
 For anything the CLI has no command for, read **`references/jira-rest-recipes.md`**. That covers
