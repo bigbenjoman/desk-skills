@@ -62,6 +62,7 @@ t('desktop: ceiling after OS and runner', mini['memory-ceiling-gb'].value, '32')
 t('desktop: workers at 3 GB each', mini['autopilot-concurrency'].value, '5 / 10');
 t('desktop: test cap = performance cores', mini['test-cap'].value, '8');
 t('desktop: typecheck lock timeout', mini['typecheck-lock-timeout-min'].value, '20');
+t('desktop: pre-push lock timeout', mini['pre-push-lock-timeout-s'].value, '60');
 t('desktop: arithmetic shown', mini['runner-vm-memory-gb'].why, 'floor(64 GB x 3/8)');
 
 // ---- macOS: a 10-core 32 GB laptop, read from sysctl alone (no system_profiler output)

@@ -75,7 +75,7 @@ check "a dirty tracked tree is refused"               '[ $rc -ne 0 ] && [ -z "$r
 git checkout -q -- notes
 
 # ---- the typecheck item and the box-wide test lock ----
-printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `typecheck-lock-timeout-min` | `0` | test |\n' > "$DESK_MACHINE"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `pre-push-lock-timeout-s` | `0` | test |\n' > "$DESK_MACHINE"
 bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/held'; sleep 3" & holder=$!
 n=0; while [ ! -f "$T/held" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
 push origin main

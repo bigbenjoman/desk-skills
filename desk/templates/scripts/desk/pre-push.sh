@@ -7,8 +7,8 @@
 # - Tags and deletes are never checked. Any other ref must be HEAD with a clean tracked tree, because
 #   the checks run on the working tree.
 # - An item equal to a §4 Typecheck or Unit tests item takes the box-wide test lock (with-lock.sh, the
-#   memory guard), waiting at most the machine profile's typecheck-lock-timeout-min (60 s without
-#   one); past that it is skipped with a warning, since CI runs it anyway.
+#   memory guard), waiting at most the machine profile's pre-push-lock-timeout-s (60 without one);
+#   past that it is skipped with a warning, since CI runs it anyway.
 # - A failing check stops the push with its command and output. `git push --no-verify` skips the
 #   hook; CI stays the control.
 set -uo pipefail
@@ -52,8 +52,8 @@ fi
 
 typecheck="$(node "$ENV_MJS" cmds typecheck-cmd 2>/dev/null)"
 unit="$(node "$ENV_MJS" cmds test-cmd 2>/dev/null)"
-mins="$(node "$ENV_MJS" machine get typecheck-lock-timeout-min 2>/dev/null)"
-case "$mins" in ''|*[!0-9]*) wait_s=60 ;; *) wait_s=$((mins * 60)) ;; esac
+wait_s="$(node "$ENV_MJS" machine get pre-push-lock-timeout-s 2>/dev/null)"
+case "$wait_s" in ''|*[!0-9]*) wait_s=60 ;; esac
 lock_for() {
   if printf '%s\n' "$typecheck" | grep -qxF -- "$1"; then echo tsc
   elif printf '%s\n' "$unit" | grep -qxF -- "$1"; then echo test
