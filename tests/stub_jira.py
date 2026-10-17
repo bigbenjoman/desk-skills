@@ -2,7 +2,7 @@ import base64, json, re, sys, time
 from urllib.parse import urlparse, parse_qs
 DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
-# "page_size": n, "link_readback": "normal"|"drop"}. Issue links posted are kept in memory, on both
+# "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY]}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view.
 FIX = {"issues": {}, "children": {}}
 if len(sys.argv) > 4:
@@ -60,6 +60,11 @@ class H(BaseHTTPRequestHandler):
                     res["nextPageToken"] = str(start + size)
                 return self._send(200, res)
             return self._send(200, {"issues": [{"key": "KAN-1", "fields": {"summary": "s", "status": {"name": "To Do"}, "priority": {"name": "High"}}}]})
+        m = re.match(r"/rest/api/[23]/issue/([A-Z][A-Z0-9]*-[0-9]+)/remotelink$", path)
+        if m and self.command == "GET":
+            if not authed or m.group(1) in FIX.get("remotelink_fail", []):
+                return self._send(500, {"errorMessages": ["remote links unavailable"]})
+            return self._send(200, FIX.get("remotelinks", {}).get(m.group(1), []))
         m = re.match(r"/rest/api/[23]/issue/([A-Z][A-Z0-9]*-[0-9]+)$", path)
         if m and self.command == "GET":
             if not authed:

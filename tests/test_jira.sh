@@ -14,8 +14,34 @@ ok()   { PASS=$((PASS+1)); printf 'ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf 'FAIL %s\n' "$1"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
+# KAN-5 holds every element `get` prints. The parent is shaped as Jira Cloud returns it (recorded
+# from DS-30's own issue); KAN-6 has none of them; KAN-7's web links cannot be read.
+DESIGN_URL="https://www.figma.com/design/AbCdEfGhIjKlMnOpQrStUv/Desk-ticket-standard?node-id=1234-5678&t=0123456789abcdef-1&mode=design&ref=a-long-tail"
+cat > "$T/fixture.json" <<EOF
+{"issues": {
+  "KAN-5": {"summary": "full ticket", "issuetype": {"name": "Story"},
+    "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "status": {"name": "To Do"}, "issuetype": {"name": "Epic"}}},
+    "customfield_10100": "$DESIGN_URL",
+    "_names": {"customfield_10100": "Design"},
+    "issuelinks": [
+      {"id": "1", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+       "inwardIssue": {"key": "KAN-3", "fields": {"summary": "first", "status": {"name": "Done"}, "issuetype": {"name": "Task"}}}},
+      {"id": "2", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+       "outwardIssue": {"key": "KAN-4", "fields": {"summary": "later", "status": {"name": "To Do"}, "issuetype": {"name": "Task"}}}},
+      {"id": "3", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+       "outwardIssue": {"key": "KAN-8", "fields": {"summary": "nearby", "status": {"name": "To Do"}, "issuetype": {"name": "Bug"}}}}],
+    "subtasks": [{"key": "KAN-9", "fields": {"summary": "a piece", "status": {"name": "To Do"}, "issuetype": {"name": "Subtask"}}}],
+    "attachment": [{"id": "10", "filename": "flow.png", "mimeType": "image/png", "size": 2048,
+      "content": "https://example.atlassian.net/rest/api/2/attachment/content/10"}],
+    "description": "Run {{desk\\\\-jira get KAN\\\\-5}} and *read\\\\_it*.\\n{code}grep -c '\\\\[x\\\\]' f{code}"},
+  "KAN-6": {"summary": "bare"},
+  "KAN-7": {"summary": "links down"}},
+ "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
+   "object": {"url": "https://github.com/acme/alpha/pull/7", "title": "PR 7"}}]},
+ "remotelink_fail": ["KAN-7"]}
+EOF
 PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
-python3 "$S/stub_jira.py" "$PORT" "$LOG" & STUB=$!
+python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!
 SLOWPORT=$((PORT + 1)); python3 "$S/stub_jira.py" "$SLOWPORT" "$T/slow.log" 1.5 & SLOW=$!
 trap 'kill $STUB $SLOW 2>/dev/null' EXIT
 sleep 0.5
@@ -76,6 +102,29 @@ check "search with bad token says auth failed" 'printf "%s" "$err" | grep -q "au
 check "search with bad token never prints no issues" '! printf "%s" "$err" | grep -q "no issues"'
 err=$(cd "$A" && JIRA_TOKEN_FILE="$T/bad" "$J" get KAN-1 2>&1); rc=$?
 check "get with bad token says auth failed" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "authentication failed"'
+
+# get prints the whole ticket, each element in its own labelled section
+out=$(cd "$A" && "$J" get KAN-5 2>&1); rc=$?
+check "get exits 0" '[ $rc -eq 0 ]'
+check "get prints the parent with its type, after type" 'printf "%s\n" "$out" | grep -A1 "^type     : Story$" | grep -qx "parent   : KAN-2 (Epic) the epic"'
+check "get prints a custom field longer than 120 characters in full" '[ ${#DESIGN_URL} -gt 120 ] && printf "%s\n" "$out" | grep -qxF "Design : $DESIGN_URL"'
+check "get prints Blocks and Relates links under links:" 'printf "%s\n" "$out" | grep -A3 "^links:$" | grep -qx "  is blocked by KAN-3 (Task, Done) first" &&
+  printf "%s\n" "$out" | grep -A3 "^links:$" | grep -qx "  blocks KAN-4 (Task, To Do) later" &&
+  printf "%s\n" "$out" | grep -A3 "^links:$" | grep -qx "  relates to KAN-8 (Bug, To Do) nearby"'
+check "get prints subtasks under subtasks:" 'printf "%s\n" "$out" | grep -A1 "^subtasks:$" | grep -qx "  KAN-9 (Subtask, To Do) a piece"'
+check "get prints attachments under attachments:" 'printf "%s\n" "$out" | grep -A1 "^attachments:$" | grep -qxF "  flow.png (image/png, 2048 bytes) https://example.atlassian.net/rest/api/2/attachment/content/10"'
+check "get prints remote web links under web links:" 'printf "%s\n" "$out" | grep -A1 "^web links:$" | grep -qxF "  PR 7 https://github.com/acme/alpha/pull/7 (mentioned in)"'
+check "get prints the description with wiki escapes removed" 'printf "%s\n" "$out" | grep -qxF "Run {{desk-jira get KAN-5}} and *read_it*."'
+check "get leaves a {code} block as written" 'printf "%s\n" "$out" | grep -qxF "{code}grep -c '"'\\\\[x\\\\]'"' f{code}"'
+raw=$(cd "$A" && "$J" get KAN-5 --json | jq -r .fields.description | head -n1)
+check "get --json keeps the raw description" '[ "$raw" = "Run {{desk\\-jira get KAN\\-5}} and *read\\_it*." ]'
+out=$(cd "$A" && "$J" get KAN-6 2>&1); rc=$?
+check "get with none of them says so in each section" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "parent   : -" &&
+  printf "%s\n" "$out" | grep -qx "links: none" && printf "%s\n" "$out" | grep -qx "subtasks: none" &&
+  printf "%s\n" "$out" | grep -qx "attachments: none" && printf "%s\n" "$out" | grep -qx "web links: none"'
+out=$(cd "$A" && "$J" get KAN-7 2>/dev/null); rc=$?
+check "get with unreadable web links says so, never none" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "web links: (could not read them)"'
+
 out=$(cd "$A" && "$J" search 'project=KAN' 2>&1); rc=$?
 check "search with good token lists issues" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^KAN-1"'
 err=$(cd "$A" && JIRA_SITE=nonexistent.invalid "$J" search x 2>&1); rc=$?
