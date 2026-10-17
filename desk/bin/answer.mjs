@@ -83,8 +83,8 @@ if (existsSync(brief)) appendFileSync(brief, entry);
 else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 
 // A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible
-// to spawn, and answering them is exactly what the user was asked to do. A parked ticket is left
-// parked, with its park intact, for the orchestrator to decide.
+// to spawn, and answering them is exactly what the user was asked to do. A parked ticket's count
+// clears too, but it is left parked, with its park intact, for the orchestrator to decide.
 try {
   const Q = existsSync(queueFile()) ? JSON.parse(readFileSync(queueFile(), 'utf8')) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
@@ -98,6 +98,9 @@ try {
       execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
       console.log(`${ticket}: answered.`);
     } else if (st === 'parked') {
+      // The count is not the park: a parked ticket stays parked, but its questions are answered, so
+      // a re-laned ticket can be requeued (queue.mjs requeue refuses open questions).
+      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
       console.log(`${ticket}: answer recorded in its briefing. It is STILL PARKED — the orchestrator decides whether it ` +
         'resumes, is requeued (`queue.mjs requeue <TICKET>`), or is finished by hand. A lane C or D ' +
         'park is never requeued for a headless worker.');

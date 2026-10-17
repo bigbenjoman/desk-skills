@@ -550,7 +550,8 @@ not the verdict. **Read the challenge line**: `plan-batch` prints `challenge CON
 `! challenge did not run`: a single unreviewed opinion that must not be reported as settled.
 
 **A lane is a proposal.** When the user rules that a park's lane is wrong (it is really A, B or E),
-re-lane it with `queue.mjs set <TICKET> lane=A`, then `queue.mjs requeue <TICKET>`, and, where the ticket is
+re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then
+`queue.mjs requeue <TICKET>`, and, where the ticket is
 genuinely big, scope it in the briefing so what runs really is one sitting. That is a new lane, not
 a requeue of a C or D: a ticket that stays C or D is worked interactively, never by a worker.
 
