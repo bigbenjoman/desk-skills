@@ -96,4 +96,37 @@ say "AUTOPILOT_DONE: pr=2 jira=none" >> "$T/state/logs/T-3.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "the new round's screenshots go to its PR"        '[ "$(cat "$T/uploads")" = "2 $T/state/images/T-3/" ]'
 
+# T-4: round one finished and parked; its park record and an answered mailbox are still in place.
+q set T-3 state=done
+q add T-4; q set T-4 state=parked branch=fix/T-4 'park={"question":"old round"}' session_id=gone idle_passes=4 log_bytes=99
+mkdir -p "$T/state/parks" "$T/state/answers"
+say "AUTOPILOT_DONE: pr=4 jira=none" > "$T/state/logs/T-4.log"
+echo '{"question": "yesterday'"'"'s question"}' > "$T/state/parks/T-4.json"
+echo "yesterday's answer" > "$T/state/answers/T-4.txt"
+out=$(node "$B/queue.mjs" requeue T-4 2>&1)
+check "requeue moves the finished log aside"            '[ ! -e "$T/state/logs/T-4.log" ] && grep -q "pr=4" "$T/state/logs/T-4.log.round1"'
+check "requeue moves the park and answer to the same round" '[ ! -e "$T/state/parks/T-4.json" ] && [ -e "$T/state/parks/T-4.json.round1" ] && [ ! -e "$T/state/answers/T-4.txt" ] && [ -e "$T/state/answers/T-4.txt.round1" ]'
+check "requeue resets the ticket"                       '[ "$(field T-4 state)" = "\"triaged\"" ] && [ "$(field T-4 park)" = null ] && [ "$(field T-4 session_id)" = null ] && [ "$(field T-4 idle_passes)" = 0 ] && [ "$(field T-4 log_bytes)" = 0 ] && [ "$(field T-4 branch)" = "\"fix/T-4\"" ]'
+check "requeue fronts the ticket"                       '[ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets)[0])" "$DESK_QUEUE")" = T-4 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "the requeued ticket spawns without AUTOPILOT_RERUN" '[ "$(field T-4 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning"'
+q set T-4 session_id=live-1
+say "AUTOPILOT_STAGE: 2/9 understand" > "$T/state/logs/T-4.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "the old park question is not reported"           '! echo "$out" | grep -q "yesterday"'
+
+# T-5: a stale park record from an earlier round, on a ticket set back to triaged by hand.
+q set T-4 state=done
+q add T-5; q set T-5 state=triaged branch=fix/T-5
+echo '{"question": "stale"}' > "$T/state/parks/T-5.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "a spawn clears the park record first"            '[ "$(field T-5 state)" = "\"running\"" ] && [ ! -e "$T/state/parks/T-5.json" ] && [ -e "$T/state/parks/T-5.json.round1" ]'
+
+# Requeue refuses what must not get another headless worker.
+out=$(node "$B/queue.mjs" requeue T-5 2>&1)
+check "requeue refuses a running ticket"                '[ "$(field T-5 state)" = "\"running\"" ] && echo "$out" | grep -q "is running"'
+q add T-6; q set T-6 state=parked lane=C 'park={"question":"lane C"}'
+out=$(node "$B/queue.mjs" requeue T-6 2>&1)
+check "requeue refuses a lane C ticket"                 '[ "$(field T-6 state)" = "\"parked\"" ] && echo "$out" | grep -q "lane C"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFil
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, waitingOnMerge } from './batch-state.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot } from './desk-env.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound } from './desk-env.mjs';
 
 // The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
 // real branch on origin, never the config's default (that is no override) and never a production
@@ -247,6 +247,25 @@ switch (cmd) {
     break;
   }
 
+  // Send a ticket back for another worker: every field a requeue needs, not one of them left to a hand
+  // edit that fails silently. The last round's log, park record and mailbox move aside to one
+  // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
+  // worker's. The branch is kept: the merge driver finds the ticket's PR by it.
+  case 'requeue': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs requeue <TICKET>');
+    const t = ticket(q, key);
+    if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+    if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
+    if (['C', 'D'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane}, which is never requeued for a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+    const moved = rotateRound(key, { answers: true });
+    Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, updated_at: new Date().toISOString() });
+    q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
+    save(q);
+    console.log(`${key} requeued at the front of the spawn order${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}`);
+    break;
+  }
+
   case 'set-batch': {
     for (const pair of args) {
       const i = pair.indexOf('=');
@@ -311,7 +330,7 @@ switch (cmd) {
   }
 
   default:
-    console.log('usage: queue.mjs init|add|admit|hold|set|set-batch|park|front|drop|get|list|render');
+    console.log('usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|front|drop|get|list|render');
     process.exit(cmd ? 1 : 0);
 }
 } catch (e) {

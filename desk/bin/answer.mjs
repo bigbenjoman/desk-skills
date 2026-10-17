@@ -99,7 +99,7 @@ try {
       console.log(`${ticket}: answered.`);
     } else if (st === 'parked') {
       console.log(`${ticket}: answer recorded in its briefing. It is STILL PARKED — the orchestrator decides whether it ` +
-        'resumes, is requeued (`queue.mjs set <TICKET> state=triaged park=null`), or is finished by hand. A lane C or D ' +
+        'resumes, is requeued (`queue.mjs requeue <TICKET>`), or is finished by hand. A lane C or D ' +
         'park is never requeued for a headless worker.');
     } else {
       console.log(`${ticket}: answer recorded (state ${st}).`);

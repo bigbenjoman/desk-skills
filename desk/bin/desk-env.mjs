@@ -39,7 +39,7 @@
 //                                             --runner sizes a runner on a computer with a battery
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
-import { readFileSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -436,6 +436,23 @@ export const binDir = () => join(deskHome(), 'bin');
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue.
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? join(HOME, '.desk-autopilot', repoSlug()));
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHome(), 'repos', repoSlug(), 'queue.json'));
+
+// Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
+// blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
+// question reads as the new worker's) and, with `answers`, its mailbox (a stale answer satisfies the
+// next park instantly). All take one suffix, the first `.round<n>` free for every one of them, so a
+// round's files stay together. An empty log is left in place. Returns the files moved.
+export function rotateRound(key, { answers = false } = {}) {
+  const state = stateDir();
+  const files = [join(state, 'logs', `${key}.log`), join(state, 'parks', `${key}.json`)];
+  if (answers) files.push(join(state, 'answers', `${key}.txt`));
+  const present = files.filter((f) => existsSync(f) && (!f.endsWith('.log') || statSync(f).size > 0));
+  if (!present.length) return [];
+  let n = 1;
+  while (files.some((f) => existsSync(`${f}.round${n}`))) n += 1;
+  for (const f of present) renameSync(f, `${f}.round${n}`);
+  return present.map((f) => `${f}.round${n}`);
+}
 
 // A batch may target a branch other than §0 Default branch: a feature branch that ships as one merge.
 // It is the queue's top-level `base` (`queue.mjs set-batch base=<branch>`), and it reaches the code
