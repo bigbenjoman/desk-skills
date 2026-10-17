@@ -51,7 +51,9 @@ env files, commands, projects) takes **one backtick span per item**, e.g.
 `` `Lint, Type Check & Build` `Verify script sign-off` ``: items are never split on commas, so a
 name may contain one. A `|` inside backticks is part of the value. A note for people goes in one
 trailing parenthesis after the value, e.g. `` `ABC` (not `parent`) ``: the scripts ignore it,
-backticks inside it included, and ignore any other words outside backticks too. A **command** item
+backticks inside it included, and ignore any other words outside backticks too. `none` stands
+alone: a row with `none` beside any other item is refused, since that other item is a note
+written in backticks. A **command** item
 may name the directory it runs in, relative to the repo root, as `` `apps/api: uv run pytest` ``; never write `cd dir && …`, which
 breaks the test lock and the worker allow-list.
 
