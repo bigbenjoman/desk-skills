@@ -640,7 +640,8 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
 
   const completed = [...runs.values()].filter((r) => r.status === 'completed');
   const jobs = new Map();
-  for (const r of pickSample(completed, Math.max(0, allowance - calls))) {
+  const sample = pickSample(completed, Math.max(0, allowance - calls));
+  for (const r of [...sample.filter(mustRead), ...sample.filter((x) => !mustRead(x))]) {
     const js = [];
     let whole = true;
     for (let p = 1; ; p++) {

@@ -109,8 +109,8 @@ t('the report marks sampled figures', /sampled: jobs read for 3 of 11/.test(repo
 // ---- the call budget, against a stubbed API
 const SINCE = '2026-07-20';
 const UNTIL = '2026-10-17';
-function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity }) {
-  const all = Array.from({ length: count }, (_, i) => run({ id: i + 1, head_sha: `s${i}`, head_branch: 'b', conclusion: 'success',
+function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity, redId = 0, jobPages = 1 }) {
+  const all = Array.from({ length: count }, (_, i) => run({ id: i + 1, head_sha: `s${i}`, head_branch: 'b', conclusion: i + 1 === redId ? 'failure' : 'success',
     created_at: iso(`${SINCE}T12:00:00Z`, Math.floor((i * 89 * 86400) / count)), updated_at: iso(`${SINCE}T12:00:00Z`, 60) }));
   const s = { calls: 0, maxDays: 0, all };
   s.api = (path) => {
@@ -125,8 +125,12 @@ function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity }
       return { total_count: days > cap ? 1500 : inRange.length, workflow_runs: inRange.slice((page - 1) * 100, page * 100) };
     }
     if (/\/pulls\?/.test(path)) return [];
-    mm = /actions\/runs\/(\d+)\/jobs/.exec(path);
-    if (mm) return { total_count: 1, jobs: [job(all[mm[1] - 1].created_at, { name: 't', conclusion: 'success', start: 0, end: 30 })] };
+    mm = /actions\/runs\/(\d+)\/jobs\?filter=all&per_page=100&page=(\d+)/.exec(path);
+    if (mm) {
+      const one = job(all[mm[1] - 1].created_at, { name: 't', conclusion: 'success', start: 0, end: 30 });
+      if (jobPages === 1) return { total_count: 1, jobs: [one] };
+      return { total_count: 150, jobs: Array.from({ length: Number(mm[2]) === 1 ? 100 : 50 }, () => one) };
+    }
     throw new Error(`unexpected path ${path}`);
   };
   return s;
@@ -159,6 +163,10 @@ t('and keeps no run older than the window it reports', c.runs.every((r) => r.cre
 s = stub({ remaining: 5000, count: 120, cap: 10 });
 c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 1000, api: s.api });
 t('a range over the 1000-run listing cap is split', `${c.runs.length} ${c.coveredSince}`, `120 ${SINCE}`);
+
+s = stub({ remaining: 5000, count: 20, redId: 20, jobPages: 2 });
+c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 14, api: s.api });
+t('a red run last in the list is still read when job pages run the budget out', `${c.jobs.has(20)} ${c.jobs.size < 10}`, 'true true');
 
 console.log(fails ? `${fails} FAILED` : 'all measure checks passed');
 process.exit(fails ? 1 : 0);
