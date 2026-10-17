@@ -131,7 +131,7 @@ So: **if you are unsure whether code is new or pre-existing, do NOT recommend re
 
 ### Step 4: This Repo's Layering Rules
 
-Where the repo states its layering — in `CLAUDE.md`, `AGENTS.md`, an architecture doc, or §4 What review here consistently asks for — those rules are project law, and a violation is at minimum P2. Typical shapes to look for, none assumed:
+Where the repo states its layering — in `CLAUDE.md`, `AGENTS.md`, an architecture doc, or §4 What review here consistently asks for — those rules are project law, and a violation is a *layer bypass*: P1, or P2 when contained to one place. Typical shapes to look for, none assumed:
 
 - **All database access goes through one layer** (a repository, data-access or query module). A route handler, router or component touching the ORM or raw SQL directly is then a finding.
 - Data-access code is pure: it takes a client, returns rows or models, and holds no business logic.
@@ -140,7 +140,7 @@ Where the repo states its layering — in `CLAUDE.md`, `AGENTS.md`, an architect
 - External-service logic lives in services, not in handlers.
 - New routes or routers are registered where the repo registers them.
 
-Where the repo states nothing, infer the layering from the dominant pattern in the directories the diff touches, and report a deviation as P3 with the evidence (which existing files follow the other pattern) rather than as law.
+Where the repo states nothing, infer the layering from the dominant pattern in the directories the diff touches, and report a deviation as P2 at most, with the evidence (which existing files follow the other pattern) rather than as law.
 
 ### Step 5: Code Reuse — Never Duplicate
 
@@ -158,7 +158,7 @@ Apply these where the repo has a design system or i18n (check `DESIGN.md`, the c
 - Components must be imported from the design system's public entry point, never from its internal sub-folders directly.
 - Colour, radius and shadow must use the design system's tokens. **Raw hex in JSX is a finding** where tokens exist.
 - New design-system components need whatever the repo requires alongside them (a Storybook story, an export from the index, docs).
-- Token or component-API changes must update `DESIGN.md` (or the repo's equivalent) in the same commit — if they don't, flag it P1.
+- Token or component-API changes must update `DESIGN.md` (or the repo's equivalent) in the same commit — if they don't, that is a finding, rated on the scale in Step 2.
 - Hard-coded user-facing strings are findings in an internationalised app. Copy belongs in the repo's message files.
 
 ### Step 7: Verify Build & Test Readiness
@@ -169,7 +169,7 @@ Apply these where the repo has a design system or i18n (check `DESIGN.md`, the c
 ### Step 8: Provide Actionable Feedback
 
 For each issue found:
-1. **Severity**: P0/P1/P2/P3
+1. **Severity**: P0/P1/P2
 2. **Location**: Exact file and line reference
 3. **Problem**: Clear, concise description of what's wrong
 4. **Fix**: Specific code change or approach — not vague suggestions
@@ -187,9 +187,6 @@ For each issue found:
 ## Important Issues (strongly recommended)
 [P2 issues with specific fixes]
 
-## Minor Issues (consider fixing)
-[P3 issues, only if they represent real risks]
-
 ## What Looks Good
 [Brief acknowledgment of well-done aspects — keeps reviews constructive]
 
@@ -197,7 +194,7 @@ For each issue found:
 [Flag any changes that don't trace to the stated purpose — over-engineering, speculative abstractions, or adjacent "improvements". These are P1 or P2 findings by the scale above; see the asymmetry rule before recommending any deletion]
 ```
 
-**The boundary test between Important and Minor.** If removing the issue would not affect a user's ability to use the feature, and would not leave a visibly broken experience, it is Minor — not Important. Applied honestly this keeps the Important section short enough that people read it. Tier inflation is how a review gets ignored.
+**P3 is dropped, never promoted.** A P2 is real even when no user would notice it: a contained duplicate or a test that cannot fail. What keeps the Important section short enough that people read it is leaving P3 out, not raising it to P2 to justify having found something. Tier inflation is how a review gets ignored.
 
 ## PR Update Behavior
 
@@ -214,7 +211,7 @@ A second pass is not a second first-pass. Three rules stop a review loop running
 
 - **Still run the mechanical gate.** Lint, typecheck, build and test get re-run every time — fixes cause regressions, and that is exactly what you are here to catch.
 - **Skip what cannot have changed.** Do not re-run expensive audits, or re-check design-system and visual concerns, unless a fix actually touched that surface. Say in the report that you scoped it, and why.
-- **Do NOT raise new Minor findings on a re-review.** Report only Critical and Important. New low-severity observations on round two are what turns review into an infinite loop, and they arrive precisely when the author has least patience for them.
+- **Do NOT raise new P2 findings on a re-review.** Confirm the P0s and P1s are fixed and catch what the fixes broke. New low-severity observations on round two are what turns review into an infinite loop, and they arrive precisely when the author has least patience for them.
 
 ## What You Do NOT Do
 
