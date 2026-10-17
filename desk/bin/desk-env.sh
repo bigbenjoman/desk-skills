@@ -85,18 +85,35 @@ desk_require_headless() {
 }
 
 # timeout(1) is GNU coreutils: absent on stock macOS. gtimeout (brew coreutils), then a perl alarm.
+# On timeout every one kills the command's whole process group, TERM then KILL 2s later, so a child
+# the command started (docker exec under a wrapper, a shell's pipeline) does not outlive it. 124 on
+# timeout, otherwise the command's own status (128+n when a signal ended it).
 desk_timeout() {
   local secs="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
-  else
-    perl -e '
-      my $s = shift @ARGV; my $pid = fork();
-      if (!defined $pid) { exit 125 }
-      if ($pid == 0) { exec @ARGV or exit 127 }
-      local $SIG{ALRM} = sub { kill "TERM", $pid; sleep 2; kill "KILL", $pid; exit 124 };
-      alarm $s; waitpid($pid, 0); exit($? >> 8);' "$secs" "$@"
+  if command -v timeout >/dev/null 2>&1; then timeout -k 2 "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout -k 2 "$secs" "$@"
+  else desk_timeout_perl "$secs" "$@"
   fi
+}
+
+# The fallback, separate so a test can run it where timeout(1) exists. The command leads its own
+# process group (set on both sides of the fork, so an early kill still finds it), and INT, TERM and
+# HUP sent to this wrapper are passed on to that group, as timeout(1) does.
+desk_timeout_perl() {
+  perl -MPOSIX -e '
+    my $s = shift @ARGV; my $pid = fork();
+    if (!defined $pid) { exit 125 }
+    if ($pid == 0) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    setpgrp($pid, $pid);
+    my $grp = sub { kill($_[0], -$pid) or kill($_[0], $pid) };
+    $SIG{$_} = sub { $grp->($_[0]) } for qw(INT TERM HUP);
+    $SIG{ALRM} = sub {
+      $grp->("TERM");
+      for (1 .. 20) { waitpid($pid, WNOHANG); last unless kill(0, -$pid); select(undef, undef, undef, 0.1) }
+      $grp->("KILL"); exit 124 };
+    alarm $s;
+    1 until waitpid($pid, 0) == $pid || !$!{EINTR};
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8);' "$@"
 }
 
 # Run a command in a new session so it outlives the caller. setsid(1) is util-linux: absent on macOS,
