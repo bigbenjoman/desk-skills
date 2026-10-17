@@ -49,9 +49,10 @@ Skills cite rows as `§3 <key>`, e.g. `§3 pr-merge-green`, and other rows by se
 **How a value is written.** The value is what sits in backticks. A row that holds a list (checks,
 env files, commands, projects) takes **one backtick span per item**, e.g.
 `` `Lint, Type Check & Build` `Verify script sign-off` ``: items are never split on commas, so a
-name may contain one. A `|` inside backticks is part of the value. Words outside backticks are notes
-for people and are ignored by the scripts. A **command** item may name the directory it runs in,
-relative to the repo root, as `` `apps/api: uv run pytest` ``; never write `cd dir && …`, which
+name may contain one. A `|` inside backticks is part of the value. A note for people goes in one
+trailing parenthesis after the value, e.g. `` `ABC` (not `parent`) ``: the scripts ignore it,
+backticks inside it included, and ignore any other words outside backticks too. A **command** item
+may name the directory it runs in, relative to the repo root, as `` `apps/api: uv run pytest` ``; never write `cd dir && …`, which
 breaks the test lock and the worker allow-list.
 
 **"Green" means one thing everywhere** (merge driver, clearance, ticket, autopilot): on the exact
