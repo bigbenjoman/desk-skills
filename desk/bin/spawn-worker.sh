@@ -213,6 +213,9 @@ fi
 $(cat "$BRIEFING")"
 
 cd "$WT"
+# Marks the worker as headless for desk-jira, which then refuses config §4 Priorities only you set.
+# The worker cannot clear it: its allow-list has no VAR=value prefix, env or unset.
+export DESK_AUTOPILOT_WORKER=1
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \

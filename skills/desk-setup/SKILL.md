@@ -152,6 +152,10 @@ desk-jira api 'api/3/project/<KEY>/statuses' | jq -r '[.[].statuses[].name] | un
 desk-jira fields priority                               # a custom priority field, if any
 desk-jira fields size                                   # a Size field (XS-XL); none: tell the user it is a manual
                                                         # per-project UI step (desk-jira Epics), record it in §4 Other fields if found
+                                                        # and in §4 Size field (desk-jira refuses an XL outside an Epic)
+desk-jira meta                                          # per type, what Jira requires: propose §4 Required fields from it
+                                                        # and the user's answer; the top priority values go in §4
+                                                        # Priorities only you set only if the user says so
 # §4 people
 gh api repos/{owner}/{repo}/collaborators --jq '.[].login' 2>/dev/null
 cat .github/CODEOWNERS CODEOWNERS 2>/dev/null | head -20

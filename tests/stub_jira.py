@@ -3,7 +3,8 @@ from urllib.parse import urlparse, parse_qs
 DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
 # "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
-# "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field]}. Issue links posted are kept in memory, on both
+# "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field], "fields": [field list GET /field
+# answers]}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view.
 FIX = {"issues": {}, "children": {}}
 if len(sys.argv) > 4:
@@ -46,6 +47,8 @@ class H(BaseHTTPRequestHandler):
         if path.startswith("/rest/api/3/myself"):
             time.sleep(DELAY)
             return self._send(200, {"accountId": "abc", "displayName": "Me", "emailAddress": "me@example.com"}) if authed else self._send(401, {"errorMessages": ["unauthorized"]})
+        if path == "/rest/api/3/field" and self.command == "GET":
+            return self._send(200, FIX.get("fields", []))
         if path.startswith("/rest/api/3/search/jql"):
             if not authed:
                 return self._send(200, {"issues": []})  # Jira's anonymous behaviour
