@@ -408,7 +408,8 @@ Each one stops and waits for the user unless config §3 grants it. Silence is no
    fields name any) passed as a bare string 400s where `'{"value":"<option>"}'` succeeds.
 3. **Show the diff before pushing.** At config §3 `git-push` `yes`, print the `DIFF REVIEW`
    block as a record and push; at `ask`, print it and wait. The stray-commit check below hard-stops
-   either way.
+   either way, and so does a failing pre-push check: every push, fix-ups included, runs
+   `desk-pr` §4 "Before every push" first.
 4. **Leave the dev server running** on the port recorded in the resume file so the user can test
    it themselves. Never `pkill node`.
 5. **A reviewer's comment gets validated before any code changes.** Say whether it's correct

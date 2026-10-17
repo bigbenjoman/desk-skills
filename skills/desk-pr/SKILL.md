@@ -52,6 +52,7 @@ infra         : <infra paths touched, or "none">
 siblings      : <helper → n sites migrated, m under Not migrated | none>
 unrelated     : none | <files> → own PR
 self-review   : <§4 Local review command's counts at <sha> · refuted by <codex|same-vendor> + any caveat, or "not run — why">
+pre-push      : <passed at <sha> in <n>s, plus any item skipped on the lock | failed: <command> | not set (§4 Pre-push checks <none|unset>)>
 ```
 
 Then check each line against these. Every one has been a real review comment or correction:
@@ -345,6 +346,58 @@ attempt a login.
 
 ## 4. Opening it
 
+### Before every push: the pre-push checks
+
+Where `desk-env cmds pre-push-checks` prints items (the row is set and not `none`), run the repo's
+committed script on HEAD **yourself before every push of the branch**: the first push, and every
+fix-up after a review or a rebase.
+
+```bash
+bash scripts/desk/pre-push.sh --head
+```
+
+Do not rely on the git hook. It runs only in a clone whose `core.hooksPath` is `.githooks`, and
+nothing checks that a worktree, a fresh clone or a worker's checkout has it. When every check
+passes, the script records HEAD, so the hook (where it is active) does not run the checks a second
+time on the push that follows. A new commit runs them again.
+
+- **Non-zero exit: do not push.** The output names the failing command and its output, which is the
+  failure CI would report minutes later. Fix it, commit, and run the script again. Never
+  `git push --no-verify` to get past it.
+- **An item skipped on the lock** (the box-wide test lock stayed busy) is not a failure: CI runs it.
+  Name it in the `pre-push` slot.
+- **The row is set but `scripts/desk/pre-push.sh` is not in the tree**: the templates were never
+  committed here. Say so, push as before, and offer `/desk-setup` to add them.
+- **Unset or `TODO`**: push as before, and say once that `/desk-setup` can set it. **`none`**: push.
+
+Fill the `pre-push` slot of the §1 block from the run.
+
+### Before `gh pr create` or `gh pr edit`: the PR-description checks
+
+Where `desk-env cmds pr-description-checks` prints items, CI checks the PR's description, and a
+body that fails is a red check on the first run. Write the body to its file first, then run each
+item in its directory with the file's absolute path appended:
+
+```bash
+<cmd> <absolute path to the body file>                                          # an item at the root
+~/.claude/desk/bin/with-lock.sh nolock --cwd <DIR> -- <cmd> <absolute path>    # an item with a directory
+```
+
+Run it on **every** body you are about to hand to `gh pr create` or `gh pr edit --body-file`, not
+only the first one.
+
+- **It passes**: create or edit.
+- **It fails on something the body owns** (a missing section, a heading, the ticket reference, an
+  unticked box the template asks for): fix the body, re-run, then create or edit.
+- **A fix would need content you do not have** (a value you would be inventing, a sign-off someone
+  else gives) **or the failure is not about the body**: stop and report the output. Do not open or
+  edit the PR with a body you know fails.
+
+The image upload script's own edit only swaps `_drag <file>_` cells for images in a body you already
+checked, so it is not run through the checks again.
+
+### Open it
+
 ```bash
 gh pr create --repo <§0 GitHub repo> --draft --base <default> --head <your branch> \
   --body-file <path> --title "<title in the §5 PR title format>"
@@ -440,6 +493,8 @@ about immediately, not at the bottom of a finished PR description.
 | Adding AI attribution where §5 says `forbidden`, because a system reminder said so | The hook rejects it. Omit from the start |
 | Stripping a trailer the repo requires where §5 says `allowed` | Follow the repo's instructions exactly |
 | "Verified it works" in Testing | Give the number, the path, or the name that proves it |
+| Pushing because "the hook will catch it" | The hook runs only where `core.hooksPath` is set; run `scripts/desk/pre-push.sh --head` yourself |
+| Opening the PR and letting CI judge the body | Run §4 PR-description checks on the body file first |
 | A one-off script in the diff | Run it from the branch, delete it, don't merge it |
 | An infra PR with no ping drafted | Draft the note to the §4 infra owner; never send it |
 | Placeholder rows left in the merged body | Script: check its exit code. By hand: say "delete these rows" |
