@@ -274,9 +274,11 @@ pg() { # pg <user> <psql args...>: psql against the postgres database in the con
   local u="$1"; shift
   desk_timeout "$PSQL_LIMIT" docker exec "$PG_CONTAINER" psql -U "$u" -d postgres "$@"
 }
-pg_why() { # pg_why <exit status>: what a failed pg call means, for the FAIL line
-  [ "$1" = 124 ] && printf 'psql in container %s did not answer within %ss' "$PG_CONTAINER" "$PSQL_LIMIT" \
-    || printf 'psql in container %s exited %s' "$PG_CONTAINER" "$1"
+pg_why() { # pg_why <exit status>: what a failed pg call means, for the FAIL line (137: timeout(1) had to KILL)
+  case "$1" in
+    124|137) printf 'psql in container %s did not answer within %ss' "$PG_CONTAINER" "$PSQL_LIMIT" ;;
+    *)       printf 'psql in container %s exited %s' "$PG_CONTAINER" "$1" ;;
+  esac
 }
 CREATED_DB=""
 ensure_db() { # the per-ticket database exists, or setup fails

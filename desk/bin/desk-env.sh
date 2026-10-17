@@ -87,7 +87,8 @@ desk_require_headless() {
 # timeout(1) is GNU coreutils: absent on stock macOS. gtimeout (brew coreutils), then a perl alarm.
 # On timeout every one kills the command's whole process group, TERM then KILL 2s later, so a child
 # the command started (docker exec under a wrapper, a shell's pipeline) does not outlive it. 124 on
-# timeout, otherwise the command's own status (128+n when a signal ended it).
+# timeout (137 from timeout(1) when the command outlived the TERM), otherwise the command's own
+# status (128+n when a signal ended it).
 desk_timeout() {
   local secs="$1"; shift
   if command -v timeout >/dev/null 2>&1; then timeout -k 2 "$secs" "$@"
@@ -98,7 +99,8 @@ desk_timeout() {
 
 # The fallback, separate so a test can run it where timeout(1) exists. The command leads its own
 # process group (set on both sides of the fork, so an early kill still finds it), and INT, TERM and
-# HUP sent to this wrapper are passed on to that group, as timeout(1) does.
+# HUP sent to this wrapper are passed on to that group, as timeout(1) does. A command those end
+# exits 128+n, not 0, so a forwarded Ctrl-C never reads as success.
 desk_timeout_perl() {
   perl -MPOSIX -e '
     my $s = shift @ARGV; my $pid = fork();

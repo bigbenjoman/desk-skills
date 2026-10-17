@@ -12,15 +12,19 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mk
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   DESK_PG_CONTAINER DESK_PSQL_TIMEOUT
 PASS=0; FAIL=0
-check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
-alive(){ local p; for p in $(cat "$1" 2>/dev/null); do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
+check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
+# Any pid in the file still running a second on (an orphan killed a moment ago may not be reaped yet).
+alive(){ local p i; for i in 1 2 3 4 5 6 7 8 9 10; do
+  for p in $(cat "$1" 2>/dev/null); do kill -0 "$p" 2>/dev/null && { sleep 0.1; continue 2; }; done; return 1
+done; return 0; }
 reap(){ local p; for p in $(cat "$1" 2>/dev/null); do kill -9 "$p" 2>/dev/null; done; }
 
 # shellcheck source=../desk/bin/desk-env.sh
 . "$B/desk-env.sh"
 
 # A command that starts a child and waits on it: killing only the command would orphan the child.
-LEADER='sleep 30 & echo $! > "$0"; wait'
+# The child lets go of stdout, or the $( ) below would wait for it whatever the wrapper killed.
+LEADER='sleep 30 >/dev/null 2>&1 & echo $! > "$0"; wait'
 
 # Both the perl fallback and whichever desk_timeout picks here (timeout, gtimeout or the fallback).
 for fn in desk_timeout_perl desk_timeout; do
@@ -34,7 +38,23 @@ for fn in desk_timeout_perl desk_timeout; do
   check "$fn: passes the command's exit status through"    '[ $rc -eq 3 ]'
   "$fn" 5 sh -c 'kill -TERM $$'; rc=$?
   check "$fn: a command killed by a signal exits 128+n"    '[ $rc -eq 143 ]'
+  # A command that ignores TERM (its child inherits that) needs the KILL two seconds later.
+  P="$T/$fn.deaf.pid"; t0=$SECONDS
+  out=$("$fn" 1 sh -c "trap '' TERM; $LEADER" "$P" 2>&1); rc=$?; took=$((SECONDS - t0))
+  check "$fn: a command deaf to TERM is killed as a timeout" '[ $rc -eq 124 ] || { [ $fn = desk_timeout ] && [ $rc -eq 137 ]; }'
+  check "$fn: ...within the limit plus the kill grace"     '[ $took -le 6 ] && [ -s "$P" ] && ! alive "$P"'
+  reap "$P"
 done
+
+# TERM sent to the wrapper reaches the whole group, and the forwarded death is not a success.
+P="$T/fwd.pid"; : > "$P"
+desk_timeout_perl 20 sh -c "$LEADER" "$P" & W=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$P" ] && break; sleep 0.2; done
+# $! is the subshell running the function; the wrapper is its perl child (or the subshell itself, exec'd).
+PERL=$(pgrep -P "$W" perl || echo "$W")
+kill -TERM "$PERL"; wait "$W"; rc=$?; out="rc=$rc wrapper=$PERL"
+check "desk_timeout_perl: TERM to the wrapper ends the group, exit 143" '[ $rc -eq 143 ] && [ -s "$P" ] && ! alive "$P"'
+reap "$P"
 "desk_timeout_perl" 5 /nonexistent/cmd 2>/dev/null; rc=$?
 check "desk_timeout_perl: a command that cannot run exits 127" '[ $rc -eq 127 ]'
 
@@ -77,7 +97,7 @@ EOF
 cat > "$T/stub/docker" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/docker.args"
-sleep 30 & echo \$! >> "$T/docker.pids"; echo \$\$ >> "$T/docker.pids"; wait
+sleep 30 >/dev/null 2>&1 & echo \$! >> "$T/docker.pids"; echo \$\$ >> "$T/docker.pids"; wait
 EOF
 chmod +x "$T/stub/docker"
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json"
@@ -87,7 +107,7 @@ t0=$SECONDS
 out=$(DESK_PSQL_TIMEOUT=2 bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?; took=$((SECONDS - t0))
 check "hung psql: setup fails"                                  '[ $rc -ne 0 ]'
 check "hung psql: within the limit (2s) plus the kill grace"    '[ $took -le 10 ]'
-check "hung psql: the failure names the container and limit"'[[ "$out" == *"FAIL: cannot reach Postgres in container pg-hung"*"did not answer within 2s"* ]]'
+check "hung psql: the failure names the container and limit"   '[[ "$out" == *"FAIL: cannot reach Postgres in container pg-hung"*"did not answer within 2s"* ]]'
 check "hung psql: psql ran through docker exec"                 'grep -q "^exec pg-hung psql " "$T/docker.args"'
 check "hung psql: no docker or psql left running"               '[ -s "$T/docker.pids" ] && ! alive "$T/docker.pids"'
 check "hung psql: the half-built worktree is removed"           '[ ! -d "$T/wt/T-1" ]'
