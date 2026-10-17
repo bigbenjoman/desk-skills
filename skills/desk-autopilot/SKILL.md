@@ -631,7 +631,9 @@ asked-for work. Precedence: batch: the queue's `budget_usd`, `AUTOPILOT_BATCH_BU
 `none`; per worker: `AUTOPILOT_BUDGET_USD`, config, `25`. A malformed value holds spawns (batch,
 under `STALLED`) or fails the preflight (per worker); fix the value, never strip it.
 
-A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot. Log growth
+A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
+its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
+done with its PR, on the first pass that reads the marker. Log growth
 alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.
