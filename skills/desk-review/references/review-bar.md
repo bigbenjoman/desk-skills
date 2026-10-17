@@ -46,7 +46,7 @@ is why it is here.
 | --- | --- |
 | **Duplication** | A new implementation of logic that already exists: a helper, hook, util, component, flow, query or generator. Search by **mechanism** as well as name before deciding it is new. |
 | **Second vocabulary** | A new normalisation map, alias table, enum or spelling for a concept that already has a canonical form. |
-| **Rule enforced only in the UI** | A business rule the client checks (a disabled button, a form validator, a hidden option) that the server write it guards does not check, so a direct request gets past it. |
+| **Rule enforced only in the UI** | A business rule the client checks (a disabled button, a form validator, a limit on a field) that the server write it guards does not check, so a direct request gets past it. A rule about *who* may act (a role, ownership, a tenant) that only the UI enforces is P0 **Authorization**, not this. |
 | **Layer bypass** | Work done in a layer the repo has put somewhere else: database access outside its data-access layer, a transaction opened in a route handler, business logic in a view, a direct third-party call where a client wrapper exists. The repo's own instructions say which layers exist. |
 | **Dead on arrival** | An export whose only non-test reference is its own story or test. A new module with no importer. A flag, field or enum value with no writer. |
 | **Advisory by accretion** | A new `continue-on-error`, a new warn-level lint rule, a skipped test, or an `except: pass` added with no expiry. A control that cannot fail is not a control. |
