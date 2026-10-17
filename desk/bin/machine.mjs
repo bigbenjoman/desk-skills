@@ -21,7 +21,7 @@ export const HARDWARE_KEYS = Object.freeze([
 export const SIZING_KEYS = Object.freeze([
   'runner-possible', 'runner-vm-cpus', 'runner-vm-memory-gb', 'runner-vm-disk-gb',
   'runner-slots-per-repo', 'runner-memory-reserved-gb', 'autopilot-concurrency',
-  'memory-ceiling-gb', 'test-cap', 'typecheck-lock-timeout-min',
+  'memory-ceiling-gb', 'test-cap', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
 ]);
 
 // The thresholds and ratios the proposal uses. Changing one changes every new proposal, never a
@@ -31,7 +31,7 @@ export const RULES = Object.freeze({
   vmMemoryShare: 3 / 8, vmCpuShare: 2 / 3, vmDiskShare: 1 / 2, vmDiskMaxGB: 100,
   slotCpus: 2, slotMemoryGB: 4,
   osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3,
-  typecheckLockTimeoutMin: 20,
+  typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
 });
 
 const num = (v) => (v === '' || v == null ? NaN : Number(v));
@@ -234,6 +234,8 @@ export function propose(hw, { runnerOnBattery = false } = {}, r = RULES) {
   add('test-cap', known(perf) ? Math.max(1, perf) : 4, known(perf) ? `the ${perf} performance cores` : 'core count unknown: 4');
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
+  add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
+    'how long the pre-push hook waits for the test lock before skipping a typecheck or suite; CI runs it anyway');
   return rows;
 }
 

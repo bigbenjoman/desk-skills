@@ -8,6 +8,7 @@
 #   with-lock.sh browser <screenshot capture>
 #   with-lock.sh test --cwd apps/api -- uv run pytest tests/x.py
 #   with-lock.sh nolock --cwd portal -- pnpm dev              # a directory, no lock
+#   with-lock.sh tsc --timeout 60 --cwd . -- pnpm typecheck   # give up waiting after 60 s: exit 75
 # --cwd runs the command in that directory, relative to the root of the git worktree the caller is in:
 # the form a §4 command item with a directory (`apps/api: uv run pytest`) takes, because `cd dir && …`
 # is a compound command that neither the lock nor the worker allow-list can see into. The directory
@@ -17,8 +18,15 @@
 # Uses flock(1) where it exists (Linux). Where it does not (stock macOS) it falls back to an atomic
 # `mkdir` lock recording the wrapper's and the command's pids, so a crashed holder is detected and
 # taken over instead of wedging the box. Both block with no timeout: waiting is the feature.
+# --timeout <seconds> is only for a caller that must not wait (the committed pre-push hook): it bounds
+# the wait for the lock, never the command, and exits 75 without running anything when it passes.
 set -uo pipefail
-name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--cwd <dir> --] <command...>}"; shift
+name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> --] <command...>}"; shift
+timeout=""
+if [ "${1:-}" = "--timeout" ]; then
+  case "${2:-}" in ''|*[!0-9]*) echo "with-lock.sh: --timeout needs a whole number of seconds" >&2; exit 2 ;; esac
+  timeout="$2"; shift 2
+fi
 if [ "${1:-}" = "--cwd" ]; then
   [ "$#" -ge 3 ] && [ "$3" = "--" ] || { echo "with-lock.sh: usage: with-lock.sh <lock> --cwd <dir> -- <command...>" >&2; exit 2; }
   rel="$2"; shift 3
@@ -47,9 +55,15 @@ case "$name" in
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac
 [ -n "$lock" ] || exec "$@"
+gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 
 if command -v flock >/dev/null 2>&1; then
-  exec flock "$lock" "$@"
+  [ -n "$timeout" ] || exec flock "$lock" "$@"
+  # The descriptor form, so a timeout is told apart from the command's own exit status. The command
+  # inherits fd 9, so the lock is held until it exits.
+  exec 9>>"$lock" || exit 2
+  flock -w "$timeout" 9 || gave_up
+  exec "$@"
 fi
 
 # ---- mkdir fallback ---------------------------------------------------------------------------
@@ -82,6 +96,7 @@ while ! mkdir "$ldir" 2>/dev/null; do
     if mv "$ldir" "$grave" 2>/dev/null; then rm -rf "$grave" 2>/dev/null || true; fi
     continue
   fi
+  [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
   if [ "$waited" -eq 0 ]; then echo "with-lock.sh: waiting for $name lock (held by pid ${holders:-?})" >&2; fi
   waited=$((waited + 2))
   sleep 2
