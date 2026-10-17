@@ -229,8 +229,9 @@ ten minutes catches nothing. §3b Subagents that may run without asking still ap
 
 **Domain experts** are why the fleet is not fixed. §4 Review domain experts is one span per rule,
 `` `<glob>: <skill>` ``, e.g. `` `apps/api/trading/**: energy-trader` ``. A matching change gets a
-finder whose first instruction is to invoke that skill with the Skill tool and read the references
-it routes to, **before** reading the diff, then to report in this bar's scale. A domain error that
+finder whose first instruction is to invoke that skill with the Skill tool (where the tool lacks it,
+as in an autopilot worker, Read `$DESK_SKILLS_DIR/<skill>/SKILL.md`) and read the references it
+routes to, **before** reading the diff, then to report in this bar's scale. A domain error that
 moves money, a trade, a valuation or a regulated decision is P0. Adopting the persona from memory is
 not loading the skill; say so in the prompt.
 

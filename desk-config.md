@@ -293,7 +293,7 @@ such thing.
 | Local review command | `TODO` (run before opening a PR and posted with `pr-self-review-comment`: `/desk-review`, a review skill the repo ships, `/code-review`; `none` to skip) |
 | Clean review verdict | `TODO` (how the local review says clean: for `/desk-review`, `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`; or e.g. `no findings`) |
 | Review bar | `TODO` (`default` for desk-review's built-in bar, or the repo path of this repo's own, e.g. `docs/review-bar.md`) |
-| Review domain experts | `TODO` (skills a `/desk-review` finder loads for matching paths, one span each as `` `<glob>: <skill>` ``, e.g. `` `apps/api/pricing/**: energy-trader` ``; or `none`) |
+| Review domain experts | `TODO` (skills a `/desk-review` finder loads for matching paths, one span each as `` `<glob>: <skill>` ``, e.g. `` `apps/api/pricing/**: energy-trader` ``; or `none`. A repo with UI starts from the UI default, with its own paths: `` `**/*.{tsx,jsx,vue,svelte,css}: ui-designer` `` `` `**/*.{tsx,jsx,vue,svelte}: ux-designer` `` and `` `<message files, e.g. messages/**>: ux-copywriter` ``) |
 | Project subagents sync | `TODO` (command a fresh worktree needs to link `.claude/agents`, or `none`) |
 
 ### Toolchain

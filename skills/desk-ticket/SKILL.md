@@ -105,7 +105,7 @@ silently skipped:
 | 0 | Triage | Read the ticket fully: description, comments, linked issues, the design link if one is set, and, for context only, its parent epic or story (this ticket's own criteria are its scope). Note the issue type. Rename the session (below). Assign to the user if unassigned (Jira only). Pick a **provisional** lane and state it with its cost, **plus which skills own which stage** (below). Write the resume file. **Do not transition the ticket yet.** |
 | 1 | Branch | Off up-to-date `<default>`, named per §5 Branch names with `<TICKET>` in it, prefix from the issue type. Record the exact branch in the resume file: the PR is opened from it and is found by it (the autopilot merge driver matches a ticket's PR by its exact head branch and base `<default>`), so never rename it later. Worktree if another session is live, or lane C/D. **A new worktree then runs §4 Project subagents sync**, see below. |
 | 2 | Understand | Read the code paths, and **what the repo's own documentation says about them** before writing any code (below). Reproduce the bug. **Commit the lane now**: this is the first point it is knowable. Transition to §4 In-progress state (Jira only). Flag anything wrong in the ticket. |
-| 3 | Implement | Per lane. A change that is not mechanical gets its design from the area's expert first, and you write the code (below). Lane C stops for agreement before this stage; lane D hands the build to the project's design-build agent where it has one (routing reference). |
+| 3 | Implement | Per lane. A ticket that renders UI loads the design skills before any UI code (below). A change that is not mechanical gets its design from the area's expert first, and you write the code (below). Lane C stops for agreement before this stage; lane D hands the build to the project's design-build agent where it has one (routing reference). |
 | 4 | Verify | `desk-dev` for the environment. §4 Typecheck, §4 Lint (its fixing form if the row gives one), §4 Unit tests and the knowledge check where the repo has one; a §4 Build only when the change needs one (below). Add a spec that guards the fix. A claim the knowledge check reports as changed gets written back in this branch (below). Then run the docs check from `desk-pr` §1 and **report** what it finds: a hit is sometimes a stale comment in the source rather than a page edit, and that is far cheaper to learn here than at Stage 7. Report only; rewriting a page is the user's call. |
 | 4b | Self-review | Run §4 Local review command on the branch, **before** Stage 5, so a finding cannot invalidate screenshots already taken. With `none`, the stage is a stated skip (below). Two preconditions, each a silent false clean otherwise: where the command is a repo-local skill, the tree must contain it (rebase onto `<default>` rather than skipping), and an empty diff is a stated skip, never a clean run. **Fix what the review confirms, then report**; do not stop and ask first. Apply every confirmed P0 and P1, and any P2 whose fix is mechanical, as their own commit. Produce the `SELF-REVIEW` block as a record of what was done, with an outcome against every finding. Re-run after fixes, **at most three rounds**: each fix is itself unreviewed code, so only a round that finds nothing has reviewed everything. If the third round still finds something, stop: report what is left, do not open the PR, and let the user decide. **Three things also stop and wait**, because no refutation settles them: a finding whose fix changes product, design or catalog behaviour; **a fix that grows**: it needs a new file other than its own spec, or a file the ticket's diff does not already touch (Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites.); and any finding you could not confirm because the refutation pass did not run. |
 | 5 | Evidence | **Only if the change alters what renders, or what a server route, webhook or job does at runtime.** For a rendered change, confirm the running server's HEAD matches your branch, capture before/after to `<handoff dir>/<TICKET>/` (config §2), and delete the Playwright artefacts. For a server or webhook fix, the evidence is the request or log that shows the fix running, not only a screenshot. If neither applies, skip the stage and say so in one line. |
@@ -117,7 +117,8 @@ silently skipped:
 **Skill routing goes in the plan, not a closing checklist (Stage 0).** State a short table of which
 skill owns which stage: `desk-ticket` for this ticket, `desk-pr` at Stage 7, `desk-jira` for
 Jira writes (or "none: no tracker"), `desk-review-response` for any reviewer comment, `desk-dev` for
-the environment, `desk-autopilot` for a batch of tickets. Name any the user would expect that you
+the environment, `desk-autopilot` for a batch of tickets, and for a ticket that renders UI
+`ux-designer`, `ui-designer` and `ux-copywriter` at Stage 3. Name any the user would expect that you
 are **not** using, with the reason. A plan that buries the routing reads as improvised process.
 
 **Read what the repo documents before writing code (Stage 2).** The files §5 Repo instructions names
@@ -137,6 +138,28 @@ and ask for the design, not the code. Then write it in this session, which holds
 and can ask the user; splitting one change across agents by file type loses both. Mechanical changes
 need no consult. A repo with no project subagents has no consult: put the design in the plan
 yourself and say so. Lane D is the exception (routing reference).
+
+**A ticket that renders UI loads the design skills before any UI code (Stage 3).** It renders UI
+when autopilot triage says `renders: true`, when the ticket's Design section says anything other
+than `No UI`, or when the change alters what a user sees. Nobody has to ask; load them in every lane,
+before the first component, style or message-file edit:
+
+- **`ux-designer`** for the flow and every state the UI can be in: empty, loading, error and
+  success, plus any the ticket implies. A state the design or ticket does not show is designed here,
+  not left to whatever the code falls into.
+- **`ui-designer`** in its existing-system mode (Mode B), against the files §5 Design system names
+  (`desk-env list design-system`): read them before designing. Every colour, type size, spacing value
+  and radius comes from those tokens; a value they do not hold is labelled in the PR as a proposed
+  extension (its Mode C), never added silently. With the row `none`, its own Step 0 detection decides
+  the mode, and the PR says which it chose.
+- **`ux-copywriter`** for any user-facing wording: labels, buttons, errors, empty states,
+  confirmations. Copy the ticket or design states verbatim stays verbatim; this is for the wording
+  nobody wrote.
+
+Load each with the Skill tool. An autopilot worker has no skill registry and reads each one's
+`SKILL.md` as a file instead (worker contract). A skill that is not installed is said in the plan,
+with `/desk-update` as the fix, never skipped silently. Brief any design consult or design-build
+agent (Suki, Muriel) with the same three skills and the Design system row.
 
 **Build only when the change needs it (Stage 4).** CI builds every PR. Run §4 Build locally when the
 change touches what typecheck, lint and unit tests cannot see: framework or bundler config,
