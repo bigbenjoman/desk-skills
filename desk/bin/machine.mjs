@@ -233,7 +233,7 @@ export function propose(hw, { runnerOnBattery = false } = {}, r = RULES) {
   add('memory-ceiling-gb', ceiling, ceilingWhy);
   add('test-cap', known(perf) ? Math.max(1, perf) : 4, known(perf) ? `the ${perf} performance cores` : 'core count unknown: 4');
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
-    `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
+    `how long a typecheck waits on the lock before the wait is reported, and the pre-push hook skips it; with-lock.sh times out only when asked`);
   return rows;
 }
 

@@ -33,6 +33,7 @@ run "queue set (JSON objects and arrays)" "$SH" "$T/test_queue_set.sh"
 run "skill links (skills-upstream links)" "$SH" "$T/test_links.sh"
 run "plugins (unbumped vs outdated)" "$SH" "$T/test_plugins.sh"
 run "install_file (rename over a running script)" "$SH" "$T/test_install_file.sh"
+run "pre-push hook (stdin, no row, lock timeout)" "$SH" "$T/test_pre_push.sh"
 run "playwright lookup and saved GitHub login" node "$T/test_playwright.mjs"
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; }
 exit $fail

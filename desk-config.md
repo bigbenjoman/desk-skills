@@ -305,6 +305,8 @@ such thing.
 | E2E tests | `TODO` (or `none`) |
 | Integration tests | `TODO` (database-backed suite, and whether it needs its own database; or `none`) |
 | Build | `TODO` |
+| Pre-push checks | `TODO` (what the committed pre-push hook runs on the pushed commit before it leaves, in order with generate steps first, one span each in the form Unit tests takes, e.g. `` `pnpm prisma generate` `pnpm lint` `pnpm typecheck` ``; an item equal to a Typecheck or Unit tests item takes the box-wide test lock and is skipped, with a warning, if the lock stays busy past the machine profile's `typecheck-lock-timeout-min` (60 s with no profile); or `none` to push unchecked) |
+| PR-description checks | `TODO` (the script CI runs on a PR's description, so it can run before the PR is opened or edited, e.g. `node scripts/check-pr-body.mjs`; or `none`) |
 | Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |
 
 ### Environments and services

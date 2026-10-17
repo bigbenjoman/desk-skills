@@ -218,6 +218,8 @@ export const CONFIG_ROWS = Object.freeze({
   'e2e-cmd': { section: '4', row: 'E2E tests' },
   'build-cmd': { section: '4', row: 'Build' },
   'integration-cmd': { section: '4', row: 'Integration tests' },
+  'pre-push-checks': { section: '4', row: 'Pre-push checks' },
+  'pr-description-checks': { section: '4', row: 'PR-description checks' },
   'seed-cmd': { section: '4', row: 'Seed' },
   'db-url-var': { section: '4', row: 'Database URL variable' },
   'db-migrate-cmd': { section: '4', row: 'Database migrate' },

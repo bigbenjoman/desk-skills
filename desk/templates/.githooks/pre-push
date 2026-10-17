@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Committed pre-push hook: active once `git config core.hooksPath .githooks` is set. The checks live in
+# scripts/desk/pre-push.sh, which reads git's stdin; a checkout without that script pushes unchecked.
+# Git skips a hook that is not executable: commit it as mode 100755 (git update-index --chmod=+x).
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$top/scripts/desk/pre-push.sh" ] || exit 0
+exec bash "$top/scripts/desk/pre-push.sh" "$@"
