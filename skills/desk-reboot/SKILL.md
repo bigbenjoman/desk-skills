@@ -108,8 +108,8 @@ desk-runner status    # must not say running (it exits non-zero unless the VM ru
 ```
 
 Report the `down` line verbatim. If `down` fails or `status` still says running, that is a blocker.
-desk-runner has no login agent, so nothing starts the VM again after login: the handoff says to
-run `desk-runner up`.
+`down` also removes the launchd agents that bring the VM back at login, so nothing starts it again
+after the reboot: the handoff says to run `desk-runner up`, which reinstalls them.
 
 ## 5. This session's own handoff
 
