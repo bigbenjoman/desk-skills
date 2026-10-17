@@ -33,7 +33,7 @@ cat > "$T/fixture.json" <<EOF
     "subtasks": [{"key": "KAN-9", "fields": {"summary": "a piece", "status": {"name": "To Do"}, "issuetype": {"name": "Subtask"}}}],
     "attachment": [{"id": "10", "filename": "flow.png", "mimeType": "image/png", "size": 2048,
       "content": "https://example.atlassian.net/rest/api/2/attachment/content/10"}],
-    "description": "Run {{desk\\\\-jira get KAN\\\\-5}} and *read\\\\_it*."},
+    "description": "Run {{desk\\\\-jira get KAN\\\\-5}} and *read\\\\_it*.\\n{code}grep -c '\\\\[x\\\\]' f{code}"},
   "KAN-6": {"summary": "bare"},
   "KAN-7": {"summary": "links down"}},
  "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
@@ -115,7 +115,8 @@ check "get prints subtasks under subtasks:" 'printf "%s\n" "$out" | grep -A1 "^s
 check "get prints attachments under attachments:" 'printf "%s\n" "$out" | grep -A1 "^attachments:$" | grep -qxF "  flow.png (image/png, 2048 bytes) https://example.atlassian.net/rest/api/2/attachment/content/10"'
 check "get prints remote web links under web links:" 'printf "%s\n" "$out" | grep -A1 "^web links:$" | grep -qxF "  PR 7 https://github.com/acme/alpha/pull/7 (mentioned in)"'
 check "get prints the description with wiki escapes removed" 'printf "%s\n" "$out" | grep -qxF "Run {{desk-jira get KAN-5}} and *read_it*."'
-raw=$(cd "$A" && "$J" get KAN-5 --json | jq -r .fields.description)
+check "get leaves a {code} block as written" 'printf "%s\n" "$out" | grep -qxF "{code}grep -c '"'\\\\[x\\\\]'"' f{code}"'
+raw=$(cd "$A" && "$J" get KAN-5 --json | jq -r .fields.description | head -n1)
 check "get --json keeps the raw description" '[ "$raw" = "Run {{desk\\-jira get KAN\\-5}} and *read\\_it*." ]'
 out=$(cd "$A" && "$J" get KAN-6 2>&1); rc=$?
 check "get with none of them says so in each section" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "parent   : -" &&

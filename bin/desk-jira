@@ -414,9 +414,13 @@ case "$cmd" in
       # rather than reading as "none".
       remote=$(api GET "api/2/issue/$key/remotelink") || remote='null'
       # The text form is for reading and copying, so wiki-markup escapes are dropped (`\-` prints as
-      # `-`) and no field is cut short. --json above stays the raw issue.
+      # `-`) everywhere but {code} and {noformat} blocks, whose text Jira keeps literally, and no
+      # field is cut short. --json above stays the raw issue.
       printf '%s\n%s' "$res" "$remote" | jq -rs "$JQ_VAL"'
-        def unwiki: if type == "string" then gsub("\\\\(?<c>[-_*+^~?#{}\\[\\]|!])"; .c) else . end;
+        def unwiki: if type == "string" then
+            [scan("(?s)\\{(?:code|noformat)[^}]*\\}.*?\\{(?:code|noformat)\\}|(?:(?!\\{(?:code|noformat)).)+|.")]
+            | map(if test("^\\{(code|noformat)") then . else gsub("\\\\(?<c>[-_*+^~?#{}\\[\\]|!])"; .c) end) | join("")
+          else . end;
         def brief: "\(.key) (\(.fields.issuetype.name // "-"), \(.fields.status.name // "-")) \(.fields.summary // "")";
         def section($name; $rows): if ($rows | length) == 0 then "\($name): none" else "\($name):", ($rows[] | "  \(.)") end;
         .[0] as $i | .[1] as $remote | $i.fields as $f |
