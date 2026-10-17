@@ -93,4 +93,31 @@ check "with-lock --timeout: a non-number is refused"  '[ $rc -eq 2 ]'
 rm -f "$DESK_MACHINE"; commit g; push origin main
 check "no profile, lock free: the typecheck runs"     '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ]'
 
+# ---- --head: desk-pr runs the checks itself, and the hook does not repeat a pass ----
+head_run(){ rm -f "$T/ran"; out=$(bash scripts/desk/pre-push.sh --head 2>&1 </dev/null); rc=$?; ran=$(tr '\n' ' ' < "$T/ran" 2>/dev/null); }
+commit h; LINT_RC=1 LINT_SAYS=broken head_run
+check "--head: a failing check exits non-zero"        '[ $rc -ne 0 ] && [ "$ran" = "gen tc lint " ] && [[ "$out" == *"FAIL  sh lint.sh"* ]] && [[ "$out" == *"lint says broken"* ]]'
+LINT_RC=1 push origin main
+check "--head failure records nothing: the hook still stops the push" '[ $rc -ne 0 ] && [ "$ran" = "gen tc lint " ]'
+head_run
+check "--head: a pass runs every check, exit 0"       '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ] && [[ "$out" == *"checks passed"* ]]'
+push origin main
+check "after a --head pass the hook does not run them again" '[ $rc -eq 0 ] && [ -z "$ran" ] && [[ "$out" == *"already passed on"* ]] && [ "$(remote main)" = "$(git rev-parse HEAD)" ]'
+commit i; push origin main
+check "a new commit runs them again"                  '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ]'
+head_run; config '`sh gen.sh` `sh lint.sh`'; head_run
+check "a changed row runs them again"                 '[ $rc -eq 0 ] && [ "$ran" = "gen lint " ]'
+config "$ROW"; head_run; echo dirty >> notes; head_run
+check "--head: a dirty tracked tree is refused"       '[ $rc -ne 0 ] && [ -z "$ran" ] && [[ "$out" == *"differ from HEAD"* ]]'
+git checkout -q -- notes
+config; head_run
+check "--head with no row: nothing runs, exit 0"      '[ $rc -eq 0 ] && [ -z "$ran" ]'
+config "$ROW"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `pre-push-lock-timeout-s` | `0` | test |\n' > "$DESK_MACHINE"
+bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/held2'; sleep 3" & holder=$!
+n=0; while [ ! -f "$T/held2" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+commit j; head_run
+wait "$holder"; rm -f "$DESK_MACHINE"; push origin main
+check "a pass with a check skipped on the lock is not recorded" '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ]'
+
 echo "pre-push: $PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

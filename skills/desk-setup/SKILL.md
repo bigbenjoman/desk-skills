@@ -121,6 +121,12 @@ find . -maxdepth 3 \( -name node_modules -o -name .git -o -name .venv \) -prune 
   -o -name Makefile -o -name 'docker-compose*.yml' -o -name 'compose*.yml' -o -name vercel.json \) -print | sort
 jq -r '.packageManager // empty, (.scripts // {} | to_entries[] | "\(.key)\t\(.value)")' package.json
 find . -maxdepth 1 \( -name .claude -o -name .agents -o -iname claude.md -o -iname agents.md \) -print
+# §4 pre-push and PR-description checks: what CI runs, and any hook already in charge of pushes
+grep -rnE 'run:|pull_request\.(body|title)|PR_BODY' .github/workflows 2>/dev/null
+git config --get core.hooksPath
+find . -maxdepth 2 \( -name .husky -o -name 'lefthook*.yml' -o -name .pre-commit-config.yaml \) -print
+find "$(git rev-parse --git-common-dir)/hooks" -type f ! -name '*.sample' -print   # hooks a hooksPath would switch off
+find .githooks scripts/desk -maxdepth 1 -type f -print 2>/dev/null                   # templates already committed?
 # §4 environments: names only, never values
 find . -maxdepth 3 -name node_modules -prune -o -name '.env*' -type f -print | sort
 grep -hoE '^[A-Z0-9_]*(DATABASE|DB|POSTGRES|PG)[A-Z0-9_]*=' $(find . -maxdepth 3 -name node_modules -prune -o -name '.env*' -type f -print) 2>/dev/null | sort -u   # variable names only
@@ -248,6 +254,20 @@ How to turn what you find into rows:
   command items in its directory, e.g. `` `apps/api: uv run pytest` ``, and its `alembic.ini` a
   §4 Database migrate candidate. Propose, then confirm; a guessed test command that does not exist
   wastes a worker's whole run.
+- **Pre-push checks.** From the steps the CI workflows run on a pull request, take the fast,
+  local ones (code generation, format, lint, typecheck) and map each onto the repo's own command
+  (a `package.json` script, a Makefile target), one span each in the Unit tests form, generate steps
+  first: `` `pnpm prisma generate` `pnpm biome ci` `pnpm turbo type-check` ``. Leave out anything
+  that needs a database, a browser, secrets or a deploy, and any suite too slow to sit in front of a
+  push: the aim is about 90 s on this computer. Say which CI step each item came from and which
+  steps you left out and why. Write an item exactly as the Typecheck or Unit tests row writes it when
+  it is the same command, so it takes the test lock. `none` is a fine answer.
+- **PR-description checks.** A workflow step that reads `github.event.pull_request.body` (or a
+  `PR_BODY`-style variable set from it) and runs a script is the candidate: propose that script's
+  command, e.g. `` `node scripts/check-pr-body.mjs` ``. desk-pr runs it with the draft body's file
+  path appended, so **read the script** and say whether it accepts a file path. One that reads only
+  the event or an environment variable cannot run before the PR exists: propose `none` and say that
+  adding a file-path argument is a change to the repo, for its own PR. No such step: `none`.
 - **Env files.** The `.env*` files the primary checkout has that a fresh worktree lacks
   (`git -C <root> ls-files --others --ignored --exclude-standard | grep -E '(^|/)\.env'`). Names
   only; never read them.
@@ -324,6 +344,50 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
   follow the profile, including after a re-proposal.
 - `desk-env machine get <key>` reads a value and `desk-env machine why <key>` its reason;
   `runner-possible` is what the runner tooling refuses on.
+
+### The pre-push hook
+
+Once §4 Pre-push checks is confirmed and is not `none`, make two offers, each its own question.
+
+**1. Commit the hook and the script.** The templates are in the desk-skills checkout that ran
+`install.sh`: `$(cat ~/.claude/desk/source-checkout)/desk/templates/`, holding `.githooks/pre-push`
+and `scripts/desk/pre-push.sh`. If the repo already has both and they match, say so and skip. If they
+differ, show the diff and ask whether to update them. On a yes, on a new branch off `<default>` named
+per §5 Branch names, never on `<default>` itself:
+
+```bash
+T="$(cat ~/.claude/desk/source-checkout)/desk/templates"
+mkdir -p .githooks scripts/desk
+cp "$T/.githooks/pre-push" .githooks/pre-push && cp "$T/scripts/desk/pre-push.sh" scripts/desk/pre-push.sh
+git add .githooks/pre-push scripts/desk/pre-push.sh
+git update-index --chmod=+x .githooks/pre-push      # git skips a hook that is not executable
+git commit -m "<§5 PR title format>: add the desk pre-push hook"
+```
+
+Push it and open the PR through `desk-pr`, under §3 `git-push` and `pr-open`. Say that both paths
+fall under the merge holds proposed above, so a person merges it.
+
+**2. Set `core.hooksPath` for this clone.** First check what already runs on a push:
+
+- **A hook manager is in charge** (`.husky/`, a `lefthook` file, `.pre-commit-config.yaml`), or
+  `core.hooksPath` is already set to something other than `.githooks`: do not change it, because
+  that would switch the manager off. Say so, and that `desk-pr` runs the script itself before every
+  push anyway. Offer the one line for the manager's own pre-push hook,
+  `bash scripts/desk/pre-push.sh "$@"`, as the user's change to make.
+- **Hooks in `.git/hooks` that are not samples**: a hooks path switches them off. Name them and ask
+  before setting it.
+- **Otherwise**, on a yes, in the primary checkout:
+
+  ```bash
+  git config core.hooksPath .githooks     # local to this clone and shared by its worktrees; a new clone needs it again
+  ```
+
+  Git finds no hook there until the hook from offer 1 is checked out. That is harmless: the push
+  runs unchecked, as it does today.
+
+Once the script is in the checkout, run `bash scripts/desk/pre-push.sh --head` once and show each
+item's time. Over about 90 s: say so, and offer to move the slowest item out of the row (CI still
+runs it).
 
 ## 2. The permission interview
 
@@ -498,6 +562,8 @@ github    : protection <summary (classic / ruleset <name>) / none> · required <
             gh scopes <scopes> · codex <yes date / no> · review <command> (clean = <verdict>)
 toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build ·
             env files <names>          (each list item as its own backtick span, `dir: cmd` where it has one)
+pre-push  : checks <items / none> · pr-body <command / none> · hook <committed in #<n> / declined / not offered> ·
+            hooksPath <.githooks / <other>, left alone / unset> · first run <n>s
 services  : db <…/none> · db vars <names / none> · services <…/none> · staging <url/none> ·
             vercel <…/none> · slack <…/none> · check-out → <destination>
 people    : reviewer <…> · infra/security <…> · product <…> · designer <…> · QA <…> · deletes <…>

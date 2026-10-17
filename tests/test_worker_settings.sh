@@ -37,6 +37,7 @@ settings(){
 | Command prefix | \`none\` |
 | Install | \`none\` |
 | Unit tests | $1 |
+${2:-}
 EOF
   rm -f "$T/ws.json"
   out=$(cd "$T/repo" && DESK_CONFIG="$T/config.md" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" \
@@ -53,6 +54,15 @@ check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env
 
 settings '`sh scripts/check.sh`'
 check "sh <repo script>: allowed and probed"              '[ $rc -eq 0 ] && allows "Bash(sh scripts/check.sh:*)" && [[ "$out" == *"TOOLCHAIN_PROBE: sh --version"* ]]'
+
+check "no Pre-push checks row: no pre-push rule"          '! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
+settings '`bash tests/run.sh`' '| Pre-push checks | `bash tests/run.sh` |
+| PR-description checks | `node scripts/check-pr-body.mjs` |'
+check "pre-push row: desk-pr may run the script on HEAD"  '[ $rc -eq 0 ] && allows "Bash(bash scripts/desk/pre-push.sh --head)"'
+check "pre-push rule is exact, not a prefix"              '! allows "Bash(bash scripts/desk/pre-push.sh --head:*)" && ! allows "Bash(bash scripts/desk/pre-push.sh:*)"'
+check "PR-description check: allowed with a body file"    'allows "Bash(node scripts/check-pr-body.mjs:*)"'
+settings '`bash tests/run.sh`' '| Pre-push checks | `none` |'
+check "pre-push none: no pre-push rule"                   '[ $rc -eq 0 ] && ! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
 
 for item in 'bash -c tests/run.sh' 'bash' 'bash /abs/run.sh' 'bash ../run.sh' 'bash tests/../../x.sh' 'zsh tests/run.sh' 'bash tests/run.py' 'bash -x tests/run.sh'; do
   settings "\`$item\`"

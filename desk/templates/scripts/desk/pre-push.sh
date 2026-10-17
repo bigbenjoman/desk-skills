@@ -11,6 +11,8 @@
 #   past that it is skipped with a warning, since CI runs it anyway.
 # - A failing check stops the push with its command and output. `git push --no-verify` skips the
 #   hook; CI stays the control.
+# - `--head` checks HEAD without a push (desk-pr runs it before pushing, hook or no hook). A run where
+#   every check passed records HEAD, so the hook on the push that follows does not run them twice.
 set -uo pipefail
 DESK_HOME="${DESK_HOME:-$HOME/.claude/desk}"
 ENV_MJS="$DESK_HOME/bin/desk-env.mjs"
@@ -18,12 +20,16 @@ WITH_LOCK="$DESK_HOME/bin/with-lock.sh"
 say() { echo "pre-push: $*" >&2; }
 
 refs=""
-while read -r lref lsha _; do
-  [ -n "${lsha:-}" ] || continue
-  case "$lsha" in *[!0]*) ;; *) continue ;; esac   # all zeros: a delete
-  case "$lref" in refs/tags/*) continue ;; esac
-  refs="$refs $lref=$lsha"
-done
+if [ "${1:-}" = --head ]; then
+  refs="HEAD=$(git rev-parse HEAD)" || exit 1
+else
+  while read -r lref lsha _; do
+    [ -n "${lsha:-}" ] || continue
+    case "$lsha" in *[!0]*) ;; *) continue ;; esac   # all zeros: a delete
+    case "$lref" in refs/tags/*) continue ;; esac
+    refs="$refs $lref=$lsha"
+  done
+fi
 [ -n "$refs" ] || exit 0
 
 command -v node >/dev/null 2>&1 && [ -f "$ENV_MJS" ] || exit 0
@@ -50,6 +56,14 @@ if ! git diff --quiet HEAD --; then
   exit 1
 fi
 
+# The commit and the row a full pass ran on. A changed row, or any new commit, runs them again.
+stamp="$(git rev-parse --git-path desk-pre-push-passed)"
+key="$head $(printf '%s' "$checks" | git hash-object --stdin)"
+if [ "$(cat "$stamp" 2>/dev/null)" = "$key" ]; then
+  say "checks already passed on ${head:0:12}; not running them again"
+  exit 0
+fi
+
 typecheck="$(node "$ENV_MJS" cmds typecheck-cmd 2>/dev/null)"
 unit="$(node "$ENV_MJS" cmds test-cmd 2>/dev/null)"
 wait_s="$(node "$ENV_MJS" machine get pre-push-lock-timeout-s 2>/dev/null)"
@@ -63,6 +77,7 @@ lock_for() {
 out="$(mktemp "${TMPDIR:-/tmp}/desk-pre-push.XXXXXX")" || exit 1
 trap 'rm -f "$out"' EXIT
 began=$(date +%s)
+skipped=0
 while IFS=$'\t' read -r dir cmd <&3; do
   [ -n "${cmd:-}" ] || continue
   lock="$(lock_for "$dir"$'\t'"$cmd")"
@@ -74,12 +89,12 @@ while IFS=$'\t' read -r dir cmd <&3; do
     bash "$WITH_LOCK" "$lock" --timeout "$wait_s" --cwd "$dir" -- bash -c "$cmd" >"$out" 2>&1 </dev/null; rc=$?
   else
     say "skip  $cmd$where: with-lock.sh is not installed, so it cannot take the test lock; CI will run it"
-    continue
+    skipped=1; continue
   fi
   secs=$(( $(date +%s) - start ))
   if [ "$rc" = 75 ] && [ "$lock" != nolock ] && grep -q '^with-lock.sh: gave up waiting' "$out"; then
     say "skip  $cmd$where: the box-wide test lock stayed busy for ${wait_s}s; CI will run it"
-    continue
+    skipped=1; continue
   fi
   if [ "$rc" -ne 0 ]; then
     say "FAIL  $cmd$where (${secs}s, exit $rc)"
@@ -90,3 +105,5 @@ while IFS=$'\t' read -r dir cmd <&3; do
   say "ok    $cmd$where (${secs}s)"
 done 3<<< "$checks"
 say "checks passed in $(( $(date +%s) - began ))s"
+[ "$skipped" = 0 ] && { printf '%s\n' "$key" > "$stamp"; } 2>/dev/null
+exit 0

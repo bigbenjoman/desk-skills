@@ -148,8 +148,9 @@ const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? ''
 
 // The §4 command rows a worker may run, and the lock each takes when wrapped by with-lock.sh.
 const LOCK_OF = { 'test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
+// desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'agents-sync',
-  ...(HAS_TICKET_DB ? ['db-migrate-cmd', 'seed-cmd'] : [])];
+  'pr-description-checks', ...(HAS_TICKET_DB ? ['db-migrate-cmd', 'seed-cmd'] : [])];
 const warns = [];
 const items = [];
 for (const id of TOOL_IDS) {
@@ -315,6 +316,8 @@ if (mode === 'triage') {
   for (const f of FORBIDDEN) probeBins.delete(f);
   // `<bin> --version`, exactly, is the preflight's proof that each toolchain binary executes.
   for (const b of probeBins) allow.push(...withPrefix(`${b} --version`).map((c) => `Bash(${c})`));
+  // desk-pr's run of the committed pre-push script on HEAD, exactly: the checks it runs are §4 rows.
+  if (cfgList('pre-push-checks').length) allow.push('Bash(bash scripts/desk/pre-push.sh --head)');
   // Screenshot capture under the browser lock, with an installed package runner from the worktree.
   allow.push(...BIN_FORMS.flatMap((b) => withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${b}/with-lock.sh browser ${c}:*)`)));
 
