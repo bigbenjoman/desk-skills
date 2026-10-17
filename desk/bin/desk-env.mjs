@@ -31,13 +31,18 @@
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
-import { readFileSync, existsSync, realpathSync } from 'node:fs';
+//   node desk-env.mjs machine detect          print this computer's hardware, and what changed since the profile
+//   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
+//   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
+//   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
+import { readFileSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
+import * as M from './machine.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -316,12 +321,36 @@ function rowFor(id) {
 const expandSlug = (v) => (typeof v === 'string' && v.includes('<slug>') && currentRepo().slug
   ? v.replaceAll('<slug>', currentRepo().slug) : v);
 
+// ---- the machine profile -------------------------------------------------------------------
+// One per computer, beside the repo configs. §3b rows that are about the computer rather than the
+// repo fall back to it when the repo leaves them TODO or absent; a set repo row always wins, and
+// with no profile they read as unset exactly as before.
+export const machineProfilePath = () => expandHome(process.env.DESK_MACHINE ?? join(deskConfigRoot(), 'machine.md'));
+const MACHINE_FALLBACK = Object.freeze({
+  concurrency: 'autopilot-concurrency',
+  'memory-ceiling': 'memory-ceiling-gb',
+  'test-cap': 'test-cap',
+});
+let machineCache;
+export function machineProfile() {
+  if (machineCache === undefined) machineCache = M.readProfile(machineProfilePath());
+  return machineCache;
+}
+// A profile value by key (hardware or sizing), or null.
+export function machineValue(key) {
+  const p = machineProfile();
+  const v = p?.sizing[key]?.value ?? p?.hardware[key]?.value;
+  return unset(v) ? null : v;
+}
+export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
+
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
   const { section, row } = rowFor(id);
   const e = parseConfig().sections[section]?.byName[norm(row)];
-  return unset(e?.value) ? null : expandSlug(e.value);
+  if (!unset(e?.value)) return expandSlug(e.value);
+  return MACHINE_FALLBACK[id] ? machineValue(MACHINE_FALLBACK[id]) : null;
 }
 
 // Every item of a row, one per backtick span, in order. Items are never split on commas: a check
@@ -713,8 +742,52 @@ if (isMain) {
       case 'port-in-use':
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
+      case 'machine': {
+        const [sub, key] = args;
+        const path = machineProfilePath();
+        if (sub === 'get' || sub === 'why') {
+          const v = sub === 'get' ? machineValue(String(key ?? '').toLowerCase()) : machineWhy(String(key ?? '').toLowerCase());
+          if (v == null) process.exit(3);
+          console.log(v);
+          break;
+        }
+        if (!['detect', 'propose', 'write'].includes(sub)) {
+          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>');
+          process.exit(2);
+        }
+        const hw = M.gather();
+        const profile = machineProfile();
+        const proposal = M.propose(hw);
+        if (sub === 'detect') {
+          for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
+          if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          const hwc = M.hardwareChanges(profile, hw);
+          const szc = M.sizingChanges(profile, proposal);
+          if (!hwc.length && !szc.length) { console.log(`\nunchanged since ${path}`); break; }
+          if (hwc.length) console.log(`\nhardware changed since ${path}:`);
+          for (const c of hwc) console.log(`  ${c.key}: ${c.was} -> ${c.now}`);
+          if (szc.length) console.log('\nthe rules would now propose:');
+          for (const c of szc) console.log(`  ${c.key}: ${c.was} -> ${c.now}`);
+          console.log('\nre-propose the sizes: desk-env machine propose, then desk-env machine write once confirmed');
+          break;
+        }
+        if (sub === 'propose') {
+          for (const s of proposal) {
+            const was = profile?.sizing[s.key]?.value;
+            console.log(`${s.key.padEnd(27)} ${s.value.padEnd(8)} ${s.why}${was != null && was !== s.value ? `  (profile: ${was})` : ''}`);
+          }
+          break;
+        }
+        // write: overwrites; /desk-setup runs it only after the user confirms the proposal.
+        mkdirSync(dirname(path), { recursive: true });
+        const had = existsSync(path);
+        if (had) copyFileSync(path, `${path}.bak`);
+        writeFileSync(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10)));
+        console.log(`wrote ${path}${had ? ` (previous copy: ${path}.bak)` : ''}`);
+        break;
+      }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|machine');
         process.exit(2);
     }
   } catch (e) {
