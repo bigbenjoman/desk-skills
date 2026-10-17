@@ -4,7 +4,7 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
@@ -131,7 +131,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
         .find((a) => a.sessionId === t.session_id) ?? {}).pid;
       if (pid) sh('kill', [String(pid)], { tolerant: true });
-      q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it as desk-autopilot's orchestrator-recovery.md describes; never resume the session by hand, which would run it without the worker sandbox`);
+      q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
       report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
     } else if (idle >= 3) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
   }
@@ -290,20 +290,9 @@ const runningKeys = new Set(running.map((r) => r.key));
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
 // un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
 // completed ticket. This is a guard, not the cure: markers are never consumed.
-// Deliberate re-runs stay possible — name the ticket, and the spawn rotates its log:
-//   AUTOPILOT_RERUN=<TICKET> node pass.mjs
+// A deliberate re-run is `queue.mjs requeue <TICKET>`, which moves the log aside; naming the ticket
+// here does the same at spawn: AUTOPILOT_RERUN=<TICKET> node pass.mjs
 const rerunAllowed = new Set((process.env.AUTOPILOT_RERUN ?? '').split(/[,\s]+/).filter(Boolean));
-
-// Every spawn is a fresh session, so it starts a fresh log: <TICKET>.log moves to the next free
-// <TICKET>.log.round<n>. spawn-worker.sh appends, and the image upload reads its directory and PR
-// from the log, so a kept log would send the last round's screenshots to the last round's PR.
-const rotateLog = (key) => {
-  const log = join(STATE, 'logs', `${key}.log`);
-  if (!existsSync(log) || statSync(log).size === 0) return;
-  let n = 1;
-  while (existsSync(`${log}.round${n}`)) n += 1;
-  renameSync(log, `${log}.round${n}`);
-};
 
 const alreadyFinished = (r) => {
   if (rerunAllowed.has(r.key)) return false;
@@ -325,7 +314,7 @@ if (!maySpawn && eligible.length) {
 // Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
 if (blockedByDone.length) {
   report.stalled.push(`not respawning (log already has AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
-    'rotate the log or set AUTOPILOT_RERUN if the re-run is deliberate');
+    `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
 for (const t of eligible.slice(0, Math.max(0, slots))) {
@@ -411,7 +400,9 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
   // size, and without this the stall killer shoots each fresh worker within a pass or two.
   // Clear the previous round's PR and image flags too: a stale result.pr sent this round's
   // screenshots to the last round's PR, and a stale images_uploaded=true stopped them uploading.
-  rotateLog(t.key);
+  // Every spawn is a fresh session, so the last round's log and park record move aside first:
+  // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
+  E.rotateRound(t.key);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null');
