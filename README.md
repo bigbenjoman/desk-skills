@@ -43,6 +43,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
 | `desk-reboot` | Before a reboot: every session, the runner VM, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
+| `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; changes nothing | `/desk-ci classify`, `/desk-ci ci-lint` |
 
 A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), another id you list in
 setup (a planning id such as `P1-M14-FIX-1`, a bug id such as `BUG-119-5`), or, in a repo with no
@@ -194,6 +195,19 @@ session, never commits anyone's changes, and never reboots. The read-only half r
 
 ```
 node ~/.claude/desk/bin/reboot-check.mjs     worktrees across configured repos, the runner, heavy processes
+```
+
+**`/desk-ci`** proposes which of a repo's GitHub Actions jobs can move to the self-hosted runner.
+`classify` places a job hosted when it uses a secret other than `GITHUB_TOKEN` (workflow-level env
+included), an environment, `id-token`, a staging or preview URL, a third-party service, an image with
+no arm64 build, or exists for production x64 build parity, and self-hosted otherwise, citing the
+line that decided it. `ci-lint` fails a job that can run self-hosted and would receive a secret, an
+environment or `id-token`, or whose `runs-on` has no `github.actor == 'dependabot[bot]'` branch to a
+hosted runner. Neither writes anything:
+
+```
+node ~/.claude/desk/bin/desk-ci.mjs classify     placement per job, with file:line
+node ~/.claude/desk/bin/desk-ci.mjs ci-lint      exit 1 on any finding
 ```
 
 **`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile
