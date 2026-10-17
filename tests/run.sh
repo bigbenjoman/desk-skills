@@ -22,6 +22,7 @@ run "syntax and shellcheck (every shell script and .mjs)" "$SH" "$T/test_lint.sh
 run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --self-test
 run "gate (one definition of green)" node "$T/test_gate.mjs"
 run "machine profile (detection, sizing, §3b fallback)" node "$T/test_machine.mjs"
+run "memory watch (avail band, heavy processes)" node "$T/test_mem_watch.mjs"
 run "desk-jira against a local stub" "$SH" "$T/test_jira.sh"
 run "harness-rules" "$SH" "$T/test_harness.sh"
 run "batch base (one batch targets a feature branch)" "$SH" "$T/test_batch_base.sh"

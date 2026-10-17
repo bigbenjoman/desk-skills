@@ -655,12 +655,14 @@ advertises.
 | Is there room to start something? | `avail`: Linux `MemAvailable`; macOS free + inactive + purgeable |
 
 `desk-env mem status` prints both plus total process RSS. They diverge badly (by several GiB at the
-same instant) so **gate a spawn on `avail` and judge health on `vmmem`**, using RSS to tell live work
-from page cache. `free`'s `used` column is a third number, wrong for both: it excludes page cache.
+same instant) so **gate a spawn and the sustained-high watch on `avail`**, and report `vmmem` as the
+footprint, using RSS to tell live work from page cache. Never alert on `vmmem`: it counts page
+cache, so on macOS it sits over the §3b ceiling while tens of GiB are free to start work. `free`'s
+`used` column is a third number, wrong for both: it excludes page cache.
 
 **Spikes are fine. Sustained is the problem.** A test fan-out at the ceiling for ninety seconds is
-the system working; the ceiling held five minutes or more with no suite or typecheck running to
-explain it is what destabilises the machine. Do not throttle on a spike: over-caution that slows the
+the system working; `avail` under the reclaim band held five minutes or more with no suite or
+typecheck running to explain it is what destabilises the machine. Do not throttle on a spike: over-caution that slows the
 batch is a failure too.
 
 **The ladder, read at the top of every pass** (config §3b "Spawn gate (available memory)" can move
@@ -680,8 +682,10 @@ An OOM leaves a worker's worktree, database and port behind.
 
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the pass report (90s, change-only, carrying `vmmem=` and `avail=`), and a sustained-high watch
-that fires only on the ceiling held 5 minutes with nothing heavy running to explain it. Killing a
-runaway process is a call to make from the monitor, not a park.
+(`desk-env mem watch`) that fires only on `avail` below the ladder's lowest band (2 GiB, or a lower
+band the §3b row names) held 5 minutes with nothing heavy running to explain it. It keeps its timer
+in the process, so re-arm it when the `Monitor` expires. Killing a runaway process is a call to make
+from the monitor, not a park.
 
 **Test runners ignore the cap unless it is on the command line**, so seed the worker-count flag
 (`--maxWorkers=<cap>`, appended **only** to a Jest or Vitest command; never to pytest or another
@@ -771,7 +775,7 @@ cat ~/.claude/skills/desk-autopilot/references/batch-notes-header.md >> <state>/
 
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs render | tail -n +2; desk-env mem status
-[ "$(desk-env mem used | cut -d. -f1)" -ge "<§3b ceiling>" ] && [ -z "$(desk-env heavy)" ] && echo "SUSTAINED-HIGH: footprint over the ceiling with nothing running to explain it"
+desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
 
 # apply the ladder — top-level field
 node ~/.claude/desk/bin/queue.mjs set-batch concurrency=1

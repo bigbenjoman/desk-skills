@@ -29,6 +29,9 @@
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
 //   node desk-env.mjs mem <avail|used|rss|status>
+//   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
+//                                             when avail stays under the band for the window (default 300s)
+//                                             with nothing heavy running
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs machine detect          print this computer's hardware, and what changed since the profile
@@ -593,18 +596,40 @@ export const memCeilingGiB = () => Number(/\d+(\.\d+)?/.exec(resolve({ env: 'DES
 export function heavyProcesses() {
   let out = '';
   try { out = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }); } catch { return []; }
+  return heavyFromPs(out, process.pid);
+}
+// `playwright` only as a whole name: `playwright test` is a suite, an idle `playwright-mcp` server is not.
+export function heavyFromPs(out, selfPid) {
   const rows = [];
   for (const line of out.split('\n')) {
     const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!m || Number(m[1]) === process.pid) continue;
+    if (!m || Number(m[1]) === selfPid) continue;
     const [a0 = '', a1 = '', a2 = ''] = m[2].split(/\s+/);
     const exe = basename(a0);
     if (['claude', 'bash', 'sh', 'zsh', 'grep', 'ps', 'awk'].includes(exe)) continue;
     // argv[2] only for `python -m <module>`, so a Python suite or server counts the same as a JS one.
     const hay = `${exe} ${basename(a1)}${/^python/.test(exe) && a1 === '-m' ? ` ${a2}` : ''}`;
-    if (/jest|vitest|tsc|next-server|next dev|playwright|storybook|pytest|uvicorn|gunicorn/.test(hay)) rows.push({ pid: Number(m[1]), args: m[2].slice(0, 160) });
+    if (/jest|vitest|tsc|next-server|next dev|\bplaywright\b(?!-)|storybook|pytest|uvicorn|gunicorn/.test(hay)) rows.push({ pid: Number(m[1]), args: m[2].slice(0, 160) });
   }
   return rows;
+}
+
+// The sustained-high watch: `avail` under the lowest band of §3b "Spawn gate (available memory)",
+// held for the window with nothing heavy running. Never vmmem, which counts page cache (macOS sits
+// over any ceiling while tens of GiB are free). The band is 2 GiB (the ladder's reclaim row) unless
+// the row names a lower one; the `drop to <n>` worker count is not a band.
+export function sustainedBandGiB(row = configValue('spawn-gate') ?? '') {
+  const bands = String(row).replace(/drop(?:\s+to)?\s*\d+/gi, '').replace(/\d+\s*(?=below)/gi, '')
+    .match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  return Math.min(2, ...bands);
+}
+// One sample in, the next state out, plus the line to print (once per episode). state: { since, fired }.
+export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) {
+  if (!(avail < band) || heavy > 0) return { state: { since: null, fired: false }, line: null };
+  const since = state?.since ?? now;
+  if (state?.fired || now - since < windowMs) return { state: { since, fired: !!state?.fired }, line: null };
+  const mins = Math.round((now - since) / 60000);
+  return { state: { since, fired: true }, line: `SUSTAINED-HIGH: avail=${avail.toFixed(1)}G below ${band}G for ${mins}m with nothing heavy running` };
 }
 
 // ---- misc ----------------------------------------------------------------------------------
@@ -717,6 +742,19 @@ if (isMain) {
         if (what === 'avail') console.log(availableGiB().toFixed(1));
         else if (what === 'used') console.log(usedGiB().toFixed(1));
         else if (what === 'rss') console.log(rssGiB().toFixed(1));
+        else if (what === 'watch') {
+          // Runs until killed (a Monitor); prints only when the condition has held for the window.
+          const opt = (name, dflt) => { const i = args.indexOf(name); return i > 0 && Number(args[i + 1]) > 0 ? Number(args[i + 1]) : dflt; };
+          const cfg = { band: sustainedBandGiB(), windowMs: opt('--window', 300) * 1000 };
+          const intervalMs = opt('--interval', 30) * 1000;
+          let state = null;
+          for (;;) {
+            const r = sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy: heavyProcesses().length }, cfg);
+            state = r.state;
+            if (r.line) console.log(r.line);
+            await new Promise((res) => setTimeout(res, intervalMs));
+          }
+        }
         else console.log(`vmmem=${usedGiB().toFixed(1)}G avail=${availableGiB().toFixed(1)}G rss=${rssGiB().toFixed(1)}G`);
         break;
       }
