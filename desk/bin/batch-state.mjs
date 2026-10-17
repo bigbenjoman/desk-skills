@@ -7,6 +7,20 @@ export const HELD_PREFIX = 'held by orchestrator';
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
 
+// A lane C or D triage record whose lane challenge could not read the code (triage.sh's INCONCLUSIVE):
+// one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
+export const laneUnchecked = (r) => ['C', 'D'].includes(r?.lane) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
+
+// The park question for a lane C or D triage record, or null for any other lane. plan-batch and
+// queue.mjs admit both seed a ticket's park from it.
+export function lanePark(r) {
+  if (!['C', 'D'].includes(r?.lane)) return null;
+  const reason = String(r.lane_reason ?? 'needs a person');
+  return laneUnchecked(r)
+    ? `lane ${r.lane} UNCHECKED (challenge could not read the code): confirm lane ${r.lane} or re-lane — ${reason.slice(0, 120)}`
+    : `lane ${r.lane} — ${reason.slice(0, 160)}`;
+}
+
 // A held ticket is still going somewhere only while it can still be released: every predecessor is
 // either progressing (running, waiting to spawn, done with a PR that is open, or itself held and
 // going somewhere) or merged (done with a merged PR: the release is due). One predecessor that cannot
