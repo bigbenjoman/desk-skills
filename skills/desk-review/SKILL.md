@@ -262,7 +262,7 @@ evidence. `NO FINDINGS` is the expected result for most changes and is not a fai
 
 ```
 FINDING
-severity: P0 | P1 | P2
+severity: P0 | P1 | P2 | PREMISE
 file: <path>:<line>
 title: <one line>
 detail: <what breaks, or what this duplicates and where the original lives>
@@ -355,7 +355,8 @@ the diff leaves the anchored code untouched. **When genuinely uncertain, reject*
 costs less than a false positive that burns the author's time.
 
 `CONFIRMED` and `UNREFUTED` findings reach the report; `REJECTED` ones do not. Duplicates merge: keep the clearest write-up and the
-union of the evidence. Requirement gaps never enter this phase (Phase 5 owns them).
+union of the evidence. Requirement gaps never enter this phase (Phase 5 owns them), and neither does
+a `PREMISE`: it is a claim nobody could prove, so a refuter reading the same code has nothing to add.
 
 **Existing bot comments** (interactive, on a PR): tag any surviving finding an automated reviewer
 already raised, so the report shows what is new. `references/gotchas.md#bot-comments` has the call;
@@ -464,8 +465,13 @@ REQUIREMENT GAPS (2, 1 unverified)  ABC-123
  AC3: "export includes VAT" — no VAT column in the CSV writer
  AC1: "the cache is keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only, not posted
 
+UNPROVEN PREMISES (1)
+ apps/api/jobs/sync.py:12              assumes the vendor retries a 5xx webhook; not run, docs silent
+
 → posting to #742
 ```
+
+`UNPROVEN PREMISES` are posted in the review body and counted in no field of the verdict.
 
 The last line says what is about to happen: `→ posting to #<n>`, `→ not posting (--no-comment)`,
 `→ not posting: no PR for this branch`, or `→ not posting: §3 <key> is no`.
