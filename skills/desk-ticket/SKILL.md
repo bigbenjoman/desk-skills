@@ -404,9 +404,11 @@ ticket's Design section carry both the artifact URL and the repo path (the `desi
 via `desk-jira edit` under §3 `jira-edit`.
 
 An artifact the user does not own reads as a summary, not the files: ask for access or an export
-rather than saving that. When the copy already exists and the artifact lists a newer version,
-`desk-design.mjs status <saved folder> --version <v>` exits 3: say so, and re-save on the user's
-confirmation (autopilot: the orchestrator asks).
+rather than saving that. **When a copy is already saved** (`check` prints `ok`, or an `advisory`
+naming the path), still read the artifact's current version (`action:list scope:files`) and run
+`node ~/.claude/desk/bin/desk-design.mjs status <saved folder> --version <v>`. Exit 3 means the
+artifact has moved on: say so, and re-save as above on the user's confirmation (in a batch the
+orchestrator asks and snapshots it).
 
 For lane predicates, costs, demotion triggers and how lanes C and D run: **read
 `references/desk-ticket-routing.md`**.

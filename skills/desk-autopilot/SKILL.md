@@ -381,8 +381,10 @@ node ~/.claude/desk/bin/desk-design.mjs write <state>/designs/<TICKET> --url <ar
 Each worker runs `desk-design.mjs save` on its snapshot (desk-ticket, "A Claude Design canvas is saved
 into the repo"), which commits it under `<§2 Design canvases directory>/<EPIC or KEY>/` on the
 ticket's branch, once per artifact. `canvas.json` names each board and its width; each board holds
-the exact copy, colours and sizes. When a copy is already saved and the artifact lists a newer
-version (`desk-design.mjs status <URL> --version <v>` exits 3), re-saving is a Stage 3 question.
+the exact copy, colours and sizes. For a ticket whose canvas is already saved (`check` prints `ok`
+or an `advisory`), read the artifact's current version (`Artifact action:list`) and run
+`desk-design.mjs status <URL> --version <v>`. Exit 3 means it has moved on: re-saving is a Stage 3
+question, and on a yes you snapshot it as above.
 An artifact the user does not own returns a summary, not the files: that, or one that will not
 read, is a Stage 3 question. A worker never builds from a summary or a guess.
 

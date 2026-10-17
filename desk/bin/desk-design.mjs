@@ -21,7 +21,7 @@ import { basename, dirname, extname, isAbsolute, join, normalize, relative, reso
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 
-const KEY = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$|^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const safeId = (s) => E.SAFE_ID.test(String(s ?? '')) && !String(s).includes('..');
 const fail = (msg, code = 2) => { const e = new Error(msg); e.code = code; throw e; };
 
 // ---- the canvas ------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ function ticketsFromArgs(args) {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key') {
       const key = args[++i];
-      if (!key || !KEY.test(key)) fail(`--key needs a ticket key, got ${key ?? 'nothing'}`);
+      if (!safeId(key)) fail(`--key needs a ticket key, got ${key ?? 'nothing'}`);
       out.push({ key, boards: [] });
     } else if (args[i] === '--boards') {
       const t = out.at(-1);
@@ -238,7 +238,7 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   for (const t of tickets) { const i = all.findIndex((p) => p.key === t.key); if (i < 0) all.push(t); else if (t.boards.length) all[i] = t; }
   const existing = findSaved(root, dir, url);
   const name = existing ? basename(existing.path.replace(/\/$/, '')) : (epic ?? meta?.dir ?? tickets[0].key);
-  if (!KEY.test(name)) fail(`not a folder name for a canvas: ${name}`);
+  if (!safeId(name)) fail(`not a folder name for a canvas: ${name}`);
   const destRel = `${join(dir, name)}/`;
   const dest = join(root, dir, name);
   const prev = readJson(join(dest, 'source.json'));
@@ -324,7 +324,7 @@ function loadIssue(arg, keyOpt) {
     if (j?.fields) return j;
     return { key: keyOpt ?? basename(arg).replace(/\.[^.]*$/, ''), text: raw };
   }
-  if (!KEY.test(arg)) fail(`not a ticket key or file: ${arg}`);
+  if (!safeId(arg)) fail(`not a ticket key or file: ${arg}`);
   let out;
   try { out = execFileSync('desk-jira', ['get', arg, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (e) { fail(`desk-jira get ${arg} failed: ${String(e.stderr ?? e.message).trim()}`, 2); }

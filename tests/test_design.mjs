@@ -142,6 +142,7 @@ put(join(T, 'DS-81.md'), `# DS-81\n\n## Design\n${URL1.replace('abc123', 'zzz')}
 const chk = run('check', join(T, 'DS-81.md'));
 t('cli check: blocking exits 1', chk.status, 1);
 t('cli check: prints a blocking line', chk.stdout.startsWith('blocking: design: DS-81'), true);
+t('cli save: a key with .. is refused', run('save', s1, '--key', 'a..b').status, 2);
 t('cli save: --boards before --key is a usage error', run('save', s1, '--boards', 'x', '--key', 'DS-82').status, 2);
 
 rmSync(T, { recursive: true, force: true });
