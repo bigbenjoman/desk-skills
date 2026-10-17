@@ -92,7 +92,9 @@ What the CLI does for you, and the traps it still has:
     never converted, and nor is a `.md` file holding wiki markup (an `h2.` heading, a `{code}` or
     `{noformat}` block, `bq.`, a `||` header row, a `[text|url]` link). A `.md` file converts only
     when it has something only markdown writes: a fence, a backtick, `**bold**`, `[text](url)`, a
-    `1.` item, a `|---|` row or a `#` heading on its own after a blank line.
+    `1.` item, a `|---|` row or a `#` heading on its own after a blank line. `- ` items, which wiki
+    markup writes too, convert only when nothing wiki-like is beside them (`{{monospace}}`,
+    `*bold*`, a run of `#` list lines).
   - **Once converting, a line starting `#` and a space is a heading**, never a wiki list item. So
     text copied from `get` or `comments`, which print wiki markup, goes back as a `.wiki` file.
   - Raw `curl` recipes send the file as it is: run `desk-jira md2wiki body.md > body.wiki` first.

@@ -413,8 +413,8 @@ body_of() {  # file path (optionally @path), or the literal string
 # Which bodies convert: no wiki-only construct (an h2. heading, a {code} or {noformat} block, bq.,
 # a || table header, a [text|url] link), and at least one markdown-only one (a fence, a backtick
 # span, **bold**, [text](url), a numbered `1.` item, a `|---|` table rule, or a `#` heading standing
-# on its own after a blank line). `- ` items count only when there is no {{monospace}} or run of `#`
-# list lines, which wiki markup also writes. So a .md file of wiki markup, as the skills wrote until
+# on its own after a blank line). `- ` items count only when there is no {{monospace}}, *bold* or
+# run of `#` list lines, which wiki markup also writes. So a .md file of wiki markup, as the skills wrote until
 # DS-31, still goes as is. Once converting, a line starting `#` and a space is a heading.
 md_to_wiki() {
   command -v python3 >/dev/null 2>&1 || die "desk-jira: python3 is needed to convert a .md body (send it as a .wiki or .txt file to post it unchanged)"
@@ -757,6 +757,8 @@ WIKI_LINK = re.compile(r'\[[^\]\n|]*\|(?:https?://|mailto:)[^\]\s]*\]')
 CODE_SPAN = re.compile(r'`[^`\n]+`')
 MD_SURE = re.compile(r'`[^`\n]+`|\*\*[^*\s](?:[^*\n]*[^*\s])?\*\*|\]\([^)\s]+\)|^\s*\d+[.)]\s+\S|^\s*\|?\s*:?-{3,}:?\s*\|')
 MD_DASH = re.compile(r'^\s*[-+]\s+\S')
+# *bold* in wiki markup, which markdown would read as italic
+WIKI_BOLD = re.compile(r'(?<![*\w])\*[^*\s](?:[^*\n]*[^*\s])?\*(?![*\w])')
 HASH_LINE = re.compile(r'^\s{0,3}#{1,6}\s+\S')
 
 
@@ -781,7 +783,7 @@ def is_markdown(md):
             sure = True
         if MD_DASH.match(line):
             dash = True
-        if '{{' in bare:
+        if '{{' in bare or WIKI_BOLD.search(bare):
             wikiish = True
         if HASH_LINE.match(line):
             prev = lines[idx - 1].strip() if idx else ''
@@ -825,12 +827,21 @@ text_of() {
 # A description carries no Status, Priority, P0-P4 or Size line: those live in fields, and a copy in
 # the body goes stale the day the field moves. The one exception is the Size fallback, `Size: <X>`
 # as the first line, for a project whose config names no §4 Size field. One refusal per line.
+# Lines inside {code} and {noformat} blocks are code (`status = resp.status`), so they are blanked
+# first, which keeps the line numbers.
 FACT_LEAD='^[[:space:]]*(([*#>|+-]|h[1-6]\.|bq\.)[[:space:]]*)*[*_]*'
 desc_errors() {  # description text
   load_rules
-  local first hits hit n text
+  local text_only first hits hit n text
+  text_only=$(printf '%s\n' "$1" | awk '
+    inb { if ($0 ~ /\{(code|noformat)\}/) inb = 0; print ""; next }
+    /^[[:space:]]*\{(code|noformat)[^}]*\}/ {
+      rest = $0; sub(/^[[:space:]]*\{(code|noformat)[^}]*\}/, "", rest)
+      if (rest !~ /\{(code|noformat)\}/) inb = 1
+      print ""; next }
+    { print }')
   first=$(printf '%s\n' "$1" | grep -n '[^[:space:]]' | head -n1 | cut -d: -f1) || true
-  hits=$(printf '%s\n' "$1" | grep -inE "${FACT_LEAD}"'((status|([a-z]+ )?priority|size)[*_]*[[:space:]]*[:=]|p[0-4][*_]*[[:space:]]*($|[:=]|[\\]?-))') || return 0
+  hits=$(printf '%s\n' "$text_only" | grep -inE "${FACT_LEAD}"'((status|([a-z]+ )?priority|size)[*_]*[[:space:]]*[:=]|p[0-4][*_]*[[:space:]]*($|[:=]|[\\]?-))') || return 0
   while IFS= read -r hit; do
     n="${hit%%:*}"; text="${hit#*:}"
     if [[ "$n" == "$first" && -z "$RULES_SIZE" ]] \
@@ -1114,6 +1125,11 @@ case "$cmd" in
     [[ -n "$type" ]] || die "desk-jira: pass issuetype by its name, so the field rules know the type"
     errs=$(rule_errors create "$type" "$extra" "$APPROVED") || die "desk-jira: could not check the field rules"
     [[ -z "$errs" ]] || die "$errs"
+    # A description= pair replaces the positional one in the payload, so it is checked the same way.
+    if printf '%s' "$extra" | jq -e '.description | type == "string"' >/dev/null; then
+      errs=$(desc_errors "$(printf '%s' "$extra" | jq -r '.description')") || die "desk-jira: could not check the description"
+      [[ -z "$errs" ]] || die "$errs"
+    fi
     # An assignee other than you is routing (§3 jira-route), and needs --route spelt out so a harness
     # rule can prompt on it while assignee=me goes through. With §3 jira-assign-self yes and no
     # assignee given, the new ticket is yours: autopilot only picks up tickets assigned to you.

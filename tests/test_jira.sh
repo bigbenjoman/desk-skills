@@ -310,8 +310,9 @@ Calls are not forwarded to the PA while the user is on another call.
 - The call reaches the PA
 - See [the spec](https://example.com/spec_(v2)) and `forward_when_busy`
 EOF
-conv vpl288; rc=$?
-check "md2wiki runs with no Jira credentials" '[ $rc -eq 0 ] && [ ! -s "$M/vpl288.err" ]'
+conv vpl288
+out=$(cd "$T" && "$J" md2wiki "$M/vpl288.md" 2>&1); rc=$?
+check "md2wiki runs outside any repo, with no Jira site or credentials" '[ $rc -eq 0 ] && printf "%s\n" "$out" | cmp -s - "$M/vpl288.out"'
 check "every ## heading becomes h2., the same count" '[ "$(grep -c "^h2\. " "$M/vpl288.out")" -eq "$(grep -c "^## " "$M/vpl288.md")" ] && has "$M/vpl288.out" "h2. Steps to reproduce"'
 check "no markdown heading is left to render as a numbered list" '! grep -q "^##" "$M/vpl288.out"'
 check "numbered items -> #, a nested dash -> #*, bold -> *x*" 'has "$M/vpl288.out" "# Turn on *Forward when busy* in the app" && has "$M/vpl288.out" "#* while they are on a call" && has "$M/vpl288.out" "# The call drops"'
@@ -341,7 +342,11 @@ check "a plain body is sent byte for byte, no newline added" 'same plain'
 printf '## Kept\n`as is`\n' > "$M/k.wiki"; (cd "$A" && "$J" md2wiki "$M/k.wiki") > "$M/k.out"
 check "a .wiki file is never converted" 'cmp -s "$M/k.wiki" "$M/k.out"'
 printf 'h2. Kept\n```\nmd example: ## x\n```\n' > "$M/wiki4.md"; conv wiki4
-check "markdown inside a fence does not override a wiki heading" 'same wiki4'
+check "a wiki heading anywhere keeps the body unchanged, a fence beside it included" 'same wiki4'
+printf 'This is *important*.\n- one\n- two\n' > "$M/wiki5.md"; conv wiki5
+check "a wiki - list beside *bold* is sent unchanged, bold kept bold" 'same wiki5'
+printf -- '- one\n- two with \\-escaped\n' > "$M/md6.md"; conv md6
+check "a - list with nothing wiki-like beside it converts" 'has "$M/md6.out" "* one"'
 printf '```\nh2. inside a fence\n```\n## Real\n' > "$M/md5.md"; conv md5
 check "wiki inside a fence does not stop a markdown body converting" 'has "$M/md5.out" "h2. Real" && has "$M/md5.out" "h2. inside a fence"'
 err=$(cd "$A" && "$J" md2wiki "$M/missing.md" 2>&1); rc=$?
@@ -380,11 +385,20 @@ for body in 'Priority: P2' '**Status:** In Progress' 'Launch Priority: P1' '* P1
   err=$(cd "$A" && "$J" create Story s md/fact.md 2>&1); rc=$?
   check "create refuses a description line: $body" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
 done
+printf 'a body\n' > "$M/lit2.txt"
+err=$(cd "$A" && "$J" create Story s md/lit2.txt 'description=Status: Done' 2>&1); rc=$?
+check "create refuses a Status line passed as a description= field" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$A" && "$J" create Story s md/lit2.txt description=@md/fact.md 2>&1); rc=$?
+check "create refuses a description=@file.md carrying a Size line" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
 err=$(cd "$A" && "$J" edit KAN-20 'description=Status: Not Started' 2>&1); rc=$?
 check "edit refuses a Status line in the description" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing line 1" && [ "$(puts)" -eq "$p0" ]'
 printf 'Size: M\n\nh2. Context\nVPL-82 says Status: Not Started while it is In Progress, and P1 is the field.\n' > "$M/ok.md"
 out=$(cd "$A" && "$J" create Story s md/ok.md 2>&1); rc=$?
 check "a first-line Size with no §4 Size field, and status quoted mid-sentence, pass" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ]'
+printf '## Bug\nThe handler reads it:\n\n```python\nstatus = resp.status_code\np1 = Point(0, 0)\n```\n\n```\npriority: high\nsize: 3\n```\n' > "$M/codeok.md"
+out=$(cd "$A" && "$J" create Story s md/codeok.md 2>&1); rc=$?
+check "status, priority and size lines inside code blocks are code, not fields" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 2)) ]'
+n0=$((n0 + 1))
 cp "$M/ok.md" "$C/ok.md"
 err=$(cd "$C" && "$J" create Story s ok.md customfield_10208=M customfield_10207=P2 2>&1); rc=$?
 check "a first-line Size is refused where §4 names a Size field" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing line 1" && [ "$(creates)" -eq $((n0 + 1)) ]'
