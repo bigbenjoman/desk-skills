@@ -42,6 +42,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
+| `desk-reboot` | Before a reboot: every session, the runner VM, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
 
 A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), another id you list in
 setup (a planning id such as `P1-M14-FIX-1`, a bug id such as `BUG-119-5`), or, in a repo with no
@@ -182,6 +183,17 @@ the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
 /desk-update outdated        report only
 /desk-update ux-designer     check and upgrade named skills
 /desk-update --all           upgrade everything that is behind, still after showing the diff
+```
+
+**`/desk-reboot`** gets the machine ready to restart. It lists every open Claude session with its
+state (busy, waiting, idle) and age, the desk-runner VM, dev servers and heavy processes, and every
+worktree in each configured repo with uncommitted changes or unpushed commits. Once you confirm, it
+asks each busy or waiting session to finish its step and save a handoff, and runs `desk-runner down`.
+It writes its own handoff, then ends with `READY TO REBOOT` or what still blocks it. It never stops a
+session, never commits anyone's changes, and never reboots. The read-only half runs on its own:
+
+```
+node ~/.claude/desk/bin/reboot-check.mjs     worktrees across configured repos, the runner, heavy processes
 ```
 
 **`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile
