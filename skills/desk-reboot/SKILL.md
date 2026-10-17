@@ -48,7 +48,9 @@ Two sources, in one turn:
   repo it lists each worktree with uncommitted changes (and how many untracked) or commits on no
   remote, with counts; then the desk-runner VM (`desk-runner status`), then every heavy process
   (`desk-env heavy`: test suites, typechecks, dev servers). Its last line is
-  `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown> heavy=<n>`. A repo whose
+  `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown> keep=<loaded|none> heavy=<n>`.
+  `keep=loaded` means desk-runner's launchd agent is installed, and it starts a stopped or absent
+  VM again within a minute, so the VM counts as running whatever its state reads. A repo whose
   root is unset or not a checkout here is printed as not checked: carry that into the report.
 
 Then print the report:
@@ -59,7 +61,7 @@ sessions  : <n> open besides this one · <b> busy · <w> waiting · <i> idle
             <name>  busy (mid-command)  started 2h ago
             <name>  waiting             started 53m ago
             <name>  idle                started 10d ago
-runner    : desk-runner <running | stopped | absent | unknown>
+runner    : desk-runner <running | stopped | absent | unknown>[, keep agent loaded]
 heavy     : <n>
             <pid> <args>
 worktrees : <r> repos, <m> worktrees · <d> with uncommitted changes · <u> with unpushed commits
@@ -73,7 +75,7 @@ Nothing below happens until the user says yes, and silence is not a yes. Ask onc
 `AskUserQuestion`, covering only what applies:
 
 - message the `<b + w>` busy and waiting sessions, by name, asking each to save a handoff (step 3);
-- run `desk-runner down` (only if the runner is `running`; step 4).
+- run `desk-runner down` (only if the runner is `running` or its keep agent is loaded; step 4).
 
 Each is its own question; a no to one leaves the other standing. A no is recorded in the verdict as
 a blocker, not argued.
@@ -100,14 +102,16 @@ One `SendMessage` per session, to the name `ListAgents` printed:
 
 ## 4. Stop desk-runner
 
-Only if it is running and the user said yes:
+Only if it is running or its keep agent is loaded, and the user said yes:
 
 ```bash
-desk-runner down      # waits for `tart run` to exit; ends "nothing is left running for <VM>"
-desk-runner status    # must not say running (it exits non-zero unless the VM runs)
+desk-runner down      # removes the agents, waits for `tart run` to exit; ends "nothing is left running for <VM>"
+desk-runner status    # must not say running (it exits non-zero unless the VM runs), and its
+                      # agents line must say "every minute not installed"
 ```
 
-Report the `down` line verbatim. If `down` fails or `status` still says running, that is a blocker.
+Report the `down` line verbatim. If `down` fails, or `status` still says running or the keep agent
+loaded, that is a blocker.
 `down` also removes the launchd agents that bring the VM back at login, so nothing starts it again
 after the reboot: the handoff says to run `desk-runner up`, which reinstalls them.
 
@@ -122,8 +126,7 @@ append `.handoffs/` to `<git rev-parse --git-common-dir>/info/exclude`. Never `.
 a diff in someone's repo.
 
 It holds the `REBOOT CHECK` block, each session's reply (or that none came), and what to do after
-login: `claude -r` for each session that was busy, waiting or idle; `desk-runner up` if it was
-running; the dev servers in the heavy list, to restart with their repo's §4 Dev server; and the
+login: `claude -r` for each session that was busy, waiting or idle; `desk-runner up` if `down` ran; the dev servers in the heavy list, to restart with their repo's §4 Dev server; and the
 worktrees with uncommitted or unpushed work.
 
 ## 6. The verdict
@@ -139,7 +142,7 @@ Blockers, each named:
 
 - a busy or waiting session with no checked handoff (`voicepa-25: no reply`, `kan-621-3d: CANNOT
   SAVE: mid-migration`), including those the user chose not to message;
-- desk-runner still running;
+- desk-runner still running, or its keep agent still loaded;
 - this session's handoff not written.
 
 Not blockers, because a reboot keeps them or they come back with one command: uncommitted or

@@ -47,11 +47,19 @@ check "clean repo still listed with its worktree count" 'grep -qE "acme__gadgets
 check "repo with no root row reported, not skipped" 'grep -q "acme__nope: §2 Primary repo root is unset; not checked" <<< "$out"'
 check "root that is not a checkout reported" 'grep -qE "acme__gone: .*gone is not a git checkout here; not checked" <<< "$out"'
 check "runner absent" 'grep -q "^runner: absent$" <<< "$out"'
-check "summary line" 'grep -qE "^summary: dirty=1 unpushed=1 runner=absent heavy=[0-9]+$" <<< "$out"'
+check "summary line" 'grep -qE "^summary: dirty=1 unpushed=1 runner=absent keep=none heavy=[0-9]+$" <<< "$out"'
 check "nothing written to the dirty tree" '[ "$(git -C "$T/wt/a" status --porcelain | wc -l | tr -d " ")" = 2 ]'
 
 rm -rf "$T/cfg/repos"
 out=$(cd "$T" && node "$B/reboot-check.mjs" 2>&1); rc=$?
 check "no configured repos: still reports, exits 0" '[ $rc -eq 0 ] && grep -q "^worktrees: 0 configured repos, 0 worktrees" <<< "$out"'
+
+# A stopped VM whose keep agent is loaded will be started again, so the agent is reported.
+mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$T/bin/"
+printf '#!/bin/sh\necho "desk-runner: stopped (4 CPUs, 8192 MB, 50 GB disk)"\necho "agents: restart at login and every minute loaded; verify-isolation nightly at 03:30 loaded"\nexit 1\n' > "$T/bin/desk-runner"
+chmod +x "$T/bin/desk-runner"
+out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1); rc=$?
+check "stopped VM with its keep agent loaded says so" 'grep -q "^runner: stopped (its keep agent is loaded and starts it again within a minute)$" <<< "$out"'
+check "summary carries keep=loaded" 'grep -qE "^summary: .* runner=stopped keep=loaded heavy=[0-9]+$" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
