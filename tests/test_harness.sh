@@ -75,4 +75,15 @@ run --ledger "$T/own.json" --settings "$T/own/.claude/settings.local.json" remov
 check "remove of an unowned row says nothing to remove" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to remove"* ]]'
 run --ledger "$L" --settings "$HOME/.claude/settings.json" baseline --check
 check "baseline --check still passes at user level" '[ $rc -eq 0 ]'
+
+# unset-default-mode: only dontAsk goes, backed up, the rest of the file kept
+mkrepo dm
+printf '{"permissions":{"defaultMode":"dontAsk","allow":["Bash(ls)"]},"model":"x"}\n' > "$T/dm/.claude/settings.local.json"
+run --settings "$T/dm/.claude/settings.local.json" unset-default-mode
+check "unset-default-mode removes dontAsk" '[ $rc -eq 0 ] && [[ "$out" == *"removed  permissions.defaultMode"* ]] && ! grep -q defaultMode "$T/dm/.claude/settings.local.json"'
+check "unset-default-mode keeps the rest" 'grep -q "Bash(ls)" "$T/dm/.claude/settings.local.json" && grep -q "\"model\"" "$T/dm/.claude/settings.local.json"'
+check "unset-default-mode backs up first" 'grep -q dontAsk "$T"/dm/.claude/settings.local.json.bak-desk-*'
+printf '{"permissions":{"defaultMode":"acceptEdits"}}\n' > "$T/dm/.claude/settings.json"
+run --settings "$T/dm/.claude/settings.json" unset-default-mode
+check "unset-default-mode leaves another mode alone" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to change"* ]] && grep -q acceptEdits "$T/dm/.claude/settings.json"'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]
