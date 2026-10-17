@@ -128,6 +128,16 @@ grep -hoE '^[A-Z0-9_]*(DATABASE|DB|POSTGRES|PG)[A-Z0-9_]*=' $(find . -maxdepth 3
 git branch -r --sort=-committerdate --format='%(refname:short)' | head -50
 find . -maxdepth 2 -type d \( -name .belmont -o -name .planning -o -name .plans \) -print   # planning tools that mint their own ids
 grep -niE 'before merg|merge.*only after|do not merge|must (run|build).*(merg|deploy)' CLAUDE.md AGENTS.md claude.md agents.md 2>/dev/null
+find .github .githooks scripts/desk -maxdepth 0 -print 2>/dev/null                   # CI and hook holds
+jq -r 'keys[] | select(. == "scripts" or . == "jest" or . == "eslintConfig")' package.json 2>/dev/null   # package.json#<key> holds
+find . -maxdepth 3 -name node_modules -prune -o -type f -name 'vite.config.*' \
+  -exec grep -lE '^[[:space:]]*test[[:space:]]*:' {} +                              # Vitest configured inside vite.config
+grep -lE '^\[tool\.(ruff|pytest|mypy)' pyproject.toml 2>/dev/null                   # lint or test config in pyproject.toml
+find . -maxdepth 3 \( -name node_modules -o -name .git -o -name .venv \) -prune -o -type f \( -name CODEOWNERS \
+  -o -iname '*ruleset*.json' -o -iname '*protection*.json' -o -name settings.yml -o -name 'tsconfig*.json' \
+  -o -name 'eslint.config.*' -o -name '.eslintrc*' -o -name 'biome.json*' -o -name '.oxlintrc*' -o -name 'ruff.toml' \
+  -o -name 'vitest.config.*' -o -name 'vitest.workspace.*' -o -name 'jest.config.*' -o -name 'playwright.config.*' \
+  -o -name 'pytest.ini' -o -name 'tox.ini' -o -name 'setup.cfg' -o -name '.flake8' -o -name 'mypy.ini' \) -print | sort   # check-config holds
 # §4 tracker (only if the user says this repo uses Jira)
 desk-jira where
 desk-jira whoami                                        # display name, email, account id
@@ -200,6 +210,32 @@ How to turn what you find into rows:
   user confirms or writes `none`. **The row must be set**: `none` is a fine answer, but while it is
   unset the merge driver refuses to start and clearance parks every PR. Say that autopilot and clearance will never merge a PR that
   touches a held path: they report it with the reason and a person merges.
+
+  **Then propose the holds on how CI checks things**, so a PR that changes the checks is never
+  merged without a person. These are defaults the user confirms or declines one by one; a
+  declined one is simply left out of the row. Propose each that the scans found, with its reason:
+
+  | Found | Propose |
+  |---|---|
+  | `.github/` | `` `.github/**: changes CI workflows or repo settings, which decide what a merge is checked against` `` |
+  | `.githooks/` | `` `.githooks/**: changes the committed git hooks that check a push` `` |
+  | `scripts/desk/` | `` `scripts/desk/**: changes the checks the pre-push hook runs` `` |
+  | a committed `CODEOWNERS`, ruleset or protection file outside `.github/` | `` `<its path>: changes who must review, or what protects the branch` `` |
+  | `package.json` with a `scripts` section | `` `package.json#scripts: changes the commands CI runs` `` |
+  | `tsconfig*.json` | `` `tsconfig*.json: changes what the typecheck checks` `` |
+  | a lint config (`eslint.config.*`, `.eslintrc*`, `biome.json*`, `.oxlintrc*`, `ruff.toml`, `.flake8`, `mypy.ini`) | `` `<its name or glob>: changes what lint checks` `` |
+  | a test config (`vitest.config.*`, `jest.config.*`, `playwright.config.*`, `pytest.ini`, `tox.ini`) | `` `<its name or glob>: changes what the tests run` `` |
+  | a `jest` or `eslintConfig` key in `package.json` | `` `package.json#jest: changes what the tests run` `` / `` `package.json#eslintConfig: changes what lint checks` `` |
+  | a `test:` block in `vite.config.*` | `` `vite.config.*: changes what the tests run (and the build)` `` |
+  | lint or test config in `setup.cfg`, or `[tool.ruff]`, `[tool.pytest…]` or `[tool.mypy]` in `pyproject.toml` | `` `<that file>: changes what lint or the tests check` ``, saying that every edit to the file is then held |
+
+  `package.json#scripts` holds a PR only when it changes the `scripts` key, so a version-only bump of
+  `package.json` and its lockfile still merges on its own (any `<file>#<key>` holds a JSON file only
+  when that key changes; dotted for a nested key). A lockfile is **not** held by default: ask once
+  whether dependency updates should wait for a person too, and only on `yes` add
+  `` `<the lockfile>: dependency changes are merged by a person` ``. The key form reads JSON only,
+  so a TOML or INI file holding check config is held whole: for `pyproject.toml` that includes every
+  dependency bump, which the user weighs before confirming.
 - **Merge method.** From the repo's allowed methods (`allow_squash_merge`, `allow_merge_commit`,
   `allow_rebase_merge`) and the merged-PR history: a merge commit with **two parents** is `merge`;
   one parent is `squash` (or `rebase`, when only rebase is allowed). Propose the method the last 20

@@ -15,13 +15,15 @@
 //     checks: normalised { name, status: 'queued'|'in_progress'|'completed', conclusion, runId }
 //     state:  'pass' | 'fail' | 'pending' | 'absent'
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
-//   parseHolds(items)        §4 Merge holds items `<glob>: <why>` -> [{ glob, why }]
-//   matchHolds(files, holds) -> [{ glob, why, files }]
+//   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
+//   matchHolds(files, holds, contents) -> [{ glob, why, files }]
+//   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
 //     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks), holds
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
+//     (with no diff to read, a `#<key>` hold on a listed file holds)
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -128,13 +130,23 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
 }
 
 // §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
+// `<glob>#<key>` holds a JSON file only when the PR changes that key (dotted for a nested one), so
+// `package.json#scripts` holds a PR that edits the scripts but not one that only bumps versions.
+// `glob` is the item as written, for reporting; `path` is the part matched against file names.
 export function parseHolds(items) {
   if (!items) return [];
   return items.filter((x) => x && !/^none$/i.test(x.trim())).map((x) => {
     const i = x.indexOf(': ');
-    return i < 0 ? { glob: x.trim(), why: '(no reason given in §4 Merge holds)' } : { glob: x.slice(0, i).trim(), why: x.slice(i + 2).trim() };
+    const glob = (i < 0 ? x : x.slice(0, i)).trim();
+    const why = i < 0 ? '(no reason given in §4 Merge holds)' : x.slice(i + 2).trim();
+    const k = glob.indexOf('#');
+    return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why };
   });
 }
+
+// The PR's files for matchHolds, from `gh api pulls/<n>/files`: both sides of a rename, so a file
+// moved out of a held path is still held.
+export const PR_FILES_JQ = '.[] | .filename, (.previous_filename // empty)';
 
 // gitignore-flavoured globs: `**` crosses directories, `*` and `?` do not, a trailing `/` means the
 // whole directory, and a pattern with no `/` matches that name at any depth.
@@ -154,11 +166,49 @@ export function globToRegExp(glob) {
   }
   return new RegExp(anyDepth ? `(^|/)${re}$` : `^${re}$`);
 }
-export function matchHolds(files, holds) {
+// A `#<key>` hold compares the key's value at the merge base and the head. A missing file reads as
+// an absent key; a file that does not parse counts as changed.
+const valueAt = (text, key) => (text == null ? undefined : key.split('.').reduce((v, k) => v?.[k], JSON.parse(text)));
+export function keyChanged(before, after, key) {
+  try { return JSON.stringify(valueAt(before, key)) !== JSON.stringify(valueAt(after, key)); } catch { return true; }
+}
+
+// contents: Map file -> { before, after } from readKeyedFiles. A keyed hold on a file it lacks holds
+// the PR rather than guess.
+export function matchHolds(files, holds, contents) {
   return holds.map((h) => {
-    const re = globToRegExp(h.glob);
-    return { ...h, files: files.filter((f) => re.test(f)) };
+    const re = globToRegExp(h.path ?? h.glob);
+    let unread = false;
+    const hit = files.filter((f) => {
+      if (!re.test(f)) return false;
+      if (!h.key) return true;
+      const c = contents?.get(f);
+      if (!c) { unread = true; return true; }
+      return keyChanged(c.before, c.after, h.key);
+    });
+    return { ...h, why: unread ? `${h.why} (${h.key} could not be compared, so held)` : h.why, files: hit };
   }).filter((h) => h.files.length);
+}
+
+// The files a `#<key>` hold has to look inside, read at the PR's merge base and at its head. A file
+// absent on one side (added or deleted) reads as null; one that cannot be read is left out, so
+// matchHolds holds it. run(ghArgs) returns gh's stdout, or a promise of it, and throws on failure.
+export async function readKeyedFiles({ repo, base, head, files, holds, run }) {
+  const out = new Map();
+  const want = files.filter((f) => holds.some((h) => h.key && globToRegExp(h.path).test(f)));
+  if (!want.length) return out;
+  let mergeBase;
+  try { mergeBase = String(await run(['api', `repos/${repo}/compare/${base}...${head}`, '--jq', '.merge_base_commit.sha'])).trim(); }
+  catch { return out; }
+  if (!/^[0-9a-f]{40}$/.test(mergeBase)) return out;
+  const read = async (path, ref) => {
+    try { return String(await run(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${ref}`])); }
+    catch (e) { if (/HTTP 404/.test(String(e?.stderr ?? e?.message ?? e))) return null; throw e; }
+  };
+  await Promise.all(want.map(async (f) => {
+    try { out.set(f, { before: await read(f, mergeBase), after: await read(f, head) }); } catch { /* unread: held */ }
+  }));
+  return out;
 }
 
 // ---- CLI -------------------------------------------------------------------------------------
@@ -201,9 +251,10 @@ if (isMain) {
       }
       let files = [];
       let filesOk = true;
-      try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', '.[].filename']).split('\n').filter(Boolean); }
+      try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean); }
       catch { filesOk = false; }
-      const held = filesOk ? matchHolds(files, holds) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];
+      const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
+      const held = filesOk ? matchHolds(files, holds, contents) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];
       console.log(JSON.stringify({
         number: pr.number, sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,

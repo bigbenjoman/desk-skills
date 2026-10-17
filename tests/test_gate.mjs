@@ -1,4 +1,4 @@
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
 import { collectAnswers, ANSWER_HEAD, SIBLING_HEAD } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -24,6 +24,44 @@ t('hold split on first ": "', holds[0].why, 'build and push Lambda images first 
 t('hold match', matchHolds(['backend/app/x.py', 'frontend/a.ts'], holds).map((h) => h.glob).join(','), 'backend/**');
 t('hold basename any depth', matchHolds(['docs/claude.md'], holds).length, 1);
 t('no hold', matchHolds(['backendish/x', 'frontend/backend.ts'], holds).length, 0);
+// Holds on what CI checks things with. The defaults /desk-setup proposes, then fixture diffs.
+const ciHolds = parseHolds(['.github/**: changes CI, which decides what a merge is checked against', '.githooks/**: changes the pre-push hook',
+  'package.json#scripts: changes the commands CI runs', 'tsconfig*.json: changes the typecheck', 'eslint.config.*: changes lint', 'vitest.config.*: changes the tests']);
+t('keyed hold parsed', JSON.stringify([ciHolds[2].glob, ciHolds[2].path, ciHolds[2].key]), '["package.json#scripts","package.json","scripts"]');
+t('plain hold has no key', ciHolds[0].key, null);
+const pkg = (scripts, deps) => JSON.stringify({ name: 'app', scripts, dependencies: deps }, null, 2);
+const before = pkg({ test: 'vitest run', lint: 'eslint .' }, { react: '19.0.0' });
+const heldBy = (files, contents, hs = ciHolds) => matchHolds(files, hs, contents).map((h) => h.glob).join(',');
+t('workflow edit held', heldBy(['.github/workflows/ci.yml'], new Map()), '.github/**');
+t('scripts edit held', heldBy(['package.json'], new Map([['package.json', { before, after: pkg({ test: 'vitest run --passWithNoTests', lint: 'eslint .' }, { react: '19.0.0' }) }]])), 'package.json#scripts');
+const bump = new Map([['package.json', { before, after: pkg({ test: 'vitest run', lint: 'eslint .' }, { react: '19.1.0' }) }]]);
+t('version-only bump with lockfile not held', heldBy(['package.json', 'pnpm-lock.yaml'], bump), '');
+t('opt-in lockfile hold', heldBy(['package.json', 'pnpm-lock.yaml'], bump, [...ciHolds, ...parseHolds(['pnpm-lock.yaml: dependency changes need a person'])]), 'pnpm-lock.yaml');
+t('nested package.json scripts held', heldBy(['apps/web/package.json'], new Map([['apps/web/package.json', { before, after: pkg({ test: 'jest' }, { react: '19.0.0' }) }]])), 'package.json#scripts');
+t('scripts added to a new package.json held', heldBy(['package.json'], new Map([['package.json', { before: null, after: before }]])), 'package.json#scripts');
+t('tsconfig, lint and test config held', heldBy(['tsconfig.base.json', 'eslint.config.mjs', 'packages/a/vitest.config.ts'], new Map()), 'tsconfig*.json,eslint.config.*,vitest.config.*');
+const unread = matchHolds(['package.json'], ciHolds);
+t('unread keyed file held, saying why', unread.length === 1 && unread[0].why.endsWith('(scripts could not be compared, so held)'), true);
+t('unparseable JSON counts as changed', keyChanged('{', before, 'scripts'), true);
+t('dotted key', keyChanged(before, pkg({ test: 'vitest run', lint: 'eslint . --fix' }, {}), 'scripts.test'), false);
+// readKeyedFiles reads at the merge base and the head; a 404 is an absent file, any other failure leaves it unread.
+const calls = [];
+const fakeGh = (files) => (args) => {
+  calls.push(args.join(' '));
+  if (args[1].includes('/compare/')) return 'a'.repeat(40) + '\n';
+  const m = /contents\/(.+)\?ref=(\w+)$/.exec(args.at(-1));
+  const v = files[`${decodeURIComponent(m[1])}@${m[2] === 'a'.repeat(40) ? 'base' : 'head'}`];
+  if (v === 404) throw Object.assign(new Error('x'), { stderr: 'gh: Not Found (HTTP 404)' });
+  if (v === 500) throw Object.assign(new Error('x'), { stderr: 'gh: Server Error (HTTP 500)' });
+  return v;
+};
+const read = await readKeyedFiles({ repo: 'o/r', base: 'main', head: 'b'.repeat(40), files: ['package.json', 'apps/x/package.json', 'src/a.ts'], holds: ciHolds,
+  run: fakeGh({ 'package.json@base': before, 'package.json@head': before, 'apps/x/package.json@base': 404, 'apps/x/package.json@head': 500 }) });
+t('read at merge base and head', JSON.stringify(read.get('package.json')), JSON.stringify({ before, after: before }));
+t('server error leaves the file unread', read.has('apps/x/package.json'), false);
+t('only keyed-hold files read', calls.some((c) => c.includes('src/a.ts')), false);
+t('unchanged scripts not held', heldBy(['package.json'], read), '');
+t('nothing to read, no gh call', (await readKeyedFiles({ repo: 'o/r', base: 'main', head: 'x', files: ['a.ts'], holds: ciHolds, run: () => { throw new Error('called'); } })).size, 0);
 t('glob *', globToRegExp('apps/*/alembic/**').test('apps/api/alembic/versions/1.py'), true);
 t('glob * no slash', globToRegExp('apps/*/x').test('apps/a/b/x'), false);
 t('gh-checks bucket skipping', evaluateGate(normaliseRollup([{ name: 'a', bucket: 'skipping', state: 'SKIPPED' }]), { required: ['a'] }).state, 'fail');
