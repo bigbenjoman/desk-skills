@@ -4,8 +4,8 @@
 // land on a self-hosted runner receives a secret. Read-only: it never writes a workflow.
 //   node desk-ci.mjs classify [<workflow file or directory>...]   default .github/workflows
 //   node desk-ci.mjs ci-lint  [<workflow file or directory>...]   exits 1 on any finding
-// classify prints `<file>:<line>  <job>  <hosted|self-hosted|callee>  <reason>` per job, the line
-// being the one that decided it, then `summary: jobs=<n> hosted=<n> self-hosted=<n> callee=<n>`.
+// classify prints `<file>:<line>  <job>  <hosted|self-hosted>  <reason>` per job, the line being
+// the one that decided it, then `summary: jobs=<n> hosted=<n> self-hosted=<n>`.
 // ci-lint prints `<file>:<line>  <job>  <problem>` per finding, then `summary: findings=<n>`.
 import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -188,12 +188,25 @@ function parityHits(job) {
 
 const inheritedEnv = (wf) => secretHits(all(wf.env), ' (inherited workflow-level env)');
 
+// A YAML alias pulls in a block defined elsewhere (a secret env, an id-token permission) that the
+// line rules above never see, so it is treated as handing over whatever it could.
+const ALIAS = /(?:^|:\s+|-\s+|[[,{]\s*)\*([A-Za-z0-9_-]+)\s*(?:$|[,\]}])/;
+function aliasHits(lines, why = '') {
+  for (const l of lines) {
+    const m = !l.blank && !l.scalar && ALIAS.exec(l.text);
+    if (m) return [{ line: l, kind: 'alias', why: `YAML alias *${m[1]}${why}, which may carry a secret or permission not checked here` }];
+  }
+  return [];
+}
+const inheritedAliases = (wf) => aliasHits([...all(wf.env), ...all(wf.permissions)], ' (workflow level)');
+
 export function hostedReasons(job, wf) {
   return [
     ...secretHits(job.lines), ...inheritedEnv(wf),
     ...environmentHits(job), ...idTokenHits(job, wf),
     ...stagingHits([...job.lines, ...all(wf.env)]),
     ...serviceHits(job), ...imageHits(job), ...parityHits(job),
+    ...aliasHits(job.lines), ...inheritedAliases(wf),
   ];
 }
 
@@ -202,8 +215,11 @@ export function classify(text) {
   return wf.jobs.map((job) => {
     const reasons = hostedReasons(job, wf);
     if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: reasons[0].why, also: reasons.slice(1) };
-    if (job.keys.uses && !job.keys['runs-on']) {
-      return { job: job.id, placement: 'callee', line: job.keys.uses.line.n, why: `calls ${job.keys.uses.value}: its jobs are placed where they are defined`, also: [] };
+    const uses = job.keys.uses;
+    if (uses && !job.keys['runs-on']) {
+      return uses.value.startsWith('./')
+        ? { job: job.id, placement: 'self-hosted', line: uses.line.n, why: `calls ${uses.value}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
+        : { job: job.id, placement: 'hosted', line: uses.line.n, why: `calls ${uses.value}, a workflow outside this repo that cannot be read here`, also: [] };
     }
     const ro = job.keys['runs-on'];
     return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : ''}`, also: [] };
@@ -213,7 +229,17 @@ export function classify(text) {
 // ---- runs-on ----------------------------------------------------------------------------------
 
 const HOSTED_LABEL = /^(ubuntu|macos|windows)-[a-z0-9.-]+$/i;
-const DEPENDABOT = /github\.actor\s*==\s*'dependabot\[bot\]'|'dependabot\[bot\]'\s*==\s*github\.actor/;
+const ACTOR = (op) => `(?:github\\.actor\\s*${op}\\s*'dependabot\\[bot\\]'|'dependabot\\[bot\\]'\\s*${op}\\s*github\\.actor)`;
+const DEPENDABOT_EQ = new RegExp(`${ACTOR('==')}\\s*&&\\s*'([^']*)'`);
+const DEPENDABOT_NE = new RegExp(`${ACTOR('!=')}\\s*&&\\s*'[^']*'\\s*\\|\\|\\s*'([^']*)'`);
+
+// What runs-on gives Dependabot: 'hosted', 'not-hosted' (the branch exists but picks anything
+// else, or cannot be read), or 'missing'.
+function dependabotBranch(text) {
+  const m = DEPENDABOT_EQ.exec(text) ?? DEPENDABOT_NE.exec(text);
+  if (m) { const t = tokens(m[1]); return t.length && t.every((c) => HOSTED_LABEL.test(c)) ? 'hosted' : 'not-hosted'; }
+  return new RegExp(ACTOR('[!=]=')).test(text) ? 'not-hosted' : 'missing';
+}
 
 // The values matrix.<key> can take, or null when the matrix is computed and cannot be read here.
 function matrixValues(job, key) {
@@ -222,7 +248,10 @@ function matrixValues(job, key) {
   const vals = [];
   const lines = strat.block;
   let found = false;
+  const flow = new RegExp(`[{,]\\s*${key}\\s*:\\s*(\\[[^\\]]*\\]|[^,}]+)`, 'g');
   lines.forEach((l, idx) => {
+    if (l.scalar) return;
+    for (const m of l.text.matchAll(flow)) { found = true; vals.push(m[1].trim()); }
     const kv = keyOf(l);
     if (!kv || kv.key !== key) return;
     found = true;
@@ -265,10 +294,14 @@ export function lint(text) {
   for (const job of wf.jobs) {
     if (!canResolveSelfHosted(job)) continue;
     const ro = job.keys['runs-on'];
-    const hits = [...secretHits(job.lines), ...inheritedEnv(wf), ...environmentHits(job), ...idTokenHits(job, wf)];
+    const hits = [...secretHits(job.lines), ...inheritedEnv(wf), ...environmentHits(job), ...idTokenHits(job, wf),
+      ...aliasHits(job.lines), ...inheritedAliases(wf)];
     for (const h of hits) out.push({ job: job.id, line: h.line.n, problem: `can run self-hosted but receives ${h.why}` });
-    if (!DEPENDABOT.test(textOf(ro))) {
+    const dependabot = dependabotBranch(textOf(ro));
+    if (dependabot === 'missing') {
       out.push({ job: job.id, line: ro.line.n, problem: "can run self-hosted but runs-on has no github.actor == 'dependabot[bot]' branch to a hosted runner" });
+    } else if (dependabot === 'not-hosted') {
+      out.push({ job: job.id, line: ro.line.n, problem: "can run self-hosted and its github.actor == 'dependabot[bot]' branch does not pick a GitHub-hosted runner" });
     }
   }
   return out.sort((a, b) => a.line - b.line);
@@ -298,7 +331,7 @@ if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);
   try {
     if (cmd === 'classify') {
-      const count = { hosted: 0, 'self-hosted': 0, callee: 0 };
+      const count = { hosted: 0, 'self-hosted': 0 };
       let jobs = 0;
       for (const f of workflowFiles(rest)) {
         for (const r of classify(readFileSync(f, 'utf8'))) {
@@ -307,7 +340,7 @@ if (isMain) {
           console.log(`${f}:${r.line}  ${r.job}  ${r.placement}  ${r.why}${also}`);
         }
       }
-      console.log(`summary: jobs=${jobs} hosted=${count.hosted} self-hosted=${count['self-hosted']} callee=${count.callee}`);
+      console.log(`summary: jobs=${jobs} hosted=${count.hosted} self-hosted=${count['self-hosted']}`);
     } else if (cmd === 'ci-lint' || cmd === 'lint') {
       let n = 0;
       for (const f of workflowFiles(rest)) {

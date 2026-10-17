@@ -44,18 +44,19 @@ A job is placed **hosted** if any of these holds, and **self-hosted** otherwise:
 | a third-party service | a step using a service action (Codecov, Vercel, Slack, Sentry, cloud logins, …), a service CLI (`vercel`, `aws`, `gcloud`, `wrangler`, …), or `curl`/`wget` to a host other than GitHub or localhost |
 | an image with no arm64 build | a `container:` or `services:` image known amd64-only (`postgis/postgis`, `mcr.microsoft.com/mssql/server`), or a container pinned to `linux/amd64` |
 | production x64 build parity | a job named or id'd for Vercel parity or a production build, or one that runs `vercel build` |
+| what cannot be read here | a YAML alias (`*name`) in the job or the workflow-level `env:`/`permissions:`, which can carry any of the above in from elsewhere; a call to a reusable workflow outside this repo |
 
 `classify` prints one line per job:
 
 ```
 <file>:<line>  <job>  hosted       <the first trigger>  (also <trigger> :<line>, …)
 <file>:<line>  <job>  self-hosted  no hosted trigger (runs-on today: <value>)
-<file>:<line>  <job>  callee       calls <workflow>: its jobs are placed where they are defined
-summary: jobs=<n> hosted=<n> self-hosted=<n> callee=<n>
+summary: jobs=<n> hosted=<n> self-hosted=<n>
 ```
 
 The line is the one that decided it: the trigger's line for hosted, the job's own line for
-self-hosted. A reusable-workflow call that passes no secrets is placed by its callee's jobs.
+self-hosted. A call to a local reusable workflow (`uses: ./…`) that passes no secrets is placed
+self-hosted at its `uses:` line; the jobs it runs are placed in that workflow's own file.
 
 **An image the list does not know is not proof of arm64.** Where a self-hosted placement runs a
 `container:` or `services:` image, say so in the proposal and check it (`docker manifest inspect
@@ -66,10 +67,12 @@ self-hosted. A reusable-workflow call that passes no secrets is placed by its ca
 For every job whose `runs-on` **can resolve** to the self-hosted runner, `ci-lint` fails when:
 
 - it would receive a secret other than `GITHUB_TOKEN` (job or inherited workflow-level env), an
-  environment, or `id-token`;
+  environment, or `id-token`, or a YAML alias that could carry one in;
 - its `runs-on` lacks the Dependabot-to-hosted branch, the `github.actor == 'dependabot[bot]'`
   expression that sends Dependabot's runs to a hosted runner, e.g.
-  `runs-on: ${{ github.actor == 'dependabot[bot]' && 'ubuntu-latest' || 'self-hosted' }}`.
+  `runs-on: ${{ github.actor == 'dependabot[bot]' && 'ubuntu-latest' || 'self-hosted' }}`, or has
+  one that picks anything but a GitHub-hosted label (the `!=` form,
+  `github.actor != 'dependabot[bot]' && 'self-hosted' || 'ubuntu-latest'`, is read too).
 
 "Can resolve" means any value other than a GitHub-hosted image label (`ubuntu-*`, `macos-*`,
 `windows-*`): `self-hosted` or any custom label, a runner `group:`, a matrix entry holding one, or a

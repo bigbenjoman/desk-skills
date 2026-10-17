@@ -156,14 +156,58 @@ const outside = wf(`  smoke:
 `);
 t('staging URL and service action are hosted, localhost is not', placed(outside), 'smoke=hosted@9 cov=hosted@13 local=self-hosted@14');
 
-// A reusable workflow call follows its callee unless it hands over secrets.
+// A reusable workflow call: a local one with no secrets is self-hosted (its jobs are placed in its
+// own file); one handing over secrets, or one from outside the repo, is hosted.
 const reusable = wf(`  call:
     uses: ./.github/workflows/build.yml
   callsecrets:
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
+  remote:
+    uses: acme/shared/.github/workflows/ci.yml@v1
 `);
-t('reusable calls', placed(reusable), 'call=callee@5 callsecrets=hosted@8');
+t('reusable calls', placed(reusable), 'call=self-hosted@5 callsecrets=hosted@8 remote=hosted@10');
+
+// A matrix include written as a flow mapping still reaches runs-on.
+const flowInclude = wf(`  legs:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        include:
+          - { os: self-hosted, node: 20 }
+    runs-on: \${{ matrix.os }}
+    env:
+      T: \${{ secrets.DEPLOY }}
+    steps: [{ run: 'true' }]
+`);
+t('flow-mapping include makes runs-on self-hostable', linted(flowInclude), 'legs@10 legs@12');
+
+// A YAML alias can carry a secret env in from another job.
+const alias = wf(`  h:
+    runs-on: ubuntu-latest
+    env: &shared
+      T: \${{ secrets.DEPLOY }}
+    steps: [{ run: 'true' }]
+  a:
+    ${SELF}
+    env: *shared
+    steps: [{ run: 'true' }]
+`);
+t('alias job is hosted at the alias line', placed(alias), 'h=hosted@7 a=hosted@11');
+t('alias on a self-hostable job fails lint', linted(alias), 'a@11');
+
+// The Dependabot branch must pick a hosted runner, written either way round.
+const dependabot = wf(`  inverted:
+    runs-on: \${{ github.actor == 'dependabot[bot]' && 'self-hosted' || 'ubuntu-latest' }}
+    steps: [{ run: 'true' }]
+  negated:
+    runs-on: \${{ github.actor != 'dependabot[bot]' && 'self-hosted' || 'ubuntu-latest' }}
+    steps: [{ run: 'true' }]
+  json:
+    runs-on: \${{ fromJSON(github.actor == 'dependabot[bot]' && '["ubuntu-24.04"]' || '["self-hosted","linux"]') }}
+    steps: [{ run: 'true' }]
+`);
+t('a Dependabot branch to self-hosted fails; != and fromJSON forms pass', linted(dependabot), 'inverted@5');
 
 // This repo's own workflow: a hosted-only matrix and a hosted label, so nothing to lint.
 const own = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows/tests.yml'), 'utf8');
@@ -179,7 +223,7 @@ try {
   const bin = join(dirname(fileURLToPath(import.meta.url)), '../desk/bin/desk-ci.mjs');
   const out = execFileSync(process.execPath, [bin, 'classify', dir], { encoding: 'utf8' }).trim().split('\n');
   t('cli classify cites file:line', out[0], `${join(dir, 'a.yml')}:9  e2e  hosted  secret API_KEY`);
-  t('cli classify summary', out.at(-1), 'summary: jobs=2 hosted=1 self-hosted=1 callee=0');
+  t('cli classify summary', out.at(-1), 'summary: jobs=2 hosted=1 self-hosted=1');
   let status = 0; let lintOut = '';
   try { lintOut = execFileSync(process.execPath, [bin, 'ci-lint', dir], { encoding: 'utf8' }); }
   catch (e) { status = e.status; lintOut = String(e.stdout); }
