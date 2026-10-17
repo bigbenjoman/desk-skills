@@ -144,6 +144,10 @@ export function parseHolds(items) {
   });
 }
 
+// The PR's files for matchHolds, from `gh api pulls/<n>/files`: both sides of a rename, so a file
+// moved out of a held path is still held.
+export const PR_FILES_JQ = '.[] | .filename, (.previous_filename // empty)';
+
 // gitignore-flavoured globs: `**` crosses directories, `*` and `?` do not, a trailing `/` means the
 // whole directory, and a pattern with no `/` matches that name at any depth.
 export function globToRegExp(glob) {
@@ -247,7 +251,7 @@ if (isMain) {
       }
       let files = [];
       let filesOk = true;
-      try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', '.[].filename']).split('\n').filter(Boolean); }
+      try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean); }
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
       const held = filesOk ? matchHolds(files, holds, contents) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];

@@ -559,7 +559,7 @@ async function annotateRest(prs) {
     try {
       const { stdout } = await exec('gh', [
         'api', '--paginate', `repos/${GH.full}/pulls/${pr.number}/files?per_page=100`,
-        '--jq', '.[].filename',
+        '--jq', G.PR_FILES_JQ,
       ], { maxBuffer: 16 * 1024 * 1024 })
       pr.files = stdout.trim().split('\n').filter(Boolean)
     } catch { pr.files = null }

@@ -24,7 +24,7 @@ t('hold split on first ": "', holds[0].why, 'build and push Lambda images first 
 t('hold match', matchHolds(['backend/app/x.py', 'frontend/a.ts'], holds).map((h) => h.glob).join(','), 'backend/**');
 t('hold basename any depth', matchHolds(['docs/claude.md'], holds).length, 1);
 t('no hold', matchHolds(['backendish/x', 'frontend/backend.ts'], holds).length, 0);
-// DS-73: holds on what CI checks things with. The defaults /desk-setup proposes, then fixture diffs.
+// Holds on what CI checks things with. The defaults /desk-setup proposes, then fixture diffs.
 const ciHolds = parseHolds(['.github/**: changes CI, which decides what a merge is checked against', '.githooks/**: changes the pre-push hook',
   'package.json#scripts: changes the commands CI runs', 'tsconfig*.json: changes the typecheck', 'eslint.config.*: changes lint', 'vitest.config.*: changes the tests']);
 t('keyed hold parsed', JSON.stringify([ciHolds[2].glob, ciHolds[2].path, ciHolds[2].key]), '["package.json#scripts","package.json","scripts"]');
