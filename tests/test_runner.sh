@@ -62,7 +62,12 @@ cat > "$T/stub/lsof" <<'EOF'
 [ -n "${STUB_LSOF_EMPTY:-}" ] && exit 0
 printf 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nControlCe 1 b 9u IPv4 0x0 0t0 TCP *:5000 (LISTEN)\npostgres 2 b 7u IPv6 0x0 0t0 TCP [::1]:5432 (LISTEN)\n'
 if [ -e /proc/net/tcp ]; then
-  awk '$4 == "0A" {split($2, a, ":"); printf "py 3 b 3u IPv4 0x0 0t0 TCP *:%d (LISTEN)\n", ("0x" a[2]) + 0}' /proc/net/tcp /proc/net/tcp6
+  # python, not awk, for the hex port: gawk reads "0x1F90" + 0 as 0, mawk as 8080.
+  python3 -c 'import sys
+for path in sys.argv[1:]:
+    for row in open(path).read().splitlines()[1:]:
+        f = row.split()
+        if f[3] == "0A": print("py 3 b 3u IPv4 0x0 0t0 TCP *:%d (LISTEN)" % int(f[1].rsplit(":", 1)[1], 16))' /proc/net/tcp /proc/net/tcp6
 else
   /usr/sbin/lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1'
 fi
