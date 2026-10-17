@@ -49,6 +49,7 @@ check "bash <repo script>: settings written"              '[ $rc -eq 0 ] && [ -f
 check "bash <repo script>: exact command allowed"         'allows "Bash(bash tests/run.sh:*)"'
 check "bash <repo script>: probed with bash --version"    '[[ "$out" == *"TOOLCHAIN_PROBE: bash --version"* ]] && allows "Bash(bash --version)"'
 check "bash <repo script>: no wholesale bash rule"        '! allows "Bash(bash:*)"'
+check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env:*)" && jq -e ".permissions.deny | index(\"Bash(desk-env machine write:*)\")" "$T/ws.json" >/dev/null'
 
 settings '`sh scripts/check.sh`'
 check "sh <repo script>: allowed and probed"              '[ $rc -eq 0 ] && allows "Bash(sh scripts/check.sh:*)" && [[ "$out" == *"TOOLCHAIN_PROBE: sh --version"* ]]'

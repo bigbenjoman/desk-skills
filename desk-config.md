@@ -228,6 +228,11 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |
 
+Worker concurrency, the memory ceiling and the test worker cap are about the computer more than the
+repo. Left `TODO` or absent, each falls back to the machine profile, `~/.config/desk/machine.md`
+(`desk-env machine get autopilot-concurrency`, `memory-ceiling-gb`, `test-cap`), which `/desk-setup`
+sizes from the detected hardware; a value set here wins. With no profile they behave as unset.
+
 ## 3c. Harness rules written by setup
 
 `/desk-setup` adds Claude Code `permissions` allow rules for your `yes` rows to **this repo's**

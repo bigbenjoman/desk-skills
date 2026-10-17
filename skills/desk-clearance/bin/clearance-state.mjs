@@ -806,7 +806,11 @@ function ceilingGB() {
   const declared = Number(process.env.DESK_CLEARANCE_MEM_GB)
   if (Number.isFinite(declared) && declared > 0) return { gb: declared, source: 'DESK_CLEARANCE_MEM_GB' }
   const fromCfg = Number((cfg('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)') || '').match(/\d+(\.\d+)?/)?.[0])
-  if (Number.isFinite(fromCfg) && fromCfg > 0) return { gb: fromCfg, source: 'config §3b Memory ceiling for parallel work (GB)' }
+  if (Number.isFinite(fromCfg) && fromCfg > 0) {
+    // An unset repo row reaches here through desk-env's fallback to the machine profile.
+    const source = rawRow('3b', 'Memory ceiling for parallel work (GB)') ? 'config §3b Memory ceiling for parallel work (GB)' : 'machine profile memory-ceiling-gb'
+    return { gb: fromCfg, source }
+  }
   if (isWsl()) return { gb: WSL_DEFAULT_CEILING_GB, source: 'WSL default ceiling - set it in config §3b' }
   return { gb: Math.max(2, totalmem() / 1024 ** 3 - 8), source: 'physical RAM minus 8G - set it in config §3b' }
 }
