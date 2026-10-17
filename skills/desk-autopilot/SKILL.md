@@ -540,14 +540,18 @@ The over-escalations that have actually happened, all named in the challenge pro
 
 The challenge confirms unless it can name the trigger that does not fire, and doubt confirms. **The
 one exception is a park on size alone**, where "describe it file by file" would make the trigger
-unfalsifiable; there the test is whether the work is mechanical and bounded.
+unfalsifiable; there the test is whether the work is mechanical and bounded. **A challenge that could
+not read the code is not doubt**: any read it needed and could not make makes its verdict
+INCONCLUSIVE, with the failed reads recorded, and the lane is left exactly as the first pass set it.
 
 **A confirmed park can still be wrong, because both passes can share one over-estimate.** A park on
 size CONFIRMED by counting new things to build can be lane A in a handful of files when every one has
 an existing pattern on `origin/<default>` to copy. Before reporting any park on size, check each
 thing the challenge calls "new" against `origin/<default>` and say what you found: report the doubt,
-not the verdict. **Read the challenge line**: `plan-batch` prints `challenge CONFIRMED`, or
-`! challenge did not run`: a single unreviewed opinion that must not be reported as settled.
+not the verdict. **Read the challenge line**: `plan-batch` prints `challenge CONFIRMED`,
+`! challenge INCONCLUSIVE` with the reads that failed, or `! challenge did not run`. The last two are
+a single unchecked opinion that must not be reported as settled. An INCONCLUSIVE park's lane is
+marked `UNCHECKED` and is listed under QUESTIONS: put it to the user to confirm or re-lane.
 
 **A lane is a proposal.** When the user rules that a park's lane is wrong (it is really A, B or E),
 re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then

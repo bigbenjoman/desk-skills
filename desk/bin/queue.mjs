@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, waitingOnMerge } from './batch-state.mjs';
+import { isHeld, waitingOnMerge, lanePark } from './batch-state.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound } from './desk-env.mjs';
 
 // The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
@@ -190,8 +190,7 @@ switch (cmd) {
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
     const r = JSON.parse(readFileSync(recPath, 'utf8'));
     const size = String(r.size ?? '').toUpperCase();
-    const park = ['C', 'D'].includes(r.lane) ? `lane ${r.lane} — ${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`
-      : ['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null;
+    const park = lanePark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
     const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
     // The collision check plan-batch makes, against every ticket still to finish: two tickets that
     // touch one file never run at once.

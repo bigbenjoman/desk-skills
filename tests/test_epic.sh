@@ -344,6 +344,22 @@ out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-202 KAN-201 P1-5 2>&1
 check "regression: no links -> all triaged, argument order kept, no deps" \
   '[ $rc -eq 0 ] && [ "$(jq -r ".tickets|keys_unsorted|join(\" \")" "$DESK_QUEUE")" = "KAN-202 KAN-201 P1-5" ] && [ "$(jq -r "[.tickets[].state]|unique|join(\",\")" "$DESK_QUEUE")" = triaged ] && ! printf "%s" "$out" | grep -q -- "--deps"'
 
+# An INCONCLUSIVE lane challenge (its code reads failed) shows the lane as unchecked and asks the user.
+rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
+r KAN-301 C '[]' '"lane_challenge":{"verdict":"INCONCLUSIVE","reason":"x","failed_reads":["git show main:src/a.ts: denied"]}'
+r KAN-302 C '[]' '"lane_challenge":{"verdict":"CONFIRM","reason":"y"}'
+r KAN-303 A '[]'
+node "$B/queue.mjs" init t3 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-301 KAN-302 KAN-303 2>&1); rc=$?
+check "inconclusive challenge: plan marks the lane UNCHECKED" \
+  '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^KAN-301  lane C .*UNCHECKED" && printf "%s" "$out" | grep -q "challenge INCONCLUSIVE.*git show main:src/a.ts: denied"'
+check "inconclusive challenge: listed as a question to confirm or re-lane, with the failed reads" \
+  'printf "%s" "$out" | grep -q "\[KAN-301\] lane C is unchecked.*git show main:src/a.ts: denied.*re-lane"'
+check "a confirmed challenge is not asked again" \
+  'printf "%s" "$out" | grep -q "challenge CONFIRMED: y" && ! printf "%s" "$out" | grep -q "\[KAN-302\]" && ! printf "%s" "$out" | grep -q "^KAN-302 .*UNCHECKED"'
+check "inconclusive challenge: parked, park question says unchecked, no open answers to block a re-lane" \
+  '[ "$(qg KAN-301 .state)" = parked ] && [[ "$(qg KAN-301 .park.question)" == "lane C UNCHECKED"* ]] && [ "$(qg KAN-301 .open_questions)" = 0 ] && [[ "$(qg KAN-302 .park.question)" == "lane C —"* ]] && [ "$(qg KAN-303 .state)" = triaged ]'
+
 # ---------------------------------------------------------------------------------------------------
 # E idle rule and answer.mjs on a held ticket
 idle(){ node --input-type=module -e "import {batchIdle} from '$B/batch-state.mjs'; console.log(batchIdle(JSON.parse(process.argv[1])) ? 'idle' : 'busy')" "$1"; }
@@ -425,6 +441,9 @@ node "$B/queue.mjs" admit KAN-810 >/dev/null; node "$B/queue.mjs" admit KAN-811 
 check "admit: a lane A ticket is triaged with its branch" '[ "$(qg KAN-810 .state)" = triaged ] && [ "$(qg KAN-810 .branch)" = feat/KAN-810 ]'
 check "admit records collisions both ways from files in scope" '[ "$(qg KAN-810 .collides_with)" = KAN-801 ] && [[ "$(qg KAN-801 .collides_with)" == *KAN-810* ]]'
 check "admit: lane C and size XL are parked for their own reason" '[[ "$(qg KAN-811 .park.question)" == "lane C"* ]] && [[ "$(qg KAN-812 .park.question)" == "size XL"* ]]'
+printf '{"ticket":"KAN-814","type":"Task","lane":"D","lane_reason":"design","branch":"feat/KAN-814","unknowns":[],"lane_challenge":{"verdict":"INCONCLUSIVE","reason":"x","failed_reads":["r"]}}' > "$T/state/triage/KAN-814.json"
+node "$B/queue.mjs" admit KAN-814 >/dev/null
+check "admit: an INCONCLUSIVE challenge parks the lane as unchecked, as plan-batch does" '[ "$(qg KAN-814 .state)" = parked ] && [[ "$(qg KAN-814 .park.question)" == "lane D UNCHECKED"* ]]'
 out=$(node "$B/queue.mjs" admit KAN-813 2>&1); rc=$?
 check "admit refuses a ticket with no triage record" '[ $rc -ne 0 ]'
 
