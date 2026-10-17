@@ -433,7 +433,7 @@ accounts. Setup prints these with the real folder filled in; you run them yourse
 
 ```bash
 d="$(desk-jira where --dir)"; mkdir -p "$d" && chmod 700 "$d"
-printf %s you@example.com > "$d/jira-email"
+printf %s you@example.com > "$d/jira-email" && chmod 600 "$d/jira-email"
 printf %s '<api token>' > "$d/atlassian-token" && chmod 600 "$d/atlassian-token"
 desk-jira where && desk-jira whoami      # shows the site, project and login it resolved
 ```
@@ -447,7 +447,7 @@ plain description, and every Jira step is skipped.
 ~/.config/desk/repos/
   bigbenjoman__voicepa/
     config.md            everything desk knows about this repo, and what it may do here
-    jira-email           your Atlassian login for this repo's Jira site
+    jira-email           your Atlassian login for this repo's Jira site (chmod 600)
     atlassian-token      an API token for it (chmod 600)
     harness-rules.json   the Claude Code permission rules setup added for this repo
   bigbenjoman__forewatt/

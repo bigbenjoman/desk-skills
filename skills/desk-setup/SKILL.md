@@ -80,7 +80,7 @@ first option, and the user still answers every row. A row the user has not answe
    and Jira account can differ per client), and **§3 / §3b as the first option of each question**,
    never as answers. §0, §2, §4 and §5 are always detected fresh for this repo.
 4. If that repo uses the same Jira site, offer to copy its `jira-email` and `atlassian-token` into
-   this repo's `CREDS` (`cp -p`, then `chmod 600`). Say that the token is then shared by both repos
+   this repo's `CREDS` (`cp -p`, then `chmod 600` on both). Say that the token is then shared by both repos
    and that revoking it in Atlassian breaks both.
 
 ## 1. Detect, then confirm
@@ -175,7 +175,7 @@ How to turn what you find into rows:
 
   ```
   ! mkdir -p <CREDS> && chmod 700 <CREDS>
-  ! printf %s 'you@example.com' > <CREDS>/jira-email
+  ! printf %s 'you@example.com' > <CREDS>/jira-email && chmod 600 <CREDS>/jira-email
   ! printf %s '<api token>' > <CREDS>/atlassian-token && chmod 600 <CREDS>/atlassian-token
   ```
 
@@ -609,6 +609,10 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 - Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.
+- Check the credential files' modes on every re-run: `ls -l <CREDS>/jira-email
+  <CREDS>/atlassian-token`. Either one not `-rw-------` (600): name the file and its mode, say you
+  are fixing it, then `chmod 600` it and show `ls -l` again. A missing file is the *Jira
+  credentials* step above, not this one.
 - **Before/after for every changed row**; never reset one quietly.
 - Revoking is as easy as granting: set the row, run
   `python3 $H "${REPO_RULES[@]}" remove <row> [<row>...]` (backs up, removes every rule the row
