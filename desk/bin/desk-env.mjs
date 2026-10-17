@@ -491,16 +491,15 @@ export function isWSL() {
 }
 
 const DEFAULT_DEV_PORT = 3000;
-const validPort = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+const positiveInt = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 export function devPort() {
-  return validPort(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: String(DEFAULT_DEV_PORT) })) ?? DEFAULT_DEV_PORT;
+  return positiveInt(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: String(DEFAULT_DEV_PORT) })) ?? DEFAULT_DEV_PORT;
 }
 
 // Worker ports start one above the user's dev port and skip anything taken. One definition, used
 // by pass.mjs (the real path) and spawn-worker.sh's standalone fallback alike.
 export function workerPortFloor() {
-  const v = Number(process.env.AUTOPILOT_PORT_FLOOR ?? devPort() + 1);
-  return Number.isInteger(v) && v > 0 ? v : devPort() + 1;
+  return positiveInt(process.env.AUTOPILOT_PORT_FLOOR ?? devPort() + 1) ?? devPort() + 1;
 }
 
 // `<default> / <cap>` from §3b, default 2 / 3.
@@ -522,7 +521,7 @@ export function repoPortClaims(root = deskConfigRoot()) {
   return slugs.flatMap((slug) => {
     const parsed = parseConfigFile(join(dir, slug, 'config.md'));
     if (!parsed.exists) return [];
-    const port = validPort(configValueIn(parsed, 'dev-port')) ?? DEFAULT_DEV_PORT;
+    const port = positiveInt(configValueIn(parsed, 'dev-port')) ?? DEFAULT_DEV_PORT;
     return [{ slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap }];
   });
 }
@@ -812,9 +811,9 @@ if (isMain) {
         // --cap: the worker cap /desk-setup has just been told, before it is written to the config.
         const slug = currentRepo().slug;
         const i = args.indexOf('--cap');
-        const cap = i >= 0 && Number.isInteger(Number(args[i + 1])) && Number(args[i + 1]) > 0 ? Number(args[i + 1]) : concurrencyLimits().cap;
+        const cap = (i >= 0 ? positiveInt(args[i + 1]) : null) ?? concurrencyLimits().cap;
         const others = repoPortClaims().filter((c) => c.slug !== slug);
-        const port = validPort(configValue('dev-port'));
+        const port = positiveInt(configValue('dev-port'));
         const self = port ? { slug, port, last: port + cap } : null;
         for (const c of [...others, ...(self ? [self] : [])]) {
           console.log(`REPO\t${c.slug}\t${c.port}\tworkers ${c.port + 1}-${c.last}${c === self ? '\t(this repo)' : ''}`);
