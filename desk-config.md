@@ -93,7 +93,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 |---|---|---|
 | Primary repo root | `TODO` | the main checkout, e.g. `~/voicepa` |
 | Worktrees directory | `TODO` | e.g. `~/voicepa-worktrees`; autopilot creates `<dir>/<TICKET>` |
-| Handoff directory | `TODO` | files you open yourself (screenshots, exports); skills create `<dir>/<TICKET>/`. On WSL it must be Windows-visible |
+| Handoff directory | `TODO` | files you open yourself (screenshots, exports); skills create `<dir>/<TICKET>/`. On WSL it must be Windows-visible; on macOS not `~/Downloads/`, which folder privacy refuses (`~/desk-handoff/`) |
 | Backups directory | `~/desk-backups/<slug>/` | dumps before any write to shared data |
 | Running on WSL? | `TODO` | `yes` / `no` |
 | Signed-in browser profile | `~/.cache/ms-playwright-mcp/desk-profile` | written by `install.sh`'s Playwright step; PR image upload reuses it; one per machine, exclusive |

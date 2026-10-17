@@ -307,8 +307,12 @@ How to turn what you find into rows:
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
   the hook is the backstop.
 - **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
-- **Handoff directory** on WSL must be Windows-visible (`/mnt/c/Users/<name>/Downloads/`); elsewhere
-  `~/Downloads/`.
+- **Handoff directory** on WSL must be Windows-visible (`/mnt/c/Users/<name>/Downloads/`). On macOS
+  propose `~/desk-handoff/`, never `~/Downloads/`, `~/Desktop/` or `~/Documents/`: macOS folder
+  privacy refuses Claude Code those (EPERM), so every skill that writes there fails. Elsewhere
+  `~/Downloads/`. Whatever the answer, check the agent can create a file there before writing the
+  row: `mkdir -p <dir> && touch <dir>/.desk-write-check && rm <dir>/.desk-write-check`. A refusal is
+  said with its error and the row is asked again; never save a directory the check refused.
 - **codex**: only the exit code and a `CODEX_OK` in the output count.
 - **Memory ceiling** default: the machine profile's, else WSL `16`; otherwise physical RAM minus ~8.
 - **What review asks for** (optional): offer to mine the last 30 review comments on merged PRs
@@ -613,6 +617,9 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 - Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.
+- Run the handoff directory's write check (§1) on every re-run. A directory it refuses (on macOS,
+  typically `~/Downloads/`) is flagged with the error and asked again, `~/desk-handoff/` first on
+  macOS, whether or not the user asked to change it.
 - Check the credential files' modes on every re-run: `ls -l <CREDS>/jira-email
   <CREDS>/atlassian-token`. Either one not `-rw-------` (600; a trailing `@`, `+` or `.` is an
   attribute marker, not part of the mode): name the file and its mode, say you
