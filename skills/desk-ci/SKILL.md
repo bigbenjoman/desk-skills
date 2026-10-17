@@ -107,7 +107,7 @@ API, and reports:
 | failure rate and first failing job | per workflow, over attempts; the first failing job is the red job that finished first |
 | CI red rate per PR | PRs whose CI went red at least once, of PRs with CI in the window |
 | red-to-fix round trips | from a red attempt to the next green head, by re-run or new push; median CI minutes spent and median wait |
-| PR time to green | first CI run on the PR to its first head with every run green; median and p90 |
+| PR time to green | first CI run on the PR to its first head with every run green (a cancelled or approval-waiting run is not green); median and p90 |
 | queue time | job created to job started, hosted and self-hosted apart; median and p90 |
 | minutes per merged PR, by month | the month's billed plus self-hosted minutes over the PRs merged that month |
 

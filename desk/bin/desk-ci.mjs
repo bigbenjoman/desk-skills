@@ -317,6 +317,8 @@ export function lint(text) {
 
 const RED = new Set(['failure', 'timed_out', 'startup_failure']);
 const DECIDED = new Set(['success', ...RED]);
+// A cancelled or approval-waiting attempt is neither red nor a pass.
+const PASSING = new Set(['success', 'skipped', 'neutral']);
 const ms = (s) => (s ? Date.parse(s) : NaN);
 const finite = (xs) => xs.filter(Number.isFinite);
 
@@ -385,7 +387,8 @@ function attemptsOf(run, jobs, estimate) {
   }
   if (!byAttempt.size) {
     return [{ run, attempt: run.run_attempt ?? 1, sha: run.head_sha, created: ms(run.run_started_at ?? run.created_at), completed: ms(run.updated_at),
-      red: RED.has(run.conclusion), decided: DECIDED.has(run.conclusion), done: run.status === 'completed', minutes: estimate, jobs: [] }];
+      red: RED.has(run.conclusion), decided: DECIDED.has(run.conclusion), passed: PASSING.has(run.conclusion),
+      done: run.status === 'completed', minutes: estimate, jobs: [] }];
   }
   return [...byAttempt.entries()].sort((a, b) => a[0] - b[0]).map(([attempt, js]) => {
     const red = js.some((j) => RED.has(j.conclusion));
@@ -393,7 +396,8 @@ function attemptsOf(run, jobs, estimate) {
       run, attempt, sha: run.head_sha,
       created: Math.min(...finite(js.map((j) => ms(j.created_at ?? j.started_at)))),
       completed: Math.max(...finite(js.map((j) => ms(j.completed_at)))),
-      red, decided: red || js.some((j) => j.conclusion === 'success'), done: js.every((j) => j.status === 'completed'),
+      red, decided: red || js.some((j) => j.conclusion === 'success'), passed: js.every((j) => PASSING.has(j.conclusion)),
+      done: js.every((j) => j.status === 'completed'),
       minutes: js.reduce((t, j) => t + jobMinutes(j) * (isSelfHosted(j) ? 1 : osMultiplier(j)), 0), jobs: js,
     };
   });
@@ -420,7 +424,7 @@ export function prTimeline(atts) {
     const reds = as.filter((a) => a.red).map((a) => a.completed);
     return {
       first: Math.min(...as.map((a) => a.created)),
-      greenAt: fin.every((a) => a.done && !a.red) ? Math.max(...fin.map((a) => a.completed)) : null,
+      greenAt: fin.every((a) => a.done && a.passed) && fin.some((a) => a.decided) ? Math.max(...fin.map((a) => a.completed)) : null,
       redAt: reds.length ? Math.min(...reds) : null,
     };
   }).sort((a, b) => a.first - b.first);
@@ -744,15 +748,15 @@ function runMeasure(args) {
   const now = new Date();
   const until = now.toISOString().slice(0, 10);
   const since = day(until, -(days - 1));
+  const dir = f.out ?? join(mainCheckout(), '.handoffs');
+  mkdirSync(dir, { recursive: true });
   const c = collect({ repo, since, until, budget });
   const m = measure({ ...c });
   const text = report(m, c, now.toISOString());
-  const dir = f.out ?? join(mainCheckout(), '.handoffs');
-  mkdirSync(dir, { recursive: true });
+  console.log(text);
   const base = join(dir, `${until}-ci-measure-${repo.replace('/', '__')}`);
   writeFileSync(`${base}.md`, text);
   writeFileSync(`${base}.json`, `${JSON.stringify({ repo, measuredAt: now.toISOString(), calls: c.calls, budget, allowance: c.allowance, notes: c.notes, ...m }, null, 2)}\n`);
-  console.log(text);
   console.log(`saved: ${base}.md and ${base}.json`);
 }
 

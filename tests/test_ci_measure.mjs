@@ -79,6 +79,22 @@ const red = measure({ runs: [runs[1]], jobs: new Map([[2, jobs.get(2)]]), prs, s
 t('a PR still red has an unresolved trip', red.prs.roundTrips.unresolved, 1);
 t('and no time to green', red.prs.timeToGreen.n, 0);
 
+// A push cancelled by a newer one is not green: the round trip runs on to the push that passes.
+const T3 = '2026-09-20T10:00:00Z';
+const cancelled = [
+  run({ id: 20, head_sha: 'x', head_branch: 'feat/four', pull_requests: [{ number: 4 }], conclusion: 'failure', created_at: T3, updated_at: iso(T3, 60) }),
+  run({ id: 21, head_sha: 'y', head_branch: 'feat/four', pull_requests: [{ number: 4 }], conclusion: 'cancelled', created_at: iso(T3, 600), updated_at: iso(T3, 630) }),
+  run({ id: 22, head_sha: 'z', head_branch: 'feat/four', pull_requests: [{ number: 4 }], conclusion: 'success', created_at: iso(T3, 900), updated_at: iso(T3, 1000) }),
+];
+const cm = measure({ runs: cancelled, prs: [{ number: 4, created_at: T3, head: { ref: 'feat/four' } }], since: '2026-07-20', until: '2026-10-17',
+  jobs: new Map([
+    [20, [job(T3, { name: 'test', conclusion: 'failure', start: 0, end: 60 })]],
+    [21, [job(T3, { name: 'test', conclusion: 'cancelled', created: 600, start: 600, end: 630 })]],
+    [22, [job(T3, { name: 'test', conclusion: 'success', created: 900, start: 900, end: 1000 })]],
+  ]) });
+t('a cancelled push does not end a round trip', cm.prs.roundTrips.medianWait, 940 * 1000);
+t('nor count as time to green', cm.prs.timeToGreen.median, 1000 * 1000);
+
 // ---- sampling: red and re-run runs are read first, the rest scale back up
 const nightly = Array.from({ length: 11 }, (_, i) => run({ id: 100 + i, name: 'Nightly', event: 'schedule', head_sha: `n${i}`, head_branch: 'main',
   conclusion: i === 7 ? 'failure' : 'success', created_at: iso(T0, i * 86400), updated_at: iso(T0, i * 86400 + 61) }));
