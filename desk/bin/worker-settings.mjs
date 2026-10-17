@@ -112,7 +112,14 @@ const shortFlag = (lead, flag) => [`${lead} ${flag}*`, `${lead} * ${flag}`, `${l
 // ---- this repo's config ----------------------------------------------------------------------
 // A config row desk-env.mjs does not know yet (it throws on an unknown id) reads as unset.
 const cfg = (id) => { try { return E.configValue(id); } catch { return null; } };
-const cfgList = (id) => { try { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; } catch { return []; } };
+// A row desk-env refuses (`none` beside other items) fails here too: `none` is never a command.
+const cfgList = (id) => {
+  try { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; }
+  catch (e) {
+    if (e instanceof E.DeskConfigError) { console.error(`FAIL: ${e.message}`); process.exit(1); }
+    return [];
+  }
+};
 const isNone = (v) => v != null && /^none\b/i.test(String(v).trim());
 const BIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 // Never allowed even as the exact configured command: a prefix rule for `rm -rf build` also matches

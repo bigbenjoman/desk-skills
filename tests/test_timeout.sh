@@ -116,4 +116,9 @@ reap "$T/docker.pids"
 out=$(DESK_PSQL_TIMEOUT=soon bash "$B/setup-worktree.sh" T-2 fix/T-2 2>&1); rc=$?
 check "a non-numeric limit is refused before anything is made"  '[ $rc -ne 0 ] && [[ "$out" == *"DESK_PSQL_TIMEOUT="* ]] && [ ! -d "$T/wt/T-2" ]'
 
+# `none` beside another item (a note in backticks) is refused with desk-env's message, never run.
+sed 's/^| Install | .*/| Install | `none` `.\/install.sh` |/' "$T/config.md" > "$T/mixed.md"
+out=$(DESK_CONFIG="$T/mixed.md" bash "$B/setup-worktree.sh" T-3 fix/T-3 2>&1); rc=$?
+check "mixed none Install row: refused before anything is made" '[ $rc -ne 0 ] && [[ "$out" == *"FAIL: desk: config §4 \"Install\" mixes \`none\` with other items"* ]] && [ ! -d "$T/wt/T-3" ]'
+
 echo "timeout: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

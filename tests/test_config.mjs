@@ -41,6 +41,26 @@ const run = (...a) => execFileSync('node', [BIN, ...a], { encoding: 'utf8', env 
 t('design-dir reads the value column', run('get', 'design-dir'), 'docs/design/');
 t('breakpoints lists every width', run('list', 'breakpoints'), '375 | 768 | 1024 | 1280 | 1920');
 t('design-system lists every file', run('list', 'design-system'), 'src/styles/tokens.css | DESIGN.md');
+
+// `none` stands alone: beside another item it is a note in backticks, refused rather than run.
+const tool = join(T, 'tool.md');
+writeFileSync(tool, '## 4. Toolchain\n\n| Field | Value |\n|---|---|\n'
+  + '| Install | `none` — `./install.sh` installs to your machine |\n'
+  + '| Unit tests | `none` (`./install.sh` is not a suite) |\n'
+  + '| Lint | `none` |\n');
+const toolEnv = { ...process.env, DESK_CONFIG: tool, DESK_MACHINE: join(T, 'none.md'), HOME: T };
+const refused = (...a) => {
+  try { execFileSync('node', [BIN, ...a], { encoding: 'utf8', env: toolEnv, stdio: 'pipe' }); return 'exit 0'; }
+  catch (e) { return `exit ${e.status}: ${String(e.stderr).trim()}`; }
+};
+for (const sub of ['cmds', 'list']) {
+  const r = refused(sub, 'install-cmd');
+  t(`${sub} refuses a mixed none row`, /^exit 4: .*§4 "Install" mixes `none` with other items \(none \| \.\/install\.sh\).*move the note out of backticks/.test(r), true);
+}
+const plain = (...a) => execFileSync('node', [BIN, ...a], { encoding: 'utf8', env: toolEnv }).trim();
+t('cmds prints nothing for a plain none', plain('cmds', 'lint-cmd'), '');
+t('list prints a plain none', plain('list', 'lint-cmd'), 'none');
+t('a backticked note in trailing parens is still one none', plain('cmds', 'test-cmd'), '');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');
