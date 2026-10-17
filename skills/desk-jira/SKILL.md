@@ -212,7 +212,11 @@ are rare. Don't inflate it. Calibrate against the ticket it came from and a coup
 (`desk-jira get <KEY>`). A follow-up rarely outranks its parent. If §4 Priority names values with
 no way to tell them apart, ask once and suggest `/desk-setup` record the meanings.
 
-**Assignee.** The user, by default. Anyone else is routing (gate item 3).
+**Assignee.** The user, by default. With §3 `jira-assign-self` `yes`, `create` assigns the new
+ticket to the user when no `assignee=` is given; otherwise pass `assignee=me` (which waits on that
+row). `create` prints the assignee read back from Jira; `(empty - the assignment did not stick)`
+means set it with `desk-jira edit`. Anyone else is routing (gate item 3): `create` refuses an
+assignee other than the user unless `--route` is given.
 
 **Labels.** Use the vocabulary in §4 Labels (`any` means the project's existing labels: list them
 before choosing). Pick the ones that genuinely apply. There is no unconditional set: a label is

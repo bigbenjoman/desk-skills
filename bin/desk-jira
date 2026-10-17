@@ -90,6 +90,11 @@ cfg() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
   node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
 }
+# A §3 row as yes|ask|no|never|stop; empty without desk-env, which reads as not granted.
+cfg_perm() {
+  [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
+  node "$DESK_ENV_MJS" perm "$1" 2>/dev/null || true
+}
 # First word of a row ('KAN "Voice PA"; Task, Bug' -> KAN); `none` reads as empty.
 first_word_raw() { printf '%s' "$1" | awk '{print $1}' | tr -d '`,;' | tr '[:upper:]' '[:lower:]'; }
 first_word() {
@@ -308,7 +313,9 @@ desk-jira <command> [args]
   fields [filter]                 field ids and names (find custom fields)
   meta [issuetype]                createmeta: required fields + allowed values
 
-  create <type> <summary> <desc-file|text> [field=value ...]
+  create <type> <summary> <desc-file|text> [field=value ...] [--route]
+                                  assigned to you when §3 jira-assign-self is yes and no assignee
+                                  is given; anyone else needs --route; the assignee is read back
   edit <KEY> <field=value ...>    prints each field read back from Jira after the write
   labels <KEY> add|remove <label ...>
   link <KEY> blocked-by|blocks <OTHER>   a Blocks link, direction handled, read back
@@ -507,14 +514,40 @@ case "$cmd" in
 
   create)
     [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
-    [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...]'
+    [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...] [--route]'
     type="$1"; summary="$2"; desc=$(body_of "$3") || exit 2; shift 3
-    extra=$(fields_from_args "$@") || exit 2
+    route=0; pairs=()
+    for a in "$@"; do if [[ "$a" == --route ]]; then route=1; else pairs+=("$a"); fi; done
+    extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+    # An assignee other than you is routing (§3 jira-route), and needs --route spelt out so a harness
+    # rule can prompt on it while assignee=me goes through. With §3 jira-assign-self yes and no
+    # assignee given, the new ticket is yours: autopilot only picks up tickets assigned to you.
+    want=$(printf '%s' "$extra" | jq -r 'if has("assignee") | not then ""
+      elif .assignee == null then "none"
+      elif (.assignee | type) == "object" and (.assignee | has("accountId")) then .assignee.accountId | tostring
+      else .assignee | tojson end')
+    if [[ -z "$want" && "$(cfg_perm jira-assign-self)" == yes ]] || [[ -n "$want" && "$want" != none ]]; then
+      me=$(my_account_id)
+      [[ -n "$me" && "$me" != null ]] || die "desk-jira: could not read your accountId to set the assignee"
+      if [[ -z "$want" ]]; then
+        extra=$(printf '%s' "$extra" | jq --arg me "$me" '.assignee={accountId:$me}')
+      elif [[ "$want" != "$me" ]] && (( ! route )); then
+        die "desk-jira: assignee $want is not you, which routes the ticket to someone else: add --route if that is meant (§3 jira-route)"
+      fi
+    fi
     payload=$(jq -n \
       --arg p "$PROJECT" --arg t "$type" --arg s "$summary" --arg d "$desc" --argjson e "$extra" \
       '{fields: ({project:{key:$p}, issuetype:{name:$t}, summary:$s, description:$d} + $e)}')
-    json POST 'api/2/issue' -d "$payload" \
-      | jq -r --arg site "$SITE" '"created \(.key)  https://\($site)/browse/\(.key)"'
+    key=$(json POST 'api/2/issue' -d "$payload" | jq -r '.key')
+    echo "created $key  https://$SITE/browse/$key"
+    # A 201 is not proof the assignee landed (a project can drop it), so read it back.
+    if back=$(api GET "api/2/issue/$key?fields=assignee"); then
+      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL"'
+        if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
+        else "  assignee: \(.fields.assignee | val)" end'
+    else
+      echo "  assignee: (could not read back)"
+    fi
     ;;
 
   edit)

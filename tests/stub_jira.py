@@ -79,6 +79,11 @@ class H(BaseHTTPRequestHandler):
                     {"id": str(NEXT_ID[0]), "type": BLOCKS, "outwardIssue": brief(outward)})
             return self._send(201, {})
         if path == "/rest/api/2/issue" and self.command == "POST":
+            # Kept so a read-back sees it; only the stub's own account resolves to a display name.
+            f = dict(json.loads(data or "{}").get("fields", {}))
+            a = f.get("assignee")
+            f["assignee"] = dict(a, displayName="Me") if isinstance(a, dict) and a.get("accountId") == "abc" else a
+            FIX["issues"]["KAN-99"] = f
             return self._send(201, {"id": "1", "key": "KAN-99"})
         if "/comment" in self.path and self.command == "POST":
             return self._send(201, {"id": "10"})

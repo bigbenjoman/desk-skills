@@ -67,6 +67,7 @@ a row changes, say which of these applies.
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
 | `upload-images.mjs` | `pr-images` |
+| `desk-jira create` | `jira-assign-self` (a new ticket with no assignee given is assigned to you) |
 | `clearance-state.mjs` | `pr-merge-green`, `merge-feedback-first` |
 | `/desk-checkout`'s collectors (`github_activity.py`, `jira_activity.py`, `claude_activity.py`) | `read-own-work`, `read-transcripts`, per repo |
 
@@ -97,9 +98,9 @@ rows).
 
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
-| `jira-assign-self` | yes | starting a ticket without a round-trip | board shows you on it | ask | — (`desk-jira edit` can set any assignee) |
+| `jira-assign-self` | yes | starting a ticket without a round-trip; `desk-jira create` assigns a new ticket to you | board shows you on it | ask | `unguard: Bash(desk-jira create *assignee*)` · `ask: Bash(desk-jira create *--route*)`: `desk-jira create` refuses an assignee other than you without `--route`, so `assignee=me` goes through and routing still prompts. No `edit` rule: `desk-jira edit` can set any assignee |
 | `jira-comment` | yes | the root-cause + PR-link comment posts as it happens; exact text printed `posted` | text is public to the team under your name; editable. _Reach_: the rule posts on **any** ticket on the Jira site, other people's included; only the skill's `jira-others` check keeps it to yours | ask (every comment prompts) | `Bash(desk-jira comment *)` |
-| `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *assignee*)` `ask: Bash(desk-jira create *reporter*)` (routing is `jira-route`). No `attach` rule: it reaches any ticket |
+| `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *assignee*)` (removed when `jira-assign-self` is yes) `ask: Bash(desk-jira create *reporter*)` (routing is `jira-route`). No `attach` rule: it reaches any ticket |
 | `jira-edit` | yes | narrowing a description to what shipped, the §4 Priority field, labels, an epic's Blocks links | overwrites fields others read | ask | — (`desk-jira edit`, `labels` and `link` reach any ticket and any field, assignee included; `link` is never a worker's) |
 
 ## Round 4 — Jira, board state

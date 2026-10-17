@@ -120,6 +120,32 @@ err=$(cd "$A" && "$J" attach KAN-1 /etc/hosts 2>&1); rc=$?
 check "attach outside roots refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing to send"'
 check "nothing refused reached the stub" '[ "$(wc -l < "$LOG")" -eq "$n_before" ]'
 check "no request anywhere carried a token in its body" '! grep -q "good-token" "$LOG"'
+
+# create assigns the user under §3 jira-assign-self yes, reads the assignee back, and needs
+# --route for anyone else
+printf '\n## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `jira-assign-self` | x | `yes` | `yes` |\n' \
+  >> "$DESK_CONFIG_ROOT/repos/$SLUG_A/config.md"
+SLUG_B=$(mkrepo b "https://github.com/acme/beta" jira "http://127.0.0.1:$PORT"); B="$T/repos/b"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_B/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_B/atlassian-token"
+printf 'a body' > "$B/body.md"
+sent_assignee() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields | if has("assignee") then .assignee else "absent" end' "$LOG"; }
+creates() { jq -s '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | length' "$LOG"; }
+out=$(cd "$A" && "$J" create Task s body.md 2>&1); rc=$?
+check "create with assign-self yes sends your accountId" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"abc\"}" ]'
+check "create reads the assignee back" 'printf "%s" "$out" | grep -q "^  assignee: Me$"'
+out=$(cd "$A" && "$J" create Task s body.md assignee=me 2>&1); rc=$?
+check "create assignee=me goes through without --route" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"abc\"}" ]'
+out=$(cd "$A" && "$J" create Task s body.md assignee=null 2>&1); rc=$?
+check "create assignee=null stays unassigned" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "null" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
+n0=$(creates)
+err=$(cd "$A" && "$J" create Task s body.md assignee=xyz 2>&1); rc=$?
+check "create for someone else refused without --route" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--route" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$A" && "$J" create Task s body.md 'assignee={"name":"xyz"}' 2>&1); rc=$?
+check "create with a non-accountId assignee refused without --route" '[ $rc -ne 0 ] && [ "$(creates)" -eq "$n0" ]'
+out=$(cd "$A" && "$J" create Task s body.md assignee=xyz --route 2>&1); rc=$?
+check "create for someone else with --route sends them" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"xyz\"}" ] && printf "%s" "$out" | grep -q "^  assignee: xyz$"'
+out=$(cd "$B" && "$J" create Task s body.md 2>&1); rc=$?
+check "create without assign-self sends no assignee" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "\"absent\"" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
