@@ -103,10 +103,9 @@ const q = cmd === 'init' ? empty() : load(); // init must be able to repair a co
 switch (cmd) {
   case 'init': {
     // Stage 0 is the last point before triage: an orchestrator that cannot ask or run its monitors
-    // would triage, then stall at Stage 3. AUTOPILOT_ALLOW_DONTASK=1 is for a session started with
-    // another --permission-mode, which the settings files cannot show.
+    // would triage, then stall at Stage 3.
     const dm = sessionDefaultMode();
-    if (dm.mode === 'dontAsk' && process.env.AUTOPILOT_ALLOW_DONTASK !== '1') {
+    if (dm.mode === 'dontAsk') {
       throw new Error(`${DONTASK_WARNING}. Set in ${dm.file}; remove it (run /desk-setup, which backs the file up first), restart the session, then init again`);
     }
     const fresh = empty();

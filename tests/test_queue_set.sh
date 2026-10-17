@@ -54,8 +54,6 @@ out=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]
 check "a refused init leaves the queue alone"                             '[ "$out" = t ]'
 out=$(node "$B/desk-env.mjs" default-mode 2>&1); rc=$?
 check "desk-env default-mode exits 1 and names the file"                  '[ $rc -eq 1 ] && [[ "$out" == *"DEFAULT_MODE=dontAsk"* ]] && [[ "$out" == *"SOURCE=$R/.claude/settings.json"* ]]'
-out=$(AUTOPILOT_ALLOW_DONTASK=1 node "$B/queue.mjs" init t3 2>&1); rc=$?
-check "AUTOPILOT_ALLOW_DONTASK=1 overrides"                               '[ $rc -eq 0 ]'
 printf '{"permissions":{"defaultMode":"default"}}\n' > "$T/repo/.claude/settings.local.json"
 q init t4
 check "settings.local.json outranks settings.json"                        '[ $rc -eq 0 ]'
