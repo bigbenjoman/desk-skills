@@ -22,7 +22,9 @@ check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+
 cat > "$T/fixture.json" <<'EOF'
 {
   "page_size": 3,
+  "page_fault": {"KAN-90": "repeat", "KAN-91": "missing", "KAN-92": "endless"},
   "issues": {
+    "KAN-93": {"summary": "to be filed under an epic"},
     "KAN-10": {"summary": "Epic", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1}},
     "KAN-11": {"summary": "first"},
     "KAN-12": {"summary": "finished", "status": {"name": "Done", "statusCategory": {"key": "done"}}},
@@ -86,6 +88,8 @@ cat > "$T/fixture.json" <<'EOF'
   },
   "children": {
     "KAN-10": ["KAN-11", "KAN-12", "KAN-13", "KAN-14", "KAN-17", "OTH-1", "KAN-19"],
+    "KAN-90": ["KAN-11", "KAN-12", "KAN-13", "KAN-14", "KAN-17", "OTH-1", "KAN-19"],
+    "KAN-91": ["KAN-11", "KAN-12", "KAN-13", "KAN-14", "KAN-17", "OTH-1", "KAN-19"],
     "KAN-14": ["KAN-15", "KAN-16"],
     "KAN-17": ["KAN-18"],
     "KAN-30": ["KAN-31"],
@@ -99,7 +103,7 @@ cat > "$T/fixture.json" <<'EOF'
   }
 }
 EOF
-sed 's/"page_size": 3/"page_size": 3, "link_readback": "drop"/' "$T/fixture.json" > "$T/fixture-drop.json"
+sed 's/"page_size": 3/"page_size": 3, "link_readback": "drop", "edit_drop": ["parent"]/' "$T/fixture.json" > "$T/fixture-drop.json"
 
 PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
 python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!
@@ -174,6 +178,12 @@ check "no children says so, exit 0" '[ $rc -eq 0 ] && [ "$out" = "no children" ]
 printf bad-token > "$T/bad"
 out=$(JIRA_TOKEN_FILE="$T/bad" desk-jira children KAN-10 2>&1); rc=$?
 check "children with a bad token fails, never 'no children'" '[ $rc -ne 0 ] && ! printf "%s" "$out" | grep -q "no children"'
+J children KAN-90
+check "children stops on a repeated page token, naming it and the page" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "page 2 repeats page token .3."'
+J children KAN-91
+check "children fails on a missing token before the last page" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "page 1 is not the last but has no nextPageToken" && ! printf "%s" "$out" | grep -q "^KAN-11"'
+: > "$LOG"; J children KAN-92
+check "children gives up after 200 pages, with the count" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "no last page after 200 pages" && [ "$(grep -c search/jql "$LOG")" -eq 200 ]'
 
 # A page far bigger than one argv string may hold (Linux caps one argument at 128 KB).
 python3 - "$T/fixture.json" <<'PY'
@@ -219,6 +229,10 @@ J create Story "s" b.md parent=not-a-key
 check "parent= that is not a key is refused" '[ $rc -ne 0 ]'
 printf 'KAN-10' > "$T/repo/p.txt"; J create Story "s" b.md parent=@p.txt
 check "parent=@file is refused too (a key only)" '[ $rc -ne 0 ]'
+J edit KAN-93 parent=KAN-10
+check "edit parent=KEY that reads back exits 0" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^updated KAN-93"'
+out=$(JIRA_SITE="http://127.0.0.1:$DPORT" desk-jira edit KAN-93 parent=KAN-10 2>&1); rc=$?
+check "edit exits 1 when the parent does not stick" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "reads back as -, not KAN-10"'
 
 # ---------------------------------------------------------------------------------------------------
 # B expand-parent
