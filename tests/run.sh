@@ -36,5 +36,6 @@ run "install_file (rename over a running script)" "$SH" "$T/test_install_file.sh
 run "pre-push hook (stdin, no row, lock timeout)" "$SH" "$T/test_pre_push.sh"
 run "playwright lookup and saved GitHub login" node "$T/test_playwright.mjs"
 run "desk-runner (profile gate, stubbed tart, isolation results)" "$SH" "$T/test_runner.sh"
+run "reboot-check (worktrees across repos, runner, heavy)" "$SH" "$T/test_reboot.sh"
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; }
 exit $fail
