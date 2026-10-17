@@ -99,22 +99,20 @@ check "the new round's screenshots go to its PR"        '[ "$(cat "$T/uploads")"
 
 # T-4: round one finished and parked; its park record and an answered mailbox are still in place.
 q set T-3 state=done
-q add T-4; q set T-4 state=parked branch=fix/T-4 'park={"question":"old round"}' session_id=gone idle_passes=4 log_bytes=99
+q add T-4; q set T-4 state=parked lane=A branch=fix/T-4 'park={"question":"old round"}' session_id=gone idle_passes=4 log_bytes=99
 mkdir -p "$T/state/parks" "$T/state/answers"
 say "AUTOPILOT_DONE: pr=4 jira=none" > "$T/state/logs/T-4.log"
 echo '{"question": "yesterday'"'"'s question"}' > "$T/state/parks/T-4.json"
 echo "yesterday's answer" > "$T/state/answers/T-4.txt"
+# An even older round left a park record only: the log's own next free round would be .round1.
+echo '{"question": "older"}' > "$T/state/parks/T-4.json.round1"
 out=$(node "$B/queue.mjs" requeue T-4 2>&1)
-check "requeue moves the finished log aside"            '[ ! -e "$T/state/logs/T-4.log" ] && grep -q "pr=4" "$T/state/logs/T-4.log.round1"'
-check "requeue moves the park and answer to the same round" '[ ! -e "$T/state/parks/T-4.json" ] && [ -e "$T/state/parks/T-4.json.round1" ] && [ ! -e "$T/state/answers/T-4.txt" ] && [ -e "$T/state/answers/T-4.txt.round1" ]'
+check "requeue moves the finished log aside"            '[ ! -e "$T/state/logs/T-4.log" ] && grep -q "pr=4" "$T/state/logs/T-4.log.round2"'
+check "requeue moves log, park and answer to one round" '[ ! -e "$T/state/logs/T-4.log.round1" ] && [ ! -e "$T/state/parks/T-4.json" ] && grep -q yesterday "$T/state/parks/T-4.json.round2" && grep -q older "$T/state/parks/T-4.json.round1" && [ ! -e "$T/state/answers/T-4.txt" ] && [ -e "$T/state/answers/T-4.txt.round2" ]'
 check "requeue resets the ticket"                       '[ "$(field T-4 state)" = "\"triaged\"" ] && [ "$(field T-4 park)" = null ] && [ "$(field T-4 session_id)" = null ] && [ "$(field T-4 idle_passes)" = 0 ] && [ "$(field T-4 log_bytes)" = 0 ] && [ "$(field T-4 branch)" = "\"fix/T-4\"" ]'
 check "requeue fronts the ticket"                       '[ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets)[0])" "$DESK_QUEUE")" = T-4 ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "the requeued ticket spawns without AUTOPILOT_RERUN" '[ "$(field T-4 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning"'
-q set T-4 session_id=live-1
-say "AUTOPILOT_STAGE: 2/9 understand" > "$T/state/logs/T-4.log"
-out=$(node "$B/pass.mjs" 2>&1)
-check "the old park question is not reported"           '! echo "$out" | grep -q "yesterday"'
 
 # T-5: a stale park record from an earlier round, on a ticket set back to triaged by hand.
 q set T-4 state=done
@@ -129,5 +127,11 @@ check "requeue refuses a running ticket"                '[ "$(field T-5 state)" 
 q add T-6; q set T-6 state=parked lane=C 'park={"question":"lane C"}'
 out=$(node "$B/queue.mjs" requeue T-6 2>&1)
 check "requeue refuses a lane C ticket"                 '[ "$(field T-6 state)" = "\"parked\"" ] && echo "$out" | grep -q "lane C"'
+q add T-7
+out=$(node "$B/queue.mjs" requeue T-7 2>&1)
+check "requeue refuses an untriaged ticket"             '[ "$(field T-7 state)" = "\"queued\"" ] && echo "$out" | grep -q "not been triaged"'
+q set T-7 state=triaged lane=A open_questions=2
+out=$(node "$B/queue.mjs" requeue T-7 2>&1)
+check "requeue keeps open triage questions"             '[ "$(field T-7 open_questions)" = 2 ] && echo "$out" | grep -q "question(s) open"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

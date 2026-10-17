@@ -257,7 +257,11 @@ switch (cmd) {
     const t = ticket(q, key);
     if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
     if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
-    if (['C', 'D'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane}, which is never requeued for a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+    // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
+    // the one place an untriaged ticket, unanswered triage questions or a lane C or D would slip by.
+    if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
+    if (t.state === 'triaged' && (t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them with answer.mjs, which makes it eligible`);
+    if (!['A', 'B', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
     const moved = rotateRound(key, { answers: true });
     Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, updated_at: new Date().toISOString() });
     q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
