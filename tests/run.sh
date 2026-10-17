@@ -29,7 +29,7 @@ run "batch base (one batch targets a feature branch)" "$SH" "$T/test_batch_base.
 run "triage (claude -p receives every flag)" "$SH" "$T/test_triage.sh"
 run "worker-settings (shell-script toolchain)" "$SH" "$T/test_worker_settings.sh"
 run "epics (expansion, Jira links, held tickets)" "$SH" "$T/test_epic.sh"
-run "pass (screenshots go to the current round's PR)" "$SH" "$T/test_pass.sh"
+run "pass (screenshots go to the current round's PR; requeue)" "$SH" "$T/test_pass.sh"
 run "queue set (JSON objects and arrays)" "$SH" "$T/test_queue_set.sh"
 run "skill links (skills-upstream links)" "$SH" "$T/test_links.sh"
 run "plugins (unbumped vs outdated)" "$SH" "$T/test_plugins.sh"

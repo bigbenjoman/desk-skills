@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # pass.mjs after a requeue: screenshots go to the PR the current log names, not the one an earlier
-# round stored, and a respawn clears the stored PR and image flags and starts a fresh log. Runs the
+# round stored, and a respawn clears the stored PR and image flags and starts a fresh log and park
+# record. queue.mjs requeue moves a finished round's files aside so it respawns. Runs the
 # real pass.mjs with stub claude, gh, upload-images, setup-worktree and spawn-worker. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
