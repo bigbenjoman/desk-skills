@@ -64,9 +64,9 @@ machine, never copy one from someone else's notes.
 6. **Capture the tags before clearing the textarea**, then clear it. There is no API to list
    `user-attachments` assets afterwards; the only recovery is re-uploading. Map tags to cells **by
    alt**, never by upload order.
-7. **Set the body with `gh pr edit <n> --body-file`**, not the browser editor — the file on disk is
-   your undo. Write that file from the **live** body (`gh pr view <n> --json body --jq .body`)
-   fetched just before the edit, never from your local draft, so whatever CI or a bot added since
+7. **Set the body with `gh pr edit <n> --repo <§0 GitHub repo> --body-file`**, not the browser
+   editor — the file on disk is your undo. Write that file from the **live** body
+   (`gh pr view <n> --repo <§0 GitHub repo> --json body --jq .body`) fetched just before the edit, never from your local draft, so whatever CI or a bot added since
    the PR opened survives; swap only the `_drag <file>_` cells (SKILL.md §4, "Editing the body
    later"). `<img alt="…" src="…" width="400">` in the cells keeps a multi-row table readable.
 8. **Verify.** Reload with `domcontentloaded`, `window.scrollTo(0, 400)`, wait a few seconds so the

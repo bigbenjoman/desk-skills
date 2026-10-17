@@ -499,11 +499,13 @@ push, and a PR can merge in that gap with the section gone. So every edit, whate
      markers.
    - **A marker missing its partner, or either one appearing twice**: do not guess where desk's
      section ends. Stop and report the body as you found it.
-3. **Run the PR-description checks** on the file (above), then write it back with
-   `gh pr edit <n> --repo <§0 GitHub repo> --body-file <path>`.
-4. **Re-read the live body** and confirm every section outside the markers that was there in step 1
-   is still there. If one is gone, CI wrote between your read and your write: fetch again and
-   repeat from step 2.
+3. **Run the PR-description checks** on the file (above).
+4. **Fetch the live body once more, just before writing**, and compare everything outside the
+   markers (with no markers, the whole body) with the step 1 copy. Any difference means CI or a bot wrote while you edited, and your
+   file would delete it: go back to step 1 from the new body. Twice in a row: stop and report
+   rather than loop.
+5. **Write it back** with `gh pr edit <n> --repo <§0 GitHub repo> --body-file <path>`. `gh pr edit`
+   has no compare-and-swap, so step 4 narrows the window to seconds; it does not close it.
 
 The image upload script already edits from the live body and touches only the `_drag <file>_`
 cells, so it needs none of this.
