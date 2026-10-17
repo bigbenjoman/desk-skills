@@ -293,11 +293,7 @@ function parseConfigFile(path) {
     let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1;
     if (col < 0) col = 1;
     const keyCol = header.indexOf('key');
-    // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
-    // copied into a value, the doubled backticks are display only.
-    const cell = (cells[col] ?? '').replace(/``\s?/g, '').replace(/\s?``/g, '');
-    const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
-    const items = spans.length ? spans : [cell.trim()];
+    const items = cellItems(cells[col] ?? '');
     const s = parsed.sections[section];
     // `value` is the first item (what every single-valued row means); `items` is every backtick span.
     const entry = { value: items[0], items };
@@ -305,6 +301,33 @@ function parseConfigFile(path) {
     else { const n = norm(cells[0] ?? ''); if (n) s.byName[n] = entry; }
   }
   return parsed;
+}
+
+// A value cell's items: every backtick span, except those in a trailing parenthesised note
+// (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
+export function cellItems(raw) {
+  // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
+  // copied into a value, the doubled backticks are display only.
+  const cell = raw.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
+  const spans = [...stripTrailingNote(cell).matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+  return spans.length ? spans : [cell];
+}
+
+// The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
+// Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
+// cell that is only a note, or whose last paren never opens, is returned whole.
+function stripTrailingNote(cell) {
+  if (!cell.endsWith(')')) return cell;
+  let depth = 0;
+  let inSpan = false;
+  for (let i = cell.length - 1; i >= 0; i--) {
+    const c = cell[i];
+    if (c === '`') inSpan = !inSpan;
+    else if (inSpan) continue;
+    else if (c === ')') depth++;
+    else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
+  }
+  return cell;
 }
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
