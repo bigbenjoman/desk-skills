@@ -52,7 +52,8 @@ printf '%s\0' "$@" > "$STUB_LOG.$n"
 if [ "$n" = 0 ]; then
   printf '{"ticket":"fix-thing","lane":"%s","branch":"fix/fix-thing"}' "$STUB_LANE" > "$DESK_STATE/triage/fix-thing.json"
 else
-  printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE" > "$DESK_STATE/triage/fix-thing.challenge.json"
+  [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
+  printf '%s' "$STUB_CHAL" > "$DESK_STATE/triage/fix-thing.challenge.json"
 fi
 echo "STUB-STDOUT"; echo "STUB-STDERR" >&2
 exit 1
@@ -130,6 +131,20 @@ check "challenge receives every flag"                                   'flags_o
 check "challenge output goes to /dev/null"                              '[ -f "$STUB_LOG.1" ] && [[ "$out" != *STUB-* ]]'
 check "challenge: every git command it names runs under triage settings"  'prompt_git_ok 1'
 check "challenge: names no git -C or fetch"                             '! node "$T/match.js" prompt "$STUB_LOG.1" | grep -qE "^git (-C|fetch)"'
+check "challenge: a CONFIRM with no failed reads stays CONFIRM"           '[ "$(jq -r .lane_challenge.verdict "$T/state/triage/fix-thing.json")" = CONFIRM ]'
+
+# A challenge whose code reads failed is INCONCLUSIVE, with the reads; a CONFIRM that lists failed
+# reads is too, and neither changes the lane.
+lc(){ jq -r "$1" "$T/state/triage/fix-thing.json"; }
+for chal in '{"verdict":"INCONCLUSIVE","lane":"C","reason":"could not read","failed_reads":["git show main:a.ts: denied"]}' \
+            '{"verdict":"CONFIRM","lane":"C","reason":"rests on the first pass","failed_reads":["git show main:a.ts: denied"]}'; do
+  rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+  out=$(STUB_CHAL="$chal" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+  check "challenge $(printf '%s' "$chal" | jq -r .verdict) with failed reads: INCONCLUSIVE, reads kept, lane kept" \
+    '[ $rc -eq 0 ] && [ "$(lc .lane_challenge.verdict)" = INCONCLUSIVE ] && [ "$(lc ".lane_challenge.failed_reads[0]")" = "git show main:a.ts: denied" ] && [ "$(lc .lane)" = C ] && [ "$(lc .lane_original)" = null ]'
+done
+check "challenge prompt asks for INCONCLUSIVE and failed_reads" \
+  'node -e "const a=require(\"fs\").readFileSync(process.argv[1],\"utf8\").split(\"\\0\"); const p=a[a.indexOf(\"-p\")+1]; process.exit(/INCONCLUSIVE/.test(p) && /failed_reads/.test(p) ? 0 : 1)" "$STUB_LOG.1"'
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'

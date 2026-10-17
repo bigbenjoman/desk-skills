@@ -42,6 +42,10 @@ const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));
 const laneOk = (r) => ['A', 'B', 'E'].includes(r.lane);
 const sizeParked = (r) => laneOk(r) && ['L', 'XL'].includes(String(r.size ?? '').toUpperCase());
 const parked = ours.filter((r) => ['C', 'D'].includes(r.lane));
+// A C or D whose challenge could not read the code (triage.sh's INCONCLUSIVE) is one unchecked
+// opinion: the plan says so, and the user confirms or re-lanes it rather than reading it as settled.
+const unchecked = (r) => ['C', 'D'].includes(r.lane) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
+const failedReads = (r) => (r.lane_challenge?.failed_reads ?? []).join('; ') || 'none listed';
 const sized = ours.filter(sizeParked);
 let admitted = ours.filter((r) => laneOk(r) && !sizeParked(r));
 
@@ -168,7 +172,8 @@ if (notOurs.length) {
   for (const r of notOurs) console.log(`  ${r.ticket}: assigned to ${r.assignee}`);
 }
 
-const verdict = (r) => (['C', 'D'].includes(r.lane) ? `PARK (lane ${r.lane} — run manually)`
+const verdict = (r) => (unchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
+  : ['C', 'D'].includes(r.lane) ? `PARK (lane ${r.lane} — run manually)`
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
   : onCycle.has(r.ticket) ? `PARK (dependency cycle: ${onCycle.get(r.ticket)})`
   : held(r.ticket) ? `HELD (blocked by ${preds[r.ticket].join(', ')} — starts once their PRs merge)`
@@ -199,12 +204,20 @@ if (parked.length) {
     const c = r.lane_challenge;
     if (!c) console.log('      (no challenge recorded)');
     else if (c.verdict === 'CONFIRM') console.log(`      challenge CONFIRMED: ${c.reason ?? ''}`);
+    else if (unchecked(r)) console.log(`      ! challenge INCONCLUSIVE — lane is unchecked, reads failed: ${failedReads(r)}`);
     else console.log(`      ! challenge did not run (${c.reason ?? ''}) — lane is unreviewed`);
   }
 }
 
+for (const r of parked.filter(unchecked)) {
+  ask(r.ticket, `lane ${r.lane} is unchecked: its challenge could not read the code (${failedReads(r)}). Confirm lane ${r.lane}, or re-lane it to A, B or E`);
+}
 const qsOf = (r) => [...(r.unknowns ?? []), ...(added[r.ticket] ?? [])];
-const questions = admitted.flatMap((r) => qsOf(r).map((u) => ({ ticket: r.ticket, q: u })));
+// A parked ticket's own unknowns wait for whoever works it; only its lane question is asked now.
+const questions = [
+  ...admitted.flatMap((r) => qsOf(r).map((u) => ({ ticket: r.ticket, q: u }))),
+  ...parked.filter(unchecked).flatMap((r) => (added[r.ticket] ?? []).map((u) => ({ ticket: r.ticket, q: u }))),
+];
 console.log(`\n${'='.repeat(60)}`);
 if (questions.length) {
   console.log(`QUESTIONS — ${questions.length} across ${new Set(questions.map((q) => q.ticket)).size} ticket(s).`);
@@ -245,7 +258,8 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `held_by=${held(t) ? preds[t].join('|') : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
-    const park = ['C', 'D'].includes(r.lane) ? `lane ${r.lane} — ${r.lane_reason?.slice(0, 160) ?? 'needs a person'}`
+    const park = unchecked(r) ? `lane ${r.lane} UNCHECKED (challenge could not read the code): confirm lane ${r.lane} or re-lane — ${r.lane_reason?.slice(0, 120) ?? 'needs a person'}`
+      : ['C', 'D'].includes(r.lane) ? `lane ${r.lane} — ${r.lane_reason?.slice(0, 160) ?? 'needs a person'}`
       : sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — fix the Jira links`
       : held(t) ? `held by orchestrator: blocked by ${preds[t].join(', ')} (Jira link) — starts once their PRs merge`

@@ -166,7 +166,9 @@ node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
 # the user reads a question, so a wrong C/D costs a whole batch cycle while a
 # wrong A costs the worker one demotion. Bounded by construction — it fires on
 # the minority of tickets, reuses the read-only settings, and can only ever
-# downgrade. Set AUTOPILOT_SKIP_CHALLENGE=1 to turn it off.
+# downgrade. One whose code reads failed is INCONCLUSIVE, never a confirm:
+# plan-batch then shows the lane as unchecked. Set AUTOPILOT_SKIP_CHALLENGE=1
+# to turn it off.
 # ---------------------------------------------------------------------------
 LANE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).lane)' "$OUT")
 CHAL="$STATE/triage/$TICKET.challenge.json"
@@ -183,10 +185,18 @@ the code to judge it yourself. You are in $MAIN: run plain \`git <subcommand>\` 
 fetching are both refused), and read code as it is on $BASE
 (\`git show $BASE:<path>\`, \`git grep -n <pattern> $BASE -- <path>\`).
 
-**Confirm unless you can name the specific C or D trigger that does not in fact fire.** Doubt means
-confirm. You are looking for clear over-escalation, not an argument — the routing file's own rule is
-that ties break toward the cheaper lane and then the doubt gets stated, so a genuine tie is a
-confirm with the doubt written down.
+**Confirm unless you can name the specific C or D trigger that does not in fact fire.** Doubt about
+a judgement you could check means confirm. You are looking for clear over-escalation, not an
+argument — the routing file's own rule is that ties break toward the cheaper lane and then the doubt
+gets stated, so a genuine tie is a confirm with the doubt written down.
+
+**A check you could not make is not doubt: it is INCONCLUSIVE.** If a read you needed to judge the
+lane failed (a command was denied or errored, a file you had to read could not be opened, a ref did
+not resolve) and you found no other way to read the same code, do not confirm on the first pass's own
+file references. Answer INCONCLUSIVE, keep the lane, and list each of those reads in
+\`failed_reads\`, so the plan shows the lane as unchecked rather than as settled. A search that ran
+and found nothing is a result, not a failed read. Any entry in \`failed_reads\` makes the verdict
+INCONCLUSIVE, so list only the reads you needed and could not make.
 
 The ones that have actually been got wrong, all toward over-escalation:
 
@@ -213,9 +223,10 @@ edit repeated, or an extension of something that exists — in which case downgr
 Write ONLY this JSON to $CHAL — no prose, no code fence:
 
 {
-  "verdict": "CONFIRM|DOWNGRADE",
-  "lane": "<the lane you land on: $LANE if CONFIRM, else A|B|E>",
-  "reason": "<one or two sentences. On DOWNGRADE, name the trigger that does not fire and list the files. On CONFIRM, name the trigger that does, and for each 'new' thing say whether an existing pattern was found.>"
+  "verdict": "CONFIRM|DOWNGRADE|INCONCLUSIVE",
+  "lane": "<the lane you land on: $LANE if CONFIRM or INCONCLUSIVE, else A|B|E>",
+  "reason": "<one or two sentences. On DOWNGRADE, name the trigger that does not fire and list the files. On CONFIRM, name the trigger that does, and for each 'new' thing say whether an existing pattern was found. On INCONCLUSIVE, say what you could not check.>",
+  "failed_reads": ["<each read you needed that failed, as the command or path and why, e.g. 'git show $BASE:src/x.ts: path not in $BASE'; [] when none did>"]
 }
 CHALLENGE_END
 
@@ -243,7 +254,12 @@ if (!fs.existsSync(chal)) {
   catch (e) { d.lane_challenge = { verdict: 'UNAVAILABLE', reason: `unreadable challenge record (${e.message}); first-pass lane kept` }; }
   if (c) {
     const reason = String(c.reason ?? '').trim();
-    if (c.verdict === 'DOWNGRADE' && ['A', 'B', 'E'].includes(c.lane)) {
+    // A challenge that could not read the code has not checked the lane, whatever verdict it wrote:
+    // any failed read makes it INCONCLUSIVE, and the first-pass lane stays, marked unchecked.
+    const failedReads = (Array.isArray(c.failed_reads) ? c.failed_reads : []).map((x) => String(x).trim()).filter(Boolean);
+    if (c.verdict === 'INCONCLUSIVE' || failedReads.length) {
+      d.lane_challenge = { verdict: 'INCONCLUSIVE', reason, failed_reads: failedReads };
+    } else if (c.verdict === 'DOWNGRADE' && ['A', 'B', 'E'].includes(c.lane)) {
       d.lane_original = d.lane;
       d.lane = c.lane;
       d.lane_reason = `downgraded from ${d.lane_original} at challenge: ${reason}`;
