@@ -28,6 +28,19 @@ writeFileSync(cfg, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n'
   + '| Other work id patterns | `BUG-[0-9]+` `P[0-9]+-M[0-9]+(-FIX)?-[0-9]+` (not `roadmap-fw-3xx`) |\n');
 const out = execFileSync('node', [BIN, 'list', 'work-id-patterns'], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: cfg, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim();
 t('desk-env list skips the note', out.split('\n').join(' | '), 'BUG-[0-9]+ | P[0-9]+-M[0-9]+(-FIX)?-[0-9]+');
+
+// The design rows, by key: §2's value column sits before its Notes column.
+const design = join(T, 'design.md');
+writeFileSync(design, '## 2. Paths on your machine\n\n| Field | Value | Notes |\n|---|---|---|\n'
+  + '| Design canvases directory | `docs/design/` | committed, not `~/Downloads/` |\n\n'
+  + '## 5. Conventions\n\n| Field | Value |\n|---|---|\n'
+  + '| Breakpoints | `375` `768` `1024` `1280` `1920` (from `scripts/audit.ts:65`) |\n'
+  + '| Design system | `src/styles/tokens.css` `DESIGN.md` |\n');
+const env = { ...process.env, DESK_CONFIG: design, DESK_MACHINE: join(T, 'none.md'), HOME: T };
+const run = (...a) => execFileSync('node', [BIN, ...a], { encoding: 'utf8', env }).trim().split('\n').join(' | ');
+t('design-dir reads the value column', run('get', 'design-dir'), 'docs/design/');
+t('breakpoints lists every width', run('list', 'breakpoints'), '375 | 768 | 1024 | 1280 | 1920');
+t('design-system lists every file', run('list', 'design-system'), 'src/styles/tokens.css | DESIGN.md');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');

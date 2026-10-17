@@ -95,6 +95,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Worktrees directory | `TODO` | e.g. `~/voicepa-worktrees`; autopilot creates `<dir>/<TICKET>` |
 | Handoff directory | `TODO` | files you open yourself (screenshots, exports); skills create `<dir>/<TICKET>/`. On WSL it must be Windows-visible; on macOS not `~/Downloads/`, which folder privacy refuses (`~/desk-handoff/`) |
 | Backups directory | `~/desk-backups/<slug>/` | dumps before any write to shared data |
+| Design canvases directory | `docs/design/` | relative to the repo root, and committed: where design canvases and artifacts are saved so autopilot workers and the design agents read the same files. Never only a shared artifact link, which only the account that made it can edit |
 | Running on WSL? | `TODO` | `yes` / `no` |
 | Signed-in browser profile | `~/.cache/ms-playwright-mcp/desk-profile` | written by `install.sh`'s Playwright step; PR image upload reuses it; one per machine, exclusive |
 | Autopilot state | `~/.desk-autopilot/<slug>/`, `~/.claude/desk/` | fixed; listed so you know where batch state lives |
@@ -365,6 +366,8 @@ House style for this repo. Setup proposes values from recent merged PRs and bran
 | Ticket comment | root cause in one sentence, fix in one sentence, PR link; skip it if a comment already carries the link |
 | Code comments | `TODO` (e.g. default none; at most one short line) |
 | User-facing copy you write | `TODO` (e.g. copy supplied by design or product ships verbatim) |
+| Breakpoints | `TODO` (viewport widths in px every design is shown and captured at, one span each, ascending: the default `390` `768` `1024` `1280` `1440` merged with the widths the repo's own code uses; or `none` for a repo with no UI) |
+| Design system | `TODO` (the files that define the design system, one span each, repo-relative: token files, theme files, the Tailwind config, a `DESIGN.md`, e.g. `` `src/styles/tokens.css` `tailwind.config.ts` `DESIGN.md` ``; or `none`) |
 | Messages to colleagues | plain, direct, no filler: the fact, then the ask. Always a draft |
 | Decisions put to you | one `AskUserQuestion` carousel, recommended option first and labelled, trade-off on each option |
 | Vercel env vars | `TODO` (how to set them in this repo, or `none`) |
