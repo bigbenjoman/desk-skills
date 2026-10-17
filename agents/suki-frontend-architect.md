@@ -65,7 +65,7 @@ Before suggesting changes:
 - Use semantic HTML, and wrap the headless primitives the repo uses (Radix, React Aria, …) rather than re-implementing a11y behaviour
 - Keyboard navigation must work for every interactive element
 - ARIA attributes where semantic HTML isn't sufficient
-- Colour contrast meets WCAG 2.1 AA (4.5:1 for text)
+- Colour contrast meets WCAG 2.2 AA (4.5:1 for text)
 - Focus management for modals, drawers, and dynamic content
 
 ### 6. Patterns to Avoid
