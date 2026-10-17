@@ -64,6 +64,24 @@ check "PR-description check: allowed with a body file"    'allows "Bash(node scr
 settings '`bash tests/run.sh`' '| Pre-push checks | `none` |'
 check "pre-push none: no pre-push rule"                   '[ $rc -eq 0 ] && ! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
 
+# git rm and git mv inside the worktree; -C and --work-tree, which would reach outside it, stay denied
+denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
+settings '`bash tests/run.sh`'
+check "git rm and git mv allowed"                         'allows "Bash(git rm:*)" && allows "Bash(git mv:*)"'
+check "git -C and --work-tree still denied"               'denies "Bash(git -C*)" && denies "Bash(git --work-tree*)"'
+check "no Codegen row: no codegen rule, no warning"       '[ $rc -eq 0 ] && ! allows "Bash(pnpm prisma generate:*)" && [[ "$out" != *Codegen* ]]'
+ws_none=$(jq -S .permissions "$T/ws.json")
+settings '`bash tests/run.sh`' '| Codegen | `none` |'
+check "Codegen none: settings unchanged"                  '[ "$(jq -S .permissions "$T/ws.json")" = "$ws_none" ]'
+
+settings '`bash tests/run.sh`' '| Codegen | `pnpm prisma generate` `apps/api: uv run gen-client` |'
+check "Codegen: root item allowed exactly"                '[ $rc -eq 0 ] && allows "Bash(pnpm prisma generate:*)" && ! allows "Bash(pnpm:*)"'
+check "Codegen: probed with --version"                    '[[ "$out" == *"TOOLCHAIN_PROBE: pnpm --version"* ]]'
+check "Codegen: directory item runs nolock"               'allows "Bash($SRC/desk/bin/with-lock.sh nolock --cwd apps/api -- uv run gen-client:*)"'
+check "Codegen: no lock taken"                            '! jq -e ".permissions.allow[] | select(test(\"with-lock.sh (test|tsc) .*prisma generate\"))" "$T/ws.json" >/dev/null'
+settings '`bash tests/run.sh`' '| Codegen | `rm -rf generated` |'
+check "Codegen: rm refused"                               '[ $rc -eq 0 ] && [[ "$out" == *"Codegen item \"rm -rf generated\" starts with rm"* ]] && ! allows "Bash(rm -rf generated:*)"'
+
 for item in 'bash -c tests/run.sh' 'bash' 'bash /abs/run.sh' 'bash ../run.sh' 'bash tests/../../x.sh' 'zsh tests/run.sh' 'bash tests/run.py' 'bash -x tests/run.sh'; do
   settings "\`$item\`"
   check "refused alone: $item" '[ $rc -ne 0 ] && [[ "$out" == *"no toolchain allow rule"* ]] && [ ! -f "$T/ws.json" ]'

@@ -42,7 +42,7 @@
 //                                             --runner sizes a runner on a computer with a battery
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
-import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -223,6 +223,7 @@ export const CONFIG_ROWS = Object.freeze({
   'test-cmd': { section: '4', row: 'Unit tests' },
   'e2e-cmd': { section: '4', row: 'E2E tests' },
   'build-cmd': { section: '4', row: 'Build' },
+  'codegen-cmd': { section: '4', row: 'Codegen' },
   'integration-cmd': { section: '4', row: 'Integration tests' },
   'pre-push-checks': { section: '4', row: 'Pre-push checks' },
   'pr-description-checks': { section: '4', row: 'PR-description checks' },
@@ -293,11 +294,7 @@ function parseConfigFile(path) {
     let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1;
     if (col < 0) col = 1;
     const keyCol = header.indexOf('key');
-    // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
-    // copied into a value, the doubled backticks are display only.
-    const cell = (cells[col] ?? '').replace(/``\s?/g, '').replace(/\s?``/g, '');
-    const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
-    const items = spans.length ? spans : [cell.trim()];
+    const items = cellItems(cells[col] ?? '');
     const s = parsed.sections[section];
     // `value` is the first item (what every single-valued row means); `items` is every backtick span.
     const entry = { value: items[0], items };
@@ -305,6 +302,33 @@ function parseConfigFile(path) {
     else { const n = norm(cells[0] ?? ''); if (n) s.byName[n] = entry; }
   }
   return parsed;
+}
+
+// A value cell's items: every backtick span, except those in a trailing parenthesised note
+// (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
+export function cellItems(raw) {
+  // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
+  // copied into a value, the doubled backticks are display only.
+  const cell = raw.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
+  const spans = [...stripTrailingNote(cell).matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+  return spans.length ? spans : [cell];
+}
+
+// The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
+// Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
+// cell that is only a note, or whose last paren never opens, is returned whole.
+function stripTrailingNote(cell) {
+  if (!cell.endsWith(')')) return cell;
+  let depth = 0;
+  let inSpan = false;
+  for (let i = cell.length - 1; i >= 0; i--) {
+    const c = cell[i];
+    if (c === '`') inSpan = !inSpan;
+    else if (inSpan) continue;
+    else if (c === ')') depth++;
+    else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
+  }
+  return cell;
 }
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
@@ -448,6 +472,23 @@ export const binDir = () => join(deskHome(), 'bin');
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue.
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? join(HOME, '.desk-autopilot', repoSlug()));
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHome(), 'repos', repoSlug(), 'queue.json'));
+
+// Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
+// blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
+// question reads as the new worker's) and, with `answers`, its mailbox (a stale answer satisfies the
+// next park instantly). All take one suffix, the first `.round<n>` free for every one of them, so a
+// round's files stay together. An empty log is left in place. Returns the files moved.
+export function rotateRound(key, { answers = false } = {}) {
+  const state = stateDir();
+  const files = [join(state, 'logs', `${key}.log`), join(state, 'parks', `${key}.json`)];
+  if (answers) files.push(join(state, 'answers', `${key}.txt`));
+  const present = files.filter((f) => existsSync(f) && (!f.endsWith('.log') || statSync(f).size > 0));
+  if (!present.length) return [];
+  let n = 1;
+  while (files.some((f) => existsSync(`${f}.round${n}`))) n += 1;
+  for (const f of present) renameSync(f, `${f}.round${n}`);
+  return present.map((f) => `${f}.round${n}`);
+}
 
 // A batch may target a branch other than §0 Default branch: a feature branch that ships as one merge.
 // It is the queue's top-level `base` (`queue.mjs set-batch base=<branch>`), and it reaches the code

@@ -6,6 +6,7 @@
 #   with-lock.sh test  <config §4 Unit tests command> <specs>   # at config §3b's test worker cap: 4, 2 while the spawn gate says hold
 #   with-lock.sh tsc   <config §4 Typecheck command>
 #   with-lock.sh browser <screenshot capture>
+#   with-lock.sh browser -- node shot.mjs                     # a leading -- is dropped with or without --cwd
 #   with-lock.sh test --cwd apps/api -- uv run pytest tests/x.py
 #   with-lock.sh nolock --cwd portal -- pnpm dev              # a directory, no lock
 #   with-lock.sh tsc --timeout 60 --cwd . -- pnpm typecheck   # give up waiting after 60 s: exit 75
@@ -21,7 +22,7 @@
 # --timeout <seconds> is only for a caller that must not wait (the committed pre-push hook): it bounds
 # the wait for the lock, never the command, and exits 75 without running anything when it passes.
 set -uo pipefail
-name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> --] <command...>}"; shift
+name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
 timeout=""
 if [ "${1:-}" = "--timeout" ]; then
   case "${2:-}" in ''|*[!0-9]*) echo "with-lock.sh: --timeout needs a whole number of seconds" >&2; exit 2 ;; esac
@@ -39,6 +40,8 @@ if [ "${1:-}" = "--cwd" ]; then
   real_top="$(cd "$top" && pwd -P)"
   case "$target/" in "$real_top"/*) ;; *) echo "with-lock.sh: --cwd $rel resolves outside the worktree ($target)" >&2; exit 2 ;; esac
   cd "$target" || exit 2
+elif [ "${1:-}" = "--" ]; then
+  shift   # `with-lock.sh browser -- node x.mjs`: the separator is optional without --cwd
 fi
 [ "$#" -gt 0 ] || { echo "with-lock.sh: no command given" >&2; exit 2; }
 

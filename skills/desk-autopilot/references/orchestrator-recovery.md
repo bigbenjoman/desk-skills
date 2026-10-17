@@ -17,7 +17,8 @@ it has already actioned. So:
   posted, not that it merged. Re-derive with
   `gh pr view <n> --json state,mergedAt,isDraft,headRefOid` every time.
 - A spent `AUTOPILOT_PARK` in the log can re-park a ticket you just un-parked, and a spent
-  `AUTOPILOT_DONE` makes `pass.mjs` refuse to respawn it (it says so under `STALLED`).
+  `AUTOPILOT_DONE` makes `pass.mjs` refuse to respawn it (it says so under `STALLED`). Un-park
+  with `queue.mjs requeue`, which moves the log aside, never with a bare `queue.mjs set`.
 - A PR recorded as done "without a marker" may be one whose worker died before posting its review.
 
 ## A park means the worker is already gone
@@ -40,10 +41,10 @@ How to resume, by what was parked:
 | Parked on | Resume by |
 |---|---|
 | a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
-| triage lane C or D | **never requeued for a headless worker**: it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E> state=triaged park=null`, then `queue.mjs front <TICKET>` |
+| triage lane C or D | **never requeued for a headless worker**: it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
 | a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload |
-| a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs set <TICKET> state=triaged park=null` plus the fields below |
-| any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly |
+| a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
+| any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
@@ -63,20 +64,29 @@ Message each running worker as well as editing the file.
 
 ## Requeueing a ticket
 
-A requeue is several fields, not one, and each missing one fails silently:
+A requeue is several fields and files, not one, and each missing one fails silently, so it is one
+command:
 
 ```bash
-# <state> written out in full: no allow rule matches a variable path
-mv <state>/logs/<TICKET>.log <state>/logs/<TICKET>.log.round<n>     # next free <n>; else alreadyFinished() blocks it
-node ~/.claude/desk/bin/queue.mjs set <TICKET> state=triaged open_questions=0 park=null session_id=null pid=null idle_passes=0 log_bytes=0
-node ~/.claude/desk/bin/queue.mjs front <TICKET>                      # spawn order is .tickets key order
+node ~/.claude/desk/bin/queue.mjs requeue <TICKET>
 ```
+
+It moves `<state>/logs/<TICKET>.log`, `<state>/parks/<TICKET>.json` and
+`<state>/answers/<TICKET>.txt` aside to one next free `.round<n>` (a kept `AUTOPILOT_DONE` makes
+`alreadyFinished()` refuse the respawn, a kept park file shows the last round's question as "needs
+you", and a kept mailbox answers the next park instantly), sets `state=triaged open_questions=0
+park=null session_id=null pid=null idle_passes=0 log_bytes=0`, and moves the ticket to the front of
+the spawn order (`.tickets` key order). It refuses a running ticket, a held one (release it
+instead), one never triaged, one with triage questions still open (answer them instead), one
+parked at triage for its size or a dependency cycle, and any lane but A, B or E, because `pass.mjs`
+spawns whatever is triaged without reading the lane.
 
 `pass.mjs` resets `log_bytes`/`idle_passes` at spawn, because a rotated log makes the byte count go
 backwards and the stall killer then shoots each fresh worker. A climbing `idle_passes` across
 respawns is the tell. It also clears `result`, `images_uploaded` and `images_reported`, and moves
-any log still at `<TICKET>.log` to the next free `.round<n>`, so the new round's screenshots go to
-the new round's PR rather than the last one's.
+any log or park record still in place to the next free `.round<n>`, so the new round's screenshots
+go to the new round's PR rather than the last one's, and no earlier question reads as the new
+worker's.
 
 Remove the old worktree first (`git worktree remove --force`, under §3 `worktree-remove`) if the
 follow-up needs a fresh branch off current `<default>` (§0 Default branch); otherwise
@@ -103,7 +113,7 @@ yourself and give the worker only the part that needs an agent.
 `spawn-worker.sh` with the old id breaks "pass.mjs is the only spawner". Instead:
 
 1. Pause the pass loop.
-2. Rotate the ticket's log and requeue it as above.
+2. Requeue it as above (`queue.mjs requeue <TICKET>`, which rotates its log).
 3. Run one pass with an `AUTOPILOT_TASK` describing the worktree as it stands (the commits, the
    uncommitted files) and saying to finish from there, not redo.
 4. Resume the loop.

@@ -80,7 +80,7 @@ first option, and the user still answers every row. A row the user has not answe
    and Jira account can differ per client), and **§3 / §3b as the first option of each question**,
    never as answers. §0, §2, §4 and §5 are always detected fresh for this repo.
 4. If that repo uses the same Jira site, offer to copy its `jira-email` and `atlassian-token` into
-   this repo's `CREDS` (`cp -p`, then `chmod 600`). Say that the token is then shared by both repos
+   this repo's `CREDS` (`cp -p`, then `chmod 600` on both). Say that the token is then shared by both repos
    and that revoking it in Atlassian breaks both.
 
 ## 1. Detect, then confirm
@@ -175,7 +175,7 @@ How to turn what you find into rows:
 
   ```
   ! mkdir -p <CREDS> && chmod 700 <CREDS>
-  ! printf %s 'you@example.com' > <CREDS>/jira-email
+  ! printf %s 'you@example.com' > <CREDS>/jira-email && chmod 600 <CREDS>/jira-email
   ! printf %s '<api token>' > <CREDS>/atlassian-token && chmod 600 <CREDS>/atlassian-token
   ```
 
@@ -254,6 +254,10 @@ How to turn what you find into rows:
   command items in its directory, e.g. `` `apps/api: uv run pytest` ``, and its `alembic.ini` a
   §4 Database migrate candidate. Propose, then confirm; a guessed test command that does not exist
   wastes a worker's whole run.
+- **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
+  needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
+  `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
+  wider, with no lock. `none` is a fine answer, and changes nothing.
 - **Pre-push checks.** From the steps the CI workflows run on a pull request, take the fast,
   local ones (code generation, format, lint, typecheck) and map each onto the repo's own command
   (a `package.json` script, a Makefile target), one span each in the Unit tests form, generate steps
@@ -573,7 +577,7 @@ tracker   : <jira site / none> · project <key> · keys <pattern> · other ids <
 github    : protection <summary (classic / ruleset <name>) / none> · required <checks / none> ·
             advisory <checks / none> · holds <glob: why / none> · merge <method> · auto-merge <on/off> ·
             gh scopes <scopes> · codex <yes date / no> · review <command> (clean = <verdict>)
-toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build ·
+toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build · codegen ·
             env files <names>          (each list item as its own backtick span, `dir: cmd` where it has one)
 pre-push  : checks <items / none> · pr-body <command / none> · hook <committed in #<n> / declined / not offered> ·
             hooksPath <.githooks / <other>, left alone / unset> · first run <n>s
@@ -616,6 +620,11 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 - Run the handoff directory's write check (§1) on every re-run. A directory it refuses (on macOS,
   typically `~/Downloads/`) is flagged with the error and asked again, `~/desk-handoff/` first on
   macOS, whether or not the user asked to change it.
+- Check the credential files' modes on every re-run: `ls -l <CREDS>/jira-email
+  <CREDS>/atlassian-token`. Either one not `-rw-------` (600; a trailing `@`, `+` or `.` is an
+  attribute marker, not part of the mode): name the file and its mode, say you
+  are fixing it, then `chmod 600` it and show `ls -l` again. A missing file is the *Jira
+  credentials* step above, not this one.
 - **Before/after for every changed row**; never reset one quietly.
 - Revoking is as easy as granting: set the row, run
   `python3 $H "${REPO_RULES[@]}" remove <row> [<row>...]` (backs up, removes every rule the row

@@ -12,7 +12,7 @@ the repo, so nothing here reaches git. `DESK_CONFIG=/path/to/config.md` override
 directory.
 
 Credentials sit beside it and are only ever referenced by path:
-`~/.config/desk/repos/<slug>/jira-email`, `atlassian-token` (chmod 600), and anything §4 names.
+`~/.config/desk/repos/<slug>/jira-email` and `atlassian-token` (both chmod 600), and anything §4 names.
 
 **You do not fill this in by hand.** Run `/desk-setup` inside the repo: it detects what it can, has
 you confirm it, and asks every permission. It can start from another repo's answers so a second repo
@@ -49,9 +49,10 @@ Skills cite rows as `§3 <key>`, e.g. `§3 pr-merge-green`, and other rows by se
 **How a value is written.** The value is what sits in backticks. A row that holds a list (checks,
 env files, commands, projects) takes **one backtick span per item**, e.g.
 `` `Lint, Type Check & Build` `Verify script sign-off` ``: items are never split on commas, so a
-name may contain one. A `|` inside backticks is part of the value. Words outside backticks are notes
-for people and are ignored by the scripts. A **command** item may name the directory it runs in,
-relative to the repo root, as `` `apps/api: uv run pytest` ``; never write `cd dir && …`, which
+name may contain one. A `|` inside backticks is part of the value. A note for people goes in one
+trailing parenthesis after the value, e.g. `` `ABC` (not `parent`) ``: the scripts ignore it,
+backticks inside it included, and ignore any other words outside backticks too. A **command** item
+may name the directory it runs in, relative to the repo root, as `` `apps/api: uv run pytest` ``; never write `cd dir && …`, which
 breaks the test lock and the worker allow-list.
 
 **"Green" means one thing everywhere** (merge driver, clearance, ticket, autopilot): on the exact
@@ -305,6 +306,7 @@ such thing.
 | E2E tests | `TODO` (or `none`) |
 | Integration tests | `TODO` (database-backed suite, and whether it needs its own database; or `none`) |
 | Build | `TODO` |
+| Codegen | `TODO` (commands that regenerate checked-in or ignored code, one span each in the Build form, e.g. `` `pnpm prisma generate` ``; workers may run exactly these, with no lock; or `none`) |
 | Pre-push checks | `TODO` (what the committed pre-push hook runs on the pushed commit before it leaves, in order with generate steps first, one span each in the form Unit tests takes, e.g. `` `pnpm prisma generate` `pnpm lint` `pnpm typecheck` ``; an item equal to a Typecheck or Unit tests item takes the box-wide test lock and is skipped, with a warning, if the lock stays busy past the machine profile's `pre-push-lock-timeout-s` (60 with no profile); or `none` to push unchecked) |
 | PR-description checks | `TODO` (the script CI runs on a PR's description, so it can run before the PR is opened or edited, e.g. `node scripts/check-pr-body.mjs`; desk-pr runs each span with the draft body's file path appended, so the script must accept one; or `none`) |
 | Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |

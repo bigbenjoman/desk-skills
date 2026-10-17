@@ -22,6 +22,7 @@ run "syntax and shellcheck (every shell script and .mjs)" "$SH" "$T/test_lint.sh
 run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --self-test
 run "gate (one definition of green)" node "$T/test_gate.mjs"
 run "machine profile (detection, sizing, §3b fallback)" node "$T/test_machine.mjs"
+run "config values (list items, trailing notes)" node "$T/test_config.mjs"
 run "memory watch (avail band, heavy processes)" node "$T/test_mem_watch.mjs"
 run "desk-jira against a local stub" "$SH" "$T/test_jira.sh"
 run "harness-rules" "$SH" "$T/test_harness.sh"
@@ -30,7 +31,7 @@ run "batch base (one batch targets a feature branch)" "$SH" "$T/test_batch_base.
 run "triage (claude -p receives every flag)" "$SH" "$T/test_triage.sh"
 run "worker-settings (shell-script toolchain)" "$SH" "$T/test_worker_settings.sh"
 run "epics (expansion, Jira links, held tickets)" "$SH" "$T/test_epic.sh"
-run "pass (screenshots go to the current round's PR)" "$SH" "$T/test_pass.sh"
+run "pass (screenshots go to the current round's PR; requeue)" "$SH" "$T/test_pass.sh"
 run "queue set (JSON objects and arrays)" "$SH" "$T/test_queue_set.sh"
 run "skill links (skills-upstream links)" "$SH" "$T/test_links.sh"
 run "plugins (unbumped vs outdated)" "$SH" "$T/test_plugins.sh"
