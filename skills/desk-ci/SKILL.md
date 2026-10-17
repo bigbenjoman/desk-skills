@@ -107,12 +107,15 @@ Each one rests on two definitions:
   only for a check that blocks the merge. The latest attempt takes the run's own conclusion
   (`failure`, `timed_out` or `startup_failure`). A `continue-on-error` job that fails leaves that
   conclusion `success`, so it never makes a run red. Where the default branch requires checks (its
-  rulesets, plus its branch protection where that is readable), a failed run is red only if a
-  failed job is one of those required checks. A required check that no Actions job carries (another
-  app's status) is ignored, and with no such checks the conclusion alone decides. GitHub keeps no
-  conclusion for an earlier attempt of a re-run, so that attempt is red when a job failed that is a
-  required check (any job, where none are set). A job does not count if it has failed in an attempt
-  GitHub concluded `success` in the same workflow: that is the mark of `continue-on-error`.
+  rulesets, plus its branch protection where that is readable), a failed run **that tests a PR**
+  (as *PRs with CI* below assigns runs) is red only if a failed job is one of those required
+  checks, since required checks gate only a PR's merge. A run that tests no PR (a push to the
+  default branch, a schedule) is red by its conclusion alone. A required check that no Actions job
+  carries (another app's status) is ignored, and with no such checks the conclusion alone decides.
+  GitHub keeps no conclusion for an earlier attempt of a re-run, so that attempt is red when a job
+  failed that is a required check (any job, where none apply). A job does not count if it has
+  failed in an attempt GitHub concluded `success` in the same workflow: that is the mark of
+  `continue-on-error`.
 - **An attempt passes** when it is not red and GitHub shows it succeeded: a conclusion of `success`,
   `skipped` or `neutral`, or a failure in no required check. A cancelled or approval-waiting attempt
   neither passes nor is red. A PR's **head** (one commit) turns green at the first moment every run
@@ -123,7 +126,7 @@ Each one rests on two definitions:
 | billed minutes, per workflow and per job | each job's `completed_at − started_at`, rounded up to the whole minute as GitHub bills (a job that never started bills 0), times the runner OS multiplier (macOS ×10, Windows ×2, Linux ×1), summed over every attempt. Runs whose jobs were not read are scaled in per stratum (below) and marked `(est.)` |
 | self-hosted minutes | the same rounding with no multiplier, for jobs on a `self-hosted` label or a runner group other than GitHub Actions; not billed |
 | failure rate | per workflow: red attempts ÷ decided attempts. A latest attempt is decided when its run concluded `success` or a failure (red or not, by the rule above); an earlier attempt when it is red or a job in it succeeded. Re-runs count each attempt; a cancelled or approval-waiting attempt is in neither count |
-| first failing job | per workflow, over red attempts whose jobs were read: the job that made the attempt red (above) and finished first; `(no job ran)` for a red attempt with no failed job, such as a `startup_failure` |
+| first failing job | per workflow, over red attempts whose jobs were read: of the failed jobs that count (above), the one that finished first. A job marked `continue-on-error` that way is named only when the run's conclusion is red and no other failed job counts; `(no job ran)` for a red attempt with no failed job, such as a `startup_failure` |
 | PRs with CI | PRs with at least one completed run in the window. A run belongs to the PR GitHub names on it, or else to the PR whose head branch (and fork) it ran on while that PR was open |
 | CI red rate per PR | PRs with at least one red attempt ÷ PRs with CI |
 | red-to-fix round trips | per PR, in push order: one starts at the first red attempt's completion and ends at the next head to turn green whose green time is at or after it, whether by a re-run or a new push. Its **cost** is the CI minutes of every attempt the PR started within it, and its **wait** is end minus start; both are reported as the median over all trips. A PR whose last red is never followed by green is counted as left red |

@@ -120,6 +120,20 @@ const req = (failing, required) => measure({ runs: [coe({ id: 32, conclusion: 'f
   jobs: new Map([[32, ['test', 'lint'].map((n) => job(T4, { name: n, conclusion: n === failing ? 'failure' : 'success', start: 0, end: 60 }))]]) });
 t('a failed job that is not a required check does not make a run red', `${req('lint', ['test']).totals.failed} ${req('lint', ['test']).prs.red}`, '0 0');
 t('a failed required check does', `${req('test', ['test']).totals.failed} ${req('test', ['test']).prs.red}`, '1 1');
+// Required checks gate a PR's merge only: a failed push to main is red whatever its job is called.
+const push = measure({ runs: [run({ id: 33, name: 'Deploy', event: 'push', head_sha: 'q', head_branch: 'main', conclusion: 'failure', created_at: T4, updated_at: iso(T4, 60) }),
+  coe({ id: 36, conclusion: 'failure' })], prs: pr5, required: ['test'], since: '2026-07-20', until: '2026-10-17',
+  jobs: new Map([[33, [job(T4, { name: 'ship', conclusion: 'failure', start: 0, end: 60 })]],
+    [36, ['test', 'ship'].map((n) => job(T4, { name: n, conclusion: n === 'ship' ? 'failure' : 'success', start: 0, end: 60 }))]]) });
+const deploy = push.workflows.find((w) => w.workflow === 'Deploy');
+t('a failed run that tests no PR is red by its conclusion', `${deploy.failed} ${JSON.stringify(deploy.firstFailing)}`, '1 {"ship":1}');
+t('while the same failure on a PR is not a required check', `${push.workflows.find((w) => w.workflow === 'CI').failed} ${push.prs.red}`, '0 0');
+// A continue-on-error job that failed first is not named as the first failing job.
+const coeFirst = measure({ runs: [coe({ id: 34, conclusion: 'success' }), coe({ id: 35, head_sha: 'p2', conclusion: 'failure', created_at: iso(T4, 600), updated_at: iso(T4, 900) })],
+  prs: pr5, since: '2026-07-20', until: '2026-10-17', jobs: new Map([
+    [34, [job(T4, { name: 'test', conclusion: 'success', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 90 })]],
+    [35, [job(T4, { name: 'e2e', conclusion: 'failure', created: 600, start: 600, end: 650 }), job(T4, { name: 'test', conclusion: 'failure', created: 600, start: 600, end: 900 })]]]) });
+t('the first failing job leaves out a continue-on-error job', JSON.stringify(coeFirst.workflows[0].firstFailing), '{"test":1}');
 t('a required check no job carries is ignored', `${req('lint', ['Vercel']).totals.failed} ${req('lint', ['Vercel']).required.length}`, '1 0');
 
 // ---- sampling: red and re-run runs are read first, the rest scale back up
