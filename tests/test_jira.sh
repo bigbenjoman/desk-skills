@@ -235,6 +235,8 @@ check "an Epic may be XL" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"valu
 n0=$(creates)
 err=$(cd "$C" && "$J" create Epic s body.md issuetype=Task customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
 check "an issuetype field overrides the type the rules read" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "XL on a Task" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$C" && "$J" create Epic s body.md 'issuetype={"id":"10001","name":"Epic"}' customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
+check "create refuses an issuetype carrying an id beside its name" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "pass issuetype by its name" && [ "$(creates)" -eq "$n0" ]'
 
 p0=$(puts)
 err=$(cd "$C" && "$J" edit KAN-20 customfield_10208=null 2>&1); rc=$?
@@ -243,6 +245,8 @@ err=$(cd "$C" && "$J" edit KAN-20 customfield_10207= 2>&1); rc=$?
 check "edit setting a required field empty is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing to clear customfield_10207" && [ "$(puts)" -eq "$p0" ]'
 err=$(cd "$C" && "$J" edit KAN-20 customfield_10208=XL 2>&1); rc=$?
 check "edit setting XL on a Story is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "XL on a Story" && [ "$(puts)" -eq "$p0" ]'
+err=$(cd "$C" && "$J" edit KAN-20 'issuetype={"id":"10000","name":"Epic"}' customfield_10208=XL 2>&1); rc=$?
+check "edit refuses an issuetype carrying an id beside its name" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "pass issuetype by its name" && [ "$(puts)" -eq "$p0" ]'
 err=$(cd "$C" && "$J" edit 'KAN-20?x=1' customfield_10208=XL 2>&1); rc=$?
 check "edit refuses a key that is not a key" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "not an issue key" && [ "$(puts)" -eq "$p0" ]'
 out=$(cd "$C" && "$J" edit KAN-20 customfield_10208=L 2>&1); rc=$?
@@ -273,6 +277,18 @@ check "the decision is recorded on the new ticket" '[ "$(comments_sent)" -eq $((
 out=$(cd "$C" && "$J" edit KAN-20 customfield_10207=P0 --approved="the user: live harm" 2>&1); rc=$?
 check "edit to a top priority with --approved= goes and is recorded" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 2)) ] && [ "$(comments_sent)" -eq $((c0 + 2)) ] &&
   last_comment | grep -qxF "customfield_10207 set to P0 by Me: the user: live harm"'
+
+# With the built-in priority, Jira reads an option's name, so a decoy value beside it must not pass.
+SLUG_D=$(mkrepo d "https://github.com/acme/delta" jira "http://127.0.0.1:$PORT"); D="$T/repos/d"
+printf '| Priorities only you set | `Highest` `High` |\n' >> "$DESK_CONFIG_ROOT/repos/$SLUG_D/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_D/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_D/atlassian-token"
+p0=$(puts)
+for v in 'priority=Highest' 'priority={"value":"","name":"Highest"}' 'priority={"value":"Low","name":"Highest"}' 'priority={"name":"high"}'; do
+  err=$(cd "$D" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 "$v" 2>&1); rc=$?
+  check "a headless worker cannot set the built-in priority with $v" '[ $rc -ne 0 ] && [ "$(puts)" -eq "$p0" ]'
+done
+out=$(cd "$D" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 priority=Low 2>&1); rc=$?
+check "a headless worker may set the built-in priority lower" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 1)) ]'
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

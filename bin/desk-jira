@@ -265,16 +265,17 @@ load_rules() {
 PRIORITY_KEY="${PRIORITY_FIELD:-priority}"
 
 # rule_errors <create|edit> <issue type> <fields json> <approved text>: one refusal per line, none
-# when the write may go. An option is read by name only (a bare name, {"value"} or {"name"}): an
-# object carrying an id is refused, because Jira would write the id whatever name rides with it.
+# when the write may go. An option is read by name only: a bare name, or an object whose one key is
+# "value" or "name". Any other object (an id, both keys, anything extra) is refused, because Jira
+# may write a key the rules did not read: an id over a name, or a name over a value.
 rule_errors() {
   load_rules
   jq -rn --arg mode "$1" --arg type "$2" --argjson f "$3" --arg approved "$4" \
     --argjson req "$RULES_REQ" --argjson top "$RULES_TOP" --arg size "$RULES_SIZE" \
     --arg pf "$PRIORITY_KEY" --arg headless "${DESK_AUTOPILOT_WORKER:-}" '
-    def blank: . == null or . == "" or . == [] or . == {}
-      or (type == "object" and (has("id") | not) and ((.value // .name // "") == ""));
-    def oname: if type == "string" then . elif type == "object" and (has("id") | not) then (.value // .name // null) else null end;
+    def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
+    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));
+    def oname: if type == "string" then . elif byname then (.value // .name) else null end;
     def trim: gsub("^\\s+|\\s+$"; "");
     ($type | ascii_downcase) as $t
     | ([$req[] | capture("^(?<types>[^:]+):(?<fields>.+)$")?
@@ -655,7 +656,9 @@ case "$cmd" in
     for a in ${REST[@]+"${REST[@]}"}; do if [[ "$a" == --route ]]; then route=1; else pairs+=("$a"); fi; done
     extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
     # An issuetype among the fields replaces <type> in the payload, so the rules read that one.
-    type=$(printf '%s' "$extra" | jq -r --arg t "$type" 'if has("issuetype") then (.issuetype | .name? // empty) else $t end')
+    # Only {"name"}: Jira resolves an id before a name, so an id would bypass the type read here.
+    type=$(printf '%s' "$extra" | jq -r --arg t "$type" 'if has("issuetype") then
+      (.issuetype | if type == "object" and keys == ["name"] and (.name | type) == "string" then .name else empty end) else $t end')
     [[ -n "$type" ]] || die "desk-jira: pass issuetype by its name, so the field rules know the type"
     errs=$(rule_errors create "$type" "$extra" "$APPROVED") || die "desk-jira: could not check the field rules"
     [[ -z "$errs" ]] || die "$errs"
@@ -699,7 +702,8 @@ case "$cmd" in
     [[ ${#REST[@]} -ge 1 ]] || die 'usage: desk-jira edit <KEY> <field=value ...> [--approved <text>]'
     f=$(fields_from_args "${REST[@]}") || exit 2
     # The rules depend on the issue type, so read it unless the edit sets it (by name) itself.
-    type=$(printf '%s' "$f" | jq -r 'if has("issuetype") then (.issuetype | .name? // "?") else empty end')
+    type=$(printf '%s' "$f" | jq -r 'if has("issuetype") then
+      (.issuetype | if type == "object" and keys == ["name"] and (.name | type) == "string" and .name != "" then .name else "?" end) else empty end')
     [[ "$type" != '?' ]] || die "desk-jira: pass issuetype by its name, so the field rules know the type"
     load_rules
     if [[ -z "$type" && ( "$RULES_REQ" != '[]' || -n "$RULES_SIZE" ) ]]; then
