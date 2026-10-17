@@ -15,7 +15,7 @@ One script, registered by install.sh on four events; it reads `hook_event_name` 
 
 A desk session is one whose repo has a desk config (`desk-env where` says EXISTS=yes); anywhere else
 the hook is silent. Context used is the last main-chain assistant entry's usage in the transcript
-(input + cache creation + cache read tokens), divided by the window: DESK_CONTEXT_WINDOW if set,
+since its last compaction (input + cache creation + cache read tokens), divided by the window: DESK_CONTEXT_WINDOW if set,
 else 1,000,000 for a `[1m]` model (or once usage has passed 200,000, which no smaller window
 allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
 added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session id>.json, which is
@@ -98,7 +98,10 @@ def save_state(session, state):
 
 
 def context_used(transcript):
-    """Input-side tokens of the last main-chain assistant entry, or None."""
+    """Input-side tokens of the last main-chain assistant entry since the last compaction, or None.
+
+    A compaction keeps the transcript file and writes a `compact_boundary` entry; usage from before
+    it describes the context that was just summarised away, so the scan stops there."""
     try:
         with open(transcript, "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -112,12 +115,14 @@ def context_used(transcript):
     if start > 0:
         lines = lines[1:]  # the first line may be cut
     for raw in reversed(lines):
-        if b'"usage"' not in raw:
+        if b'"usage"' not in raw and b"compact_boundary" not in raw:
             continue
         try:
             e = json.loads(raw)
         except Exception:
             continue
+        if e.get("type") == "system" and e.get("subtype") == "compact_boundary":
+            return None
         if e.get("type") != "assistant" or e.get("isSidechain"):
             continue
         u = (e.get("message") or {}).get("usage") or {}

@@ -119,8 +119,17 @@ hook SessionStart n3 "$T/low.jsonl" ',"source":"resume"'
 check "resume injects nothing"                            '[ -z "$out" ]'
 hook SessionStart s1 "$T/low.jsonl" ',"source":"compact"'
 check "compact: injects the newest handoff"               '[[ "$(ctx)" == *"read .handoffs/$DAY-2.md"* ]]'
-hook PostToolUse s1 "$T/high.jsonl"
-check "after compact the threshold can fire again"        '[[ "$(ctx)" == *"context is at 50%"* ]]'
+transcript "$T/compacted.jsonl" 100000
+printf '{"type":"system","subtype":"compact_boundary","isSidechain":false}\n{"type":"user","isSidechain":false,"isCompactSummary":true,"message":{"role":"user","content":"summary"}}\n' >> "$T/compacted.jsonl"
+hook UserPromptSubmit s1 "$T/compacted.jsonl"
+check "after compact, usage from before it is not counted" '[ -z "$out" ]'
+transcript "$T/later.jsonl" 30000
+{ cat "$T/compacted.jsonl"; tail -n 3 "$T/later.jsonl"; } > "$T/compacted-low.jsonl"
+hook PostToolUse s1 "$T/compacted-low.jsonl"
+check "nor does usage under it fire"                      '[ -z "$out" ]'
+{ cat "$T/compacted.jsonl"; tail -n 3 "$T/high.jsonl"; } > "$T/compacted-high.jsonl"
+hook PostToolUse s1 "$T/compacted-high.jsonl"
+check "usage after compact over the threshold fires again" '[[ "$(ctx)" == *"context is at 50%"* ]]'
 echo "# old" > "$R/.handoffs/old.md"; age "$R/.handoffs/old.md" 90000
 age "$R/.handoffs/$DAY.md" 90001; age "$R/.handoffs/$DAY-2.md" 90002
 hook SessionStart n4 "$T/low.jsonl" ',"source":"clear"'
@@ -137,5 +146,41 @@ out=$(printf '{"hook_event_name":"PostToolUse","session_id":"x","transcript_path
 check "outside a git repo: exit 0, silent"                '[ $rc -eq 0 ] && [ -z "$out" ]'
 hook PostToolUse s12 "$T/missing.jsonl"
 check "a missing transcript: silent"                      '[ $rc -eq 0 ] && [ -z "$out" ]'
+
+# ---- AC6: install.sh's register_hook, taken from install.sh, on a throwaway settings.json ----
+eval "$(sed -n '/^DESK_WRITE_JSON_PY="$(cat <<.PY.$/,/^)"$/p' "$SRC/install.sh")"; export DESK_WRITE_JSON_PY
+fn="$(sed -n '/^register_hook() {$/,/^}$/p' "$SRC/install.sh")"
+check "register_hook is found in install.sh"              '[ -n "$fn" ] && [ -n "${DESK_WRITE_JSON_PY:-}" ]'
+eval "$fn"
+SETTINGS="$T/settings.json"
+EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+printf '{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine.sh"}]}]}}\n' > "$SETTINGS"
+reg(){ rc=0; register_hook "$@" || rc=$?; out=$(cat "$SETTINGS" 2>/dev/null); }
+# shellcheck disable=SC2086
+reg check desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
+check "check: not registered is exit 1"                   '[ $rc -eq 1 ]'
+# shellcheck disable=SC2086
+reg apply desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
+q(){ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$SETTINGS" "$1"; }
+check "apply: each of the four events runs the hook"      '[ "$(q "sum(1 for ev in \"$EVENTS\".split() for e in d[\"hooks\"][ev] for h in e[\"hooks\"] if h[\"command\"]==\"python3 \\\"/h/desk-handoff.py\\\"\" and h[\"timeout\"]==15)")" = 4 ]'
+check "apply: other settings and hooks are kept"          '[ "$(q "d[\"model\"]")" = opus ] && [ "$(q "d[\"hooks\"][\"Stop\"][0][\"hooks\"][0][\"command\"]")" = mine.sh ]'
+# shellcheck disable=SC2086
+reg check desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
+check "check after apply: exit 0"                         '[ $rc -eq 0 ]'
+# shellcheck disable=SC2086
+reg apply desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
+check "apply again adds nothing"                          '[ "$(q "len(d[\"hooks\"][\"Stop\"])")" = 2 ]'
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["Stop"]=d["hooks"]["Stop"][:1]; json.dump(d,open(p,"w"))' "$SETTINGS"
+# shellcheck disable=SC2086
+reg apply desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
+check "one event missing: only it is added back"          '[ $rc -eq 0 ] && [ "$(q "[len(d[\"hooks\"][ev]) for ev in \"$EVENTS\".split()]")" = "[1, 1, 2, 1]" ]'
+reg apply deny-ai-attribution.py 'python3 "/h/deny.py"' 10 Bash PreToolUse
+check "a matcher is written when given"                   '[ "$(q "d[\"hooks\"][\"PreToolUse\"][0][\"matcher\"]")" = Bash ] && [ "$(q "\"matcher\" in d[\"hooks\"][\"SessionStart\"][0]")" = False ]'
+: > "$SETTINGS"
+reg apply desk-update-check.sh 'bash "/h/u.sh"' 15 "" SessionStart
+check "an empty settings.json is treated as {}"           '[ $rc -eq 0 ] && [ "$(q "d[\"hooks\"][\"SessionStart\"][0][\"hooks\"][0][\"command\"]")" = "bash \"/h/u.sh\"" ]'
+printf '{not json' > "$SETTINGS"
+reg check desk-update-check.sh 'bash "/h/u.sh"' 15 "" SessionStart
+check "unreadable settings.json: exit 2, untouched"       '[ $rc -eq 2 ] && [ "$out" = "{not json" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
