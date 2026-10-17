@@ -25,6 +25,7 @@ run "machine profile (detection, sizing, §3b fallback)" node "$T/test_machine.m
 run "memory watch (avail band, heavy processes)" node "$T/test_mem_watch.mjs"
 run "desk-jira against a local stub" "$SH" "$T/test_jira.sh"
 run "harness-rules" "$SH" "$T/test_harness.sh"
+run "dev ports across repo configs" node "$T/test_ports.mjs"
 run "batch base (one batch targets a feature branch)" "$SH" "$T/test_batch_base.sh"
 run "triage (claude -p receives every flag)" "$SH" "$T/test_triage.sh"
 run "worker-settings (shell-script toolchain)" "$SH" "$T/test_worker_settings.sh"
