@@ -275,8 +275,10 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
   CI runner needs at least 32 GB, 8 CPU cores and 100 GB free, and is proposed off on a computer with
   a battery; the runner VM takes at most 3/8 of memory and 2/3 of the cores; a slot is 2 CPUs and
   4 GB; autopilot workers at ~3 GB each from what the runner leaves; test workers capped at the
-  performance cores). **Write nothing until the user confirms**; then `desk-env machine write`. A
-  size they want different is a hand edit to that file afterwards, said as such.
+  performance cores). **Write nothing until the user confirms**; then `desk-env machine write`. On a
+  computer with a battery that meets the minimum, ask whether to size a runner anyway; on a yes,
+  `propose --runner` shows those sizes and `write --runner` writes them. Any other size they want
+  different is a hand edit to that file afterwards, said as such.
 - **A profile exists**: `desk-env machine detect` says what changed since it was written. Nothing
   changed: say so and move on. Something changed (another computer, more memory, the disk filling
   up): show the changes and offer to re-propose; on a yes, the same propose, confirm, write.

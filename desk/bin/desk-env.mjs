@@ -32,8 +32,9 @@
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs machine detect          print this computer's hardware, and what changed since the profile
-//   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
-//   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
+//   node desk-env.mjs machine propose [--runner]  print the sizes the rules propose, with the arithmetic;
+//                                             --runner sizes a runner on a computer with a battery
+//   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 import { readFileSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -258,23 +259,7 @@ export class DeskConfigError extends Error {}
 let cache = null;
 const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-// Split a markdown table row into cells. A `|` inside backticks is part of the value (a regex such
-// as `KAN-[0-9]+|VPL-[0-9]+`), not a column break; `\|` is a literal pipe too.
-function splitRow(line) {
-  const body = line.replace(/^\|/, '').replace(/\|$/, '');
-  const cells = [];
-  let cur = '';
-  let tick = false;
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === '\\' && body[i + 1] === '|') { cur += '|'; i++; continue; }
-    if (c === '`') tick = !tick;
-    if (c === '|' && !tick) { cells.push(cur.trim()); cur = ''; continue; }
-    cur += c;
-  }
-  cells.push(cur.trim());
-  return cells;
-}
+const { splitRow } = M;
 
 function parseConfig() {
   if (cache) return cache;
@@ -743,7 +728,9 @@ if (isMain) {
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
       case 'machine': {
-        const [sub, key] = args;
+        // The subcommand is always the first word, so a worker's `machine write` deny rule holds.
+        const [sub, ...rest] = args;
+        const key = rest.find((a) => a !== '--runner');
         const path = machineProfilePath();
         if (sub === 'get' || sub === 'why') {
           const v = sub === 'get' ? machineValue(String(key ?? '').toLowerCase()) : machineWhy(String(key ?? '').toLowerCase());
@@ -757,7 +744,9 @@ if (isMain) {
         }
         const hw = M.gather();
         const profile = machineProfile();
-        const proposal = M.propose(hw);
+        // A runner the profile already has stays chosen, so a laptop that opted in is not a change.
+        const runnerOnBattery = rest.includes('--runner') || profile?.sizing['runner-possible']?.value === 'yes';
+        const proposal = M.propose(hw, { runnerOnBattery });
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }

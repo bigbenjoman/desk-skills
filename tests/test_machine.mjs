@@ -88,6 +88,10 @@ t('laptop: test cap', lap['test-cap'].value, '8');
 const lapMains = sized({ ...laptop, battery: 'no' });
 t('same laptop on mains: runner possible', lapMains['runner-possible'].value, 'yes');
 t('same laptop on mains: slots', `${lapMains['runner-vm-cpus'].value} ${lapMains['runner-vm-memory-gb'].value} ${lapMains['runner-slots-per-repo'].value}`, '6 12 3');
+const lapOptIn = Object.fromEntries(propose(laptop, { runnerOnBattery: true }).map((r) => [r.key, r]));
+t('laptop opted in: runner sized', `${lapOptIn['runner-possible'].value} ${lapOptIn['runner-vm-memory-gb'].value} ${lapOptIn['runner-slots-per-repo'].value}`, 'yes 12 3');
+t('laptop opted in: ceiling leaves room for it', `${lapOptIn['memory-ceiling-gb'].value} ${lapOptIn['autopilot-concurrency'].value}`, '12 2 / 4');
+t('opt-in cannot lift a machine below the minimum', propose({ ...laptop, 'memory-gb': 16 }, { runnerOnBattery: true })[0].value, 'no');
 
 // ---- an Intel Mac: one kind of core
 const intel = parseMac({ systemProfiler: '      Model Name: MacBook Pro\n      Model Identifier: MacBookPro16,1\n      Processor Name: 6-Core Intel Core i7\n      Total Number of Cores: 6\n      Memory: 16 GB\n', arch: 'x64' });
@@ -152,7 +156,8 @@ t('disk below the minimum re-proposes', sizingChanges(back, propose({ ...macMini
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
 const T = mkdtempSync(join(tmpdir(), 'desk-machine-'));
 const profile = join(T, 'machine.md');
-writeFileSync(profile, renderProfile(small, propose(small), '2026-10-17'));
+// A stray park-after row, so the repo-only check below fails if the fallback ever reaches every id.
+writeFileSync(profile, `${renderProfile(small, propose(small), '2026-10-17')}| \`park-after\` | \`99\` | stray |\n`);
 const cfg = (rows) => { const p = join(T, `c${Math.random().toString(36).slice(2)}.md`); writeFileSync(p, `## 3b. Cost\n\n| Field | Recommended | Your setting |\n|---|---|---|\n${rows}\n`); return p; };
 const env = (args, config, machine = profile) => {
   try {
@@ -171,7 +176,9 @@ t('TODO ceiling falls back', env(['get', 'memory-ceiling'], todo), '8');
 t('absent row falls back', env(['get', 'concurrency'], absent), '1 / 2');
 t('set row wins', env(['get', 'test-cap'], set), '3');
 t('set concurrency wins', env(['get', 'concurrency'], set), '2 / 3');
+t('the stray row is readable', env(['machine', 'get', 'park-after'], absent), '99');
 t('a repo-only row never falls back', env(['get', 'park-after'], absent), 'exit 3');
+t('machine --runner write is not a subcommand', env(['machine', '--runner', 'write'], absent), 'exit 2');
 const missing = join(T, 'none.md');
 t('no profile: TODO row stays unset', env(['get', 'test-cap'], todo, missing), 'exit 3');
 t('no profile: machine get exits 3', env(['machine', 'get', 'runner-possible'], absent, missing), 'exit 3');

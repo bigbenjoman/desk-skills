@@ -176,8 +176,9 @@ export function gather(plat = osPlatform()) {
 
 // ---- the proposal ----------------------------------------------------------------------------
 // -> [{ key, value, why }] in SIZING_KEYS order; `why` is the arithmetic, shown before anything is
-// written and kept in the profile's Why column.
-export function propose(hw, r = RULES) {
+// written and kept in the profile's Why column. A computer on battery that meets the minimum gets
+// no runner unless runnerOnBattery is set (`--runner`), which sizes it as on mains.
+export function propose(hw, { runnerOnBattery = false } = {}, r = RULES) {
   const mem = num(hw['memory-gb']);
   const cores = num(hw['cpu-cores']);
   const disk = num(hw['disk-free-gb']);
@@ -197,11 +198,11 @@ export function propose(hw, r = RULES) {
   let runner = false;
   if (wsl) add('runner-possible', 'no', 'WSL is not a runner host');
   else if (short.length) add('runner-possible', 'no', `below the minimum: ${short.join(', ')}`);
-  else if (hw.battery === 'yes') {
-    add('runner-possible', 'no', `meets the minimum (${mem} GB, ${cores} cores, ${disk} GB free) but runs on battery: proposed off, set yes to allow`);
+  else if (hw.battery === 'yes' && !runnerOnBattery) {
+    add('runner-possible', 'no', `meets the minimum (${mem} GB, ${cores} cores, ${disk} GB free) but runs on battery: proposed off, --runner sizes it on`);
   } else {
     runner = true;
-    add('runner-possible', 'yes', `${mem} GB >= ${r.runnerMinMemoryGB}, ${cores} cores >= ${r.runnerMinCores}, ${disk} GB free >= ${r.runnerMinDiskGB}`);
+    add('runner-possible', 'yes', `${mem} GB >= ${r.runnerMinMemoryGB}, ${cores} cores >= ${r.runnerMinCores}, ${disk} GB free >= ${r.runnerMinDiskGB}${hw.battery === 'yes' ? ', on battery by choice' : ''}`);
   }
 
   const vmCpus = runner ? Math.floor(cores * r.vmCpuShare) : 0;
@@ -237,21 +238,24 @@ export function propose(hw, r = RULES) {
 }
 
 // ---- the file --------------------------------------------------------------------------------
-const cellsOf = (line) => {
-  const body = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  const out = [];
+// Split a markdown table row into cells. A `|` inside backticks is part of the value (a regex such
+// as `KAN-[0-9]+|VPL-[0-9]+`), not a column break; `\|` is a literal pipe too. desk-env's config
+// parser uses this as well, so the config and the profile split rows one way.
+export function splitRow(line) {
+  const body = line.replace(/^\|/, '').replace(/\|$/, '');
+  const cells = [];
   let cur = '';
   let tick = false;
   for (let i = 0; i < body.length; i++) {
     const c = body[i];
     if (c === '\\' && body[i + 1] === '|') { cur += '|'; i++; continue; }
     if (c === '`') tick = !tick;
-    if (c === '|' && !tick) { out.push(cur.trim()); cur = ''; continue; }
+    if (c === '|' && !tick) { cells.push(cur.trim()); cur = ''; continue; }
     cur += c;
   }
-  out.push(cur.trim());
-  return out;
-};
+  cells.push(cur.trim());
+  return cells;
+}
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 const esc = (s) => String(s).replace(/\|/g, '\\|');
 
@@ -265,7 +269,7 @@ export function parseProfile(text) {
     const h = /^##\s+(.+)$/.exec(line);
     if (h) { section = /hardware/i.test(h[1]) ? 'hardware' : /sizing/i.test(h[1]) ? 'sizing' : null; header = false; continue; }
     if (!section || !line.startsWith('|')) { header = false; continue; }
-    const cells = cellsOf(line);
+    const cells = splitRow(line);
     if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue;
     if (!header) { header = true; continue; }
     const key = unquote(cells[0]).toLowerCase();
