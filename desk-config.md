@@ -280,7 +280,7 @@ such thing.
 | Branch protection | `TODO` (as detected: required approvals, whether a standing `CHANGES_REQUESTED` blocks, whether the branch must be up to date; `none` if unprotected) |
 | Required checks | `TODO` (the check names that must succeed to merge, one span each, exactly as GitHub shows them; from branch protection AND rulesets. `none` only when nothing is required, and then "Green" still requires every non-advisory check to pass) |
 | Advisory checks | `TODO` (checks that may fail without blocking a merge, one span each, e.g. a check that is red on the default branch too; or `none`. Every other check that runs must pass: see "Green" above) |
-| Merge holds | `TODO` (paths a PR may touch only with a person merging it, each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)` ``; or `none`. Autopilot and clearance never merge such a PR themselves; they report it with the reason) |
+| Merge holds | `TODO` (paths a PR may touch only with a person merging it, each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)` ``; `<glob>#<key>` holds a JSON file only when that key changes, e.g. `` `package.json#scripts: changes the commands CI runs` ``; or `none`. /desk-setup proposes holds on CI, hooks and check config, each declinable. Autopilot and clearance never merge such a PR themselves; they report it with the reason) |
 | Merge method | `TODO` (`squash`, `merge` or `rebase`; what the skills pass to `gh pr merge`) |
 | Repo merge settings | `TODO` (auto-merge allowed? `delete_branch_on_merge`?) |
 | `gh` token scopes | `TODO` (needs `repo` and `workflow`) |

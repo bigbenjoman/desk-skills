@@ -163,8 +163,9 @@ not, and `mergeable` never is — it flaps to `UNKNOWN` every time the default b
   check the platform does not enforce can lower the bar. The script prints any drift between the
   two, which is a reason to re-run `/desk-setup`. Green belongs to a SHA, and the merge is pinned to
   it (`--match-head-commit`).
-- **No §4 Merge holds entry applies.** A PR whose files match a glob in §4 Merge holds needs a manual step
-  before it merges (the hold says which), so a person merges it: clearance never does, whatever §3
+- **No §4 Merge holds entry applies.** A PR whose files match a glob in §4 Merge holds (for a
+  `<glob>#<key>` hold, whose diff changes that key of the file) needs a manual step before it merges
+  (the hold says which), so a person merges it: clearance never does, whatever §3
   grants, and never arms auto-merge on it. `clearance-state.mjs` parks such a PR's merge (its park
   reason names the glob and why) and prints `DISARM` for any held PR with auto-merge armed; you
   disarm it and report it under `HELD`. **While §4 Merge holds is unset, every PR's merge is

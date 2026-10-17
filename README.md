@@ -424,7 +424,7 @@ Setup writes these for you; this is what to know when you read or edit the file 
 | `none` means the repo does not have that thing; the step is skipped and said so | `` | Staging | `none` | `` |
 | `TODO` means not answered yet; a skill stops and asks rather than guess. In §3 it means `no` | `` | Designer | `TODO` | `` |
 | §3 permissions are `yes` (standing), `ask` (ask each time) or `no` | `` | `pr-merge-green` | … | `ask` | `` |
-| A merge hold is `<glob>: <why>`; a PR touching it is always left for you to merge | `` | Merge holds | `backend/**: build and push the Lambda images first` | `` |
+| A merge hold is `<glob>: <why>`, or `<glob>#<key>: <why>` to hold a JSON file only when that key changes; a PR touching it is always left for you to merge | `` | Merge holds | `backend/**: build and push the Lambda images first` | `` |
 
 "Green" means one thing everywhere: every required check succeeded on the exact commit (skipped
 does not count), nothing else failed or is still running unless it is listed as advisory, and at

@@ -417,7 +417,8 @@ merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-he
 push after the checks cannot be merged unchecked. With §4 Branch protection `none`, GitHub will
 accept a merge with red checks, so the rule is enforced only by you and the driver.
 
-**Merge holds.** A PR whose diff touches any glob in §4 Merge holds is merged by a person, never by
+**Merge holds.** A PR whose diff touches any glob in §4 Merge holds (for a `<glob>#<key>` hold, changes
+that key of the file) is merged by a person, never by
 the driver or by you, whatever §3 grants: the repo needs a manual step first (the hold says which).
 The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
 PR link and its head SHA, and it stays there until the user says they have merged it.
