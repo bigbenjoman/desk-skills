@@ -324,6 +324,10 @@ How to turn what you find into rows:
   `~/Downloads/`. Whatever the answer, check the agent can create a file there before writing the
   row: `mkdir -p <dir> && touch <dir>/.desk-write-check && rm <dir>/.desk-write-check`. A refusal is
   said with its error and the row is asked again; never save a directory the check refused.
+- **Handoff at context %.** Propose `45`. When the session's context passes that share of its
+  window, the `desk-handoff.py` hook (registered by `install.sh`) has it finish its step and write
+  `.handoffs/<yyyy-mm-dd>[-n].md`, and the session after `/clear` or a compaction picks that up on
+  its own. A whole number from `1` to `99`, or `0` to turn it off for this repo.
 - **Design canvases directory.** Propose `docs/design/`, or the directory the repo already commits
   canvases in when the design scan found one. It is relative to the repo root and committed, so
   autopilot workers and the design agents read the same files; a shared artifact link alone is not

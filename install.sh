@@ -584,6 +584,56 @@ PY
     ;;
 esac
 
+# Context handoff: one script on four events. Past config §2 "Handoff at context %" (default 45) the
+# session finishes its step and writes .handoffs/<date>.md; after /clear or a compaction the next
+# session is told to read it. Silent in repos with no desk config.
+HANDOFF_HOOK="$CLAUDE_DIR/hooks/desk-handoff.py"
+HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+install_file "$SRC/hooks/desk-handoff.py" "$HANDOFF_HOOK"
+chmod +x "$HANDOFF_HOOK"
+wrote "hook     ~/.claude/hooks/desk-handoff.py (script only; registering it is asked)"
+# handoff_hook <check|apply> — exit 0 registered on every event/applied, 1 missing on one, 2 unreadable
+handoff_hook() {
+  python3 - "$SETTINGS" "$HANDOFF_HOOK" "$1" $HANDOFF_EVENTS <<'PY'
+import json, os, sys
+path, cmd, mode, events = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+try:
+    data = json.load(open(path)) if os.path.exists(path) else {}
+except Exception:
+    sys.exit(2)
+if not isinstance(data, dict):
+    sys.exit(2)
+hooks = data.setdefault("hooks", {})
+missing = [ev for ev in events
+           if not any("desk-handoff.py" in (h.get("command") or "")
+                      for e in hooks.get(ev, []) for h in (e.get("hooks") or []))]
+if mode == "check" or not missing:
+    sys.exit(1 if missing else 0)
+for ev in missing:
+    hooks.setdefault(ev, []).append(
+        {"hooks": [{"type": "command", "command": f'python3 "{cmd}"', "timeout": 15}]})
+exec(os.environ["DESK_WRITE_JSON_PY"])
+write_json(path, data)
+PY
+}
+rc=0; handoff_hook check || rc=$?
+case "$rc" in
+  0) ok "context handoff already registered ($HANDOFF_EVENTS)" ;;
+  2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the context handoff" ;;
+  *)
+    note "Registers one hook on $HANDOFF_EVENTS. In a repo with a desk config, once the"
+    note "context passes §2 'Handoff at context %' (default 45, 0 turns it off) it asks the session to"
+    note "finish its step and write .handoffs/<date>.md, blocks the end of that turn once until it is"
+    note "written, and after /clear or a compaction tells the next session to read it. Other hooks are kept."
+    if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
+      backup_settings
+      if handoff_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
+    else
+      note "not registered. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+    fi
+    ;;
+esac
+
 # The deny-only plan (skills/desk-setup/references/baseline-deny.json): Slack send and write
 # tools, gh pr merge --admin, and best-effort force, delete and mirror pushes. It only takes
 # capability away, whatever /desk-setup is later answered.

@@ -20,6 +20,7 @@ run() { printf '\n== %s\n' "$1"; shift; "$@" >"$OUT" 2>&1; rc=$?
   [ "$c" -gt 0 ] || { echo "no checks ran"; fail=1; }; }
 run "syntax and shellcheck (every shell script and .mjs)" "$SH" "$T/test_lint.sh"
 run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --self-test
+run "context handoff hook (threshold, Stop block, clear/compact resume)" "$SH" "$T/test_handoff.sh"
 run "gate (one definition of green)" node "$T/test_gate.mjs"
 run "machine profile (detection, sizing, §3b fallback)" node "$T/test_machine.mjs"
 run "config values (list items, trailing notes)" node "$T/test_config.mjs"

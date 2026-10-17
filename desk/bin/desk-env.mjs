@@ -197,6 +197,7 @@ export const CONFIG_ROWS = Object.freeze({
   'design-dir': { section: '2', row: 'Design canvases directory' },
   wsl: { section: '2', row: 'Running on WSL?' },
   'browser-profile': { section: '2', row: 'Signed-in browser profile' },
+  'handoff-pct': { section: '2', row: 'Handoff at context %' },
   tracker: { section: '4', row: 'Tracker' },
   'jira-site': { section: '4', row: 'Jira site' },
   'jira-project': { section: '4', row: 'Jira project' },
