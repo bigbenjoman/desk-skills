@@ -65,7 +65,10 @@ machine, never copy one from someone else's notes.
    `user-attachments` assets afterwards; the only recovery is re-uploading. Map tags to cells **by
    alt**, never by upload order.
 7. **Set the body with `gh pr edit <n> --body-file`**, not the browser editor — the file on disk is
-   your undo. `<img alt="…" src="…" width="400">` in the cells keeps a multi-row table readable.
+   your undo. Write that file from the **live** body (`gh pr view <n> --json body --jq .body`)
+   fetched just before the edit, never from your local draft, so whatever CI or a bot added since
+   the PR opened survives; swap only the `_drag <file>_` cells (SKILL.md §4, "Editing the body
+   later"). `<img alt="…" src="…" width="400">` in the cells keeps a multi-row table readable.
 8. **Verify.** Reload with `domcontentloaded`, `window.scrollTo(0, 400)`, wait a few seconds so the
    description images load, then select images **by alt** and read `naturalWidth`. On a private repo
    the rendered src is rewritten to `private-user-images.githubusercontent.com`, so

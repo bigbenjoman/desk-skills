@@ -119,6 +119,7 @@ The sections are the ones §5 PR body names, in its order. For the common shape 
 `### Changes` · `### Testing` · optional `### Before / after` — it looks like this:
 
 ```markdown
+<!-- desk-pr: body -->
 <One or two sentences: what was wrong and what this does. Ticket ref in
 parentheses at the end when it reads naturally (<TICKET>).>
 
@@ -136,7 +137,16 @@ parentheses at the end when it reads naturally (<TICKET>).>
 | Before | After |
 | --- | --- |
 | <img …> | <img …> |
+<!-- desk-pr: end -->
 ```
+
+**The two marker lines are desk's fence.** `<!-- desk-pr: body -->` opens the body desk writes and
+`<!-- desk-pr: end -->` closes it, each on its own line; GitHub does not render them. Anything
+outside them belongs to someone else (a CI preview table, a bot's summary, the reviewer's own
+notes), and every later edit leaves it exactly as it is (see "Editing the body later" in §4). Keep
+them written exactly so, never as a `<!-- name -->` … `<!-- /name -->` pair: `desk-review` strips
+that shape as a generated block when it looks for author-written intent, and would read desk's own
+body as none.
 
 Only the sections §5 PR body names (plus `Not migrated` when it applies). No title in the body, and
 no headings §5 does not list. If §5 names different sections, the rules below still apply to
@@ -471,6 +481,33 @@ The first number is this part, the second the total — a three-part ticket runs
 before the key — a title check wants the key exactly where §5 puts it. Say in the body which PRs
 make up the set and the order they merge in.
 
+### Editing the body later: start from the live body, never your draft
+
+Once the PR is open, the body on GitHub is no longer only yours. CI and bots add sections after
+`gh pr create` (a preview-links table, a coverage summary, a deploy status), and a
+`gh pr edit --body-file` from your local draft deletes them. Nothing puts them back until the next
+push, and a PR can merge in that gap with the section gone. So every edit, whatever prompted it
+(new screenshots, a fix-up after review, a corrected Testing bullet):
+
+1. **Fetch the live body immediately before you edit**: `gh pr view <n> --repo <§0 GitHub repo>
+   --json body --jq .body`, saved to the body file. Not the draft you opened the PR with, and not a
+   copy from earlier in the session: CI may have written since.
+2. **Change only desk's section**: the text between `<!-- desk-pr: body -->` and `<!-- desk-pr: end -->`.
+   Everything outside the markers stays byte for byte, including where it sits.
+   - **No markers** (a PR opened before this rule, or by hand): edit the live body in place,
+     changing only the lines you mean to change. Do not wrap text you did not write in desk's
+     markers.
+   - **A marker missing its partner, or either one appearing twice**: do not guess where desk's
+     section ends. Stop and report the body as you found it.
+3. **Run the PR-description checks** on the file (above), then write it back with
+   `gh pr edit <n> --repo <§0 GitHub repo> --body-file <path>`.
+4. **Re-read the live body** and confirm every section outside the markers that was there in step 1
+   is still there. If one is gone, CI wrote between your read and your write: fetch again and
+   repeat from step 2.
+
+The image upload script already edits from the live body and touches only the `_drag <file>_`
+cells, so it needs none of this.
+
 ## 5. Stacked PRs
 
 If the branch depends on another PR that hasn't merged, say so in the body — which PR, and that
@@ -497,6 +534,7 @@ about immediately, not at the bottom of a finished PR description.
 | Opening the PR and letting CI judge the body | Run §4 PR-description checks on the body file first |
 | A one-off script in the diff | Run it from the branch, delete it, don't merge it |
 | An infra PR with no ping drafted | Draft the note to the §4 infra owner; never send it |
+| `gh pr edit --body-file` from your local draft | It wipes what CI and bots added. Fetch the live body and change only what sits between desk's markers |
 | Placeholder rows left in the merged body | Script: check its exit code. By hand: say "delete these rows" |
 | Uploading when §3 says `ask`, because it was fine last time | `ask` means every run. Standing permission is a §3 `yes`, never an inference |
 | Re-running the upload after exit 3 or 4 | The assets exist; fix the body from the printed tags |
