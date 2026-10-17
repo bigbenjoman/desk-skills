@@ -16,7 +16,7 @@
 // that matter most. Nothing is allowed wholesale that can run another program or change git's or gh's
 // own configuration:
 //   - git: named read and local-write subcommands only (status, diff, log, show, add, commit, restore,
-//     checkout/switch, rebase, merge, fetch, clean, ...). `git push` exists only as exact rules for the
+//     checkout/switch, rebase, merge, fetch, clean, rm, mv, ...). `git push` exists only as exact rules for the
 //     ticket's own branch (--branch). `git config`, `git -c`, `git -C`, aliases (any unknown
 //     subcommand), `git stash`, `rebase --exec` and `--upload-pack` are refused.
 //   - gh: named read subcommands, plus `pr create --draft`, `pr edit`, `pr comment`, `pr review`,
@@ -149,7 +149,8 @@ const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? ''
 // The §4 command rows a worker may run, and the lock each takes when wrapped by with-lock.sh.
 const LOCK_OF = { 'test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
-const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'agents-sync',
+// §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
+const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
   'pr-description-checks', ...(HAS_TICKET_DB ? ['db-migrate-cmd', 'seed-cmd'] : [])];
 const warns = [];
 const items = [];
@@ -207,7 +208,9 @@ const GIT_READ = [' status', ' diff', ' log', ' show', ' rev-parse', ' rev-list'
   ' ls-tree', ' for-each-ref', ' grep', ' blame', ' describe', ' cat-file', ' branch --show-current', ' branch --list',
   ' worktree list', ' remote -v', ' remote get-url'];
 const GIT_READ_EXACT = [' branch -a', ' branch -r'];
-const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean'];
+// `rm` and `mv` touch only tracked paths of this worktree: git refuses a path outside the repository,
+// and `-C`, `--git-dir` and `--work-tree` are denied below.
+const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean', ' rm', ' mv'];
 // `rebase` takes bundled short flags (`-qx cmd` runs cmd), so it is allowed only in these exact forms.
 const GIT_REBASE = [' rebase --continue', ' rebase --abort', ' rebase --skip', ` rebase origin/${E.defaultBranch()}`];
 // The ways a permitted git subcommand could reach outside it: another repo or config, an external
