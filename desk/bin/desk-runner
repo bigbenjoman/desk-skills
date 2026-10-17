@@ -3,8 +3,15 @@
 # services and the LAN. Written for bash 3.2 (stock macOS) as well as 4+.
 #   desk-runner up                 create or start the VM, then verify-isolation; no runner unless it passes
 #   desk-runner verify-isolation   probe from the VM's root shell and from a container in it
-#   desk-runner status             the VM's state and the last isolation result with its age
-#   desk-runner down               stop the VM and check nothing is left running for it
+#   desk-runner status             the VM's state, the last isolation result with its age, the agents
+#   desk-runner down               stop the VM, remove its agents, and check nothing is left running
+#   desk-runner settings           show the Mac settings a runner needs; change them if you confirm
+#   desk-runner gate               exit 0 only while a new runner slot may start
+#   desk-runner keep               bring the VM back if it is down (launchd runs this every minute)
+#
+# Once isolation passes, `up` installs two launchd agents: `keep` at login and every minute, which
+# restarts the VM with exponential backoff, and a nightly verify-isolation. `gate` stays closed
+# unless the VM runs behind the block and its last verification passed within MAX_AGE.
 #
 # The boundary is Tart with Softnet, blocking every private, shared and link-local IPv4 range. That
 # covers the Mac's address on the VM network (a random private /30 per boot), so the guest resolves
@@ -23,10 +30,47 @@ RESOLVERS="1.1.1.1 9.9.9.9"
 # Bump when the guest setup below changes, so `up` re-applies it to an existing VM.
 PROVISION_VERSION=1
 HOST_ALIASES="host.docker.internal gateway.docker.internal host.containers.internal host.lima.internal host.tart.internal"
+AGENTS="$HOME/Library/LaunchAgents"
+LABEL="com.desk-skills.$VM"
+NIGHTLY_HOUR=3
+# A pass older than this closes the gate: a day plus slack for the nightly run.
+MAX_AGE=$((25 * 3600))
+BACKOFF_BASE=60
+BACKOFF_CAP=3600
 
 say() { printf 'desk-runner: %s\n' "$*"; }
-die() { printf 'desk-runner: %s\n' "$*" >&2; exit "${2:-1}"; }
-usage() { sed -n '4,7p' "$0" | sed 's/^# //' >&2; exit 2; }
+# ON_DIE names a function to run before exiting, so `keep` can record a failed attempt.
+ON_DIE=""
+die() { printf 'desk-runner: %s\n' "$*" >&2; [ -n "$ON_DIE" ] && "$ON_DIE"; exit "${2:-1}"; }
+usage() { sed -n '4,10p' "$0" | sed 's/^# //' >&2; exit 2; }
+
+# One EXIT trap for everything a run leaves behind: the test services, and the busy lock.
+SVC_PID=""; SERVICES=""; HOLDS_LOCK=""
+cleanup() {
+  [ -n "$SVC_PID" ] && kill "$SVC_PID" 2>/dev/null
+  [ -n "$SERVICES" ] && rm -f "$SERVICES"
+  [ -n "$HOLDS_LOCK" ] && rm -rf "$STATE/busy"
+  return 0
+}
+trap cleanup EXIT
+
+lock() { # lock <wait|skip>: one desk-runner at a time starts, probes or stops the VM
+  local holder waited=0
+  mkdir -p "$STATE"
+  while ! mkdir "$STATE/busy" 2>/dev/null; do
+    holder=$(cat "$STATE/busy/pid" 2>/dev/null)
+    # A holder that died, or one that never wrote its pid within a minute, is taken over.
+    if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } \
+      || { [ -z "$holder" ] && [ -n "$(find "$STATE/busy" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+      rm -rf "$STATE/busy"; continue
+    fi
+    [ "$1" = skip ] && { say "another desk-runner is busy with $VM (pid ${holder:-?}); nothing to do"; exit 0; }
+    [ $waited -eq 0 ] && say "waiting for another desk-runner (pid ${holder:-?}) to finish with $VM"
+    sleep 1; waited=$((waited + 1))
+  done
+  echo $$ > "$STATE/busy/pid"
+  HOLDS_LOCK=1
+}
 
 machine() { node "$HERE/desk-env.mjs" machine "$@"; }
 json_field() { python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print("" if v is None else str(v).lower() if isinstance(v,bool) else v)' "$1"; }
@@ -39,6 +83,7 @@ guest_stdin() { tart exec -i "$VM" "$@"; }
 run_process() {
   ps -axo pid=,args= | awk -v vm="$VM" '{for (i = 2; i < NF - 1; i++) if ($i ~ /(^|\/)tart$/ && $(i + 1) == "run" && $(i + 2) == vm) {print; next}}'
 }
+behind_block() { case " $(run_process) " in *" --net-softnet-block=$BLOCK "*) return 0 ;; esac; return 1; }
 
 # ---- the machine profile ---------------------------------------------------------------------
 require_runner_possible() {
@@ -153,14 +198,11 @@ verify_isolation() {
   vm_running || die "$VM is not running: desk-runner up"
   # A VM started some other way (a plain tart run) is refused: probes alone cannot always tell, as the
   # macOS firewall can hide a Mac service from the VM that Softnet would not have blocked.
-  case " $(run_process) " in
-    *" --net-softnet-block=$BLOCK "*) ;;
-    *) die "$VM is not running behind the Softnet block desk-runner starts it with: desk-runner down, then up" ;;
-  esac
-  local out="$STATE/isolation.last" services svc_pid lo_port any_port gw router ports listening targets guest_targets container_targets ip p h rc
+  behind_block || die "$VM is not running behind the Softnet block desk-runner starts it with: desk-runner down, then up"
+  local out="$STATE/isolation.last" services lo_port any_port gw router ports listening targets guest_targets container_targets ip p h rc
   # Two test services on the Mac, one on loopback and one on every interface. Each must answer the
   # Mac itself, or failing to reach it from the VM would prove nothing.
-  services=$(mktemp)
+  services=$(mktemp); SERVICES=$services
   python3 -c '
 import socket, sys, threading
 socks = []
@@ -172,9 +214,7 @@ def serve(s):
         c, _ = s.accept(); c.close()
 for s in socks: threading.Thread(target=serve, args=(s,), daemon=True).start()
 threading.Event().wait()' > "$services" 2>/dev/null &
-  svc_pid=$!
-  # shellcheck disable=SC2064
-  trap "kill $svc_pid 2>/dev/null; rm -f '$services'" EXIT
+  SVC_PID=$!
   local waited=0
   while [ ! -s "$services" ] && [ $waited -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
   read -r lo_port any_port < "$services"
@@ -219,7 +259,7 @@ threading.Event().wait()' > "$services" 2>/dev/null &
     guest sudo -n sh -c 'ulimit -n 8192; exec bash /var/lib/desk-runner/probe.sh "$@"' probe guest "${guest_targets[@]}"
     guest sudo -n docker run --rm -v /var/lib/desk-runner/probe.sh:/probe.sh:ro ubuntu:24.04 bash /probe.sh container "${container_targets[@]}"
   } > "$out" 2>&1
-  kill "$svc_pid" 2>/dev/null
+  kill "$SVC_PID" 2>/dev/null; SVC_PID=""
 
   rc=0
   if grep -q '^BAD ' "$out"; then
@@ -239,10 +279,122 @@ threading.Event().wait()' > "$services" 2>/dev/null &
   return $rc
 }
 
+# ---- the gate on new runner slots ------------------------------------------------------------
+ago() { # a number of seconds, as 5m, 3h or 2d
+  if [ "$1" -lt 3600 ]; then echo "$(($1 / 60))m"; elif [ "$1" -lt 172800 ]; then echo "$(($1 / 3600))h"; else echo "$(($1 / 86400))d"; fi
+}
+gate_reason() { # why no new runner slot may start, or nothing when one may
+  local result at detail age
+  vm_running || { echo "$VM is not running"; return; }
+  behind_block || { echo "$VM is not running behind the Softnet block"; return; }
+  [ -s "$STATE/isolation.status" ] || { echo "isolation has never been verified"; return; }
+  read -r result at detail < "$STATE/isolation.status"
+  age=$(( $(date +%s) - at ))
+  [ "$result" = pass ] || { echo "the last verify-isolation failed $(ago $age) ago ($detail)"; return; }
+  [ $age -le $MAX_AGE ] || echo "the last pass is $(ago $age) old, past the nightly check"
+}
+
+# ---- the Mac's settings ----------------------------------------------------------------------
+SU_PLIST=/Library/Preferences/com.apple.SoftwareUpdate
+pmset_value() { pmset -g 2>/dev/null | awk -v k="$1" '$1 == k {print $2; exit}'; }
+setting() { # setting <what> <now> <met: yes|no> <the change, run with sudo>
+  if [ "$3" = yes ]; then printf '  %-36s ok (%s)\n' "$1" "$2"
+  else printf '  %-36s needs a change (%s): sudo %s\n' "$1" "$2" "$4"; FIXES+=("$4"); fi
+}
+check_settings() { # prints each setting; FIXES holds the change for each one not as needed
+  local sleep restart updates met
+  FIXES=()
+  sleep=$(pmset_value sleep); restart=$(pmset_value autorestart)
+  updates=$(defaults read "$SU_PLIST" AutomaticallyInstallMacOSUpdates 2>/dev/null)
+  met=no; [ "$sleep" = 0 ] && met=yes
+  setting "never sleep" "sleep ${sleep:-unknown}" $met "pmset -a sleep 0"
+  met=no; [ "$restart" = 1 ] && met=yes
+  setting "restart after power loss" "autorestart ${restart:-unknown}" $met "pmset -a autorestart 1"
+  met=no; [ "$updates" = 0 ] && met=yes
+  setting "no automatic macOS update installs" "AutomaticallyInstallMacOSUpdates ${updates:-unset}" $met \
+    "defaults write $SU_PLIST AutomaticallyInstallMacOSUpdates -bool false"
+}
+mac_settings() { # mac_settings <ask|tell>: show them; with ask, change them only on a yes
+  local answer fix
+  say "the Mac settings a runner needs:"
+  check_settings
+  [ ${#FIXES[@]} -eq 0 ] && { say "all set"; return 0; }
+  if [ "$1" != ask ]; then say "not changed: run desk-runner settings in a terminal to change them"; return 0; fi
+  printf 'desk-runner: change them now (sudo asks for your password)? [y/N] '
+  read -r answer || answer=""
+  case $answer in y|Y|yes|Yes|YES) ;; *) say "nothing changed"; return 0 ;; esac
+  for fix in "${FIXES[@]}"; do
+    # shellcheck disable=SC2086
+    sudo $fix || say "failed: sudo $fix"
+  done
+  say "now:"
+  check_settings
+  [ ${#FIXES[@]} -eq 0 ] && { say "all set"; return 0; }
+  say "${#FIXES[@]} still not as needed"; return 1
+}
+
+# ---- launchd agents --------------------------------------------------------------------------
+domain() { echo "gui/$(id -u)"; }
+agent_loaded() { launchctl print "$(domain)/$1" >/dev/null 2>&1; }
+plist() { # plist <keep|nightly> <label> <log> <hour> <program args...>: the job as plist XML
+  python3 -c '
+import os, plistlib, sys
+kind, label, log, hour, args = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5:]
+keys = ("PATH", "DESK_HOME", "DESK_MACHINE", "DESK_RUNNER_VM", "DESK_RUNNER_IMAGE", "DESK_RUNNER_STATE", "DESK_RUNNER_BOOT_WAIT")
+job = {"Label": label, "ProgramArguments": args, "StandardOutPath": log, "StandardErrorPath": log,
+       "EnvironmentVariables": {k: os.environ[k] for k in keys if k in os.environ},
+       # keep leaves tart run behind it; launchd would otherwise kill it when keep exits.
+       "AbandonProcessGroup": True}
+if kind == "keep":
+    job.update(RunAtLoad=True, StartInterval=60)
+else:
+    job["StartCalendarInterval"] = {"Hour": hour, "Minute": 30}
+sys.stdout.write(plistlib.dumps(job).decode())' "$@"
+}
+install_agent() { # install_agent <label> <plist XML>: loaded once; reloaded only when it changed
+  local file="$AGENTS/$1.plist"
+  [ -n "$2" ] || die "could not write the launchd agent $1"
+  if [ -f "$file" ] && [ "$(cat "$file")" = "$2" ] && agent_loaded "$1"; then return 0; fi
+  mkdir -p "$AGENTS" || die "could not create $AGENTS"
+  agent_loaded "$1" && launchctl bootout "$(domain)/$1" >/dev/null 2>&1
+  printf '%s\n' "$2" > "$file" || die "could not write $file"
+  launchctl bootstrap "$(domain)" "$file" || die "launchctl bootstrap $(domain) $file failed"
+  say "installed the launchd agent $1"
+}
+remove_agent() {
+  if agent_loaded "$1"; then
+    launchctl bootout "$(domain)/$1" || die "launchctl bootout $(domain)/$1 failed"
+  fi
+  rm -f "$AGENTS/$1.plist"
+}
+install_agents() {
+  local log="$STATE/agent.log" keep nightly
+  keep=$(plist keep "$LABEL" "$log" "$NIGHTLY_HOUR" "$HERE/desk-runner" keep)
+  install_agent "$LABEL" "$keep"
+  nightly=$(plist nightly "$LABEL.nightly" "$log" "$NIGHTLY_HOUR" "$HERE/desk-runner" verify-isolation)
+  install_agent "$LABEL.nightly" "$nightly"
+}
+
+# ---- bringing the VM back --------------------------------------------------------------------
+BACKOFF="$STATE/restart.backoff"   # <failed attempts in a row> <epoch of the next attempt>
+keep_failed() { # each failed attempt doubles the wait before the next, up to BACKOFF_CAP
+  local failures=0 n=1 delay=$BACKOFF_BASE
+  [ -s "$BACKOFF" ] && read -r failures _ < "$BACKOFF"
+  case $failures in ''|*[!0-9]*) failures=0 ;; esac
+  failures=$((failures + 1))
+  while [ $n -lt $failures ] && [ $delay -lt $BACKOFF_CAP ]; do delay=$((delay * 2)); n=$((n + 1)); done
+  [ $delay -gt $BACKOFF_CAP ] && delay=$BACKOFF_CAP
+  mkdir -p "$STATE"
+  echo "$failures $(( $(date +%s) + delay ))" > "$BACKOFF"
+  say "attempt $failures to bring $VM back failed; the next is in $(ago $delay)"
+}
+
 # ---- commands --------------------------------------------------------------------------------
 cmd_up() {
+  lock wait
   require_runner_possible
   require_tart
+  if [ -t 0 ]; then mac_settings ask; else mac_settings tell; fi
   ensure_vm
   start_vm
   provision
@@ -250,11 +402,46 @@ cmd_up() {
     say "no runner started: the VM stays up for inspection; desk-runner down stops it"
     exit 1
   fi
-  say "$VM is up and isolated. Runner registration is not part of desk-runner yet"
+  rm -f "$BACKOFF"
+  install_agents
+  say "$VM is up and isolated, and comes back after a restart. Runner registration is not part of desk-runner yet"
+}
+
+cmd_keep() {
+  lock skip
+  local reason failures next now
+  reason=$(gate_reason)
+  if [ -z "$reason" ]; then rm -f "$BACKOFF"; return 0; fi
+  if [ -s "$BACKOFF" ]; then
+    read -r failures next < "$BACKOFF"; now=$(date +%s)
+    case $next in ''|*[!0-9]*) next=0 ;; esac
+    if [ "$now" -lt "$next" ]; then
+      say "attempt $failures to bring $VM back failed; waiting $(ago $((next - now))) before the next"
+      return 0
+    fi
+  fi
+  say "bringing $VM back: $reason"
+  ON_DIE=keep_failed
+  require_runner_possible
+  require_tart
+  ensure_vm
+  start_vm
+  provision
+  if ! verify_isolation; then ON_DIE=""; keep_failed; exit 1; fi
+  ON_DIE=""
+  rm -f "$BACKOFF"
+  say "$VM is back and isolated"
+}
+
+cmd_gate() {
+  local reason
+  reason=$(gate_reason)
+  [ -z "$reason" ] || { say "runner slots closed: $reason"; exit 1; }
+  say "runner slots open: $VM runs behind the block and its last verify-isolation passed"
 }
 
 cmd_status() {
-  local state="absent" info result at detail age
+  local state="absent" info result at detail reason failures next keep nightly
   if info=$(vm_info); then
     state=$( [ "$(echo "$info" | json_field Running)" = true ] && echo running || echo stopped )
     echo "$VM: $state ($(echo "$info" | json_field CPU) CPUs, $(echo "$info" | json_field Memory) MB, $(echo "$info" | json_field Disk) GB disk)"
@@ -263,16 +450,29 @@ cmd_status() {
   fi
   if [ -s "$STATE/isolation.status" ]; then
     read -r result at detail < "$STATE/isolation.status"
-    age=$(( $(date +%s) - at ))
-    if [ $age -lt 3600 ]; then age="$((age / 60))m"; elif [ $age -lt 172800 ]; then age="$((age / 3600))h"; else age="$((age / 86400))d"; fi
-    echo "isolation: $result, $age ago ($detail)"
+    echo "isolation: $result, $(ago $(( $(date +%s) - at ))) ago ($detail)"
   else
     echo "isolation: never verified"
+  fi
+  reason=$(gate_reason)
+  if [ -z "$reason" ]; then echo "runner slots: open"; else echo "runner slots: closed ($reason)"; fi
+  keep="not installed"; agent_loaded "$LABEL" && keep=loaded
+  nightly="not installed"; agent_loaded "$LABEL.nightly" && nightly=loaded
+  echo "agents: restart at login and every minute $keep; verify-isolation nightly at 0$NIGHTLY_HOUR:30 $nightly"
+  if [ -s "$BACKOFF" ]; then
+    read -r failures next < "$BACKOFF"
+    next=$(( next - $(date +%s) )); [ $next -lt 0 ] && next=0
+    echo "restarts: $failures failed in a row; the next attempt is in $(ago $next)"
   fi
   [ "$state" = running ]
 }
 
 cmd_down() {
+  lock wait
+  # The agents go first, or keep would start the VM again a minute later.
+  remove_agent "$LABEL"
+  remove_agent "$LABEL.nightly"
+  rm -f "$BACKOFF"
   if vm_exists && vm_running; then
     say "stopping $VM"
     tart stop "$VM" || die "tart stop $VM failed"
@@ -290,8 +490,11 @@ cmd_down() {
 
 case "${1:-}" in
   up) cmd_up ;;
-  verify-isolation) require_tart; verify_isolation ;;
+  verify-isolation) lock wait; require_tart; verify_isolation ;;
   status) cmd_status ;;
   down) cmd_down ;;
+  settings) mac_settings ask ;;
+  gate) cmd_gate ;;
+  keep) cmd_keep ;;
   *) usage ;;
 esac
