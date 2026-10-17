@@ -18,6 +18,8 @@
 #   §4 Database URL variable   every variable repointed at that database, or blanked when there is none
 #   §4 Database migrate        run against the per-ticket database only
 #
+# DESK_PSQL_TIMEOUT (seconds, default 30) limits each psql call, so a wedged container fails setup.
+#
 # Databases, the rule: in a worktree's copied env files, every §4 Database URL variable either points
 # at this ticket's own local database or is blank. A URL whose host is not local (a hosted, staging or
 # production database) is never rewritten into a local one: it is blanked. So is every variable when
@@ -265,16 +267,29 @@ $ENV_FILES
 EOF_FILES
   printf 'postgres'
 }
+# Every psql call runs under this limit: a stopped or wedged container must fail setup, not hang it.
+PSQL_LIMIT="${DESK_PSQL_TIMEOUT:-30}"
+case "$PSQL_LIMIT" in ''|*[!0-9]*|0) fail "DESK_PSQL_TIMEOUT='$PSQL_LIMIT' is not a positive number of seconds" ;; esac
+pg() { # pg <user> <psql args...>: psql against the postgres database in the container, time-limited
+  local u="$1"; shift
+  desk_timeout "$PSQL_LIMIT" docker exec "$PG_CONTAINER" psql -U "$u" -d postgres "$@"
+}
+pg_why() { # pg_why <exit status>: what a failed pg call means, for the FAIL line (137: timeout(1) had to KILL)
+  case "$1" in
+    124|137) printf 'psql in container %s did not answer within %ss' "$PG_CONTAINER" "$PSQL_LIMIT" ;;
+    *)       printf 'psql in container %s exited %s' "$PG_CONTAINER" "$1" ;;
+  esac
+}
 CREATED_DB=""
 ensure_db() { # the per-ticket database exists, or setup fails
   command -v docker >/dev/null 2>&1 || fail "docker is not on PATH — cannot create $DB in $PG_CONTAINER"
   local user; user="$(pg_user)"
-  local have
-  have="$(docker exec "$PG_CONTAINER" psql -U "$user" -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = '$DB'" 2>/dev/null)" \
-    || fail "cannot reach Postgres in container $PG_CONTAINER as $user (is it running? §4 Local database names it as \`postgres container <name>\`)"
+  local have rc=0
+  have="$(pg "$user" -Atc "SELECT 1 FROM pg_database WHERE datname = '$DB'" 2>/dev/null)" || rc=$?
+  [ "$rc" = 0 ] \
+    || fail "cannot reach Postgres in container $PG_CONTAINER as $user: $(pg_why "$rc") (is it running? §4 Local database names it as \`postgres container <name>\`)"
   if [ "$have" = 1 ]; then say "  database $DB already exists"; return 0; fi
-  docker exec "$PG_CONTAINER" psql -U "$user" -d postgres -c "CREATE DATABASE \"$DB\"" >/dev/null \
-    || fail "could not create database $DB in $PG_CONTAINER"
+  pg "$user" -c "CREATE DATABASE \"$DB\"" >/dev/null || { rc=$?; fail "could not create database $DB: $(pg_why "$rc")"; }
   CREATED_DB="$user"
   say "  created database $DB in $PG_CONTAINER"
 }
@@ -299,7 +314,7 @@ cleanup() {
   git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"
   git -C "$MAIN" worktree prune >/dev/null 2>&1 || true
   if [ -n "$CREATED_BRANCH" ]; then git -C "$MAIN" branch -D "$BRANCH" >/dev/null 2>&1 && say "  removed branch $BRANCH (this run created it)"; fi
-  if [ -n "$CREATED_DB" ]; then docker exec "$PG_CONTAINER" psql -U "$CREATED_DB" -d postgres -c "DROP DATABASE IF EXISTS \"$DB\"" >/dev/null 2>&1 && say "  dropped database $DB (this run created it)"; fi
+  if [ -n "$CREATED_DB" ]; then pg "$CREATED_DB" -c "DROP DATABASE IF EXISTS \"$DB\"" >/dev/null 2>&1 && say "  dropped database $DB (this run created it)"; fi
   return 0
 }
 trap cleanup EXIT
