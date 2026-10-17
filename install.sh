@@ -436,6 +436,14 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-env"
   ok "desk-env -> ~/.local/bin (desk-env where: which repo config applies here)"
   wrote "desk-env ~/.local/bin/desk-env"
+  # desk-runner on PATH: the CI runner VM on a computer whose machine profile allows one.
+  RUNNER_SHIM="$(mktemp)"
+  printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: the isolated CI runner VM.\nexec "%s" "$@"\n' \
+    "$DESKDIR/bin/desk-runner" > "$RUNNER_SHIM"
+  install_file "$RUNNER_SHIM" "$HOME/.local/bin/desk-runner"; rm -f "$RUNNER_SHIM"
+  chmod +x "$HOME/.local/bin/desk-runner"
+  ok "desk-runner -> ~/.local/bin (desk-runner up: the isolated CI runner VM)"
+  wrote "desk-runner ~/.local/bin/desk-runner"
   # skills-upstream runs from this checkout (vendor/ lives here), so the shim records where it is.
   UP_SHIM="$(mktemp)"
   printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: check and upgrade the pinned third-party skills.\nexec python3 "%s" "$@"\n' \

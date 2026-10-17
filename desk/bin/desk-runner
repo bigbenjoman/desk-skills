@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# The Linux VM on this Mac that CI jobs run in, isolated from the Mac's files, the Mac, its local
+# services and the LAN. Written for bash 3.2 (stock macOS) as well as 4+.
+#   desk-runner up                 create or start the VM, then verify-isolation; no runner unless it passes
+#   desk-runner verify-isolation   probe from the VM's root shell and from a container in it
+#   desk-runner status             the VM's state and the last isolation result with its age
+#   desk-runner down               stop the VM and check nothing is left running for it
+#
+# The boundary is Tart with Softnet, blocking every private, shared and link-local IPv4 range. That
+# covers the Mac's address on the VM network (a random private /30 per boot), so the guest resolves
+# names through public resolvers rather than the gateway. Softnet's defaults alone leave the gateway
+# open, which exposes every Mac service bound to 0.0.0.0.
+# Sizes come from the machine profile (desk-env machine get runner-vm-*); with no profile, or one
+# that says no runner, `up` refuses.
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+VM="${DESK_RUNNER_VM:-desk-runner}"
+IMAGE="${DESK_RUNNER_IMAGE:-ghcr.io/cirruslabs/ubuntu:24.04}"
+STATE="${DESK_RUNNER_STATE:-${DESK_HOME:-$HOME/.claude/desk}/runner}"
+BOOT_WAIT="${DESK_RUNNER_BOOT_WAIT:-180}"
+BLOCK="10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16"
+RESOLVERS="1.1.1.1 9.9.9.9"
+# Bump when the guest setup below changes, so `up` re-applies it to an existing VM.
+PROVISION_VERSION=1
+HOST_ALIASES="host.docker.internal gateway.docker.internal host.containers.internal host.lima.internal host.tart.internal"
+
+say() { printf 'desk-runner: %s\n' "$*"; }
+die() { printf 'desk-runner: %s\n' "$*" >&2; exit "${2:-1}"; }
+usage() { sed -n '4,7p' "$0" | sed 's/^# //' >&2; exit 2; }
+
+machine() { node "$HERE/desk-env.mjs" machine "$@"; }
+json_field() { python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print("" if v is None else str(v).lower() if isinstance(v,bool) else v)' "$1"; }
+vm_info() { tart get "$VM" --format json 2>/dev/null; }
+vm_exists() { vm_info >/dev/null; }
+vm_running() { [ "$(vm_info | json_field Running)" = true ]; }
+guest() { tart exec "$VM" "$@"; }
+guest_stdin() { tart exec -i "$VM" "$@"; }
+# `<pid> <args>` of the `tart run <VM>` process, however tart was invoked (a path, or a wrapper's interpreter).
+run_process() {
+  ps -axo pid=,args= | awk -v vm="$VM" '{for (i = 2; i < NF - 1; i++) if ($i ~ /(^|\/)tart$/ && $(i + 1) == "run" && $(i + 2) == vm) {print; next}}'
+}
+
+# ---- the machine profile ---------------------------------------------------------------------
+require_runner_possible() {
+  local v why rc
+  v=$(machine get runner-possible); rc=$?
+  if [ $rc -eq 3 ] || [ -z "$v" ]; then
+    die "no machine profile says a runner is possible here: run /desk-setup (desk-env machine propose shows what it would write)" 3
+  fi
+  [ $rc -eq 0 ] || die "could not read the machine profile (desk-env machine get runner-possible exited $rc)"
+  if [ "$v" != yes ]; then
+    why=$(machine why runner-possible 2>/dev/null)
+    die "the machine profile says no runner on this computer${why:+: $why}" 3
+  fi
+}
+read_sizes() { # sets CPUS, MEM_GB, DISK_GB from the profile, or dies naming the key; never in a $(…)
+  local key v
+  for key in runner-vm-cpus runner-vm-memory-gb runner-vm-disk-gb; do
+    v=$(machine get "$key") || die "the machine profile has no $key: run /desk-setup"
+    case $v in ''|*[!0-9]*) die "the machine profile's $key is '$v', not a whole number" ;; esac
+    [ "$v" -gt 0 ] || die "the machine profile's $key is 0"
+    case $key in runner-vm-cpus) CPUS=$v ;; runner-vm-memory-gb) MEM_GB=$v ;; *) DISK_GB=$v ;; esac
+  done
+}
+
+# ---- the VM tool -----------------------------------------------------------------------------
+require_tart() {
+  command -v tart >/dev/null 2>&1 || die "Tart is not installed: brew install openai/tools/tart openai/tools/softnet"
+  local sn real
+  sn=$(command -v softnet) || die "Softnet is not installed: brew install openai/tools/softnet"
+  # Tart accepts either a setuid-root softnet or passwordless sudo for it; with neither it would
+  # prompt for a password, which a detached start cannot answer.
+  real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$sn")
+  if ! ls -ln "$real" | awk '{exit !($3 == 0 && substr($1, 4, 1) == "s")}' && ! sudo -n softnet --help >/dev/null 2>&1; then
+    die "Softnet is not setuid root, so Tart cannot start it unattended. Run this once in a terminal:
+  sudo sh -c 'chown root $real && chmod u+s $real'"
+  fi
+}
+
+ensure_vm() { # create the VM sized from the profile; a VM already at those sizes is left alone
+  local cpus mem_gb disk_gb mem_mb info cur_cpu cur_mem cur_disk
+  read_sizes
+  cpus=$CPUS; mem_gb=$MEM_GB; disk_gb=$DISK_GB; mem_mb=$((mem_gb * 1024))
+  if ! vm_exists; then
+    say "creating $VM from $IMAGE ($cpus CPUs, $mem_gb GB memory, $disk_gb GB disk; no shared folders, no forwarded ports)"
+    tart clone "$IMAGE" "$VM" || die "tart clone $IMAGE failed"
+    tart set "$VM" --cpu "$cpus" --memory "$mem_mb" --disk-size "$disk_gb" || die "tart set failed"
+    return
+  fi
+  info=$(vm_info)
+  cur_cpu=$(echo "$info" | json_field CPU); cur_mem=$(echo "$info" | json_field Memory); cur_disk=$(echo "$info" | json_field Disk)
+  [ "$cur_cpu" = "$cpus" ] && [ "$cur_mem" = "$mem_mb" ] && [ "$cur_disk" -ge "$disk_gb" ] && return
+  if vm_running; then
+    say "the profile asks for $cpus CPUs, $mem_mb MB, $disk_gb GB; $VM runs with $cur_cpu, $cur_mem MB, $cur_disk GB. desk-runner down, then up, applies it"
+    return
+  fi
+  say "resizing $VM to the profile: $cpus CPUs, $mem_mb MB memory${disk_gb:+, disk at least $disk_gb GB}"
+  if [ "$cur_disk" -lt "$disk_gb" ]; then tart set "$VM" --cpu "$cpus" --memory "$mem_mb" --disk-size "$disk_gb"
+  else tart set "$VM" --cpu "$cpus" --memory "$mem_mb"; fi || die "tart set failed"
+}
+
+start_vm() {
+  vm_running && return
+  mkdir -p "$STATE"
+  say "starting $VM headless behind Softnet (blocked: $BLOCK)"
+  nohup tart run "$VM" --no-graphics --net-softnet-block="$BLOCK" >> "$STATE/run.log" 2>&1 &
+  disown 2>/dev/null || true
+  local waited=0
+  until guest true >/dev/null 2>&1; do
+    [ "$waited" -ge "$BOOT_WAIT" ] && die "$VM did not answer within ${BOOT_WAIT}s; see $STATE/run.log"
+    sleep 3; waited=$((waited + 3))
+  done
+}
+
+provision() { # idempotent guest setup: public resolvers, Docker, the probe container's image
+  [ "$(guest cat /var/lib/desk-runner/provisioned 2>/dev/null)" = "$PROVISION_VERSION" ] && return
+  say "setting up the guest: public DNS resolvers ($RESOLVERS), Docker"
+  guest_stdin sudo -n bash -s -- "$PROVISION_VERSION" "$RESOLVERS" <<'GUEST' || die "guest setup failed"
+set -e
+version=$1; resolvers=$2
+dev=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1); exit}')
+mkdir -p /etc/systemd/resolved.conf.d /var/lib/desk-runner
+printf '[Resolve]\nDNS=%s\nDomains=~.\n' "$resolvers" > /etc/systemd/resolved.conf.d/desk-runner.conf
+printf 'network:\n  version: 2\n  ethernets:\n    %s:\n      dhcp4-overrides:\n        use-dns: false\n' "$dev" > /etc/netplan/99-desk-runner.yaml
+chmod 600 /etc/netplan/99-desk-runner.yaml
+netplan apply 2>/dev/null
+systemctl restart systemd-resolved
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
+apt-get update -qq
+apt-get install -y -qq docker.io curl >/dev/null
+systemctl enable --now docker >/dev/null
+docker pull -q ubuntu:24.04 >/dev/null
+echo "$version" > /var/lib/desk-runner/provisioned
+GUEST
+}
+
+# ---- isolation -------------------------------------------------------------------------------
+host_ipv4() { ifconfig | awk '$1 == "inet" && $2 !~ /^127\./ {print $2}' | sort -u; }
+# This user's listening ports. Without root, lsof does not show other users' (root's screen
+# sharing, say), and netstat run under Homebrew bash leaves TCP out altogether, so the gateway is
+# swept on every port rather than trusting any list.
+host_listen_ports() { lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {n = split($9, a, ":"); print a[n]}' | sort -un; }
+host_router() { route -n get default 2>/dev/null | awk '/gateway:/ {print $2}'; }
+
+record() { # record <pass|fail> <detail>: the last result, read by status and by whatever starts runners
+  mkdir -p "$STATE"
+  printf '%s %s %s\n' "$1" "$(date +%s)" "$2" > "$STATE/isolation.status"
+}
+
+verify_isolation() {
+  # Until every probe has finished clean, the recorded result is a failure.
+  record fail "verification did not complete"
+  vm_running || die "$VM is not running: desk-runner up"
+  # A VM started some other way (a plain tart run) is refused: probes alone cannot always tell, as the
+  # macOS firewall can hide a Mac service from the VM that Softnet would not have blocked.
+  case " $(run_process) " in
+    *" --net-softnet-block=$BLOCK "*) ;;
+    *) die "$VM is not running behind the Softnet block desk-runner starts it with: desk-runner down, then up" ;;
+  esac
+  local out="$STATE/isolation.last" services svc_pid lo_port any_port gw router ports listening targets guest_targets container_targets ip p h rc
+  # Two test services on the Mac, one on loopback and one on every interface. Each must answer the
+  # Mac itself, or failing to reach it from the VM would prove nothing.
+  services=$(mktemp)
+  python3 -c '
+import socket, sys, threading
+socks = []
+for addr in ("127.0.0.1", "0.0.0.0"):
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind((addr, 0)); s.listen(64); socks.append(s)
+print(socks[0].getsockname()[1], socks[1].getsockname()[1], flush=True)
+def serve(s):
+    while True:
+        c, _ = s.accept(); c.close()
+for s in socks: threading.Thread(target=serve, args=(s,), daemon=True).start()
+threading.Event().wait()' > "$services" 2>/dev/null &
+  svc_pid=$!
+  # shellcheck disable=SC2064
+  trap "kill $svc_pid 2>/dev/null; rm -f '$services'" EXIT
+  local waited=0
+  while [ ! -s "$services" ] && [ $waited -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+  read -r lo_port any_port < "$services"
+  [ -n "${any_port:-}" ] || die "could not start the Mac-side test services"
+  for p in "$lo_port" "$any_port"; do
+    python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 2).close()' "$p" \
+      || die "the Mac cannot reach its own test service on port $p, so the probes would prove nothing"
+  done
+  say "test services on 127.0.0.1:$lo_port and every interface:$any_port"
+
+  gw=$(guest ip -4 route show default | awk '{print $3; exit}')
+  [ -n "$gw" ] || die "could not read the VM's gateway"
+  router=$(host_router)
+  listening=$(host_listen_ports)
+  # The test service on every interface is listening now, so a list without it is a broken listing.
+  printf '%s\n' $listening | grep -qx "$any_port" \
+    || die "could not list the Mac's listening sockets (lsof did not show the test service on port $any_port)"
+  # shellcheck disable=SC2086
+  ports=$(printf '%s\n' "$lo_port" "$any_port" 22 80 443 $listening | sort -un | tr '\n' ' ')
+  targets=()
+  for ip in $(host_ipv4); do
+    [ "$ip" = "$gw" ] && continue
+    for p in $ports; do targets+=("deny:$ip:$p"); done
+  done
+  targets+=("deny:$gw:53/udp")
+  if [ -n "$router" ]; then for p in 53 80 443 53/udp; do targets+=("deny:$router:$p"); done; fi
+  targets+=("deny:169.254.169.254:80" "deny:100.100.100.100:53")
+  for h in $HOST_ALIASES; do targets+=("deny:$h:$any_port" "deny:$h:22"); done
+  # The controls: if these fail, the probe itself is broken, not the boundary.
+  targets+=("allow:registry.npmjs.org:443" "allow:1.1.1.1:53/udp")
+  # The gateway is the Mac, and the address Softnet's defaults leave open. The guest resolves through
+  # public resolvers, so no port of it is needed: the guest sweeps every one (about a minute); the
+  # container, which has no python3 for that, sweeps the low ports and the known ones.
+  guest_targets=("${targets[@]}" "deny:$gw:1-65535")
+  container_targets=("${targets[@]}" "deny:$gw:1-1024")
+  for p in $ports; do [ "$p" -gt 1024 ] && container_targets+=("deny:$gw:$p"); done
+
+  guest_stdin sudo -n sh -c 'mkdir -p /var/lib/desk-runner && cat > /var/lib/desk-runner/probe.sh' < "$HERE/runner-probe.sh" \
+    || die "could not copy the probe into $VM"
+  say "probing ${#guest_targets[@]} targets from the VM's root shell (every port of the gateway) and ${#container_targets[@]} from a container in it"
+  {
+    guest sudo -n sh -c 'ulimit -n 8192; exec bash /var/lib/desk-runner/probe.sh "$@"' probe guest "${guest_targets[@]}"
+    guest sudo -n docker run --rm -v /var/lib/desk-runner/probe.sh:/probe.sh:ro ubuntu:24.04 bash /probe.sh container "${container_targets[@]}"
+  } > "$out" 2>&1
+  kill "$svc_pid" 2>/dev/null
+
+  rc=0
+  if grep -q '^BAD ' "$out"; then
+    say "isolation FAILED; every expectation not met:"
+    grep '^BAD ' "$out" | sed 's/^/  /'
+    rc=1
+  fi
+  for h in guest container; do
+    grep -qx "DONE $h" "$out" || { say "isolation FAILED: the $h probe did not finish (see $out)"; rc=1; }
+  done
+  if [ $rc -eq 0 ]; then
+    say "isolation passed: $(grep -c '^OK ' "$out") probes, none reached the Mac, its services or the LAN (full output: $out)"
+    record pass "$(grep -c '^OK ' "$out") probes"
+  else
+    record fail "$(grep -c '^BAD ' "$out") failed"
+  fi
+  return $rc
+}
+
+# ---- commands --------------------------------------------------------------------------------
+cmd_up() {
+  require_runner_possible
+  require_tart
+  ensure_vm
+  start_vm
+  provision
+  if ! verify_isolation; then
+    say "no runner started: the VM stays up for inspection; desk-runner down stops it"
+    exit 1
+  fi
+  say "$VM is up and isolated. Runner registration is not part of desk-runner yet"
+}
+
+cmd_status() {
+  local state="absent" info result at detail age
+  if info=$(vm_info); then
+    state=$( [ "$(echo "$info" | json_field Running)" = true ] && echo running || echo stopped )
+    echo "$VM: $state ($(echo "$info" | json_field CPU) CPUs, $(echo "$info" | json_field Memory) MB, $(echo "$info" | json_field Disk) GB disk)"
+  else
+    echo "$VM: absent (desk-runner up creates it)"
+  fi
+  if [ -s "$STATE/isolation.status" ]; then
+    read -r result at detail < "$STATE/isolation.status"
+    age=$(( $(date +%s) - at ))
+    if [ $age -lt 3600 ]; then age="$((age / 60))m"; elif [ $age -lt 172800 ]; then age="$((age / 3600))h"; else age="$((age / 86400))d"; fi
+    echo "isolation: $result, $age ago ($detail)"
+  else
+    echo "isolation: never verified"
+  fi
+  [ "$state" = running ]
+}
+
+cmd_down() {
+  if vm_exists && vm_running; then
+    say "stopping $VM"
+    tart stop "$VM" || die "tart stop $VM failed"
+  else
+    say "$VM is not running"
+  fi
+  local waited=0 left
+  while left=$(run_process | awk '{print $1}') && [ -n "$left" ]; do
+    # tart stop shuts the guest down cleanly first, which can take well over 30 seconds.
+    [ $waited -ge 120 ] && die "tart run $VM is still running (pid $left) two minutes after it was stopped"
+    sleep 1; waited=$((waited + 1))
+  done
+  say "nothing is left running for $VM"
+}
+
+case "${1:-}" in
+  up) cmd_up ;;
+  verify-isolation) require_tart; verify_isolation ;;
+  status) cmd_status ;;
+  down) cmd_down ;;
+  *) usage ;;
+esac

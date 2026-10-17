@@ -184,6 +184,27 @@ the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
 /desk-update --all           upgrade everything that is behind, still after showing the diff
 ```
 
+**`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile
+says a runner is possible (`desk-env machine get runner-possible`). It needs Tart and Softnet
+(`brew install openai/tools/tart openai/tools/softnet`), with Softnet setuid root, which `up` tells
+you how to set once.
+
+```
+desk-runner up                 create the VM at the profile's sizes, start it, verify isolation
+desk-runner verify-isolation   probe from the VM and a container in it; non-zero names each failure
+desk-runner status             the VM's state and the last isolation result with its age
+desk-runner down               stop the VM and check nothing is left running for it
+```
+
+The VM has no Mac folders and no forwarded ports, and Softnet blocks every private, shared and
+link-local IPv4 range, the Mac's own address on the VM network included, so the guest resolves names
+through public resolvers. `verify-isolation` proves it each time, from the VM's root shell and from
+a container: no port of the Mac's address on the VM network answers (the root shell sweeps all
+65,535), nor DNS there or at the router; nothing answers at the Mac's other addresses (their low
+ports, your listening ports, and a test service on loopback and one on every interface), the router,
+169.254.169.254 or a VM tool's host alias; and registry.npmjs.org and 1.1.1.1 do. Softnet's defaults
+alone leave the Mac's address on the VM network open. It takes about a minute and a half.
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
@@ -320,8 +341,8 @@ What it does:
 - **Writes without asking** (desk's own files; a copy you edited is backed up first):
   the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
   `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
-  up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-jira` and
-  `skills-upstream` (`~/.local/bin`), and the two hook scripts.
+  up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-runner`,
+  `desk-jira` and `skills-upstream` (`~/.local/bin`), and the two hook scripts.
 - **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
   always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
   didn't install, or patching the Playwright MCP.
