@@ -158,6 +158,12 @@ cat .github/CODEOWNERS CODEOWNERS 2>/dev/null | head -20
 # §5 conventions
 git log -n 40 --format='%s%n%b' | grep -ciE 'co-authored-by: *claude|generated with \[?claude code'   # attribution already in use?
 git branch -r --sort=-committerdate | head -30
+# §2 and §5 design: where canvases live, the widths the code already uses, the design system's files
+git ls-files | grep -iE '(^|/)(docs/)?design/' | head -20                          # canvases already committed?
+git grep -nE 'MOBILE_BREAKPOINT|use-?mobile|viewport[^;]*width|setViewportSize|--breakpoint-|screens[[:space:]]*:|@media[^{]*(min|max)-width' \
+  -- ':!*.lock' ':!*-lock.*' ':!*.min.*' | head -60                                 # use-mobile hooks, e2e viewports, Tailwind screens
+git ls-files | grep -iE '(^|/)(tokens?([.-][a-z]+)*\.(css|scss|json|ts|js)|theme\.(css|scss|json|ts|js)|tailwind\.config\.[cm]?[jt]s|design\.md)$'
+git grep -lE '^@theme' -- '*.css'                                                   # Tailwind v4 tokens in CSS
 # everything else
 (codex exec --sandbox read-only "Reply with exactly: CODEX_OK")
 claude plugin list --json | jq -r '.[] | "\(.id) enabled=\(.enabled)"'
@@ -314,6 +320,25 @@ How to turn what you find into rows:
   `~/Downloads/`. Whatever the answer, check the agent can create a file there before writing the
   row: `mkdir -p <dir> && touch <dir>/.desk-write-check && rm <dir>/.desk-write-check`. A refusal is
   said with its error and the row is asked again; never save a directory the check refused.
+- **Design canvases directory.** Propose `docs/design/`, or the directory the repo already commits
+  canvases in when the design scan found one. It is relative to the repo root and committed, so
+  autopilot workers and the design agents read the same files; a shared artifact link alone is not
+  an answer, because only the account that made it can edit it.
+- **Breakpoints.** Start from `390` `768` `1024` `1280` `1440` and merge in every width the design
+  scan found in the repo's own code (a use-mobile hook's constant, an e2e or screenshot viewport,
+  Tailwind `screens` or `--breakpoint-*`, a width that recurs in `@media` queries), deduplicated and
+  ascending, one span each. Name the `file:line` each width not in the default came from. `none` for
+  a repo with no UI.
+- **Design system.** Propose each file the design scan found that defines tokens (a `tokens.css`,
+  theme files, the Tailwind config, a CSS file with an `@theme` block, a `DESIGN.md`), one span each,
+  repo-relative. `none` for a repo with no UI. **A repo with UI but nothing to put in this row
+  except token values** (no `DESIGN.md`): offer to draft one from the tokens found, as a proposal
+  to review. Every value in it is copied from a token file with that file named beside it (colours,
+  type scale, spacing, radii, shadows, and the Breakpoints above); a value the files do not hold is
+  left out, never invented. Show the draft in full and write nothing until the user confirms; on a
+  yes, commit it the way the pre-push hook is committed (a new branch named per §5 Branch names,
+  pushed and opened through `desk-pr` under §3 `git-push` and `pr-open`) and add `DESIGN.md` to the
+  row. On a no, the row keeps the token files, or `none`.
 - **codex**: only the exit code and a `CODEX_OK` in the output count.
 - **Memory ceiling** default: the machine profile's, else WSL `16`; otherwise physical RAM minus ~8.
 - **What review asks for** (optional): offer to mine the last 30 review comments on merged PRs
@@ -573,7 +598,7 @@ DESK CONFIG WRITTEN — <CONFIG>   (repo <owner/name>)
 repo      : <owner/name> · default <branch> · <description>
 identity  : <name> · short <short form> · <github> · jira <email / none> · <jira display name> ·
             account <jira account id> · git <author> · pronouns <pronouns or they/them>
-paths     : root <path> · worktrees <path> · handoff <path> · backups <path> · WSL <yes/no>
+paths     : root <path> · worktrees <path> · handoff <path> · backups <path> · canvases <path> · WSL <yes/no>
 tracker   : <jira site / none> · project <key> · keys <pattern> · other ids <patterns / none> ·
             states <in-progress> → <review> → <done> · priority <field> · desk-jira <yes/no>
 github    : protection <summary (classic / ruleset <name>) / none> · required <checks / none> ·
@@ -601,6 +626,7 @@ never     : slack-send · merge-bypass · others-prs      stop: product-calls ·
 autonomy  : subagents <a> · workers <a> (cap <a>) · memory <a>GB · spawn gate <a> · tests <a> · port <a> ·
             park <a>m · budget <a>/<a> · stage reports <a> · push notify <a>
 conventions: branches <…> · PR title <…> · attribution <forbidden/allowed> · instructions <files>
+design    : breakpoints <widths / none> · system <files / none> · DESIGN.md <drafted in #<n> / declined / not offered>
 connectors: Atlassian <present/missing/not needed> · Slack <…> · Figma <…> · Vercel <…> · Playwright <…>
 harness   : deny-only plan <already there / n NEW> (user-level) · <n> NEW allow · <n> ask · <n> guards removed ·
             <n> yours (untouched) → <root>/.claude/settings.local.json · backup <path>
