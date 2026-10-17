@@ -133,5 +133,8 @@ check "requeue refuses an untriaged ticket"             '[ "$(field T-7 state)" 
 q set T-7 state=triaged lane=A open_questions=2
 out=$(node "$B/queue.mjs" requeue T-7 2>&1)
 check "requeue keeps open triage questions"             '[ "$(field T-7 open_questions)" = 2 ] && echo "$out" | grep -q "question(s) open"'
+q add T-8; q set T-8 state=triaged lane=A open_questions=0; q park T-8 "size XL — split it before batching"
+out=$(node "$B/queue.mjs" requeue T-8 2>&1)
+check "requeue refuses a ticket parked at triage for size" '[ "$(field T-8 state)" = "\"parked\"" ] && echo "$out" | grep -q "parked at triage"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

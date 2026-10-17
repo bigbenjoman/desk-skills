@@ -77,8 +77,9 @@ It moves `<state>/logs/<TICKET>.log`, `<state>/parks/<TICKET>.json` and
 you", and a kept mailbox answers the next park instantly), sets `state=triaged open_questions=0
 park=null session_id=null pid=null idle_passes=0 log_bytes=0`, and moves the ticket to the front of
 the spawn order (`.tickets` key order). It refuses a running ticket, a held one (release it
-instead), one never triaged, a triaged one with questions still open (answer them instead), and any
-lane but A, B or E, because `pass.mjs` spawns whatever is triaged without reading the lane.
+instead), one never triaged, one with triage questions still open (answer them instead), one
+parked at triage for its size or a dependency cycle, and any lane but A, B or E, because `pass.mjs`
+spawns whatever is triaged without reading the lane.
 
 `pass.mjs` resets `log_bytes`/`idle_passes` at spawn, because a rotated log makes the byte count go
 backwards and the stall killer then shoots each fresh worker. A climbing `idle_passes` across
