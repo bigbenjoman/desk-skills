@@ -441,6 +441,9 @@ node "$B/queue.mjs" admit KAN-810 >/dev/null; node "$B/queue.mjs" admit KAN-811 
 check "admit: a lane A ticket is triaged with its branch" '[ "$(qg KAN-810 .state)" = triaged ] && [ "$(qg KAN-810 .branch)" = feat/KAN-810 ]'
 check "admit records collisions both ways from files in scope" '[ "$(qg KAN-810 .collides_with)" = KAN-801 ] && [[ "$(qg KAN-801 .collides_with)" == *KAN-810* ]]'
 check "admit: lane C and size XL are parked for their own reason" '[[ "$(qg KAN-811 .park.question)" == "lane C"* ]] && [[ "$(qg KAN-812 .park.question)" == "size XL"* ]]'
+printf '{"ticket":"KAN-814","type":"Task","lane":"D","lane_reason":"design","branch":"feat/KAN-814","unknowns":[],"lane_challenge":{"verdict":"INCONCLUSIVE","reason":"x","failed_reads":["r"]}}' > "$T/state/triage/KAN-814.json"
+node "$B/queue.mjs" admit KAN-814 >/dev/null
+check "admit: an INCONCLUSIVE challenge parks the lane as unchecked, as plan-batch does" '[ "$(qg KAN-814 .state)" = parked ] && [[ "$(qg KAN-814 .park.question)" == "lane D UNCHECKED"* ]]'
 out=$(node "$B/queue.mjs" admit KAN-813 2>&1); rc=$?
 check "admit refuses a ticket with no triage record" '[ $rc -ne 0 ]'
 
