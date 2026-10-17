@@ -162,6 +162,7 @@ git branch -r --sort=-committerdate | head -30
 (codex exec --sandbox read-only "Reply with exactly: CODEX_OK")
 claude plugin list --json | jq -r '.[] | "\(.id) enabled=\(.enabled)"'
 jq '.hooks.PreToolUse' ~/.claude/settings.json | grep -c deny-ai-attribution
+desk-env default-mode                                   # exit 1: defaultMode is dontAsk, SOURCE= names the file
 bash ~/.agents/skills/desk-setup/bin/user-skill-copies.sh <repo root>      # user-level skills shadowing this repo's
 desk-env machine detect                                 # this computer's hardware (below, "This computer")
 ```
@@ -328,6 +329,7 @@ Fix what detection finds before the interview, each as the user's own action:
 | plugins missing or hook unregistered | re-run `./install.sh` from the desk-skills checkout, then restart |
 | `.claude/agents` has no links and §4 Project subagents sync is set | offer to run that command in the repo |
 | a user-level skill shadows one the repo ships | show the script's output and ask them to decide; never delete or refresh it for them |
+| `desk-env default-mode` exits 1 | say exactly "defaultMode is dontAsk: the orchestrator cannot ask questions or run monitors", name the `SOURCE` file, and offer to remove it: `python3 ~/.agents/skills/desk-setup/bin/harness-rules.py --settings <SOURCE> unset-default-mode` (backs the file up first). If `SOURCE` is a git-tracked `.claude/settings.json`, the removal is a commit for the user to make instead. Either way, it takes effect in a new session |
 
 ### This computer
 

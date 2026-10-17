@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFil
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, waitingOnMerge, lanePark } from './batch-state.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound } from './desk-env.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING } from './desk-env.mjs';
 
 // The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
 // real branch on origin, never the config's default (that is no override) and never a production
@@ -102,6 +102,12 @@ const q = cmd === 'init' ? empty() : load(); // init must be able to repair a co
 
 switch (cmd) {
   case 'init': {
+    // Stage 0 is the last point before triage: an orchestrator that cannot ask or run its monitors
+    // would triage, then stall at Stage 3.
+    const dm = sessionDefaultMode();
+    if (dm.mode === 'dontAsk') {
+      throw new Error(`${DONTASK_WARNING}. Set in ${dm.file}; remove it (run /desk-setup, which backs the file up first), restart the session, then init again`);
+    }
     const fresh = empty();
     fresh.batch = args[0] ?? new Date().toISOString().slice(0, 16);
     save(fresh);

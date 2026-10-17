@@ -9,6 +9,8 @@
   harness-rules.py remove <row> [<row>...]  revoke rows: drop every rule any of them owns
   harness-rules.py remove --all             drop everything setup ever recorded
   harness-rules.py list [--markdown]        the ledger (--markdown: rows for config §3c)
+  harness-rules.py unset-default-mode       drop permissions.defaultMode from --settings when it is
+                                            dontAsk (backed up first); the ledger is not touched
 
 Options (before the command): --settings PATH (default ~/.claude/settings.json)
                               --ledger PATH   (default ~/.claude/desk/harness-rules.json)
@@ -397,7 +399,24 @@ def cmd_list(st, markdown):
 
 
 USAGE = ("usage: harness-rules.py [--settings P] [--ledger P] add <plan.json> | "
-         "baseline [--check] [--slack-prefix P]... [<plan.json>] | remove <row>...|--all | list [--markdown]")
+         "baseline [--check] [--slack-prefix P]... [<plan.json>] | remove <row>...|--all | list [--markdown] | "
+         "unset-default-mode")
+
+
+def cmd_unset_default_mode(settings_path):
+    """Drop permissions.defaultMode from one file when it is dontAsk. The ledger is not involved:
+    setup never sets a mode, it only removes the one that blocks the orchestrator."""
+    data, _ = load_json(settings_path, {})
+    perm = data.get("permissions") if isinstance(data, dict) else None
+    if not isinstance(perm, dict) or perm.get("defaultMode") != "dontAsk":
+        print(f"nothing to change: defaultMode is not dontAsk in {settings_path}")
+        return 0
+    b = backup(settings_path, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    del perm["defaultMode"]
+    write_json(settings_path, data)
+    print(f"backup   {b}")
+    print(f"removed  permissions.defaultMode (dontAsk) from {settings_path}")
+    return 0
 
 
 def main(argv):
@@ -420,6 +439,8 @@ def main(argv):
     if cmd == "list" and rest in ([], ["--markdown"]):
         cmd_list(State(settings, ledger, need_settings=False), bool(rest))
         return 0
+    if cmd == "unset-default-mode" and not rest:
+        return cmd_unset_default_mode(settings)
     st = State(settings, ledger)
     if cmd == "add" and len(rest) == 1:
         cmd_add(st, rest[0])

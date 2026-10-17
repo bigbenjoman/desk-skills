@@ -37,7 +37,9 @@
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
 //                                             one this repo's block meets (CLASH), and a free port (PROPOSE);
 //                                             --cap sizes this repo's block instead of its concurrency row
-//   node desk-env.mjs machine detect          print this computer's hardware, and what changed since the profile
+//   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
+//                                             the warning on stderr) when it is dontAsk
+//   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose [--runner]  print the sizes the rules propose, with the arithmetic;
 //                                             --runner sizes a runner on a computer with a battery
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
@@ -728,6 +730,29 @@ export function portInUse(port, timeoutMs = 400) {
   return Promise.all([probe('127.0.0.1'), probe('::1')]).then((r) => r.some(Boolean));
 }
 
+// ---- the session's permission mode ---------------------------------------------------------
+// A `permissions.defaultMode` of `dontAsk` refuses AskUserQuestion and Monitor, which an
+// orchestrator (and /desk-setup's interview) cannot work without. Workers are unaffected: they run
+// with `--setting-sources ""` and their own settings file. The files are read in Claude Code's
+// precedence order, highest first, so the first one that sets it is the mode a session starts in.
+export const DONTASK_WARNING = 'defaultMode is dontAsk: the orchestrator cannot ask questions or run monitors';
+
+export function defaultModeIn(root, home = HOME) {
+  const files = [
+    ...(root ? [join(root, '.claude', 'settings.local.json'), join(root, '.claude', 'settings.json')] : []),
+    join(home, '.claude', 'settings.json'),
+  ];
+  for (const file of files) {
+    let mode;
+    try { mode = JSON.parse(readFileSync(file, 'utf8'))?.permissions?.defaultMode; }
+    catch { continue; } // missing or unreadable: Claude Code skips it too
+    if (typeof mode === 'string' && mode) return { mode, file };
+  }
+  return { mode: null, file: null };
+}
+
+export const sessionDefaultMode = () => defaultModeIn(git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null);
+
 // ---- CLI -----------------------------------------------------------------------------------
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
@@ -845,6 +870,13 @@ if (isMain) {
       case 'uuid':
         console.log(uuid());
         break;
+      case 'default-mode': {
+        const { mode, file } = sessionDefaultMode();
+        console.log(`DEFAULT_MODE=${mode ?? 'unset'}`);
+        console.log(`SOURCE=${file ?? 'none'}`);
+        if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
+        break;
+      }
       case 'port-in-use':
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
