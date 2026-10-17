@@ -440,9 +440,10 @@ dangerous spelling.
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
 budget, stage reports, push notification.
 
-**The dev-server port is read, not recalled.** Run `desk-env ports --cap <the worker cap just
-answered>`: it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block
-(`REPO`: the port and one port per worker above it, up to its concurrency cap), every block this
+**The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
+autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block
+(`REPO`: the port and one port per worker above it, up to its concurrency cap; a repo whose port row is
+unset holds 3000, the default it runs on), every block this
 repo's port meets (`CLASH`), and the lowest free port whose own block meets none (`PROPOSE`).
 Recommend the `PROPOSE` port, or keep this repo's current port when there is no `CLASH`. **A `CLASH`
 line is said plainly in the question** ("3400 is also gygg-platform's port") and the current port is

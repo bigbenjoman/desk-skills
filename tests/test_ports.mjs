@@ -11,6 +11,8 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 
 const T = mkdtempSync(join(tmpdir(), 'desk-ports-'));
 const ROOT = join(T, 'desk');
+// No machine profile, so an unset concurrency row reads as 2 / 3 rather than this computer's sizing.
+process.env.DESK_MACHINE = join(T, 'none.md');
 const repo = (slug, rows) => {
   mkdirSync(join(ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(ROOT, 'repos', slug, 'config.md'), `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n${rows}\n`);
@@ -23,15 +25,15 @@ repo('acme__todo', port('TODO'));
 repo('acme__empty', '');
 mkdirSync(join(ROOT, 'repos', 'acme__noconfig'), { recursive: true });
 
-// ---- claims: each set port holds itself and one port per worker above it
+// ---- claims: each port holds itself and one port per worker above it; unset runs on 3000
 const claims = repoPortClaims(ROOT);
-t('only repos with a set port claim', claims.map((c) => c.slug).join(), 'acme__blog,acme__shop');
-t('block runs to port + worker cap', claims.map((c) => `${c.port}-${c.last}`).join(), '3500-3505,3400-3403');
+t('every config claims, a directory with none does not', claims.map((c) => c.slug).join(), 'acme__blog,acme__empty,acme__shop,acme__todo');
+t('block runs to port + worker cap, unset port is 3000', claims.map((c) => `${c.port}-${c.last}`).join(), '3500-3505,3000-3003,3400-3403,3000-3003');
 t('no repos directory: no claims', repoPortClaims(join(T, 'nowhere')).length, 0);
 
 // ---- AC1: the proposal is no repo's port and inside no worker block, and its own block is clear
-const proposed = proposePort(3, claims);
-t('proposal skips nothing free', proposed, 3000);
+t('a repo with an unset port keeps 3000 off the table', proposePort(3, claims), 3100);
+t('nothing claimed: the first step', proposePort(3, []), 3000);
 const crowded = [{ slug: 'a', port: 3000, last: 3003 }, { slug: 'b', port: 3098, last: 3101 }];
 t('a worker block reaching the next step rules it out', proposePort(3, crowded), 3200);
 t('own worker block reaching another port rules it out', proposePort(3, [{ slug: 'a', port: 3102, last: 3104 }], { from: 3100 }), 3200);

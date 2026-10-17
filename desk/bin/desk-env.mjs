@@ -490,9 +490,10 @@ export function isWSL() {
   return platform() === 'linux' && /microsoft/i.test(release());
 }
 
+const DEFAULT_DEV_PORT = 3000;
+const validPort = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 export function devPort() {
-  const v = Number(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: '3000' }));
-  return Number.isInteger(v) && v > 0 ? v : 3000;
+  return validPort(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: String(DEFAULT_DEV_PORT) })) ?? DEFAULT_DEV_PORT;
 }
 
 // Worker ports start one above the user's dev port and skip anything taken. One definition, used
@@ -512,15 +513,16 @@ export function concurrencyLimits(row = configValue('concurrency')) {
 // ---- dev ports across repos ----------------------------------------------------------------
 // A repo holds its §3b dev port and the worker ports above it: workers start one above the dev
 // port (workerPortFloor), so a repo at P with a worker cap of N holds P..P+N. /desk-setup proposes
-// a port whose block meets no other repo's, and flags this repo's when it already does.
+// a port whose block meets no other repo's, and flags this repo's when it already does. A config
+// that leaves the port unset runs on devPort()'s default, so it claims that.
 export function repoPortClaims(root = deskConfigRoot()) {
   const dir = join(root, 'repos');
   let slugs = [];
   try { slugs = readdirSync(dir).sort(); } catch { return []; }
   return slugs.flatMap((slug) => {
     const parsed = parseConfigFile(join(dir, slug, 'config.md'));
-    const port = Number(parsed.exists ? configValueIn(parsed, 'dev-port') : NaN);
-    if (!Number.isInteger(port) || port <= 0) return [];
+    if (!parsed.exists) return [];
+    const port = validPort(configValueIn(parsed, 'dev-port')) ?? DEFAULT_DEV_PORT;
     return [{ slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap }];
   });
 }
@@ -812,8 +814,8 @@ if (isMain) {
         const i = args.indexOf('--cap');
         const cap = i >= 0 && Number.isInteger(Number(args[i + 1])) && Number(args[i + 1]) > 0 ? Number(args[i + 1]) : concurrencyLimits().cap;
         const others = repoPortClaims().filter((c) => c.slug !== slug);
-        const port = Number(configValue('dev-port'));
-        const self = Number.isInteger(port) && port > 0 ? { slug, port, last: port + cap } : null;
+        const port = validPort(configValue('dev-port'));
+        const self = port ? { slug, port, last: port + cap } : null;
         for (const c of [...others, ...(self ? [self] : [])]) {
           console.log(`REPO\t${c.slug}\t${c.port}\tworkers ${c.port + 1}-${c.last}${c === self ? '\t(this repo)' : ''}`);
         }
