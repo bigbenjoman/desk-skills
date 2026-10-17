@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# desk-runner against a stubbed tart (and stubbed softnet, sudo, ifconfig, lsof, route): the machine
-# profile gates `up`, the VM is created once at the profile's sizes and started behind the Softnet
-# block, isolation results are read from the probe's output, and status and down report the state.
+# desk-runner against a stubbed tart (and stubbed softnet, sudo, ifconfig, lsof, route, launchctl,
+# pmset, defaults): the machine profile gates `up`, the VM is created once at the profile's sizes and
+# started behind the Softnet block, isolation results are read from the probe's output, status and
+# down report the state, the launchd agents bring the VM back with backoff and verify it nightly,
+# the gate closes on a failed or stale verification, and the Mac settings change only on a yes.
 # Then runner-probe.sh itself against local listeners, where `timeout` exists (not stock macOS).
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -13,7 +15,9 @@ export DESK_MACHINE="$T/machine.md" DESK_RUNNER_STATE="$T/state" DESK_RUNNER_VM=
 R="$SRC/desk/bin/desk-runner"
 PASS=0; FAIL=0; out=""; rc=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
-run(){ : > "$T/tart.log"; out=$("$R" "$@" 2>&1); rc=$?; log=$(cat "$T/tart.log"); }
+run(){ : > "$T/tart.log"; : > "$T/launchctl.log"; : > "$T/sudo.log"; out=$("$R" "$@" 2>&1 < /dev/null); rc=$?; log=$(cat "$T/tart.log"); }
+# settings <answer>: desk-runner settings, answering its prompt
+settings(){ : > "$T/sudo.log"; out=$(printf '%s\n' "$1" | "$R" settings 2>&1); rc=$?; }
 
 # ---- stubs ----
 cat > "$T/stub/tart" <<'EOF'
@@ -49,7 +53,41 @@ case $cmd in
 esac
 EOF
 printf '#!/bin/sh\necho softnet\n' > "$T/stub/softnet"
-printf '#!/bin/sh\nexit "${STUB_SUDO_RC:-0}"\n' > "$T/stub/sudo"
+cat > "$T/stub/sudo" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$STUB_TART/../sudo.log"
+[ -n "${STUB_SUDO_RC:-}" ] && exit "$STUB_SUDO_RC"
+[ "$1" = -n ] && shift
+exec "$@"
+EOF
+# launchctl keeps each loaded label as a file; pmset and defaults keep each setting as a file.
+cat > "$T/stub/launchctl" <<'EOF'
+#!/bin/sh
+D="$STUB_TART/../launchd"; mkdir -p "$D"; echo "$*" >> "$STUB_TART/../launchctl.log"
+case $1 in
+  print) [ -f "$D/${2##*/}" ] ;;
+  bootstrap) l=$(basename "$3" .plist); [ -f "$D/$l" ] && exit 5; : > "$D/$l" ;;
+  bootout) [ -f "$D/${2##*/}" ] || exit 3; rm -f "$D/${2##*/}" ;;
+  *) echo "stub launchctl: unexpected $*" >&2; exit 99 ;;
+esac
+EOF
+cat > "$T/stub/pmset" <<'EOF'
+#!/bin/sh
+M="$STUB_TART/../mac"
+case $1 in
+  -g) printf 'System-wide power settings:\nCurrently in use:\n standby              0\n sleep                %s\n autorestart          %s\n' "$(cat "$M/sleep")" "$(cat "$M/autorestart")" ;;
+  -a) echo "$3" > "$M/$2" ;;
+esac
+EOF
+cat > "$T/stub/defaults" <<'EOF'
+#!/bin/sh
+M="$STUB_TART/../mac"
+case $1 in
+  read) cat "$M/updates" 2>/dev/null || { echo "The domain/default pair of ($2, $3) does not exist" >&2; exit 1; } ;;
+  write) [ "$4 $5" = "-bool false" ] && echo 0 > "$M/updates" ;;
+esac
+EOF
+mkdir -p "$T/mac"; mac(){ echo "$1" > "$T/mac/sleep"; echo "$2" > "$T/mac/autorestart"; rm -f "$T/mac/updates"; }; mac 1 0
 cat > "$T/stub/ifconfig" <<'EOF'
 #!/bin/sh
 printf 'lo0: flags\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags\n\tinet 192.168.4.187 netmask 0xffffff00\n'
@@ -76,6 +114,14 @@ printf '#!/bin/sh\nprintf "   route to: default\\n    gateway: 192.168.4.1\\n"\n
 chmod +x "$T/stub/"*
 export STUB_TART="$T/tart" PATH="$T/stub:$PATH"
 [ "$(command -v tart)" = "$T/stub/tart" ] || { echo "FAIL the tart stub is not first on PATH"; exit 1; }
+[ "$(command -v launchctl)" = "$T/stub/launchctl" ] || { echo "FAIL the launchctl stub is not first on PATH"; exit 1; }
+[ "$(command -v sudo)" = "$T/stub/sudo" ] && [ "$(command -v pmset)" = "$T/stub/pmset" ] || { echo "FAIL the sudo or pmset stub is not first on PATH"; exit 1; }
+KEEP="$HOME/Library/LaunchAgents/com.desk-skills.desk-runner-test.plist"
+NIGHTLY="$HOME/Library/LaunchAgents/com.desk-skills.desk-runner-test.nightly.plist"
+BACKOFF="$T/state/restart.backoff"; UID_="$(id -u)"
+pl(){ python3 -c 'import plistlib,sys; d=plistlib.load(open(sys.argv[1],"rb")); print(eval(sys.argv[2]))' "$1" "$2"; }
+stop_vm(){ "$T/stub/tart" stop desk-runner-test; n=0; while pgrep -f "$T/stub/tart run desk-runner-test" >/dev/null && [ $n -lt 30 ]; do sleep 0.1; n=$((n + 1)); done; }
+next_in(){ read -r _ nx < "$BACKOFF"; echo $(( nx - $(date +%s) )); }
 STUB_GUEST_OUT="$T/guest.out"; STUB_CONTAINER_OUT="$T/container.out"; export STUB_GUEST_OUT STUB_CONTAINER_OUT
 probe_ok(){ printf 'OK %s deny 10.9.9.1:1-1024 (no port connected)\nOK %s allow registry.npmjs.org:443 (connected)\nDONE %s\n' "$1" "$1" "$1"; }
 probe_ok guest > "$STUB_GUEST_OUT"; probe_ok container > "$STUB_CONTAINER_OUT"
@@ -122,6 +168,29 @@ check "no shared folder or forwarded port"              '! grep -qE -- "--dir|--
 check "guest set up: public resolvers, Docker"          'grep -q "use-dns: false" "$v/provision-script" && grep -q "docker.io" "$v/provision-script" && [ "$(cat "$v/provisioned")" = 1 ]'
 check "the probe was copied into the guest"             'cmp -s "$v/probe.sh" "$SRC/desk/bin/runner-probe.sh"'
 check "the pass is recorded"                            'read -r r _ < "$T/state/isolation.status"; [ "$r" = pass ]'
+check "the busy lock is released"                       '[ ! -e "$T/state/busy" ]'
+
+# ---- the launchd agents (AC5, AC7) ----
+check "first up: both agents bootstrapped in the GUI domain" 'grep -qx "bootstrap gui/$UID_ $KEEP" "$T/launchctl.log" && grep -qx "bootstrap gui/$UID_ $NIGHTLY" "$T/launchctl.log"'
+job_keep=$(pl "$KEEP" '" ".join(map(str, [d["RunAtLoad"], d["StartInterval"], d["AbandonProcessGroup"]] + d["ProgramArguments"]))')
+job_env=$(pl "$KEEP" '" ".join(d["EnvironmentVariables"].get(k, "-") for k in ("DESK_RUNNER_VM", "DESK_RUNNER_STATE", "PATH"))')
+job_nightly=$(pl "$NIGHTLY" '" ".join(map(str, [d["StartCalendarInterval"]["Hour"], d["StartCalendarInterval"]["Minute"], "RunAtLoad" in d, d["AbandonProcessGroup"]] + d["ProgramArguments"]))')
+check "keep: at login and every minute, runs desk-runner keep" '[ "$job_keep" = "True 60 True $R keep" ]'
+check "keep: the VM name, state and PATH carried over"  '[[ "$job_env" == "desk-runner-test $T/state $T/stub:"* ]]'
+check "nightly: verify-isolation at 03:30"              '[ "$job_nightly" = "3 30 False True $R verify-isolation" ]'
+
+# ---- the Mac settings (AC6) ----
+check "up shows the settings, changes none without a terminal" '[[ "$out" == *"never sleep"*"needs a change (sleep 1): sudo pmset -a sleep 0"* ]] && [[ "$out" == *"restart after power loss"*"needs a change (autorestart 0)"* ]] && [[ "$out" == *"AutomaticallyInstallMacOSUpdates unset"* ]] && [[ "$out" == *"run desk-runner settings in a terminal"* ]] && ! grep -qE "pmset|defaults" "$T/sudo.log"'
+settings n
+check "settings: a no changes nothing"                  '[ $rc -eq 0 ] && [[ "$out" == *"[y/N]"* ]] && [[ "$out" == *"nothing changed"* ]] && [ ! -s "$T/sudo.log" ] && [ "$(cat "$T/mac/sleep")" = 1 ]'
+settings ""
+check "settings: no answer changes nothing"             '[[ "$out" == *"nothing changed"* ]] && [ ! -s "$T/sudo.log" ]'
+STUB_SUDO_RC=1 settings y
+check "settings: a sudo that fails is reported, exit 1" '[ $rc -eq 1 ] && [[ "$out" == *"failed: sudo pmset -a sleep 0"* ]] && [[ "$out" == *"3 still not as needed"* ]]'
+settings y
+check "settings: a yes makes each change with sudo"     '[ $rc -eq 0 ] && grep -qx "pmset -a sleep 0" "$T/sudo.log" && grep -qx "pmset -a autorestart 1" "$T/sudo.log" && grep -qx "defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false" "$T/sudo.log" && [[ "$out" == *"all set"* ]]'
+settings y
+check "settings: all set, no prompt and no sudo"        '[ $rc -eq 0 ] && [[ "$out" != *"[y/N]"* ]] && [[ "$out" == *"all set"* ]] && [ ! -s "$T/sudo.log" ]'
 
 # ---- what is probed (AC2) ----
 targets=$(cat "$v/targets")
@@ -146,6 +215,10 @@ check "npm must be reachable"                           'grep -qx "allow:registr
 run up
 check "second up: exit 0"                               '[ $rc -eq 0 ]'
 check "second up: no clone, set, run or setup"          '[[ "$log" != *clone* ]] && [[ "$log" != *"set desk-runner-test"* ]] && [[ "$log" != *"run desk-runner-test"* ]] && [[ "$log" != *"bash -s"* ]]'
+check "second up: the agents are not reloaded"          '! grep -qE "bootstrap|bootout" "$T/launchctl.log" && [[ "$out" == *"all set"* ]]'
+cp "$KEEP" "$T/keep.plist"; printf 'changed\n' > "$KEEP"
+run up
+check "an agent whose plist changed is reloaded"        'grep -qx "bootout gui/$UID_/com.desk-skills.desk-runner-test" "$T/launchctl.log" && grep -qx "bootstrap gui/$UID_ $KEEP" "$T/launchctl.log" && cmp -s "$KEEP" "$T/keep.plist" && ! grep -qE "(bootstrap|bootout).*nightly" "$T/launchctl.log"'
 
 # ---- failures (AC2, AC4) ----
 printf 'OK guest deny 192.168.4.187:22 (no connection)\nBAD guest deny 10.9.9.1:1-1024 (connected: 53 88)\nDONE guest\n' > "$STUB_GUEST_OUT"
@@ -175,16 +248,72 @@ check "... and recorded as a failure"                   'read -r r _ < "$T/state
 rm -f "$v/running"; run up
 check "up starts it behind the block again"             '[ $rc -eq 0 ] && [[ "$out" == *"isolation passed"* ]]'
 
+# ---- the gate on new runner slots (AC7) ----
+run gate
+check "gate: open after a pass"                         '[ $rc -eq 0 ] && [[ "$out" == *"runner slots open"* ]]'
+printf 'BAD guest deny 10.9.9.1:1-65535 (connected: 5000)\nDONE guest\n' > "$STUB_GUEST_OUT"
+run verify-isolation   # what the nightly agent runs
+run gate
+check "gate: a failed verify closes it, naming why"     '[ $rc -eq 1 ] && [[ "$out" == *"runner slots closed: the last verify-isolation failed 0m ago (1 failed)"* ]]'
+probe_ok guest > "$STUB_GUEST_OUT"
+run verify-isolation; run gate
+check "gate: the next pass reopens it"                  '[ $rc -eq 0 ]'
+read -r r at d < "$T/state/isolation.status"; printf 'pass %s %s\n' $((at - 26 * 3600)) "$d" > "$T/state/isolation.status"
+run gate
+check "gate: a pass older than 25h closes it"           '[ $rc -eq 1 ] && [[ "$out" == *"the last pass is 26h old"* ]]'
+run status
+check "status: the last result, its age, and the slots" '[[ "$out" == *"isolation: pass, 26h ago"* ]] && [[ "$out" == *"runner slots: closed (the last pass is 26h old"* ]] && [[ "$out" == *"every minute loaded; verify-isolation nightly at 03:30 loaded"* ]]'
+
+# ---- keep: bringing the VM back (AC5) ----
+run keep
+check "keep: a stale pass is verified again, no restart" '[ $rc -eq 0 ] && [[ "$log" != *"run desk-runner-test"* ]] && [[ "$out" == *"isolation passed"* ]] && read -r r at _ < "$T/state/isolation.status" && [ "$r" = pass ] && [ $(( $(date +%s) - at )) -lt 60 ]'
+run keep
+check "keep: a healthy VM is left alone, silently"      '[ $rc -eq 0 ] && [ -z "$out" ] && [[ "$log" != *exec* ]] && [[ "$log" != *"run desk-runner-test"* ]]'
+stop_vm
+run status
+check "status: a stopped VM closes the slots"           '[ $rc -eq 1 ] && [[ "$out" == *"runner slots: closed (desk-runner-test is not running)"* ]]'
+run keep
+check "keep: a stopped VM is started and verified"      '[ $rc -eq 0 ] && [[ "$out" == *"bringing desk-runner-test back: desk-runner-test is not running"* ]] && [[ "$out" == *"is back and isolated"* ]] && grep -q -- "--net-softnet-block=" "$v/run-args" && [ ! -e "$BACKOFF" ]'
+run status
+check "status after keep: running, slots open"          '[ $rc -eq 0 ] && [[ "$out" == *"desk-runner-test: running"* ]] && [[ "$out" == *"runner slots: open"* ]]'
+
+stop_vm; printf 'BAD guest deny 10.9.9.1:1-65535 (connected: 5000)\nDONE guest\n' > "$STUB_GUEST_OUT"
+run keep
+check "keep: a failed attempt exits 1, next in 1m"      '[ $rc -eq 1 ] && [[ "$out" == *"attempt 1 to bring desk-runner-test back failed; the next is in 1m"* ]] && read -r f _ < "$BACKOFF" && [ "$f" = 1 ] && n=$(next_in) && [ "$n" -ge 55 ] && [ "$n" -le 60 ]'
+run keep
+check "keep: inside the wait, no attempt"               '[ $rc -eq 0 ] && [[ "$out" == *"waiting"* ]] && [[ "$log" != *exec* ]]'
+run status
+check "status: the failed restarts and the next attempt" '[[ "$out" == *"restarts: 1 failed in a row; the next attempt is in"* ]]'
+echo "1 0" > "$BACKOFF"; run keep
+check "keep: the second failure waits 2m"               '[ $rc -eq 1 ] && read -r f _ < "$BACKOFF" && [ "$f" = 2 ] && n=$(next_in) && [ "$n" -ge 115 ] && [ "$n" -le 120 ]'
+echo "2 0" > "$BACKOFF"; run keep
+check "keep: the third waits 4m"                        'read -r f _ < "$BACKOFF" && [ "$f" = 3 ] && n=$(next_in) && [ "$n" -ge 235 ] && [ "$n" -le 240 ]'
+echo "9 0" > "$BACKOFF"; run keep
+check "keep: the wait stops doubling at an hour"        'read -r f _ < "$BACKOFF" && [ "$f" = 10 ] && n=$(next_in) && [ "$n" -ge 3595 ] && [ "$n" -le 3600 ]'
+probe_ok guest > "$STUB_GUEST_OUT"; echo "1 0" > "$BACKOFF"
+STUB_COPY_RC=1 run keep
+check "keep: an attempt that dies part-way also backs off" '[ $rc -ne 0 ] && [[ "$out" == *"could not copy the probe"* ]] && read -r f _ < "$BACKOFF" && [ "$f" = 2 ]'
+echo "2 0" > "$BACKOFF"; run keep
+check "keep: a passing attempt clears the backoff"      '[ $rc -eq 0 ] && [[ "$out" == *"is back and isolated"* ]] && [ ! -e "$BACKOFF" ]'
+
+stop_vm; mkdir "$T/state/busy"; echo $$ > "$T/state/busy/pid"
+run keep
+check "keep: another desk-runner busy, nothing done"    '[ $rc -eq 0 ] && [[ "$out" == *"is busy"* ]] && [[ "$log" != *"run desk-runner-test"* ]] && [ -d "$T/state/busy" ]'
+sh -c 'exit 0' & dead=$!; wait $dead; echo "$dead" > "$T/state/busy/pid"
+run keep
+check "keep: a dead holder's lock is taken over"        '[ $rc -eq 0 ] && [[ "$out" == *"is back and isolated"* ]] && [ ! -e "$T/state/busy" ]'
+
 # ---- status and down (AC9) ----
 run verify-isolation
 run status
 check "status: running, with the last result and age"   '[ $rc -eq 0 ] && [[ "$out" == *"desk-runner-test: running (8 CPUs, 24576 MB, 100 GB disk)"* ]] && [[ "$out" == *"isolation: pass, 0m ago"* ]]'
 run down
 check "down stops the VM, and its tart run is gone"     '[ $rc -eq 0 ] && [[ "$log" == *"stop desk-runner-test"* ]] && [ ! -f "$v/running" ] && [[ "$out" == *"nothing is left running"* ]] && ! pgrep -f "$T/stub/tart run desk-runner-test" >/dev/null'
+check "down removes both agents first"                  'grep -qx "bootout gui/$UID_/com.desk-skills.desk-runner-test" "$T/launchctl.log" && grep -qx "bootout gui/$UID_/com.desk-skills.desk-runner-test.nightly" "$T/launchctl.log" && [ ! -e "$KEEP" ] && [ ! -e "$NIGHTLY" ]'
 run status
-check "status after down: stopped, exit 1"              '[ $rc -eq 1 ] && [[ "$out" == *"stopped"* ]]'
+check "status after down: stopped, exit 1"              '[ $rc -eq 1 ] && [[ "$out" == *"stopped"* ]] && [[ "$out" == *"every minute not installed; verify-isolation nightly at 03:30 not installed"* ]]'
 run down
-check "down when stopped: says so, exit 0"              '[ $rc -eq 0 ] && [[ "$out" == *"is not running"* ]] && [[ "$log" != *stop* ]]'
+check "down when stopped: says so, exit 0"              '[ $rc -eq 0 ] && [[ "$out" == *"is not running"* ]] && [[ "$log" != *stop* ]] && ! grep -q bootout "$T/launchctl.log"'
 run verify-isolation
 check "verify-isolation on a stopped VM refuses"        '[ $rc -ne 0 ] && [[ "$out" == *"is not running"* ]]'
 

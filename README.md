@@ -192,9 +192,22 @@ you how to set once.
 ```
 desk-runner up                 create the VM at the profile's sizes, start it, verify isolation
 desk-runner verify-isolation   probe from the VM and a container in it; non-zero names each failure
-desk-runner status             the VM's state and the last isolation result with its age
-desk-runner down               stop the VM and check nothing is left running for it
+desk-runner status             the VM's state, the last isolation result with its age, the agents
+desk-runner down               stop the VM, remove its agents, check nothing is left running for it
+desk-runner settings           show the Mac settings a runner needs; change them if you say yes
+desk-runner gate               exit 0 only while a new runner slot may start
+desk-runner keep               bring the VM back if it is down (its launchd agent runs this)
 ```
+
+Once isolation passes, `up` installs two launchd agents in your login session. One runs
+`desk-runner keep` at login and every minute: if the VM is down, or its last check failed or is
+more than 25 hours old, it starts and verifies the VM, waiting 1, 2, 4… minutes (at most an hour)
+after each failed attempt. The other runs `verify-isolation` every night at 03:30. `gate` stays
+closed, so no new runner slot starts, unless the VM runs behind the block and its last check passed
+within 25 hours. `down` removes both agents before it stops the VM. FileVault means the VM comes back
+only after you log in following a restart. `up` also shows the Mac settings a runner needs (never
+sleep, restart after power loss, no automatic macOS update installs) and, in a terminal, changes
+them with `sudo` only if you say yes.
 
 The VM has no Mac folders and no forwarded ports, and Softnet blocks every private, shared and
 link-local IPv4 range, the Mac's own address on the VM network included, so the guest resolves names
