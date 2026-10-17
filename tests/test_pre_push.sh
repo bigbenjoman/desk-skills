@@ -90,6 +90,17 @@ out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 3' 2>&1); rc
 check "with-lock --timeout: a free lock runs the command, keeps its status" '[ $rc -eq 3 ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout soon true 2>&1); rc=$?
 check "with-lock --timeout: a non-number is refused"  '[ $rc -eq 2 ]'
+# A leading -- is optional without --cwd: `with-lock.sh browser -- <cmd>` runs <cmd>, not `--`
+out=$(bash "$SRC/desk/bin/with-lock.sh" browser -- sh -c 'echo ran; exit 3' 2>&1); rc=$?
+check "with-lock <lock> -- <cmd>: runs the command under the lock" '[ $rc -eq 3 ] && [ "$out" = ran ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" browser sh -c 'echo ran; exit 3' 2>&1); rc=$?
+check "with-lock <lock> <cmd>: runs the command under the lock"    '[ $rc -eq 3 ] && [ "$out" = ran ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 -- sh -c 'echo ran' 2>&1); rc=$?
+check "with-lock --timeout n -- <cmd>: runs the command"          '[ $rc -eq 0 ] && [ "$out" = ran ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" nolock -- sh -c 'echo ran' 2>&1); rc=$?
+check "with-lock nolock -- <cmd>: runs the command"               '[ $rc -eq 0 ] && [ "$out" = ran ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" browser -- 2>&1); rc=$?
+check "with-lock <lock> -- and nothing else: no command given"     '[ $rc -eq 2 ] && [[ "$out" == *"no command given"* ]]'
 rm -f "$DESK_MACHINE"; commit g; push origin main
 check "no profile, lock free: the typecheck runs"     '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ]'
 
