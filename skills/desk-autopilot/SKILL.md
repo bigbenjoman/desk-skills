@@ -834,7 +834,7 @@ that one field between passes: never by hand-spawning, and never by holding tick
 | "Triage said D, so it is D" | Triage is one opinion and a D is terminal. Read the challenge line, and check its "new" things against `origin/<default>`. |
 | "The description tells me the scope" | A ticket's scope changes the moment an open PR touching the same lines comes into view. That is what `prior_art` is for. |
 | "The machine is quiet, one unlocked suite is fine" | The lock costs a wait. An OOM costs every worker, worktree, database and port at once. |
-| "The footprint is past the ceiling, I should stop the batch" | Spikes are expected. It is the ceiling held for minutes with nothing running to explain it that means something. |
+| "The footprint is past the ceiling, I should stop the batch" | Spikes are expected, and `vmmem` counts page cache. It is `avail` under the reclaim band for minutes with nothing running to explain it that means something. |
 | "`free` says 2.5Gi used, there is loads of room" | `free`'s `used` excludes page cache. It has read 2.5Gi while the host sat past 16GB. Read `avail`. |
 | "I'll ask whether to throttle" | Decide from the monitor. Report the decision and the number behind it; do not park it. |
 | "That idle dev server is wasting 1.2GB" | It is probably a peer's. Ask over `SendMessage`; killing another session's server has already cost someone a ticket. |
