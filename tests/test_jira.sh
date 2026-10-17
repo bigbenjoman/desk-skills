@@ -121,7 +121,7 @@ check "attach outside roots refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep
 check "nothing refused reached the stub" '[ "$(wc -l < "$LOG")" -eq "$n_before" ]'
 check "no request anywhere carried a token in its body" '! grep -q "good-token" "$LOG"'
 
-# DS-19: create assigns the user under §3 jira-assign-self yes, reads the assignee back, and needs
+# create assigns the user under §3 jira-assign-self yes, reads the assignee back, and needs
 # --route for anyone else
 printf '\n## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `jira-assign-self` | x | `yes` | `yes` |\n' \
   >> "$DESK_CONFIG_ROOT/repos/$SLUG_A/config.md"
