@@ -168,4 +168,20 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "the stall killer does not park a ticket whose log has DONE" '[ "$(field T-11 state)" = "\"done\"" ] && [ "$(field T-11 result.pr)" = 11 ] && ! echo "$out" | grep -q "T-11: no output"'
 check "the stall killer still parks a quiet ticket with no DONE" '[ "$(field T-12 state)" = "\"parked\"" ] && field T-12 park | grep -q wedged'
 
+# T-13: an earlier round grepped for the marker, so AUTOPILOT_DONE: sits in a tool call and its
+# result but the worker never printed it: it respawns. T-14's worker printed it: it does not.
+q set T-5 state=done; q set T-11 state=done; q set T-12 state=done
+q add T-13; q set T-13 state=triaged lane=A branch=fix/T-13
+{ say "AUTOPILOT_STAGE: 4/9 verify"
+  node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "grep -n \"AUTOPILOT_DONE:\" desk/bin/pass.mjs" } }] } }))'
+  node -e 'console.log(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "AUTOPILOT_DONE: pr=3 jira=none" }] } }))'
+} > "$T/state/logs/T-13.log"
+out=$(node "$B/harvest.mjs" "$T/state/logs/T-13.log" 2>&1)
+check "harvest ignores a marker inside a tool call or tool result" '! echo "$out" | grep -q AUTOPILOT_DONE && echo "$out" | grep -q "AUTOPILOT_STAGE: 4/9"'
+q add T-14; q set T-14 state=triaged lane=A branch=fix/T-14
+say "AUTOPILOT_DONE: pr=14 jira=none" > "$T/state/logs/T-14.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "a marker only in a tool call or result does not block a respawn" '[ "$(field T-13 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning.*T-13"'
+check "a marker the worker printed still blocks a respawn, and says why" '[ "$(field T-14 state)" = "\"triaged\"" ] && echo "$out" | grep -q "not respawning (its worker already printed AUTOPILOT_DONE): T-14"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
