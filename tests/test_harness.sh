@@ -99,6 +99,18 @@ git -C "$T/wt2" worktree add -q "$T/wt2-same" -b same; mkdir -p "$T/wt2-same/.cl
 cp "$T/wt2/.claude/settings.local.json" "$T/wt2-same/.claude/settings.local.json"
 run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" remove pr-ready
 check "a copy of a file setup created and now removed goes too, backed up" '[ $rc -eq 0 ] && [ ! -e "$T/wt2/.claude/settings.local.json" ] && [ ! -e "$T/wt2-same/.claude/settings.local.json" ] && ls "$T"/wt2-same/.claude/settings.local.json.bak-desk-* >/dev/null 2>&1'
+mkrepo wt3; printf '.claude/settings.local.json\n' > "$T/wt3/.gitignore"
+git -C "$T/wt3" add .gitignore; git -C "$T/wt3" commit -qm init
+printf '{"permissions":{"allow":["Bash(ls)"]}}\n' > "$T/wt3/.claude/settings.local.json"
+run --ledger "$T/wt3.json" --settings "$T/wt3/.claude/settings.local.json" add "$T/allow.json"
+for w in a b; do
+  git -C "$T/wt3" worktree add -q "$T/wt3-$w" -b "$w"; mkdir -p "$T/wt3-$w/.claude"
+  cp "$T/wt3/.claude/settings.local.json" "$T/wt3-$w/.claude/settings.local.json"
+done
+chmod 000 "$T/wt3-a/.claude/settings.local.json"
+run --ledger "$T/wt3.json" --settings "$T/wt3/.claude/settings.local.json" remove pr-ready
+chmod 644 "$T/wt3-a/.claude/settings.local.json"
+check "an unreadable copy is named, exit 1, and the next copy is still synced" '[ $rc -eq 1 ] && [[ "$out" == *"FAILED   $RT/wt3-a/.claude/settings.local.json"* ]] && [[ "$out" == *"REMOVED  allow"* ]] && [[ "$out" == *"synced   $RT/wt3-b/.claude/settings.local.json"* ]] && [[ "$out" != *Traceback* ]]'
 
 run --ledger "$L" --settings "$HOME/.claude/settings.json" baseline --check
 check "baseline --check still passes at user level" '[ $rc -eq 0 ]'

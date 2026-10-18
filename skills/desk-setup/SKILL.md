@@ -679,8 +679,9 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
   `python3 $H "${REPO_RULES[@]}" remove <row> [<row>...]` (backs up, removes every rule the row
   owns in this repo, restores a guard it had removed), refresh §3c, confirm. It also updates every
   worktree copy (`git worktree list`) that matched the file before the revoke, backing each up
-  first; a `differs` line names a copy that did not match and still carries the rule, so pass each
-  one on for the user to fix there. Do not argue for the capability it costs.
+  first; a `differs` line names a copy that did not match and still carries the rule, and a
+  `FAILED` line (exit 1) one it could not read or write, so pass each one on for the user to fix
+  there. Do not argue for the capability it costs.
 - A row newly `yes` on a re-run: `add` a plan with just its rules (and any `unguard:`).
 
 ## Red flags — stop

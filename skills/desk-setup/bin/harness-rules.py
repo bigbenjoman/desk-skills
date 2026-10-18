@@ -43,7 +43,8 @@ removed from it and drops only the ledger records.
 A revoke also reaches the worktrees. When `remove` changes a repo-level <root>/.claude/<file>, the
 same file in every other worktree `git worktree list` shows is checked: a copy that matched the
 file byte for byte before the revoke is backed up and replaced with the new file (removed, if the
-file was); a copy that differs is left alone and named, for revoking there by hand.
+file was); a copy that differs is left alone and named, for revoking there by hand. A copy that
+cannot be read or written is named FAILED, the rest are still done, and `remove` exits 1.
 """
 
 import datetime
@@ -197,25 +198,32 @@ def sync_copies(st, before):
 
     setup-worktree.sh and desk-setup copy <root>/.claude/settings.local.json into worktrees, so a
     rule revoked only in the main file stays live in every copy. A copy that differs from the main
-    file before the revoke is someone's own edit: it is left alone and named."""
+    file before the revoke is someone's own edit: it is left alone and named. A copy that cannot be
+    read or written is named too, and the rest are still checked. Returns True if any copy failed."""
     after = read_bytes(st.settings_path)
     if before is None or after == before:
-        return
+        return False
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    failed = False
     for copy in worktree_copies(st.settings_path):
         if not os.path.isfile(copy) or os.path.realpath(copy) == os.path.realpath(st.settings_path):
             continue
-        if read_bytes(copy) != before:
-            st.log.append(f"differs  {copy}  (did not match {st.settings_path} before the revoke: "
-                          "left alone; revoke there by hand)")
-            continue
-        st.log.append(f"backup   {backup(copy, stamp)}")
-        if after is None:
-            os.remove(copy)
-            st.log.append(f"removed  {copy} (the main file it copied was removed)")
-        else:
-            write_bytes(copy, after)
-            st.log.append(f"synced   {copy}")
+        try:
+            if read_bytes(copy) != before:
+                st.log.append(f"differs  {copy}  (did not match {st.settings_path} before the revoke: "
+                              "left alone; revoke there by hand)")
+                continue
+            st.log.append(f"backup   {backup(copy, stamp)}")
+            if after is None:
+                os.remove(copy)
+                st.log.append(f"removed  {copy} (the main file it copied was removed)")
+            else:
+                write_bytes(copy, after)
+                st.log.append(f"synced   {copy}")
+        except OSError as e:
+            failed = True
+            st.log.append(f"FAILED   {copy}  ({e}; it may still allow what was revoked: revoke there by hand)")
+    return failed
 
 
 class State:
@@ -430,7 +438,7 @@ def cmd_remove(st, rows, everything):
         st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
     before = read_bytes(st.settings_path)
     st.save()
-    sync_copies(st, before)
+    return sync_copies(st, before)
 
 
 def cmd_list(st, markdown):
@@ -498,6 +506,7 @@ def main(argv):
     if cmd == "unset-default-mode" and not rest:
         return cmd_unset_default_mode(settings)
     st = State(settings, ledger)
+    code = 0
     if cmd == "add" and len(rest) == 1:
         cmd_add(st, rest[0])
     elif cmd == "baseline":
@@ -513,17 +522,17 @@ def main(argv):
                 plan, rest = rest[0], []
             else:
                 die(USAGE)
-        code = cmd_baseline(st, plan, prefixes, check)
-        if code is not None:
-            return code
+        checked = cmd_baseline(st, plan, prefixes, check)
+        if checked is not None:
+            return checked
     elif cmd == "remove" and rest == ["--all"]:
-        cmd_remove(st, [], True)
+        code = 1 if cmd_remove(st, [], True) else 0
     elif cmd == "remove" and rest and "--all" not in rest:
-        cmd_remove(st, rest, False)
+        code = 1 if cmd_remove(st, rest, False) else 0
     else:
         die(USAGE)
     print("\n".join(st.log) if st.log else "nothing to change")
-    return 0
+    return code
 
 
 if __name__ == "__main__":
