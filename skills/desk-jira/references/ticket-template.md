@@ -160,6 +160,8 @@ its `_Context:_` line naming the epic. Before the user approves the set, run
 The Story layout, scoped to its parent. The `_Context:_` line names the parent story. Design may
 point at the parent's link when it is the same design, written out as the URL, not as "see
 parent". A subtask's criteria are checked by its own worker, so they never just repeat the parent's.
+A project may give subtasks no Size field (Jira then refuses one with a 400 naming the field): leave
+it off and size the parent.
 
 ## Before you file
 
