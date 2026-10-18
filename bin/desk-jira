@@ -148,6 +148,12 @@ JQ_VAL='def val: if . == null then "-"
   elif type == "object" then (.value // .name // .displayName // .accountId // tojson)
   else tostring end;'
 
+# jq helper: one issue link as get prints it, from the side of the issue it was read from:
+# "<the verb> KEY (type, status) summary".
+JQ_LINK='def brief: "\(.key) (\(.fields.issuetype.name // "-"), \(.fields.status.name // "-")) \(.fields.summary // "")";
+  def link_line: if .inwardIssue then "\(.type.inward // .type.name) \(.inwardIssue | brief)"
+    else "\(.type.outward // .type.name) \(.outwardIssue | brief)" end;'
+
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
 have_token() { [[ -n "${JIRA_TOKEN:-}" || -r "$TOKEN_FILE" ]]; }
@@ -244,6 +250,31 @@ field_type() {  # schema.type of a field id (option, user, array, string...), em
 }
 
 my_account_id() { api GET 'api/3/myself' | jq -r '.accountId'; }
+
+# A link type as it is written on the command line, matched against the site's own types: the type's
+# name (Duplicate), its outward wording (duplicates) or its inward wording (is duplicated by), in any
+# case, with hyphens for spaces and the leading "is" optional, so blocked-by and blocks are the two
+# sides of Blocks. Prints the type as JSON plus .dir, the side the word names (a name is outward).
+link_type() {
+  local types matches
+  types=$(api GET 'api/2/issueLinkType') || return 1
+  matches=$(printf '%s' "$types" | jq -c --arg w "$1" '
+    def norm: ascii_downcase | gsub("[-_\\s]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | ltrimstr("is ");
+    ($w | norm) as $w
+    | [.issueLinkTypes[]? | if (.name | norm) == $w or (.outward | norm) == $w then . + {dir:"outward"}
+        elif (.inward | norm) == $w then . + {dir:"inward"} else empty end]')
+  case "$(jq length <<<"$matches")" in
+    1) jq -c '.[0]' <<<"$matches" ;;
+    0) die "desk-jira: this site has no link type '$1'. Its types: $(printf '%s' "$types" | jq -r '[.issueLinkTypes[]? | "\(.name) (\(.outward) / \(.inward))"] | join(", ")')" ;;
+    *) die "desk-jira: '$1' names more than one link type ($(jq -r 'map(.name) | join(", ")' <<<"$matches")): use the type's name" ;;
+  esac
+}
+
+# Every link of one issue, as get prints them.
+print_links() {
+  api GET "api/2/issue/$1?fields=issuelinks" | jq -r "$JQ_LINK"'[.fields.issuelinks[]? | link_line]
+    | if length == 0 then "links: none" else "links:", (.[] | "  \(.)") end'
+}
 
 # A list row of this repo's config, as a JSON array of its items; `none` and unset are [].
 cfg_list() {
@@ -870,7 +901,11 @@ desk-jira <command> [args]
   edit <KEY> <field=value ...> [--approved <text>]
                                   prints each field read back from Jira after the write
   labels <KEY> add|remove <label ...>
-  link <KEY> blocked-by|blocks <OTHER>   a Blocks link, direction handled, read back
+  link <KEY> <type> <OTHER>       any link type the site has, by name (Blocks, Relates, Duplicate,
+                                  Cloners) or wording from KEY's side (blocked-by, blocks, relates-to,
+                                  duplicates, is-duplicated-by, clones): direction handled, read back
+  unlink <KEY> <OTHER> [<type>]   removes the link between them, read back, and prints KEY's links;
+                                  the type is needed only when they have links of more than one type
 
   comment <KEY> <body-file|text>
   comments <KEY>                  existing comments (check idempotency markers)
@@ -979,12 +1014,11 @@ case "$cmd" in
       # The text form is for reading and copying, so wiki-markup escapes are dropped (`\-` prints as
       # `-`) everywhere but {code} and {noformat} blocks, whose text Jira keeps literally, and no
       # field is cut short. --json above stays the raw issue.
-      printf '%s\n%s' "$res" "$remote" | jq -rs "$JQ_VAL"'
+      printf '%s\n%s' "$res" "$remote" | jq -rs "$JQ_VAL$JQ_LINK"'
         def unwiki: if type == "string" then
             [scan("(?s)\\{(?:code|noformat)[^}]*\\}.*?\\{(?:code|noformat)\\}|(?:(?!\\{(?:code|noformat)).)+|.")]
             | map(if test("^\\{(code|noformat)") then . else gsub("\\\\(?<c>[-_*+^~?#{}\\[\\]|!])"; .c) end) | join("")
           else . end;
-        def brief: "\(.key) (\(.fields.issuetype.name // "-"), \(.fields.status.name // "-")) \(.fields.summary // "")";
         def section($name; $rows): if ($rows | length) == 0 then "\($name): none" else "\($name):", ($rows[] | "  \(.)") end;
         .[0] as $i | .[1] as $remote | $i.fields as $f |
         "key      : \($i.key)",
@@ -1000,9 +1034,7 @@ case "$cmd" in
           | select((.key | startswith("customfield_")) and .value != null and .value != [])
           | "\($n[.key] // .key) : \(.value | unwiki | val | gsub("\n"; " "))"),
         "",
-        section("links"; [($f.issuelinks // [])[]
-          | if .inwardIssue then "\(.type.inward // .type.name) \(.inwardIssue | brief)"
-            else "\(.type.outward // .type.name) \(.outwardIssue | brief)" end]),
+        section("links"; [($f.issuelinks // [])[] | link_line]),
         section("subtasks"; [($f.subtasks // [])[] | brief]),
         section("attachments"; [($f.attachment // [])[]
           | "\(.filename) (\(.mimeType // "-"), \(.size // "?") bytes) \(.content // "")"]),
@@ -1048,41 +1080,71 @@ case "$cmd" in
     ;;
 
   link)
-    [[ $# -eq 3 ]] || die 'usage: desk-jira link <KEY> blocked-by|blocks <OTHER>'
-    key="$1"; verb="$2"; other="$3"
+    [[ $# -eq 3 ]] || die 'usage: desk-jira link <KEY> <type> <OTHER>   (type: a name such as Blocks or Relates, or its wording such as blocked-by, blocks, duplicates)'
+    key="$1"; word="$2"; other="$3"
     for k in "$key" "$other"; do [[ "$k" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: not an issue key: $k"; done
-    [[ "$key" != "$other" ]] || die "desk-jira: an issue cannot block itself ($key)"
+    [[ "$key" != "$other" ]] || die "desk-jira: an issue cannot be linked to itself ($key)"
+    ensure_auth
+    t=$(link_type "$word") || exit 1
+    name=$(jq -r .name <<<"$t"); dir=$(jq -r .dir <<<"$t"); verb=$(jq -r '.[.dir]' <<<"$t")
+    sym=$(jq '.inward == .outward' <<<"$t")
+    if [[ "$dir" == outward ]]; then rev=inward; else rev=outward; fi
+    # From KEY's side, an entry whose outwardIssue is X reads "KEY <outward> X" and one whose
+    # inwardIssue is X reads "KEY <inward> X". A symmetric type (Relates) reads the same either way.
+    links_of() { api GET "api/2/issue/$key?fields=issuelinks" | jq -c --arg n "$name" '[.fields.issuelinks[]? | select(.type.name == $n)
+      | if .inwardIssue then {rel:"inward", key:.inwardIssue.key} else {rel:"outward", key:.outwardIssue.key} end]'; }
+    has() { jq -e --arg o "$other" --arg r "$1" --argjson s "$sym" 'any(.[]; .key == $o and ($s or .rel == $r))' >/dev/null; }
+    have=$(links_of) || exit 1
+    if printf '%s' "$have" | has "$dir"; then echo "already linked: $key $verb $other"; exit 0; fi
+    if printf '%s' "$have" | has "$rev"; then
+      die "desk-jira: refusing: $key already $(jq -r ".$rev" <<<"$t") $other, so this link would be the reverse of it and make a cycle"
+    fi
     # Jira's inwardIssue is the one that performs the outward verb ("inward blocks outward"), the
     # reverse of what the field names suggest; a link posted the obvious way lands backwards and
     # still returns 201. So the direction is decided here, once.
-    case "$verb" in
-      blocked-by) blocker="$other"; blocked="$key" ;;
-      blocks)     blocker="$key";   blocked="$other" ;;
-      *) die "desk-jira: the verb is blocked-by or blocks, not '$verb'" ;;
-    esac
-    ensure_auth
-    # From the blocked issue's side, "blocked by X" is a Blocks entry whose inwardIssue is X, and
-    # "blocks X" one whose outwardIssue is X.
-    links_of() { api GET "api/2/issue/$1?fields=issuelinks" | jq -c '[.fields.issuelinks[]? | select(.type.name == "Blocks")
-      | if .inwardIssue then {rel:"blocked-by", key:.inwardIssue.key} else {rel:"blocks", key:.outwardIssue.key} end]'; }
-    have=$(links_of "$blocked") || exit 1
-    if printf '%s' "$have" | jq -e --arg o "$blocker" 'any(.[]; .rel == "blocked-by" and .key == $o)' >/dev/null; then
-      echo "already linked: $blocked is blocked by $blocker"; exit 0
-    fi
-    if printf '%s' "$have" | jq -e --arg o "$blocker" 'any(.[]; .rel == "blocks" and .key == $o)' >/dev/null; then
-      die "desk-jira: refusing: $blocked already blocks $blocker, so this link would be the reverse of it and make a cycle"
-    fi
-    payload=$(jq -n --arg in "$blocker" --arg out "$blocked" \
-      '{type:{name:"Blocks"}, inwardIssue:{key:$in}, outwardIssue:{key:$out}}')
+    if [[ "$dir" == outward ]]; then in="$key"; out="$other"; else in="$other"; out="$key"; fi
+    payload=$(jq -n --arg n "$name" --arg in "$in" --arg out "$out" \
+      '{type:{name:$n}, inwardIssue:{key:$in}, outwardIssue:{key:$out}}')
     json POST 'api/2/issueLink' -d "$payload" >/dev/null || exit 1
-    back=$(links_of "$blocked") || exit 1
-    if ! printf '%s' "$back" | jq -e --arg o "$blocker" 'any(.[]; .rel == "blocked-by" and .key == $o)' >/dev/null; then
-      echo "desk-jira: the link was posted but the read-back of $blocked does not show 'is blocked by $blocker'." >&2
-      echo "  $blocked's Blocks links now: $(printf '%s' "$back" | jq -r 'map("\(.rel) \(.key)") | join(", ") | if . == "" then "none" else . end')" >&2
-      echo "  A link that landed backwards is deleted with DELETE /rest/api/3/issueLink/<id> (references/jira-rest-recipes.md), then re-run this." >&2
+    back=$(links_of) || exit 1
+    if ! printf '%s' "$back" | has "$dir"; then
+      echo "desk-jira: the link was posted but the read-back of $key does not show '$verb $other'." >&2
+      echo "  $key's $name links now: $(printf '%s' "$back" | jq -r --argjson t "$t" 'map("\($t[.rel]) \(.key)") | join(", ") | if . == "" then "none" else . end')" >&2
+      echo "  A link that landed backwards is removed with 'desk-jira unlink $key $other $name', then re-run this." >&2
       exit 1
     fi
-    echo "linked: $blocked is blocked by $blocker (read back)"
+    echo "linked: $key $verb $other (read back)"
+    ;;
+
+  unlink)
+    [[ $# -eq 2 || $# -eq 3 ]] || die 'usage: desk-jira unlink <KEY> <OTHER> [<type>]'
+    key="$1"; other="$2"; name=''
+    for k in "$key" "$other"; do [[ "$k" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: not an issue key: $k"; done
+    [[ "$key" != "$other" ]] || die "desk-jira: an issue has no link to itself ($key)"
+    ensure_auth
+    if [[ $# -eq 3 ]]; then t=$(link_type "$3") || exit 1; name=$(jq -r .name <<<"$t"); fi
+    # KEY's links to OTHER (of the type, when one is named), each with its id and how it reads.
+    between() { api GET "api/2/issue/$key?fields=issuelinks" | jq -c --arg o "$other" --arg n "$name" '[.fields.issuelinks[]?
+      | select((.inwardIssue.key // .outwardIssue.key) == $o and ($n == "" or .type.name == $n))
+      | {id, type:.type.name, verb:(if .inwardIssue then .type.inward else .type.outward end)}]'; }
+    found=$(between) || exit 1
+    if [[ "$(jq length <<<"$found")" -eq 0 ]]; then
+      echo "not linked: $key has no ${name:+$name }link to $other"
+      print_links "$key" || exit 1
+      exit 0
+    fi
+    if [[ -z "$name" && "$(jq '[.[].type] | unique | length' <<<"$found")" -gt 1 ]]; then
+      die "desk-jira: $key and $other have links of more than one type ($(jq -r 'map("\(.type): \(.verb)") | join(", ")' <<<"$found")); name the one to remove: desk-jira unlink $key $other <type>"
+    fi
+    for id in $(jq -r '.[].id' <<<"$found"); do
+      api DELETE "api/2/issueLink/$id" >/dev/null || exit 1
+    done
+    left=$(between) || exit 1
+    if jq -e --argjson f "$found" 'any(.[]; .id as $i | any($f[]; .id == $i))' <<<"$left" >/dev/null; then
+      die "desk-jira: the delete was sent but the read-back of $key still shows: $(jq -r --arg o "$other" 'map("\(.verb) \($o)") | join(", ")' <<<"$left")"
+    fi
+    jq -r --arg k "$key" --arg o "$other" '.[] | "unlinked: \($k) \(.verb) \($o) (read back)"' <<<"$found"
+    print_links "$key" || exit 1
     ;;
 
   fields)

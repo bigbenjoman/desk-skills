@@ -240,8 +240,8 @@ const GH_DENY = [' api', ' alias', ' extension', ' ext', ' pr merge', ' pr ready
 // `api` takes one path and always sends GET; desk-jira's render check after a write runs it.
 const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki', ' api'];
 // Issue links are Bea's, filed interactively after the user approves an epic: never a worker's or a
-// triage pass's, whatever config §3 jira-edit says.
-const JIRA_NEVER = [' link'];
+// triage pass's to make or remove, whatever config §3 jira-edit says.
+const JIRA_NEVER = [' link', ' unlink'];
 
 if (mode === 'triage') {
   // Read-only by construction: no Edit, Write only to this ticket's triage records.

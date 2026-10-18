@@ -217,8 +217,8 @@ body=$(grep issueLink "$LOG" | grep POST | jq -r .body)
 check "link blocks sends inward=KEY outward=OTHER" '[ $rc -eq 0 ] && [ "$(printf "%s" "$body" | jq -r ".inwardIssue.key+\" \"+.outwardIssue.key")" = "KAN-11 KAN-19" ]'
 J link KAN-40 blocked-by KAN-40
 check "a self link is refused" '[ $rc -ne 0 ]'
-J link KAN-40 relates KAN-41
-check "an unknown verb is a usage error" '[ $rc -ne 0 ]'
+J link KAN-40 frobs KAN-41
+check "a link type the site does not have is refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "no link type"'
 out=$(JIRA_SITE="http://127.0.0.1:$DPORT" desk-jira link KAN-40 blocked-by KAN-41 2>&1); rc=$?
 check "a read-back that does not show the link fails" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -qi "read.back"'
 

@@ -124,7 +124,8 @@ What the CLI does for you, and the traps it still has:
 
 For anything the CLI has no command for, read **`references/jira-rest-recipes.md`**. That covers
 deleting a mistaken comment, editing a description that holds inline images, and subtasks with
-sprints. Issue links have a command now: `desk-jira link` (see *Epics*).
+sprints. Issue links of every type have commands: `desk-jira link` and `desk-jira unlink` (see
+*Epics*).
 
 ## Gate — which writes post, which wait
 
@@ -145,7 +146,7 @@ Find the config §3 row for the write:
 | Comment, or edit your own comment | `jira-comment` |
 | New ticket | `jira-create` |
 | Description or field edit (§4 Priority, labels, §4 Other fields) | `jira-edit` |
-| Blocks link (`desk-jira link`) | `jira-edit` |
+| Issue link, or removing one (`desk-jira link`, `desk-jira unlink`) | `jira-edit` |
 | Status change between working states (§4 In-progress state, Review state, and any other non-closing state in §4 Workflow) | `jira-transition` |
 | §4 Done state once the user's own last PR on the key has merged | `jira-close-own-merged` |
 | Any other close: duplicate, not-a-bug, out of scope, already fixed | `jira-close` |
@@ -282,11 +283,16 @@ them as a batch. The commands:
 desk-jira children ABC-900                         # its children (or a story's subtasks), rank order
 desk-jira create Story "<summary>" body.md parent=ABC-900 <size field>=M
 desk-jira link ABC-903 blocked-by ABC-901          # ABC-903 cannot start until ABC-901 merges
+desk-jira link ABC-904 duplicates ABC-850          # any type the site has: relates, is-cloned-by, …
+desk-jira unlink ABC-903 ABC-901                   # remove it; prints ABC-903's links left
 ```
 
-`link` owns Jira's inverted direction, refuses a self link or the reverse of an existing one,
-skips one that exists, and reads the link back. Dependencies go in links, never in prose: autopilot
-reads only the links.
+`link` takes a type by its name (`Blocks`, `Relates`, `Duplicate`, `Cloners`) or by its wording
+from KEY's side (`blocked-by`, `blocks`, `relates-to`, `is-duplicated-by`), owns Jira's inverted
+direction, refuses a self link or the reverse of an existing one, skips one that exists, and reads
+the link back. `unlink` removes every link between the two (name the type when they have links of
+more than one) and reads that back. Dependencies go in links, never in prose: autopilot reads only
+the Blocks links.
 
 **Size every ticket**, epic children included:
 
@@ -389,7 +395,7 @@ ambiguous, say so at that ticket, not in a footnote.
 | Wiki text from `get` or `comments` sent back as `.md` with only `#` lists in it | Save it as `.wiki`: a converted `# item` becomes a heading |
 | A `Status:`, `Priority:`, `P1` or `Size:` line in a description | Set the field; the body never repeats it (only the first-line `Size:` fallback where there is no Size field) |
 | Adding a Subtask to a sprint | Put the parent in the sprint |
-| Posting an issue link by hand with the obvious inward/outward mapping | It lands backwards and still returns 201. Use `desk-jira link` |
+| Posting or deleting an issue link by hand with the token | A link posted with the obvious inward/outward mapping lands backwards and still returns 201. Use `desk-jira link` and `desk-jira unlink` |
 | A dependency written in a description ("needs ABC-1 first") | Autopilot reads links only: `desk-jira link` it |
 | A ticket with no size, or an L in an epic | Size it from the scale; split anything above M |
 | Hardcoding a transition name or id | Fetch the list; names change and vary by issue type |

@@ -27,31 +27,10 @@ A 2xx is not proof. Past failures all returned success:
 
 | Write | Silent failure seen | Read back with |
 |---|---|---|
-| issue link | created backwards, 201 | the `issuelinks` query below |
 | description PUT via v3 | 204 even when a node was malformed | re-GET and compare |
 
-## Issue links — the direction is inverted
-
-Use `desk-jira link <KEY> blocked-by|blocks <OTHER>` for Blocks links: it handles all of this. The
-recipe below is for another link type, or for deleting a wrong link. The usual link types are `Blocks`, `Duplicate` and `Relates`; ids vary by site. List them with `GET /rest/api/3/issueLinkType`.
-
-`inwardIssue` is the **subject that performs the outward verb** on `outwardIssue`. To record
-"ABC-1 is blocked by ABC-2", send `inwardIssue: ABC-2, outwardIssue: ABC-1`. The reading the field
-names suggest creates the link backwards, and it still returns 201.
-
-```bash
-jcurl -X POST -H 'Content-Type: application/json' \
-  "https://$SITE/rest/api/3/issueLink" \
-  -d '{"type":{"name":"Blocks"},"inwardIssue":{"key":"ABC-2"},"outwardIssue":{"key":"ABC-1"}}'
-
-# read back (read-only)
-jcurl "https://$SITE/rest/api/3/issue/ABC-1?fields=issuelinks" | jq -r '
-  .fields.issuelinks[] | if .outwardIssue then "\(.type.outward) \(.outwardIssue.key)"
-                         else "\(.type.inward) \(.inwardIssue.key)" end'
-```
-
-There is no update: fix a wrong link with `DELETE /rest/api/3/issueLink/<id>` and re-post.
-`Relates` is symmetric, so order doesn't matter.
+Issue links are not here: `desk-jira link` and `desk-jira unlink` handle every link type, its
+inverted direction and the read-back.
 
 ## Deleting or editing a comment
 

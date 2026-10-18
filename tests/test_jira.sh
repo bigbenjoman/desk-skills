@@ -36,7 +36,8 @@ cat > "$T/fixture.json" <<EOF
     "description": "Run {{desk\\\\-jira get KAN\\\\-5}} and *read\\\\_it*.\\n{code}grep -c '\\\\[x\\\\]' f{code}"},
   "KAN-6": {"summary": "bare"},
   "KAN-7": {"summary": "links down"},
-  "KAN-20": {"summary": "a story", "issuetype": {"name": "Story"}, "customfield_10208": {"value": "M"}}},
+  "KAN-20": {"summary": "a story", "issuetype": {"name": "Story"}, "customfield_10208": {"value": "M"}},
+  "KAN-30": {}, "KAN-31": {}, "KAN-32": {}, "KAN-33": {}, "KAN-34": {}},
  "fields": [{"id": "customfield_10207", "name": "Launch Priority", "custom": true, "schema": {"type": "option"}},
             {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}],
  "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
@@ -46,7 +47,16 @@ EOF
 PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
 python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!
 SLOWPORT=$((PORT + 1)); python3 "$S/stub_jira.py" "$SLOWPORT" "$T/slow.log" 1.5 & SLOW=$!
-trap 'kill $STUB $SLOW 2>/dev/null' EXIT
+# A site where a deleted link is still there on the read-back.
+cat > "$T/keep.json" <<'EOF'
+{"unlink_readback": "keep", "issues": {
+  "KAN-30": {"issuelinks": [{"id": "77", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+                             "outwardIssue": {"key": "KAN-31"}}]},
+  "KAN-31": {"issuelinks": [{"id": "77", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+                             "inwardIssue": {"key": "KAN-30"}}]}}}
+EOF
+KEEPPORT=$((PORT + 2)); python3 "$S/stub_jira.py" "$KEEPPORT" "$T/keep.log" "" "$T/keep.json" & KEEP=$!
+trap 'kill $STUB $SLOW $KEEP 2>/dev/null' EXIT
 sleep 0.5
 
 mkrepo() {  # name remote tracker site
@@ -402,6 +412,47 @@ n0=$((n0 + 1))
 cp "$M/ok.md" "$C/ok.md"
 err=$(cd "$C" && "$J" create Story s ok.md customfield_10208=M customfield_10207=P2 2>&1); rc=$?
 check "a first-line Size is refused where §4 names a Size field" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing line 1" && [ "$(creates)" -eq $((n0 + 1)) ]'
+
+# link takes any type the site has, by name or by its wording from KEY's side; unlink removes one.
+# The stub keeps posted links on both issues and drops a deleted one from both.
+L(){ : > "$LOG"; out=$(cd "$A" && "$J" "$@" 2>&1); rc=$?; }
+posted(){ grep '"method": "POST"' "$LOG" | grep issueLink | jq -r .body | jq -r '"\(.type.name) \(.inwardIssue.key) \(.outwardIssue.key)"'; }
+deletes(){ grep -c '"method": "DELETE"' "$LOG"; }
+L link KAN-30 relates KAN-31
+check "link relates: a Relates link, KEY inward, read back" '[ $rc -eq 0 ] && [ "$(posted)" = "Relates KAN-30 KAN-31" ] && [ "$out" = "linked: KAN-30 relates to KAN-31 (read back)" ]'
+L link KAN-31 relates-to KAN-30
+check "a symmetric link already there from the other side is skipped" '[ $rc -eq 0 ] && [ -z "$(posted)" ] && printf "%s" "$out" | grep -q "^already linked"'
+L link KAN-30 duplicates KAN-32
+check "link duplicates: outward wording puts KEY inward" '[ $rc -eq 0 ] && [ "$(posted)" = "Duplicate KAN-30 KAN-32" ] && printf "%s" "$out" | grep -qx "linked: KAN-30 duplicates KAN-32 (read back)"'
+L link KAN-30 is-duplicated-by KAN-33
+check "link is-duplicated-by: inward wording puts OTHER inward" '[ $rc -eq 0 ] && [ "$(posted)" = "Duplicate KAN-33 KAN-30" ] && printf "%s" "$out" | grep -qx "linked: KAN-30 is duplicated by KAN-33 (read back)"'
+L link KAN-32 duplicates KAN-30
+check "the reverse of an existing Duplicate link is refused" '[ $rc -ne 0 ] && [ -z "$(posted)" ] && printf "%s" "$out" | grep -q "reverse"'
+L link KAN-34 Cloners KAN-30
+check "link by type name (Cloners) reads as the outward verb" '[ $rc -eq 0 ] && [ "$(posted)" = "Cloners KAN-34 KAN-30" ] && printf "%s" "$out" | grep -qx "linked: KAN-34 clones KAN-30 (read back)"'
+L link KAN-34 "is cloned by" KAN-31
+check "link with spaced inward wording" '[ $rc -eq 0 ] && [ "$(posted)" = "Cloners KAN-31 KAN-34" ]'
+L link KAN-30 BLOCKED-BY KAN-34
+check "link blocked-by in any case is a Blocks link with OTHER inward" '[ $rc -eq 0 ] && [ "$(posted)" = "Blocks KAN-34 KAN-30" ] && printf "%s" "$out" | grep -qx "linked: KAN-30 is blocked by KAN-34 (read back)"'
+L link KAN-30 frobs KAN-31
+check "an unknown type is refused and the site's types are named" '[ $rc -ne 0 ] && [ -z "$(posted)" ] && printf "%s" "$out" | grep -q "Duplicate (duplicates / is duplicated by)"'
+
+L unlink KAN-30 KAN-32
+check "unlink sends one DELETE and says what it removed" '[ $rc -eq 0 ] && [ "$(deletes)" = 1 ] && printf "%s\n" "$out" | grep -qx "unlinked: KAN-30 duplicates KAN-32 (read back)"'
+check "unlink prints the links left, without the removed one" 'printf "%s\n" "$out" | grep -qx "links:" && printf "%s\n" "$out" | grep -q "^  relates to KAN-31 " && ! printf "%s\n" "$out" | grep -q "^  duplicates KAN-32"'
+L get KAN-32
+check "the link is gone from the other issue too" 'printf "%s\n" "$out" | grep -qx "links: none"'
+L unlink KAN-30 KAN-32
+check "unlink with no link between them deletes nothing and says so" '[ $rc -eq 0 ] && [ "$(deletes)" = 0 ] && printf "%s\n" "$out" | grep -qx "not linked: KAN-30 has no link to KAN-32"'
+L link KAN-30 blocks KAN-31
+L unlink KAN-30 KAN-31
+check "unlink refuses when two types link them, and names both" '[ $rc -ne 0 ] && [ "$(deletes)" = 0 ] && printf "%s" "$out" | grep -q "Blocks: blocks" && printf "%s" "$out" | grep -q "Relates: relates to"'
+L unlink KAN-30 KAN-31 relates
+check "unlink with a type removes only that type" '[ $rc -eq 0 ] && [ "$(deletes)" = 1 ] && printf "%s\n" "$out" | grep -qx "unlinked: KAN-30 relates to KAN-31 (read back)" && printf "%s\n" "$out" | grep -q "^  blocks KAN-31 "'
+out=$(cd "$A" && JIRA_SITE="http://127.0.0.1:$KEEPPORT" "$J" unlink KAN-30 KAN-31 2>&1); rc=$?
+check "a delete the read-back still shows fails" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "still shows: relates to KAN-31"'
+L link KAN-30 blocks KAN-30
+check "a self link is refused" '[ $rc -ne 0 ] && [ -z "$(posted)" ]'
 
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
