@@ -58,9 +58,12 @@ There is no update: fix a wrong link with `DELETE /rest/api/3/issueLink/<id>` an
 No CLI subcommand. `desk-jira comments <KEY>` prints each comment's id.
 
 ```bash
-# edit — comments hold no media, so v2 wiki markup is safe (200 = applied)
+# edit — comments hold no media, so v2 wiki markup is safe (200 = applied).
+# curl sends the file as is. `desk-jira comments` prints wiki markup: edit that text in body.wiki
+# and send it as is. New text written in markdown is converted first:
+desk-jira md2wiki body.md > body.wiki
 jcurl -X PUT -H 'Content-Type: application/json' \
-  "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>" -d "$(jq -n --rawfile b body.md '{body:$b}')"
+  "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>" -d "$(jq -n --rawfile b body.wiki '{body:$b}')"
 
 # delete a mistaken comment (204)
 jcurl -X DELETE "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>"
@@ -69,6 +72,10 @@ jcurl -X DELETE "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>"
 Editing the canonical root-cause comment beats leaving a superseded one that now reads as false.
 
 ## Editing a description that contains screenshots
+
+Without images, `desk-jira edit ABC-123 description=@body.wiki` is enough. `desk-jira get` prints the
+description as wiki markup, so save the edited text as `.wiki` and it is sent unchanged; a `.md`
+file of markdown is converted.
 
 Inline images live in the description as ADF `mediaSingle` nodes. Writing the field as markdown or
 wiki markup (API v2, or `desk-jira edit description=…`) flattens the document, and **the images are
@@ -85,12 +92,13 @@ gone**. Patch the ADF instead:
 
 The file form (`desk-jira create Task "<summary>" body.md field=value…`) is the reliable one. If it
 400s, the error body names the field. The usual cause is a required field; `desk-jira meta <type>`
-lists them. Raw fallback:
+lists them. Raw fallback, which sends the file as is, so convert the markdown first:
 
 ```bash
+desk-jira md2wiki body.md > body.wiki
 jcurl -X POST -H 'Content-Type: application/json' \
   "https://$SITE/rest/api/2/issue" \
-  -d "$(jq -n --rawfile d body.md --arg p "$PROJECT" '{fields:{project:{key:$p},issuetype:{name:"Bug"},summary:"…",description:$d}}')"
+  -d "$(jq -n --rawfile d body.wiki --arg p "$PROJECT" '{fields:{project:{key:$p},issuetype:{name:"Bug"},summary:"…",description:$d}}')"
 ```
 
 ## Sprints and subtasks

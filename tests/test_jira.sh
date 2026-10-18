@@ -289,6 +289,120 @@ for v in 'priority=Highest' 'priority={"value":"","name":"Highest"}' 'priority={
 done
 out=$(cd "$D" && DESK_AUTOPILOT_WORKER=1 "$J" edit KAN-20 priority=Low 2>&1); rc=$?
 check "a headless worker may set the built-in priority lower" '[ $rc -eq 0 ] && [ "$(puts)" -eq $((p0 + 1)) ]'
+# DS-31: a .md body is converted from markdown to wiki markup on create, comment and edit
+# description=@file.md; a body already in wiki markup, and every other body, goes unchanged.
+M="$A/md"; mkdir -p "$M"
+has(){ grep -qxF -- "$2" "$1"; }
+conv(){ (cd "$A" && "$J" md2wiki "$M/$1.md" > "$M/$1.out" 2>"$M/$1.err"); }
+same(){ cmp -s "$M/$1.md" "$M/$1.out"; }
+# The shape of VPL-288 (not on this site, so rebuilt): ## headings, numbered and dash lists, bold.
+cat > "$M/vpl288.md" <<'EOF'
+## Summary
+Calls are not forwarded to the PA while the user is on another call.
+
+## Steps to reproduce
+1. Turn on **Forward when busy** in the app
+2. Ring the user from a second phone
+   - while they are on a call
+3. The call drops
+
+## Expected
+- The call reaches the PA
+- See [the spec](https://example.com/spec_(v2)) and `forward_when_busy`
+EOF
+conv vpl288
+out=$(cd "$T" && "$J" md2wiki "$M/vpl288.md" 2>&1); rc=$?
+check "md2wiki runs outside any repo, with no Jira site or credentials" '[ $rc -eq 0 ] && printf "%s\n" "$out" | cmp -s - "$M/vpl288.out"'
+check "every ## heading becomes h2., the same count" '[ "$(grep -c "^h2\. " "$M/vpl288.out")" -eq "$(grep -c "^## " "$M/vpl288.md")" ] && has "$M/vpl288.out" "h2. Steps to reproduce"'
+check "no markdown heading is left to render as a numbered list" '! grep -q "^##" "$M/vpl288.out"'
+check "numbered items -> #, a nested dash -> #*, bold -> *x*" 'has "$M/vpl288.out" "# Turn on *Forward when busy* in the app" && has "$M/vpl288.out" "#* while they are on a call" && has "$M/vpl288.out" "# The call drops"'
+check "dash list -> *, link -> [t|u], backticks -> {{}} with _ escaped" 'has "$M/vpl288.out" "* The call reaches the PA" && has "$M/vpl288.out" "* See [the spec|https://example.com/spec_(v2)] and {{forward\_when\_busy}}"'
+# The shape of VPL-83's forwarding codes: asterisks and hashes that must not become effects or lists.
+cat > "$M/vpl83.md" <<'EOF'
+## Forwarding codes
+Dial `**21*07700900123#` to forward every call, and `##21#` to cancel.
+
+```
+**61*07700900123*11*20#
+#61#
+```
+EOF
+conv vpl83
+check "a forwarding code in backticks keeps every * and # as text" 'has "$M/vpl83.out" "Dial {{\*\*21\*07700900123\#}} to forward every call, and {{\#\#21\#}} to cancel."'
+check "a forwarding code in a fence goes verbatim in {noformat}" '[ "$(grep -cxF "{noformat}" "$M/vpl83.out")" -eq 2 ] && has "$M/vpl83.out" "**61*07700900123*11*20#" && has "$M/vpl83.out" "#61#"'
+# A body already in wiki markup goes byte for byte, even from a .md file (as the skills wrote it).
+printf 'h2. Summary\nUse {{desk\\-jira}} and *bold*.\n# one\n# two\n' > "$M/wiki1.md"; conv wiki1
+check "a .md file holding wiki markup (h2.) is sent unchanged" 'same wiki1'
+printf 'Fixed. To check:\n# Open the page\n# Click save\n\n* as a tutor, with {{x}}\n' > "$M/wiki2.md"; conv wiki2
+check "a wiki numbered list after text is not made headings" 'same wiki2'
+printf 'See [the PR|https://github.com/acme/alpha/pull/7] and `x`.\n' > "$M/wiki3.md"; conv wiki3
+check "a [text|url] link marks the body as wiki, a backtick beside it stays" 'same wiki3'
+printf '%s' 'hello, no markup at all' > "$M/plain.md"; conv plain
+check "a plain body is sent byte for byte, no newline added" 'same plain'
+printf '## Kept\n`as is`\n' > "$M/k.wiki"; (cd "$A" && "$J" md2wiki "$M/k.wiki") > "$M/k.out"
+check "a .wiki file is never converted" 'cmp -s "$M/k.wiki" "$M/k.out"'
+printf 'h2. Kept\n```\nmd example: ## x\n```\n' > "$M/wiki4.md"; conv wiki4
+check "a wiki heading anywhere keeps the body unchanged, a fence beside it included" 'same wiki4'
+printf 'This is *important*.\n- one\n- two\n' > "$M/wiki5.md"; conv wiki5
+check "a wiki - list beside *bold* is sent unchanged, bold kept bold" 'same wiki5'
+printf -- '- one\n- two with \\-escaped\n' > "$M/md6.md"; conv md6
+check "a - list with nothing wiki-like beside it converts" 'has "$M/md6.out" "* one"'
+printf '```\nh2. inside a fence\n```\n## Real\n' > "$M/md5.md"; conv md5
+check "wiki inside a fence does not stop a markdown body converting" 'has "$M/md5.out" "h2. Real" && has "$M/md5.out" "h2. inside a fence"'
+err=$(cd "$A" && "$J" md2wiki "$M/missing.md" 2>&1); rc=$?
+check "md2wiki of a missing file is an error" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "file not found"'
+# The converter runs isolated: a module planted in the working directory is not imported.
+mkdir -p "$T/cwd"; for m in re sys os encodings; do printf 'print("PLANTED-%s")\n' "$m" > "$T/cwd/$m.py"; done
+printf '## Hi\n' > "$T/cwd/b.md"
+out=$(cd "$T/cwd" && PYTHONPATH="$T/cwd" "$J" md2wiki b.md 2>&1)
+check "a re.py in the working directory or on PYTHONPATH is not run" '[ "$out" = "h2. Hi" ]'
+
+# What create, comment and edit send.
+last_desc() { jq -sj '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields.description' "$LOG"; }
+last_put_desc() { jq -sj '[.[] | select(.method == "PUT")] | last | .body | fromjson | .fields.description' "$LOG"; }
+last_body() { jq -sj '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
+out=$(cd "$A" && "$J" create Story s md/vpl288.md 2>&1); rc=$?
+check "create converts a .md description" '[ $rc -eq 0 ] && last_desc | cmp -s - "$M/vpl288.out"'
+out=$(cd "$A" && "$J" create Story s md/wiki1.md 2>&1); rc=$?
+check "create sends a wiki .md description unchanged" '[ $rc -eq 0 ] && last_desc | cmp -s - "$M/wiki1.md"'
+printf '## Not converted\n' > "$M/lit.txt"
+out=$(cd "$A" && "$J" create Story s md/lit.txt 2>&1); rc=$?
+check "create sends a .txt description unchanged" '[ $rc -eq 0 ] && [ "$(last_desc)" = "## Not converted" ]'
+out=$(cd "$A" && "$J" comment KAN-1 md/vpl83.md 2>&1); rc=$?
+check "comment converts a .md body" '[ $rc -eq 0 ] && last_body | cmp -s - "$M/vpl83.out"'
+out=$(cd "$A" && "$J" comment KAN-1 md/k.wiki 2>&1); rc=$?
+check "comment sends a .wiki body unchanged" '[ $rc -eq 0 ] && last_body | cmp -s - "$M/k.wiki"'
+out=$(cd "$A" && "$J" edit KAN-20 description=@md/vpl288.md 2>&1); rc=$?
+check "edit description=@file.md converts" '[ $rc -eq 0 ] && last_put_desc | cmp -s - "$M/vpl288.out"'
+out=$(cd "$A" && "$J" edit KAN-20 description=@md/wiki2.md 2>&1); rc=$?
+check "edit description=@file.md of wiki markup goes unchanged" '[ $rc -eq 0 ] && last_put_desc | cmp -s - "$M/wiki2.md"'
+
+# No Status, Priority, P0-P4 or Size line in a description; a first-line Size passes only where
+# config names no §4 Size field (repo A has none, repo C has customfield_10208).
+n0=$(creates); p0=$(puts)
+for body in 'Priority: P2' '**Status:** In Progress' 'Launch Priority: P1' '* P1' 'h2. Context\nPriority = High' 'Intro\n\nSize: M'; do
+  printf "$body\n" > "$M/fact.md"
+  err=$(cd "$A" && "$J" create Story s md/fact.md 2>&1); rc=$?
+  check "create refuses a description line: $body" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
+done
+printf 'a body\n' > "$M/lit2.txt"
+err=$(cd "$A" && "$J" create Story s md/lit2.txt 'description=Status: Done' 2>&1); rc=$?
+check "create refuses a Status line passed as a description= field" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$A" && "$J" create Story s md/lit2.txt description=@md/fact.md 2>&1); rc=$?
+check "create refuses a description=@file.md carrying a Size line" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$A" && "$J" edit KAN-20 'description=Status: Not Started' 2>&1); rc=$?
+check "edit refuses a Status line in the description" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing line 1" && [ "$(puts)" -eq "$p0" ]'
+printf 'Size: M\n\nh2. Context\nVPL-82 says Status: Not Started while it is In Progress, and P1 is the field.\n' > "$M/ok.md"
+out=$(cd "$A" && "$J" create Story s md/ok.md 2>&1); rc=$?
+check "a first-line Size with no §4 Size field, and status quoted mid-sentence, pass" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ]'
+printf '## Bug\nThe handler reads it:\n\n```python\nstatus = resp.status_code\np1 = Point(0, 0)\n```\n\n```\npriority: high\nsize: 3\n```\n' > "$M/codeok.md"
+out=$(cd "$A" && "$J" create Story s md/codeok.md 2>&1); rc=$?
+check "status, priority and size lines inside code blocks are code, not fields" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 2)) ]'
+n0=$((n0 + 1))
+cp "$M/ok.md" "$C/ok.md"
+err=$(cd "$C" && "$J" create Story s ok.md customfield_10208=M customfield_10207=P2 2>&1); rc=$?
+check "a first-line Size is refused where §4 names a Size field" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing line 1" && [ "$(creates)" -eq $((n0 + 1)) ]'
+
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

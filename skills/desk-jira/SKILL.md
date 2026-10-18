@@ -84,9 +84,22 @@ What the CLI does for you, and the traps it still has:
 - **`search` shows the §4 Priority custom field** in its third column when §4 Priority names one
   (`desk-jira where` prints which), otherwise the built-in priority. For anything you will act on,
   confirm with `desk-jira get <KEY>`, which prints every set custom field by name (`--json` for raw).
-- **Text calls use API v2, which takes Jira wiki markup, not markdown.** Write a heading as
-  `h2. Summary`. A markdown `## Summary` does **not** render as a heading: `#` is wiki markup's
-  numbered-list marker, so it becomes a nested numbered list. The rest, wiki form first:
+- **Write bodies in markdown, in a `.md` file.** `create`'s description, `comment` and
+  `edit description=@body.md` convert a `.md` file to Jira wiki markup before sending, because API v2
+  reads wiki markup: a markdown `## Summary` sent raw renders as a nested numbered list, not a
+  heading. `desk-jira md2wiki body.md` prints what would be sent, with no credentials.
+  - **A body already in wiki markup goes unchanged.** A `.wiki` or `.txt` file and literal text are
+    never converted, and nor is a `.md` file holding wiki markup (an `h2.` heading, a `{code}` or
+    `{noformat}` block, `bq.`, a `||` header row, a `[text|url]` link). A `.md` file converts only
+    when it has something only markdown writes: a fence, a backtick, `**bold**`, `[text](url)`, a
+    `1.` item, a `|---|` row or a `#` heading on its own after a blank line. `- ` items, which wiki
+    markup writes too, convert only when nothing wiki-like is beside them (`{{monospace}}`,
+    `*bold*`, a run of `#` list lines).
+  - **Once converting, a line starting `#` and a space is a heading**, never a wiki list item. So
+    text copied from `get` or `comments`, which print wiki markup, goes back as a `.wiki` file.
+  - Raw `curl` recipes send the file as it is: run `desk-jira md2wiki body.md > body.wiki` first.
+
+  When you write wiki markup yourself (a `.wiki` file, or a raw recipe), the forms are, wiki first:
   - lists `* item` and `# item` (nest with `**`, `##`), not `- item` / `1. item`;
   - bold `*bold*`, not `**bold**`;
   - inline code, flags and paths `{{\-\-add\-dir}}`, not backticks, **with every hyphen inside the
@@ -98,11 +111,11 @@ What the CLI does for you, and the traps it still has:
 
   Some plain text is markup too: `-x-` is strikethrough and a stray `{word}` is read as a macro,
   so escape them with `\`. A `--flag` mid-sentence is left alone (measured), but `{{\-\-flag}}` is
-  still the clearer way to write one. A `.md` body file is not converted; the text is sent exactly as written.
+  still the clearer way to write one. The converter escapes all of these in a `.md` body for you.
 
   Check a new body once in the rendered HTML with two counts. `grep -c '<h2'` should match the
-  `h2.` headings you wrote. `grep -c '<del'` must print `0`: any `<del` is a failure (a hyphen
-  read as strikethrough), so escape it and edit the body again:
+  `h2.` headings sent (the `##` headings of a `.md` body). `grep -c '<del'` must print `0`: any
+  `<del` is a failure (a hyphen read as strikethrough), so escape it and edit the body again:
   `desk-jira api "api/2/issue/<KEY>?fields=description&expand=renderedFields" | jq -r .renderedFields.description | grep -c '<del'`,
   or for a comment,
   `desk-jira api "api/2/issue/<KEY>/comment/<ID>?expand=renderedBody" | jq -r .renderedBody | grep -c '<del'`,
@@ -209,6 +222,12 @@ sweeps for blanks. `desk-jira meta <type>` lists the fields Jira itself requires
 | Sprint | resolve with `desk-jira fields sprint`. **A Subtask rejects a sprint write with a bare 400**: it inherits the parent's sprint, so put the parent in instead and skip subtasks in bulk loops |
 
 Resolve anything else with `desk-jira fields <filter>` rather than guessing an id.
+
+**Status, priority and size live in their fields, never in the body.** A `Status:`, `Priority:`,
+`P0`–`P4` or `Size:` line in a description goes stale the day the field moves, and then contradicts
+it. `create` and `edit` refuse a description with one. The one exception is the Size fallback
+under *Epics*: a first line `Size: <X>`, only for a project with no Size field (no §4 Size field in
+config). Mentioning a status mid-sentence ("the body said Status: Not Started") is fine.
 
 **The CLI enforces §4's field rules** before `create` or `edit` sends anything, and names the field
 it refuses:
@@ -366,7 +385,9 @@ ambiguous, say so at that ticket, not in a footnote.
 | Source labels (audit, design QA) on a ticket that didn't come from there | They say where the finding came from |
 | A per-finding id label, or a new label slipped in | Use §4 Labels; announce a genuinely new one |
 | `comment ABC-1 --file body.md` | The body is positional: `comment ABC-1 body.md` |
-| Markdown (`## Summary`, `**bold**`, fences, `[text](url)`) in a ticket or comment body | Wiki markup (see *Transport*): `h2. Summary`. `##` renders as a nested numbered list |
+| Markdown (`## Summary`, `**bold**`, fences, `[text](url)`) sent as literal text, a `.txt` or through a raw recipe | Put it in a `.md` file, which is converted (see *Transport*), or `desk-jira md2wiki` it first. `##` sent raw renders as a nested numbered list |
+| Wiki text from `get` or `comments` sent back as `.md` with only `#` lists in it | Save it as `.wiki`: a converted `# item` becomes a heading |
+| A `Status:`, `Priority:`, `P1` or `Size:` line in a description | Set the field; the body never repeats it (only the first-line `Size:` fallback where there is no Size field) |
 | Adding a Subtask to a sprint | Put the parent in the sprint |
 | Posting an issue link by hand with the obvious inward/outward mapping | It lands backwards and still returns 201. Use `desk-jira link` |
 | A dependency written in a description ("needs ABC-1 first") | Autopilot reads links only: `desk-jira link` it |
