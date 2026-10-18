@@ -192,6 +192,7 @@ const withPrefix = (c) => [c, ...(PREFIX ? [`${PREFIX} ${c}`] : [])];
 const STATE = E.stateDir();
 const BIN = E.binDir();
 const BIN_FORMS = [BIN, ...(tilde(BIN) ? [tilde(BIN)] : [])];
+const VERDICT = `${E.skillsDir()}/desk-review/bin/verdict.mjs`;
 const T = opt.ticket;
 const allow = [];
 const deny = [];
@@ -295,6 +296,8 @@ if (mode === 'triage') {
     // A script from the worktree's installed packages (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave node_modules.
     ...withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${c}:*)`),
+    // desk-review's verdict lines, computed from the run's results file rather than written by hand.
+    ...[VERDICT, ...(tilde(VERDICT) ? [tilde(VERDICT)] : [])].map((p) => `Bash(node ${p}:*)`),
   );
   deny.push(
     ...READ_DENY,
