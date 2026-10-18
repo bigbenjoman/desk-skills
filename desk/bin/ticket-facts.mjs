@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { configValue, stateDir, ticketKind } from './desk-env.mjs';
+import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 
 const key = process.argv[2];
@@ -41,7 +41,7 @@ if (kind.kind !== 'tracker') {
   const file = join(stateDir(), 'tickets', `${key}.md`);
   let text = null;
   if (kind.kind === 'issue') {
-    try { text = execFileSync('gh', ['issue', 'view', key.replace(/^issue-/, ''), '--repo', String(configValue('gh-repo') ?? ''), '--json', 'body', '--jq', '.body'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { text = execFileSync('gh', ['issue', 'view', key.replace(/^issue-/, ''), '--repo', ghRepo(), '--json', 'body', '--jq', '.body'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch (e) { rec.lint_error = lastLine(e) || 'gh issue view failed'; }
   } else if (existsSync(file)) text = readFileSync(file, 'utf8');
   else rec.lint_error = `no ticket file at ${file}`;
