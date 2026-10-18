@@ -16,10 +16,13 @@ That is the render check's count.
 
 ## Rules for every type
 
-- **No status, priority or size in the body.** They are fields (desk-jira *Fields*).
+- **No status, priority or size in the body.** They are fields (desk-jira *Fields*), except the
+  first-line `Size: M` for a project with no Size field (desk-jira *Epics*).
 - **Dependencies are Blocks links, never prose** (desk-jira *Epics*). With §4 Tracker `none` a
-  GitHub issue has no Blocks link, so it carries one `Blocked by #<n>` line per dependency, first in
-  the body: the one dependency written as text.
+  GitHub issue has no Blocks link, so it carries one `Blocked by #<n>` line per dependency. That
+  line is for people only: autopilot reads Jira links alone, so nothing holds the issue back.
+- **The body opens in this order**: a `Size:` line where one is allowed, then any `Blocked by`
+  lines, then the `_Context:_` line, then the first `##` section.
 - **Every acceptance criterion is one the worker who picks the ticket up can do and check**, in its
   branch and its PR. These are never acceptance criteria: creating or editing Jira links (the filer
   does that when filing), a live production measurement, a run only an operator can do, or someone's
@@ -167,8 +170,9 @@ it off and size the parent.
 
 1. Every section of the type is there, under its `##` heading, in this order.
 2. Every criterion is Given / When / Then, one `when` each, and a worker can do it.
-3. No status, priority or size line; no open decision; no dependency in prose.
+3. No status or priority line, and no size line beyond the allowed first one; no open decision; no
+   dependency in prose.
 4. After `create`: `desk-jira get <KEY>` reads the fields back. The render check (desk-jira
    *Transport*) counts one `<h2` per `##` heading sent and no `<del`.
 5. After `create`: `desk-jira link` each dependency (with Tracker `none`, the `Blocked by #<n>`
-   lines carry them).
+   lines record them, for people only).
