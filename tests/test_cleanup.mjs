@@ -15,7 +15,9 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const T = realpathSync(mkdtempSync(join(tmpdir(), 'desk-cleanup-')))
 process.on('exit', () => rmSync(T, { recursive: true, force: true }))
 writeFileSync(join(T, 'gitconfig'), '[user]\n\temail = t@example.com\n\tname = t\n[init]\n\tdefaultBranch = main\n')
-const env = { ...process.env, HOME: join(T, 'home'), GIT_CONFIG_GLOBAL: join(T, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }
+// A stub watchman on PATH records its arguments, so the host's watchman is never touched.
+mkdirSync(join(T, 'bin')); writeFileSync(join(T, 'bin', 'watchman'), `#!/bin/sh\necho "$@" >> "${T}/watchman.log"\n`, { mode: 0o755 })
+const env = { ...process.env, PATH: `${join(T, 'bin')}:${process.env.PATH}`, HOME: join(T, 'home'), GIT_CONFIG_GLOBAL: join(T, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }
 mkdirSync(env.HOME)
 const sh = (cwd, cmd, ...a) => { const r = spawnSync(cmd, a, { cwd, env, encoding: 'utf8' }); if (r.status !== 0) throw new Error(`${cmd} ${a.join(' ')}: ${r.stderr}`); return r.stdout.trim() }
 const git = (cwd, ...a) => sh(cwd, 'git', ...a)
@@ -29,7 +31,8 @@ t('BUG-119 does not match BUG-119-5', keyMatches('fix BUG-119-5 crash', 'BUG-119
 t('BUG-119-5 matches itself', keyMatches('fix BUG-119-5 crash', 'BUG-119-5'), true)
 t('a letter before the key is not a boundary', keyMatches('XABC-1', 'ABC-1'), false)
 t('case-insensitive on a lower-case branch', keyMatches('fix/abc-1-login', 'ABC-1'), true)
-t('a regex character in the key is literal', keyMatches('feat/A.B-1', 'A+B-1'), false)
+t('a regex character in the key is literal', keyMatches('feat/AXB-1', 'A.B-1'), false)
+t('a key with a regex character still matches itself', keyMatches('feat/A.B-1', 'A.B-1'), true)
 const prs = [{ number: 1, title: 'fix(x): ABC-12 thing', headRefName: 'fix/ABC-12-thing' }, { number: 2, title: 'ABC-1 the real one', headRefName: 'x' }, { number: 3, title: 'unrelated', headRefName: 'feat/abc-1-more' }]
 t('prsForKey keeps title and branch matches only', prsForKey(prs, 'ABC-1').map((p) => p.number).join(','), '2,3')
 const kf = spawnSync('node', [SCAN, 'key-filter', 'ABC-1'], { input: JSON.stringify(prs), encoding: 'utf8' })
@@ -56,15 +59,20 @@ git(R, 'add', '.'); git(R, 'commit', '-q', '-m', 'init'); git(R, 'remote', 'add'
 const add = (name, branch) => { const p = join(W, name); git(R, 'worktree', 'add', '-q', '-b', branch, p); return p }
 const commit = (p, msg) => { writeFileSync(join(p, `${msg}.txt`), msg); git(p, 'add', '.'); git(p, 'commit', '-q', '-m', msg); return git(p, 'rev-parse', 'HEAD') }
 const me = { login: 'me' }, them = { login: 'them' }
-const pr = (number, state, headRefName, headRefOid, author = me) => ({ number, state, headRefName, headRefOid, author, title: headRefName })
+const pr = (number, state, headRefName, headRefOid, author = me, baseRefName = 'main') => ({ number, state, headRefName, headRefOid, baseRefName, author, title: headRefName })
 
 // merged: a merge-commit merge into main, with ignored SPEC.md, node_modules and a resume file
 const merged = add('merged', 'feat/DS-1-merged'); const mergedTip = commit(merged, 'm1')
 git(R, 'merge', '-q', '--no-ff', '-m', 'Merge DS-1', 'feat/DS-1-merged'); git(R, 'push', '-q', 'origin', 'main')
 writeFileSync(join(merged, 'SPEC.md'), 'the spec'); mkdirSync(join(merged, 'node_modules', 'x'), { recursive: true }); writeFileSync(join(merged, 'node_modules', 'x', 'i.js'), '')
 mkdirSync(join(merged, '.claude')); writeFileSync(join(merged, '.claude', 'desk-ticket-DS-1.json'), '{"live":true}')
-// squashed: never in main, but the PR merged at this exact head
-const squashed = add('squashed', 'feat/DS-12-squashed'); const squashedTip = commit(squashed, 's1')
+// squashed: never in main, but the PR merged at this exact head. Its branch ignores all of
+// `.claude/`, so the resume file shows only as the collapsed directory.
+const squashed = add('squashed', 'feat/DS-12-squashed')
+writeFileSync(join(squashed, '.gitignore'), 'SPEC.md\nnode_modules/\n.ralph/\n.claude/\n'); const squashedTip = commit(squashed, 's1')
+mkdirSync(join(squashed, '.claude')); writeFileSync(join(squashed, '.claude', 'desk-ticket-DS-12.json'), '{}')
+// stacked: the PR merged at this head, but into another branch, not main
+const stacked = add('stacked', 'feat/DS-22-stacked'); const stackedTip = commit(stacked, 'k1')
 // check: the PR merged at a head that is not this tip
 const check = add('check', 'feat/DS-13-check'); commit(check, 'c1')
 const elsewhere = add('elsewhere', 'tmp/elsewhere'); const otherHead = commit(elsewhere, 'e1')
@@ -87,6 +95,7 @@ writeFileSync(join(T, 'prs.json'), JSON.stringify([
   pr(3, 'MERGED', 'feat/DS-13-check', otherHead), pr(4, 'MERGED', 'feat/DS-14-untracked', mainTip),
   pr(5, 'MERGED', 'feat/DS-15-theirs', mainTip, them), pr(6, 'OPEN', 'feat/DS-16-open', openTip),
   pr(8, 'MERGED', 'feat/DS-18-dirty', mainTip), pr(9, 'MERGED', 'feat/DS-19-live', mainTip),
+  pr(10, 'MERGED', 'feat/DS-22-stacked', stackedTip, me, 'feat/DS-21-parent'),
 ]))
 // the fake process table: a dev server whose cwd is a package subdirectory of `live`
 writeFileSync(join(T, 'cwds.txt'), `p4242\ncnode\nn${live}/apps/web\np77\nczsh\nn${T}\n`)
@@ -100,9 +109,11 @@ const reason = (p) => rows[p]?.[7] ?? ''
 t('header row', ws.stdout.split('\n')[0], 'verdict\tpath\tbranch\tticket\ttip\tpr\tauthor\treason\tuntracked\textras')
 t('merged into main: SAFE (a resume file alone does not block)', v(merged), 'SAFE')
 t('merged: ticket column', rows[merged]?.[3], 'DS-1')
-t('merged: SPEC.md and the resume file in extras, node_modules not', rows[merged]?.[9], 'SPEC.md')
+t('merged: SPEC.md in extras, node_modules not', rows[merged]?.[9], 'SPEC.md')
 t('merged: the untracked resume file listed', rows[merged]?.[8], '.claude/desk-ticket-DS-1.json')
 t('squash at the PR head: SAFE', `${v(squashed)} ${reason(squashed)}`, 'SAFE PR merged; local tip is the PR head')
+t('a resume file inside an ignored .claude/ is still named in extras', rows[squashed]?.[9]?.split(',').includes('.claude/desk-ticket-DS-12.json'), true)
+t('PR merged into another branch at this head: CHECK, never SAFE', `${v(stacked)} ${/not origin\/main/.test(reason(stacked))}`, 'CHECK true')
 t('PR merged at another head: CHECK', v(check), 'CHECK')
 t('merged with a scratch file: UNTRACKED', `${v(untracked)} ${rows[untracked]?.[8]}`, 'UNTRACKED scratch.txt')
 t("someone else's PR: KEEP", `${v(theirs)} ${reason(theirs)}`, "KEEP someone else's PR: report only")
@@ -141,6 +152,8 @@ t('remove: modified tracked file is SKIP', /^SKIP .*modified tracked files now/m
 t('remove: a live process is SKIP', /^SKIP .*a process is running inside it now \(node\(4242\)\)/m.test(rmv(live).stdout) && existsSync(live), true)
 t('remove: an unregistered path is SKIP', /^SKIP .*not a registered worktree/m.test(rmv(join(W, 'orphan-DS-21')).stdout), true)
 t('remove: the main worktree is SKIP', /^SKIP .*the main worktree/m.test(rmv(R).stdout), true)
+const wlog = existsSync(join(T, 'watchman.log')) ? readFileSync(join(T, 'watchman.log'), 'utf8') : ''
+t('remove: watchman dropped for removed trees only, never spawned', wlog.includes(`--no-spawn watch-del ${merged}\n`) && wlog.includes(`--no-spawn watch-del ${untracked}\n`) && !/watch-del .*(dirty|live)/.test(wlog) && !/^watch-del/m.test(wlog), true)
 
 // ---- memory: a fake process table (AC2)
 const ps = parsePs([

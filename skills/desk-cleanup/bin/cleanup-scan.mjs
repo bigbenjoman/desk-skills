@@ -101,7 +101,8 @@ export function prFor(prs, branch, tip) {
 
 // One worktree's verdict from facts already read. `git(...)` answers ancestry questions:
 // ancestor(a, b) and mergeBase(a, b) → boolean. Two signals or no SAFE: the PR (merged, the
-// user's) and the content (in the default branch, or the local tip is the PR's head or behind it).
+// user's) and the content (in the default branch, or the local tip is the head, or behind the head,
+// of a PR that merged into the default branch; a PR stacked on another branch proves nothing).
 export function classify(f, git) {
   const { pr, open } = f
   const prCol = pr ? `#${pr.number} ${pr.state}` : ''
@@ -121,9 +122,11 @@ export function classify(f, git) {
   if (author !== f.author) return v('KEEP', "someone else's PR: report only")
   if (pr.state !== 'MERGED') return v('KEEP', 'PR closed unmerged: needs a decision')
   let ok = ''
+  const intoDefault = pr.baseRefName === f.mainRef.replace(/^origin\//, '')
   if (git.ancestor(f.tip, f.mainRef)) ok = `PR merged; tip in ${f.mainRef}`
-  else if (pr.headRefOid === f.tip) ok = 'PR merged; local tip is the PR head'
-  else if (pr.headRefOid && git.ancestor(f.tip, pr.headRefOid)) ok = 'PR merged; local tip behind the PR head'
+  else if (intoDefault && pr.headRefOid === f.tip) ok = 'PR merged; local tip is the PR head'
+  else if (intoDefault && pr.headRefOid && git.ancestor(f.tip, pr.headRefOid)) ok = 'PR merged; local tip behind the PR head'
+  else if (!intoDefault && git.mergeBase(f.tip, f.mainRef)) return v('CHECK', `PR merged into ${pr.baseRefName ?? 'an unknown base'}, not ${f.mainRef}: check its work reached the default branch`)
   else if (git.mergeBase(f.tip, f.mainRef)) return v('CHECK', 'PR merged; local tip differs from the PR head: run the squash check')
   else return v('KEEP', 'PR merged but no merge base: second signal unavailable')
   return f.untracked.some((u) => !isResume(u)) ? v('UNTRACKED', `${ok}; untracked files block removal`) : v('SAFE', ok)
@@ -266,7 +269,7 @@ function scanWorktrees(o) {
   let prs = []
   if (o.prs) prs = JSON.parse(read(o.prs))
   else {
-    const r = spawnSync('gh', ['pr', 'list', '--state', 'all', '--limit', '2000', '--json', 'number,state,headRefName,headRefOid,author'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 })
+    const r = spawnSync('gh', ['pr', 'list', '--state', 'all', '--limit', '2000', '--json', 'number,state,headRefName,headRefOid,baseRefName,author'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 })
     if (r.status !== 0) console.error('warn: gh pr list failed: no PR signal, so nothing reads SAFE')
     else prs = JSON.parse(r.stdout)
   }
@@ -334,7 +337,7 @@ function removeWorktrees(o) {
   const registered = new Set(parseWorktrees(gitOut(root, 'worktree', 'list', '--porcelain') ?? '').map((w) => real(w.path)))
   const df = () => Number(execFileSync('df', ['-k', root], { encoding: 'utf8' }).trim().split('\n').pop().split(/\s+/)[3])
   const before = df(); let removed = 0
-  const hasWatchman = spawnSync('watchman', ['--version'], { stdio: 'ignore' }).status === 0
+  const hasWatchman = spawnSync('watchman', ['--no-spawn', '--version'], { stdio: 'ignore' }).status === 0
 
   for (const given of o._) {
     const wt = real(expand(given).replace(/\/$/, ''))
@@ -367,7 +370,8 @@ function removeWorktrees(o) {
     if (r.status !== 0) { console.log(`FAIL  ${wt}: git refused (${r.stderr.trim().split('\n')[0]}); left in place`); continue }
     removed++
     mkdirSync(run, { recursive: true }); appendFileSync(join(run, 'restore.tsv'), `${wt}\t${br}\t${tip}\n`)
-    if (hasWatchman) spawnSync('watchman', ['watch-del', wt], { stdio: 'ignore' })
+    // --no-spawn: a stopped watchman has no watch to drop, and must not be started to drop one.
+    if (hasWatchman) spawnSync('watchman', ['--no-spawn', 'watch-del', wt], { stdio: 'ignore' })
     console.log(`DONE  ${wt}  (${br} @ ${tip.slice(0, 10)})`)
   }
   git(root, 'worktree', 'prune')

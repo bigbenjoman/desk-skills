@@ -52,7 +52,11 @@ rather than re-deriving each check by hand across dozens of worktrees. `worktree
 | `remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>…` | removes approved worktrees only, backing up first (step 2) |
 | `memory --repo <root> --worktrees-dir <§2 Worktrees directory> --ports <dev-server ports>` | prices RAM, dev servers, sessions, test runs, watchman, Docker and caches (steps 5 and 6) |
 
-The rules below are what the script implements. Read them before overriding a verdict.
+The rules below are what the script implements, with two exceptions it leaves to you: it checks
+live processes by **cwd** only, so open files and the owners of the dev-server ports (step 2,
+"Check for live processes") are still checked by hand before a `SAFE` row is proposed, and it does
+not run the merge method's confirmation for a `CHECK` row. Read the rules before overriding a
+verdict.
 
 ## Ownership — the hard boundary
 
@@ -174,9 +178,9 @@ worktree (`verdict path branch ticket tip pr author reason untracked extras`):
 
 | Verdict | Meaning | Next |
 |---|---|---|
-| `SAFE` | clean, no live process, the user's PR merged, and the tip is in the default branch, is the PR's head, or is behind it | check the ticket column against the tracker half of the ownership test, then propose removal |
+| `SAFE` | clean, no live process, the user's PR merged, and the tip is in the default branch, or is the head (or behind the head) of a PR that merged into the default branch | check the ticket column against the tracker half of the ownership test, then propose removal |
 | `UNTRACKED` | as `SAFE`, but untracked files other than a resume file block `git worktree remove` | name every file in the plan (see below) |
-| `CHECK` | the user's PR merged, but the local tip is not the PR's head (for example after a server-side `update-branch`) | run the method's check below; propose only if it confirms |
+| `CHECK` | the user's PR merged, but the local tip is not the PR's head (for example after a server-side `update-branch`), or the PR merged into a branch other than the default (a stacked PR) | run the method's check below; propose only if it confirms |
 | `KEEP` | modified tracked files, a stash, a live process, a lock, an open or closed-unmerged PR, no PR, someone else's PR, no merge base | report it with the reason column |
 | `PRUNE` | a registry entry whose directory is gone | `git worktree prune`, which costs nothing |
 | `ORPHAN` | on disk in a worktrees directory, not registered to this repo | see Orphaned worktree directories |
@@ -186,7 +190,12 @@ is no merged signal and no author to apply the ownership test to.
 
 The `extras` column lists **ignored** files that are not build output or installed dependencies:
 `SPEC.md`, a plan directory, a resume file. `git status` does not show them, and `git worktree
-remove` deletes them without a word, so name them in the plan too.
+remove` deletes them without a word, so name them in the plan too. What it leaves out, and so does
+not back up, is what something puts back: `node_modules`, build and cache directories (`dist`,
+`build`, `out`, `.next`, `.turbo`, `coverage`, `generated` and the like), `.DS_Store`, and `.env*`
+files, which `copy-env.sh` restores from the main checkout and which should not pile up as copies of
+secrets. A hand-made file under one of those names is lost on removal; if you know of one, copy it
+out before approving.
 
 After approval, pass exactly the approved paths to `cleanup-scan.mjs remove`. It re-reads each path
 first, since state moves between the scan and the approval: still registered, not the main worktree,
