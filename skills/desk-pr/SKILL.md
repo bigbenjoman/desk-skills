@@ -247,7 +247,52 @@ change the rendering — so when it qualifies, it isn't optional.
 Reviewers cut oversized tables on request ("do we need 24 images?").
 Pick the two or three widths that carry the change, say in the line above the table that the other
 widths were verified by measurement, and put the numbers in Testing. A ticket asking for "screenshots
-at each breakpoint" does not override this.
+at each breakpoint" does not override this. **The one exception is a ticket with a saved canvas**
+(below): it shows every breakpoint, collapsed.
+
+### A ticket with a saved canvas: every breakpoint, canvas beside build
+
+When the ticket builds from a Claude Design canvas saved in the repo (`<§2 Design canvases
+directory>/<EPIC or KEY>/`, whose `source.json` lists the ticket), the width cap above does not
+apply. The canvas is the specification, so the reviewer sees it next to the built page at every
+size:
+
+- **Rows**: one per width in §5 Breakpoints (`desk-env list breakpoints`; unset is desk-design's
+  default `390` `768` `1024` `1280` `1440`, and `none` means no table), plus each board's own drawn
+  width where it is not a breakpoint. If `source.json` has no `screens` record (a re-save of a new
+  version drops it) or `source.screens.breakpoints` differs from the row, run `desk-design render`
+  (desk-ticket, "A Claude Design canvas is saved into the repo") before capturing.
+- **Canvas cell**: the board's image at that width, `screens/<board>@<width>.png` from
+  `source.screens.images` (its `drawn` flag says whether the designer drew that width or the browser
+  reflowed the board to it). Copy each into `<§2 Handoff directory>/<TICKET>/` as
+  `canvas-<board>@<width>.png` so it uploads with the rest (an autopilot worker has no `cp`: do it
+  in the capture script).
+- **Built cell**: the page at the same width, `built-<board>@<width>.png`, captured as below.
+- **Result**: `PASS` with what was compared, `FAIL` with expected against actual (the board's value,
+  never the code's), or `UNVERIFIABLE` with why. A comparison that did not run is `UNVERIFIABLE`,
+  never `PASS`: no canvas image at that width, no built capture, or the two not actually compared.
+  Take the results from the design-build agent's per-width Visual Comparison where one ran, and
+  check them against the images rather than copying them.
+
+One collapsed table per board the ticket uses (the README's ticket-to-board table), with the counts
+in the summary so a reviewer sees the outcome without opening it:
+
+```markdown
+<details>
+<summary>Order summary: canvas vs build at 6 widths (5 PASS, 1 FAIL)</summary>
+
+| Width | Canvas | Built | Result |
+| --- | --- | --- | --- |
+| 390 | _drag canvas-order-summary@390.png_ | _drag built-order-summary@390.png_ | PASS: copy, colours, 16px padding |
+| 420 (drawn, not a breakpoint) | _drag canvas-order-summary@420.png_ | _drag built-order-summary@420.png_ | FAIL: total 18px, board 20px |
+
+</details>
+```
+
+Leave a blank line after `<summary>` and before `</details>`, or GitHub renders the table as text.
+Where the page existed before the ticket, a before/after pair in the short form above still goes
+alongside; the canvas table does not replace it. Testing carries the counts per board. A UI PR with
+no saved canvas keeps the short form.
 
 **Capturing.** Playwright at the chosen widths, saved to `<§2 Handoff directory>/<TICKET>/`.
 Pick the cheapest surface that renders real copy — **read `references/screenshot-surfaces.md`**
@@ -543,7 +588,7 @@ about immediately, not at the bottom of a finished PR description.
 | Uploading when §3 says `ask`, because it was fine last time | `ask` means every run. Standing permission is a §3 `yes`, never an inference |
 | Re-running the upload after exit 3 or 4 | The assets exist; fix the body from the printed tags |
 | Running the upload while another browser holds the profile | One `SingletonLock`. Never kill the holder; ask the user to free it |
-| A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing |
+| A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing. A ticket with a saved canvas is the exception: every breakpoint, collapsed |
 | Screenshots with a consent banner over the content | Seed its cookie before the first `goto` |
 | A before/after table on a change that renders identically | Omit the section and say why in one line |
 | Opening a non-draft PR | Draft first (unless §5 PR lifecycle says otherwise); images and self-review land before it goes ready |
