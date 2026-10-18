@@ -275,18 +275,26 @@ export function status(target, version, { root, dir } = {}) {
 
 // ---- check (the lint finding) -----------------------------------------------------------------
 
-// The ticket's Design section: from a `h2. Design` (Jira wiki) or `## Design` heading to the next
-// heading. Null when there is none. Text with any `hN.` heading is wiki markup, where `# item` is a
-// numbered list item (desk-jira writes markdown's `1. item` that way), so only `hN.` heads it.
-export function designSection(text) {
+// The text split at its `h2. Name` (Jira wiki) or `## Name` headings: [{name, lines: [{n, text}]}],
+// what comes before the first heading under '', emphasis dropped from names. Text with any `hN.`
+// heading is wiki markup, where `# item` is a numbered list item (desk-jira writes markdown's
+// `1. item` that way), so only `hN.` heads it.
+export function sections(text) {
   const lines = String(text ?? '').split(/\r?\n/);
-  const mark = lines.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? 'h[1-6]\\.\\s+' : '#{1,6}\\s+';
-  const head = (l) => new RegExp(`^\\s*${mark}`, 'i').test(l);
-  const start = lines.findIndex((l) => new RegExp(`^\\s*${mark}design\\b`, 'i').test(l));
-  if (start < 0) return null;
-  let end = lines.findIndex((l, i) => i > start && head(l));
-  if (end < 0) end = lines.length;
-  return lines.slice(start + 1, end).join('\n');
+  const head = lines.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? /^\s*h[1-6]\.\s+(.*)$/i : /^\s*#{1,6}\s+(.*?)\s*$/;
+  const out = [{ name: '', lines: [] }];
+  lines.forEach((l, i) => {
+    const m = head.exec(l);
+    if (m) out.push({ name: m[1].replace(/[*_]/g, '').trim(), lines: [] });
+    else out.at(-1).lines.push({ n: i + 1, text: l });
+  });
+  return out;
+}
+
+// The ticket's Design section, up to the next heading. Null when there is none.
+export function designSection(text) {
+  const s = sections(text).find((x) => /^design\b/i.test(x.name));
+  return s ? s.lines.map((l) => l.text).join('\n') : null;
 }
 
 export function claudeDesignLinks(section) {

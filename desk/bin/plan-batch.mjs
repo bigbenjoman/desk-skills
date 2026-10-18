@@ -165,6 +165,8 @@ const DB_NOTE = !localDb
         : 'its own per-ticket database will be created in the local Postgres, or the worktree is not set up';
 
 const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b === t ? [c.a] : []));
+// desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
+const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 
 console.log(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (notOurs.length) {
@@ -186,10 +188,17 @@ for (const r of order) {
   if (r.needs_db) console.log(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) console.log(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) console.log(`  ! prior art: ${pa}`);
+  for (const f of lintBlocking(r)) console.log(`  ! lint (blocking): ${f.message}`);
+  if (r.lint_error) console.log(`  ! lint did not run: ${r.lint_error}`);
   if (r.lane_original) console.log(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);
   for (const n of notes[r.ticket] ?? []) console.log(`  ~ ${n}`);
 }
 
+const linted = ours.filter((r) => lintBlocking(r).length || r.lint_error);
+if (linted.length) {
+  console.log(`\n${'='.repeat(60)}\nLINT — ${linted.length} ticket(s) a worker would park on; fix each ticket (desk-jira lint <KEY>) before spawning:`);
+  for (const r of linted) console.log(`  ${r.ticket}: ${r.lint_error ? `lint did not run (${r.lint_error})` : `${lintBlocking(r).length} blocking finding(s)`}`);
+}
 if (sized.length) {
   console.log(`\n${'='.repeat(60)}\nPARKED ON SIZE (${sized.length}) — L and XL are split before they are batched:`);
   for (const r of sized) console.log(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);

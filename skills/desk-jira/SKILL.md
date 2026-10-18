@@ -189,6 +189,24 @@ hand, by Bea, or by a machine path (a spin-off, a follow-up, an L split, an epic
 The template says how §5 Ticket format overrides it. Read two or three recent tickets of the same type in §4 Jira project before writing a new
 one, and match their summary style (an `[Area]` prefix, a verb-first phrase, whatever they use).
 
+**`desk-jira lint` checks a ticket against the template**: `desk-jira lint <KEY>` for one in Jira,
+or `desk-jira lint body.md [<type>] [field=value ...]` for a draft, read as `create` would send it.
+It prints one line per finding and exits 1 on any blocking one:
+
+- **Blocking**, what makes triage ask or a worker park: no acceptance criteria; an open decision
+  (TBD, TODO, decide, proposal for, needs a decision, or a question mark in Outcome, the criteria or
+  Out of scope); no design link and no `No UI.` line; Size unset (not asked of a Subtask); a
+  criterion that needs a Jira write, a live production run or an operator step; and `desk-design`'s
+  finding for a Claude Design link with no saved copy (advisory once autopilot has snapshotted the
+  canvas, since the worker saves it).
+- **Advisory**: no Out of scope or Verification section; a ticket key or a sibling's title named
+  with no Blocks link; a status or priority line in the body; markdown that will not render (a `##`
+  heading, `**bold**` or backticks in wiki markup, an unescaped `--` inside `{{ }}`).
+
+**`create` lints first** and refuses a blocking finding, printing them. Fix the body; `--no-lint`
+files it as it is, only when the user has seen the findings and said so. Autopilot lints every
+ticket at triage and shows the blocking findings in the batch plan.
+
 **Never invent the substance.** If the real name, price, business rule or product data isn't in the
 ticket, a sheet or the database, ask. Invented product data costs a full revert.
 

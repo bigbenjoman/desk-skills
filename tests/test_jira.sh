@@ -192,21 +192,21 @@ printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_B/atlassian-token"; chmod 600
 printf 'a body' > "$B/body.md"
 sent_assignee() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields | if has("assignee") then .assignee else "absent" end' "$LOG"; }
 creates() { jq -s '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | length' "$LOG"; }
-out=$(cd "$A" && "$J" create Task s body.md 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Task s body.md --no-lint 2>&1); rc=$?
 check "create with assign-self yes sends your accountId" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"abc\"}" ]'
 check "create reads the assignee back" 'printf "%s" "$out" | grep -q "^  assignee: Me$"'
-out=$(cd "$A" && "$J" create Task s body.md assignee=me 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Task s body.md assignee=me --no-lint 2>&1); rc=$?
 check "create assignee=me goes through without --route" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"abc\"}" ]'
-out=$(cd "$A" && "$J" create Task s body.md assignee=null 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Task s body.md assignee=null --no-lint 2>&1); rc=$?
 check "create assignee=null stays unassigned" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "null" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
 n0=$(creates)
-err=$(cd "$A" && "$J" create Task s body.md assignee=xyz 2>&1); rc=$?
+err=$(cd "$A" && "$J" create Task s body.md assignee=xyz --no-lint 2>&1); rc=$?
 check "create for someone else refused without --route" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--route" && [ "$(creates)" -eq "$n0" ]'
-err=$(cd "$A" && "$J" create Task s body.md 'assignee={"name":"xyz"}' 2>&1); rc=$?
+err=$(cd "$A" && "$J" create Task s body.md 'assignee={"name":"xyz"}' --no-lint 2>&1); rc=$?
 check "create with a non-accountId assignee refused without --route" '[ $rc -ne 0 ] && [ "$(creates)" -eq "$n0" ]'
-out=$(cd "$A" && "$J" create Task s body.md assignee=xyz --route 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Task s body.md assignee=xyz --route --no-lint 2>&1); rc=$?
 check "create for someone else with --route sends them" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"xyz\"}" ] && printf "%s" "$out" | grep -q "^  assignee: xyz$"'
-out=$(cd "$B" && "$J" create Task s body.md 2>&1); rc=$?
+out=$(cd "$B" && "$J" create Task s body.md --no-lint 2>&1); rc=$?
 check "create without assign-self sends no assignee" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "\"absent\"" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
 
 # Field rules from config §4: required fields per type, no XL outside an Epic, and the top
@@ -228,9 +228,9 @@ err=$(cd "$C" && "$J" create bug s body.md 2>&1); rc=$?
 check "create names every missing field, type matched in any case" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "needs customfield_10207" && printf "%s" "$err" | grep -q "needs customfield_10208" && [ "$(creates)" -eq "$n0" ]'
 err=$(cd "$C" && "$J" create Task s body.md customfield_10208= customfield_10207=P2 2>&1); rc=$?
 check "create with a required field empty is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "needs customfield_10208" && [ "$(creates)" -eq "$n0" ]'
-out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 2>&1); rc=$?
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 --no-lint 2>&1); rc=$?
 check "create with every required field goes, options wrapped by name" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"M\"},\"p\":{\"value\":\"P2\"}}" ]'
-out=$(cd "$C" && "$J" create Subtask s body.md 2>&1); rc=$?
+out=$(cd "$C" && "$J" create Subtask s body.md --no-lint 2>&1); rc=$?
 check "a type with no rule needs no fields" '[ $rc -eq 0 ]'
 
 n0=$(creates)
@@ -240,7 +240,7 @@ err=$(cd "$C" && "$J" create Story s body.md 'customfield_10208={"value":"xl"}' 
 check "create with Size xl as JSON on a Story is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "split it" && [ "$(creates)" -eq "$n0" ]'
 err=$(cd "$C" && "$J" create Story s body.md 'customfield_10208={"id":"10301"}' customfield_10207=P2 2>&1); rc=$?
 check "create with Size as an option id is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "by its option name" && [ "$(creates)" -eq "$n0" ]'
-out=$(cd "$C" && "$J" create Epic s body.md customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
+out=$(cd "$C" && "$J" create Epic s body.md customfield_10208=XL customfield_10207=P2 --no-lint 2>&1); rc=$?
 check "an Epic may be XL" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"XL\"},\"p\":{\"value\":\"P2\"}}" ]'
 n0=$(creates)
 err=$(cd "$C" && "$J" create Epic s body.md issuetype=Task customfield_10208=XL customfield_10207=P2 2>&1); rc=$?
@@ -280,7 +280,7 @@ check "a headless worker may set a lower priority" '[ $rc -eq 0 ] && [ "$(puts)"
 check "nothing refused posted a comment" '[ "$(comments_sent)" -eq "$c0" ]'
 err=$(cd "$C" && "$J" edit KAN-20 customfield_10207=P2 --approved "not needed" 2>&1); rc=$?
 check "--approved on a lower priority is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--approved is only for" && [ "$(puts)" -eq $((p0 + 1)) ]'
-out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P1 --approved "Launch blocks on it, per the user" 2>&1); rc=$?
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P1 --approved "Launch blocks on it, per the user" --no-lint 2>&1); rc=$?
 check "create at a top priority with --approved goes" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"M\"},\"p\":{\"value\":\"P1\"}}" ]'
 check "the decision is recorded on the new ticket" '[ "$(comments_sent)" -eq $((c0 + 1)) ] && last_comment | grep -qxF "customfield_10207 set to P1 by Me: Launch blocks on it, per the user" &&
   last_comment | grep -qxF "(KAN-99/desk-jira priority)" && printf "%s" "$out" | grep -q "recorded on KAN-99"'
@@ -371,12 +371,12 @@ check "a re.py in the working directory or on PYTHONPATH is not run" '[ "$out" =
 last_desc() { jq -sj '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields.description' "$LOG"; }
 last_put_desc() { jq -sj '[.[] | select(.method == "PUT")] | last | .body | fromjson | .fields.description' "$LOG"; }
 last_body() { jq -sj '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
-out=$(cd "$A" && "$J" create Story s md/vpl288.md 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Story s md/vpl288.md --no-lint 2>&1); rc=$?
 check "create converts a .md description" '[ $rc -eq 0 ] && last_desc | cmp -s - "$M/vpl288.out"'
-out=$(cd "$A" && "$J" create Story s md/wiki1.md 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Story s md/wiki1.md --no-lint 2>&1); rc=$?
 check "create sends a wiki .md description unchanged" '[ $rc -eq 0 ] && last_desc | cmp -s - "$M/wiki1.md"'
 printf '## Not converted\n' > "$M/lit.txt"
-out=$(cd "$A" && "$J" create Story s md/lit.txt 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Story s md/lit.txt --no-lint 2>&1); rc=$?
 check "create sends a .txt description unchanged" '[ $rc -eq 0 ] && [ "$(last_desc)" = "## Not converted" ]'
 out=$(cd "$A" && "$J" comment KAN-1 md/vpl83.md 2>&1); rc=$?
 check "comment converts a .md body" '[ $rc -eq 0 ] && last_body | cmp -s - "$M/vpl83.out"'
@@ -392,21 +392,21 @@ check "edit description=@file.md of wiki markup goes unchanged" '[ $rc -eq 0 ] &
 n0=$(creates); p0=$(puts)
 for body in 'Priority: P2' '**Status:** In Progress' 'Launch Priority: P1' '* P1' 'h2. Context\nPriority = High' 'Intro\n\nSize: M'; do
   printf "$body\n" > "$M/fact.md"
-  err=$(cd "$A" && "$J" create Story s md/fact.md 2>&1); rc=$?
+  err=$(cd "$A" && "$J" create Story s md/fact.md --no-lint 2>&1); rc=$?
   check "create refuses a description line: $body" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
 done
 printf 'a body\n' > "$M/lit2.txt"
-err=$(cd "$A" && "$J" create Story s md/lit2.txt 'description=Status: Done' 2>&1); rc=$?
+err=$(cd "$A" && "$J" create Story s md/lit2.txt 'description=Status: Done' --no-lint 2>&1); rc=$?
 check "create refuses a Status line passed as a description= field" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
-err=$(cd "$A" && "$J" create Story s md/lit2.txt description=@md/fact.md 2>&1); rc=$?
+err=$(cd "$A" && "$J" create Story s md/lit2.txt description=@md/fact.md --no-lint 2>&1); rc=$?
 check "create refuses a description=@file.md carrying a Size line" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "live in their fields" && [ "$(creates)" -eq "$n0" ]'
 err=$(cd "$A" && "$J" edit KAN-20 'description=Status: Not Started' 2>&1); rc=$?
 check "edit refuses a Status line in the description" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing line 1" && [ "$(puts)" -eq "$p0" ]'
 printf 'Size: M\n\nh2. Context\nVPL-82 says Status: Not Started while it is In Progress, and P1 is the field.\n' > "$M/ok.md"
-out=$(cd "$A" && "$J" create Story s md/ok.md 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Story s md/ok.md --no-lint 2>&1); rc=$?
 check "a first-line Size with no §4 Size field, and status quoted mid-sentence, pass" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ]'
 printf '## Bug\nThe handler reads it:\n\n```python\nstatus = resp.status_code\np1 = Point(0, 0)\n```\n\n```\npriority: high\nsize: 3\n```\n' > "$M/codeok.md"
-out=$(cd "$A" && "$J" create Story s md/codeok.md 2>&1); rc=$?
+out=$(cd "$A" && "$J" create Story s md/codeok.md --no-lint 2>&1); rc=$?
 check "status, priority and size lines inside code blocks are code, not fields" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 2)) ]'
 n0=$((n0 + 1))
 cp "$M/ok.md" "$C/ok.md"
@@ -453,6 +453,180 @@ out=$(cd "$A" && JIRA_SITE="http://127.0.0.1:$KEEPPORT" "$J" unlink KAN-30 KAN-3
 check "a delete the read-back still shows fails" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "still shows: relates to KAN-31"'
 L link KAN-30 blocks KAN-30
 check "a self link is refused" '[ $rc -ne 0 ] && [ -z "$(posted)" ]'
+
+# lint checks a ticket or a draft against the ticket template; create refuses a blocking finding.
+LD="$A/lint"; mkdir -p "$LD"
+# A draft with every section the template asks for (repo A's Size field is the site's "Size").
+clean(){ cat <<'EOF'
+_Context: none._
+
+## Outcome
+Reviewers see what a ticket lacks before it reaches a batch.
+
+## Acceptance criteria
+1. AC1: Given a draft, when lint runs, then it lists each finding with its severity.
+
+## Verification
+* Unit: tests/test_jira.sh.
+
+## Design
+No UI.
+
+## Out of scope
+* None.
+
+## Decisions
+* 2026-10-17 Ben: lint before create.
+
+## Build on
+* `bin/desk-jira`
+EOF
+}
+clean > "$LD/clean.md"
+lint(){ out=$(cd "$A" && "$J" lint "$@" 2>&1); rc=$?; }
+lint "$LD/clean.md" customfield_10208=M
+check "lint: a clean draft has no findings and exits 0" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+# Each blocking finding: the clean draft with one thing changed.
+clean | grep -v -e '^## Acceptance criteria' -e '^1\. AC1' > "$LD/nocrit.md"
+lint "$LD/nocrit.md" customfield_10208=M
+check "lint: no acceptance criteria is blocking, exit 1" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria"'
+for open in 'TBD' 'TODO' 'needs a decision' 'proposal for' 'decide'; do
+  clean | awk -v o="$open" '{ print } /^\* None\.$/ { print "* Whether to " o " the rest." }' > "$LD/open.md"
+  lint "$LD/open.md" customfield_10208=M
+  check "lint: an open decision ($open) is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* leaves a decision open"'
+done
+clean | awk '{ print } /^Reviewers see/ { print "Should it also fix them?" }' > "$LD/q.md"
+lint "$LD/q.md" customfield_10208=M
+check "lint: a question mark in scope is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* asks a question in Outcome"'
+clean | awk '{ print } /^Reviewers see/ { print "See `a?` and https://example.com/a?b=1." } /^\* Unit/ { print "* Manual: does it list them?" }' > "$LD/q2.md"
+lint "$LD/q2.md" customfield_10208=M
+check "lint: a question mark outside scope, in code or in a URL is not" '[ $rc -eq 0 ]'
+clean | grep -v -e '^## Design' -e '^No UI' > "$LD/nodesign.md"
+lint "$LD/nodesign.md" customfield_10208=M
+check "lint: no design link and no No UI line is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
+clean | awk '{ if ($0 == "No UI.") print "https://www.figma.com/design/Ab/x?node-id=1-2"; else print }' > "$LD/figma.md"
+lint "$LD/figma.md" customfield_10208=M
+check "lint: a design URL in the Design section passes" '[ $rc -eq 0 ]'
+lint "$LD/clean.md"
+check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
+{ printf 'Size: S\n\n'; clean; } > "$LD/sized.md"
+lint "$LD/sized.md"
+check "lint: a first-line Size counts as set" '[ $rc -eq 0 ]'
+lint "$LD/clean.md" Subtask
+check "lint: a subtask needs no Size (its parent is sized)" '[ $rc -eq 0 ]'
+for ac in 'then KAN-3 is linked to KAN-4' 'then the field is set in Jira' 'then the p95 is measured in production' 'then an operator restarts the service'; do
+  clean | awk -v a="$ac" '{ print } /^1\. AC1/ { print "2. AC2: Given a filed ticket, when it is picked up, " a "." }' > "$LD/ac.md"
+  lint "$LD/ac.md" customfield_10208=M
+  check "lint: a criterion the worker cannot do ($ac) is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do"'
+done
+clean | awk '{ print } /^1\. AC1/ { print "2. AC2: Given a live session, when the link is created, then it is read back." }' > "$LD/acok.md"
+lint "$LD/acok.md" customfield_10208=M
+check "lint: a criterion about link code, or a live session, is one the worker can do" '[ $rc -eq 0 ]'
+# Advisory findings do not fail the lint.
+clean | grep -v -e '^## Out of scope' -e '^\* None' -e '^## Verification' -e '^\* Unit' > "$LD/adv0.md"
+{ cat "$LD/adv0.md"; printf '\nPriority: P2\n'; } > "$LD/adv.md"
+lint "$LD/adv.md" customfield_10208=M
+check "lint: no Out of scope and no Verification are advisory, exit 0" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: no \"Out of scope\" section" && printf "%s\n" "$out" | grep -q "^advisory: no \"Verification\" section"'
+check "lint: a priority line in the body is advisory" 'printf "%s\n" "$out" | grep -q "^advisory: line [0-9]*, \"Priority: P2\": status, priority and size live in their fields"'
+lint "$LD/nocrit.md" customfield_10208=M --json
+check "lint --json: an array of findings with severity" '[ $rc -eq 1 ] && printf "%s" "$out" | jq -e "map(select(.severity == \"blocking\" and .rule == \"criteria\")) | length == 1" >/dev/null'
+
+# Tickets read from Jira: KAN-45 is clean; KAN-46 has every advisory; KAN-47 links an unsaved
+# Claude Design canvas.
+cat > "$LD/45.wiki" <<'EOF'
+_Context: Part of the KAN-2 epic._
+
+h2. Outcome
+Reviewers see what a ticket lacks before it reaches a batch.
+h2. Acceptance criteria
+# AC1: Given a ticket, when lint runs, then it lists each finding.
+h2. Verification
+* Unit: tests/test\_jira.sh.
+h2. Design
+No UI.
+h2. Out of scope
+* None.
+EOF
+cat > "$LD/46.wiki" <<'EOF'
+h2. Outcome
+Builds on KAN-3 and KAN-4, and on Lint every ticket before create.
+
+## Notes
+Run **this**, `that` and {{desk-jira --json}}.
+Priority: P2
+h2. Acceptance criteria
+# AC1: Given a ticket, when lint runs, then it lists each finding.
+h2. Verification
+* Unit: tests/test\_jira.sh.
+h2. Design
+No UI.
+h2. Out of scope
+* None.
+EOF
+printf 'h2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Design\nhttps://claude.ai/design/p/abc123\nh2. Verification\n* none\nh2. Out of scope\n* None.\n' > "$LD/47.wiki"
+jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" '
+  {"issues": {
+    "KAN-2": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}},
+    "KAN-45": {"summary": "Lint every ticket before create", "issuetype": {"name": "Story"}, "description": $d45,
+      "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}},
+      "customfield_10208": {"value": "M"}, "_names": {"customfield_10208": "Size"}},
+    "KAN-46": {"summary": "Record the lint for plan-batch", "issuetype": {"name": "Story"}, "description": $d46,
+      "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}},
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"},
+      "issuelinks": [{"id": "5", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}, "inwardIssue": {"key": "KAN-3"}}]},
+    "KAN-47": {"summary": "a canvas", "issuetype": {"name": "Story"}, "description": $d47,
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}}},
+   "children": {"KAN-2": ["KAN-45", "KAN-46"]},
+   "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}' > "$T/lint.json"
+LPORT=$((PORT + 3)); python3 "$S/stub_jira.py" "$LPORT" "$T/lint.log" "" "$T/lint.json" & LSTUB=$!
+trap 'kill $STUB $SLOW $KEEP $LSTUB 2>/dev/null' EXIT
+sleep 0.5
+klint(){ out=$(cd "$A" && JIRA_SITE="http://127.0.0.1:$LPORT" "$J" lint "$@" 2>&1); rc=$?; }
+klint KAN-45
+check "lint KEY: a clean ticket (parent and sibling excluded) has no findings" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+klint KAN-46
+check "lint KEY: only advisory findings, exit 0" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "^blocking"'
+check "lint KEY: a key named with no Blocks link is advisory, a linked one is not" 'printf "%s\n" "$out" | grep -q "^advisory: names KAN-4 with no Blocks link"'
+check "lint KEY: a sibling title named with no Blocks link is advisory" 'printf "%s\n" "$out" | grep -q "^advisory: names its sibling KAN-45 (\"Lint every ticket before create\")"'
+check "lint KEY: a status or priority line is advisory" 'printf "%s\n" "$out" | grep -q "^advisory: line [0-9]*, \"Priority: P2\""'
+check "lint KEY: markdown that will not render is advisory, each kind named" 'printf "%s\n" "$out" | grep "^advisory: markdown that will not render" | grep "markdown heading" | grep "\*\*bold\*\*" | grep "backtick span" | grep -q "unescaped -- inside"'
+klint KAN-47
+check "lint KEY: an unsaved Claude Design canvas is desk-design's blocking finding" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: design: KAN-47.s Design section links the Claude Design artifact https://claude.ai/design/p/abc123, but no copy is saved"'
+mkdir -p "$T/state/designs/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123#board"}' > "$T/state/designs/KAN-47/source.json"
+out=$(cd "$A" && DESK_AUTOPILOT_STATE="$T/state" JIRA_SITE="http://127.0.0.1:$LPORT" "$J" lint KAN-47 2>&1); rc=$?
+check "lint KEY: a canvas autopilot has snapshotted is advisory, the worker saves it" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*no copy is saved.*autopilot has snapshotted it"'
+mkdir -p "$A/docs/design/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123","version":"1","tickets":[{"key":"KAN-47","boards":[]}]}' > "$A/docs/design/KAN-47/source.json"
+klint KAN-47
+check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'
+klint KAN-46 Story
+check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "pass no type or fields"'
+
+# DS-2 to DS-25 as rewritten on 2026-10-16 (descriptions recorded from desk-jira get --json on
+# 2026-10-18): none has a blocking finding, under the DS project's own key pattern.
+jq -s '{issues: (map({key: .key, value: {summary: .key, issuetype: {name: .type}, description: .d,
+  customfield_10208: {value: .size}, _names: {customfield_10208: "Size"}}}) | from_entries)}' "$S/lint_corpus.jsonl" > "$T/corpus.json"
+CPORT=$((PORT + 4)); python3 "$S/stub_jira.py" "$CPORT" "$T/corpus.log" "" "$T/corpus.json" & CSTUB=$!
+trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB 2>/dev/null' EXIT
+SLUG_DS=$(mkrepo ds "https://github.com/acme/ds" jira "http://127.0.0.1:$CPORT")
+printf '| Ticket key pattern | `DS-[0-9]+` |\n' >> "$DESK_CONFIG_ROOT/repos/$SLUG_DS/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_DS/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_DS/atlassian-token"
+sleep 0.5
+blocked=''; n=0
+for k in $(jq -r .key "$S/lint_corpus.jsonl"); do
+  out=$(cd "$T/repos/ds" && "$J" lint "$k" 2>&1); rc=$?; n=$((n + 1))
+  [ $rc -eq 0 ] || blocked="$blocked $k(rc $rc: $(printf '%s' "$out" | grep -m1 -v '^advisory'))"
+done
+check "lint: DS-2 to DS-25 ($n tickets) have no blocking finding" '[ "$n" -eq 24 ] && [ -z "$blocked" ]'
+[ -z "$blocked" ] || printf '  blocked:%s\n' "$blocked"
+
+# create lints first: a blocking finding stops it, before anything is posted.
+n0=$(creates)
+err=$(cd "$A" && "$J" create Story s lint/nocrit.md customfield_10208=M 2>&1); rc=$?
+check "create with a blocking finding is refused and prints it" '[ $rc -ne 0 ] && printf "%s\n" "$err" | grep -q "not created: the ticket has blocking findings" && printf "%s\n" "$err" | grep -q "^blocking: no acceptance criteria" && [ "$(creates)" -eq "$n0" ]'
+out=$(cd "$A" && "$J" create Story s lint/nocrit.md customfield_10208=M --no-lint 2>&1); rc=$?
+check "create --no-lint skips the lint" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ]'
+out=$(cd "$A" && "$J" create Story s lint/adv0.md customfield_10208=M 2>&1); rc=$?
+check "create with only advisory findings goes, and prints them" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 2)) ] && printf "%s\n" "$out" | grep -q "^advisory: no \"Verification\" section"'
 
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

@@ -280,8 +280,9 @@ console.log(d.lane_original
 MERGE_END
 fi
 
-# Jira facts plan-batch needs (Blocks links, size), read deterministically rather than taken from the
-# model: a read failure is recorded as facts_error, which plan-batch turns into a question.
+# Jira facts plan-batch needs (Blocks links, size, the lint findings), read deterministically rather
+# than taken from the model: a read failure is recorded as facts_error, which plan-batch turns into a
+# question.
 node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
 
