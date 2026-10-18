@@ -111,12 +111,27 @@ check_links() {
   fi
 }
 
-have_tty() { { : </dev/tty; } 2>/dev/null; }
+# stdin as well as /dev/tty: `./install.sh </dev/null` (as /desk-update runs it) skips every prompt
+# even when the process still has a controlling terminal.
+have_tty() { [ -t 0 ] && { : </dev/tty; } 2>/dev/null; }
 
-# confirm "question" [big]  — big=1 means --yes does not accept it on your behalf
+# Every prompt skipped for want of a terminal, listed at the end with the way to apply it.
+SKIPPED=""
+SKIPPED_N=0
+IN_TERMINAL="run in a terminal: cd \"$SRC\" && ./install.sh"
+
+# confirm "question" [big] [apply]  — big=1 means --yes does not accept it on your behalf; apply is
+# the command that does the same thing later, if there is one (otherwise: re-run in a terminal)
 confirm() {
   if [ "$YES" = 1 ] && [ "${2:-0}" != 1 ]; then printf '  ?     %s [y/N] y (--yes)\n' "$1"; return 0; fi
-  if ! have_tty; then printf '  skip  %s (no terminal to ask on)\n' "$1"; return 1; fi
+  if ! have_tty; then
+    printf '  skip  %s (no terminal to ask on)\n' "$1"
+    SKIPPED="$SKIPPED  SKIP  $1
+        apply: ${3:-$IN_TERMINAL}
+"
+    SKIPPED_N=$((SKIPPED_N + 1))
+    return 1
+  fi
   local reply=""
   printf '  ?     %s [y/N] ' "$1"
   read -r reply </dev/tty || reply=""
@@ -224,7 +239,8 @@ if need codex 0 "brew install --cask codex, or npm i -g @openai/codex" \
   note "codex --version and codex login status pass even on a seat with no usage left; only a real call proves it."
   if [ "$CHECK_ONLY" = 1 ]; then
     note "no real codex call under --check; run ./install.sh without it, or /desk-setup, to make one"
-  elif confirm "Make one real codex call to prove it can answer?"; then
+  elif confirm "Make one real codex call to prove it can answer?" 0 \
+      "codex exec --sandbox read-only \"Reply with exactly: CODEX_OK\" </dev/null"; then
     if out="$(cd "$SRC" && codex exec --sandbox read-only "Reply with exactly: CODEX_OK" </dev/null 2>&1)" \
         && printf '%s' "$out" | grep -q CODEX_OK; then
       ok "codex answered"
@@ -316,7 +332,7 @@ for d in "$AGENTS"/desk-*; do
 done
 if [ -n "$stale" ]; then
   warn "no longer shipped:$stale"
-  if confirm "Move them out of ~/.agents/skills and ~/.claude/skills (kept under $BACKUP)?"; then
+  if confirm "Move the retired skills out of ~/.agents/skills and ~/.claude/skills (kept under $BACKUP)?"; then
     mkdir -p "$BACKUP/.agents/skills"
     for name in $stale; do
       [ "$LINK_MODE" = each ] && [ -L "$SKILLS_LINK/$name" ] && rm -f "$SKILLS_LINK/$name"
@@ -537,7 +553,7 @@ case "$rc" in
     note "or file, also inside bash -c or eval) carrying a Co-Authored-By trailer naming Claude or"
     note "Anthropic, Claude-Session, an Anthropic noreply address, a Claude session link, 'Generated with"
     note "Claude Code' or the robot emoji is denied. Other repos are untouched. Other hooks are kept."
-    if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
+    if confirm "Register the attribution hook in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if settings_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -565,7 +581,7 @@ case "$rc" in
   *)
     note "Registers a SessionStart hook: once a day it fetches this checkout (killed after 5 seconds)"
     note "and, if there are new commits, shows one line telling you to run /desk-update. Nothing is installed."
-    if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
+    if confirm "Register the update notice in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if update_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -593,7 +609,7 @@ case "$rc" in
     note "context passes §2 'Handoff at context %' (default 45, 0 turns it off) it asks the session to"
     note "finish its step and write .handoffs/<date>.md, blocks the end of that turn once until it is"
     note "written, and after /clear or a compaction tells the next session to read it. Other hooks are kept."
-    if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
+    if confirm "Register the context handoff in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if handoff_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -614,7 +630,8 @@ case "$rc" in
     note "Adds deny rules at user level: the Slack connector's send and write tools (drafts stay"
     note "possible), gh pr merge --admin, and git push with --force, -f, +refspec, --delete, -d or"
     note "--mirror. The push patterns are best-effort: git also takes -qf, --forc, --delet. Other rules are kept."
-    if confirm "Add them to ~/.claude/settings.json (backed up first)?"; then
+    if confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
+        "python3 \"$HARNESS\" --settings \"$SETTINGS\" baseline"; then
       if out="$(python3 "$HARNESS" --settings "$SETTINGS" baseline 2>&1)"; then
         ok "deny rules added (recorded in ~/.claude/desk/harness-rules.json)"
       else
@@ -643,7 +660,10 @@ done
 
 if [ -n "$missing_plugins" ]; then
   note "missing:$missing_plugins"
-  if confirm "Install them now, user scope?"; then
+  plugin_cmds="claude plugin marketplace add anthropics/claude-plugins-official"
+  case "$missing_plugins" in *@openai-codex*) plugin_cmds="$plugin_cmds; claude plugin marketplace add openai/codex-plugin-cc" ;; esac
+  for p in $missing_plugins; do plugin_cmds="$plugin_cmds; claude plugin install $p --scope user"; done
+  if confirm "Install the missing plugins now, user scope?" 0 "$plugin_cmds"; then
     if ! out="$(claude plugin marketplace add anthropics/claude-plugins-official 2>&1)"; then
       warn "could not add the claude-plugins-official marketplace (fine if it is already added)"; show_err "$out"
     fi
@@ -752,7 +772,7 @@ EOF
     [ "$USE_BUNX" = 1 ] || note "Rewrites the plugin's .mcp.json: --browser chromium,"
     note "--user-data-dir $PROFILE_DIR if none is set (the profile PR image upload reuses)."
     note "Every other argument the plugin ships is kept."
-    if confirm "Apply it (each file backed up first)?"; then
+    if confirm "Apply the Playwright MCP patch (each file backed up first)?"; then
       mkdir -p "$PROFILE_DIR"
       while IFS= read -r f; do
         [ -n "$f" ] || continue
@@ -778,7 +798,8 @@ EOF
   fi
   note "if a browser call later fails with 'Browser ... is not installed', download the build (no root, ~300MB):"
   note "  cd /tmp && bunx @playwright/mcp@latest install-browser chrome-for-testing"
-  if [ "$USE_BUNX" = 1 ] && confirm "Download it now?" 1; then
+  if [ "$USE_BUNX" = 1 ] && confirm "Download the Playwright browser build now (~300MB)?" 1 \
+      "cd /tmp && bunx @playwright/mcp@latest install-browser chrome-for-testing"; then
     (cd "${TMPDIR:-/tmp}" && bunx @playwright/mcp@latest install-browser chrome-for-testing) \
       || warn "browser download failed; run the command above by hand"
   fi
@@ -802,7 +823,8 @@ if out="$(python3 "$SRC/bin/skills-upstream" index 2>&1)"; then
       note "shrinks the listing budget to 0.3% of the context window (plugin skills cannot be set name-only),"
       note "and adds ~/.claude/rules/desk-skill-index.md pointing Claude at skill-index, whose area files hold"
       note "every full description. Entries you already set in skillOverrides are kept."
-      if confirm "List skills by name only in ~/.claude/settings.json (backed up first)?"; then
+      if confirm "List skills by name only in ~/.claude/settings.json (backed up first)?" 0 \
+          "cp -p \"$SETTINGS\" \"$SETTINGS.bak-desk-$TS\"; python3 \"$SRC/bin/skills-upstream\" index --quiet --name-only"; then
         backup_settings
         if out="$(python3 "$SRC/bin/skills-upstream" index --quiet --name-only 2>&1)"; then ok "${out#skill-index: }"
         else warn "could not update ~/.claude/settings.json"; show_err "$out"; fi
@@ -857,6 +879,10 @@ if [ -f "$SRC/vendor/sources.json" ]; then
 fi
 
 printf '\nDone. %s warning(s) above.\n' "$WARNINGS"
+if [ "$SKIPPED_N" -gt 0 ]; then
+  echo "Skipped (no terminal): $SKIPPED_N prompt(s), nothing was changed for them. Each one and how to apply it:"
+  printf '%s' "$SKIPPED"
+fi
 if [ -n "$WROTE" ]; then
   echo "Written or moved, because these paths are desk-owned (an edited copy is backed up"
   echo "under $BACKUP first):"
