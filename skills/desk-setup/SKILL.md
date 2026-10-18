@@ -564,7 +564,8 @@ or un-ignored file and any user-level file (exit 2, nothing written). Pass its r
 tracked copy) as the user's own action.
 
 Existing worktrees you open yourself do not see the file; offer to copy it into the ones
-`git worktree list` shows (backing up any that exist). **Autopilot worker worktrees never get a
+`git worktree list` shows (backing up any that exist). A later `remove` updates those copies too,
+as long as nobody has edited them since. **Autopilot worker worktrees never get a
 copy**: `setup-worktree.sh` does not copy it, because it carries your own allows (merge driver
 included). Workers run on their own settings built from §3 by `worker-settings.mjs`, kept outside the
 repo in `$DESK_STATE/workers/`.
@@ -676,8 +677,10 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 - **Before/after for every changed row**; never reset one quietly.
 - Revoking is as easy as granting: set the row, run
   `python3 $H "${REPO_RULES[@]}" remove <row> [<row>...]` (backs up, removes every rule the row
-  owns in this repo, restores a guard it had removed), refresh §3c, confirm. Do not argue for the
-  capability it costs.
+  owns in this repo, restores a guard it had removed), refresh §3c, confirm. It also updates every
+  worktree copy (`git worktree list`) that matched the file before the revoke, backing each up
+  first; a `differs` line names a copy that did not match and still carries the rule, so pass each
+  one on for the user to fix there. Do not argue for the capability it costs.
 - A row newly `yes` on a re-run: `add` a plan with just its rules (and any `unguard:`).
 
 ## Red flags — stop

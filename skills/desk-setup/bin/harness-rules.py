@@ -39,6 +39,11 @@ up settings.json and the ledger first, and writes through a symlink with the fil
 Exit 2 on an unreadable settings.json, ledger or plan, or a refused destination; nothing is written
 then. `remove` never creates a settings file: when the file does not exist it says no rule was
 removed from it and drops only the ledger records.
+
+A revoke also reaches the worktrees. When `remove` changes a repo-level <root>/.claude/<file>, the
+same file in every other worktree `git worktree list` shows is checked: a copy that matched the
+file byte for byte before the revoke is backed up and replaced with the new file (removed, if the
+file was); a copy that differs is left alone and named, for revoking there by hand.
 """
 
 import datetime
@@ -81,15 +86,25 @@ def backup(path, stamp):
 
 
 def write_json(path, data):
+    write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode())
+
+
+def read_bytes(path):
+    if not os.path.isfile(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def write_bytes(path, raw):
     """Replace the file a path resolves to, so a symlinked settings.json stays a symlink."""
     real = os.path.realpath(path)
     folder = os.path.dirname(real)
     os.makedirs(folder, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".desk-", suffix=".tmp", dir=folder)
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
         if os.path.exists(real):
             shutil.copymode(real, tmp)
         else:
@@ -162,6 +177,45 @@ def check_destination(settings_path, plan):
             "(allow rules or removed guards). Grants are per repo: pass --settings "
             "<repo root>/.claude/settings.local.json. Nothing changed.")
     return check_ignored(*scope)
+
+
+def worktree_copies(settings_path):
+    """The same <worktree>/.claude/<file> in every other worktree `git worktree list` shows."""
+    scope = repo_settings_scope(settings_path)
+    if scope is None:
+        return []
+    root, rel = scope
+    r = _git(root, "worktree", "list", "--porcelain")
+    if not r or r.returncode != 0:
+        return []
+    trees = [line[len("worktree "):] for line in r.stdout.splitlines() if line.startswith("worktree ")]
+    return [os.path.join(t, rel) for t in trees if os.path.realpath(t) != os.path.realpath(root)]
+
+
+def sync_copies(st, before):
+    """After a revoke, bring each worktree copy that matched the file before it up to date.
+
+    setup-worktree.sh and desk-setup copy <root>/.claude/settings.local.json into worktrees, so a
+    rule revoked only in the main file stays live in every copy. A copy that differs from the main
+    file before the revoke is someone's own edit: it is left alone and named."""
+    after = read_bytes(st.settings_path)
+    if before is None or after == before:
+        return
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    for copy in worktree_copies(st.settings_path):
+        if not os.path.isfile(copy) or os.path.realpath(copy) == os.path.realpath(st.settings_path):
+            continue
+        if read_bytes(copy) != before:
+            st.log.append(f"differs  {copy}  (did not match {st.settings_path} before the revoke: "
+                          "left alone; revoke there by hand)")
+            continue
+        st.log.append(f"backup   {backup(copy, stamp)}")
+        if after is None:
+            os.remove(copy)
+            st.log.append(f"removed  {copy} (the main file it copied was removed)")
+        else:
+            write_bytes(copy, after)
+            st.log.append(f"synced   {copy}")
 
 
 class State:
@@ -374,7 +428,9 @@ def cmd_remove(st, rows, everything):
         what = "any recorded rule" if everything else f"a recorded rule owned by {', '.join(rows)}"
         where = f"{st.settings_path} does not exist and the" if missing else "the"
         st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
+    before = read_bytes(st.settings_path)
     st.save()
+    sync_copies(st, before)
 
 
 def cmd_list(st, markdown):

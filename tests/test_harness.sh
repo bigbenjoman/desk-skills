@@ -73,6 +73,33 @@ run --ledger "$T/glob2.json" --settings "$T/glob/.claude/gone.json" remove pr-re
 check "remove with ledger records but missing file: no REMOVED, no file created" '[ $rc -eq 0 ] && [[ "$out" == *"absent"* ]] && [[ "$out" != *REMOVED* ]] && [ ! -e "$T/glob/.claude/gone.json" ]'
 run --ledger "$T/own.json" --settings "$T/own/.claude/settings.local.json" remove nobody
 check "remove of an unowned row says nothing to remove" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to remove"* ]]'
+
+# remove reaches worktree copies: a matching copy is synced (after a backup), a differing one named
+RT="$(cd "$T" && pwd -P)"  # git worktree list prints real paths (/private/var on macOS)
+mkrepo wt; printf '.claude/settings.local.json\n' > "$T/wt/.gitignore"
+git -C "$T/wt" add .gitignore; git -C "$T/wt" commit -qm init
+printf '{"permissions":{"allow":["Bash(ls)"]}}\n' > "$T/wt/.claude/settings.local.json"  # the user's own: the file outlives the revoke
+run --ledger "$T/wt.json" --settings "$T/wt/.claude/settings.local.json" add "$T/allow.json"
+git -C "$T/wt" worktree add -q "$T/wt-same" -b same; git -C "$T/wt" worktree add -q "$T/wt-own" -b own
+git -C "$T/wt" worktree add -q "$T/wt-none" -b none
+mkdir -p "$T/wt-same/.claude" "$T/wt-own/.claude"
+cp "$T/wt/.claude/settings.local.json" "$T/wt-same/.claude/settings.local.json"
+printf '{"permissions":{"allow":["Bash(gh pr ready *)","Bash(ls)"]}}\n' > "$T/wt-own/.claude/settings.local.json"
+run --ledger "$T/wt.json" --settings "$T/wt/.claude/settings.local.json" remove pr-ready
+check "remove syncs a worktree copy that matched" '[ $rc -eq 0 ] && [[ "$out" == *"synced   $RT/wt-same/.claude/settings.local.json"* ]] && ! grep -q "gh pr ready" "$T/wt-same/.claude/settings.local.json" && cmp -s "$T/wt/.claude/settings.local.json" "$T/wt-same/.claude/settings.local.json"'
+check "the synced copy is backed up first" 'grep -q "gh pr ready" "$T"/wt-same/.claude/settings.local.json.bak-desk-*'
+check "a differing copy is left alone and named" '[[ "$out" == *"differs  $RT/wt-own/.claude/settings.local.json"* ]] && grep -q "gh pr ready" "$T/wt-own/.claude/settings.local.json" && ! ls "$T"/wt-own/.claude/settings.local.json.bak-desk-* >/dev/null 2>&1'
+check "a worktree with no copy gets none" '[ ! -e "$T/wt-none/.claude/settings.local.json" ]'
+run --ledger "$T/wt.json" --settings "$T/wt/.claude/settings.local.json" remove pr-ready
+check "a second remove touches no copy" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to remove"* ]] && [[ "$out" != *synced* ]] && [[ "$out" != *differs* ]]'
+mkrepo wt2; printf '.claude/settings.local.json\n' > "$T/wt2/.gitignore"
+git -C "$T/wt2" add .gitignore; git -C "$T/wt2" commit -qm init
+run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" add "$T/allow.json"
+git -C "$T/wt2" worktree add -q "$T/wt2-same" -b same; mkdir -p "$T/wt2-same/.claude"
+cp "$T/wt2/.claude/settings.local.json" "$T/wt2-same/.claude/settings.local.json"
+run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" remove pr-ready
+check "a copy of a file setup created and now removed goes too, backed up" '[ $rc -eq 0 ] && [ ! -e "$T/wt2/.claude/settings.local.json" ] && [ ! -e "$T/wt2-same/.claude/settings.local.json" ] && ls "$T"/wt2-same/.claude/settings.local.json.bak-desk-* >/dev/null 2>&1'
+
 run --ledger "$L" --settings "$HOME/.claude/settings.json" baseline --check
 check "baseline --check still passes at user level" '[ $rc -eq 0 ]'
 
