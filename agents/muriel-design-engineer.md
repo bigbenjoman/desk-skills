@@ -111,7 +111,8 @@ Close the pass with an attestation. It is short by design, and its job is to mak
 ## Visual Comparison
 Design reference: <fileKey / nodeId, or path to the image>
 Loaded via:       <the exact tool call you made>
-Widths compared:  <e.g. 375, 1440>
+Widths compared:  <e.g. 375, 1440; for a Claude Design canvas one line per width:
+                   390 (interpolated): PASS | FAIL | UNVERIFIABLE — <what was compared, or why not>>
 Verdict:          PASS | FAIL | UNCERTAIN
 Differences:      <concrete numbers, or "none observed">
 ```

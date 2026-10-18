@@ -258,16 +258,17 @@ apply. The canvas is the specification, so the reviewer sees it next to the buil
 size:
 
 - **Rows**: one per width in §5 Breakpoints (`desk-env list breakpoints`; unset is desk-design's
-  default `390` `768` `1024` `1280` `1440`, and `none` means no table), plus each board's own drawn
-  width where it is not a breakpoint. If `source.json` has no `screens` record (a re-save of a new
+  default `390` `768` `1024` `1280` `1440`, and `none` leaves only the drawn widths), plus each
+  board's own drawn width where it is not a breakpoint. If `source.json` has no `screens` record (a re-save of a new
   version drops it) or `source.screens.breakpoints` differs from the row, run `desk-design render`
   (desk-ticket, "A Claude Design canvas is saved into the repo") before capturing.
 - **Canvas cell**: the board's image at that width, `screens/<board>@<width>.png` from
   `source.screens.images` (its `drawn` flag says whether the designer drew that width or the browser
   reflowed the board to it). Copy each into `<§2 Handoff directory>/<TICKET>/` as
-  `canvas-<board>@<width>.png` so it uploads with the rest (an autopilot worker has no `cp`: do it
-  in the capture script).
-- **Built cell**: the page at the same width, `built-<board>@<width>.png`, captured as below.
+  `canvas-<board>-<width>.png` so it uploads with the rest (an autopilot worker has no `cp`: do it
+  in the capture script). Names stay to letters, digits and `-`: the upload matches each cell by
+  the alt text GitHub writes from the file name.
+- **Built cell**: the page at the same width, `built-<board>-<width>.png`, captured as below.
 - **Result**: `PASS` with what was compared, `FAIL` with expected against actual (the board's value,
   never the code's), or `UNVERIFIABLE` with why. A comparison that did not run is `UNVERIFIABLE`,
   never `PASS`: no canvas image at that width, no built capture, or the two not actually compared.
@@ -283,8 +284,8 @@ in the summary so a reviewer sees the outcome without opening it:
 
 | Width | Canvas | Built | Result |
 | --- | --- | --- | --- |
-| 390 | _drag canvas-order-summary@390.png_ | _drag built-order-summary@390.png_ | PASS: copy, colours, 16px padding |
-| 420 (drawn, not a breakpoint) | _drag canvas-order-summary@420.png_ | _drag built-order-summary@420.png_ | FAIL: total 18px, board 20px |
+| 390 | _drag canvas-order-summary-390.png_ | _drag built-order-summary-390.png_ | PASS: copy, colours, 16px padding |
+| 420 (drawn, not a breakpoint) | _drag canvas-order-summary-420.png_ | _drag built-order-summary-420.png_ | FAIL: total 18px, board 20px |
 
 </details>
 ```
