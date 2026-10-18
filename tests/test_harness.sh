@@ -132,7 +132,7 @@ merge_allows=$(grep -E '^\| `[a-z-]+` \|' "$ROWS" | grep -oE '`Bash\(gh pr merge
 out=$merge_allows
 check "the rows grant merge allows" '[ "$(printf "%s\n" "$merge_allows" | grep -c .)" -ge 3 ]'
 check "every merge allow in the rows requires --match-head-commit" '! printf "%s\n" "$merge_allows" | grep -v -- "--match-head-commit \*)\`$"'
-for g in '"' "'" '#' '<' '$' '`' '--match-head-commit='; do
+for g in '"' "'" '#' '<' '>(' '$' '`' '--match-head-commit='; do
   check "the merge row prompts on $g" 'grep -qF "ask: Bash(gh pr merge *$g*)" "$ROWS"'
 done
 for m in --squash --merge --rebase; do
