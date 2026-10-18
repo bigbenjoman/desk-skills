@@ -132,7 +132,9 @@ merge_allows=$(grep -E '^\| `[a-z-]+` \|' "$ROWS" | grep -oE '`Bash\(gh pr merge
 out=$merge_allows
 check "the rows grant merge allows" '[ "$(printf "%s\n" "$merge_allows" | grep -c .)" -ge 3 ]'
 check "every merge allow in the rows requires --match-head-commit" '! printf "%s\n" "$merge_allows" | grep -v -- "--match-head-commit \*)\`$"'
-check "the merge row prompts on a quoted value or an = pin" 'grep -qF "ask: Bash(gh pr merge *\"*)" "$ROWS" && grep -qF "ask: Bash(gh pr merge *'"'"'*)" "$ROWS" && grep -qF "ask: Bash(gh pr merge *--match-head-commit=*)" "$ROWS"'
+for g in '"' "'" '#' '<' '$' '`' '--match-head-commit='; do
+  check "the merge row prompts on $g" 'grep -qF "ask: Bash(gh pr merge *$g*)" "$ROWS"'
+done
 for m in --squash --merge --rebase; do
   out=$(printf '%s\n' "$merge_allows" | while IFS= read -r r; do printf '%s\n' "${r//<merge>/$m}"; done)
   check "rows rendered with $m stay pinned" '[[ "$out" == *"$m --match-head-commit *)"* ]] && ! printf "%s\n" "$out" | grep -qE -- "$m( --auto)?\)\`$"'
