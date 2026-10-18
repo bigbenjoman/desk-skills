@@ -72,7 +72,7 @@ check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec -
 check "deny-rule skip carries the harness-rules command" '[[ "$summary" == *"harness-rules.py\" --settings"*"baseline"* ]]'
 check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install vercel@claude-plugins-official --scope user"* ]]'
 check "the playwright plugin is no longer installed" '[[ "$summary" != *"install playwright@claude-plugins-official"* ]]'
-# DS-6: Claude's browser is a user-level server on desk's pinned MCP, loading the one saved login.
+# Claude's browser is a user-level server on desk's pinned MCP, loading the one saved login.
 # shellcheck disable=SC2034  # mcp and LOGIN are read inside check's eval strings
 mcp="$(printf '%s\n' "$summary" | sed -n "s/.*claude mcp add-json --scope user playwright '\(.*\)'$/\1/p" | head -n 1)"
 # shellcheck disable=SC2034
