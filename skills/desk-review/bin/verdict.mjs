@@ -18,6 +18,8 @@
 // The rules, each a false clean otherwise:
 //   - every count is computed here; a count the caller leaves out is refused, never read as zero;
 //   - a CONFIRMED or UNREFUTED finding is outstanding, and counts in its p field;
+//   - a DUPLICATE names the finding it merged into, and still counts unless that one is counted at
+//     the same severity or higher;
 //   - a seat that was dispatched and died (no usable answer after a retry) is partial coverage, so
 //     it counts in `partial` beside the files the oversized cap skipped;
 //   - vendor=codex-cross only when codex read the diff cold on this run and every finding was
@@ -28,7 +30,7 @@ import { fileURLToPath } from 'node:url'
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 const TOP = ['sha', 'round', 'gaps', 'skipped_files', 'seats', 'findings']
 const SEAT = ['role', 'agent', 'vendor', 'status', 'note']
-const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'deferred']
+const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
 const VENDORS = ['claude', 'codex']
@@ -92,11 +94,26 @@ export function tally(r) {
       if (!VENDORS.includes(f.refuted_by)) no(`${name}: refuted_by must be claude or codex`)
       if (f.refuted_by === seat.vendor) cross = false
     }
-    if (f.result === 'REJECTED' || f.result === 'DUPLICATE') return
+    if (f.result === 'DUPLICATE' && (f.duplicate_of == null || f.duplicate_of === f.id)) no(`${name}: a DUPLICATE names the finding it duplicates in duplicate_of`)
+    if (f.result !== 'DUPLICATE' && f.duplicate_of != null) no(`${name}: only a DUPLICATE has duplicate_of`)
+  })
+  const byId = new Map(r.findings.map((f) => [f.id, f]))
+  const RANK = { P0: 0, P1: 1, P2: 2 }
+  const counted = (f) => f.result === 'CONFIRMED' || f.result === 'UNREFUTED'
+  for (const f of r.findings) {
+    if (f.severity === 'PREMISE' || f.result === 'REJECTED') continue
+    if (f.result === 'DUPLICATE') {
+      const target = byId.get(f.duplicate_of)
+      if (!target) no(`finding ${f.id}: duplicate_of ${f.duplicate_of} is not in findings`)
+      if (target.result === 'DUPLICATE') no(`finding ${f.id}: duplicate_of ${f.duplicate_of} is itself a DUPLICATE; name the finding that stands`)
+      // Dropped only when the finding it duplicates is counted at the same severity or higher; a
+      // duplicate of a rejected finding, or of a milder one, still stands.
+      if (counted(target) && RANK[target.severity] <= RANK[f.severity]) continue
+    }
     n[f.severity.toLowerCase()]++
     if (f.result === 'UNREFUTED') n.unrefuted++
     if (f.deferred) n.deferred++
-  })
+  }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
   n.partial += died.length
   return { sha, round: r.round, n, vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped,

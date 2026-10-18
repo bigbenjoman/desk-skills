@@ -43,7 +43,13 @@ t('codex cold died: same-vendor', marker(codexDied).includes(' vendor=same-vendo
 
 // ---- refutation outcomes and the vendor
 t('rejected finding: clean', reads(base({ findings: [f({ result: 'REJECTED' })] })), true)
-t('duplicate finding: not counted twice', marker(base({ findings: [f(), f({ id: 'F2', result: 'DUPLICATE' })] })).includes(' p1=1 '), true)
+t('duplicate finding: not counted twice', marker(base({ findings: [f(), f({ id: 'F2', result: 'DUPLICATE', duplicate_of: 'F1' })] })).includes(' p1=1 '), true)
+// The merge that hides a finding: codex confirms F1, Claude rejects codex's C1 at the same line, and F1 is
+// recorded as the duplicate. F1 still stands.
+const hidden = base({ findings: [f({ id: 'C1', seat: 'codex', refuted_by: 'claude', result: 'REJECTED' }), f({ result: 'DUPLICATE', duplicate_of: 'C1' })] })
+t('duplicate of a rejected finding: still counted, not clean', `${reads(hidden)} ${marker(hidden).includes(' p1=1 ')}`, 'false true')
+const milder = base({ findings: [f({ id: 'F1', severity: 'P2' }), f({ id: 'F2', severity: 'P0', result: 'DUPLICATE', duplicate_of: 'F1' })] })
+t('duplicate of a milder finding: counted at its own severity', marker(milder).includes(' p0=1 p1=0 p2=1 '), true)
 const unref = base({ findings: [f({ result: 'UNREFUTED', refuted_by: undefined })] })
 t('unrefuted: counted in its p field and in unrefuted', marker(unref).includes(' p1=1 p2=0 deferred=0 gaps=0 unrefuted=1 '), true)
 t('unrefuted: same-vendor', marker(unref).includes(' vendor=same-vendor '), true)
@@ -62,7 +68,7 @@ t('no codex seat: heading says codex did not read', heading(noCodex).endsWith('s
 // ---- exhaustively: clean exactly when nothing is open, nothing skipped, no seat died, no gap
 let combos = 0, wrong = 0
 for (const severity of ['P0', 'P1', 'P2', 'PREMISE', null]) {
-  for (const result of ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']) {
+  for (const result of ['CONFIRMED', 'REJECTED', 'UNREFUTED']) {
     for (const deferred of [false, true]) {
       for (const status of ['ran', 'died']) {
         for (const codexStatus of ['ran', 'died', null]) {
@@ -87,6 +93,26 @@ for (const severity of ['P0', 'P1', 'P2', 'PREMISE', null]) {
 }
 t(`every combination (${combos}) reads clean only when it is`, wrong, 0)
 
+// Every merge of one duplicate into another finding: clean only when neither stands.
+let dupCombos = 0, dupWrong = 0
+const RANK = { P0: 0, P1: 1, P2: 2 }
+for (const targetResult of ['CONFIRMED', 'REJECTED', 'UNREFUTED']) {
+  for (const targetSev of ['P0', 'P1', 'P2']) {
+    for (const dupSev of ['P0', 'P1', 'P2']) {
+      const r = base({ findings: [
+        f({ id: 'C1', seat: 'codex', severity: targetSev, result: targetResult, refuted_by: targetResult === 'UNREFUTED' ? undefined : 'claude' }),
+        f({ id: 'F1', severity: dupSev, result: 'DUPLICATE', duplicate_of: 'C1' })] })
+      const targetOpen = targetResult !== 'REJECTED'
+      const dupStands = !(targetOpen && RANK[targetSev] <= RANK[dupSev])
+      const n = tally(r).n
+      dupCombos++
+      if (reads(r) !== (!targetOpen && !dupStands)) dupWrong++
+      if (n.p0 + n.p1 + n.p2 !== (targetOpen ? 1 : 0) + (dupStands ? 1 : 0)) dupWrong++
+    }
+  }
+}
+t(`every duplicate merge (${dupCombos}) keeps a finding that stands`, dupWrong, 0)
+
 // ---- results it refuses, each on the guard it names
 const want = (name, r, msg) => { const got = refused(r); t(name, got.includes(msg) ? msg : got, msg) }
 want('refuses a short SHA', base({ sha: '0123456' }), 'full 40-character')
@@ -106,6 +132,10 @@ want('refuses a refuted finding with no refuter', base({ findings: [f({ refuted_
 want('refuses an UNREFUTED finding naming a refuter', base({ findings: [f({ result: 'UNREFUTED' })] }), 'has no refuted_by')
 want('refuses P3', base({ findings: [f({ severity: 'P3' })] }), 'severity must be')
 want('refuses a finding listed twice', base({ findings: [f(), f()] }), 'listed twice')
+want('refuses a DUPLICATE naming nothing', base({ findings: [f({ result: 'DUPLICATE' })] }), 'names the finding it duplicates')
+want('refuses a DUPLICATE of a missing finding', base({ findings: [f({ result: 'DUPLICATE', duplicate_of: 'F9' })] }), 'is not in findings')
+want('refuses a DUPLICATE of a DUPLICATE', base({ findings: [f({ id: 'F0' }), f({ id: 'F2', result: 'DUPLICATE', duplicate_of: 'F0' }), f({ id: 'F3', result: 'DUPLICATE', duplicate_of: 'F2' })] }), 'is itself a DUPLICATE')
+want('refuses duplicate_of on a non-duplicate', base({ findings: [f({ duplicate_of: 'F0' })] }), 'only a DUPLICATE')
 
 // ---- the CLI, and SKILL.md's documented forms
 const T = mkdtempSync(join(tmpdir(), 'desk-verdict-'))

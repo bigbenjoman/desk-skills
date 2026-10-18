@@ -65,10 +65,15 @@ judged by the bar its own commit carries:
    `skills/desk-review/references/review-bar.md`), read it at `<TIP>` the same way, so a PR that
    changes the bar is reviewed against its own copy.
 
+**One exception: someone else's PR that changes the bar's file.** The author must not write the
+rules their PR is judged by, so the bar is then read at `origin/<base>` instead (`git show
+origin/<base>:<path>`), and the header line ends `· changed by this PR, base copy used`. On your own
+branch or PR the changed copy is the bar, as above: a branch that edits its own bar is reviewed
+against it.
+
 The header names which bar ran and the commit it was read at:
-`bar: repo <path>@<short TIP>`, `bar: default@<short TIP>` or `bar: default@installed`. When the diff
-itself changes the bar's file, add `· changed by this diff`, so a reader of someone else's PR sees
-that the author edited the rules it was judged by. Every finder, Bea and codex get the same text.
+`bar: repo <path>@<short sha>`, `bar: default@<short sha>` or `bar: default@installed`. Every
+finder, Bea and codex get the same text.
 
 ## Entry points
 
@@ -332,11 +337,12 @@ paragraph, the `FINDING` format, the round rules on round 2+, and:
 Then one plain command, alongside the Claude finders:
 
 ```bash
-codex exec --sandbox read-only 'Read the review brief in desk-review-codex-brief.txt and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS.'
+codex exec --sandbox read-only 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS.'
 ```
 
-On a PR add `--cd <the PR's worktree>` after `--sandbox read-only`, and name the brief by its full
-scratchpad path. The prompt stays single-quoted with no flags in its text (Phase 4's rules): the git
+`<brief>` is the brief's full scratchpad path, or `desk-review-codex-brief.txt` in a worker, where
+codex runs at the worktree root beside it. On a PR also add `--cd <the PR's worktree>` after
+`--sandbox read-only`. The prompt stays single-quoted with no flags in its text (Phase 4's rules): the git
 commands live in the brief, never on the command line. Codex's findings are refuted by Claude
 (Phase 4). If it dies (above), the run is `same-vendor` as well as partial: codex did not read the
 head.
@@ -439,7 +445,8 @@ the diff leaves the anchored code untouched. **When genuinely uncertain, reject*
 costs less than a false positive that burns the author's time.
 
 `CONFIRMED` and `UNREFUTED` findings reach the report; `REJECTED` ones do not. Duplicates merge: keep the clearest write-up and the
-union of the evidence. Requirement gaps never enter this phase (Phase 5 owns them), and neither does
+union of the evidence, at the severity of the one that survived refutation; the other is recorded
+as `DUPLICATE` of it (Phase 7). Requirement gaps never enter this phase (Phase 5 owns them), and neither does
 a `PREMISE`: it is a claim nobody could prove, so a refuter reading the same code has nothing to add.
 
 **Existing bot comments** (interactive, on a PR): tag any surviving finding an automated reviewer
@@ -615,17 +622,21 @@ removed at the end with `git clean -f`):
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
-  finding deliberately left unfixed.
+  finding deliberately left unfixed. A merged duplicate is `"result": "DUPLICATE"` with
+  `duplicate_of` naming the finding kept, and it still counts unless that one is counted at the
+  same severity or higher: merging must never drop a confirmed finding behind a rejected one.
 - `gaps`, `skipped_files`: the open requirement gaps and the files the oversized cap skipped. Every
   count is required, `0` when there are none: one left out is refused, never read as zero.
 
 Then:
 
 ```bash
-node ~/.agents/skills/desk-review/bin/verdict.mjs desk-review-results.json
+node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 ```
 
-(`$DESK_SKILLS_DIR` in place of `~/.agents/skills` where it is set elsewhere.) It prints the three
+`<results>` is the file's full scratchpad path, or `desk-review-results.json` in a worker (run from
+its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
+elsewhere. It prints the three
 lines and refuses (exit 2) any results file that is incomplete or contradicts itself. Its tests,
 `tests/test_review_verdict.mjs`, prove that no combination with an open finding, a skipped file, a
 dead seat or an open gap prints the clean verdict. Use its output verbatim, then the report below
@@ -753,7 +764,7 @@ gh run rerun <run id> --repo <owner>/<repo> --failed
 | Writing the verdict marker or heading by hand | `bin/verdict.mjs` on the results file |
 | `vendor=codex-cross` on a run where codex only refuted, or never ran | Codex read the diff cold, or the run is `same-vendor` |
 | A finder that errored left out of the results | `"status": "died"`, counted in `partial` |
-| The bar read from the current checkout or an installed copy | The bar at `<TIP>`, named in the header |
+| The bar read from the current checkout or an installed copy | The bar at `<TIP>` (at the base on someone else's PR that changes it), named in the header |
 
 ## References
 
