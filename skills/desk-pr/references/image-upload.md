@@ -9,11 +9,18 @@ have to work out why. Every rule below cost at least one failed run. The permiss
 Do not use the Playwright MCP for this. Drive the signed-in profile directly:
 
 ```js
+import { readFileSync } from 'node:fs';
 process.env.PLAYWRIGHT_BROWSERS_PATH = '<home>/.claude/desk/playwright/browsers';
 const { chromium } = await import('<home>/.claude/desk/playwright/node_modules/playwright/index.mjs');
-const PROFILE = '<config §2 "Signed-in browser profile">';
+const PROFILE = '<config §2 "Signed-in browser profile", or ~/.cache/ms-playwright-mcp/desk-profile when unset>';
 const ctx = await chromium.launchPersistentContext(PROFILE, { headless: true, viewport: { width: 1400, height: 1200 } });
+await ctx.addCookies(JSON.parse(readFileSync(`${PROFILE}.github-session.json`, 'utf8')).cookies);
 ```
+
+The profile drops GitHub's login (a session cookie) when it closes, so the login lives in
+`<profile>.github-session.json`, which `github-signin.mjs` writes and Claude's Playwright MCP also
+loads. No such file, or GitHub shows you signed out: the login has expired; run
+`node ~/.claude/desk/bin/github-signin.mjs` where there is a screen.
 
 Use desk's own Playwright (installed by `install.sh`), never the repo's, so the profile is always
 opened by the same Chromium build: an older build crashes on a profile a newer one wrote. Import it by **absolute path**, after setting the browsers path:
@@ -29,9 +36,9 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
    pgrep -af "[u]ser-data-dir=<profile dir>"
    ```
 
-   The bracket stops `pgrep` matching its own command line. The usual holder is the Playwright MCP
-   browser used for the screenshots — `browser_close` closes the tab, not the process. **Do not kill
-   it**; it may belong to another session mid-capture. Say the profile is busy and let the user free
+   The bracket stops `pgrep` matching its own command line. The usual holder is another upload, or a
+   Playwright MCP still configured on the profile by an older install (`install.sh` now runs it
+   `--isolated`, off the profile). **Do not kill it**; it may belong to another session. Say the profile is busy and let the user free
    it. Copying the profile is not a workaround: it is a directory of live session cookies, and the
    classifier refuses it, correctly.
 1. **Check the session.** `meta[name="user-login"]` must match config §1 GitHub handle. Signed out, or

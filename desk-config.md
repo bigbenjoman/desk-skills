@@ -99,7 +99,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Backups directory | `~/desk-backups/<slug>/` | dumps before any write to shared data |
 | Design canvases directory | `docs/design/` | relative to the repo root, and committed: where design canvases and artifacts are saved so autopilot workers and the design agents read the same files. Never only a shared artifact link, which only the account that made it can edit |
 | Running on WSL? | `TODO` | `yes` / `no` |
-| Signed-in browser profile | `~/.cache/ms-playwright-mcp/desk-profile` | written by `install.sh`'s Playwright step; PR image upload reuses it; one per machine, exclusive |
+| Signed-in browser profile | `~/.cache/ms-playwright-mcp/desk-profile` | optional: unset means that machine-level default. `github-signin.mjs` saves the GitHub login beside it (`<profile>.github-session.json`), which PR image upload and Claude's Playwright MCP load; set it only to give this repo's uploads another login (the MCP keeps the machine one); exclusive while an upload runs |
 | Handoff at context % | `45` | when the session's context passes this share of its window, it finishes its step and writes `.handoffs/<yyyy-mm-dd>[-n].md` in the repo root, which the session after `/clear` or a compaction reads on its own; `0` disables. Read by install.sh's `desk-handoff.py` hook |
 | Autopilot state | `~/.desk-autopilot/<slug>/`, `~/.claude/desk/` | fixed; listed so you know where batch state lives |
 

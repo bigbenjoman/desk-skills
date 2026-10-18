@@ -341,7 +341,7 @@ It uploads every png/jpg in the directory and swaps the `_drag <file>_` cells.
 | 3 | uploaded, but no `_drag <file>_` placeholder matched (tags printed) |
 | 4 | uploaded, but placeholders still left |
 | 5 | not permitted (§3 `pr-images` not `yes`) |
-| 6 | setup: browser profile unset or missing, or Playwright not installed |
+| 6 | setup: Playwright not installed, or no saved GitHub login or it has expired (it names `github-signin.mjs`) |
 
 On 3 or 4 fix the body by hand from the printed tags — **do not re-upload**, the assets already
 exist. One session at a time: a single profile, one `SingletonLock`.

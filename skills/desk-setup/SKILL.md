@@ -562,7 +562,7 @@ in this session (`ToolSearch` with the keywords below). Do not call it.
 | Google Calendar and Gmail (claude.ai) | `read-calendar` | `list_events`, `search_threads` | same path |
 | Figma (claude.ai) | `read-figma` | `get_design_context` | same path |
 | Vercel (plugin) | `read-vercel` | `mcp__plugin_vercel_vercel__list_deployments` | `claude plugin install vercel@claude-plugins-official`, restart, `/mcp`. CLI: `vercel login`, `vercel switch <§4 Vercel team>` |
-| Playwright (plugin) | `pr-images`, screenshots | `browser_navigate` | re-run `./install.sh` (its Playwright step), restart |
+| Playwright (user-level MCP) | `pr-images`, screenshots | `browser_navigate` | re-run `./install.sh` (its Playwright MCP step), restart; signed out of GitHub: `node ~/.claude/desk/bin/github-signin.mjs` |
 
 Report each connector as present, missing (with the step) or not needed.
 

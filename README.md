@@ -309,14 +309,18 @@ They load themselves when a request matches; `skills-upstream list` prints them 
 | Claude Code tooling | `context-audit` (token waste in your setup), `context7-mcp` (current library docs), `find-skills` (discover and install more skills) |
 
 And these plugins, each asked before installing: `superpowers` (brainstorming, plans, TDD,
-debugging and other process skills), `code-review`, `code-simplifier`, `frontend-design`, `vercel`,
-`playwright` (the browser MCP desk-pr and desk-dev drive, patched to run from inside a monorepo) and
+debugging and other process skills), `code-review`, `code-simplifier`, `frontend-design`, `vercel` and
 `codex` (the OpenAI CLI bridge desk-review refutes with). `/desk-setup plugins` switches off, per repo,
 the ones that repo does not need.
 
-PR image upload and GitHub sign-in run on desk's own pinned Playwright, which `install.sh` puts in
-`~/.claude/desk/playwright` with its Chromium, so they work in every repo; a repo's own Playwright is
-left to its tests.
+PR image upload, GitHub sign-in and Claude's browser (the Playwright MCP desk-pr and desk-dev drive)
+run on desk's own pinned Playwright, which `install.sh` puts in `~/.claude/desk/playwright` with its
+Chromium and `@playwright/mcp`, so they work in every repo; a repo's own Playwright is left to its
+tests. `install.sh` registers the MCP at user level, with `--isolated --storage-state` on the one
+GitHub login `node ~/.claude/desk/bin/github-signin.mjs` saves, and offers to disable the
+`playwright` plugin, whose own server would run beside it signed out. Sign in once per machine, and
+again when GitHub expires the session (about every two weeks); every session in every repo and
+worktree, and every upload, uses that login.
 
 ## Skills, one copy each
 
@@ -404,7 +408,7 @@ What it does:
   `desk-jira` and `skills-upstream` (`~/.local/bin`), and the three hook scripts.
 - **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
   always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
-  didn't install, or patching the Playwright MCP.
+  didn't install, registering the Playwright MCP at user level, or disabling the `playwright` plugin.
 
 The three hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
 repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at session start, at
@@ -603,7 +607,7 @@ Pull and install only on `main`: a feature branch's files would put unmerged wor
 `main` is protected, so changes to desk-skills go through a PR, never a push to `main`.
 
 Restart Claude Code. Repo configs are kept; if the template gained rows, `/desk-setup` in that repo
-asks only those. Re-run `./install.sh` after a Playwright plugin update, which undoes its patch.
+asks only those.
 
 You don't need to remember to check: once a day, the first session you start says when desk-skills
 has new commits.
