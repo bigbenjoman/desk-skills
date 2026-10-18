@@ -1,3 +1,4 @@
+// suite: playwright lookup and saved GitHub login
 // findPlaywright: desk's own pinned Playwright, never the repo's; DESK_PLAYWRIGHT overrides it.
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';

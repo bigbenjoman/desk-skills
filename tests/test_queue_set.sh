@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: queue set (JSON objects and arrays)
 # queue.mjs set must store a value opening with { or [ as JSON, refuse an invalid one, and keep an
 # object's other keys when one nested key is set.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.

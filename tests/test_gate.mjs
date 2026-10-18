@@ -1,3 +1,4 @@
+// suite: gate (one definition of green)
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
 import { collectAnswers, ANSWER_HEAD, SIBLING_HEAD } from '../desk/bin/briefing.mjs';
 let fails = 0;

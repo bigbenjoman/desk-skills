@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: epics (expansion, Jira links, held tickets)
 # Epics as autopilot batches (docs/design-epic-batches.md): desk-jira children/link/parent against a
 # local stub, expand-parent.mjs, ticket-facts.mjs, plan-batch.mjs dependency handling, the held-ticket
 # idle rule, answer.mjs on a held ticket, and worker-settings for `link`. Scratch HOME only.

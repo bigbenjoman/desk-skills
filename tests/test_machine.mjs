@@ -1,3 +1,4 @@
+// suite: machine profile (detection, sizing, §3b fallback)
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';

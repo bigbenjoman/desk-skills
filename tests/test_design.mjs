@@ -1,3 +1,4 @@
+// suite: desk-design (save a canvas, source.json, README, check)
 // desk-design.mjs on a fixture snapshot: write records source.json and a README with the
 // ticket-to-board table; save copies canvas.json, the boards and the local files they reference into
 // the Design canvases directory, once per artifact; status sees a newer version; check reports a

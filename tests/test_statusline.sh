@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: status line (pinned tool, its installer, another statusLine command)
 # Tests the status line as a pinned tool (DS-34): `skills-upstream outdated` reports it, `upgrade` moves
 # only its pin, `statusline install` runs the repo's own installer at the pin, and install.sh's section
 # asks before installing and never replaces another statusLine command on --yes. Against a scratch
