@@ -1,0 +1,70 @@
+name: desk gate
+
+# Copied into a repo by /desk-setup. Three checks, each its own job so a repo can require any of
+# them: list the job names under §4 Required checks and in the branch ruleset to make them block.
+#
+# A pull_request or pull_request_review run uses the PR's own copy of this file and of
+# scripts/desk/review-gate.mjs, so a PR can blank PROTECTED or rewrite a job and every check still
+# passes under its usual name. Nothing in this workflow can stop that. Only the branch ruleset can:
+# required reviewers (or CODEOWNERS review) over .github/** and scripts/desk/**.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  # A posted review or approval re-runs the gate, so posting /desk-review clears it.
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# Listing reviews and files is a Pull requests endpoint; `contents: read` alone 403s on it. The
+# collaborator permission lookup needs only metadata, which every token can read.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verdict:
+    name: desk-review verdict
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: The latest desk-review verdict is clean, at this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # `codex-cross` to refuse a review whose findings were refuted same-vendor; empty for either.
+          REQUIRE_VENDOR: ''
+        run: node scripts/desk/review-gate.mjs verdict
+
+  claude-md:
+    name: CLAUDE.md size
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No CLAUDE.md is over 20,000 characters
+        run: node scripts/desk/review-gate.mjs claude-md
+
+  approval:
+    name: protected-path approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require an approval on protected paths unless a small fix, docs or chore change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # One regex over changed paths; empty turns this check into a pass. For example
+          # '^(\.github|scripts/desk)/|(^|/)(package\.json|Dockerfile)$|(^|/)migrations/'
+          PROTECTED: ''
+          FILE_LIMIT: '30'
+          EXEMPT_TYPES: 'fix|docs|chore'
+          # Not counted toward FILE_LIMIT: every package manager's lockfile (npm, yarn, pnpm, bun,
+          # cargo and the rest, deliberately all of them), build output, snapshots and binaries.
+          GENERATED: '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|composer\.lock|Gemfile\.lock|poetry\.lock|go\.sum)$|(^|/)(dist|build|\.next|out|vendor|node_modules|__snapshots__)/|\.(min\.js|min\.css|map|snap|pb\.go|g\.dart|png|jpe?g|gif|webp|ico|svg|pdf|woff2?|ttf|eot|zip|gz)$|_pb2\.py$|\.generated\.'
+        run: node scripts/desk/review-gate.mjs approval

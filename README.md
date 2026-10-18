@@ -120,6 +120,13 @@ blocks.
 /desk-review --no-comment        report only, nothing reaches GitHub
 ```
 
+`/desk-setup` offers to commit the CI side of it, `desk/templates/.github/workflows/desk-gate.yml`:
+a `desk-review verdict` check that fails a PR whose latest verdict is missing, not at the head, not
+clean, or under a heading that says otherwise; a `CLAUDE.md size` check (20,000 characters, the most
+the reviewer loads); and an optional `protected-path approval` check that wants an approval on the
+paths you list unless the PR is a small `fix`, `docs` or `chore` change. Each blocks only once a repo
+requires it.
+
 It is also what desk-ticket and autopilot workers run as their self-review. Codex is optional: when
 it is missing, desk-review asks before falling back to Claude checking Claude, and says so.
 
