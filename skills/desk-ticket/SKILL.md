@@ -593,7 +593,7 @@ work went up attached to an unrelated ticket.
 | "The ticket seems big, I'll stop for a plan" | A ticket that looks big can be a one-line deletion. Name the signal or take lane A. |
 | "I'll reindex quickly to check" | A shared local index is every other session's index. |
 | "I'll tell them once it's all done" | They want to test it themselves before the PR exists. |
-| "The design has placeholder copy, so the ticket is blocked" | Build with the placeholders in as real copy keys and raise **one** spin-off ticket for all of them. |
+| "The design has placeholder copy, so the ticket is blocked" | Build with the placeholders in as real copy keys and raise **one** spin-off ticket for all of them, in desk-jira's ticket template. |
 | "Self-review found nothing, so there is no block to show" | The empty result is the finding. Show it. |
 | "I should ask before fixing this finding" | Stage 4b fixes what it confirms. Only the stop conditions wait: product/design/catalog behaviour, a fix that grows, a finding the refutation pass never confirmed, or a third round still finding things. |
 | "The P0 is fixed, so the block can just report clean" | Then nobody ever learns a P0 existed. Fixed findings still get an outcome line naming the commit. |

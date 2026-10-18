@@ -29,3 +29,6 @@ behind it, or merges a feature that does not hang together.
 9. **Design.** Every child that changes what a user sees links its design (Figma or Claude Design)
    or says "no UI".
 10. **Scope.** No out-of-scope line contradicts an acceptance criterion, in the epic or a child.
+11. **Template.** The epic and every child carry every section `references/ticket-template.md`
+    gives their type. No criterion is one a worker cannot do (creating Jira links, a live production
+    measurement, an operator run, a sign-off). No status, priority or dependency is written in a body.

@@ -14,7 +14,7 @@ You run in many different repositories. Before the first question, find out whic
 1. Run `desk-env where`. If it prints `EXISTS=yes`, read the `CONFIG` file:
    - **§0 One-line description** — what the product is.
    - **§4 Tracker** — `jira` or `none`. With `jira`: §4 Jira project (key and issue types), §4 Priority (built-in priority or a custom field and its values), §4 Other fields, §4 Labels, and whether §4 `desk-jira` set up? is `yes`.
-   - **§5 Ticket format** — the sections a new ticket carries here. It overrides the default layout in step 6.
+   - **§5 Ticket format** — `default` means desk-jira's `references/ticket-template.md` (step 6); a repo's own sections replace its headings, never its rules.
    - **§4 People, by role** — the Product owner decides scope; the Designer (or, with `none`, the product owner) answers design questions.
    - **§3 `jira-create`** / **`jira-edit`** — whether you may write at all. `no` or `TODO` means you draft only and hand the text to the user.
 2. If it prints `EXISTS=no` (or `desk-env` is not installed), carry on without it: treat the tracker as a GitHub issue on this repo (`gh repo view --json nameWithOwner`) unless the user names a Jira project, and ask rather than guess a project key.
@@ -80,21 +80,18 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
 
 5. **Before You Draft — Check for Duplicates**: search the tracker for existing tickets covering the same ground and surface anything close — `desk-jira search` (JQL) with Tracker `jira`, `gh issue list --search "<terms>" --state all` otherwise. Raising a duplicate wastes more time than the search costs. `desk-jira search` checks its credentials before it searches and exits non-zero on a bad or expired token, so an empty result with exit 0 genuinely means no matches; a non-zero exit means the search did not run, and you say so rather than reporting "no duplicates".
 
-6. **Ticket Authoring**: once you have sufficient detail, draft a comprehensive issue. If §5 Ticket format names the sections, use those; otherwise:
+6. **Ticket Authoring**: once you have sufficient detail, draft the issue. **The body follows the desk ticket template**: read `references/ticket-template.md` in the desk-jira skill (`desk-env paths` prints `DESK_SKILLS_DIR`; it is `$DESK_SKILLS_DIR/desk-jira/references/ticket-template.md`) and use its layout for the issue type, with its rules: numbered Given / When / Then criteria a worker can do, Verification naming the environment and who does any human or device step, a Design link or "No UI.", Out of scope, and dated Decisions with none open. Where §5 Ticket format names the repo's own sections, use those headings with the same substance in them. Around the body:
    - **Project**: §4 Jira project unless told otherwise; with Tracker `none`, the current GitHub repo
-   - **Issue Type**: Story, Bug, Task or Spike (or the types §4 Jira project lists) — chosen deliberately, not defaulted. For a GitHub issue, express the type as a label if the repo has one.
+   - **Issue Type**: Story, Task, Bug, Epic or Subtask (or the types §4 Jira project lists) — chosen deliberately, not defaulted. For a GitHub issue, express the type as a label if the repo has one.
    - **Summary**: clear, concise, action-oriented (e.g. "Allow users to export their account data as CSV")
-   - **Problem Statement**: why this matters, and to whom
-   - **Proposed Solution**: high-level approach, not an implementation spec
-   - **Acceptance Criteria**: bullet-pointed, testable, each independently verifiable
-   - **Technical Notes**: relevant constraints or architectural considerations
-   - **Out of Scope**: what this ticket explicitly does NOT include
    - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank. Priority, status and size go in their fields, never as a line in the description (`desk-jira create` refuses one); the only exception is the `Size: M` first line below
    - **Size**: XS, S, M, L or XL on desk-jira's scale (its *Epics* section), in the project's `Size` field where there is one (`desk-jira fields size`), otherwise as the description's first line `Size: M`. Anything L or bigger is split: see *Epic Mode*
    - **Other fields**: every field §4 Other fields lists, filled in the same create — a blank one is never flagged later
-   - **Labels / Links**: from §4 Labels, plus any blocking or related issues
+   - **Labels / Links**: from §4 Labels; each dependency is a Blocks link you plan and file with `desk-jira link`, never a sentence in the body
 
-   For a **Bug**, replace Proposed Solution with: steps to reproduce, expected result, actual result, environment, and affected persona.
+   For a **Bug**, the template adds Problem, Where seen, Steps to reproduce with expected and actual, and a Diagnosis marked with the commit it was read at. Name the affected persona in Problem.
+
+   **An open decision blocks the create.** Anything you would be tempted to write as "open question", "TBD" or "to confirm" is a question for the user (or the owner §4 People names) now. Ask it, record the answer as a dated decision, and only then draft. Never file a ticket that carries an open question.
 
 7. **Present, Then Wait**: show the full ticket and ask for approval. Only after an explicit yes do you create it:
    - **Tracker `jira`** with `desk-jira` set up: write the description to a file and create it with `desk-jira create` (see the `desk-jira` skill for its arguments and its markup: write the description in markdown in a `.md` file, which `desk-jira` converts to Jira wiki markup, and preview it with `desk-jira md2wiki <file>`; `desk-jira fields <filter>` resolves a field id), setting every §4 Priority / Other fields value in that one call. Then `desk-jira get` it and confirm the fields read back.
@@ -110,7 +107,7 @@ A ticket states **what must be true**; the implementation decides **how**. Accep
 - Behaviour (belongs in the ticket): *"`LSEGroup` must not match as `LSE`."*
 - Mechanism (does not): *"use `/(\blse\b|…)/i` — the `\b` word boundary enforces it."*
 
-Before you present a draft, scan your own acceptance criteria for leaked mechanism and move anything you find into Technical Notes as a *suggestion*, or drop it:
+Before you present a draft, scan your own acceptance criteria for leaked mechanism and move anything you find into Build on as a *suggestion*, or drop it:
 
 - file paths under `src/` (or any source directory)
 - specific component or wrapper choices
@@ -119,7 +116,7 @@ Before you present a draft, scan your own acceptance criteria for leaked mechani
 - regex syntax
 - type, class or schema names
 
-If the user volunteers an implementation idiom during the interview, record it as an open question for the implementer rather than committing the ticket to it.
+If the user volunteers an implementation idiom during the interview, put it in Build on as a suggestion the implementer may take or leave, rather than committing the criteria to it.
 
 **Never write a task whose body is "run the checks the harness already runs."** Tickets called "Run tests", "Responsive QA" or "Final verification" are an anti-pattern — the criteria belong inside the feature ticket they verify. The exception is work that builds *new* test capability ("add a visual-regression harness", "configure end-to-end tests for the checkout journey") — that is real engineering and deserves its own ticket.
 
@@ -129,16 +126,14 @@ For a feature that is bigger than one ticket, or when the user asks for an epic.
 that desk-autopilot can run unattended, child by child, and that desk-review can check criterion by
 criterion. Read desk-jira's *Epics* section for the commands and the size scale.
 
-**The epic** carries: the outcome (who, and what changes for them); a **definition of done** as
-numbered Given / When / Then criteria for the feature end to end; out of scope; decisions, each
-dated and naming its owner; and the children in the order they are built.
+**The epic** uses the template's Epic layout: the outcome, a **definition of done** as numbered
+Given / When / Then criteria for the feature end to end, verification, design, out of scope, dated
+decisions, and the children in the order they are built.
 
-**Each child** carries: one line of context naming the epic; acceptance criteria `AC1`, `AC2`, …,
-each Given / When / Then and checkable on its own; out of scope; decisions (none open: settle it in
-the interview or do not file that child); what it builds on (existing modules or patterns to
-extend, not file trees or skeleton code); its design link (Figma or Claude Design) or "no UI"; and
-a size of **M or smaller**. Slice by user-visible behaviour, so each child can merge and ship before
-the next (invisible or behind a flag), or say the epic needs a feature branch.
+**Each child** uses the layout for its own type, with its `_Context:_` line naming the epic, no open
+decision (settle it in the interview or do not file that child), and a size of **M or smaller**.
+Slice by user-visible behaviour, so each child can merge and ship before the next (invisible or
+behind a flag), or say the epic needs a feature branch.
 
 **Dependencies are Jira links, never prose.** Wherever one child calls, reads or renders what another
 adds, plan a Blocks link: autopilot reads only the links.
@@ -165,7 +160,7 @@ back with `desk-jira children <EPIC>` and report every key. The One Hard Rule co
 
 - Never write a ticket without understanding the 'why' behind it
 - Acceptance criteria must be specific and measurable — "works well" is not a criterion
-- Flag any ambiguities or assumptions you're making, in the ticket itself
+- Resolve every ambiguity or assumption by asking before you draft; the ticket records decisions, never open questions
 - If the request is too large for one ticket (size L or more), say so and switch to *Epic Mode*
 - Always consider user experience and technical feasibility
 - Write for the developer who picks this up cold in three weeks with no memory of the conversation

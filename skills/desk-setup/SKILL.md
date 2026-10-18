@@ -330,6 +330,12 @@ How to turn what you find into rows:
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
   the hook is the backstop.
 - **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
+- **Ticket format.** While the row is `TODO`, propose `default`: desk-jira's
+  `references/ticket-template.md`, the layouts every desk path that files a ticket uses. Show its
+  section list per type (Story and Task, Bug, Epic, Subtask) and write `default` once the user
+  confirms. If the project's recent tickets share a different layout the team relies on, show both.
+  Write the repo's own sections per type only if the user picks them. A row already set is left as
+  it is.
 - **Handoff directory** on WSL must be Windows-visible (`/mnt/c/Users/<name>/Downloads/`). On macOS
   propose `~/desk-handoff/`, never `~/Downloads/`, `~/Desktop/` or `~/Documents/`: macOS folder
   privacy refuses Claude Code those (EPERM), so every skill that writes there fails. Elsewhere

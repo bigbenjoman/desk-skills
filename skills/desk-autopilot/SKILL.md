@@ -297,8 +297,9 @@ node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
   feature is complete), because the base must be set before triage reads prior art against it
   (*A batch that targets a feature branch*). Everything else waits for Stage 3.
 - Triage reads the epic's description for context; each child's own criteria are its scope.
-- Tickets filed during the batch (an L split into children, a close-out follow-up) join it one at a
-  time: fetch as at Stage 1, `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
+- Tickets filed during the batch (an L split into children, a close-out follow-up) are written in
+  desk-jira's `references/ticket-template.md` layout for their type, each child with its own
+  criteria and its dependencies as Blocks links, and join the batch one at a time: fetch as at Stage 1, `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
   ticket in the batch), or they wait for the next batch.
 
 ### Dependencies from Jira links
@@ -355,7 +356,8 @@ When the batch is idle with no held ticket left:
    story that was expanded into its subtasks, whose own criteria no worker checked), check each one against
    `origin/<base>` with desk-jira's *"Already fixed"* method (one read-only verifier per criterion,
    file:line or NOT MET, defaulting to NOT MET) and report MET / NOT MET. Each NOT MET is proposed
-   as a new child under the epic through `desk-jira`'s gate, never appended to the epic. With no
+   as a new child under the epic through `desk-jira`'s gate, in the ticket template's layout (the
+   unmet criterion becomes its AC1), never appended to the epic. With no
    criteria, say "epic has no criteria — not verified".
 3. With a batch base, the promotion PR (base → default) is the user's. Title it with the epic key
    so `/desk-review` checks the epic's criteria against the whole feature, and say so.
