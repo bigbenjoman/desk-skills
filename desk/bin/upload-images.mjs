@@ -29,9 +29,8 @@
 import { readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { HOME, permission, permissionKey, browserProfile, ghRepo, DeskConfigError } from './desk-env.mjs';
-import { findPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies } from './find-playwright.mjs';
+import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies } from './find-playwright.mjs';
 
 const [pr, dir] = process.argv.slice(2);
 if (!pr || !dir) { console.error('usage: upload-images.mjs <pr-number> <image-dir>'); process.exit(1); }
@@ -59,13 +58,13 @@ try {
 if (!existsSync(PROFILE)) { console.error(`[upload] browser profile does not exist: ${PROFILE}`); process.exit(6); }
 
 const REPO = ghRepo();
-const { entry: playwrightEntry, tried } = findPlaywright();
-if (!playwrightEntry) {
-  console.error(`[upload] playwright not found (tried: ${tried.join(', ')}). Install the repo's dependencies ` +
-    '(config §4 Install), or point DESK_PLAYWRIGHT at an installed playwright/index.mjs.');
+const playwright = findPlaywright();
+if (!playwright.entry) {
+  console.error(`[upload] playwright not found (tried: ${playwright.tried.join(', ')}). Re-run desk-skills' ./install.sh ` +
+    '(or /desk-update), which installs desk\'s own, or point DESK_PLAYWRIGHT at an installed playwright/index.mjs.');
   process.exit(6);
 }
-const { chromium } = await import(pathToFileURL(playwrightEntry).href);
+const { chromium } = await importPlaywright(playwright);
 
 const files = readdirSync(dir).filter((f) => /\.(png|jpe?g)$/i.test(f)).sort();
 if (!files.length) { console.error(`no images in ${dir}`); process.exit(1); }

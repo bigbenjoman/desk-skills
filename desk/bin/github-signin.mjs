@@ -14,9 +14,8 @@
 //
 // Exit codes: 0 signed in and saved · 1 no sign-in within the wait · 6 setup or config
 import { existsSync, mkdirSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { browserProfile, DeskConfigError } from './desk-env.mjs';
-import { findPlaywright, githubCookies, saveSession } from './find-playwright.mjs';
+import { findPlaywright, importPlaywright, githubCookies, saveSession } from './find-playwright.mjs';
 
 let PROFILE;
 try {
@@ -28,12 +27,13 @@ try {
 }
 if (!existsSync(PROFILE)) mkdirSync(PROFILE, { recursive: true });
 
-const { entry, tried } = findPlaywright();
-if (!entry) {
-  console.error(`[signin] playwright not found (tried: ${tried.join(', ')}). Point DESK_PLAYWRIGHT at playwright/index.mjs.`);
+const playwright = findPlaywright();
+if (!playwright.entry) {
+  console.error(`[signin] playwright not found (tried: ${playwright.tried.join(', ')}). Re-run desk-skills' ./install.sh ` +
+    '(or /desk-update), which installs desk\'s own, or point DESK_PLAYWRIGHT at an installed playwright/index.mjs.');
   process.exit(6);
 }
-const { chromium } = await import(pathToFileURL(entry).href);
+const { chromium } = await importPlaywright(playwright);
 
 const ctx = await chromium.launchPersistentContext(PROFILE, { headless: false, viewport: null });
 const page = ctx.pages()[0] ?? await ctx.newPage();

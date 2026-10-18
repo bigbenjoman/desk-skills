@@ -309,6 +309,10 @@ debugging and other process skills), `code-review`, `code-simplifier`, `frontend
 `codex` (the OpenAI CLI bridge desk-review refutes with). `/desk-setup plugins` switches off, per repo,
 the ones that repo does not need.
 
+PR image upload and GitHub sign-in run on desk's own pinned Playwright, which `install.sh` puts in
+`~/.claude/desk/playwright` with its Chromium, so they work in every repo; a repo's own Playwright is
+left to its tests.
+
 ## Skills, one copy each
 
 Every skill on the machine, desk's or anyone else's, has **one real copy** in

@@ -9,14 +9,15 @@ have to work out why. Every rule below cost at least one failed run. The permiss
 Do not use the Playwright MCP for this. Drive the signed-in profile directly:
 
 ```js
-import { chromium } from '<primary repo root>/node_modules/playwright/index.mjs';
+process.env.PLAYWRIGHT_BROWSERS_PATH = '<home>/.claude/desk/playwright/browsers';
+const { chromium } = await import('<home>/.claude/desk/playwright/node_modules/playwright/index.mjs');
 const PROFILE = '<config §2 "Signed-in browser profile">';
 const ctx = await chromium.launchPersistentContext(PROFILE, { headless: true, viewport: { width: 1400, height: 1200 } });
 ```
 
-Import `playwright` by **absolute path**; a script in a scratch directory cannot resolve it by bare
-name. If the profile needs a specific Chromium build, pass `executablePath` too — find it on the
-machine, never copy one from someone else's notes.
+Use desk's own Playwright (installed by `install.sh`), never the repo's, so the profile is always
+opened by the same Chromium build: an older build crashes on a profile a newer one wrote. Import it by **absolute path**, after setting the browsers path:
+Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
 
 ## Steps
 
