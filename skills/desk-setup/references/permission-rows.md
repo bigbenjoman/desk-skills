@@ -67,6 +67,7 @@ a row changes, say which of these applies.
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
 | `upload-images.mjs` | `pr-images` |
+| `desk-ci.mjs protection` | `ci-protection` (unset is `ask`; `no` refuses every `--apply`) |
 | `desk-jira create` | `jira-assign-self` (a new ticket with no assignee given is assigned to you) |
 | `clearance-state.mjs` | `pr-merge-green`, `merge-feedback-first` |
 | `/desk-checkout`'s collectors (`github_activity.py`, `jira_activity.py`, `claude_activity.py`) | `read-own-work`, `read-transcripts`, per repo |
@@ -148,6 +149,7 @@ rows).
 | `pr-conflict-unreviewed` | yes | DIRTY PRs fixed and re-reviewed without a round-trip | a resolution nobody else has read yet | ask | — |
 | `pr-conflict-reviewed` | ask | — | a silent resolution can revert a reviewer's merged work | yes | — |
 | `ci-rerun` | yes | a cancelled run or known flake retried, completed runs only | CI minutes; a rerun on a live run cancels it. _Reach_: any run; the skill checks it completed | ask | `Bash(gh run rerun *)` |
+| `ci-protection` | ask | `/desk-ci protection` restores a snapshot, pins required checks to GitHub Actions and makes the default workflow token read-only; each change is printed in full first and applies only by its plan id | a wrong protection write can block every merge or let one through unchecked; a snapshot taken first restores it | yes · no (the plans still print; nothing applies) | — (the script reads the row; `node desk-ci.mjs` keeps prompting) |
 
 ## Round 9 — autopilot (say the plain explanation first)
 

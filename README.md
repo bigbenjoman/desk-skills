@@ -43,7 +43,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
 | `desk-reboot` | Before a reboot: every session, the runner VM, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
-| `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget; changes nothing | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure` |
+| `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget; saves and restores branch protection, pins required checks to GitHub Actions and makes the default workflow token read-only, each change shown first and gated on §3 `ci-protection` | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure`, `/desk-ci protection` |
 
 A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), another id you list in
 setup (a planning id such as `P1-M14-FIX-1`, a bug id such as `BUG-119-5`), or, in a repo with no
@@ -213,12 +213,17 @@ environment or `id-token`, or whose `runs-on` has no `github.actor == 'dependabo
 hosted runner. Neither writes anything. `measure` reports what a repo's CI costs and how often it
 holds PRs up (billed and self-hosted minutes, failure and red rates, round trips, time to green,
 queue time, minutes per merged PR), within an API call budget that leaves the rate limit a reserve,
-and saves the report to the main checkout's `.handoffs/`:
+and saves the report to the main checkout's `.handoffs/`. `protection` saves a repo's branch
+protection and rulesets before any CI change and restores them, binds each required check to the
+GitHub Actions app so a same-named status from a personal token no longer satisfies it, and makes
+the default workflow token read-only once every workflow declares its permissions. Each write is
+printed as a plan first and applies only by that plan's id, under §3 `ci-protection`:
 
 ```
 node ~/.claude/desk/bin/desk-ci.mjs classify     placement per job, with file:line
 node ~/.claude/desk/bin/desk-ci.mjs ci-lint      exit 1 on any finding
 node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 days, sampled to a call budget
+node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
 **`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile

@@ -10,10 +10,16 @@
 //   node desk-ci.mjs measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>]
 // measure reads a window of Actions runs, jobs and pull requests over the GitHub API within a call
 // budget, prints what CI cost and how often it held PRs up, and saves the report under .handoffs/.
+//   node desk-ci.mjs protection snapshot|restore <file>|pin|token [--repo owner/name] [--apply <plan id>]
+// protection saves and restores branch protection and rulesets, pins required checks to the GitHub
+// Actions app and makes the default workflow token read-only. Every write is gated on config §3
+// ci-protection and printed as a plan first.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { permissionOrUnset } from './desk-env.mjs';
 
 // ---- a line scanner for workflow YAML ---------------------------------------------------------
 // Workflows are block YAML, and every rule here needs the line it fired on, which a YAML parser
@@ -827,6 +833,522 @@ function runMeasure(args) {
   console.log(`saved: ${base}.md and ${base}.json`);
 }
 
+// ---- protection: snapshot, restore, pin, token --------------------------------------------------
+// Every write is computed as a plan first and printed in full; it runs only when `--apply <id>`
+// names that exact plan, re-computed from live state, so what runs is what was shown. Each command
+// takes an injectable `api(path, { method, body })` that throws an Error carrying `.status`.
+
+export const ACTIONS_SLUG = 'github-actions';
+const enc = encodeURIComponent;
+const sortBy = (xs, f) => [...xs].sort((a, b) => (f(a) < f(b) ? -1 : f(a) > f(b) ? 1 : 0));
+
+// JSON with object keys sorted, so two reads of the same state compare equal.
+export function stable(v) {
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`;
+  return JSON.stringify(v ?? null);
+}
+
+function ghCall(path, { method = 'GET', body } = {}) {
+  const args = ['api', '-H', 'Accept: application/vnd.github+json', '-X', method, path];
+  if (body !== undefined) args.push('--input', '-');
+  try {
+    const out = execFileSync('gh', args, {
+      encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, input: body === undefined ? undefined : JSON.stringify(body),
+      stdio: [body === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    return out.trim() ? JSON.parse(out) : null;
+  } catch (e) {
+    const stderr = String(e.stderr ?? e.message).trim();
+    const err = new Error(`gh api -X ${method} ${path}: ${stderr}`);
+    err.status = Number(/HTTP (\d{3})/.exec(stderr)?.[1]) || null;
+    try { err.body = JSON.parse(e.stdout); } catch { /* no JSON body */ }
+    throw err;
+  }
+}
+
+// Reading protection needs admin rights. GitHub answers 404 both for "Branch not protected" and for
+// a token that cannot see it, so only that exact message reads as unprotected: a snapshot that
+// recorded an unreadable protection as none would make restore delete it.
+function readClassic(api, repo, branch) {
+  try { return api(`repos/${repo}/branches/${enc(branch)}/protection`); } catch (e) {
+    if (e.status === 404 && /branch not protected/i.test(e.body?.message ?? e.message)) return null;
+    throw new Error(`cannot read ${branch}'s branch protection (it needs admin rights on ${repo}): ${e.message}`);
+  }
+}
+
+function readBranch(api, repo, branch) {
+  try { api(`repos/${repo}/branches/${enc(branch)}`); } catch (e) { if (e.status === 404) return { exists: false }; throw e; }
+  return { exists: true, classic: readClassic(api, repo, branch), rules: api(`repos/${repo}/rules/branches/${enc(branch)}?per_page=100`) ?? [] };
+}
+
+// Only the repo's own rulesets can be restored from here; an organisation's are listed by name.
+function readRulesets(api, repo) {
+  const list = api(`repos/${repo}/rulesets?includes_parents=false&per_page=100`) ?? [];
+  if (list.length >= 100) throw new Error(`${repo} has 100 or more rulesets; reading past the first page is not supported`);
+  return list.filter((r) => (r.source_type ?? 'Repository') === 'Repository').map((r) => api(`repos/${repo}/rulesets/${r.id}`));
+}
+
+// The check runs on a ref, with the app that produced each.
+function checkRunsOn(api, repo, ref) {
+  return (api(`repos/${repo}/commits/${enc(ref)}/check-runs?per_page=100`)?.check_runs ?? [])
+    .map((c) => ({ name: c.name, appId: c.app?.id ?? null, appSlug: c.app?.slug ?? null, sha: c.head_sha }));
+}
+
+// The GitHub Actions app id, read from a real check run: the default branch's head, else the latest
+// completed Actions run's commit.
+export function readChecks(api, repo, branch) {
+  let runs = checkRunsOn(api, repo, branch);
+  if (!runs.some((c) => c.appSlug === ACTIONS_SLUG)) {
+    const sha = api(`repos/${repo}/actions/runs?status=completed&per_page=1`)?.workflow_runs?.[0]?.head_sha;
+    if (sha) runs = [...runs, ...checkRunsOn(api, repo, sha)];
+  }
+  const actions = runs.find((c) => c.appSlug === ACTIONS_SLUG);
+  return { runs, actionsAppId: actions?.appId ?? null, actionsNames: new Set(runs.filter((c) => c.appSlug === ACTIONS_SLUG).map((c) => c.name)) };
+}
+
+// Each required check on a branch, wherever it is required, with the app allowed to satisfy it.
+export function requiredChecks(branch, rulesets = [], apps = new Map()) {
+  if (!branch?.exists) return [];
+  const name = (id) => rulesets.find((r) => r.id === id)?.name;
+  const label = (id) => (id == null ? 'any app' : `app ${id}${apps.get(id) ? ` (${apps.get(id)})` : ''}`);
+  const out = [];
+  const rsc = branch.classic?.required_status_checks;
+  const classic = rsc ? (rsc.checks ?? (rsc.contexts ?? []).map((context) => ({ context, app_id: null }))) : [];
+  for (const c of classic) out.push({ context: c.context, appId: c.app_id ?? null, source: label(c.app_id ?? null), via: 'branch protection' });
+  for (const r of branch.rules ?? []) {
+    if (r.type !== 'required_status_checks') continue;
+    const via = `${r.ruleset_source_type === 'Organization' ? 'organisation ' : ''}ruleset ${name(r.ruleset_id) ? `"${name(r.ruleset_id)}" ` : ''}#${r.ruleset_id}`;
+    for (const c of r.parameters?.required_status_checks ?? []) out.push({ context: c.context, appId: c.integration_id ?? null, source: label(c.integration_id ?? null), via, rulesetId: r.ruleset_id, org: r.ruleset_source_type === 'Organization' });
+  }
+  return out;
+}
+
+export function snapshot({ repo, branches, api = ghCall, takenAt = new Date().toISOString() }) {
+  const def = api(`repos/${repo}`).default_branch;
+  const names = [...new Set(branches?.length ? branches : [def, 'production'])];
+  const checks = readChecks(api, repo, def);
+  const apps = new Map(checks.runs.filter((c) => c.appId != null).map((c) => [c.appId, c.appSlug]));
+  const rulesets = readRulesets(api, repo);
+  const out = {
+    kind: 'desk-ci protection snapshot', version: 1, repo, takenAt, defaultBranch: def,
+    actionsAppId: checks.actionsAppId, actionsChecks: [...checks.actionsNames].sort(), branches: {}, rulesets,
+  };
+  for (const b of names) {
+    const st = readBranch(api, repo, b);
+    out.branches[b] = st.exists ? { ...st, requiredChecks: requiredChecks(st, rulesets, apps) } : st;
+  }
+  return out;
+}
+
+// Classic protection in the shape PUT takes, which is also the form compared. GET reports a check
+// any app may satisfy as `app_id: null`, while PUT reads an omitted app_id as "the app that last
+// sent it", so "any" is written as -1, which GitHub stores as null again.
+const anyApp = (id) => (id == null || id === -1 ? -1 : id);
+const logins = (o) => ({
+  users: (o?.users ?? []).map((u) => u.login ?? u).sort(),
+  teams: (o?.teams ?? []).map((t) => t.slug ?? t).sort(),
+  apps: (o?.apps ?? []).map((a) => a.slug ?? a).sort(),
+});
+const on = (x) => !!(x?.enabled ?? x);
+export function classicBody(p) {
+  const rsc = p.required_status_checks;
+  const rpr = p.required_pull_request_reviews;
+  return {
+    required_status_checks: rsc ? {
+      strict: !!rsc.strict,
+      checks: sortBy((rsc.checks ?? (rsc.contexts ?? []).map((context) => ({ context }))).map((c) => ({ context: c.context, app_id: anyApp(c.app_id) })), (c) => c.context),
+    } : null,
+    enforce_admins: on(p.enforce_admins),
+    required_pull_request_reviews: rpr ? {
+      dismiss_stale_reviews: !!rpr.dismiss_stale_reviews,
+      require_code_owner_reviews: !!rpr.require_code_owner_reviews,
+      required_approving_review_count: rpr.required_approving_review_count ?? 0,
+      require_last_push_approval: !!rpr.require_last_push_approval,
+      ...(rpr.dismissal_restrictions ? { dismissal_restrictions: logins(rpr.dismissal_restrictions) } : {}),
+      ...(rpr.bypass_pull_request_allowances ? { bypass_pull_request_allowances: logins(rpr.bypass_pull_request_allowances) } : {}),
+    } : null,
+    restrictions: p.restrictions ? logins(p.restrictions) : null,
+    required_linear_history: on(p.required_linear_history),
+    allow_force_pushes: on(p.allow_force_pushes),
+    allow_deletions: on(p.allow_deletions),
+    block_creations: on(p.block_creations),
+    required_conversation_resolution: on(p.required_conversation_resolution),
+    lock_branch: on(p.lock_branch),
+    allow_fork_syncing: on(p.allow_fork_syncing),
+  };
+}
+const classicForm = (p) => (p ? { ...classicBody(p), required_signatures: on(p.required_signatures) } : null);
+
+export function rulesetBody(r) {
+  return {
+    name: r.name,
+    target: r.target ?? 'branch',
+    enforcement: r.enforcement,
+    bypass_actors: sortBy((r.bypass_actors ?? []).map((a) => ({ actor_id: a.actor_id ?? null, actor_type: a.actor_type, bypass_mode: a.bypass_mode })), (a) => `${a.actor_type}:${a.actor_id}`),
+    conditions: r.conditions ?? {},
+    rules: sortBy((r.rules ?? []).map((x) => ({ type: x.type, ...(x.parameters ? { parameters: x.parameters } : {}) })), (x) => x.type),
+  };
+}
+
+// Where two snapshots differ, by branch and by ruleset name: an empty list is a match.
+export function compareSnapshots(want, got) {
+  const diffs = [];
+  const keys = (a, b) => [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].filter((k) => stable(a?.[k]) !== stable(b?.[k]));
+  for (const [b, w] of Object.entries(want.branches)) {
+    const g = got.branches[b];
+    if (!w.exists) continue;
+    if (!g?.exists) { diffs.push(`branch ${b}: no longer exists`); continue; }
+    const wf = classicForm(w.classic);
+    const gf = classicForm(g.classic);
+    if (!wf !== !gf) diffs.push(`branch ${b}: protection is ${gf ? 'set' : 'off'}, the snapshot has it ${wf ? 'set' : 'off'}`);
+    else if (wf && stable(wf) !== stable(gf)) diffs.push(`branch ${b}: protection differs in ${keys(wf, gf).join(', ')}`);
+  }
+  const byName = (rs) => new Map(rs.map((r) => [r.name, rulesetBody(r)]));
+  const w = byName(want.rulesets);
+  const g = byName(got.rulesets);
+  for (const [n, body] of w) {
+    if (!g.has(n)) diffs.push(`ruleset "${n}": missing`);
+    else if (stable(body) !== stable(g.get(n))) diffs.push(`ruleset "${n}": differs in ${keys(body, g.get(n)).join(', ')}`);
+  }
+  for (const n of g.keys()) if (!w.has(n)) diffs.push(`ruleset "${n}": not in the snapshot`);
+  return diffs;
+}
+
+// The writes that put `snap` back, against the live state `cur` (a snapshot taken now).
+export function restorePlan(snap, cur) {
+  const writes = [];
+  const notes = [];
+  const repo = snap.repo;
+  for (const [b, s] of Object.entries(snap.branches)) {
+    if (!s.exists) continue;
+    const c = cur.branches[b] ?? { exists: false };
+    if (!c.exists) { notes.push(`branch ${b} no longer exists: its protection cannot be restored`); continue; }
+    const path = `repos/${repo}/branches/${enc(b)}/protection`;
+    if (!s.classic && c.classic) writes.push({ method: 'DELETE', path });
+    if (s.classic && stable(classicBody(s.classic)) !== stable(c.classic ? classicBody(c.classic) : null)) writes.push({ method: 'PUT', path, body: classicBody(s.classic) });
+    if (s.classic && on(s.classic.required_signatures) !== on(c.classic?.required_signatures)) {
+      writes.push({ method: on(s.classic.required_signatures) ? 'POST' : 'DELETE', path: `${path}/required_signatures` });
+    }
+  }
+  const live = new Map(cur.rulesets.map((r) => [r.id, r]));
+  const claimed = new Set();
+  for (const r of snap.rulesets) {
+    const match = live.get(r.id) ?? cur.rulesets.find((x) => x.name === r.name && !claimed.has(x.id));
+    const body = rulesetBody(r);
+    if (!match) { writes.push({ method: 'POST', path: `repos/${repo}/rulesets`, body }); continue; }
+    claimed.add(match.id);
+    if (stable(body) !== stable(rulesetBody(match))) writes.push({ method: 'PUT', path: `repos/${repo}/rulesets/${match.id}`, body });
+  }
+  for (const r of cur.rulesets) if (!claimed.has(r.id)) writes.push({ method: 'DELETE', path: `repos/${repo}/rulesets/${r.id}`, name: r.name });
+  return { writes, notes };
+}
+
+// ---- a committed file that rewrites protection ----
+// A repo whose CI rewrites its own protection from a committed file undoes a pin on its next run.
+// A JSON file is read for each required check it writes; any other file that calls the protection or
+// rulesets endpoint must name the Actions app id itself, or name a JSON file that is checked here.
+// The REST path (an expression such as `${{ github.repository }}` may sit inside it) with a method or
+// body flag near it, or an Octokit method that writes protection (actions/github-script).
+const PROTECTION_CALL = /branches\/.{0,160}?\/protection\b|\/rulesets\b/;
+const WRITE_VERB = /\b(PUT|POST|PATCH)\b|--input\b|(^|\s)-[fFd]\b|--(raw-)?field\b|--data(-raw|-binary)?\b|--method\b/;
+export const OCTOKIT_WRITE = /\b(updateBranchProtection|updateStatusCheckProtection|setStatusCheckContexts|addStatusCheckContexts|(create|update)(Repo|Org)Ruleset)\b/;
+
+function jsonChecks(v, out = []) {
+  if (Array.isArray(v)) { v.forEach((x) => jsonChecks(x, out)); return out; }
+  if (!v || typeof v !== 'object') return out;
+  for (const [k, x] of Object.entries(v)) {
+    if (k === 'required_status_checks' && Array.isArray(x)) for (const c of x) out.push({ context: c.context, id: c.integration_id ?? null, field: 'integration_id' });
+    else if (k === 'required_status_checks' && x && typeof x === 'object') {
+      for (const c of x.checks ?? []) out.push({ context: c.context, id: c.app_id ?? null, field: 'app_id' });
+      for (const c of x.contexts ?? []) out.push({ context: c, id: null, field: 'app_id', bare: true });
+    } else jsonChecks(x, out);
+  }
+  return out;
+}
+
+// files: [{ path, text }]. -> [{ path, line, change }], one per file that does not carry the pin.
+export function protectionFiles(files, actionsAppId) {
+  const out = [];
+  const jsonWriters = new Set();
+  for (const f of files.filter((x) => /\.json$/i.test(x.path))) {
+    let parsed;
+    try { parsed = JSON.parse(f.text); } catch { continue; }
+    const checks = jsonChecks(parsed);
+    if (!checks.length) continue;
+    jsonWriters.add(f.path);
+    const unpinned = checks.filter((c) => c.bare || c.id !== actionsAppId);
+    if (!unpinned.length) continue;
+    const line = f.text.split('\n').findIndex((l) => l.includes('required_status_checks')) + 1;
+    const bare = unpinned.some((c) => c.bare);
+    out.push({
+      path: f.path, line,
+      change: `${bare ? 'replace "contexts" with "checks" and ' : ''}set "${unpinned[0].field}": ${actionsAppId} on ${unpinned.map((c) => c.context).join(', ')}`,
+    });
+  }
+  const pin = new RegExp(`(app_id|integration_id)\\D{0,8}${actionsAppId}\\b`);
+  for (const f of files.filter((x) => !/\.json$/i.test(x.path))) {
+    const lines = f.text.split('\n');
+    // The call and its method or body flag, on the same line or within three of it.
+    const at = lines.findIndex((l, i) => OCTOKIT_WRITE.test(l) || (PROTECTION_CALL.test(l) && lines.slice(Math.max(0, i - 3), i + 4).some((x) => WRITE_VERB.test(x))));
+    if (at < 0) continue;
+    if (actionsAppId != null && pin.test(f.text) && !/\bcontexts\b/.test(f.text)) continue;
+    if ([...jsonWriters].some((p) => f.text.includes(p) || f.text.includes(basename(p)))) continue;
+    out.push({ path: f.path, line: at + 1, change: `the protection write here must pass app_id ${actionsAppId} for each required check (checks[][app_id]; integration_id in a ruleset), with no "contexts"` });
+  }
+  return out;
+}
+
+// The writes that make every required check on the snapshot's branches accept only GitHub Actions.
+// Only a check any app may satisfy, and that an Actions check run carries, is repointed: one no
+// Actions run carries is `left` (pinning it would block every merge), and one already bound to
+// another app is `other` (repointing it would let a PR's own workflow satisfy it). Either keeps the
+// pin from reporting success, since that check does not accept only GitHub Actions.
+export function pinPlan(cur, { actionsAppId, actionsNames, files = [] }) {
+  if (actionsAppId == null) throw new Error(`no check run from GitHub Actions found on ${cur.repo}: the app id cannot be read, so nothing can be pinned`);
+  const repo = cur.repo;
+  const writes = [];
+  const left = [];
+  const other = [];
+  const pinned = [];
+  const rulesetIds = new Set();
+  for (const [b, st] of Object.entries(cur.branches)) {
+    if (!st.exists) continue;
+    for (const c of st.requiredChecks) {
+      if (c.appId === actionsAppId) continue;
+      if (c.appId != null) { other.push(`${b}: ${c.context} (${c.via}) accepts only ${c.source}, not GitHub Actions; it is left as it is`); continue; }
+      if (c.org) { left.push(`${b}: ${c.context} (${c.via}, ${c.source}): set at the organisation; pin it there`); continue; }
+      if (c.rulesetId != null) rulesetIds.add(c.rulesetId);
+      if (actionsNames.has(c.context)) pinned.push(`${b}: ${c.context} (${c.via}): ${c.source} -> app ${actionsAppId} (${ACTIONS_SLUG})`);
+      else left.push(`${b}: ${c.context} (${c.via}, ${c.source}): no GitHub Actions check run of that name was found, so it is left as it is`);
+    }
+    const rsc = st.classic?.required_status_checks;
+    if (!rsc) continue;
+    const before = classicBody(st.classic).required_status_checks;
+    const after = { strict: before.strict, checks: before.checks.map((c) => (c.app_id === -1 && actionsNames.has(c.context) ? { ...c, app_id: actionsAppId } : c)) };
+    if (stable(after) !== stable(before)) writes.push({ method: 'PATCH', path: `repos/${repo}/branches/${enc(b)}/protection/required_status_checks`, body: after });
+  }
+  for (const r of cur.rulesets.filter((x) => rulesetIds.has(x.id))) {
+    const body = rulesetBody(r);
+    const next = { ...body, rules: body.rules.map((x) => (x.type !== 'required_status_checks' ? x : {
+      ...x, parameters: { ...x.parameters, required_status_checks: x.parameters.required_status_checks.map((c) => (c.integration_id == null && actionsNames.has(c.context) ? { ...c, integration_id: actionsAppId } : c)) },
+    })) };
+    if (stable(next) !== stable(body)) writes.push({ method: 'PUT', path: `repos/${repo}/rulesets/${r.id}`, body: next });
+  }
+  return { writes, left, other, pinned, files: protectionFiles(files, actionsAppId) };
+}
+
+// After a pin: no repo-level check an Actions check run carries still accepts any app.
+export function pinUnverified(cur, { actionsNames }) {
+  const out = [];
+  for (const [b, st] of Object.entries(cur.branches)) {
+    if (!st.exists) continue;
+    for (const c of st.requiredChecks) if (!c.org && actionsNames.has(c.context) && c.appId == null) out.push(`${b}: ${c.context} (${c.via}) still accepts ${c.source}`);
+  }
+  return out;
+}
+
+// ---- the default workflow token ----
+// workflows: [{ file, text }]; current: GET actions/permissions/workflow.
+export function tokenPlan(repo, workflows, current) {
+  const missing = workflows.filter((w) => !parseWorkflow(w.text).permissions).map((w) => w.file);
+  if (missing.length) return { missing, writes: [] };
+  if (current.default_workflow_permissions === 'read') return { missing, writes: [], already: true };
+  return {
+    missing,
+    writes: [{ method: 'PUT', path: `repos/${repo}/actions/permissions/workflow`, body: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: !!current.can_approve_pull_request_reviews } }],
+  };
+}
+
+// ---- plans: the id, the gate, applying ----
+export const planId = (writes) => createHash('sha256').update(stable(writes.map(({ method, path, body }) => ({ method, path, body })))).digest('hex').slice(0, 12);
+
+export function printPlan(writes, log = console.log) {
+  const id = planId(writes);
+  log(`plan ${id}: ${writes.length} write${writes.length === 1 ? '' : 's'}`);
+  for (const w of writes) {
+    log(`  ${w.method} ${w.path}${w.name ? `  (ruleset "${w.name}")` : ''}`);
+    if (w.body !== undefined) for (const l of JSON.stringify(w.body, null, 2).split('\n')) log(`    ${l}`);
+  }
+  return id;
+}
+
+// §3 ci-protection gates every write; an unset row is `ask`, which the skill asks before applying.
+export function gate(perm, applyId, writes) {
+  const p = perm ?? 'ask';
+  if (applyId == null) return false;
+  if (!['yes', 'ask'].includes(p)) throw new Error(`config §3 ci-protection is ${p}: protection and settings writes are off, so nothing was applied`);
+  const id = planId(writes);
+  if (applyId !== id) throw new Error(`the plan is now ${id}, not ${applyId}: live state changed since it was shown. Read the new plan and apply that`);
+  return true;
+}
+
+export function applyWrites(api, writes) {
+  writes.forEach((w, i) => {
+    try { api(w.path, { method: w.method, body: w.body }); } catch (e) {
+      throw new Error(`write ${i + 1} of ${writes.length} failed (${w.method} ${w.path}); ${i} applied before it. Restore from the snapshot. ${e.message}`);
+    }
+  });
+}
+
+// ---- protection: the CLI ------------------------------------------------------------------------
+
+const git = (...a) => execFileSync('git', a, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+
+// What the default branch carries, as GitHub runs it: origin/<default>, fetched and checked against
+// the head GitHub reports, so a stale or missing ref is refused rather than read.
+function committedRef(api, repo, def) {
+  const head = api(`repos/${repo}/branches/${enc(def)}`).commit.sha;
+  try { git('fetch', '--quiet', 'origin', def); } catch (e) { throw new Error(`cannot fetch origin/${def} to read its committed files: ${String(e.stderr ?? e.message).trim()}`); }
+  let sha = '';
+  try { sha = git('rev-parse', '--verify', '-q', `refs/remotes/origin/${def}`).trim(); } catch { /* compared below */ }
+  if (sha !== head) throw new Error(`origin/${def} here is ${sha || 'missing'} but GitHub's ${def} is ${head}: fetch it, then run this again`);
+  console.log(`committed files read at origin/${def} ${head.slice(0, 12)}`);
+  return `origin/${def}`;
+}
+
+// The committed files checked are this checkout's, so the repo written must be this checkout's too.
+function targetRepo(f) {
+  const repo = originRepo();
+  if (f.repo && f.repo !== repo) throw new Error(`this checkout is ${repo}, not ${f.repo}: run it from a checkout of ${f.repo}, whose committed files and config are the ones that decide`);
+  return repo;
+}
+const treePaths = (ref) => git('ls-tree', '-r', '--name-only', ref).split('\n').filter(Boolean);
+const committedWorkflows = (ref) => treePaths(ref).filter((p) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p)).map((file) => ({ file, text: git('show', `${ref}:${file}`) }));
+
+// Files that could rewrite protection: anything under .github/, a JSON file, or a file a workflow
+// names, that mentions required checks or the protection endpoints.
+function committedProtectionFiles(ref) {
+  let hits = [];
+  try { hits = git('grep', '-l', '-I', '-E', `required_status_checks|/protection|/rulesets|${OCTOKIT_WRITE.source.replace(/\\b/g, '')}`, ref).split('\n').filter(Boolean).map((l) => l.slice(ref.length + 1)); } catch { /* no match */ }
+  const workflows = committedWorkflows(ref).map((w) => w.text).join('\n');
+  return hits.filter((p) => p.startsWith('.github/') || /\.json$/i.test(p) || workflows.includes(p)).map((path) => ({ path, text: git('show', `${ref}:${path}`) }));
+}
+
+const snapshotSuffix = (repo) => `-ci-protection-${repo.replace('/', '__')}.json`;
+const hasSnapshot = (dir, repo) => { try { return readdirSync(dir).some((f) => f.endsWith(snapshotSuffix(repo))); } catch { return false; } };
+
+function ciProtectionPerm() {
+  try { return permissionOrUnset('ci-protection'); } catch { return null; }
+}
+
+function printChecks(snap) {
+  for (const [b, st] of Object.entries(snap.branches)) {
+    if (!st.exists) { console.log(`${b}: no such branch`); continue; }
+    console.log(`${b}: branch protection ${st.classic ? 'on' : 'off'}, ${st.requiredChecks.length} required check${st.requiredChecks.length === 1 ? '' : 's'}`);
+    for (const c of st.requiredChecks) console.log(`  ${c.context}  accepts ${c.source}  via ${c.via}`);
+  }
+  console.log(`rulesets: ${snap.rulesets.length ? snap.rulesets.map((r) => `"${r.name}" #${r.id} (${r.enforcement})`).join(', ') : 'none'}`);
+  console.log(`GitHub Actions app: ${snap.actionsAppId ?? 'no Actions check run found'}`);
+}
+
+function runProtection(args) {
+  const [sub, ...rest] = args;
+  const file = sub === 'restore' ? rest.shift() : null;
+  if (sub === 'restore' && (!file || file.startsWith('--'))) throw new Error('usage: desk-ci.mjs protection restore <snapshot file> [--apply <plan id>]');
+  const f = flagsOf(rest);
+  const dir = f.out ?? join(mainCheckout(), '.handoffs');
+  const branches = f.branches ? f.branches.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  const applyHint = (id) => {
+    const perm = ciProtectionPerm() ?? 'ask';
+    console.log(['yes', 'ask'].includes(perm)
+      ? `nothing applied (config §3 ci-protection is ${perm}). To apply exactly this plan: node ~/.claude/desk/bin/desk-ci.mjs protection ${args.join(' ')} --apply ${id}`
+      : `nothing applied: config §3 ci-protection is ${perm}, so protection and settings writes are off`);
+  };
+  const needSnapshot = (repo) => { if (!hasSnapshot(dir, repo)) throw new Error(`no protection snapshot of ${repo} in ${dir}: run \`protection snapshot\` before changing anything`); };
+
+  if (sub === 'snapshot') {
+    if (!f.ticket) throw new Error('pass --ticket <the cut-over ticket> to attach the snapshot to, or --ticket none to save it only');
+    const repo = f.repo ?? originRepo();
+    const snap = snapshot({ repo, branches });
+    printChecks(snap);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${snap.takenAt.replace(/[:]/g, '').replace(/\.\d+Z$/, 'Z')}${snapshotSuffix(repo)}`);
+    writeFileSync(path, `${JSON.stringify(snap, null, 2)}\n`, { flag: 'wx' });
+    console.log(`saved: ${path}`);
+    if (/^none$/i.test(f.ticket)) { console.log('not attached to a ticket (--ticket none)'); return 0; }
+    // desk-jira sends only files inside the checkout it runs in, and the snapshot is in the main one.
+    try { execFileSync('desk-jira', ['attach', f.ticket, path], { stdio: 'inherit', cwd: f.out ? undefined : mainCheckout() }); } catch {
+      console.log(`saved but not attached to ${f.ticket}. Attach it with: desk-jira attach ${f.ticket} ${path}`);
+      return 1;
+    }
+    console.log(`attached to ${f.ticket}`);
+    return 0;
+  }
+
+  if (sub === 'restore') {
+    const snap = JSON.parse(readFileSync(file, 'utf8'));
+    if (snap.kind !== 'desk-ci protection snapshot') throw new Error(`${file} is not a desk-ci protection snapshot`);
+    if (snap.repo !== targetRepo(f)) throw new Error(`${file} is a snapshot of ${snap.repo}: restore it from a checkout of ${snap.repo}, whose config gates the write`);
+    const read = () => snapshot({ repo: snap.repo, branches: Object.keys(snap.branches) });
+    const { writes, notes } = restorePlan(snap, read());
+    for (const n of notes) console.log(`note: ${n}`);
+    if (!writes.length) {
+      const diffs = compareSnapshots(snap, read());
+      for (const d of diffs) console.log(`differs: ${d}`);
+      console.log(diffs.length || notes.length ? `not restored: ${snap.repo} does not match ${file}` : `restored: ${snap.repo} already matches ${file}`);
+      return diffs.length || notes.length ? 1 : 0;
+    }
+    const id = printPlan(writes);
+    if (!gate(ciProtectionPerm(), f.apply ?? null, writes)) { applyHint(id); return 0; }
+    applyWrites(ghCall, writes);
+    const diffs = compareSnapshots(snap, read());
+    for (const d of diffs) console.log(`differs: ${d}`);
+    console.log(diffs.length || notes.length ? `not restored: read back, ${snap.repo} still differs from ${file}` : `restored: read back, ${snap.repo} matches ${file}`);
+    return diffs.length || notes.length ? 1 : 0;
+  }
+
+  if (sub === 'pin') {
+    const repo = targetRepo(f);
+    const cur = snapshot({ repo, branches });
+    const files = committedProtectionFiles(committedRef(ghCall, repo, cur.defaultBranch));
+    const ctx = { actionsAppId: cur.actionsAppId, actionsNames: new Set(cur.actionsChecks) };
+    const plan = pinPlan(cur, { ...ctx, files });
+    console.log(`GitHub Actions app id ${cur.actionsAppId}, read from a check run on ${repo}`);
+    for (const p of plan.pinned) console.log(`pin: ${p}`);
+    for (const l of plan.left) console.log(`left: ${l}`);
+    for (const o of plan.other) console.log(`another app: ${o}`);
+    for (const x of plan.files) console.log(`${x.path}:${x.line}  rewrites protection and needs: ${x.change}`);
+    let after = cur;
+    if (plan.writes.length) {
+      const id = printPlan(plan.writes);
+      if (f.apply == null) { applyHint(id); return 0; }
+      needSnapshot(repo);
+      gate(ciProtectionPerm(), f.apply, plan.writes);
+      applyWrites(ghCall, plan.writes);
+      after = snapshot({ repo, branches });
+    }
+    const unverified = pinUnverified(after, ctx);
+    for (const u of unverified) console.log(`not pinned: ${u}`);
+    const ok = !unverified.length && !plan.left.length && !plan.other.length && !plan.files.length;
+    console.log(ok
+      ? `pinned: every required check accepts only GitHub Actions (app ${cur.actionsAppId}), read back`
+      : `not pinned: ${[unverified.length && `${unverified.length} check(s) did not read back pinned`, plan.left.length && `${plan.left.length} check(s) left`, plan.other.length && `${plan.other.length} check(s) bound to another app`, plan.files.length && `${plan.files.length} committed file(s) would undo the pin`].filter(Boolean).join('; ')}`);
+    return ok ? 0 : 1;
+  }
+
+  if (sub === 'token') {
+    const repo = targetRepo(f);
+    const ref = committedRef(ghCall, repo, ghCall(`repos/${repo}`).default_branch);
+    const current = ghCall(`repos/${repo}/actions/permissions/workflow`);
+    const plan = tokenPlan(repo, committedWorkflows(ref), current);
+    console.log(`default workflow token on ${repo}: ${current.default_workflow_permissions}`);
+    for (const m of plan.missing) console.log(`${m}: no top-level permissions block (${ref})`);
+    if (plan.missing.length) { console.log(`not changed: ${plan.missing.length} workflow(s) declare no top-level permissions; give each one first`); return 1; }
+    if (plan.already) { console.log('read-only already: nothing to change'); return 0; }
+    const id = printPlan(plan.writes);
+    if (f.apply == null) { applyHint(id); return 0; }
+    needSnapshot(repo);
+    gate(ciProtectionPerm(), f.apply, plan.writes);
+    applyWrites(ghCall, plan.writes);
+    const now = ghCall(`repos/${repo}/actions/permissions/workflow`).default_workflow_permissions;
+    console.log(now === 'read' ? 'read-only: the default workflow token is read, read back' : `not changed: the default workflow token reads back as ${now}`);
+    return now === 'read' ? 0 : 1;
+  }
+
+  throw new Error('usage: desk-ci.mjs protection snapshot [--repo owner/name] [--branches a,b] [--ticket KEY] | restore <file> | pin | token  [--apply <plan id>]');
+}
+
 // ---- CLI --------------------------------------------------------------------------------------
 
 function workflowFiles(args) {
@@ -870,8 +1392,10 @@ if (isMain) {
       process.exit(n ? 1 : 0);
     } else if (cmd === 'measure') {
       runMeasure(rest);
+    } else if (cmd === 'protection') {
+      process.exit(runProtection(rest));
     } else {
-      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>]');
+      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | protection snapshot|restore <file>|pin|token');
     }
   } catch (e) {
     console.error(e.message);
