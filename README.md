@@ -553,6 +553,8 @@ bash tests/run.sh
 It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
 every shell script when shellcheck is installed (it says when it is not). On macOS,
 `/bin/bash tests/run.sh` tests bash 3.2. CI runs it on Linux and macOS for every pull request.
+`run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite needs no edit
+there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 
 ## Using autopilot
 

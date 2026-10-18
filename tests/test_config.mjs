@@ -1,3 +1,4 @@
+// suite: config values (list items, trailing notes)
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

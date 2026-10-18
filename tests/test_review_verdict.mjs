@@ -1,3 +1,4 @@
+// suite: desk-review verdict (never clean with an open finding, partial or a dead seat)
 // desk-review's verdict script: the counts, the vendor and the heading come from the finder and
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
 // the clean verdict. Pure: no git, no GitHub, no codex.

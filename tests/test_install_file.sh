@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: install_file (rename over a running script)
 # install.sh's install_file replaces a file by renaming a copy over it, so a script already running
 # from the old file finishes on the old file. Runs the function itself, taken from install.sh, under
 # a throwaway HOME. Nothing touches your real ~/.claude.

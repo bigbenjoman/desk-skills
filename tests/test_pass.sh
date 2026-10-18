@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: pass (screenshots go to the current round's PR; requeue)
 # pass.mjs after a requeue: screenshots go to the PR the current log names, not the one an earlier
 # round stored, and a respawn clears the stored PR and image flags and starts a fresh log and park
 # record. queue.mjs requeue moves a finished round's files aside so it respawns. A worker whose log

@@ -1,3 +1,4 @@
+// suite: desk-cleanup scans (verdicts, whole keys, backups, watchman)
 // desk-cleanup's scripted scans against fixture worktrees, a fixture PR list and a fake process
 // table: verdicts, whole-key matching, the ignored-file backup on removal, and watchman. Nothing
 // reads this computer's processes, worktrees or GitHub.

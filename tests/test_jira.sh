@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: desk-jira against a local stub
 # Tests for bin/desk-jira against a local stub. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
