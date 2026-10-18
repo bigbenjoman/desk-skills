@@ -33,6 +33,13 @@ check "have_tty is found in install.sh" '[ -n "$fn" ]'
 eval "$fn"
 check "have_tty is false with stdin from /dev/null" '! have_tty </dev/null'
 
+# A repo whose earlier /desk-setup recorded an unpinned merge allow, next to one the user added.
+R="$T/repo"; git init -q "$R"; mkdir -p "$R/.claude"; printf '.claude/settings.local.json\n' > "$R/.gitignore"
+printf '{"permissions":{"allow":["Bash(gh pr merge * --squash)","Bash(gh pr merge * --rebase)"]}}\n' > "$R/.claude/settings.local.json"
+C="$HOME/.config/desk/repos/o__r"; mkdir -p "$C"
+printf '## 2. Paths on your machine\n\n| Field | Value | Notes |\n|---|---|---|\n| Primary repo root | `%s` | x |\n' "$R" > "$C/config.md"
+printf '{"rules":[{"list":"allow","rule":"Bash(gh pr merge * --squash)","rows":["pr-merge-green"],"added":"2026-01-01"}]}\n' > "$C/harness-rules.json"
+
 out="$("$SH" "$S/../install.sh" </dev/null 2>&1)"
 # shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
 rc=$?
@@ -57,6 +64,11 @@ check "deny-rule skip carries the harness-rules command" '[[ "$summary" == *"har
 check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install playwright@claude-plugins-official --scope user"* ]]'
 check "a hook skip says to re-run in a terminal" \
   '[[ "$summary" == *"attribution hook"*$'"'"'\n'"'"'"        apply: run in a terminal: cd "* ]]'
+check "a repo's recorded unpinned merge allow is retired and reported" \
+  '[[ "$out" == *"RETIRED  allow Bash(gh pr merge * --squash)"* ]] && ! grep -q -- "--squash)" "$R/.claude/settings.local.json" && ! grep -q "gh pr merge" "$C/harness-rules.json"'
+check "the repo's settings are backed up before the retire" 'grep -q -- "--squash)" "$R"/.claude/settings.local.json.bak-desk-*'
+check "an unpinned merge allow the user added is reported and kept" \
+  '[[ "$out" == *"retired  allow Bash(gh pr merge * --rebase)  (yours"* ]] && grep -q -- "--rebase)" "$R/.claude/settings.local.json"'
 check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.json" ] || ! grep -q desk-update-check "$HOME/.claude/settings.json"'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
