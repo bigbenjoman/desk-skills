@@ -491,11 +491,15 @@ chmod +x "$HOOK"
 ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
 wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
 
-# settings_hook <check|apply> — exit 0 registered/applied, 1 absent, 2 unreadable settings.json
-settings_hook() {
-  python3 - "$SETTINGS" "python3 \"$HOOK\"" "$1" <<'PY'
+# register_hook <check|apply> <script name> <command> <timeout> <matcher or ""> <event>...
+# Every desk hook in settings.json goes through this. A hook counts as registered on an event when a
+# command there contains <script name>; apply adds it to each event that lacks it.
+# Exit 0 registered on every event (or applied), 1 missing on one, 2 unreadable settings.json.
+register_hook() {
+  python3 - "$SETTINGS" "$@" <<'PY'
 import json, os, sys
-path, command, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+path, mode, name, command, timeout, matcher, events = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6], sys.argv[7:])
 data = {}
 if os.path.exists(path):
     try:
@@ -506,18 +510,22 @@ if os.path.exists(path):
         sys.exit(2)
 if not isinstance(data, dict):
     sys.exit(2)
-pre = data.setdefault("hooks", {}).setdefault("PreToolUse", [])
-present = any("deny-ai-attribution.py" in (h.get("command") or "")
-              for entry in pre for h in (entry.get("hooks") or []))
-if mode == "check" or present:
-    sys.exit(0 if present else 1)
-pre.append({"matcher": "Bash",
-            "hooks": [{"type": "command", "command": command, "timeout": 10}]})
+hooks = data.setdefault("hooks", {})
+missing = [ev for ev in events
+           if not any(name in (h.get("command") or "")
+                      for e in hooks.get(ev, []) for h in (e.get("hooks") or []))]
+if mode == "check" or not missing:
+    sys.exit(1 if missing else 0)
+entry = {"matcher": matcher} if matcher else {}
+entry["hooks"] = [{"type": "command", "command": command, "timeout": timeout}]
+for ev in missing:
+    hooks.setdefault(ev, []).append(dict(entry))
 exec(os.environ["DESK_WRITE_JSON_PY"])
 write_json(path, data)
 PY
 }
 
+settings_hook() { register_hook "$1" deny-ai-attribution.py "python3 \"$HOOK\"" 10 Bash PreToolUse; }
 rc=0; settings_hook check || rc=$?
 case "$rc" in
   0) ok "already registered in ~/.claude/settings.json" ;;
@@ -549,17 +557,8 @@ UPDATE_HOOK="$CLAUDE_DIR/hooks/desk-update-check.sh"
 install_file "$SRC/hooks/desk-update-check.sh" "$UPDATE_HOOK"
 chmod +x "$UPDATE_HOOK"
 wrote "hook     ~/.claude/hooks/desk-update-check.sh (script only; registering it is asked)"
-rc=0; python3 - "$SETTINGS" "$UPDATE_HOOK" check <<'PY' || rc=$?
-import json, os, sys
-path, cmd, mode = sys.argv[1:4]
-try:
-    data = json.load(open(path)) if os.path.exists(path) else {}
-except Exception:
-    sys.exit(2)
-ss = data.setdefault("hooks", {}).setdefault("SessionStart", [])
-present = any("desk-update-check.sh" in (h.get("command") or "") for e in ss for h in (e.get("hooks") or []))
-sys.exit(0 if present else 1)
-PY
+update_hook() { register_hook "$1" desk-update-check.sh "bash \"$UPDATE_HOOK\"" 15 "" SessionStart; }
+rc=0; update_hook check || rc=$?
 case "$rc" in
   0) ok "update notice already registered (SessionStart)" ;;
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the update notice" ;;
@@ -568,16 +567,35 @@ case "$rc" in
     note "and, if there are new commits, shows one line telling you to run /desk-update. Nothing is installed."
     if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
-      if python3 - "$SETTINGS" "$UPDATE_HOOK" <<'PY'
-import json, os, sys
-path, cmd = sys.argv[1:3]
-data = json.load(open(path)) if os.path.exists(path) else {}
-data.setdefault("hooks", {}).setdefault("SessionStart", []).append(
-    {"hooks": [{"type": "command", "command": f'bash "{cmd}"', "timeout": 15}]})
-exec(os.environ["DESK_WRITE_JSON_PY"])
-write_json(path, data)
-PY
-      then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
+      if update_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
+    else
+      note "not registered. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+    fi
+    ;;
+esac
+
+# Context handoff: one script on four events. Past config §2 "Handoff at context %" (default 45) the
+# session finishes its step and writes .handoffs/<date>.md; after /clear or a compaction the next
+# session is told to read it. Silent in repos with no desk config.
+HANDOFF_HOOK="$CLAUDE_DIR/hooks/desk-handoff.py"
+HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+install_file "$SRC/hooks/desk-handoff.py" "$HANDOFF_HOOK"
+chmod +x "$HANDOFF_HOOK"
+wrote "hook     ~/.claude/hooks/desk-handoff.py (script only; registering it is asked)"
+# shellcheck disable=SC2086  # HANDOFF_EVENTS is split into one argument per event on purpose
+handoff_hook() { register_hook "$1" desk-handoff.py "python3 \"$HANDOFF_HOOK\"" 15 "" $HANDOFF_EVENTS; }
+rc=0; handoff_hook check || rc=$?
+case "$rc" in
+  0) ok "context handoff already registered ($HANDOFF_EVENTS)" ;;
+  2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the context handoff" ;;
+  *)
+    note "Registers one hook on $HANDOFF_EVENTS. In a repo with a desk config, once the"
+    note "context passes §2 'Handoff at context %' (default 45, 0 turns it off) it asks the session to"
+    note "finish its step and write .handoffs/<date>.md, blocks the end of that turn once until it is"
+    note "written, and after /clear or a compaction tells the next session to read it. Other hooks are kept."
+    if confirm "Register it in ~/.claude/settings.json (backed up first)?"; then
+      backup_settings
+      if handoff_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
       note "not registered. To do it later, re-run ./install.sh (or answer it in /desk-update)"
     fi

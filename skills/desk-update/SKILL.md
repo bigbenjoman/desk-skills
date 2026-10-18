@@ -81,6 +81,9 @@ skills-upstream plugins                   # each installed plugin vs its refresh
 skills-upstream index --quiet --name-only --check   # exit 1: skills still listed in full every turn
 jq -e '[.hooks.SessionStart[]?.hooks[]?.command] | any(test("desk-update-check"))' ~/.claude/settings.json
                                                     # false: no once-a-day update notice at session start
+jq -e '[.hooks.UserPromptSubmit, .hooks.PostToolUse, .hooks.Stop, .hooks.SessionStart]
+  | all([.[]?.hooks[]?.command] | any(test("desk-handoff")))' ~/.claude/settings.json
+                                                    # false: no context handoff on one or more events
 eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a configured repo
 python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" suggest
                                                     # only when EXISTS=yes: rows with suggest off, now on
@@ -121,6 +124,8 @@ UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt
 UNTRACKED     <names>: no recorded source, so no update check
 SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
 SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
+SETTING       no context handoff: past §2 Handoff at context % the session would write .handoffs/<date>.md,
+              and the session after /clear or a compaction would pick it up
 PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills listed every turn
 ```
 
@@ -169,7 +174,9 @@ by pushing to `main`. On no, report the branch as local only.
 
 For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
-first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
+first). For the context handoff: the same, or register it the way install.sh does (an entry running
+`python3 ~/.claude/hooks/desk-handoff.py`, timeout 15, on each of `UserPromptSubmit`, `PostToolUse`,
+`Stop` and `SessionStart` that lacks one, settings backed up first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
 copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` first). For a chosen
 PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
 
