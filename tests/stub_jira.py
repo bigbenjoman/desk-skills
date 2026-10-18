@@ -4,8 +4,9 @@ DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
 # "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
 # "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field], "fields": [field list GET /field
-# answers]}. Issue links posted are kept in memory, on both
-# issues, the way Jira shows them: the other side, from each issue's point of view.
+# answers], "unlink_readback": "normal"|"keep"}. Issue links posted are kept in memory, on both
+# issues, the way Jira shows them: the other side, from each issue's point of view. A DELETE of a
+# link id removes it from both.
 FIX = {"issues": {}, "children": {}}
 if len(sys.argv) > 4:
     with open(sys.argv[4]) as f:
@@ -13,7 +14,10 @@ if len(sys.argv) > 4:
 from http.server import BaseHTTPRequestHandler, HTTPServer
 GOOD = "Basic " + base64.b64encode(b"me@example.com:good-token").decode()
 LOG = sys.argv[2]
-BLOCKS = {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}
+LINK_TYPES = [{"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+              {"id": "10001", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
+              {"id": "10002", "name": "Duplicate", "inward": "is duplicated by", "outward": "duplicates"},
+              {"id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to"}]
 NEXT_ID = [10000]
 
 def issue(key):
@@ -89,18 +93,34 @@ class H(BaseHTTPRequestHandler):
             i = FIX["issues"].setdefault(m.group(1), {})
             i.update({k: v for k, v in fields.items() if k not in FIX.get("edit_drop", [])})
             return self._send(204, {})
+        if path in ("/rest/api/3/issueLinkType", "/rest/api/2/issueLinkType") and self.command == "GET":
+            return self._send(200, {"issueLinkTypes": LINK_TYPES})
         if path in ("/rest/api/3/issueLink", "/rest/api/2/issueLink") and self.command == "POST":
             body = json.loads(data or "{}")
             inward, outward = body["inwardIssue"]["key"], body["outwardIssue"]["key"]
+            t = next((t for t in LINK_TYPES if t["name"] == body["type"]["name"]), None)
+            if t is None:
+                return self._send(404, {"errorMessages": ["No issue link type with name '%s' found." % body["type"]["name"]]})
             # "inward blocks outward": outward shows "is blocked by inward" (an inwardIssue entry),
             # inward shows "blocks outward" (an outwardIssue entry).
             if FIX.get("link_readback") != "drop":
                 NEXT_ID[0] += 1
                 FIX["issues"].setdefault(outward, {}).setdefault("issuelinks", []).append(
-                    {"id": str(NEXT_ID[0]), "type": BLOCKS, "inwardIssue": brief(inward)})
+                    {"id": str(NEXT_ID[0]), "type": t, "inwardIssue": brief(inward)})
                 FIX["issues"].setdefault(inward, {}).setdefault("issuelinks", []).append(
-                    {"id": str(NEXT_ID[0]), "type": BLOCKS, "outwardIssue": brief(outward)})
+                    {"id": str(NEXT_ID[0]), "type": t, "outwardIssue": brief(outward)})
             return self._send(201, {})
+        m = re.match(r"/rest/api/[23]/issueLink/([0-9]+)$", path)
+        if m and self.command == "DELETE":
+            # Gone from both sides, unless "unlink_readback" is "keep" (a delete that did not stick).
+            hit = False
+            for i in FIX["issues"].values():
+                before = i.get("issuelinks", [])
+                kept = [l for l in before if l.get("id") != m.group(1)]
+                hit = hit or len(kept) != len(before)
+                if FIX.get("unlink_readback") != "keep":
+                    i["issuelinks"] = kept
+            return self._send(204, {}) if hit else self._send(404, {"errorMessages": ["No issue link with id '%s' exists." % m.group(1)]})
         if path == "/rest/api/2/issue" and self.command == "POST":
             # Kept so a read-back sees it; only the stub's own account resolves to a display name.
             f = dict(json.loads(data or "{}").get("fields", {}))
@@ -111,5 +131,5 @@ class H(BaseHTTPRequestHandler):
         if "/comment" in self.path and self.command == "POST":
             return self._send(201, {"id": "10"})
         self._send(404, {"errorMessages": ["nope"]})
-    do_GET = do_POST = do_PUT = handle_any
+    do_GET = do_POST = do_PUT = do_DELETE = handle_any
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()

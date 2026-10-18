@@ -11,6 +11,14 @@
                                        exit 1 if any is not, with the one-line fix for each
   skills-upstream plugins [--json]     installed Claude Code plugins vs the version their marketplace pins
                                        (run `claude plugin marketplace update` first); exit 10 if any is behind
+  skills-upstream statusline check     exit 0 if ~/.claude/statusline-command.sh is claude-statusline at its pin,
+                                       1 if it is missing or another version (local only, no network)
+  skills-upstream statusline other     print a status line desk did not install (a statusLine command other
+                                       than the one it recorded, or an unrecorded statusline-command.sh) and
+                                       exit 0, else exit 1; exit 2 if settings.json is not valid JSON
+  skills-upstream statusline install   run claude-statusline's own installer from the repo at its pin (the old
+                                       script copied aside first) and record the commit and the statusLine
+                                       command in ~/.claude/desk/statusline.installed
   skills-upstream is-clone-of <dir> <owner/repo>
                                        exit 0 if <dir> is a git clone whose origin IS github.com/<owner/repo>,
                                        1 if not; install.sh uses it, so both agree
@@ -30,11 +38,15 @@ Sources (vendor/sources.json):
   checkout {repo, branch}              your own skills: ~/.agents/skills/<name> IS a git clone of the repo
                                        (no copy in vendor/); outdated = commits on origin/<branch> not yet
                                        pulled; upgrade = `git pull --ff-only` after showing them
+  tools: github {repo, path "", installer}
+                                       not skills: a whole repo, newest commit vs pin.commit; upgrade moves the
+                                       pin only, and install.sh installs it with `statusline install`
 
 `upgrade` only changes files inside vendor/ (review them with `git diff`); installing them is
 install.sh's job. Nothing here touches ~/.claude or ~/.agents except `verify` and `links`, which only
 read, and `index`, which writes only the skill-index skill and its link (and, with --name-only,
-skillOverrides in settings.json, which install.sh asks before running).
+skillOverrides in settings.json, which install.sh asks before running), and `statusline install`, whose
+installer writes ~/.claude/statusline-command.sh and settings.json's statusLine (install.sh asks first).
 Last successful `outdated` run is stamped in ~/.claude/desk/skills-upstream.last.
 """
 
@@ -132,15 +144,20 @@ def gh(*args):
 
 
 # ---- github ------------------------------------------------------------------------------------
+def github_commits(src, n):
+    """The repo's commits API for src.path, or for the whole repo when path is empty (a tool)."""
+    return f"repos/{src['repo']}/commits?" + (f"path={src['path']}&" if src.get("path") else "") + f"per_page={n}"
+
+
 def github_latest(src):
-    out = gh("api", f"repos/{src['repo']}/commits?path={src['path']}&per_page=1",
+    out = gh("api", github_commits(src, 1),
              "--jq", ".[0] | [.sha, .commit.author.date[0:10], (.commit.message | split(\"\\n\")[0])] | @tsv")
     sha, date, msg = out.strip().split("\t", 2)
     return {"commit": sha[:9], "date": date, "message": msg}
 
 
 def github_count_since(src, pin_commit):
-    out = gh("api", f"repos/{src['repo']}/commits?path={src['path']}&per_page=100", "--jq", ".[].sha")
+    out = gh("api", github_commits(src, 100), "--jq", ".[].sha")
     shas = out.split()
     for i, s in enumerate(shas):
         if s.startswith(pin_commit):
@@ -149,12 +166,12 @@ def github_count_since(src, pin_commit):
 
 
 def github_fetch(src, commit, dest):
-    """Copy every file under src.path at commit into dest."""
+    """Copy every file under src.path (the whole repo when path is empty) at commit into dest."""
     tree = json.loads(gh("api", f"repos/{src['repo']}/git/trees/{commit}?recursive=1"))
-    prefix = src["path"].rstrip("/") + "/"
+    prefix = src["path"].rstrip("/") + "/" if src.get("path") else ""
     files = [t["path"] for t in tree["tree"] if t["type"] == "blob" and t["path"].startswith(prefix)]
     if not files:
-        raise RuntimeError(f"nothing under {src['path']} at {commit}")
+        raise RuntimeError(f"nothing under {src.get('path') or src['repo']} at {commit}")
     for p in files:
         raw = gh("api", f"repos/{src['repo']}/contents/{p}?ref={commit}", "--jq", ".content")
         import base64
@@ -248,7 +265,7 @@ def check_one(name, entry):
         outdated = not latest["commit"].startswith(pin["commit"][:7])
         return {"name": name, "outdated": outdated, "pinned": f"{pin['commit']} ({pin['date']})",
                 "latest": f"{latest['commit']} ({latest['date']}) {latest['message']}",
-                "behind": behind, "source": f"github:{src['repo']}/{src['path']}"}
+                "behind": behind, "source": f"github:{src['repo']}/{src['path']}".rstrip("/")}
     if src["type"] == "drive":
         rows = drive_listing(src["folder_id"])
         same = [r for r in rows if r["file_id"] == src["file_id"]]
@@ -264,18 +281,25 @@ def check_one(name, entry):
     raise RuntimeError(f"unknown source type {src['type']}")
 
 
+def tracked(data):
+    """Every pinned entry `outdated`, `list` and `upgrade` handle: the skills, then the tools (a whole
+    repo installed by its own installer, with no vendor/ copy and no ~/.agents/skills folder)."""
+    return {**data["skills"], **data.get("tools", {})}
+
+
 def cmd_list(data):
-    for name, e in sorted(data["skills"].items()):
+    for name, e in sorted(tracked(data).items()):
         s, p = e["source"], e.get("pin", {})
-        where = (f"{s['repo']}/{s['path']}" if s["type"] == "github" else s["repo"] if s["type"] == "checkout"
+        where = (f"{s['repo']}/{s['path']}".rstrip("/") if s["type"] == "github" else s["repo"] if s["type"] == "checkout"
                  else f"Drive {s['file_name']} ({s.get('publisher', '')})")
         ver = p.get("commit") or p.get("version") or f"git checkout ({s.get('branch', 'main')})"
-        print(f"{name:22} {s['type']:7} {where}  @ {ver}")
+        kind = "tool" if name in data.get("tools", {}) else s["type"]
+        print(f"{name:22} {kind:7} {where}  @ {ver}")
 
 
 def cmd_outdated(data, as_json=False):
     results, errors = [], []
-    for name, e in sorted(data["skills"].items()):
+    for name, e in sorted(tracked(data).items()):
         try:
             results.append(check_one(name, e))
         except Exception as ex:  # noqa: BLE001 - a source being unreachable is reported, never fatal
@@ -301,17 +325,25 @@ def cmd_outdated(data, as_json=False):
 
 
 def cmd_upgrade(data, names):
+    entries, tools = tracked(data), data.get("tools", {})
     if names == ["--all"]:
-        names = [n for n, e in sorted(data["skills"].items()) if check_one(n, e)["outdated"]]
+        names = [n for n, e in sorted(entries.items()) if check_one(n, e)["outdated"]]
         if not names:
             print("everything is up to date")
             return 0
     zips = {}
     for name in names:
-        if name not in data["skills"]:
+        if name not in entries:
             die(f"{name} is not in vendor/sources.json (see `skills-upstream list`)")
-        e = data["skills"][name]
+        e = entries[name]
         src, pin = e["source"], e.get("pin", {})
+        if name in tools:
+            # A tool has no vendor/ copy: the pin is the whole change, and install.sh installs it.
+            latest = github_latest(src)
+            print(f"{name}: {pin['commit']} -> {latest['commit']} ({latest['date']}: {latest['message']}); "
+                  f"pin only, installed by ./install.sh")
+            e["pin"] = {"commit": latest["commit"], "date": latest["date"]}
+            continue
         if src["type"] == "checkout":
             d = checkout_dir(name, e)
             before = git(d, "rev-parse", "--short", "HEAD")
@@ -348,6 +380,113 @@ def cmd_upgrade(data, names):
             shutil.rmtree(tmp, ignore_errors=True)
     save(data)
     print("\nReview:  git -C", ROOT, "diff --stat -- vendor/   then install with ./install.sh")
+    return 0
+
+
+# ---- status line (a tool) ----------------------------------------------------------------------
+STATUSLINE = "claude-statusline"
+STATUSLINE_SCRIPT = os.path.expanduser("~/.claude/statusline-command.sh")
+STATUSLINE_RECORD = os.path.expanduser("~/.claude/desk/statusline.installed")
+SETTINGS = os.path.expanduser("~/.claude/settings.json")
+
+
+def statusline_record():
+    """What the last `statusline install` recorded ({commit, command, ...}), or {} (never installed by desk)."""
+    try:
+        rec = json.load(open(STATUSLINE_RECORD))
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def statusline_command():
+    """settings.json's statusLine command ("" when there is none). Raises ValueError when unreadable."""
+    try:
+        with open(SETTINGS) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return ""
+    except OSError as ex:
+        raise ValueError(str(ex))
+    s = json.loads(raw) if raw.strip() else {}
+    if not isinstance(s, dict):
+        raise ValueError("not a JSON object")
+    line = s.get("statusLine")
+    if not line:
+        return ""
+    return (line.get("command") or json.dumps(line)) if isinstance(line, dict) else str(line)
+
+
+def cmd_statusline_check(data):
+    """Exit 0 the pinned commit is installed, 1 it is missing or another version. Local only."""
+    pin = data["tools"][STATUSLINE]["pin"]
+    have = statusline_record().get("commit")
+    if not os.path.isfile(STATUSLINE_SCRIPT):
+        print(f"not installed: no {tilde(STATUSLINE_SCRIPT)} (pinned {pin['commit']}, {pin['date']})")
+        return 1
+    if have is None:
+        print(f"{tilde(STATUSLINE_SCRIPT)} was not installed by desk, so its version is unknown "
+              f"(pinned {pin['commit']}, {pin['date']})")
+        return 1
+    if not pin["commit"].startswith(have[:7]) and not have.startswith(pin["commit"][:7]):
+        print(f"installed {have}, pinned {pin['commit']} ({pin['date']})")
+        return 1
+    print(f"installed at the pin, {pin['commit']} ({pin['date']})")
+    return 0
+
+
+def cmd_statusline_other():
+    """A status line desk did not install, which an install would replace: exit 0 and print it, 1 there
+    is none, 2 settings.json is not valid JSON. Ours is only the exact command the last install recorded,
+    never a name match: a user's own script is often at ~/.claude/statusline-command.sh too."""
+    try:
+        cmd = statusline_command()
+    except ValueError:
+        return 2
+    rec = statusline_record()
+    if cmd:
+        if rec.get("command") == cmd:
+            return 1
+        print(cmd)
+        return 0
+    if os.path.isfile(STATUSLINE_SCRIPT) and not rec:
+        print(f"{tilde(STATUSLINE_SCRIPT)} (a script desk did not install)")
+        return 0
+    return 1
+
+
+def cmd_statusline_install(data):
+    """Run the repo's own installer from a copy of the repo at the pin, then record the commit and the
+    statusLine command it wrote. The installer backs settings.json up itself (install.sh has too); the
+    script it overwrites is copied aside here first."""
+    e = data["tools"][STATUSLINE]
+    src, pin = e["source"], e["pin"]
+    tmp = tempfile.mkdtemp(prefix="skills-upstream-statusline-")
+    try:
+        github_fetch(src, pin["commit"], tmp)
+        installer = os.path.join(tmp, src["installer"])
+        if not os.path.isfile(installer):
+            die(f"{src['installer']} is not in {src['repo']} at {pin['commit']}")
+        if os.path.isfile(STATUSLINE_SCRIPT):
+            backup = f"{STATUSLINE_SCRIPT}.bak-desk-{time.strftime('%Y%m%d-%H%M%S')}"
+            shutil.copy2(STATUSLINE_SCRIPT, backup)
+            print(f"backup: {tilde(backup)}")
+        r = subprocess.run(["bash", installer], cwd=tmp, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"{src['installer']} at {pin['commit']} failed (exit {r.returncode}): "
+                + (r.stderr or r.stdout).strip()[-300:], 1)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        command = statusline_command()
+    except ValueError:
+        die(f"{src['installer']} ran, but {tilde(SETTINGS)} is no longer valid JSON; restore its .bak", 1)
+    os.makedirs(os.path.dirname(STATUSLINE_RECORD), exist_ok=True)
+    with open(STATUSLINE_RECORD, "w") as f:
+        json.dump({"repo": src["repo"], "commit": pin["commit"], "date": pin["date"],
+                   "command": command, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+        f.write("\n")
+    print(f"installed {STATUSLINE} {pin['commit']} ({pin['date']}) from {src['repo']}")
     return 0
 
 
@@ -947,6 +1086,15 @@ def main(argv):
         return cmd_links(data)
     if cmd == "plugins":
         return cmd_plugins("--json" in rest)
+    if cmd == "statusline":
+        sub = rest[0] if rest else ""
+        if sub == "check":
+            return cmd_statusline_check(data)
+        if sub == "other":
+            return cmd_statusline_other()
+        if sub == "install":
+            return cmd_statusline_install(data)
+        die("usage: skills-upstream statusline check | other | install")
     if cmd == "rehash":
         for name, e in data["skills"].items():
             if e["source"]["type"] != "checkout":

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld } from './batch-state.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
+import { workerMarkers } from './harvest.mjs';
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
@@ -294,7 +295,7 @@ if (lowMemory) {
 const slots = (overBudget || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
 const runningKeys = new Set(running.map((r) => r.key));
 
-// A ticket whose log already carries AUTOPILOT_DONE has finished, whatever its state says. The
+// A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
 // un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
 // completed ticket. This is a guard, not the cure: markers are never consumed.
@@ -306,7 +307,9 @@ const alreadyFinished = (r) => {
   if (rerunAllowed.has(r.key)) return false;
   const log = join(STATE, 'logs', `${r.key}.log`);
   if (!existsSync(log)) return false;
-  try { return /AUTOPILOT_DONE:/.test(readFileSync(log, 'latin1')); } catch { return false; }
+  // Only what the worker printed, read the way harvest reads it: a tool call or tool result that
+  // quotes the marker (a grep for it, say) is not the worker finishing.
+  try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
 };
 
 const eligibleBase = all.filter((r) =>
@@ -321,7 +324,7 @@ if (!maySpawn && eligible.length) {
 }
 // Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
 if (blockedByDone.length) {
-  report.stalled.push(`not respawning (log already has AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
+  report.stalled.push(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 

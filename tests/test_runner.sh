@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: desk-runner (profile gate, stubbed tart, isolation results)
 # desk-runner against a stubbed tart (and stubbed softnet, sudo, ifconfig, lsof, route, launchctl,
 # pmset, defaults): the machine profile gates `up`, the VM is created once at the profile's sizes and
 # started behind the Softnet block, isolation results are read from the probe's output, status and

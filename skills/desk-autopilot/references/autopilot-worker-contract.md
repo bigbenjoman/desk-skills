@@ -133,7 +133,7 @@ yourself, then print it under `JIRA COMMENT — posted`. Do not print `JIRA COMM
 and do not park for it. **Check idempotency first**: read existing comments and skip if the
 `(<TICKET>/desk-ticket)` marker is already there, so a re-run does not double-post. Transitioning to
 §4 Review state (skip if it is `none`) works the same way under `jira-transition`, and field edits
-under `jira-edit`. `desk-jira link` is never yours, whatever `jira-edit` says: issue links are set
+under `jira-edit`. `desk-jira link` and `unlink` are never yours, whatever `jira-edit` says: issue links are set
 interactively when an epic is written.
 
 **Not granted:** print `desk-jira`'s full block (`JIRA COMMENT — awaiting approval`,

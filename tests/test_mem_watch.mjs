@@ -1,3 +1,4 @@
+// suite: memory watch (avail band, heavy processes)
 // The sustained-high watch and what counts as heavy: fixture `ps` output and stubbed memory
 // figures only; nothing reads this computer.
 import { heavyFromPs, sustainedBandGiB, sustainedStep } from '../desk/bin/desk-env.mjs';

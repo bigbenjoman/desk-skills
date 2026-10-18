@@ -8,8 +8,9 @@
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
-# is backed up first. Repo configs under ~/.config/desk/repos are never touched. settings.json is
-# backed up before it is touched.
+# is backed up first. Repo configs under ~/.config/desk/repos are never touched, apart from dropping
+# retired allow rules /desk-setup recorded (backed up first). settings.json is backed up before it
+# is touched.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +25,9 @@ CONFIG_ROOT="${DESK_CONFIG_ROOT:-$HOME/.config/desk}"
 SETTINGS="$CLAUDE_DIR/settings.json"
 HOOK="$CLAUDE_DIR/hooks/deny-ai-attribution.py"
 PROFILE_DIR="$HOME/.cache/ms-playwright-mcp/desk-profile"
+# The playwright @playwright/mcp depends on, so desk's uploader and the MCP drive one Chromium build.
+# Taken from @playwright/mcp 0.0.83, which pins this alpha prerelease: it moves whenever @latest does.
+PLAYWRIGHT_VERSION="1.64.0-alpha-1790635538000"
 
 PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official playwright@claude-plugins-official codex@openai-codex"
 
@@ -500,6 +504,37 @@ if [ -f "$SRC/bin/desk-jira" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
+section "Desk's Playwright  -> ~/.claude/desk/playwright"
+
+# PR image upload and GitHub sign-in run on this one pinned copy in every repo; a repo's own
+# Playwright is its e2e tests' and is never read or changed. Its browsers live in browsers/ here, so
+# Playwright's own install step, which drops builds no copy in that folder uses any more, prunes only
+# this folder and never the shared ms-playwright cache. Installed without asking: /desk-update runs
+# this with no terminal, and the uploader cannot run without it.
+PW_HOME="$DESKDIR/playwright"
+if ! has npm; then
+  warn "npm not found (it ships with node); desk's Playwright not installed, so PR image upload and github-signin.mjs cannot run"
+elif [ "$(cat "$PW_HOME/version" 2>/dev/null || true)" = "$PLAYWRIGHT_VERSION" ] \
+    && [ -f "$PW_HOME/node_modules/playwright/index.mjs" ]; then
+  ok "playwright $PLAYWRIGHT_VERSION and its Chromium"
+else
+  note "installing playwright $PLAYWRIGHT_VERSION and its Chromium (a few hundred MB, once per version)"
+  mkdir -p "$PW_HOME"
+  rm -f "$PW_HOME/version"
+  printf '{\n  "private": true,\n  "dependencies": { "playwright": "%s" }\n}\n' "$PLAYWRIGHT_VERSION" > "$PW_HOME/package.json"
+  if ! out="$(cd "$PW_HOME" && npm install --no-audit --no-fund --no-package-lock 2>&1)"; then
+    warn "npm install playwright@$PLAYWRIGHT_VERSION failed in $PW_HOME; re-run ./install.sh"; show_err "$out"
+  elif ! out="$(cd "$PW_HOME" && env -u PLAYWRIGHT_SKIP_BROWSER_GC PLAYWRIGHT_BROWSERS_PATH="$PW_HOME/browsers" \
+      node node_modules/playwright/cli.js install chromium 2>&1)"; then
+    warn "the Chromium download for playwright $PLAYWRIGHT_VERSION failed; re-run ./install.sh"; show_err "$out"
+  else
+    printf '%s\n' "$PLAYWRIGHT_VERSION" > "$PW_HOME/version"
+    ok "playwright $PLAYWRIGHT_VERSION and its Chromium; older builds in $PW_HOME/browsers removed"
+    wrote "playwright ~/.claude/desk/playwright ($PLAYWRIGHT_VERSION)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------------------------
 section "Commit-attribution hook"
 
 install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
@@ -630,10 +665,12 @@ case "$rc" in
     note "Adds deny rules at user level: the Slack connector's send and write tools (drafts stay"
     note "possible), gh pr merge --admin, and git push with --force, -f, +refspec, --delete, -d or"
     note "--mirror. The push patterns are best-effort: git also takes -qf, --forc, --delet. Other rules are kept."
+    note "It also drops allow rules an earlier setup granted that no row grants any more (unpinned gh pr merge)."
     if confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
         "python3 \"$HARNESS\" --settings \"$SETTINGS\" baseline"; then
       if out="$(python3 "$HARNESS" --settings "$SETTINGS" baseline 2>&1)"; then
-        ok "deny rules added (recorded in ~/.claude/desk/harness-rules.json)"
+        ok "always-on deny rules applied, and any retired allow rules dropped (recorded in ~/.claude/desk/harness-rules.json)"
+        printf '%s\n' "$out" | grep -E '^(RETIRED|retired) ' | sed 's/^/        /' || true
       else
         warn "could not add the deny rules"; show_err "$out"
       fi
@@ -642,6 +679,26 @@ case "$rc" in
     fi
     ;;
 esac
+
+# Allow rules /desk-setup recorded in a repo's own settings.local.json that no row grants any more
+# (unpinned gh pr merge). Retiring them only takes capability away, so it is not a question.
+for ledger in "$CONFIG_ROOT"/repos/*/harness-rules.json; do
+  [ -f "$ledger" ] || continue
+  slug="$(basename "$(dirname "$ledger")")"
+  root="$(DESK_CONFIG="$(dirname "$ledger")/config.md" node "$DESKDIR/bin/desk-env.mjs" get repo-root 2>/dev/null || true)"
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    warn "$slug: its §2 Primary repo root is not a directory, so its retired allow rules were not checked (run /desk-setup there)"
+    continue
+  fi
+  rc=0; out="$(python3 "$HARNESS" --settings "$root/.claude/settings.local.json" --ledger "$ledger" retire 2>&1)" || rc=$?
+  lines="$(printf '%s\n' "$out" | grep -E '^(RETIRED|retired|backup|synced|differs|FAILED) ' || true)"
+  if [ "$rc" -ne 0 ]; then
+    warn "$slug: could not finish retiring its unpinned merge allows"; show_err "$out"
+  elif [ -n "$lines" ]; then
+    ok "$slug: retired allow rules checked in $root/.claude/settings.local.json"
+    printf '%s\n' "$lines" | sed 's/^/        /'
+  fi
+done
 
 # ---------------------------------------------------------------------------------------------
 section "Claude Code plugins"
@@ -838,6 +895,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
+section "Status line  -> ~/.claude/statusline-command.sh (claude-statusline)"
+
+# The status line stays its own repo; vendor/sources.json pins a commit (`tools`), and this runs the
+# repo's own installer at that commit. /desk-update moves the pin. A status line desk did not install
+# (`statusline other`) is the user's, so replacing it is its own question, never taken by --yes.
+rc=0; out="$(python3 "$SRC/bin/skills-upstream" statusline check 2>&1)" || rc=$?
+orc=0; other="$(python3 "$SRC/bin/skills-upstream" statusline other 2>/dev/null)" || orc=$?
+if [ "$orc" = 2 ]; then
+  warn "$SETTINGS is not valid JSON; fix it, then re-run to check the status line"
+elif [ "$rc" = 0 ] && [ "$orc" = 1 ]; then
+  ok "claude-statusline $out"
+elif [ "$rc" != 0 ] && [ "$rc" != 1 ]; then
+  warn "could not check the status line"; show_err "$out"
+else
+  sl_apply="cp -p \"$SETTINGS\" \"$SETTINGS.bak-desk-$TS\"; python3 \"$SRC/bin/skills-upstream\" statusline install"
+  if [ "$orc" = 0 ]; then
+    warn "your status line is not one desk installed: $other"
+    note "claude-statusline ($out) would replace it; it is not changed unless you say so."
+    sl_q="Replace your statusLine command with claude-statusline (settings.json backed up first)?"; sl_big=1
+  else
+    note "claude-statusline: $out"
+    note "Runs its own installer at the pinned commit: it writes ~/.claude/statusline-command.sh and"
+    note "merges a statusLine entry into ~/.claude/settings.json. Other settings are kept."
+    sl_q="Install claude-statusline (settings.json backed up first)?"; sl_big=0
+  fi
+  if confirm "$sl_q" "$sl_big" "$sl_apply"; then
+    backup_settings
+    if out="$(python3 "$SRC/bin/skills-upstream" statusline install 2>&1)"; then
+      ok "$out"; note "takes effect in the next Claude Code session"
+    else
+      warn "could not install claude-statusline"; show_err "$out"
+    fi
+  else
+    note "not installed. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------------------------
 section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
 mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
@@ -857,7 +952,7 @@ note "template /desk-setup writes from: ~/.agents/skills/desk-setup/references/d
 [ "$OS" = wsl ] && note "WSL: /desk-setup will ask for a Windows-visible handoff directory and a memory ceiling"
 
 # ---------------------------------------------------------------------------------------------
-section "Pinned third-party skills: upstream check"
+section "Pinned third-party skills and the status line: upstream check"
 
 # Upstreams change rarely, so this runs at most every 30 days; `/desk-update` or
 # `skills-upstream outdated` checks on demand. It only reports; nothing is upgraded here.
@@ -869,7 +964,7 @@ if [ -f "$SRC/vendor/sources.json" ]; then
     rc=0; out="$(python3 "$SRC/bin/skills-upstream" outdated 2>&1)" || rc=$?
     printf '%s\n' "$out" | sed 's/^/        /'
     case "$rc" in
-      0)  ok "every pinned skill matches its upstream" ;;
+      0)  ok "every pinned skill and tool matches its upstream" ;;
       10) warn "upstream has newer versions (above). Review and adopt them with /desk-update" ;;
       *)  warn "could not reach every source (above); try /desk-update later" ;;
     esac

@@ -126,7 +126,7 @@ grep -rnE 'run:|pull_request\.(body|title)|PR_BODY' .github/workflows 2>/dev/nul
 git config --get core.hooksPath
 find . -maxdepth 2 \( -name .husky -o -name 'lefthook*.yml' -o -name .pre-commit-config.yaml \) -print
 find "$(git rev-parse --git-common-dir)/hooks" -type f ! -name '*.sample' -print   # hooks a hooksPath would switch off
-find .githooks scripts/desk -maxdepth 1 -type f -print 2>/dev/null                   # templates already committed?
+find .githooks scripts/desk .github/workflows/desk-gate.yml -maxdepth 1 -type f -print 2>/dev/null   # templates already committed?
 # §4 environments: names only, never values
 find . -maxdepth 3 -name node_modules -prune -o -name '.env*' -type f -print | sort
 grep -hoE '^[A-Z0-9_]*(DATABASE|DB|POSTGRES|PG)[A-Z0-9_]*=' $(find . -maxdepth 3 -name node_modules -prune -o -name '.env*' -type f -print) 2>/dev/null | sort -u   # variable names only
@@ -242,7 +242,7 @@ How to turn what you find into rows:
   |---|---|
   | `.github/` | `` `.github/**: changes CI workflows or repo settings, which decide what a merge is checked against` `` |
   | `.githooks/` | `` `.githooks/**: changes the committed git hooks that check a push` `` |
-  | `scripts/desk/` | `` `scripts/desk/**: changes the checks the pre-push hook runs` `` |
+  | `scripts/desk/` | `` `scripts/desk/**: changes the checks the pre-push hook and the desk gate run` `` |
   | a committed `CODEOWNERS`, ruleset or protection file outside `.github/` | `` `<its path>: changes who must review, or what protects the branch` `` |
   | `package.json` with a `scripts` section | `` `package.json#scripts: changes the commands CI runs` `` |
   | `tsconfig*.json` | `` `tsconfig*.json: changes what the typecheck checks` `` |
@@ -330,6 +330,12 @@ How to turn what you find into rows:
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
   the hook is the backstop.
 - **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
+- **Ticket format.** While the row is `TODO`, propose `default`: desk-jira's
+  `references/ticket-template.md`, the layouts every desk path that files a ticket uses. Show its
+  section list per type (Story and Task, Bug, Epic, Subtask) and write `default` once the user
+  confirms. If the project's recent tickets share a different layout the team relies on, show both.
+  Write the repo's own sections per type only if the user picks them. A row already set is left as
+  it is.
 - **Handoff directory** on WSL must be Windows-visible (`/mnt/c/Users/<name>/Downloads/`). On macOS
   propose `~/desk-handoff/`, never `~/Downloads/`, `~/Desktop/` or `~/Documents/`: macOS folder
   privacy refuses Claude Code those (EPERM), so every skill that writes there fails. Elsewhere
@@ -444,6 +450,44 @@ Once the script is in the checkout, run `bash scripts/desk/pre-push.sh --head` o
 item's time. Over about 90 s: say so, and offer to move the slowest item out of the row (CI still
 runs it).
 
+### The desk gate workflow
+
+Once §4 Local review command is confirmed as `/desk-review`, offer, as its own question, to commit
+the CI gate: `desk/templates/.github/workflows/desk-gate.yml` and
+`desk/templates/scripts/desk/review-gate.mjs`, from the same templates directory. It runs three
+jobs, and say what each one fails on:
+
+| Job (check name) | Fails when |
+|---|---|
+| `desk-review verdict` | the PR's latest `desk-review:verdict` marker (from someone with write access, read from the repo's permission endpoint) is missing, attests a SHA other than the head, has any of `p0` `p1` `p2` `deferred` `gaps` `unrefuted` `partial` non-zero, or sits under a heading that lists findings, or names another SHA or round. `REQUIRE_VENDOR: 'codex-cross'` also refuses a same-vendor refutation |
+| `CLAUDE.md size` | a tracked `CLAUDE.md` is over 20,000 characters, the most the reviewer loads |
+| `protected-path approval` | the PR touches a path the `PROTECTED` regex matches (a rename's old path included) and has no approval at its head from someone with write access other than its author, unless it is a small `fix`, `docs` or `chore` change: that type in the title, no breaking `!`, and at most 30 changed files, not counting lockfiles and build output |
+
+Ask for the protected paths as a second question: the merge-hold globs the user wants a second
+person on, written as one regex, Recommended `^(\.github|scripts/desk)/` so a change to CI or to
+this gate is at least asked for an approval. `none` leaves `PROTECTED: ''` and the job passes. **Say
+plainly that none of the three jobs can protect itself**: a PR runs its own copy of the workflow and
+script, so it can blank `PROTECTED` or rewrite a job and the check still passes under its name. Only
+the branch ruleset closes that, with required reviewers (or CODEOWNERS review) over `.github/**` and
+`scripts/desk/**`, and that is the user's change to make. Say that a solo repo cannot meet this job's approval (the author's
+own never counts), so it should stay unrequired there. If the repo already has both files and they
+match, say so and skip; if they differ, show the diff and ask. On a yes, on a new branch off
+`<default>` named per §5 Branch names:
+
+```bash
+T="$(cat ~/.claude/desk/source-checkout)/desk/templates"
+mkdir -p .github/workflows scripts/desk
+cp "$T/.github/workflows/desk-gate.yml" .github/workflows/desk-gate.yml && cp "$T/scripts/desk/review-gate.mjs" scripts/desk/review-gate.mjs
+# then set PROTECTED in .github/workflows/desk-gate.yml to the confirmed regex, with Edit
+git add .github/workflows/desk-gate.yml scripts/desk/review-gate.mjs
+git commit -m "<§5 PR title format>: add the desk gate workflow"
+```
+
+Push it and open the PR through `desk-pr`, under §3 `git-push` and `pr-open`; pushing a workflow
+needs `gh`'s `workflow` scope. It blocks nothing until a job is required: offer to add the chosen
+check names to §4 Required checks, and say that the branch ruleset is the user's change to make.
+Both paths fall under the merge holds proposed above.
+
 ## 2. The permission interview
 
 `references/permission-rows.md` holds every row: the question, the Recommended option with what
@@ -542,6 +586,11 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
    lines, say it only takes capability away, then run `python3 $H baseline` (add
    `--slack-prefix <prefix>` for any other Slack prefix the session shows). Not a question. Exit 2:
    the settings file is unreadable; stop §4 and say so.
+   Then `python3 $H "${REPO_RULES[@]}" retire`, also not a question: it only takes capability away.
+   `retire`, `add` and `baseline` all first drop any rule in the script's `RETIRED` list that setup
+   recorded (printed `RETIRED`, backed up first; today the unpinned `gh pr merge` allows), and
+   `baseline --check` lists them as `retired`. A retired rule the user added themselves is printed
+   `retired … yours` and left alone: tell the user it still lets an unpinned merge run unprompted.
 2. **Build the allow plan** (JSON; shape in the script's header), replacing `<merge>` with this
    repo's §4 Merge method flag:
    - an `add` entry for each rule whose **every** owner row is `yes`, `rows` = all its owners.
@@ -564,7 +613,8 @@ or un-ignored file and any user-level file (exit 2, nothing written). Pass its r
 tracked copy) as the user's own action.
 
 Existing worktrees you open yourself do not see the file; offer to copy it into the ones
-`git worktree list` shows (backing up any that exist). **Autopilot worker worktrees never get a
+`git worktree list` shows (backing up any that exist). A later `remove` updates those copies too,
+as long as nobody has edited them since. **Autopilot worker worktrees never get a
 copy**: `setup-worktree.sh` does not copy it, because it carries your own allows (merge driver
 included). Workers run on their own settings built from §3 by `worker-settings.mjs`, kept outside the
 repo in `$DESK_STATE/workers/`.
@@ -627,7 +677,8 @@ github    : protection <summary (classic / ruleset <name>) / none> · required <
 toolchain : <package manager> · prefix <prefix/none> · install · dev · typecheck · lint · test · e2e · build · codegen ·
             env files <names>          (each list item as its own backtick span, `dir: cmd` where it has one)
 pre-push  : checks <items / none> · pr-body <command / none> · hook <committed in #<n> / declined / not offered> ·
-            hooksPath <.githooks / <other>, left alone / unset> · first run <n>s
+            hooksPath <.githooks / <other>, left alone / unset> · first run <n>s ·
+            desk gate <committed in #<n> / declined / not offered> · protected <regex / none>
 services  : db <…/none> · db vars <names / none> · services <…/none> · staging <url/none> ·
             vercel <…/none> · slack <…/none> · check-out → <destination>
 people    : reviewer <…> · infra/security <…> · product <…> · designer <…> · QA <…> · deletes <…>
@@ -677,8 +728,11 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 - **Before/after for every changed row**; never reset one quietly.
 - Revoking is as easy as granting: set the row, run
   `python3 $H "${REPO_RULES[@]}" remove <row> [<row>...]` (backs up, removes every rule the row
-  owns in this repo, restores a guard it had removed), refresh §3c, confirm. Do not argue for the
-  capability it costs.
+  owns in this repo, restores a guard it had removed), refresh §3c, confirm. It also updates every
+  worktree copy (`git worktree list`) that matched the file before the revoke, backing each up
+  first; a `differs` line names a copy that did not match and still carries the rule, and a
+  `FAILED` line (exit 1) one it could not read or write, so pass each one on for the user to fix
+  there. Do not argue for the capability it costs.
 - A row newly `yes` on a re-run: `add` a plan with just its rules (and any `unguard:`).
 
 ## Red flags — stop

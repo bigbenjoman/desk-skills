@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: harness-rules
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -73,6 +74,45 @@ run --ledger "$T/glob2.json" --settings "$T/glob/.claude/gone.json" remove pr-re
 check "remove with ledger records but missing file: no REMOVED, no file created" '[ $rc -eq 0 ] && [[ "$out" == *"absent"* ]] && [[ "$out" != *REMOVED* ]] && [ ! -e "$T/glob/.claude/gone.json" ]'
 run --ledger "$T/own.json" --settings "$T/own/.claude/settings.local.json" remove nobody
 check "remove of an unowned row says nothing to remove" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to remove"* ]]'
+
+# remove reaches worktree copies: a matching copy is synced (after a backup), a differing one named
+RT="$(cd "$T" && pwd -P)"  # git worktree list prints real paths (/private/var on macOS)
+mkrepo wt; printf '.claude/settings.local.json\n' > "$T/wt/.gitignore"
+git -C "$T/wt" add .gitignore; git -C "$T/wt" commit -qm init
+printf '{"permissions":{"allow":["Bash(ls)"]}}\n' > "$T/wt/.claude/settings.local.json"  # the user's own: the file outlives the revoke
+run --ledger "$T/wt.json" --settings "$T/wt/.claude/settings.local.json" add "$T/allow.json"
+git -C "$T/wt" worktree add -q "$T/wt-same" -b same; git -C "$T/wt" worktree add -q "$T/wt-own" -b own
+git -C "$T/wt" worktree add -q "$T/wt-none" -b none
+mkdir -p "$T/wt-same/.claude" "$T/wt-own/.claude"
+cp "$T/wt/.claude/settings.local.json" "$T/wt-same/.claude/settings.local.json"
+printf '{"permissions":{"allow":["Bash(gh pr ready *)","Bash(ls)"]}}\n' > "$T/wt-own/.claude/settings.local.json"
+run --ledger "$T/wt.json" --settings "$T/wt/.claude/settings.local.json" remove pr-ready
+check "remove syncs a worktree copy that matched" '[ $rc -eq 0 ] && [[ "$out" == *"synced   $RT/wt-same/.claude/settings.local.json"* ]] && ! grep -q "gh pr ready" "$T/wt-same/.claude/settings.local.json" && cmp -s "$T/wt/.claude/settings.local.json" "$T/wt-same/.claude/settings.local.json"'
+check "the synced copy is backed up first" 'grep -q "gh pr ready" "$T"/wt-same/.claude/settings.local.json.bak-desk-*'
+check "a differing copy is left alone and named" '[[ "$out" == *"differs  $RT/wt-own/.claude/settings.local.json"* ]] && grep -q "gh pr ready" "$T/wt-own/.claude/settings.local.json" && ! ls "$T"/wt-own/.claude/settings.local.json.bak-desk-* >/dev/null 2>&1'
+check "a worktree with no copy gets none" '[ ! -e "$T/wt-none/.claude/settings.local.json" ]'
+run --ledger "$T/wt.json" --settings "$T/wt/.claude/settings.local.json" remove pr-ready
+check "a second remove touches no copy" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to remove"* ]] && [[ "$out" != *synced* ]] && [[ "$out" != *differs* ]]'
+mkrepo wt2; printf '.claude/settings.local.json\n' > "$T/wt2/.gitignore"
+git -C "$T/wt2" add .gitignore; git -C "$T/wt2" commit -qm init
+run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" add "$T/allow.json"
+git -C "$T/wt2" worktree add -q "$T/wt2-same" -b same; mkdir -p "$T/wt2-same/.claude"
+cp "$T/wt2/.claude/settings.local.json" "$T/wt2-same/.claude/settings.local.json"
+run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" remove pr-ready
+check "a copy of a file setup created and now removed goes too, backed up" '[ $rc -eq 0 ] && [ ! -e "$T/wt2/.claude/settings.local.json" ] && [ ! -e "$T/wt2-same/.claude/settings.local.json" ] && ls "$T"/wt2-same/.claude/settings.local.json.bak-desk-* >/dev/null 2>&1'
+mkrepo wt3; printf '.claude/settings.local.json\n' > "$T/wt3/.gitignore"
+git -C "$T/wt3" add .gitignore; git -C "$T/wt3" commit -qm init
+printf '{"permissions":{"allow":["Bash(ls)"]}}\n' > "$T/wt3/.claude/settings.local.json"
+run --ledger "$T/wt3.json" --settings "$T/wt3/.claude/settings.local.json" add "$T/allow.json"
+for w in a b; do
+  git -C "$T/wt3" worktree add -q "$T/wt3-$w" -b "$w"; mkdir -p "$T/wt3-$w/.claude"
+  cp "$T/wt3/.claude/settings.local.json" "$T/wt3-$w/.claude/settings.local.json"
+done
+chmod 000 "$T/wt3-a/.claude/settings.local.json"
+run --ledger "$T/wt3.json" --settings "$T/wt3/.claude/settings.local.json" remove pr-ready
+chmod 644 "$T/wt3-a/.claude/settings.local.json"
+check "an unreadable copy is named, exit 1, and the next copy is still synced" '[ $rc -eq 1 ] && [[ "$out" == *"FAILED   $RT/wt3-a/.claude/settings.local.json"* ]] && [[ "$out" == *"REMOVED  allow"* ]] && [[ "$out" == *"synced   $RT/wt3-b/.claude/settings.local.json"* ]] && [[ "$out" != *Traceback* ]]'
+
 run --ledger "$L" --settings "$HOME/.claude/settings.json" baseline --check
 check "baseline --check still passes at user level" '[ $rc -eq 0 ]'
 
@@ -86,4 +126,52 @@ check "unset-default-mode backs up first" 'grep -q dontAsk "$T"/dm/.claude/setti
 printf '{"permissions":{"defaultMode":"acceptEdits"}}\n' > "$T/dm/.claude/settings.json"
 run --settings "$T/dm/.claude/settings.json" unset-default-mode
 check "unset-default-mode leaves another mode alone" '[ $rc -eq 0 ] && [[ "$out" == *"nothing to change"* ]] && grep -q acceptEdits "$T/dm/.claude/settings.json"'
+
+# every merge allow a row grants is pinned to a head commit, whatever the merge method
+ROWS="$S/../skills/desk-setup/references/permission-rows.md"
+merge_allows=$(grep -E '^\| `[a-z-]+` \|' "$ROWS" | grep -oE '`Bash\(gh pr merge [^`]*`')
+out=$merge_allows
+check "the rows grant merge allows" '[ "$(printf "%s\n" "$merge_allows" | grep -c .)" -ge 3 ]'
+check "every merge allow in the rows requires --match-head-commit" '! printf "%s\n" "$merge_allows" | grep -v -- "--match-head-commit \*)\`$"'
+for g in '"' "'" '#' '<' '>(' '$' '`' '--match-head-commit='; do
+  check "the merge row prompts on $g" 'grep -qF "ask: Bash(gh pr merge *$g*)" "$ROWS"'
+done
+for m in --squash --merge --rebase; do
+  out=$(printf '%s\n' "$merge_allows" | while IFS= read -r r; do printf '%s\n' "${r//<merge>/$m}"; done)
+  check "rows rendered with $m stay pinned" '[[ "$out" == *"$m --match-head-commit *)"* ]] && ! printf "%s\n" "$out" | grep -qE -- "$m( --auto)?\)\`$"'
+done
+
+# retire: unpinned merge allows an earlier setup recorded are dropped, backed up, and reported
+cat > "$T/old.json" <<'J'
+{"add":[{"list":"allow","rule":"Bash(gh pr merge * --merge)","rows":["pr-merge-green"]},{"list":"allow","rule":"Bash(gh pr merge * --auto --merge)","rows":["pr-auto-merge","pr-merge-green"]}]}
+J
+cat > "$T/pinned.json" <<'J'
+{"add":[{"list":"allow","rule":"Bash(gh pr merge * --merge --match-head-commit *)","rows":["pr-merge-green"]}]}
+J
+mkrepo rt; printf '.claude/settings.local.json\n' > "$T/rt/.gitignore"
+git -C "$T/rt" add .gitignore; git -C "$T/rt" commit -qm init
+printf '{"permissions":{"allow":["Bash(gh pr merge * --squash)"]}}\n' > "$T/rt/.claude/settings.local.json"
+run --ledger "$T/rt.json" --settings "$T/rt/.claude/settings.local.json" add "$T/old.json"
+git -C "$T/rt" worktree add -q "$T/rt-same" -b same; mkdir -p "$T/rt-same/.claude"
+cp "$T/rt/.claude/settings.local.json" "$T/rt-same/.claude/settings.local.json"
+run --ledger "$T/rt.json" --settings "$T/rt/.claude/settings.local.json" retire
+check "retire drops the unpinned merge allows setup recorded" '[ $rc -eq 0 ] && [[ "$out" == *"RETIRED  allow Bash(gh pr merge * --merge)"* ]] && [[ "$out" == *"RETIRED  allow Bash(gh pr merge * --auto --merge)"* ]] && ! grep -q -- "--merge)" "$T/rt/.claude/settings.local.json" && ! grep -q "gh pr merge" "$T/rt.json"'
+check "retire backs the settings file up first" 'grep -q -- "--auto --merge)" "$T"/rt/.claude/settings.local.json.bak-desk-*'
+check "retire reports an unpinned allow the user added and leaves it" '[[ "$out" == *"retired  allow Bash(gh pr merge * --squash)  (yours"* ]] && grep -q -- "--squash)" "$T/rt/.claude/settings.local.json"'
+check "retire syncs a worktree copy that matched" '[[ "$out" == *"synced   $RT/rt-same/.claude/settings.local.json"* ]] && cmp -s "$T/rt/.claude/settings.local.json" "$T/rt-same/.claude/settings.local.json"'
+run --ledger "$T/rt.json" --settings "$T/rt/.claude/settings.local.json" retire
+check "a second retire changes nothing" '[ $rc -eq 0 ] && [[ "$out" != *RETIRED* ]] && [[ "$out" != *backup* ]]'
+mkrepo ra; printf '.claude/settings.local.json\n' > "$T/ra/.gitignore"
+run --ledger "$T/ra.json" --settings "$T/ra/.claude/settings.local.json" add "$T/old.json"
+run --ledger "$T/ra.json" --settings "$T/ra/.claude/settings.local.json" add "$T/pinned.json"
+check "add retires the unpinned allows and writes the pinned one" '[ $rc -eq 0 ] && [[ "$out" == *"RETIRED  allow Bash(gh pr merge * --merge)"* ]] && [[ "$out" == *"NEW      allow Bash(gh pr merge * --merge --match-head-commit *)"* ]] && ! grep -q -- "--merge)\"" "$T/ra/.claude/settings.local.json"'
+mkdir -p "$T/legacy"
+printf '{"permissions":{"allow":["Bash(gh pr merge * --squash)"]}}\n' > "$T/legacy/settings.json"
+printf '{"rules":[{"list":"allow","rule":"Bash(gh pr merge * --squash)","rows":["pr-merge-green"],"added":"2026-01-01"}]}\n' > "$T/legacy.json"
+run --ledger "$T/legacy.json" --settings "$T/legacy/settings.json" baseline --check
+check "baseline --check flags a retired allow setup recorded" '[ $rc -eq 1 ] && [[ "$out" == *"retired  allow Bash(gh pr merge * --squash)"* ]]'
+run --ledger "$T/legacy.json" --settings "$T/legacy/settings.json" baseline
+check "baseline drops it, backed up" '[ $rc -eq 0 ] && [[ "$out" == *"RETIRED  allow Bash(gh pr merge * --squash)"* ]] && ! grep -q -- "--squash)" "$T/legacy/settings.json" && grep -q -- "--squash)" "$T"/legacy/settings.json.bak-desk-*'
+run --ledger "$T/legacy.json" --settings "$T/legacy/settings.json" baseline --check
+check "baseline --check passes once it is gone" '[ $rc -eq 0 ]'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]

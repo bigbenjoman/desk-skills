@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: worker-settings (shell-script toolchain)
 # worker-settings.mjs and a shell-script toolchain: `bash|sh <repo-relative .sh path>` is allowed exactly
 # and probed with `<shell> --version`; any other shell item (flags, a command string, an absolute or
 # parent path, another shell) is still refused. Scratch HOME and repo only.
@@ -9,7 +10,7 @@ S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
 export DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_STATE="$T/state" DESK_QUEUE="$T/queue.json"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
@@ -58,6 +59,8 @@ check "bash <repo script>: exact command allowed"         'allows "Bash(bash tes
 check "bash <repo script>: probed with bash --version"    '[[ "$out" == *"TOOLCHAIN_PROBE: bash --version"* ]] && allows "Bash(bash --version)"'
 check "bash <repo script>: no wholesale bash rule"        '! allows "Bash(bash:*)"'
 check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env:*)" && jq -e ".permissions.deny | index(\"Bash(desk-env machine write:*)\")" "$T/ws.json" >/dev/null'
+check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
+check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
 settings '`sh scripts/check.sh`'
 check "sh <repo script>: allowed and probed"              '[ $rc -eq 0 ] && allows "Bash(sh scripts/check.sh:*)" && [[ "$out" == *"TOOLCHAIN_PROBE: sh --version"* ]]'
@@ -94,12 +97,13 @@ settings '`bash tests/run.sh`' '| Lint | `none` `./install.sh` |'
 check "mixed none row: refused, no settings written"      '[ $rc -ne 0 ] && [[ "$out" == *"FAIL: desk: config §4 \"Lint\" mixes \`none\` with other items"* ]] && [ ! -f "$T/ws.json" ]'
 
 # desk-jira reads, transitions among them, whatever §3 jira-transition says; the transition itself only under yes
-JIRA_READS='get search comments whoami fields children transitions where meta md2wiki api'
+JIRA_READS='get search comments whoami fields children transitions where meta md2wiki api lint'
 reads_ok(){ local s; for s in $JIRA_READS; do allows "Bash(desk-jira $s:*)" || return 1; done; }
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
 check "jira-transition yes: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
 check "jira-transition yes: transition allowed"           'allows "Bash(desk-jira transition:*)" && ! denies "Bash(desk-jira transition:*)"'
 check "desk-jira link never allowed"                      '! allows "Bash(desk-jira link:*)" && denies "Bash(desk-jira link:*)"'
+check "desk-jira unlink never allowed"                    '! allows "Bash(desk-jira unlink:*)" && denies "Bash(desk-jira unlink:*)"'
 settings '`bash tests/run.sh`' '' "$(perm3 ask)"
 check "jira-transition ask: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
 check "jira-transition ask: transition denied"            'denies "Bash(desk-jira transition:*)" && ! allows "Bash(desk-jira transition:*)"'

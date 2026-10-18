@@ -192,6 +192,7 @@ const withPrefix = (c) => [c, ...(PREFIX ? [`${PREFIX} ${c}`] : [])];
 const STATE = E.stateDir();
 const BIN = E.binDir();
 const BIN_FORMS = [BIN, ...(tilde(BIN) ? [tilde(BIN)] : [])];
+const VERDICT = `${E.skillsDir()}/desk-review/bin/verdict.mjs`;
 const T = opt.ticket;
 const allow = [];
 const deny = [];
@@ -238,10 +239,11 @@ const GH_DENY = [' api', ' alias', ' extension', ' ext', ' pr merge', ' pr ready
 // Every desk-jira subcommand that only reads. `transitions` is the read desk-jira requires before
 // any `transition`; the `transition:*` rule is word-bounded, so it neither grants nor denies it.
 // `api` takes one path and always sends GET; desk-jira's render check after a write runs it.
-const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki', ' api'];
+// `lint` reads the ticket (or a local draft) and writes nothing.
+const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki', ' api', ' lint'];
 // Issue links are Bea's, filed interactively after the user approves an epic: never a worker's or a
-// triage pass's, whatever config §3 jira-edit says.
-const JIRA_NEVER = [' link'];
+// triage pass's to make or remove, whatever config §3 jira-edit says.
+const JIRA_NEVER = [' link', ' unlink'];
 
 if (mode === 'triage') {
   // Read-only by construction: no Edit, Write only to this ticket's triage records.
@@ -289,9 +291,14 @@ if (mode === 'triage') {
     // installed path, and the module behind it.
     'Bash(desk-env:*)', `Bash(${E.HOME}/.local/bin/desk-env:*)`, 'Bash(~/.local/bin/desk-env:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs:*)`, `Bash(node ${b}/desk-env.mjs:*)`]),
+    // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
+    // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
+    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
     // A script from the worktree's installed packages (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave node_modules.
     ...withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${c}:*)`),
+    // desk-review's verdict lines, computed from the run's results file rather than written by hand.
+    ...[VERDICT, ...(tilde(VERDICT) ? [tilde(VERDICT)] : [])].map((p) => `Bash(node ${p}:*)`),
   );
   deny.push(
     ...READ_DENY,

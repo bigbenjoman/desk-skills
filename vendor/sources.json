@@ -1,5 +1,5 @@
 {
-  "_about": "Third-party and own skills tracked by desk-skills. Types: `github` and `drive` entries keep the exact upstream files in vendor/<name>/ at `pin`; `checkout` entries are git clones in ~/.agents/skills/<name> (or ~/.agents/sources/<name> with `subskills` linked in) and have no vendor/ copy. install.sh installs each as the ONE real copy in ~/.agents/skills/<name> and links ~/.claude/skills/<name> to it. `bin/skills-upstream outdated` compares each pin with its source and only reports; `bin/skills-upstream upgrade <name>` pulls the newest upstream into vendor/ for review as a git diff (or `git pull --ff-only` for a checkout). `tree_sha256` is the hash of the vendored folder (sorted relative paths and file contents), checked by `skills-upstream verify` and re-recorded by `skills-upstream rehash`.",
+  "_about": "Third-party and own skills tracked by desk-skills. Types: `github` and `drive` entries keep the exact upstream files in vendor/<name>/ at `pin`; `checkout` entries are git clones in ~/.agents/skills/<name> (or ~/.agents/sources/<name> with `subskills` linked in) and have no vendor/ copy. install.sh installs each as the ONE real copy in ~/.agents/skills/<name> and links ~/.claude/skills/<name> to it. `bin/skills-upstream outdated` compares each pin with its source and only reports; `bin/skills-upstream upgrade <name>` pulls the newest upstream into vendor/ for review as a git diff (or `git pull --ff-only` for a checkout). `tree_sha256` is the hash of the vendored folder (sorted relative paths and file contents), checked by `skills-upstream verify` and re-recorded by `skills-upstream rehash`. `tools` are not skills: each is a whole GitHub repo pinned to a commit, installed by the repo's own `installer` run from a copy of the repo at the pin (`skills-upstream statusline install`), with no vendor/ copy; `outdated` reports them and `upgrade <name>` moves the pin.",
   "skills": {
     "ux-designer": {
       "source": {
@@ -859,6 +859,22 @@
       },
       "license": null,
       "notes": "Clerk's recommended source (clerk.com/docs: `npx skills add clerk/skills`). One clone in ~/.agents/sources/clerk; the listed sub-skills are linked into ~/.agents/skills. Framework/mobile skills your repos do not use (astro, nuxt, vue, tanstack, react-router, chrome-extension, expo, swift, android) are left out to save context; add a path here to link one."
+    }
+  },
+  "tools": {
+    "claude-statusline": {
+      "source": {
+        "type": "github",
+        "repo": "bigbenjoman/claude-statusline",
+        "path": "",
+        "installer": "install-statusline.sh"
+      },
+      "pin": {
+        "commit": "8eeb63190",
+        "date": "2026-08-15"
+      },
+      "license": "MIT",
+      "notes": "Ben's two-line status line, kept as its own public repo (DS-34). Its installer writes ~/.claude/statusline-command.sh and merges a statusLine entry into ~/.claude/settings.json, so install.sh asks first, and asks separately before replacing a statusLine command that is not this one."
     }
   }
 }

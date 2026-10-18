@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: plugins (unbumped vs outdated)
 # Tests `skills-upstream plugins` for plugins that live inside their marketplace, against a throwaway
 # HOME and a stub `claude`. A folder that changed under an unchanged version is UNBUMPED (claude plugin
 # update cannot apply it) and must not set exit 10; a bumped version is OUTDATED and must.

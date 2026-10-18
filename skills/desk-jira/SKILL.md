@@ -124,7 +124,8 @@ What the CLI does for you, and the traps it still has:
 
 For anything the CLI has no command for, read **`references/jira-rest-recipes.md`**. That covers
 deleting a mistaken comment, editing a description that holds inline images, and subtasks with
-sprints. Issue links have a command now: `desk-jira link` (see *Epics*).
+sprints. Issue links of every type have commands: `desk-jira link` and `desk-jira unlink` (see
+*Epics*).
 
 ## Gate — which writes post, which wait
 
@@ -145,7 +146,7 @@ Find the config §3 row for the write:
 | Comment, or edit your own comment | `jira-comment` |
 | New ticket | `jira-create` |
 | Description or field edit (§4 Priority, labels, §4 Other fields) | `jira-edit` |
-| Blocks link (`desk-jira link`) | `jira-edit` |
+| Issue link, or removing one (`desk-jira link`, `desk-jira unlink`) | `jira-edit` |
 | Status change between working states (§4 In-progress state, Review state, and any other non-closing state in §4 Workflow) | `jira-transition` |
 | §4 Done state once the user's own last PR on the key has merged | `jira-close-own-merged` |
 | Any other close: duplicate, not-a-bug, out of scope, already fixed | `jira-close` |
@@ -181,27 +182,30 @@ colleague, costs a public retraction. When unsure whether a write sits inside a 
 
 ## House ticket format
 
-Keep it simple and readable: short sections, real file paths, no padding. **The sections come from
-§5 Ticket format**, per issue type where it distinguishes them. Read two or three recent tickets of
-the same type in §4 Jira project before writing a new one, and match their summary style (an
-`[Area]` prefix, a verb-first phrase, whatever they use). §5 Ticket format `TODO` means ask, not
-invent a house style.
+Keep it simple and readable: short sections, real file paths, no padding. **Every ticket follows
+`references/ticket-template.md`**: one layout each for Story and Task, Bug, Epic and Subtask, with
+its rules for criteria, dependencies, design links and decisions. That holds for a ticket written by
+hand, by Bea, or by a machine path (a spin-off, a follow-up, an L split, an epic close-out child).
+The template says how §5 Ticket format overrides it. Read two or three recent tickets of the same type in §4 Jira project before writing a new
+one, and match their summary style (an `[Area]` prefix, a verb-first phrase, whatever they use).
 
-Whatever sections §5 names, a **Bug** needs this substance somewhere in them:
+**`desk-jira lint` checks a ticket against the template**: `desk-jira lint <KEY>` for one in Jira,
+or `desk-jira lint body.md [<type>] [field=value ...]` for a draft, read as `create` would send it.
+It prints one line per finding and exits 1 on any blocking one:
 
-- what's wrong, in two or three sentences;
-- where it was seen: the URL on §4 Staging (or §4 Production, or "local" when both are `none`),
-  the browser if relevant, the date audited;
-- numbered steps to reproduce, and expected against actual;
-- the diagnosis from the code: file:line references and the actual mechanism, and a one- or
-  two-sentence suggested fix;
-- acceptance criteria that can be checked, e.g. Given / When / Then;
-- references: related tickets, the design link, the audit id.
+- **Blocking**, what makes triage ask or a worker park: no acceptance criteria; an open decision
+  (TBD, TODO, decide, proposal for, needs a decision, or a question mark in Outcome, the criteria or
+  Out of scope); no design link and no `No UI.` line; Size unset (not asked of a Subtask); a
+  criterion that needs a Jira write, a live production run or an operator step; and `desk-design`'s
+  finding for a Claude Design link with no saved copy (advisory once autopilot has snapshotted the
+  canvas, since the worker saves it).
+- **Advisory**: no Out of scope or Verification section; a ticket key or a sibling's title named
+  with no Blocks link; a status or priority line in the body; markdown that will not render (a `##`
+  heading, `**bold**` or backticks in wiki markup, an unescaped `--` inside `{{ }}`).
 
-A **Task** drops the reproduction and states its scope as a numbered list of what to do, plus the
-design link when there is one and the testing approach when it matters. A **Story**, where the
-project uses them, carries whatever richer sections §5 Ticket format gives it; use a recent Story in
-the project as the reference example.
+**`create` lints first** and refuses a blocking finding, printing them. Fix the body; `--no-lint`
+files it as it is, only when the user has seen the findings and said so. Autopilot lints every
+ticket at triage and shows the blocking findings in the batch plan.
 
 **Never invent the substance.** If the real name, price, business rule or product data isn't in the
 ticket, a sheet or the database, ask. Invented product data costs a full revert.
@@ -282,11 +286,16 @@ them as a batch. The commands:
 desk-jira children ABC-900                         # its children (or a story's subtasks), rank order
 desk-jira create Story "<summary>" body.md parent=ABC-900 <size field>=M
 desk-jira link ABC-903 blocked-by ABC-901          # ABC-903 cannot start until ABC-901 merges
+desk-jira link ABC-904 duplicates ABC-850          # any type the site has: relates, is-cloned-by, …
+desk-jira unlink ABC-903 ABC-901                   # remove it; prints ABC-903's links left
 ```
 
-`link` owns Jira's inverted direction, refuses a self link or the reverse of an existing one,
-skips one that exists, and reads the link back. Dependencies go in links, never in prose: autopilot
-reads only the links.
+`link` takes a type by its name (`Blocks`, `Relates`, `Duplicate`, `Cloners`) or by its wording
+from KEY's side (`blocked-by`, `blocks`, `relates-to`, `is-duplicated-by`), owns Jira's inverted
+direction, refuses a self link or the reverse of an existing one, skips one that exists, and reads
+the link back. `unlink` removes every link between the two (name the type when they have links of
+more than one) and reads that back. Dependencies go in links, never in prose: autopilot reads only
+the Blocks links.
 
 **Size every ticket**, epic children included:
 
@@ -303,10 +312,8 @@ it in the `create`), otherwise as the description's first line, `Size: M`. Jira'
 field to a team-managed project: it is a manual step in the project (Project settings → Issue types
 → add a Dropdown field `Size` with XS, S, M, L, XL to each type). Say so once if it is missing.
 
-**Writing an epic** (usually Bea): an epic body with the outcome, a definition of done as numbered
-Given/When/Then criteria for the feature end to end, out of scope, and decisions (dated, with the
-owner); children of size M or less, each with its own Given/When/Then criteria, out of scope, no open
-decisions, what to build on, and its design link or "no UI". **Before the user approves the set,
+**Writing an epic** (usually Bea): the epic and each child in `references/ticket-template.md`'s
+layouts, children of size M or less. **Before the user approves the set,
 run the readiness review in `references/epic-readiness.md`.** File in this order: the epic, the
 children (`parent=`), the links, then read it all back (`desk-jira children <EPIC>`). Every write
 goes through the gate above.
@@ -389,7 +396,7 @@ ambiguous, say so at that ticket, not in a footnote.
 | Wiki text from `get` or `comments` sent back as `.md` with only `#` lists in it | Save it as `.wiki`: a converted `# item` becomes a heading |
 | A `Status:`, `Priority:`, `P1` or `Size:` line in a description | Set the field; the body never repeats it (only the first-line `Size:` fallback where there is no Size field) |
 | Adding a Subtask to a sprint | Put the parent in the sprint |
-| Posting an issue link by hand with the obvious inward/outward mapping | It lands backwards and still returns 201. Use `desk-jira link` |
+| Posting or deleting an issue link by hand with the token | A link posted with the obvious inward/outward mapping lands backwards and still returns 201. Use `desk-jira link` and `desk-jira unlink` |
 | A dependency written in a description ("needs ABC-1 first") | Autopilot reads links only: `desk-jira link` it |
 | A ticket with no size, or an L in an epic | Size it from the scale; split anything above M |
 | Hardcoding a transition name or id | Fetch the list; names change and vary by issue type |

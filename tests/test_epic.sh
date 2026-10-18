@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# suite: epics (expansion, Jira links, held tickets)
 # Epics as autopilot batches (docs/design-epic-batches.md): desk-jira children/link/parent against a
 # local stub, expand-parent.mjs, ticket-facts.mjs, plan-batch.mjs dependency handling, the held-ticket
 # idle rule, answer.mjs on a held ticket, and worker-settings for `link`. Scratch HOME only.
@@ -217,13 +218,13 @@ body=$(grep issueLink "$LOG" | grep POST | jq -r .body)
 check "link blocks sends inward=KEY outward=OTHER" '[ $rc -eq 0 ] && [ "$(printf "%s" "$body" | jq -r ".inwardIssue.key+\" \"+.outwardIssue.key")" = "KAN-11 KAN-19" ]'
 J link KAN-40 blocked-by KAN-40
 check "a self link is refused" '[ $rc -ne 0 ]'
-J link KAN-40 relates KAN-41
-check "an unknown verb is a usage error" '[ $rc -ne 0 ]'
+J link KAN-40 frobs KAN-41
+check "a link type the site does not have is refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "no link type"'
 out=$(JIRA_SITE="http://127.0.0.1:$DPORT" desk-jira link KAN-40 blocked-by KAN-41 2>&1); rc=$?
 check "a read-back that does not show the link fails" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -qi "read.back"'
 
 # A3 parent=
-: > "$LOG"; printf 'body' > "$T/repo/b.md"; J create Story "s" b.md parent=KAN-10
+: > "$LOG"; printf 'body' > "$T/repo/b.md"; J create Story "s" b.md parent=KAN-10 --no-lint
 check "create parent=KEY sends {key}" '[ $rc -eq 0 ] && [ "$(grep "\"/rest/api/2/issue\"" "$LOG" | jq -r .body | jq -c .fields.parent)" = "{\"key\":\"KAN-10\"}" ]'
 J create Story "s" b.md parent=not-a-key
 check "parent= that is not a key is refused" '[ $rc -ne 0 ]'
@@ -280,6 +281,8 @@ check "facts: Blocks blockers from the inward side only, with category" \
 check "facts: other link types counted, Relates not" '[ "$(jq .other_links "$T/state/triage/KAN-50.json")" = 1 ]'
 check "facts: size from the field named Size" '[ "$(jq -r .size "$T/state/triage/KAN-50.json")" = L ]'
 check "facts: the model-written fields survive" '[ "$(jq -r .lane "$T/state/triage/KAN-50.json")" = A ]'
+check "facts: desk-jira lint's findings are recorded, blocking ones included" \
+  '[ "$(jq -r "[.lint[] | select(.severity == \"blocking\") | .rule] | index(\"criteria\") != null" "$T/state/triage/KAN-50.json")" = true ] && printf "%s" "$out" | grep -q "lint [1-9][0-9]* blocking"'
 rec KAN-53 '{"ticket":"KAN-53","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-53 >/dev/null 2>&1
 check "facts: size from the body's first line" '[ "$(jq -r .size "$T/state/triage/KAN-53.json")" = M ] && [ "$(jq -c .blockers "$T/state/triage/KAN-53.json")" = "[]" ]'
@@ -289,6 +292,12 @@ check "facts: a failed read is recorded, not empty blockers" '[ "$(jq -r ".facts
 rec P1-1 '{"ticket":"P1-1","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" P1-1 >/dev/null 2>&1
 check "facts: a non-tracker key records links n/a" '[ "$(jq -r .links "$T/state/triage/P1-1.json")" = n/a ]'
+check "facts: a non-tracker key with no ticket file records why it was not linted" '[ "$(jq -r ".lint_error" "$T/state/triage/P1-1.json")" != null ]'
+mkdir -p "$T/state/tickets"
+printf '# P1-2\n\n## Acceptance criteria\n1. AC1: Given x, when y, then z.\n\n## Verification\n* Unit: none.\n\n## Design\nNo UI.\n\n## Out of scope\n* None.\n' > "$T/state/tickets/P1-2.md"
+rec P1-2 '{"ticket":"P1-2","lane":"A","branch":"b"}'
+node "$B/ticket-facts.mjs" P1-2 >/dev/null 2>&1
+check "facts: a ticket file is linted, with no size asked of it" '[ "$(jq -c .lint "$T/state/triage/P1-2.json")" = "[]" ]'
 
 # ---------------------------------------------------------------------------------------------------
 # D plan-batch (offline: triage records and expansion.json only)
@@ -362,7 +371,7 @@ check "regression: no links -> all triaged, argument order kept, no deps" \
 rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
 r KAN-301 C '[]' '"lane_challenge":{"verdict":"INCONCLUSIVE","reason":"x","failed_reads":["git show main:src/a.ts: denied"]}'
 r KAN-302 C '[]' '"lane_challenge":{"verdict":"CONFIRM","reason":"y"}'
-r KAN-303 A '[]'
+r KAN-303 A '[]' '"lint":[{"severity":"blocking","rule":"criteria","message":"no acceptance criteria: x"},{"severity":"advisory","rule":"section","message":"no Verification y"}]'
 node "$B/queue.mjs" init t3 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-301 KAN-302 KAN-303 2>&1); rc=$?
 check "inconclusive challenge: plan marks the lane UNCHECKED" \
@@ -371,6 +380,9 @@ check "inconclusive challenge: listed as a question to confirm or re-lane, with 
   'printf "%s" "$out" | grep -q "\[KAN-301\] lane C is unchecked.*git show main:src/a.ts: denied.*re-lane"'
 check "a confirmed challenge is not asked again" \
   'printf "%s" "$out" | grep -q "challenge CONFIRMED: y" && ! printf "%s" "$out" | grep -q "\[KAN-302\]" && ! printf "%s" "$out" | grep -q "^KAN-302 .*UNCHECKED"'
+check "plan: a blocking lint finding is shown under its ticket, an advisory one is not" \
+  'printf "%s\n" "$out" | grep -qxF "  ! lint (blocking): no acceptance criteria: x" && ! printf "%s" "$out" | grep -q "no Verification y"'
+check "plan: the LINT section lists the ticket before spawning" 'printf "%s\n" "$out" | grep -A1 "^LINT — 1 ticket" | grep -qxF "  KAN-303: 1 blocking finding(s)"'
 check "inconclusive challenge: parked, park question says unchecked, no open answers to block a re-lane" \
   '[ "$(qg KAN-301 .state)" = parked ] && [[ "$(qg KAN-301 .park.question)" == "lane C UNCHECKED"* ]] && [ "$(qg KAN-301 .open_questions)" = 0 ] && [[ "$(qg KAN-302 .park.question)" == "lane C —"* ]] && [ "$(qg KAN-303 .state)" = triaged ]'
 

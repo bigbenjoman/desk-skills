@@ -6,6 +6,8 @@
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
                                             if every rule is already in settings.json, 1 if not
+  harness-rules.py retire                   drop the RETIRED rules setup recorded (add and
+                                            baseline do this first too; --check reports them)
   harness-rules.py remove <row> [<row>...]  revoke rows: drop every rule any of them owns
   harness-rules.py remove --all             drop everything setup ever recorded
   harness-rules.py list [--markdown]        the ledger (--markdown: rows for config §3c)
@@ -39,6 +41,12 @@ up settings.json and the ledger first, and writes through a symlink with the fil
 Exit 2 on an unreadable settings.json, ledger or plan, or a refused destination; nothing is written
 then. `remove` never creates a settings file: when the file does not exist it says no rule was
 removed from it and drops only the ledger records.
+
+A revoke also reaches the worktrees. When `remove` or `retire` changes a repo-level <root>/.claude/<file>, the
+same file in every other worktree `git worktree list` shows is checked: a copy that matched the
+file byte for byte before the revoke is backed up and replaced with the new file (removed, if the
+file was); a copy that differs is left alone and named, for revoking there by hand. A copy that
+cannot be read or written is named FAILED, the rest are still done, and `remove` exits 1.
 """
 
 import datetime
@@ -81,15 +89,25 @@ def backup(path, stamp):
 
 
 def write_json(path, data):
+    write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode())
+
+
+def read_bytes(path):
+    if not os.path.isfile(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def write_bytes(path, raw):
     """Replace the file a path resolves to, so a symlinked settings.json stays a symlink."""
     real = os.path.realpath(path)
     folder = os.path.dirname(real)
     os.makedirs(folder, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".desk-", suffix=".tmp", dir=folder)
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
         if os.path.exists(real):
             shutil.copymode(real, tmp)
         else:
@@ -162,6 +180,52 @@ def check_destination(settings_path, plan):
             "(allow rules or removed guards). Grants are per repo: pass --settings "
             "<repo root>/.claude/settings.local.json. Nothing changed.")
     return check_ignored(*scope)
+
+
+def worktree_copies(settings_path):
+    """The same <worktree>/.claude/<file> in every other worktree `git worktree list` shows."""
+    scope = repo_settings_scope(settings_path)
+    if scope is None:
+        return []
+    root, rel = scope
+    r = _git(root, "worktree", "list", "--porcelain")
+    if not r or r.returncode != 0:
+        return []
+    trees = [line[len("worktree "):] for line in r.stdout.splitlines() if line.startswith("worktree ")]
+    return [os.path.join(t, rel) for t in trees if os.path.realpath(t) != os.path.realpath(root)]
+
+
+def sync_copies(st, before):
+    """After a revoke, bring each worktree copy that matched the file before it up to date.
+
+    setup-worktree.sh and desk-setup copy <root>/.claude/settings.local.json into worktrees, so a
+    rule revoked only in the main file stays live in every copy. A copy that differs from the main
+    file before the revoke is someone's own edit: it is left alone and named. A copy that cannot be
+    read or written is named too, and the rest are still checked. Returns True if any copy failed."""
+    after = read_bytes(st.settings_path)
+    if before is None or after == before:
+        return False
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    failed = False
+    for copy in worktree_copies(st.settings_path):
+        if not os.path.isfile(copy) or os.path.realpath(copy) == os.path.realpath(st.settings_path):
+            continue
+        try:
+            if read_bytes(copy) != before:
+                st.log.append(f"differs  {copy}  (did not match {st.settings_path} before the revoke: "
+                              "left alone; revoke there by hand)")
+                continue
+            st.log.append(f"backup   {backup(copy, stamp)}")
+            if after is None:
+                os.remove(copy)
+                st.log.append(f"removed  {copy} (the main file it copied was removed)")
+            else:
+                write_bytes(copy, after)
+                st.log.append(f"synced   {copy}")
+        except OSError as e:
+            failed = True
+            st.log.append(f"FAILED   {copy}  ({e}; it may still allow what was revoked: revoke there by hand)")
+    return failed
 
 
 class State:
@@ -302,13 +366,47 @@ def apply_plan(st, plan):
         st.log.append(f"UNGUARD  {lst:5} {rule}  (removed for {', '.join(rows)}; back on revoke)")
 
 
+# Rules an earlier version of setup granted and no row grants any more. `add`, `baseline` and
+# `retire` drop them when setup recorded them (a copy the user added themselves is reported, never
+# touched), so re-running setup or install.sh migrates an existing install.
+RETIRED = [
+    # Merges are pinned with --match-head-commit; these let an unpinned merge run unprompted.
+    ("allow", rule)
+    for m in ("--squash", "--merge", "--rebase")
+    for rule in (f"Bash(gh pr merge * {m})", f"Bash(gh pr merge * --auto {m})", f"Bash(gh pr merge * {m} --auto)")
+]
+
+
+def retire(st):
+    """Drop retired rules setup recorded; report a copy the user added themselves."""
+    for lst, rule in RETIRED:
+        cur = st.perm_list(lst, create=False) or []
+        rec = st.recorded(lst, rule)
+        if rec:
+            if rule in cur:
+                cur.remove(rule)
+            st.ledger["rules"].remove(rec)
+            st.log.append(f"RETIRED  {lst:5} {rule}  (no row grants it any more)")
+        elif rule in cur:
+            st.log.append(f"retired  {lst:5} {rule}  (yours, left alone: it still lets an unpinned merge "
+                          "run unprompted, so remove it by hand to enforce the pin)")
+
+
 def cmd_add(st, plan_path):
     plan = read_plan(plan_path)
     note = check_destination(st.settings_path, plan)
     if note:
         st.log.append(f"gitignore {st.settings_path}: {note}")
+    retire(st)
     apply_plan(st, plan)
     st.save()
+
+
+def cmd_retire(st):
+    before = read_bytes(st.settings_path)
+    retire(st)
+    st.save()
+    return sync_copies(st, before)
 
 
 def baseline_plan(plan_path, prefixes):
@@ -329,7 +427,11 @@ def cmd_baseline(st, plan_path, prefixes, check):
         missing = [e["rule"] for e in plan["add"] if e["rule"] not in deny]
         for rule in missing:
             print(f"missing  deny  {rule}")
-        return 1 if missing else 0
+        stale = [(lst, r) for lst, r in RETIRED if st.recorded(lst, r)]
+        for lst, rule in stale:
+            print(f"retired  {lst:5} {rule}  (recorded by setup; baseline drops it)")
+        return 1 if missing or stale else 0
+    retire(st)
     apply_plan(st, plan)
     st.save()
     return None
@@ -374,7 +476,9 @@ def cmd_remove(st, rows, everything):
         what = "any recorded rule" if everything else f"a recorded rule owned by {', '.join(rows)}"
         where = f"{st.settings_path} does not exist and the" if missing else "the"
         st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
+    before = read_bytes(st.settings_path)
     st.save()
+    return sync_copies(st, before)
 
 
 def cmd_list(st, markdown):
@@ -399,7 +503,7 @@ def cmd_list(st, markdown):
 
 
 USAGE = ("usage: harness-rules.py [--settings P] [--ledger P] add <plan.json> | "
-         "baseline [--check] [--slack-prefix P]... [<plan.json>] | remove <row>...|--all | list [--markdown] | "
+         "baseline [--check] [--slack-prefix P]... [<plan.json>] | retire | remove <row>...|--all | list [--markdown] | "
          "unset-default-mode")
 
 
@@ -442,6 +546,7 @@ def main(argv):
     if cmd == "unset-default-mode" and not rest:
         return cmd_unset_default_mode(settings)
     st = State(settings, ledger)
+    code = 0
     if cmd == "add" and len(rest) == 1:
         cmd_add(st, rest[0])
     elif cmd == "baseline":
@@ -457,17 +562,19 @@ def main(argv):
                 plan, rest = rest[0], []
             else:
                 die(USAGE)
-        code = cmd_baseline(st, plan, prefixes, check)
-        if code is not None:
-            return code
+        checked = cmd_baseline(st, plan, prefixes, check)
+        if checked is not None:
+            return checked
+    elif cmd == "retire" and not rest:
+        code = 1 if cmd_retire(st) else 0
     elif cmd == "remove" and rest == ["--all"]:
-        cmd_remove(st, [], True)
+        code = 1 if cmd_remove(st, [], True) else 0
     elif cmd == "remove" and rest and "--all" not in rest:
-        cmd_remove(st, rest, False)
+        code = 1 if cmd_remove(st, rest, False) else 0
     else:
         die(USAGE)
     print("\n".join(st.log) if st.log else "nothing to change")
-    return 0
+    return code
 
 
 if __name__ == "__main__":

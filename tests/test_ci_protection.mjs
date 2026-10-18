@@ -1,3 +1,4 @@
+// suite: desk-ci protection (snapshot, restore, pin, token, the write gate)
 // desk-ci.mjs protection against a fake GitHub that stores protection the way GitHub does: GET and
 // PUT shapes differ, an omitted app_id means "the app that last sent it", -1 means any app. A
 // snapshot restores to an equal read-back, a pin binds each Actions check to the Actions app, a

@@ -101,7 +101,8 @@ Things that are not in that file and matter here:
   most of the board. D is for a new screen, section or component the design specifies; a change to
   an existing screen that links a design, implemented across a handful of files, is lane A. A Claude
   Design artifact's boards are saved under $STATE/designs/$TICKET/project/ when the orchestrator could read
-  it (\`canvas.json\` lists the boards and their widths); read them there, never guess a design.
+  it, or in the repo under the Design canvases directory once a ticket has committed them
+  (\`canvas.json\` lists the boards and their widths); read them there, never guess a design.
 - **Labels are a hint, not a verdict.** An effort label encodes the estimate made when the ticket was
   written, and a waiting-on-design label means just that. Read the body anyway: a ticket labelled
   small can really be a redesign, or not a code fix at all.
@@ -279,8 +280,9 @@ console.log(d.lane_original
 MERGE_END
 fi
 
-# Jira facts plan-batch needs (Blocks links, size), read deterministically rather than taken from the
-# model: a read failure is recorded as facts_error, which plan-batch turns into a question.
+# Jira facts plan-batch needs (Blocks links, size, the lint findings), read deterministically rather
+# than taken from the model: a read failure is recorded as facts_error, which plan-batch turns into a
+# question.
 node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
 
