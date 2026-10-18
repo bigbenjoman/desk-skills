@@ -1,30 +1,26 @@
-// Where the repo's own Playwright lives, shared by upload-images.mjs and github-signin.mjs.
-// Playwright is not ours to install: use the one this repo already has (its node_modules, or wherever
-// node resolves it from the repo root, which covers hoisted workspaces, or pnpm's store when a
-// workspace package depends on it and nothing hoists it), else DESK_PLAYWRIGHT (a path to
-// playwright's index.mjs, for a repo that is not a JS project).
-import { existsSync, readdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { createRequire } from 'node:module';
-import { repoRoot } from './desk-env.mjs';
+// The Playwright upload-images.mjs and github-signin.mjs run on: desk's own pinned copy, which
+// install.sh puts in ~/.claude/desk/playwright with its browsers in browsers/ there, so every repo opens the
+// shared profile with the same Chromium build. A repo's own Playwright is its e2e tests', never read.
+// DESK_PLAYWRIGHT (a path to some playwright's index.mjs) overrides it, on that copy's own browsers.
+import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { deskHome } from './desk-env.mjs';
 
-export function findPlaywright(root = repoRoot()) {
-  const tried = [];
+export function findPlaywright(desk = deskHome()) {
+  const own = join(desk, 'playwright');
   const candidates = [];
-  if (process.env.DESK_PLAYWRIGHT) candidates.push(process.env.DESK_PLAYWRIGHT);
-  candidates.push(join(root, 'node_modules', 'playwright', 'index.mjs'));
-  try {
-    const req = createRequire(join(root, 'package.json'));
-    candidates.push(join(dirname(req.resolve('playwright/package.json')), 'index.mjs'));
-  } catch { /* not resolvable from the repo */ }
-  const store = join(root, 'node_modules', '.pnpm');
-  try {
-    readdirSync(store).filter((d) => d.startsWith('playwright@'))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-      .forEach((d) => candidates.push(join(store, d, 'node_modules', 'playwright', 'index.mjs')));
-  } catch { /* no pnpm store */ }
-  for (const c of candidates) { tried.push(c); if (existsSync(c)) return { entry: c, tried }; }
-  return { entry: null, tried };
+  if (process.env.DESK_PLAYWRIGHT) candidates.push({ entry: process.env.DESK_PLAYWRIGHT, browsers: null });
+  candidates.push({ entry: join(own, 'node_modules', 'playwright', 'index.mjs'), browsers: join(own, 'browsers') });
+  const tried = [];
+  for (const c of candidates) { tried.push(c.entry); if (existsSync(c.entry)) return { ...c, tried }; }
+  return { entry: null, browsers: null, tried };
+}
+
+// Playwright reads PLAYWRIGHT_BROWSERS_PATH once, when it is first imported, so it is set first.
+export async function importPlaywright({ entry, browsers }) {
+  if (browsers) process.env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+  return import(pathToFileURL(entry).href);
 }
 
 // GitHub sets its login cookies as session cookies, which Chromium drops when the browser exits,

@@ -25,6 +25,9 @@ CONFIG_ROOT="${DESK_CONFIG_ROOT:-$HOME/.config/desk}"
 SETTINGS="$CLAUDE_DIR/settings.json"
 HOOK="$CLAUDE_DIR/hooks/deny-ai-attribution.py"
 PROFILE_DIR="$HOME/.cache/ms-playwright-mcp/desk-profile"
+# The playwright @playwright/mcp depends on, so desk's uploader and the MCP drive one Chromium build.
+# Taken from @playwright/mcp 0.0.83, which pins this alpha prerelease: it moves whenever @latest does.
+PLAYWRIGHT_VERSION="1.64.0-alpha-1790635538000"
 
 PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official playwright@claude-plugins-official codex@openai-codex"
 
@@ -498,6 +501,37 @@ if [ -f "$SRC/bin/desk-jira" ]; then
   first="$(command -v desk-jira 2>/dev/null || true)"
   [ -n "$first" ] && [ "$first" != "$JIRA_DEST" ] && warn "a different desk-jira comes first on PATH: $first"
   note "desk-jira is configured per repo by /desk-setup (site in the repo's config, email and token beside it)"
+fi
+
+# ---------------------------------------------------------------------------------------------
+section "Desk's Playwright  -> ~/.claude/desk/playwright"
+
+# PR image upload and GitHub sign-in run on this one pinned copy in every repo; a repo's own
+# Playwright is its e2e tests' and is never read or changed. Its browsers live in browsers/ here, so
+# Playwright's own install step, which drops builds no copy in that folder uses any more, prunes only
+# this folder and never the shared ms-playwright cache. Installed without asking: /desk-update runs
+# this with no terminal, and the uploader cannot run without it.
+PW_HOME="$DESKDIR/playwright"
+if ! has npm; then
+  warn "npm not found (it ships with node); desk's Playwright not installed, so PR image upload and github-signin.mjs cannot run"
+elif [ "$(cat "$PW_HOME/version" 2>/dev/null || true)" = "$PLAYWRIGHT_VERSION" ] \
+    && [ -f "$PW_HOME/node_modules/playwright/index.mjs" ]; then
+  ok "playwright $PLAYWRIGHT_VERSION and its Chromium"
+else
+  note "installing playwright $PLAYWRIGHT_VERSION and its Chromium (a few hundred MB, once per version)"
+  mkdir -p "$PW_HOME"
+  rm -f "$PW_HOME/version"
+  printf '{\n  "private": true,\n  "dependencies": { "playwright": "%s" }\n}\n' "$PLAYWRIGHT_VERSION" > "$PW_HOME/package.json"
+  if ! out="$(cd "$PW_HOME" && npm install --no-audit --no-fund --no-package-lock 2>&1)"; then
+    warn "npm install playwright@$PLAYWRIGHT_VERSION failed in $PW_HOME; re-run ./install.sh"; show_err "$out"
+  elif ! out="$(cd "$PW_HOME" && env -u PLAYWRIGHT_SKIP_BROWSER_GC PLAYWRIGHT_BROWSERS_PATH="$PW_HOME/browsers" \
+      node node_modules/playwright/cli.js install chromium 2>&1)"; then
+    warn "the Chromium download for playwright $PLAYWRIGHT_VERSION failed; re-run ./install.sh"; show_err "$out"
+  else
+    printf '%s\n' "$PLAYWRIGHT_VERSION" > "$PW_HOME/version"
+    ok "playwright $PLAYWRIGHT_VERSION and its Chromium; older builds in $PW_HOME/browsers removed"
+    wrote "playwright ~/.claude/desk/playwright ($PLAYWRIGHT_VERSION)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------------------------
