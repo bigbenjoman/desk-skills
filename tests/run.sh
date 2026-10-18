@@ -48,5 +48,6 @@ run "desk-ci measure (minutes, red rate, round trips, call budget)" node "$T/tes
 run "desk-design (save a canvas, source.json, README, check)" node "$T/test_design.mjs"
 run "desk-cleanup scans (verdicts, whole keys, backups, watchman)" node "$T/test_cleanup.mjs"
 run "desk-review verdict (never clean with an open finding, partial or a dead seat)" node "$T/test_review_verdict.mjs"
+run "desk-gate template (verdict marker, CLAUDE.md size, protected-path approval)" node "$T/test_review_gate.mjs"
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; }
 exit $fail
