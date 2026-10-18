@@ -237,8 +237,8 @@ const GH_DENY = [' api', ' alias', ' extension', ' ext', ' pr merge', ' pr ready
   ' pr create *--draft=*'];
 // Every desk-jira subcommand that only reads. `transitions` is the read desk-jira requires before
 // any `transition`; the `transition:*` rule is word-bounded, so it neither grants nor denies it.
-// `api` is left out: it takes any method, so it can write.
-const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki'];
+// `api` takes one path and always sends GET; desk-jira's render check after a write runs it.
+const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki', ' api'];
 // Issue links are Bea's, filed interactively after the user approves an epic: never a worker's or a
 // triage pass's, whatever config §3 jira-edit says.
 const JIRA_NEVER = [' link'];
