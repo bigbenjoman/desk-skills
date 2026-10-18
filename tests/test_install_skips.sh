@@ -9,6 +9,10 @@ SH="${BASH:-bash}"
 export HOME="$T/home"; mkdir -p "$HOME/.claude/desk"
 unset DESK_CONFIG_ROOT
 touch "$HOME/.claude/desk/skills-upstream.last"   # the upstream check would otherwise reach the network
+# Desk's Playwright already at the pin, or every run downloads playwright and its Chromium.
+PW="$HOME/.claude/desk/playwright"; mkdir -p "$PW/node_modules/playwright"
+sed -n 's/^PLAYWRIGHT_VERSION="\(.*\)"$/\1/p' "$S/../install.sh" > "$PW/version"
+touch "$PW/node_modules/playwright/index.mjs"
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out" | tail -n 40; fi; }
 
