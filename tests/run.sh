@@ -44,5 +44,6 @@ run "desk-runner (profile gate, stubbed tart, isolation results)" "$SH" "$T/test
 run "reboot-check (worktrees across repos, runner, heavy)" "$SH" "$T/test_reboot.sh"
 run "desk-ci (classify placement, ci-lint secret safety)" node "$T/test_ci.mjs"
 run "desk-ci measure (minutes, red rate, round trips, call budget)" node "$T/test_ci_measure.mjs"
+run "desk-cleanup scans (verdicts, whole keys, backups, watchman)" node "$T/test_cleanup.mjs"
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; }
 exit $fail

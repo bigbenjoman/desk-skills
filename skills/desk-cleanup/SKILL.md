@@ -3,8 +3,8 @@ name: desk-cleanup
 description: >-
   Use when tidying up after finishing a batch of tickets in the current repo — stale worktrees left
   over from merged PRs, local branches that have no worktree, tracker statuses that have drifted
-  from GitHub, open PRs that have fallen behind the default branch, a leaked dev server eating
-  memory, or a general "clean up my workspace" / "what can I get rid of".
+  from GitHub, open PRs that have fallen behind the default branch, a leaked dev server or a bloated
+  watchman eating memory, or a general "clean up my workspace" / "what can I get rid of".
 ---
 
 # desk-cleanup
@@ -40,6 +40,19 @@ the parts that aren't are gated behind two independent signals agreeing.
 Portable shell for every check below (macOS and Linux/WSL) is in
 [`references/portable-checks.md`](references/portable-checks.md). Use those forms — `/proc`,
 `ss`, `pstree -p`, `ps --sort` and `du --one-file-system` do not exist on macOS.
+
+Steps 1, 2 and 5 are scripted in `bin/cleanup-scan.mjs`, so they read the same every run. Run it
+rather than re-deriving each check by hand across dozens of worktrees. `worktrees`, `memory` and
+`key-filter` only read; `remove` acts only on the paths it is given:
+
+| Command (`node ~/.agents/skills/desk-cleanup/bin/cleanup-scan.mjs …`) | Does |
+|---|---|
+| `key-filter <TICKET>` | keeps the whole-key matches from `gh pr list --json` on stdin (step 1) |
+| `worktrees --repo <root> --author <§1 GitHub handle> --default <default branch> --worktrees-dir <§2 Worktrees directory> --key-pattern '<§4 Ticket key pattern>'` | classifies every worktree of one repo (step 2) |
+| `remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>…` | removes approved worktrees only, backing up first (step 2) |
+| `memory --repo <root> --worktrees-dir <§2 Worktrees directory> --ports <dev-server ports>` | prices RAM, dev servers, sessions, test runs, watchman, Docker and caches (steps 5 and 6) |
+
+The rules below are what the script implements. Read them before overriding a verdict.
 
 ## Ownership — the hard boundary
 
@@ -124,9 +137,7 @@ markers — use it for the writes, not for the decision.
    ```bash
    gh pr list --repo <repo> --search "<TICKET>" --state all \
      --json number,title,state,author,mergedAt,headRefName,baseRefName \
-     | jq --arg k "<TICKET>" '[.[] | select(
-         ((.title + " " + .headRefName) | ascii_upcase)
-         | test("(^|[^A-Z0-9])" + ($k | ascii_upcase) + "(?![0-9]|-[0-9])"))]'
+     | node ~/.agents/skills/desk-cleanup/bin/cleanup-scan.mjs key-filter "<TICKET>"
    ```
 
    Match case-insensitively, since branches are often lower-case, but never loosen the bounds.
@@ -156,6 +167,36 @@ close is `jira-close`, a decision, and is never proposed from a sweep.
 
 Gated on config §3 **`worktree-remove`**: `yes` or `ask` → propose in the plan and wait (deliberate:
 removal always shows the list first, even at `yes`); `no` or `TODO` → report candidates only.
+
+**Start with `cleanup-scan.mjs worktrees`.** It fetches, refuses a shallow clone (exit 3), applies
+the PR half of the ownership test, and checks process cwds by prefix. It prints one TSV row per
+worktree (`verdict path branch ticket tip pr author reason untracked extras`):
+
+| Verdict | Meaning | Next |
+|---|---|---|
+| `SAFE` | clean, no live process, the user's PR merged, and the tip is in the default branch, is the PR's head, or is behind it | check the ticket column against the tracker half of the ownership test, then propose removal |
+| `UNTRACKED` | as `SAFE`, but untracked files other than a resume file block `git worktree remove` | name every file in the plan (see below) |
+| `CHECK` | the user's PR merged, but the local tip is not the PR's head (for example after a server-side `update-branch`) | run the method's check below; propose only if it confirms |
+| `KEEP` | modified tracked files, a stash, a live process, a lock, an open or closed-unmerged PR, no PR, someone else's PR, no merge base | report it with the reason column |
+| `PRUNE` | a registry entry whose directory is gone | `git worktree prune`, which costs nothing |
+| `ORPHAN` | on disk in a worktrees directory, not registered to this repo | see Orphaned worktree directories |
+
+A worktree with no PR is `KEEP` even when its tip is already in the default branch: with no PR there
+is no merged signal and no author to apply the ownership test to.
+
+The `extras` column lists **ignored** files that are not build output or installed dependencies:
+`SPEC.md`, a plan directory, a resume file. `git status` does not show them, and `git worktree
+remove` deletes them without a word, so name them in the plan too.
+
+After approval, pass exactly the approved paths to `cleanup-scan.mjs remove`. It re-reads each path
+first, since state moves between the scan and the approval: still registered, not the main worktree,
+no modified tracked files, no live process. It then copies resume files to `<backups dir>/resume/`
+(overwriting), and every other extra and untracked file to `<backups dir>/worktree-extras/<run>/<worktree>/`,
+listing each copy. It writes `restore.tsv` there (path, branch, tip), removes with no `--force`,
+drops the watchman watch, and prints the `df` change. Untracked files other than a resume file make
+a path `SKIP` unless `--allow-untracked` is given, which is for `UNTRACKED` rows whose files the user
+approved: they are copied out, then deleted, never forced past. A `SKIP` or `FAIL` line is reported,
+never retried.
 
 **Two signals must agree before proposing removal:**
 
@@ -231,7 +272,8 @@ Then, before removing:
   | File | What happens |
   |---|---|
   | `.claude/desk-ticket-<TICKET>.json` | **copied** to `<backups dir>/resume/` (config §2), never deleted — overwriting whatever is there |
-  | anything else (`devserver.log`, scratch files) | named in the plan, deleted only on approval |
+  | anything else (`devserver.log`, scratch files) | named in the plan, copied to `<backups dir>/worktree-extras/`, deleted only on approval |
+  | an ignored file that is not build output (`SPEC.md`, the scan's `extras`) | named in the plan, copied to `<backups dir>/worktree-extras/` before the remove deletes it |
 
   Then a plain `git worktree remove` succeeds with no flag.
 
@@ -330,8 +372,12 @@ from the platform, not memory or the config row:
 ## 5. Memory — usually the largest reclaimable thing on the box
 
 The disk win is worktrees. The RAM win is almost always **one leaked dev server**, and the report
-has to price it or a full run ends with the machine still several GB down. Measure with the
-reference's memory table, process list and `docker stats`.
+has to price it or a full run ends with the machine still several GB down. Measure with
+`cleanup-scan.mjs memory`, which reads the reference's memory table, process list, port owners and
+`docker stats` in one pass, and maps each process to its worktree (`GONE:` means its worktree was
+removed under it). Pass `--ports` as the §3b Preferred dev-server port and the range above it that
+autopilot workers take, plus every port §4 Local services and §4 Dev server name (for example
+`3500-3600,6006`).
 
 Baselines, measured on one machine running a large Next.js monorepo — re-measure for this repo's
 §4 Dev server and test runners before treating any figure as a threshold:
@@ -345,6 +391,14 @@ Baselines, measured on one machine running a large Next.js monorepo — re-measu
 | Docker (§4 Local database and §4 Local services containers) | ~140 MB total for a database, a search index and a mail catcher | never the problem |
 | a Jest full suite | one worker per core, ~6.5 GB, gone in **~30 s** | transient — never a leak |
 | a Vitest full suite | ~4.5 GB peak, gone in **~85 s** | transient |
+| `watchman` (Jest's file watcher) | a few hundred MB | **>2 GB**; 6.6 GB seen with only two roots watched |
+
+**Watchman grows with no owner and no session in sight.** It is not a dev server and runs in no
+worktree, so no other check here finds it; the memory scan reports it with its size and its watched
+roots. Above 2 GB, propose `watchman shutdown-server` in the plan under §3 `server-stop`. It restarts
+on the next Jest run and loses nothing, but **not while a test run is in flight**. A watched root
+whose directory is gone gets `watchman watch-del <root>`; `remove` already does this for what it
+removes.
 
 **A test suite in flight looks exactly like a leak — measure twice before naming one.** 11 GiB used
 can be the Jest suite, exiting 40 seconds later. Check for a run in flight with the
@@ -433,7 +487,7 @@ CLEANUP PLAN — awaiting approval
 repo       : <repo> at <repo root> (origin/<default branch> <sha>, not shallow)
 sweep      : <TICKET> · PR #<n> MERGED · no open PR on key   [<Done state> + comment | posted at jira-close-own-merged yes]  (or: skipped — §4 Tracker none)
 worktrees  : <path> · <branch> · PR #<n> MERGED · <squash|rebase|merge> confirmed · tip <sha>   [remove]
-             untracked: <files> · resume copied to <backups dir>/resume/
+             untracked: <files> · ignored extras: <SPEC.md, …> · copied to <backups dir> first
              restore `git worktree add <path> <branch>`
 orphans    : <dir> · no registry entry · diff clean · untracked superseded  [rm -rf]
 branches   : <branch> · PR #<n> MERGED · <method> confirmed · tip <sha>      [report only]
@@ -492,3 +546,5 @@ The `skipped` line matters as much as the rest — it is how a wrong guard becom
 | Chasing a process for full swap | On a tmpfs `/tmp`, compare summed `VmSwap` to swap used first |
 | Assuming worktree removal costs a session its resumability | `claude -r <id>` resumes from any cwd; transcripts are never deleted |
 | Running the tracker sweep on merged PRs alone | Any open PR on the key vetoes Done |
+| Treating a clean `git status` as nothing to lose | Ignored files (`SPEC.md`, a plan directory) do not show, and removal deletes them; read the scan's `extras` column |
+| Hunting dev servers for a memory hog and finding none | Check watchman: it belongs to no worktree and no session |
