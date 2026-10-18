@@ -289,6 +289,9 @@ if (mode === 'triage') {
     // installed path, and the module behind it.
     'Bash(desk-env:*)', `Bash(${E.HOME}/.local/bin/desk-env:*)`, 'Bash(~/.local/bin/desk-env:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs:*)`, `Bash(node ${b}/desk-env.mjs:*)`]),
+    // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
+    // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
+    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
     // A script from the worktree's installed packages (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave node_modules.
     ...withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${c}:*)`),
