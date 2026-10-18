@@ -1,4 +1,4 @@
-// suite: desk-design (save a canvas, source.json, README, check)
+// suite: desk-design (save a canvas, source.json, README, check, render)
 // desk-design.mjs on a fixture snapshot: write records source.json and a README with the
 // ticket-to-board table; save copies canvas.json, the boards and the local files they reference into
 // the Design canvases directory, once per artifact; status sees a newer version; check reports a
@@ -8,7 +8,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, writeRecord, canonicalUrl } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, collect, parseBoards, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render } from '../desk/bin/desk-design.mjs';
+import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -159,6 +160,84 @@ const nofile = runNone('check', 'no-such-ticket');
 t('cli check: a slug with no ticket file says so', nofile.status === 2 && nofile.stderr.includes('no ticket file'), true);
 t('cli save: a key with .. is refused', run('save', s1, '--key', 'a..b').status, 2);
 t('cli save: --boards before --key is a usage error', run('save', s1, '--boards', 'x', '--key', 'DS-82').status, 2);
+
+// ---- render: the plan, the README and config §5 Breakpoints ----
+const BPS = [390, 768, 1024, 1280, 1440];
+const drawn = [{ name: 'Test 390', width: 390 }, { name: 'Test 960', width: 960 }];
+const plan = renderPlan(drawn, BPS);
+t('plan: each board at every breakpoint', plan.shots.filter((s) => s.board === 'Test 390').map((s) => s.width).join(' '), '390 768 1024 1280 1440');
+t('plan: a board off the breakpoints also at its own width', plan.shots.filter((s) => s.board === 'Test 960').map((s) => s.width).join(' '), '390 768 960 1024 1280 1440');
+t('plan: screens/<board>@<width>.png', plan.shots[0].file, 'screens/test-390@390.png');
+t('plan: drawn and interpolated widths', plan.widths.map((w) => `${w.width}:${w.label}${w.breakpoint ? '' : '*'}`).join(' '), '390:drawn 768:interpolated 960:drawn* 1024:interpolated 1280:interpolated 1440:interpolated');
+t('screenNames: a clash is numbered', screenNames([{ name: 'Home' }, { name: 'home' }, { name: '!!' }]).join(' '), 'home home-2 board');
+const scr = { version: '7', rendered_at: '2026-10-18T10:00:00Z', breakpoints: BPS, widths: plan.widths, images: plan.shots.map(({ png, ...s }) => s) };
+const rs = readme({ url: URL1, version: '7', fetched_at: 'x', tickets: [], boards: drawn, screens: scr });
+t('README: a breakpoint with no board is interpolated', rs.includes('| 1024px | interpolated | - |'), true);
+t('README: a board at its own width is drawn, not a breakpoint', rs.includes('| 960px | drawn (not a breakpoint) | Test 960 |'), true);
+t('README: links every image', rs.includes('| Test 960 | [image](screens/test-960@390.png) | [image](screens/test-960@768.png) | [drawn](screens/test-960@960.png) |'), true);
+t('merge: screens kept at the same version', mergeSource({ url: URL1, screens: scr }, { url: URL1, version: '7', tickets: [] }).screens?.version, '7');
+t('merge: screens dropped at a new version', mergeSource({ url: URL1, screens: scr }, { url: URL1, version: '8', tickets: [] }).screens, undefined);
+const bp = (row) => {
+  const f = join(T, `bp-${row.length}.md`);
+  put(f, `## 5. Conventions\n| Field | Value |\n|---|---|\n${row ? `| Breakpoints | ${row} |\n` : ''}`);
+  const r = spawnSync('node', ['--input-type=module', '-e', `import { breakpoints } from ${JSON.stringify(BIN)}; console.log(breakpoints().join(' '))`], { env: { ...process.env, DESK_CONFIG: f }, encoding: 'utf8' });
+  return (r.stdout || r.stderr).trim();
+};
+t('breakpoints: unset is the default', bp(''), '390 768 1024 1280 1440');
+t('breakpoints: the row, ascending', bp('`1280` `390` `768`'), '390 768 1280');
+t('breakpoints: none is no breakpoints', bp('`none`'), '');
+
+// A re-save at a new version removes the old version's screens.
+const r7 = repo('r7');
+save(s1, { root: r7, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL1, version: '7' });
+const d7 = join(r7, DIR, 'DS-52');
+put(join(d7, 'screens/admin-390@390.png'), 'PNG');
+writeRecord(d7, { ...json(join(d7, 'source.json')), screens: { ...scr, images: [{ board: 'Admin 390', screen: 'admin-390', width: 390, file: 'screens/admin-390@390.png', drawn: true }] } });
+save(s1, { root: r7, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL1, version: '7' });
+t('re-save, same version: screens kept', existsSync(join(d7, 'screens/admin-390@390.png')) && read(join(d7, 'README.md')).includes('## Screens'), true);
+save(s4, { root: r7, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL1, version: '8' });
+t('re-save, new version: old screens removed', existsSync(join(d7, 'screens/admin-390@390.png')), false);
+t('re-save, new version: README drops them', read(join(d7, 'README.md')).includes('## Screens'), false);
+
+// ---- render in a real browser: desk's own Playwright, skipped where it is not installed ----
+const pw = findPlaywright();
+if (!pw.entry) {
+  console.log(`SKIP render in a browser: no desk Playwright (tried ${pw.tried.join(', ')})`);
+} else {
+  const { chromium } = await importPlaywright(pw);
+  // Boards that paint from a local stylesheet and font, as a saved canvas does, with no network.
+  const canvasAt = (name, { font = true } = {}) => {
+    const s = join(T, name);
+    put(join(s, 'project/canvas.json'), JSON.stringify({ boards: [
+      { title: 'Test 390', width: 390, file: 'test-390.dc.html' }, { title: 'Test 960', width: 960, file: 'test-960.dc.html' }] }));
+    for (const w of [390, 960]) put(join(s, `project/test-${w}.dc.html`), `<!doctype html><link rel="stylesheet" href="styles/app.css"><main>Board ${w}</main>`);
+    put(join(s, 'project/styles/app.css'), "@font-face { font-family: T; src: url('../fonts/T.woff2'); } main { font-family: T; height: 600px; background: #234; color: #fff; }");
+    if (font) put(join(s, 'project/fonts/T.woff2'), 'FONT');
+    const r = repo(`${name}-repo`);
+    return join(r, save(s, { root: r, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL1, version: '3' }).path);
+  };
+  const good = canvasAt('rg');
+  const out = await render(good, { chromium, bps: BPS, now: '2026-10-18T10:00:00Z' });
+  t('render: every board at every breakpoint and its own width', out.screens.images.length, 11);
+  const png = readFileSync(join(good, 'screens/test-960@960.png'));
+  t('render: a PNG on disk', png.subarray(1, 4).toString(), 'PNG');
+  t('render: at the width', png.readUInt32BE(16), 960);
+  t('render: README labels 1440 interpolated', read(join(good, 'README.md')).includes('| 1440px | interpolated | - |'), true);
+
+  // AC3: a missing font fails the render naming board and file, and writes nothing.
+  const broken = canvasAt('rb');
+  rmSync(join(broken, 'project/fonts/T.woff2'));
+  const err = await render(broken, { chromium, bps: BPS }).then(() => 'no error', (e) => `${e.code}:${e.message}`);
+  t('render: a missing asset fails with exit 4', err.startsWith('4:not rendered: board "Test 390"'), true);
+  t('render: the asset is named', err.includes('project/fonts/T.woff2 (HTTP 404)'), true);
+  t('render: no image written', existsSync(join(broken, 'screens')), false);
+  const cliR = run('render', good);
+  t('cli render: exit 0, labels each width', cliR.status === 0 && cliR.stdout.includes('1024px interpolated'), true);
+  t('cli render: a missing asset exits 4', run('render', broken).status, 4);
+  const blank = canvasAt('rx');
+  put(join(blank, 'project/test-390.dc.html'), '<!doctype html><body></body>');
+  t('render: a blank board fails', await render(blank, { chromium, bps: [390] }).then(() => 'no error', (e) => e.message.includes('painted nothing')), true);
+}
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`FAIL ${fails} check(s)`); process.exit(1); }
