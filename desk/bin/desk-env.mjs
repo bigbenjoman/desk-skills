@@ -393,7 +393,16 @@ export function configValues(id) {
   const { section, row } = rowFor(id);
   const e = parseConfig().sections[section]?.byName[norm(row)];
   if (!e || unset(e.value)) return null;
-  return e.items.filter((x) => !unset(x)).map(expandSlug);
+  const items = e.items.filter((x) => !unset(x)).map(expandSlug);
+  // `none` beside other items is a note written in backticks: every span is an item, so the note
+  // would be read as a command or check. Refuse rather than guess which one was meant.
+  if (items.length > 1 && items.some((x) => isNone(x))) {
+    throw new DeskConfigError(
+      `desk: config §${section} "${row}" mixes \`none\` with other items (${items.join(' | ')}) in ${configPathHint()}. ` +
+        '`none` must stand alone: move the note out of backticks, e.g. `none` (the note in plain text). Refusing to guess.',
+    );
+  }
+  return items;
 }
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 

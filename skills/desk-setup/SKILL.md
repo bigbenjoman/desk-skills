@@ -200,6 +200,12 @@ How to turn what you find into rows:
   `` `apps/api: uv run pytest` ``, **never** `cd apps/api && uv run pytest`: the directory form is
   what the test lock and the worker allow-list understand. Show the user the row in this form when
   you confirm it, and read it back with `desk-env list <id>` / `desk-env cmds <id>` after writing.
+- **A row's note never contains a backtick span.** Every span in a value cell outside a trailing
+  `(…)` note is read as an item, so a note written `` `none` — `./install.sh` installs to your
+  machine `` makes `./install.sh` a second item. Write the note in plain text, in parentheses
+  after the value: `` `none` (install.sh installs to your machine) ``. `none` stands alone:
+  `desk-env list` and `desk-env cmds` refuse a row with `none` beside any other item, and so do
+  worktree setup and worker settings.
 - **Ticket key pattern.** Propose `<PROJECT>-[0-9]+` from the Jira project; check it against recent
   branch names and PR titles and say how many matched (a repo can put keys in titles but never in
   branches; say which).

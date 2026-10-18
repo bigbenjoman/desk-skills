@@ -60,6 +60,15 @@ lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
 is_none() { case "$(lc "$1")" in none|none\ *|none\(*) return 0 ;; esac; return 1; }
 # A config row desk-env.mjs does not know yet (it exits non-zero on an unknown id) reads as the fallback.
 cfg_opt() { local v; if v="$(desk_cfg "$1" 2>/dev/null)" && [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "${2:-}"; fi; }
+# cfg_items list|cmds <id>: the row's items in ROW, returning non-zero when it is unset. A row desk-env
+# refuses (exit 4: `none` beside other items) fails setup with desk-env's own message, so `none` is
+# never run as a command and a note in backticks is never read as a value.
+cfg_items() {
+  local rc=0
+  ROW="$(node "$DESK_ENV_MJS" "$1" "$2" 2>/dev/null)" || rc=$?
+  [ "$rc" != 4 ] || fail "$(node "$DESK_ENV_MJS" "$1" "$2" 2>&1 >/dev/null || true)"
+  [ "$rc" = 0 ]
+}
 
 case "$BRANCH" in
   -*|*..*|*' '*|*.lock|/*|*/) fail "branch '$BRANCH' is not a usable branch name" ;;
@@ -76,11 +85,13 @@ else
   PREFIX=""; say "note: config §4 Command prefix is unset — running toolchain commands bare"
 fi
 # Command rows as `DIR<TAB>CMD` lines (desk-env cmds): an item may name the directory it runs in.
-INSTALL_CMDS="$(node "$DESK_ENV_MJS" cmds install-cmd 2>/dev/null)" || \
+cfg_items cmds install-cmd || \
   fail "config §4 Install is not set — run /desk-setup (write \`none\` if there is no install step). Refusing to guess."
+INSTALL_CMDS="$ROW"
 AGENTS_UNSET=""
-AGENTS_CMDS="$(node "$DESK_ENV_MJS" cmds agents-sync 2>/dev/null)" || { AGENTS_UNSET=1; AGENTS_CMDS=""; }
-MIGRATE_CMDS="$(node "$DESK_ENV_MJS" cmds db-migrate-cmd 2>/dev/null || true)"
+if cfg_items cmds agents-sync; then AGENTS_CMDS="$ROW"; else AGENTS_UNSET=1; AGENTS_CMDS=""; fi
+cfg_items cmds db-migrate-cmd || true
+MIGRATE_CMDS="$ROW"
 
 # Fail before creating anything if the toolchain cannot even be found.
 if [ -n "$INSTALL_CMDS" ]; then
@@ -149,7 +160,7 @@ sync_agents() { # sync_agents strict|lenient
 # ---- per-ticket database plan ------------------------------------------------------------------
 LOCAL_DB="$(cfg_opt local-db '')"
 DB_VARS_UNSET=""
-DB_VARS="$(node "$DESK_ENV_MJS" list db-url-var 2>/dev/null)" || { DB_VARS=""; DB_VARS_UNSET=1; }
+if cfg_items list db-url-var; then DB_VARS="$ROW"; else DB_VARS=""; DB_VARS_UNSET=1; fi
 is_none "$(printf '%s' "$DB_VARS" | head -1)" && DB_VARS=""
 DB_VARS="$(printf '%s\n' "$DB_VARS" | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' || true)"
 if [ -n "$DB_VARS_UNSET" ]; then
@@ -184,7 +195,8 @@ else
 fi
 [ "$DB_MODE" = ticket ] || [ -z "$DB_VARS" ] || say "every §4 Database URL variable ($(printf '%s' "$DB_VARS" | paste -sd ' ' -)) will be blanked in the copied env files"
 
-ENV_FILES="$(node "$DESK_ENV_MJS" list env-files 2>/dev/null || true)"
+cfg_items list env-files || true
+ENV_FILES="$ROW"
 is_none "$(printf '%s' "$ENV_FILES" | head -1)" && ENV_FILES=""
 
 # Repoint (ticket) or blank (none) every listed variable in every copied env file, then verify.

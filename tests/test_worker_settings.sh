@@ -82,6 +82,10 @@ check "Codegen: no lock taken"                            '! jq -e ".permissions
 settings '`bash tests/run.sh`' '| Codegen | `rm -rf generated` |'
 check "Codegen: rm refused"                               '[ $rc -eq 0 ] && [[ "$out" == *"Codegen item \"rm -rf generated\" starts with rm"* ]] && ! allows "Bash(rm -rf generated:*)"'
 
+# `none` beside another item is a note in backticks: refused with desk-env's message, never run as a command
+settings '`bash tests/run.sh`' '| Lint | `none` `./install.sh` |'
+check "mixed none row: refused, no settings written"      '[ $rc -ne 0 ] && [[ "$out" == *"FAIL: desk: config §4 \"Lint\" mixes \`none\` with other items"* ]] && [ ! -f "$T/ws.json" ]'
+
 for item in 'bash -c tests/run.sh' 'bash' 'bash /abs/run.sh' 'bash ../run.sh' 'bash tests/../../x.sh' 'zsh tests/run.sh' 'bash tests/run.py' 'bash -x tests/run.sh'; do
   settings "\`$item\`"
   check "refused alone: $item" '[ $rc -ne 0 ] && [[ "$out" == *"no toolchain allow rule"* ]] && [ ! -f "$T/ws.json" ]'
