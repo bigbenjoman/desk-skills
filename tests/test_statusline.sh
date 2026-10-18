@@ -78,10 +78,18 @@ check "other: no settings.json is exit 1" '[ $rc -eq 1 ]'
 printf '{"statusLine":{"type":"command","command":"~/mine.sh"},"keep":1}\n' > "$HOME/.claude/settings.json"
 U statusline other
 check "other: a foreign command is printed, exit 0" '[ $rc -eq 0 ] && [ "$out" = "~/mine.sh" ]'
+printf '{"statusLine":{"type":"command","command":"bash /opt/custom/statusline-command.sh"}}\n' > "$HOME/.claude/settings.json"
+U statusline other
+check "other: the same file name at another path is foreign" '[ $rc -eq 0 ] && [ "$out" = "bash /opt/custom/statusline-command.sh" ]'
 printf '{not json' > "$HOME/.claude/settings.json"
 U statusline other
 check "other: invalid settings.json is exit 2" '[ $rc -eq 2 ]'
 rm -f "$HOME/.claude/settings.json"
+echo mine > "$HOME/.claude/statusline-command.sh"
+U statusline other
+check "other: a script desk did not install, with no statusLine, is foreign" \
+  '[ $rc -eq 0 ] && [[ "$out" == "~/.claude/statusline-command.sh (a script desk did not install)" ]]'
+rm -f "$HOME/.claude/statusline-command.sh"
 
 # install.sh's section, run on its own with the installer's helpers and --yes, no terminal.
 SECTION="$T/section.sh"
@@ -96,11 +104,19 @@ I(){ out=$(SRC="$R" SETTINGS="$HOME/.claude/settings.json" TS=t YES="$1" WARNING
 
 printf '{"statusLine":{"type":"command","command":"~/mine.sh"},"keep":1}\n' > "$HOME/.claude/settings.json"
 I 1
-check "AC5: another command is reported" '[[ "$out" == *"runs another statusLine command: ~/mine.sh"* ]]'
+check "AC5: another command is reported" '[[ "$out" == *"not one desk installed: ~/mine.sh"* ]]'
 check "AC5: --yes does not replace it; the question is skipped and listed" \
   '[[ "$out" == *"skip  Replace your statusLine command with claude-statusline"* ]] && [[ "$out" == *"SKIPPED=1"* ]]'
 check "AC5: settings.json and the script are untouched" \
   'grep -q "mine.sh" "$HOME/.claude/settings.json" && [ ! -e "$HOME/.claude/statusline-command.sh" ]'
+
+# The user's own script at the very path claude-statusline uses, never installed by desk.
+echo mine > "$HOME/.claude/statusline-command.sh"
+printf '{"statusLine":{"type":"command","command":"bash ~/.claude/statusline-command.sh"}}\n' > "$HOME/.claude/settings.json"
+I 1
+check "AC5: an unrecorded script at the same path is reported, and --yes does not replace it" \
+  '[[ "$out" == *"not one desk installed: bash ~/.claude/statusline-command.sh"* ]] && [[ "$out" == *"skip  Replace your statusLine command"* ]] && [ "$(cat "$HOME/.claude/statusline-command.sh")" = mine ]'
+rm -f "$HOME/.claude/statusline-command.sh"
 
 rm -f "$HOME/.claude/settings.json"; printf '{"keep":1}\n' > "$HOME/.claude/settings.json"
 I 0
@@ -128,5 +144,6 @@ U statusline check
 check "check: installed is behind the new pin, exit 1" '[ $rc -eq 1 ] && [[ "$out" == "installed ${PIN:0:9}, pinned ${NEW:0:9}"* ]]'
 U statusline install
 check "install fetches the new pin and records it" '[ $rc -eq 0 ] && grep -q "trees/${NEW:0:9}" "$T/fetched" && grep -q "${NEW:0:9}" "$HOME/.claude/desk/statusline.installed"'
+check "the script it replaced was copied aside first" '[[ "$out" == *"backup: ~/.claude/statusline-command.sh.bak-desk-"* ]] && ls "$HOME"/.claude/statusline-command.sh.bak-desk-* >/dev/null'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

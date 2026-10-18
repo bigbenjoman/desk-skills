@@ -898,8 +898,8 @@ fi
 section "Status line  -> ~/.claude/statusline-command.sh (claude-statusline)"
 
 # The status line stays its own repo; vendor/sources.json pins a commit (`tools`), and this runs the
-# repo's own installer at that commit. /desk-update moves the pin. A statusLine command that is not
-# claude-statusline's is the user's, so replacing it is its own question, never taken by --yes.
+# repo's own installer at that commit. /desk-update moves the pin. A status line desk did not install
+# (`statusline other`) is the user's, so replacing it is its own question, never taken by --yes.
 rc=0; out="$(python3 "$SRC/bin/skills-upstream" statusline check 2>&1)" || rc=$?
 orc=0; other="$(python3 "$SRC/bin/skills-upstream" statusline other 2>/dev/null)" || orc=$?
 if [ "$orc" = 2 ]; then
@@ -911,8 +911,8 @@ elif [ "$rc" != 0 ] && [ "$rc" != 1 ]; then
 else
   sl_apply="cp -p \"$SETTINGS\" \"$SETTINGS.bak-desk-$TS\"; python3 \"$SRC/bin/skills-upstream\" statusline install"
   if [ "$orc" = 0 ]; then
-    warn "$SETTINGS runs another statusLine command: $other"
-    note "claude-statusline ($out) would replace it; your command is not changed unless you say so."
+    warn "your status line is not one desk installed: $other"
+    note "claude-statusline ($out) would replace it; it is not changed unless you say so."
     sl_q="Replace your statusLine command with claude-statusline (settings.json backed up first)?"; sl_big=1
   else
     note "claude-statusline: $out"

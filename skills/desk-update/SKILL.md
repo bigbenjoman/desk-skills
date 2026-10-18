@@ -77,7 +77,7 @@ silently.
 ```bash
 skills-upstream outdated                  # pinned third-party skills and the status line; exit 10 = outdated
 skills-upstream statusline check          # exit 1: the installed status line is missing or not at the pin
-skills-upstream statusline other          # exit 0: settings.json runs another statusLine command (printed)
+skills-upstream statusline other          # exit 0: a status line desk did not install is in place (printed)
 skills-upstream verify                    # installed copies match vendor/ (drift, hand edits), and every
                                           # skill is reachable from ~/.claude/skills (else "Unknown skill")
 claude plugin marketplace update          # refresh the marketplaces' copies (installs nothing)
@@ -116,7 +116,7 @@ desk-skills   <n> new commits pulled | up to date | skipped: <reason>
 OUTDATED      context-audit     8560b4f (2026-04-13) -> 8928560 (2026-04-13)  Vesely/skills  2 commits: "Add README…", "…"
 OUTDATED      claude-statusline 8eeb63190 (2026-08-15) -> <latest>  bigbenjoman/claude-statusline  <n> commits: "…"
 OUTDATED      plugin vercel     1.4.0 -> 1.5.1
-STATUSLINE    not at the pin: <what `statusline check` printed>; or: another statusLine command: <command>
+STATUSLINE    not at the pin: <what `statusline check` printed>; or: not one desk installed: <what `statusline other` printed>
 UNBUMPED      plugin code-simplifier  1.0.0: +LICENSE (no version bump, so nothing to update yet)
 ok            ux-designer, ui-designer, ux-copywriter, <plugins…>
 UNREACHABLE   <name>: <error>
@@ -203,9 +203,10 @@ For the status line, an upgrade is the same branch-and-PR flow as a vendored ski
 `vendor/` copy; show the commits from the compare above instead of a diff), and the first run on
 `main` after it merges installs it. A chosen STATUSLINE row (or its `skipped by install.sh` row) is
 installed on confirmation: copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>`,
-then `skills-upstream statusline install`, which runs the repo's own installer at the pin. Where
-`statusline other` printed a command, the row says it **replaces** that command, and it is never part
-of "All outdated": the user picks it on its own or it stays.
+then `skills-upstream statusline install`, which runs the repo's own installer at the pin (it copies
+the old script aside first). Where `statusline other` printed anything (a status line desk did not
+install, even one at `~/.claude/statusline-command.sh`), the row says it **replaces** that, and it is
+never part of "All outdated": the user picks it on its own or it stays.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show
 the new version. Say that plugin and skill changes load in the **next** Claude Code session.

@@ -13,10 +13,12 @@
                                        (run `claude plugin marketplace update` first); exit 10 if any is behind
   skills-upstream statusline check     exit 0 if ~/.claude/statusline-command.sh is claude-statusline at its pin,
                                        1 if it is missing or another version (local only, no network)
-  skills-upstream statusline other     print settings.json's statusLine command if it is not claude-statusline's
-                                       (exit 0), else exit 1; exit 2 if settings.json is not valid JSON
-  skills-upstream statusline install   run claude-statusline's own installer from the repo at its pin and
-                                       record the commit in ~/.claude/desk/statusline.installed
+  skills-upstream statusline other     print a status line desk did not install (a statusLine command other
+                                       than the one it recorded, or an unrecorded statusline-command.sh) and
+                                       exit 0, else exit 1; exit 2 if settings.json is not valid JSON
+  skills-upstream statusline install   run claude-statusline's own installer from the repo at its pin (the old
+                                       script copied aside first) and record the commit and the statusLine
+                                       command in ~/.claude/desk/statusline.installed
   skills-upstream is-clone-of <dir> <owner/repo>
                                        exit 0 if <dir> is a git clone whose origin IS github.com/<owner/repo>,
                                        1 if not; install.sh uses it, so both agree
@@ -388,18 +390,37 @@ STATUSLINE_RECORD = os.path.expanduser("~/.claude/desk/statusline.installed")
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 
 
-def statusline_installed():
-    """The commit the last `statusline install` recorded, or None (never installed by desk)."""
+def statusline_record():
+    """What the last `statusline install` recorded ({commit, command, ...}), or {} (never installed by desk)."""
     try:
-        return json.load(open(STATUSLINE_RECORD)).get("commit")
-    except (OSError, ValueError, AttributeError):
-        return None
+        rec = json.load(open(STATUSLINE_RECORD))
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def statusline_command():
+    """settings.json's statusLine command ("" when there is none). Raises ValueError when unreadable."""
+    try:
+        with open(SETTINGS) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return ""
+    except OSError as ex:
+        raise ValueError(str(ex))
+    s = json.loads(raw) if raw.strip() else {}
+    if not isinstance(s, dict):
+        raise ValueError("not a JSON object")
+    line = s.get("statusLine")
+    if not line:
+        return ""
+    return (line.get("command") or json.dumps(line)) if isinstance(line, dict) else str(line)
 
 
 def cmd_statusline_check(data):
     """Exit 0 the pinned commit is installed, 1 it is missing or another version. Local only."""
     pin = data["tools"][STATUSLINE]["pin"]
-    have = statusline_installed()
+    have = statusline_record().get("commit")
     if not os.path.isfile(STATUSLINE_SCRIPT):
         print(f"not installed: no {tilde(STATUSLINE_SCRIPT)} (pinned {pin['commit']}, {pin['date']})")
         return 1
@@ -415,29 +436,29 @@ def cmd_statusline_check(data):
 
 
 def cmd_statusline_other():
-    """The statusLine command in settings.json when it is not claude-statusline's: exit 0 and print it,
-    1 there is none or it is ours, 2 settings.json is not valid JSON."""
+    """A status line desk did not install, which an install would replace: exit 0 and print it, 1 there
+    is none, 2 settings.json is not valid JSON. Ours is only the exact command the last install recorded,
+    never a name match: a user's own script is often at ~/.claude/statusline-command.sh too."""
     try:
-        with open(SETTINGS) as f:
-            raw = f.read()
-        s = json.loads(raw) if raw.strip() else {}
-    except FileNotFoundError:
-        return 1
-    except (OSError, ValueError):
+        cmd = statusline_command()
+    except ValueError:
         return 2
-    line = s.get("statusLine") if isinstance(s, dict) else None
-    if not line:
-        return 1
-    cmd = line.get("command", "") if isinstance(line, dict) else str(line)
-    if os.path.basename(STATUSLINE_SCRIPT) in cmd:
-        return 1
-    print(cmd or json.dumps(line))
-    return 0
+    rec = statusline_record()
+    if cmd:
+        if rec.get("command") == cmd:
+            return 1
+        print(cmd)
+        return 0
+    if os.path.isfile(STATUSLINE_SCRIPT) and not rec:
+        print(f"{tilde(STATUSLINE_SCRIPT)} (a script desk did not install)")
+        return 0
+    return 1
 
 
 def cmd_statusline_install(data):
-    """Run the repo's own installer from a copy of the repo at the pin, then record the commit. The
-    installer backs settings.json up itself; install.sh has already taken its own backup."""
+    """Run the repo's own installer from a copy of the repo at the pin, then record the commit and the
+    statusLine command it wrote. The installer backs settings.json up itself (install.sh has too); the
+    script it overwrites is copied aside here first."""
     e = data["tools"][STATUSLINE]
     src, pin = e["source"], e["pin"]
     tmp = tempfile.mkdtemp(prefix="skills-upstream-statusline-")
@@ -446,16 +467,24 @@ def cmd_statusline_install(data):
         installer = os.path.join(tmp, src["installer"])
         if not os.path.isfile(installer):
             die(f"{src['installer']} is not in {src['repo']} at {pin['commit']}")
+        if os.path.isfile(STATUSLINE_SCRIPT):
+            backup = f"{STATUSLINE_SCRIPT}.bak-desk-{time.strftime('%Y%m%d-%H%M%S')}"
+            shutil.copy2(STATUSLINE_SCRIPT, backup)
+            print(f"backup: {tilde(backup)}")
         r = subprocess.run(["bash", installer], cwd=tmp, stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if r.returncode != 0:
             die(f"{src['installer']} at {pin['commit']} failed (exit {r.returncode}): "
                 + (r.stderr or r.stdout).strip()[-300:], 1)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        command = statusline_command()
+    except ValueError:
+        die(f"{src['installer']} ran, but {tilde(SETTINGS)} is no longer valid JSON; restore its .bak", 1)
     os.makedirs(os.path.dirname(STATUSLINE_RECORD), exist_ok=True)
     with open(STATUSLINE_RECORD, "w") as f:
         json.dump({"repo": src["repo"], "commit": pin["commit"], "date": pin["date"],
-                   "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+                   "command": command, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
         f.write("\n")
     print(f"installed {STATUSLINE} {pin['commit']} ({pin['date']}) from {src['repo']}")
     return 0
