@@ -95,7 +95,7 @@ settings '`bash tests/run.sh`' '| Lint | `none` `./install.sh` |'
 check "mixed none row: refused, no settings written"      '[ $rc -ne 0 ] && [[ "$out" == *"FAIL: desk: config §4 \"Lint\" mixes \`none\` with other items"* ]] && [ ! -f "$T/ws.json" ]'
 
 # desk-jira reads, transitions among them, whatever §3 jira-transition says; the transition itself only under yes
-JIRA_READS='get search comments whoami fields children transitions where meta md2wiki api'
+JIRA_READS='get search comments whoami fields children transitions where meta md2wiki api lint'
 reads_ok(){ local s; for s in $JIRA_READS; do allows "Bash(desk-jira $s:*)" || return 1; done; }
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
 check "jira-transition yes: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
