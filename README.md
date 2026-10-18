@@ -38,7 +38,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
 | `desk-jira` | Ticket comments, edits, transitions | loads itself |
 | `desk-review` | Reviews a branch, a PR or the open queue at this repo's bar: read-only finders, codex refutation, ticket checked both ways, posted as a verdict where allowed | `/desk-review`, `/desk-review 460` |
-| `desk-kiss` | The deep "should this be smaller?" pass: scope creep, one-consumer abstractions and narrating comments against the ticket, with a per-finding fix offer | `/desk-kiss`, `/desk-kiss 460` |
+| `desk-kiss` | Makes a change smaller: the "should this be smaller?" passes desk-review runs on every review (scope creep, one-consumer abstractions, narrating comments against the ticket), then a per-finding fix offer | `/desk-kiss`, `/desk-kiss 460` |
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
@@ -106,8 +106,8 @@ a filled-in proof block from live output, and it never writes to real staging wi
 and P2 only, against this repo's review bar (§4 Review bar, else the default in
 [`skills/desk-review/references/review-bar.md`](skills/desk-review/references/review-bar.md)).
 Read-only finder subagents are routed by path (Lena always; Nadia, Theo, Mira, Jim, Suki or a §4
-Review domain experts skill when their paths change), codex refutes each finding from a different
-vendor, and Bea checks the diff against its ticket in both directions. Where §3 allows, it posts one
+Review domain experts skill when their paths change, and desk-kiss's simplicity passes always),
+codex refutes each finding from a different vendor, and Bea checks the diff against its ticket in both directions. Where §3 allows, it posts one
 `COMMENTED` review with a machine-readable verdict a required check can read. It never approves or
 blocks.
 
@@ -123,14 +123,14 @@ blocks.
 It is also what desk-ticket and autopilot workers run as their self-review. Codex is optional: when
 it is missing, desk-review asks before falling back to Claude checking Claude, and says so.
 
-**`/desk-kiss`** is the deep pass on one question: should this change be smaller? It holds the diff
+**`/desk-kiss`** answers one question, should this change be smaller?, and offers to make it so. It holds the diff
 against its stated intent (the ticket, else the PR body, else the commits, and names which) and looks
 for scope creep, abstractions with exactly one consumer, and comments that narrate history or
 restate the code. A justification gate and a refutation that argues the author's case run before
 anything is reported. When the target is your checked-out `HEAD` on a clean tree, it then offers
-each mechanical fix one at a time, showing the exact diff, and never commits. desk-review already
-checks the same rules on every run; reach for desk-kiss when its scope findings look like the tip of
-something.
+each mechanical fix one at a time, showing the exact diff, and never commits. desk-review runs the
+same passes on every review and reports what they find; reach for desk-kiss when you want those
+simplifications made.
 
 ```
 /desk-kiss        /desk-kiss 460        /desk-kiss main...feat/x

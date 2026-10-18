@@ -1,7 +1,8 @@
 ---
 name: desk-kiss
 description: >-
-  Reviews whether a change should be smaller. Use when the user says "kiss", "/desk-kiss", "keep it
+  Finds where a change should be smaller and offers to make it smaller, applying each fix the user
+  accepts. desk-review already runs its passes on every review. Use when the user says "kiss", "/desk-kiss", "keep it
   simple", "is this over-engineered", "check for scope creep", "is this more than the ticket asked
   for", "did I add an abstraction nothing uses", "too many comments", or a PR carrying a
   `debt:narrative-comment` label. Defaults to the current branch; takes a PR number, branch or ref
@@ -21,17 +22,17 @@ Three things:
   arrival* already covers **zero** consumers; one is the gap.
 - **Commentary**: an added comment that narrates history or restates the code.
 
-**What this is for, now that desk-review covers the same axis.** All three are named classes in the
-review bar (P2 *Out of scope*, P1 *Speculative generality*, P1 *Scope creep with no consumer*, P2
-*Narrative comment*), and `desk-review` runs a cheap always-on pass over them: Bea compares the diff
-to the ticket in both directions, and the finders count consumers. **That is the gate.** It runs on
-every review whether or not anyone remembers this skill, which is the point: a guard you have to
-invoke is not a guard.
+**Who runs what.** All three are named classes in the review bar (P2 *Out of scope*, P1
+*Speculative generality*, P1 *Scope creep with no consumer*, P2 *Narrative comment*), and
+`desk-review` runs **Phases 2–5 of this skill on every review**, as its simplicity finder, and
+reports the survivors at the bar's severities. **That is the gate.** It runs whether or not anyone
+remembers this skill, which is the point: a guard you have to invoke is not a guard. When it runs
+there, desk-review supplies `RANGE` and `TIP`, so Phase 1 is skipped, and Phases 6 and 7 do not run.
 
-This skill is the **deep pass**. It is worth running when desk-review's scope findings look like the
-tip of something, when a branch is large enough that desk-review's fleet cap cannot do the axis
-justice, or when you want Phase 7's per-finding fix loop rather than a list. It is the only one of
-the two that offers to make the change.
+`/desk-kiss` is for **acting on** those findings: it runs the same passes, prints the full report
+(including the `commentary` band, near misses and held the line, which the bar does not grade), and
+then offers each simplification and applies the ones you accept (Phase 7). Run it when a review's
+simplicity findings are ones you want made.
 
 Everything else defers completely: correctness and security to `desk-review`, duplication and
 severity to the review bar, in-place cleanup to a simplifier. Whether the machinery is proportionate
