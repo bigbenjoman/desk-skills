@@ -3,11 +3,10 @@ name: desk gate
 # Copied into a repo by /desk-setup. Three checks, each its own job so a repo can require any of
 # them: list the job names under §4 Required checks and in the branch ruleset to make them block.
 #
-# A pull_request workflow runs from the PR's own branch, so a PR can edit this file or
-# scripts/desk/review-gate.mjs and loosen the check that judges it. Put both under PROTECTED below
-# and require `protected-path approval`, so changing the gate needs a second person. A small fix,
-# docs or chore change still skips that approval, and its title is only the author's claim: a
-# branch ruleset's required reviewers over .github/** is what closes the hole completely.
+# A pull_request or pull_request_review run uses the PR's own copy of this file and of
+# scripts/desk/review-gate.mjs, so a PR can blank PROTECTED or rewrite a job and every check still
+# passes under its usual name. Nothing in this workflow can stop that. Only the branch ruleset can:
+# required reviewers (or CODEOWNERS review) over .github/** and scripts/desk/**.
 
 on:
   pull_request:
@@ -16,7 +15,8 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
 
-# Listing reviews and files is a Pull requests endpoint; `contents: read` alone 403s on it.
+# Listing reviews and files is a Pull requests endpoint; `contents: read` alone 403s on it. The
+# collaborator permission lookup needs only metadata, which every token can read.
 permissions:
   contents: read
   pull-requests: read

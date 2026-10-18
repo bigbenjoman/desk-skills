@@ -459,14 +459,17 @@ jobs, and say what each one fails on:
 
 | Job (check name) | Fails when |
 |---|---|
-| `desk-review verdict` | the PR's latest `desk-review:verdict` marker (from someone with write access) is missing, attests a SHA other than the head, has any of `p0` `p1` `p2` `deferred` `gaps` `unrefuted` `partial` non-zero, or sits under a heading that lists findings, or names another SHA or round. `REQUIRE_VENDOR: 'codex-cross'` also refuses a same-vendor refutation |
+| `desk-review verdict` | the PR's latest `desk-review:verdict` marker (from someone with write access, read from the repo's permission endpoint) is missing, attests a SHA other than the head, has any of `p0` `p1` `p2` `deferred` `gaps` `unrefuted` `partial` non-zero, or sits under a heading that lists findings, or names another SHA or round. `REQUIRE_VENDOR: 'codex-cross'` also refuses a same-vendor refutation |
 | `CLAUDE.md size` | a tracked `CLAUDE.md` is over 20,000 characters, the most the reviewer loads |
-| `protected-path approval` | the PR touches a path the `PROTECTED` regex matches and has no approval at its head from someone with write access other than its author, unless it is a small `fix`, `docs` or `chore` change: that type in the title, no breaking `!`, and at most 30 changed files, not counting lockfiles and build output |
+| `protected-path approval` | the PR touches a path the `PROTECTED` regex matches (a rename's old path included) and has no approval at its head from someone with write access other than its author, unless it is a small `fix`, `docs` or `chore` change: that type in the title, no breaking `!`, and at most 30 changed files, not counting lockfiles and build output |
 
-Ask for the protected paths as a second question, Recommended `^(\.github|scripts/desk)/`, because
-a PR runs the workflow from its own branch and could otherwise loosen the gate that judges it; add
-any merge-hold globs the user wants a second person on, written as one regex. `none` leaves
-`PROTECTED: ''` and the job passes. Say that a solo repo cannot meet this job's approval (the author's
+Ask for the protected paths as a second question: the merge-hold globs the user wants a second
+person on, written as one regex, Recommended `^(\.github|scripts/desk)/` so a change to CI or to
+this gate is at least asked for an approval. `none` leaves `PROTECTED: ''` and the job passes. **Say
+plainly that none of the three jobs can protect itself**: a PR runs its own copy of the workflow and
+script, so it can blank `PROTECTED` or rewrite a job and the check still passes under its name. Only
+the branch ruleset closes that, with required reviewers (or CODEOWNERS review) over `.github/**` and
+`scripts/desk/**`, and that is the user's change to make. Say that a solo repo cannot meet this job's approval (the author's
 own never counts), so it should stay unrequired there. If the repo already has both files and they
 match, say so and skip; if they differ, show the diff and ask. On a yes, on a new branch off
 `<default>` named per §5 Branch names:

@@ -21,8 +21,10 @@ const VERDICT = new RegExp(
     '\\s+vendor=(?<vendor>[a-z-]+)\\s+round=(?<round>\\d+)\\s*-->$',
 );
 export const COUNTS = ['p0', 'p1', 'p2', 'deferred', 'gaps', 'unrefuted', 'partial'];
-// Only someone who can push to the repo can attest a review: on a public repo anyone can post one.
-const WRITERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+// Only someone who can push to the repo can attest a review or approve one: on a public repo anyone
+// can post a review. `writers` below is the set of logins main() confirmed have write access, read
+// from the permission endpoint; author_association cannot say it (MEMBER is any org member, read
+// access included).
 
 // The verdict a review body carries, with the visible heading (its first non-blank line after the
 // markers), or null. A desk-review:reply or any body not opening with the local marker has none.
@@ -56,9 +58,9 @@ export function headingMismatch(v) {
 
 // reviews: the REST list, oldest first. Returns { ok, message }. Only the latest verdict counts: an
 // older clean one never stands in for a newer dirty one, and a head with none is not reviewed.
-export function checkVerdict(reviews, head, { vendor = '' } = {}) {
+export function checkVerdict(reviews, head, writers, { vendor = '' } = {}) {
   const verdicts = reviews
-    .filter((r) => WRITERS.has(r.author_association))
+    .filter((r) => writers.has(r.user?.login))
     .map((r) => parseVerdict(r.body))
     .filter(Boolean);
   if (!verdicts.length) {
@@ -106,15 +108,20 @@ export function exemptType(type, exemptTypes) {
   return new RegExp(`^(${exemptTypes})(\\([a-z0-9./_-]+\\))?:$`).test(type);
 }
 
-// pr: { title, author, head }; files: [{ filename, additions, deletions }]; reviews: REST list.
-// env: { protected, generated, fileLimit, exemptTypes } as the workflow sets them.
-export function checkApproval(pr, files, reviews, env) {
+// The review states that set where a reviewer stands; a later COMMENTED review changes nothing.
+const DECIDING = ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'];
+
+// pr: { title, author, head }; files: [{ filename, previous_filename?, additions, deletions }];
+// reviews: REST list; writers: as checkVerdict. env: { protected, generated, fileLimit,
+// exemptTypes } as the workflow sets them.
+export function checkApproval(pr, files, reviews, writers, env) {
   if (!env.protected) return { ok: true, message: 'No protected paths are set (PROTECTED is empty). No approval needed.' };
   const prot = new RegExp(env.protected);
   const gen = new RegExp(env.generated);
   const counted = files.filter((f) => !gen.test(f.filename));
   const lines = counted.reduce((n, f) => n + f.additions + f.deletions, 0);
-  const touched = files.map((f) => f.filename).filter((p) => prot.test(p));
+  // A rename's old path counts too, or moving a file out of a protected path needs no one.
+  const touched = files.flatMap((f) => [f.filename, f.previous_filename]).filter((p) => p && prot.test(p));
   if (!touched.length) return { ok: true, message: `${counted.length} changed files, no protected path touched. No approval needed.` };
 
   const type = titleType(pr.title);
@@ -134,8 +141,8 @@ export function checkApproval(pr, files, reviews, env) {
   // while benign and then loosen the very regex that judges it. The author never counts.
   const last = new Map();
   for (const r of reviews) {
-    if (r.user?.login === pr.author || !WRITERS.has(r.author_association)) continue;
-    if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) last.set(r.user.login, r);
+    if (r.user?.login === pr.author || !writers.has(r.user?.login)) continue;
+    if (DECIDING.includes(r.state)) last.set(r.user.login, r);
   }
   const approvals = [...last.values()].filter((r) => r.state === 'APPROVED');
   const atHead = approvals.find((r) => r.commit_id === pr.head);
@@ -145,13 +152,15 @@ export function checkApproval(pr, files, reviews, env) {
   return { ok: false, message: `${why} One approval at the head from someone with write access clears it.${stale}` };
 }
 
-async function api(path) {
+// missing: what a 404 returns instead of failing, for a lookup where "not found" is an answer.
+async function api(path, missing) {
   const out = [];
   for (let page = 1; ; page++) {
     const sep = path.includes('?') ? '&' : '?';
     const res = await fetch(`https://api.github.com/${path}${sep}per_page=100&page=${page}`, {
       headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json' },
     });
+    if (res.status === 404 && missing !== undefined) return missing;
     // Never read a failed call as "no reviews": that reports a token problem as the author's omission.
     if (!res.ok) throw new Error(`GET ${path} returned ${res.status}: an API or token failure, not a missing review`);
     const body = await res.json();
@@ -167,11 +176,24 @@ function report({ ok, message }) {
   process.exitCode = ok ? 0 : 1;
 }
 
+// The logins among these reviews' authors who can push to REPO. The permission endpoint maps
+// maintain to write, so admin and write are every role that can.
+async function writersOf(reviews) {
+  const writers = new Set();
+  for (const login of new Set(reviews.map((r) => r.user?.login).filter(Boolean))) {
+    // A login that is no collaborator 404s: not a writer, never a reason to fail the run.
+    const p = await api(`repos/${process.env.REPO}/collaborators/${encodeURIComponent(login)}/permission`, {});
+    if (['admin', 'write'].includes(p.permission)) writers.add(login);
+  }
+  return writers;
+}
+
 async function main(mode) {
   const { REPO, PR, HEAD_SHA } = process.env;
   const pulls = `repos/${REPO}/pulls/${PR}`;
   if (mode === 'verdict') {
-    return report(checkVerdict(await api(`${pulls}/reviews`), HEAD_SHA, { vendor: process.env.REQUIRE_VENDOR || '' }));
+    const reviews = (await api(`${pulls}/reviews`)).filter((r) => parseVerdict(r.body));
+    return report(checkVerdict(reviews, HEAD_SHA, await writersOf(reviews), { vendor: process.env.REQUIRE_VENDOR || '' }));
   }
   if (mode === 'claude-md') {
     const paths = execFileSync('git', ['ls-files', '-z', '--', 'CLAUDE.md', '**/CLAUDE.md'], { encoding: 'utf8' })
@@ -181,10 +203,12 @@ async function main(mode) {
   if (mode === 'approval') {
     // The title is read live: a pull_request_review run carries it as it stood when the event fired.
     const pr = await api(pulls);
+    const reviews = (await api(`${pulls}/reviews`)).filter((r) => DECIDING.includes(r.state));
     return report(checkApproval(
       { title: pr.title, author: pr.user.login, head: HEAD_SHA },
       await api(`${pulls}/files`),
-      await api(`${pulls}/reviews`),
+      reviews,
+      await writersOf(reviews),
       {
         protected: process.env.PROTECTED || '',
         generated: process.env.GENERATED,

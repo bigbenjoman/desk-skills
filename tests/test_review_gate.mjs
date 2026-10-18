@@ -22,8 +22,10 @@ const body = (o = {}) => {
     `<!-- desk-review:verdict v=1 sha=${v.sha} ${COUNTS.map((k) => `${k}=${v[k]}`).join(' ')} vendor=${v.vendor} round=${v.round} -->\n\n` +
     `${heading}\n\nreview prose`;
 };
-const review = (b, o = {}) => ({ body: b, author_association: 'OWNER', state: 'COMMENTED', user: { login: 'me' }, ...o });
-const verdict = (reviews, opts) => checkVerdict(reviews, HEAD, opts);
+// The logins the permission endpoint said can push; `reader` is an org member with read access.
+const WRITERS = new Set(['me', 'rev']);
+const review = (b, o = {}) => ({ body: b, state: 'COMMENTED', user: { login: 'me' }, ...o });
+const verdict = (reviews, opts) => checkVerdict(reviews, HEAD, WRITERS, opts);
 
 // The verdict marker.
 t('clean at head passes', verdict([review(body())]).ok, true);
@@ -42,8 +44,8 @@ for (const k of COUNTS) {
 t('the latest verdict wins over an older clean one', verdict([review(body()), review(body({ p1: 1, heading: '1 P1' }))]).ok, false);
 t('a newer clean verdict clears an older dirty one', verdict([review(body({ p0: 1, heading: '1 P0' })), review(body())]).ok, true);
 t('a newer clean verdict at an old sha does not pass', verdict([review(body()), review(body({ sha: OTHER }))]).ok, false);
-t('a verdict from a non-collaborator is ignored', verdict([review(body(), { author_association: 'NONE' })]).ok, false);
-t('a non-collaborator cannot override the latest real verdict', verdict([review(body()), review(body({ p0: 1, heading: 'x' }), { author_association: 'CONTRIBUTOR' })]).ok, true);
+t('a verdict from someone without write access is ignored', verdict([review(body(), { user: { login: 'reader' } })]).ok, false);
+t('nor can it override the latest real verdict', verdict([review(body({ p0: 1, heading: '1 P0' })), review(body(), { user: { login: 'reader' } })]).ok, false);
 t('same-vendor passes by default', verdict([review(body({ vendor: 'same-vendor' }))]).ok, true);
 t('same-vendor fails when codex-cross is required', verdict([review(body({ vendor: 'same-vendor' }))], { vendor: 'codex-cross' }).ok, false);
 
@@ -107,8 +109,8 @@ const ENV = { protected: '^(\\.github|scripts/desk)/', generated: env('GENERATED
 const file = (filename, n = 1) => ({ filename, additions: n, deletions: 0 });
 const many = (n) => Array.from({ length: n }, (_, i) => file(`src/f${i}.ts`));
 const pr = (title) => ({ title, author: 'me', head: HEAD });
-const approve = (o = {}) => ({ state: 'APPROVED', commit_id: HEAD, author_association: 'COLLABORATOR', user: { login: 'rev' }, ...o });
-const gate = (title, files, reviews = [], e = ENV) => checkApproval(pr(title), files, reviews, e);
+const approve = (o = {}) => ({ state: 'APPROVED', commit_id: HEAD, user: { login: 'rev' }, ...o });
+const gate = (title, files, reviews = [], e = ENV) => checkApproval(pr(title), files, reviews, WRITERS, e);
 const GATE = [file('.github/workflows/desk-gate.yml')];
 t('empty PROTECTED passes', gate('feat: x', GATE, [], { ...ENV, protected: '' }).ok, true);
 t('no protected path touched passes, whatever the type', gate('feat: x', many(40)).ok, true);
@@ -127,7 +129,10 @@ const old = gate('feat: x', GATE, [approve({ commit_id: OTHER })]);
 t('an approval at an earlier commit does not', old.ok, false);
 has('it says to approve again', old.message, 'rev approved an earlier commit');
 t("the author's own approval does not count", gate('feat: x', GATE, [approve({ user: { login: 'me' } })]).ok, false);
-t('an approval without write access does not count', gate('feat: x', GATE, [approve({ author_association: 'NONE' })]).ok, false);
+t('an approval without write access does not count', gate('feat: x', GATE, [approve({ user: { login: 'reader' } })]).ok, false);
+const moved = gate('feat: x', [{ filename: 'docs/old-gate.yml', previous_filename: '.github/workflows/desk-gate.yml', additions: 0, deletions: 0 }]);
+t('renaming a file out of a protected path needs an approval', moved.ok, false);
+has('it names the old path', moved.message, '`.github/workflows/desk-gate.yml`');
 t('changes requested after an approval voids it', gate('feat: x', GATE, [approve(), approve({ state: 'CHANGES_REQUESTED' })]).ok, false);
 t('a dismissed approval does not count', gate('feat: x', GATE, [approve({ state: 'DISMISSED' })]).ok, false);
 t('a comment after an approval keeps it', gate('feat: x', GATE, [approve(), approve({ state: 'COMMENTED' })]).ok, true);
