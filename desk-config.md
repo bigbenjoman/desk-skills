@@ -137,7 +137,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `jira-assign-self` | Assign your ticket to yourself | `yes` | `TODO` |
 | `jira-comment` | Post a comment on your own ticket | `yes` | `TODO` |
 | `jira-create` | Create a ticket | `yes` | `TODO` |
-| `jira-edit` | Edit your ticket's description or fields (priority field, labels), and Blocks links (`desk-jira link`, never a worker's) | `yes` | `TODO` |
+| `jira-edit` | Edit your ticket's description or fields (priority field, labels), and issue links (`desk-jira link` and `unlink`, never a worker's) | `yes` | `TODO` |
 | `jira-transition` | Move your ticket between working states (§4 In-progress state, Review state) | `yes` | `TODO` |
 | `jira-close-own-merged` | Move your ticket to §4 Done state once your own last PR for it has merged | `yes` | `TODO` |
 | `jira-close` | Close a ticket any other way (duplicate, not a bug, out of scope, already fixed) | `ask` | `TODO` |

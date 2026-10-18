@@ -100,6 +100,7 @@ settings '`bash tests/run.sh`' '' "$(perm3 yes)"
 check "jira-transition yes: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
 check "jira-transition yes: transition allowed"           'allows "Bash(desk-jira transition:*)" && ! denies "Bash(desk-jira transition:*)"'
 check "desk-jira link never allowed"                      '! allows "Bash(desk-jira link:*)" && denies "Bash(desk-jira link:*)"'
+check "desk-jira unlink never allowed"                    '! allows "Bash(desk-jira unlink:*)" && denies "Bash(desk-jira unlink:*)"'
 settings '`bash tests/run.sh`' '' "$(perm3 ask)"
 check "jira-transition ask: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
 check "jira-transition ask: transition denied"            'denies "Bash(desk-jira transition:*)" && ! allows "Bash(desk-jira transition:*)"'
