@@ -294,6 +294,8 @@ if (mode === 'triage') {
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
     // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
     ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
+    // `render` opens Chromium on the saved boards, so only under the browser lock.
+    ...BIN_FORMS.flatMap((b) => BIN_FORMS.map((d) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs render:*)`)),
     // A script from the worktree's installed packages (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave node_modules.
     ...withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${c}:*)`),

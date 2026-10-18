@@ -399,7 +399,17 @@ already holding the same artifact, so a canvas several tickets share is saved on
 added to it. It writes `source.json` (URL, version, fetched-at, the tickets using it) and a README
 with the ticket-to-board table, and refuses, saving nothing, when a board references a file the
 snapshot lacks (`missing:`): read that file too. A `remote:` line is a file loaded from the network,
-which will not render offline; say so. Commit the folder on the ticket's branch. Then make the
+which will not render offline; say so. Then render every board at every breakpoint, under the
+browser lock:
+
+```bash
+~/.claude/desk/bin/with-lock.sh browser node ~/.claude/desk/bin/desk-design.mjs render <saved folder>
+```
+
+It writes `screens/<board>@<width>.png` for each width in §5 Breakpoints and each board's own width,
+and lists them in the README, each width labelled `drawn` or `interpolated` (no board was drawn at
+it). Exit 4 names a board and the file it could not load, and writes no image: save that file too.
+Commit the folder, screens included, on the ticket's branch. Then make the
 ticket's Design section carry both the artifact URL and the repo path (the `design:` line it prints),
 via `desk-jira edit` under §3 `jira-edit`.
 

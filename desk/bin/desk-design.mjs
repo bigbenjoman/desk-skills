@@ -14,8 +14,13 @@
 //       exit 0 when the saved copy is that version, 3 when the artifact has moved on
 //   node desk-design.mjs check  <KEY | ticket file> [--key <K>]
 //       exit 1 when the ticket's Design section links a Claude Design artifact with no saved copy
+//   node desk-design.mjs render <saved dir>
+//       renders every board at config §5 Breakpoints (default 390 768 1024 1280 1440) and at its own
+//       width into <dir>/screens/<board>@<width>.png, and lists them in the README; exit 4 (nothing
+//       written) when a board fails to load a file or renders blank, 6 when Playwright is missing
 // `--boards` binds to the `--key` before it; a key with none uses every board. Usage errors exit 2.
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -147,10 +152,12 @@ export function mergeSource(prev, next) {
     if (i < 0) tickets.push(t); else tickets[i] = t;
   }
   tickets.sort((a, b) => a.key.localeCompare(b.key, 'en', { numeric: true }));
+  // Screens describe one version: a write at another version drops them (save removes the images).
+  const screens = next.screens ?? (prev?.screens && String(prev.screens.version) === String(next.version) ? prev.screens : undefined);
   return {
     url: next.url, version: String(next.version), fetched_at: next.fetched_at,
     dir: next.dir ?? prev?.dir ?? null, tickets,
-    boards: next.boards ?? prev?.boards ?? [], files: next.files ?? prev?.files ?? [],
+    boards: next.boards ?? prev?.boards ?? [], files: next.files ?? prev?.files ?? [], screens,
   };
 }
 
@@ -181,7 +188,34 @@ export function readme(source) {
       ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(b.file) : '-'} |`)]
       : ['canvas.json names no boards.']),
     '',
+    ...screensSection(source.screens),
   ].join('\n');
+}
+
+// What `render` drew: each width labelled drawn (a board was drawn at it) or interpolated (none
+// was, so every image at it is a board laid out at a width nobody designed), then each image.
+function screensSection(screens) {
+  if (!screens?.images?.length) return [];
+  const widths = screens.widths.map((w) => w.width);
+  const img = (s) => `[${s.drawn ? 'drawn' : 'image'}](${s.file})`;
+  return [
+    '## Screens',
+    '',
+    `Rendered by \`desk-design render\` from version ${screens.version} on ${screens.rendered_at}, at the`,
+    `Breakpoints (${screens.breakpoints.length ? screens.breakpoints.map((w) => `${w}px`).join(', ') : 'none'}) and each board's own width.`,
+    '',
+    '| Width | Label | Boards drawn at it |',
+    '|---|---|---|',
+    ...screens.widths.map((w) => `| ${w.width}px | ${w.label}${w.breakpoint ? '' : ' (not a breakpoint)'} | ${w.boards.length ? cell(w.boards.join(', ')) : '-'} |`),
+    '',
+    `| Board | ${widths.map((w) => `${w}px`).join(' | ')} |`,
+    `|---|${widths.map(() => '---').join('|')}|`,
+    ...[...new Set(screens.images.map((s) => s.screen))].map((screen) => `| ${cell(screens.images.find((x) => x.screen === screen).board)} | ${widths.map((w) => {
+      const s = screens.images.find((x) => x.screen === screen && x.width === w);
+      return s ? img(s) : '-';
+    }).join(' | ')} |`),
+    '',
+  ];
 }
 
 // Write source.json and README.md into dir. Returns the merged source.
@@ -248,8 +282,9 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   if (missing.length) fail(`not saved: the snapshot lacks files the boards reference; read them from the artifact too:\n${missing.map((m) => `missing: ${m}`).join('\n')}`, 4);
   const boards = parseBoards(readJson(join(src, canvas)) ?? {});
 
-  // A re-save replaces the old version's files, so none outlive it.
-  for (const f of prev?.files ?? []) {
+  // A re-save replaces the old version's files, so none outlive it: its screens included.
+  const stale = String(prev?.screens?.version) !== String(version) ? (prev?.screens?.images ?? []).map((s) => s.file) : [];
+  for (const f of [...(prev?.files ?? []), ...stale]) {
     const p = normalize(join(dest, f));
     if (!files.includes(f) && p.startsWith(dest + sep) && existsSync(p)) rmSync(p);
   }
@@ -271,6 +306,126 @@ export function status(target, version, { root, dir } = {}) {
   else source = readJson(join(target, 'source.json'));
   if (!source) return { state: 'unsaved' };
   return { state: String(source.version) === String(version) ? 'current' : 'newer', saved: String(source.version), source };
+}
+
+// ---- render (every board at every breakpoint) --------------------------------------------------
+
+export const DEFAULT_BREAKPOINTS = [390, 768, 1024, 1280, 1440];
+
+const asWidth = (v) => {
+  const n = Number(String(v).trim().replace(/px$/i, ''));
+  return Number.isInteger(n) && n > 0 ? n : fail(`config §5 "Breakpoints" holds ${v}, not a width in pixels`);
+};
+
+// Config §5 Breakpoints as ascending widths: the default when unset, none for `none`.
+export function breakpoints() {
+  let v;
+  try { v = E.configValues('breakpoints'); } catch (e) { if (e instanceof E.DeskConfigError) throw e; v = null; }
+  if (!v) return DEFAULT_BREAKPOINTS;
+  if (E.isNone(v)) return [];
+  return [...new Set(v.map(asWidth))].sort((a, b) => a - b);
+}
+
+// A board's name as a file name: lower-case words joined by `-`, numbered on a clash with any name
+// already given, so two boards never share a file.
+export function screenNames(boards) {
+  const used = new Set();
+  return boards.map((b) => {
+    const base = String(b.name).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'board';
+    let name = base;
+    for (let n = 2; used.has(name); n++) name = `${base}-${n}`;
+    used.add(name);
+    return name;
+  });
+}
+
+// What to render: each board at every breakpoint and at its own width, and each width labelled
+// drawn when a board was drawn at it, interpolated when none was.
+export function renderPlan(boards, bps) {
+  const names = screenNames(boards);
+  const shots = boards.flatMap((b, i) => [...new Set([...bps, b.width])].sort((x, y) => x - y)
+    .map((width) => ({ board: b.name, screen: names[i], width, file: `screens/${names[i]}@${width}.png`, drawn: b.width === width })));
+  const widths = [...new Set(shots.map((s) => s.width))].sort((x, y) => x - y).map((width) => {
+    const drawnBy = boards.filter((b) => b.width === width).map((b) => b.name);
+    return { width, label: drawnBy.length ? 'drawn' : 'interpolated', breakpoint: bps.includes(width), boards: drawnBy };
+  });
+  return { shots, widths };
+}
+
+const TYPES = {
+  '.html': 'text/html', '.htm': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf',
+};
+
+// The saved folder over HTTP on a loopback port, so module scripts and fonts load as they would
+// from the artifact (file:// refuses both); a file outside it, or missing, is a 404.
+function serve(dir) {
+  const server = createServer((req, res) => {
+    let rel;
+    try { rel = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname).slice(1)); } catch { rel = '..'; }
+    const p = join(dir, rel);
+    if (rel.startsWith('..') || isAbsolute(rel) || !existsSync(p) || !statSync(p).isFile()) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': TYPES[extname(p).toLowerCase()] ?? 'application/octet-stream' });
+    res.end(readFileSync(p));
+  });
+  return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok({ server, origin: `http://127.0.0.1:${server.address().port}/` })));
+}
+
+// Renders every board from disk, all or nothing: a board that fails to load a file, or paints
+// nothing, fails the render naming the board and the file, and no image is written.
+// `chromium` is Playwright's.
+export async function render(dir, { chromium, bps = breakpoints(), now = new Date().toISOString(), height = 900 }) {
+  const source = readJson(join(dir, 'source.json'));
+  if (!source?.url) fail(`no saved canvas at ${dir}: render a folder desk-design save wrote`);
+  const { canvas } = collect(dir);
+  const boards = parseBoards(readJson(join(dir, canvas)) ?? {});
+  if (!boards.length) fail(`${canvas} names no boards: nothing to render`);
+  const plan = renderPlan(boards, bps);
+  const names = screenNames(boards);
+  const pages = new Map(boards.map((b, i) => {
+    const rel = b.file && normalize(join(dirname(canvas), b.file));
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) fail(`board "${b.name}" names no file inside ${dir}`);
+    if (!existsSync(join(dir, rel))) fail(`not rendered: board "${b.name}" is ${rel}, which is not in ${dir}`, 4);
+    return [names[i], rel];
+  }));
+  const { server, origin } = await serve(dir);
+  const browser = await chromium.launch();
+  const images = [];
+  try {
+    for (const shot of plan.shots) {
+      const rel = pages.get(shot.screen);
+      const page = await browser.newPage({ viewport: { width: shot.width, height } });
+      const bad = [];
+      const name = (u) => (u.startsWith(origin) ? decodeURIComponent(u.slice(origin.length).replace(/[?#].*$/, '')) : u);
+      page.on('requestfailed', (r) => bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`));
+      page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
+      await page.goto(origin + rel.split(sep).map(encodeURIComponent).join('/'), { waitUntil: 'networkidle' });
+      await page.evaluate(() => document.fonts.ready.then(() => true));
+      if (bad.length) fail(`not rendered: board "${shot.board}" (${rel}) at ${shot.width}px could not load ${[...new Set(bad)].join(', ')}`, 4);
+      const painted = await page.evaluate(() => !!document.body && (document.body.innerText.trim() !== ''
+        || [...document.body.querySelectorAll('*')].some((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })));
+      if (!painted) fail(`not rendered: board "${shot.board}" (${rel}) at ${shot.width}px painted nothing`, 4);
+      images.push({ ...shot, png: await page.screenshot({ fullPage: true }) });
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+    server.close();
+  }
+  // Every board rendered: replace the previous screens.
+  const keep = new Set(images.map((s) => s.file));
+  for (const s of source.screens?.images ?? []) {
+    const p = normalize(join(dir, s.file));
+    if (!keep.has(s.file) && p.startsWith(join(dir, 'screens') + sep) && existsSync(p)) rmSync(p);
+  }
+  mkdirSync(join(dir, 'screens'), { recursive: true });
+  for (const s of images) writeFileSync(join(dir, s.file), s.png);
+  const screens = {
+    version: String(source.version), rendered_at: now, breakpoints: bps, widths: plan.widths,
+    images: images.map(({ png, ...s }) => s),
+  };
+  return writeRecord(dir, { ...source, screens });
 }
 
 // ---- check (the lint finding) -----------------------------------------------------------------
@@ -398,8 +553,21 @@ if (isMain) {
       for (const f of findings) console.log(`${f.severity}: ${f.message}`);
       if (!findings.length) console.log('ok: no unsaved Claude Design canvas');
       process.exit(findings.some((f) => f.severity === 'blocking') ? 1 : 0);
+    } else if (cmd === 'render') {
+      if (!target) fail('usage: desk-design render <saved dir>');
+      const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
+      const found = findPlaywright();
+      if (!found.entry) {
+        fail(`playwright not found (tried: ${found.tried.join(', ')}): re-run desk-skills' ./install.sh, which installs desk's own`, 6);
+      }
+      const { chromium } = await importPlaywright(found);
+      const s = await render(resolve(target), { chromium });
+      console.log(`rendered: ${join(target, 'screens')}/ (${s.screens.images.length} images, version ${s.version})`);
+      for (const w of s.screens.widths) {
+        console.log(`  ${w.width}px ${w.label}${w.breakpoint ? '' : ' (not a breakpoint)'}${w.boards.length ? `: ${w.boards.join(', ')}` : ''}`);
+      }
     } else {
-      fail('usage: desk-design.mjs write|save|status|check ... (see the top of the file)');
+      fail('usage: desk-design.mjs write|save|status|check|render ... (see the top of the file)');
     }
   } catch (e) {
     console.error(`desk-design: ${e.message}`);
