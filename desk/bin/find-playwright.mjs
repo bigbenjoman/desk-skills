@@ -25,15 +25,19 @@ export async function importPlaywright({ entry, browsers }) {
 
 // GitHub sets its login cookies as session cookies, which Chromium drops when the browser exits,
 // so a signed-in profile reads as signed out on its next launch. github-signin.mjs saves them
-// here (owner-only); upload-images.mjs adds them back to each run's context.
+// here (owner-only) as a Playwright storage-state file: upload-images.mjs adds them back to each
+// run's context, and Claude's Playwright MCP, which install.sh registers at user level with
+// --isolated --storage-state <this file>, starts every session from it. One file per machine.
 export const sessionFile = (profile) => `${profile.replace(/\/+$/, '')}.github-session.json`;
 
 export const githubCookies = async (ctx) =>
   (await ctx.cookies()).filter((c) => /(^|\.)github\.com$/.test(c.domain.replace(/^\./, '')));
 
+// `origins` makes it a storage state the MCP can load; `user` and `savedAt` are ours, and Playwright
+// ignores them.
 export function saveSession(profile, user, cookies) {
   const file = sessionFile(profile);
-  writeFileSync(file, JSON.stringify({ user, savedAt: new Date().toISOString(), cookies }, null, 1), { mode: 0o600 });
+  writeFileSync(file, JSON.stringify({ user, savedAt: new Date().toISOString(), cookies, origins: [] }, null, 1), { mode: 0o600 });
   chmodSync(file, 0o600);
   return file;
 }
@@ -41,4 +45,18 @@ export function saveSession(profile, user, cookies) {
 export function loadSessionCookies(profile) {
   const file = sessionFile(profile);
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).cookies ?? [] : [];
+}
+
+// What the saved login can say without opening a browser: 'missing' (no file, or no login cookie in
+// it, as install.sh's empty placeholder) or 'expired' (every login cookie carries an expiry, and all
+// have passed). 'ok' means not known to be stale: a session cookie has no expiry, so only GitHub can
+// tell, and the uploader still checks the page.
+export function loginState(profile, now = Date.now()) {
+  const file = sessionFile(profile);
+  const saved = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  const logins = (saved.cookies ?? []).filter((c) => c.name === 'user_session');
+  if (!logins.length) return { file, status: 'missing' };
+  const expires = logins.map((c) => c.expires ?? -1);
+  const status = expires.every((e) => e > 0 && e * 1000 <= now) ? 'expired' : 'ok';
+  return { file, status, user: saved.user, expiredAt: status === 'expired' ? new Date(Math.max(...expires) * 1000).toISOString() : null };
 }

@@ -23,14 +23,14 @@
 //   0 uploaded, every placeholder replaced      3 uploaded, but no `_drag <file>_` placeholder matched (tags on stderr)
 //   1 bad arguments, no such dir, no images     4 uploaded, but placeholder(s) are still left in the body
 //   2 the shared profile is in use (retry)      5 not permitted: config §3 pr-images is not yes and no DESK_UPLOAD_APPROVED
-//   6 setup or config: browser profile unset or missing, playwright not installed, or the profile
-//     is not signed in to GitHub (run github-signin.mjs: GitHub's login is a session cookie the
-//     profile drops on exit, so it is kept in <profile>.github-session.json instead)
-import { readdirSync, existsSync } from 'node:fs';
+//   6 setup or config: playwright not installed, or no saved GitHub login, or it has expired (run
+//     github-signin.mjs: GitHub's login is a session cookie the profile drops on exit, so it is kept
+//     in <profile>.github-session.json instead, which Claude's Playwright MCP loads too)
+import { readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { HOME, permission, permissionKey, browserProfile, ghRepo, DeskConfigError } from './desk-env.mjs';
-import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies } from './find-playwright.mjs';
+import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError } from './desk-env.mjs';
+import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
 const [pr, dir] = process.argv.slice(2);
 if (!pr || !dir) { console.error('usage: upload-images.mjs <pr-number> <image-dir>'); process.exit(1); }
@@ -43,19 +43,26 @@ if (perm !== 'yes' && !process.env.DESK_UPLOAD_APPROVED) {
   process.exit(5);
 }
 
-// The profile is signed in as a person, so it is identity-shaped: never auto-pick one.
+// The machine's profile, or this repo's §2 override. The login is the file github-signin.mjs saved
+// beside it, so a missing or expired one is said here, before a browser opens on a signed-out page.
 let PROFILE;
 try {
   PROFILE = browserProfile();
 } catch (e) {
   if (!(e instanceof DeskConfigError)) throw e;
-  const candidates = [join(HOME, '.cache', 'ms-playwright-mcp'), join(HOME, 'Library', 'Caches', 'ms-playwright-mcp')]
-    .flatMap((d) => (existsSync(d) ? readdirSync(d).filter((f) => f.startsWith('mcp-')).map((f) => join(d, f)) : []));
   console.error(e.message);
-  if (candidates.length) console.error(`[upload] candidate profiles found (confirm which is signed in to GitHub):\n  ${candidates.join('\n  ')}`);
   process.exit(6);
 }
-if (!existsSync(PROFILE)) { console.error(`[upload] browser profile does not exist: ${PROFILE}`); process.exit(6); }
+const SIGNIN = 'node ~/.claude/desk/bin/github-signin.mjs  (opens a window; run it where there is a screen)';
+const login = loginState(PROFILE);
+if (login.status !== 'ok') {
+  console.error(login.status === 'expired'
+    ? `[upload] the saved GitHub login${login.user ? ` (${login.user})` : ''} expired on ${login.expiredAt}: ${login.file}.`
+    : `[upload] no saved GitHub login: ${login.file}.`);
+  console.error(`[upload] sign in with: ${SIGNIN}`);
+  process.exit(6);
+}
+if (!existsSync(PROFILE)) mkdirSync(PROFILE, { recursive: true });
 
 const REPO = ghRepo();
 const playwright = findPlaywright();
@@ -90,8 +97,8 @@ try {
   // Signed out, a private repo's PR is a 404 with no comment box: say so rather than time out on it.
   const user = await page.evaluate(() => document.querySelector('meta[name="user-login"]')?.content || '');
   if (!user) {
-    console.error(`[upload] the browser profile is not signed in to GitHub (${existsSync(saved) ? 'saved session expired' : `no ${saved}`}).`);
-    console.error('[upload] sign in once with: node ~/.claude/desk/bin/github-signin.mjs  (opens a window; run it where there is a screen)');
+    console.error(`[upload] the saved GitHub login has expired: GitHub no longer accepts ${saved}.`);
+    console.error(`[upload] sign in with: ${SIGNIN}`);
     await ctx.close();
     process.exit(6);
   }

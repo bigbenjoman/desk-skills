@@ -1,9 +1,10 @@
 // suite: playwright lookup and saved GitHub login
 // findPlaywright: desk's own pinned Playwright, never the repo's; DESK_PLAYWRIGHT overrides it.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
+// The saved login: a storage state, and whether it is missing or expired before a browser opens.
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies } from '../desk/bin/find-playwright.mjs';
+import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from '../desk/bin/find-playwright.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const put = (r, ...p) => { mkdirSync(join(r, ...p), { recursive: true }); const f = join(r, ...p, 'index.mjs'); writeFileSync(f, 'export const browsers = process.env.PLAYWRIGHT_BROWSERS_PATH;\n'); return f; };
@@ -53,6 +54,21 @@ writeFileSync(sessionFile(profile), '{}', { mode: 0o644 });
 const file = saveSession(profile, 'me', await githubCookies(ctx));
 t('re-save tightens a wider file to 0600', (statSync(file).mode & 0o777).toString(8), '600');
 t('saved cookies load back', loadSessionCookies(profile).length, 3);
+t('the saved login is a storage state the MCP can load', JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).origins), '[]');
+
+// Before a browser opens: no login, an expired one, and one only GitHub can judge.
+const at = (expires) => [{ name: 'user_session', domain: 'github.com', expires }];
+const NOW = Date.parse('2026-10-18T12:00:00Z');
+writeFileSync(file, '{"cookies": [], "origins": []}');
+t("install.sh's empty placeholder reads as no login", loginState(profile, NOW).status, 'missing');
+saveSession(profile, 'me', at(NOW / 1000 - 60));
+t('a login cookie past its expiry reads as expired', loginState(profile, NOW).status, 'expired');
+t('the expiry says when', loginState(profile, NOW).expiredAt, '2026-10-18T11:59:00.000Z');
+saveSession(profile, 'me', at(NOW / 1000 + 60));
+t('a login cookie not yet expired is ok', loginState(profile, NOW).status, 'ok');
+saveSession(profile, 'me', at(-1));
+t('a session cookie is left to the page check', loginState(profile, NOW).status, 'ok');
+t('no file at all is no login', loginState(join(dir, 'other'), NOW).status, 'missing');
 
 for (const r of [repo, desk, none, dir]) rmSync(r, { recursive: true, force: true });
 process.exit(fails ? 1 : 0);

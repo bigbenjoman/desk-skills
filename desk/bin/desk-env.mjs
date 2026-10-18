@@ -477,7 +477,11 @@ export const worktreesDir = () => resolve({
   env: 'DESK_WORKTREES_DIR', id: 'worktrees-dir',
   fallback: () => { const r = repoRoot(); return join(dirname(r), `${basename(r)}-worktrees`); },
 }).replace(/\/+$/, '');
-export const browserProfile = () => resolve({ env: 'DESK_BROWSER_PROFILE', id: 'browser-profile', identity: true });
+// One per machine, beside which github-signin.mjs saves the GitHub login that the uploader and Claude's
+// Playwright MCP share (install.sh registers the MCP on it). A repo's §2 row overrides it for that repo's
+// uploads only: the MCP is user-level and keeps the machine one.
+export const DEFAULT_BROWSER_PROFILE = join(HOME, '.cache', 'ms-playwright-mcp', 'desk-profile');
+export const browserProfile = () => resolve({ env: 'DESK_BROWSER_PROFILE', id: 'browser-profile', fallback: DEFAULT_BROWSER_PROFILE });
 // The origin remote wins over the config row: the row is what setup saw, the remote is what is true now.
 export const ghRepo = () => currentRepo().ownerRepo ?? resolve({ env: 'DESK_GH_REPO', id: 'gh-repo', identity: true });
 export const repoSlug = () => {

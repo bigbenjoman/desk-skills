@@ -26,10 +26,12 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 HOOK="$CLAUDE_DIR/hooks/deny-ai-attribution.py"
 PROFILE_DIR="$HOME/.cache/ms-playwright-mcp/desk-profile"
 # The playwright @playwright/mcp depends on, so desk's uploader and the MCP drive one Chromium build.
-# Taken from @playwright/mcp 0.0.83, which pins this alpha prerelease: it moves whenever @latest does.
+# Taken from @playwright/mcp 0.0.83, which pins this alpha prerelease: the two move together.
 PLAYWRIGHT_VERSION="1.64.0-alpha-1790635538000"
+PLAYWRIGHT_MCP_VERSION="0.0.83"
 
-PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official playwright@claude-plugins-official codex@openai-codex"
+# No playwright plugin: Claude's browser is desk's own user-level server (the Playwright MCP section).
+PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official codex@openai-codex"
 
 YES=0
 CHECK_ONLY=0
@@ -510,27 +512,35 @@ section "Desk's Playwright  -> ~/.claude/desk/playwright"
 # Playwright is its e2e tests' and is never read or changed. Its browsers live in browsers/ here, so
 # Playwright's own install step, which drops builds no copy in that folder uses any more, prunes only
 # this folder and never the shared ms-playwright cache. Installed without asking: /desk-update runs
-# this with no terminal, and the uploader cannot run without it.
+# this with no terminal, and the uploader cannot run without it. Claude's own browser, the
+# @playwright/mcp server, is installed beside it at the version that depends on this Playwright, so
+# all three drive the one Chromium in browsers/.
 PW_HOME="$DESKDIR/playwright"
+PW_MCP_CLI="$PW_HOME/node_modules/@playwright/mcp/cli.js"
+PW_PIN="playwright $PLAYWRIGHT_VERSION, @playwright/mcp $PLAYWRIGHT_MCP_VERSION"
 if ! has npm; then
-  warn "npm not found (it ships with node); desk's Playwright not installed, so PR image upload and github-signin.mjs cannot run"
-elif [ "$(cat "$PW_HOME/version" 2>/dev/null || true)" = "$PLAYWRIGHT_VERSION" ] \
-    && [ -f "$PW_HOME/node_modules/playwright/index.mjs" ]; then
-  ok "playwright $PLAYWRIGHT_VERSION and its Chromium"
+  warn "npm not found (it ships with node); desk's Playwright not installed, so PR image upload, github-signin.mjs and Claude's browser cannot run"
+elif [ "$(cat "$PW_HOME/version" 2>/dev/null || true)" = "$PW_PIN" ] \
+    && [ -f "$PW_HOME/node_modules/playwright/index.mjs" ] && [ -f "$PW_MCP_CLI" ]; then
+  ok "$PW_PIN and its Chromium"
 else
-  note "installing playwright $PLAYWRIGHT_VERSION and its Chromium (a few hundred MB, once per version)"
+  note "installing $PW_PIN and its Chromium (a few hundred MB, once per version)"
   mkdir -p "$PW_HOME"
   rm -f "$PW_HOME/version"
-  printf '{\n  "private": true,\n  "dependencies": { "playwright": "%s" }\n}\n' "$PLAYWRIGHT_VERSION" > "$PW_HOME/package.json"
+  printf '{\n  "private": true,\n  "dependencies": { "playwright": "%s", "@playwright/mcp": "%s" }\n}\n' \
+    "$PLAYWRIGHT_VERSION" "$PLAYWRIGHT_MCP_VERSION" > "$PW_HOME/package.json"
   if ! out="$(cd "$PW_HOME" && npm install --no-audit --no-fund --no-package-lock 2>&1)"; then
-    warn "npm install playwright@$PLAYWRIGHT_VERSION failed in $PW_HOME; re-run ./install.sh"; show_err "$out"
+    warn "npm install of $PW_PIN failed in $PW_HOME; re-run ./install.sh"; show_err "$out"
   elif ! out="$(cd "$PW_HOME" && env -u PLAYWRIGHT_SKIP_BROWSER_GC PLAYWRIGHT_BROWSERS_PATH="$PW_HOME/browsers" \
       node node_modules/playwright/cli.js install chromium 2>&1)"; then
     warn "the Chromium download for playwright $PLAYWRIGHT_VERSION failed; re-run ./install.sh"; show_err "$out"
   else
-    printf '%s\n' "$PLAYWRIGHT_VERSION" > "$PW_HOME/version"
-    ok "playwright $PLAYWRIGHT_VERSION and its Chromium; older builds in $PW_HOME/browsers removed"
-    wrote "playwright ~/.claude/desk/playwright ($PLAYWRIGHT_VERSION)"
+    printf '%s\n' "$PW_PIN" > "$PW_HOME/version"
+    ok "$PW_PIN and its Chromium; older builds in $PW_HOME/browsers removed"
+    wrote "playwright ~/.claude/desk/playwright ($PW_PIN)"
+    # npm nests a second copy only when the MCP wants another Playwright: then it has no Chromium here.
+    [ -d "$PW_HOME/node_modules/@playwright/mcp/node_modules/playwright-core" ] \
+      && warn "@playwright/mcp $PLAYWRIGHT_MCP_VERSION wants a Playwright other than $PLAYWRIGHT_VERSION; set PLAYWRIGHT_VERSION in install.sh to the one it depends on"
   fi
 fi
 
@@ -743,124 +753,57 @@ if [ -n "$missing_plugins" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-section "Playwright MCP"
+section "Playwright MCP  (Claude's browser, signed in from the one saved GitHub login)"
 
-# The plugin ships `npx @playwright/mcp@latest`. Inside a monorepo whose root package.json carries
-# overrides, npm can die before the MCP handshake (CONNECTION_CLOSED), and the default
-# `chrome` channel is not installed on most dev boxes. bunx, the bundled chromium and a pinned
-# profile fix all three. A plugin update resets the file, so re-run this installer afterwards.
-pw_files=""
-pw_install="$(claude plugin list --json 2>/dev/null \
-  | jq -r '.[] | select(.id == "playwright@claude-plugins-official") | .installPath' 2>/dev/null | head -n 1 || true)"
-[ -n "$pw_install" ] && [ -f "$pw_install/.mcp.json" ] && pw_files="$pw_install/.mcp.json"
-pw_market="$CLAUDE_DIR/plugins/marketplaces/claude-plugins-official/external_plugins/playwright/.mcp.json"
-[ -f "$pw_market" ] && pw_files="$pw_files${pw_files:+
-}$pw_market"
-
-# Claude Code starts the MCP from whatever directory the session opened in, where mise may not put
-# bun on PATH. So swap npx for bunx only if bunx runs from outside any checkout.
-bunx_anywhere() { (cd / && command -v bunx >/dev/null 2>&1 && bunx --version >/dev/null 2>&1); }
-USE_BUNX=0
-bunx_anywhere && USE_BUNX=1
-
-# mcp_patch <check|apply> <file> — exit 0 nothing to do/applied, 1 needs patch, 2 unreadable.
-# Sets --browser chromium, adds a --user-data-dir if there is none, npx -> bunx when USE_BUNX=1.
-# Every other arg the plugin ships is kept, in order.
-mcp_patch() {
-  python3 - "$2" "$PROFILE_DIR" "$1" "$USE_BUNX" <<'PY'
-import json, os, sys
-path, profile, mode, use_bunx = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-except Exception:
-    sys.exit(2)
-servers = cfg.get("mcpServers", cfg)
-srv = servers.get("playwright") if isinstance(servers, dict) else None
-if not isinstance(srv, dict) or not isinstance(srv.get("args", []), list):
-    sys.exit(2)
-args = list(srv.get("args") or [])
-new = list(args)
-i = next((k for k, a in enumerate(new) if a == "--browser" or a.startswith("--browser=")), None)
-if i is None:
-    new += ["--browser", "chromium"]
-elif new[i] == "--browser":
-    if i + 1 < len(new) and not new[i + 1].startswith("-"):
-        new[i + 1] = "chromium"
-    else:
-        new.insert(i + 1, "chromium")
-else:
-    new[i] = "--browser=chromium"
-if not any(a == "--user-data-dir" or a.startswith("--user-data-dir=") for a in new):
-    new += ["--user-data-dir", profile]
-command = srv.get("command")
-if use_bunx and command == "npx":
-    command = "bunx"
-    pkg = next((k for k, a in enumerate(new) if not a.startswith("-")), len(new))
-    new = [a for k, a in enumerate(new) if k >= pkg or a not in ("-y", "--yes")]  # npx-only flags
-if new == args and command == srv.get("command"):
-    sys.exit(0)
-if mode == "check":
-    sys.exit(1)
-srv["command"], srv["args"] = command, new
-exec(os.environ["DESK_WRITE_JSON_PY"])
-write_json(path, cfg)
-PY
-}
-
-if [ -z "$pw_files" ]; then
-  note "playwright plugin not installed; skipped"
+# Claude's browser is desk's pinned @playwright/mcp (installed above), registered at user level in
+# ~/.claude.json, so a plugin update cannot undo it, and run with --isolated --storage-state <the saved
+# login>: every session in every repo and worktree starts from the GitHub login github-signin.mjs saved,
+# and none holds a profile lock. node goes in by absolute path because Claude Code starts the server
+# from whatever directory the session opened in, where a version manager may not put node on PATH;
+# re-run this after removing that node. No npx, so a monorepo's npm overrides cannot break the start.
+# The playwright plugin would start its own server beside it, signed out, so it is disabled.
+LOGIN_FILE="$PROFILE_DIR.github-session.json"
+if [ ! -f "$PW_MCP_CLI" ]; then
+  warn "desk's @playwright/mcp is not installed (above), so Claude's browser is not registered; re-run ./install.sh"
 else
-  todo=""
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    rc=0; mcp_patch check "$f" || rc=$?
-    case "$rc" in
-      0) ok "already patched: ${f#"$HOME"/}" ;;
-      2) warn "unreadable, left alone: $f" ;;
-      *) todo="$todo${todo:+
-}$f" ;;
-    esac
-  done <<EOF
-$pw_files
-EOF
-  if [ -n "$todo" ]; then
-    [ "$USE_BUNX" = 1 ] && note "Rewrites the plugin's .mcp.json: npx -> bunx, --browser chromium,"
-    [ "$USE_BUNX" = 1 ] || note "Rewrites the plugin's .mcp.json: --browser chromium,"
-    note "--user-data-dir $PROFILE_DIR if none is set (the profile PR image upload reuses)."
-    note "Every other argument the plugin ships is kept."
-    if confirm "Apply the Playwright MCP patch (each file backed up first)?"; then
-      mkdir -p "$PROFILE_DIR"
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        cp -p "$f" "$f.bak-desk-$TS"
-        if mcp_patch apply "$f"; then ok "patched ${f#"$HOME"/}"; else warn "could not patch $f"; fi
-      done <<EOF
-$todo
-EOF
-      note "takes effect when Claude Code restarts"
+  if [ ! -f "$LOGIN_FILE" ]; then
+    # An empty storage state, so the server starts before the first sign-in; github-signin.mjs replaces it.
+    mkdir -p "$(dirname "$LOGIN_FILE")"
+    (umask 077 && printf '{"cookies": [], "origins": []}\n' > "$LOGIN_FILE")
+  fi
+  want_mcp="$(jq -cn --arg node "$(command -v node)" --arg cli "$PW_MCP_CLI" --arg login "$LOGIN_FILE" \
+    --arg browsers "$PW_HOME/browsers" \
+    '{type: "stdio", command: $node, args: [$cli, "--browser", "chromium", "--isolated", "--storage-state", $login],
+      env: {PLAYWRIGHT_BROWSERS_PATH: $browsers}}')"
+  have_mcp="$(jq -c '.mcpServers.playwright // empty' "$HOME/.claude.json" 2>/dev/null || true)"
+  if [ -n "$have_mcp" ] && [ "$(printf '%s' "$have_mcp" | jq -S .)" = "$(printf '%s' "$want_mcp" | jq -S .)" ]; then
+    ok "user-level playwright server: desk's @playwright/mcp $PLAYWRIGHT_MCP_VERSION on ${LOGIN_FILE#"$HOME"/}"
+  else
+    mcp_cmd="claude mcp add-json --scope user playwright '$want_mcp'"
+    if [ -n "$have_mcp" ]; then
+      note "replaces your user-level playwright server: $have_mcp"
+      mcp_cmd="claude mcp remove --scope user playwright; $mcp_cmd"
+    fi
+    if confirm "Register desk's Playwright MCP as your user-level playwright server?" 0 "$mcp_cmd"; then
+      [ -z "$have_mcp" ] || claude mcp remove --scope user playwright >/dev/null 2>&1 || true
+      if out="$(claude mcp add-json --scope user playwright "$want_mcp" 2>&1)"; then
+        ok "registered the user-level playwright server; takes effect when Claude Code restarts"
+        wrote "mcp      playwright in ~/.claude.json (user level, desk's @playwright/mcp)"
+      else
+        warn "could not register the playwright MCP server"; show_err "$out"
+      fi
     fi
   fi
-  if [ "$USE_BUNX" = 0 ]; then
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      if [ "$(jq -r '(.mcpServers // .).playwright.command // empty' "$f" 2>/dev/null)" = npx ]; then
-        note "left on npx: bunx is not on PATH outside a checkout here, so a swap would break the MCP"
-        note "if the MCP fails to start inside a repo (CONNECTION_CLOSED), install bun globally and re-run ./install.sh"
-        break
-      fi
-    done <<EOF
-$pw_files
-EOF
-  fi
-  note "if a browser call later fails with 'Browser ... is not installed', download the build (no root, ~300MB):"
-  note "  cd /tmp && bunx @playwright/mcp@latest install-browser chrome-for-testing"
-  if [ "$USE_BUNX" = 1 ] && confirm "Download the Playwright browser build now (~300MB)?" 1 \
-      "cd /tmp && bunx @playwright/mcp@latest install-browser chrome-for-testing"; then
-    (cd "${TMPDIR:-/tmp}" && bunx @playwright/mcp@latest install-browser chrome-for-testing) \
-      || warn "browser download failed; run the command above by hand"
+fi
+if printf '%s' "$plugin_json" | jq -e '.[] | select(.id == "playwright@claude-plugins-official" and .enabled)' >/dev/null 2>&1; then
+  note "the playwright plugin starts its own browser server beside desk's, on a profile that is not signed in"
+  if confirm "Disable the playwright plugin (desk's user-level server replaces it)?" 0 \
+      "claude plugin disable playwright@claude-plugins-official"; then
+    if out="$(claude plugin disable playwright@claude-plugins-official 2>&1)"; then ok "disabled playwright@claude-plugins-official"
+    else warn "could not disable the playwright plugin"; show_err "$out"; fi
   fi
 fi
+note "sign in to GitHub once per machine, and again when GitHub expires it: node ~/.claude/desk/bin/github-signin.mjs"
 
 # ---------------------------------------------------------------------------------------------
 section "Skill index  -> ~/.agents/skills/skill-index"

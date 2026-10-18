@@ -10,10 +10,12 @@ SH="${BASH:-bash}"
 export HOME="$T/home"; mkdir -p "$HOME/.claude/desk"
 unset DESK_CONFIG_ROOT
 touch "$HOME/.claude/desk/skills-upstream.last"   # the upstream check would otherwise reach the network
-# Desk's Playwright already at the pin, or every run downloads playwright and its Chromium.
-PW="$HOME/.claude/desk/playwright"; mkdir -p "$PW/node_modules/playwright"
-sed -n 's/^PLAYWRIGHT_VERSION="\(.*\)"$/\1/p' "$S/../install.sh" > "$PW/version"
-touch "$PW/node_modules/playwright/index.mjs"
+# Desk's Playwright and @playwright/mcp already at the pin, or every run downloads them and Chromium.
+PW="$HOME/.claude/desk/playwright"; mkdir -p "$PW/node_modules/playwright" "$PW/node_modules/@playwright/mcp"
+printf 'playwright %s, @playwright/mcp %s\n' \
+  "$(sed -n 's/^PLAYWRIGHT_VERSION="\(.*\)"$/\1/p' "$S/../install.sh")" \
+  "$(sed -n 's/^PLAYWRIGHT_MCP_VERSION="\(.*\)"$/\1/p' "$S/../install.sh")" > "$PW/version"
+touch "$PW/node_modules/playwright/index.mjs" "$PW/node_modules/@playwright/mcp/cli.js"
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out" | tail -n 40; fi; }
 
@@ -52,13 +54,14 @@ rc=$?
 summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
 check "install.sh exits 0" '[ $rc -eq 0 ]'
 check "summary has a Skipped (no terminal) block with the count" \
-  '[[ "$summary" == "Skipped (no terminal): 8 prompt(s)"* ]]'
+  '[[ "$summary" == "Skipped (no terminal): 9 prompt(s)"* ]]'
 for q in "Make one real codex call to prove it can answer?" \
          "Register the attribution hook in ~/.claude/settings.json (backed up first)?" \
          "Register the update notice in ~/.claude/settings.json (backed up first)?" \
          "Register the context handoff in ~/.claude/settings.json (backed up first)?" \
          "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" \
          "Install the missing plugins now, user scope?" \
+         "Register desk's Playwright MCP as your user-level playwright server?" \
          "List skills by name only in ~/.claude/settings.json (backed up first)?" \
          "Install claude-statusline (settings.json backed up first)?"; do
   check "listed: $q" '[[ "$summary" == *"  SKIP  $q"* ]]'
@@ -67,7 +70,20 @@ check "every skip line is followed by an apply line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "^  SKIP  ")" = "$(printf "%s\n" "$summary" | grep -c "^        apply: ")" ]'
 check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec --sandbox read-only"* ]]'
 check "deny-rule skip carries the harness-rules command" '[[ "$summary" == *"harness-rules.py\" --settings"*"baseline"* ]]'
-check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install playwright@claude-plugins-official --scope user"* ]]'
+check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install vercel@claude-plugins-official --scope user"* ]]'
+check "the playwright plugin is no longer installed" '[[ "$summary" != *"install playwright@claude-plugins-official"* ]]'
+# Claude's browser is a user-level server on desk's pinned MCP, loading the one saved login.
+# shellcheck disable=SC2034  # mcp and LOGIN are read inside check's eval strings
+mcp="$(printf '%s\n' "$summary" | sed -n "s/.*claude mcp add-json --scope user playwright '\(.*\)'$/\1/p" | head -n 1)"
+# shellcheck disable=SC2034
+LOGIN="$HOME/.cache/ms-playwright-mcp/desk-profile.github-session.json"
+check "the MCP skip carries the user-level add-json" '[ -n "$mcp" ]'
+check "the MCP runs desk's pinned @playwright/mcp on desk's browsers" \
+  '[ "$(printf "%s" "$mcp" | jq -r ".args[0]")" = "$PW/node_modules/@playwright/mcp/cli.js" ] && [ "$(printf "%s" "$mcp" | jq -r .env.PLAYWRIGHT_BROWSERS_PATH)" = "$PW/browsers" ]'
+check "the MCP is isolated on the saved login" \
+  '[ "$(printf "%s" "$mcp" | jq -c ".args[1:]")" = "[\"--browser\",\"chromium\",\"--isolated\",\"--storage-state\",\"$LOGIN\"]" ]'
+check "an empty owner-only login is in place before the first sign-in" \
+  '[ "$(jq -c . "$LOGIN")" = "{\"cookies\":[],\"origins\":[]}" ] && [ "$(stat -c %a "$LOGIN" 2>/dev/null || stat -f %Lp "$LOGIN")" = 600 ]'
 check "a hook skip says to re-run in a terminal" \
   '[[ "$summary" == *"attribution hook"*$'"'"'\n'"'"'"        apply: run in a terminal: cd "* ]]'
 check "a repo's recorded unpinned merge allow is retired and reported" \

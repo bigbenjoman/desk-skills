@@ -1,16 +1,20 @@
-// Sign the configured browser profile (config §2 "Signed-in browser profile") in to GitHub, for
-// upload-images.mjs. Run it from the repo, in a terminal on the machine with a screen:
+// Sign this machine in to GitHub once, for upload-images.mjs and Claude's Playwright MCP in every
+// repo and worktree. Run it in a terminal on the machine with a screen, from anywhere:
 //
 //   node ~/.claude/desk/bin/github-signin.mjs
 //
-// It opens a visible Chromium at github.com/login and waits (up to 20 minutes) for the page to
-// show a signed-in user, then saves GitHub's login cookies to <profile>.github-session.json
-// (owner-only) and closes the browser itself.
+// It opens a visible Chromium at github.com/login on the browser profile (the machine one,
+// ~/.cache/ms-playwright-mcp/desk-profile, unless config §2 "Signed-in browser profile" overrides
+// it for this repo) and waits (up to 20 minutes) for the page to show a signed-in user, then saves
+// GitHub's login cookies as a storage-state file, <profile>.github-session.json (owner-only), and
+// closes the browser itself. Run it again when GitHub expires the session.
 //
 // Why the file: GitHub sets its login as session cookies, and Chromium drops session cookies on
 // exit, so the profile alone reads as signed out on the uploader's next launch. Cookies added
-// with addCookies are not persisted by the profile either. The file is as sensitive as the
-// profile: it is a live GitHub session until GitHub expires it. Delete it to sign out.
+// with addCookies are not persisted by the profile either. The MCP loads the same file into each
+// session's isolated browser (install.sh registers it with --storage-state), so no session needs
+// the profile, or its lock. The file is a live GitHub session until GitHub expires it: delete it
+// to sign out.
 //
 // Exit codes: 0 signed in and saved · 1 no sign-in within the wait · 6 setup or config
 import { existsSync, mkdirSync } from 'node:fs';
@@ -54,5 +58,6 @@ if (!user) {
 const cookies = await githubCookies(ctx);
 const file = saveSession(PROFILE, user, cookies);
 console.log(`[signin] signed in as ${user}; saved ${cookies.length} GitHub cookie(s) to ${file}. Closing the window.`);
+console.log('[signin] Claude\'s browser loads it when it starts: restart any session whose browser is already open.');
 await page.waitForTimeout(1500);
 await ctx.close();
