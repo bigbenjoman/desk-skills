@@ -93,9 +93,11 @@ When a design is the specification:
    description covers building from a design) with the design URL or node, the ticket, the files in
    scope from Stage 2, and an instruction to follow the repo's design-to-code skill: its tokens and
    components, its copy keys, any story or preview it keeps, and the screenshot diff against the
-   frame. It commits nothing; ask for the changed files and the diff result. **A repo with no such
-   agent** builds it here in this session, following the same skill and the same frame diff; D still
-   stops for agreement first.
+   frame. The brief also names `ux-designer`, `ui-designer` and `ux-copywriter` and §5 Design system,
+   for the states, token mapping and wording the design leaves open (SKILL.md, Stage 3). It commits
+   nothing; ask for the changed files and the diff result. **A repo with no such agent** builds it
+   here in this session, following the same skills and the same frame diff; D still stops for
+   agreement first.
 2. Read what it changed before Stage 4, as you would a colleague's diff. Stages 4–9 run here.
 3. Placeholder copy in the design does not block the build (working-style reference).
 4. Reading the frame needs §3 `read-figma` (or the equivalent read for the design tool); without it,

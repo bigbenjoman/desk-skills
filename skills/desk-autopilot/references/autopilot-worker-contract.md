@@ -17,6 +17,13 @@ it. Wherever a skill or this file says "run `desk-review`" or "load `desk-ticket
 that file and follow it. The same goes for named review agents a skill calls: where one is not
 available, follow its brief yourself and say so in the report, never skip the step.
 
+**The design skills are files too.** When `desk-ticket` Stage 3 loads `ux-designer`, `ui-designer`
+and `ux-copywriter` for a ticket that renders UI, Read `$DESK_SKILLS_DIR/ux-designer/SKILL.md`,
+`$DESK_SKILLS_DIR/ui-designer/SKILL.md` and `$DESK_SKILLS_DIR/ux-copywriter/SKILL.md` before the
+first UI edit, and the references each one routes you to, then apply them as an interactive session
+would. `ui-designer` runs against `desk-env list design-system`. A missing file is not a park: build
+without it and name it in `AUTOPILOT_DONE` and the PR's Testing.
+
 **Read config values with `desk-env`, not by reading the config file.** `desk-env where` (slug,
 `EXISTS`), `desk-env get <id>`, `desk-env list <id>`, `desk-env cmds <id>` and `desk-env perm <key>`
 are your config; the file itself is outside your readable directories, and a refused Read of it is

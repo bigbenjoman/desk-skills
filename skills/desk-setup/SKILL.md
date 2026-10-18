@@ -316,6 +316,12 @@ How to turn what you find into rows:
   description is domain knowledge rather than tooling (pricing, trading, property, regulation), and
   propose a `` `<glob>: <skill>` `` for each, the glob being the code that domain lives in (find it
   with `git ls-files | grep -i <domain word>`). The user confirms each; `none` is a fine answer.
+  **A repo with UI** (the design scan found components or tokens) also gets the UI default, the
+  globs narrowed to where its frontend code lives: `ui-designer` on component and style files
+  (`` `**/*.{tsx,jsx,vue,svelte,css}: ui-designer` ``), `ux-designer` on component files, and
+  `ux-copywriter` on its copy files: its message catalogues (`git ls-files | grep -iE
+  'messages|locales|i18n'`, e.g. `` `messages/**: ux-copywriter` ``), or the component globs where
+  copy lives inline. Each is declinable like any other rule.
 - **People.** For a solo repo propose `you` in every role and say so. For a team repo, propose from
   collaborators and CODEOWNERS; the user names the roles.
 - **AI attribution.** Propose `allowed` if recent commits already carry a Claude trailer (the repo's

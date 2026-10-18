@@ -48,7 +48,15 @@ this file applies to it as it does to a Figma node, with "the board" for "the no
 
 **If the repo ships its own design-to-code skill** (look under `.agents/skills/`, `.claude/skills/` and the instruction files for one that maps Figma onto this repo's design system), load it too: it is the procedure — the token mapping rules, typography utilities, breakpoint inference, asset handling, i18n, and the verification loop — and it is usually shared with Suki deliberately, so the rules cannot drift between the two of you. If there is none, the steps below and what you detected in "This Repo" are the procedure.
 
-Everything below is what such a skill does not cover: how you decide, and when you hand off.
+**Load `ux-designer`, `ui-designer` and `ux-copywriter` as well, before you write any UI code.** They cover what the comp leaves open, and they never override it:
+
+- **`ux-designer`** for the states the comp did not draw (empty, loading, error, success) and the flow between them.
+- **`ui-designer`** in its existing-system mode (Mode B), against the files the desk config's §5 Design system row names (`desk-env list design-system`; with `none` or no config, the token source you detected above). Every colour, size, spacing value and radius comes from those tokens; a value the comp needs that they do not hold is labelled as a proposed extension (its Mode C) and escalated to Suki, never added silently.
+- **`ux-copywriter`** for wording the comp does not state: error and empty-state text, aria-labels, confirmations. Copy the comp states is used verbatim.
+
+Load them with the Skill tool; where you have no Skill tool (an autopilot worker), Read each one's `SKILL.md` from `$DESK_SKILLS_DIR` (`desk-env paths`). If one is not installed, say so in your handoff.
+
+Everything below is what these skills do not cover: how you decide, and when you hand off.
 
 ## Division of Labour with Suki
 
