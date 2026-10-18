@@ -4,7 +4,8 @@ The bar `desk-review` hands every finder **verbatim**, unless this repo's config
 its own file. It overrides any severity scale an agent carries in its own definition, so everything
 that reads it reviews at one bar.
 
-Four priorities, of which three are reported. A finding is P0, P1 or P2, or it is not reported.
+Four priorities, of which three are reported. A finding is P0, P1 or P2, or it is not reported. The
+one thing listed beside them is an unproven premise (under P0), which is never counted.
 
 A repo that wants its own bar copies this file into the repo (so it is versioned with the code it
 judges), edits the classes and calibration to fit, and sets §4 Review bar to that path. Keep the
@@ -20,11 +21,15 @@ Something a user, an operator or the books experience as wrong.
 | --- | --- |
 | **Authorization** | A gate that is missing, bypassable, or scoped to the wrong role. A handler that checks sign-in and nothing further, where the resource belongs to someone. |
 | **Money** | Currency held as float, mixed units (pence and pounds, MWh and kWh), or rounded outside the one place that owns rounding. Two code paths that compute the same amount differently. |
-| **Data isolation** | Cross-tenant or cross-user reads and writes. Personal data reaching a log, a client payload, an LLM prompt or a third party it was not meant for. |
+| **Data isolation** | Cross-tenant or cross-user reads and writes. Personal data reaching a log, a client payload, an LLM prompt or a third party it was not meant for. A non-essential storage write (a cookie, local or session storage, a tracking pixel) or a third-party script that runs before the user has given cookie consent (PECR). |
 | **Data loss** | A destructive or non-reversible migration. A write that can clobber a concurrent write. A migration chain with two heads. |
 | **Contract** | A change that breaks an existing consumer of a published API, webhook payload, event, file format or persisted shape. |
-| **Async** | An unhandled rejection or error path that surfaces as a user-visible failure, a stuck record, or a job that silently stops. |
+| **Async** | An unhandled rejection or error path that surfaces as a user-visible failure, a stuck record, or a job that silently stops. A batch with no per-item isolation, where one item's failure aborts or loses the rest. |
 | **Secrets** | A credential, token or key committed, logged, or sent to the client. |
+| **Premise** | The change relies on behaviour it does not own (a library's config, a vendor API, an environment variable, a registration elsewhere) and that behaviour does not hold. Counted only when running it, or the vendor's own documentation, shows it does not hold; reading the vendor's source is not proof. A premise nobody could prove either way is not a P0: list it separately (*Unproven premises* below). |
+
+**Unproven premises.** Report one as a `FINDING` with `severity: PREMISE`, naming what the change
+assumes and why it could not be proven. It is listed apart from the findings and never counted.
 
 **Calibration.** A create endpoint that read its input and never read the caller's identity, so any
 signed-in user could create an admin invitation. The omission had no syntactic form, so neither the
@@ -41,6 +46,7 @@ is why it is here.
 | --- | --- |
 | **Duplication** | A new implementation of logic that already exists: a helper, hook, util, component, flow, query or generator. Search by **mechanism** as well as name before deciding it is new. |
 | **Second vocabulary** | A new normalisation map, alias table, enum or spelling for a concept that already has a canonical form. |
+| **Rule enforced only in the UI** | A business rule the client checks (a disabled button, a form validator, a limit on a field) that the server write it guards does not check, so a direct request gets past it. A rule about *who* may act (a role, ownership, a tenant) that only the UI enforces is P0 **Authorization**, not this. |
 | **Layer bypass** | Work done in a layer the repo has put somewhere else: database access outside its data-access layer, a transaction opened in a route handler, business logic in a view, a direct third-party call where a client wrapper exists. The repo's own instructions say which layers exist. |
 | **Dead on arrival** | An export whose only non-test reference is its own story or test. A new module with no importer. A flag, field or enum value with no writer. |
 | **Advisory by accretion** | A new `continue-on-error`, a new warn-level lint rule, a skipped test, or an `except: pass` added with no expiry. A control that cannot fail is not a control. |
@@ -79,6 +85,8 @@ a dead subsystem. Real, mechanical, worth knowing, and never ranked beside a P0.
 | --- | --- |
 | **Local duplication** | A helper, type, mapping or constant restated in a second place inside one module or package. |
 | **Transcription** | One shape declared more than once (a schema, a type, a mapping, a model) where one declaration could derive the rest. Adding a field means editing every copy. |
+| **Unparsed boundary** | External data (a request body, a webhook, a third-party response, a file, a queue message) given its type by a cast or an annotation instead of being parsed with the repo's runtime validator. |
+| **Copy outside i18n** | User-facing copy written inline where the repo has an i18n layer, instead of going through it. A repo with no i18n layer has no finding here. |
 | **Dead weight** | A single unused export, a story-only component, a dependency declared and never imported. |
 | **A test that cannot fail** | An assertion that a mock returns what the mock was told to return, a suite under `continue-on-error`, or a mock that re-implements the logic under test. Source-text tests belong here too: reading a source file as text (`readFileSync`, `open(...).read()`), slicing markup with `indexOf`, a regex over class names, or a hand-rolled evaluator of a query filter. Each one checks how the code is written, not what it does. |
 | **Narrative comment** | An added comment that carries a ticket ID, a review-finding number, a person's name, a date, "previously", or an account of a failed attempt. That history belongs in the commit and the PR. Also reportable: an added comment that contradicts the code beside it. A *"mirrors"* or "must match" twin annotation is not narrative; see *Extract first, then drop the comment* under P1. Nor is the expiry on a skip, a lint suppression or a `continue-on-error`: the ticket ID or date saying when it comes out is what *Advisory by accretion* asks for. |
@@ -125,7 +133,8 @@ expert's own vocabulary is not a severity.
   which is the author having already built an abstraction nobody needs. The test is who wrote it: in
   the diff, judge it; outside the diff, leave it alone.
 - Performance micro-optimisation, hypothetical future needs.
-- Anything the linter, type checker, formatter or CI already enforces.
+- Anything the type checker, formatter or CI already enforces, or a linter rule at error level. A
+  rule at warn level enforces nothing, so a finding it also flags may still be reported.
 - A hunk the repo's own instructions mandate (the boy-scout exemption above) as *Out of scope*.
 - A defect the repo already records as known (a known-issues register, an ADR, a `KNOWN GAP`
   note the repo instructions point to), **unless this diff changes the code it anchors to**; then

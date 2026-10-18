@@ -20,6 +20,7 @@ run() { printf '\n== %s\n' "$1"; shift; "$@" >"$OUT" 2>&1; rc=$?
   [ "$c" -gt 0 ] || { echo "no checks ran"; fail=1; }; }
 run "syntax and shellcheck (every shell script and .mjs)" "$SH" "$T/test_lint.sh"
 run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --self-test
+run "context handoff hook (threshold, Stop block, clear/compact resume)" "$SH" "$T/test_handoff.sh"
 run "gate (one definition of green)" node "$T/test_gate.mjs"
 run "machine profile (detection, sizing, §3b fallback)" node "$T/test_machine.mjs"
 run "config values (list items, trailing notes)" node "$T/test_config.mjs"
@@ -36,6 +37,7 @@ run "queue set (JSON objects and arrays)" "$SH" "$T/test_queue_set.sh"
 run "skill links (skills-upstream links)" "$SH" "$T/test_links.sh"
 run "plugins (unbumped vs outdated)" "$SH" "$T/test_plugins.sh"
 run "install_file (rename over a running script)" "$SH" "$T/test_install_file.sh"
+run "install.sh with no terminal (every skipped prompt listed)" "$SH" "$T/test_install_skips.sh"
 run "pre-push hook (stdin, no row, lock timeout)" "$SH" "$T/test_pre_push.sh"
 run "timeout (process group, hung psql in setup-worktree)" "$SH" "$T/test_timeout.sh"
 run "playwright lookup and saved GitHub login" node "$T/test_playwright.mjs"
@@ -44,5 +46,6 @@ run "reboot-check (worktrees across repos, runner, heavy)" "$SH" "$T/test_reboot
 run "desk-ci (classify placement, ci-lint secret safety)" node "$T/test_ci.mjs"
 run "desk-ci measure (minutes, red rate, round trips, call budget)" node "$T/test_ci_measure.mjs"
 run "desk-design (save a canvas, source.json, README, check)" node "$T/test_design.mjs"
+run "desk-cleanup scans (verdicts, whole keys, backups, watchman)" node "$T/test_cleanup.mjs"
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; }
 exit $fail

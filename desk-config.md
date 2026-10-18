@@ -100,6 +100,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Design canvases directory | `docs/design/` | relative to the repo root, and committed: where design canvases and artifacts are saved so autopilot workers and the design agents read the same files. Never only a shared artifact link, which only the account that made it can edit |
 | Running on WSL? | `TODO` | `yes` / `no` |
 | Signed-in browser profile | `~/.cache/ms-playwright-mcp/desk-profile` | written by `install.sh`'s Playwright step; PR image upload reuses it; one per machine, exclusive |
+| Handoff at context % | `45` | when the session's context passes this share of its window, it finishes its step and writes `.handoffs/<yyyy-mm-dd>[-n].md` in the repo root, which the session after `/clear` or a compaction reads on its own; `0` disables. Read by install.sh's `desk-handoff.py` hook |
 | Autopilot state | `~/.desk-autopilot/<slug>/`, `~/.claude/desk/` | fixed; listed so you know where batch state lives |
 
 ## 3. Permissions — the allowlist
@@ -136,7 +137,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `jira-assign-self` | Assign your ticket to yourself | `yes` | `TODO` |
 | `jira-comment` | Post a comment on your own ticket | `yes` | `TODO` |
 | `jira-create` | Create a ticket | `yes` | `TODO` |
-| `jira-edit` | Edit your ticket's description or fields (priority field, labels), and Blocks links (`desk-jira link`, never a worker's) | `yes` | `TODO` |
+| `jira-edit` | Edit your ticket's description or fields (priority field, labels), and issue links (`desk-jira link` and `unlink`, never a worker's) | `yes` | `TODO` |
 | `jira-transition` | Move your ticket between working states (§4 In-progress state, Review state) | `yes` | `TODO` |
 | `jira-close-own-merged` | Move your ticket to §4 Done state once your own last PR for it has merged | `yes` | `TODO` |
 | `jira-close` | Close a ticket any other way (duplicate, not a bug, out of scope, already fixed) | `ask` | `TODO` |

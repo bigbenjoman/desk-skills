@@ -38,11 +38,18 @@ settings(){
 | Install | \`none\` |
 | Unit tests | $1 |
 ${2:-}
+${3:-}
 EOF
   rm -f "$T/ws.json"
   out=$(cd "$T/repo" && DESK_CONFIG="$T/config.md" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" \
     --branch fix/fix-thing --out "$T/ws.json" 2>&1); rc=$?
 }
+# triage settings from the config settings() last wrote -> $T/ws.json
+triage(){
+  rm -f "$T/ws.json"
+  out=$(cd "$T/repo" && DESK_CONFIG="$T/config.md" node "$B/worker-settings.mjs" triage --ticket fix-thing --out "$T/ws.json" 2>&1); rc=$?
+}
+perm3(){ printf '\n## 3. Permissions\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `jira-transition` | Transition tickets | `yes` | `%s` |\n' "$1"; }
 allows(){ jq -e --arg r "$1" '.permissions.allow | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 
 settings '`bash tests/run.sh`'
@@ -86,6 +93,25 @@ check "Codegen: rm refused"                               '[ $rc -eq 0 ] && [[ "
 # `none` beside another item is a note in backticks: refused with desk-env's message, never run as a command
 settings '`bash tests/run.sh`' '| Lint | `none` `./install.sh` |'
 check "mixed none row: refused, no settings written"      '[ $rc -ne 0 ] && [[ "$out" == *"FAIL: desk: config §4 \"Lint\" mixes \`none\` with other items"* ]] && [ ! -f "$T/ws.json" ]'
+
+# desk-jira reads, transitions among them, whatever §3 jira-transition says; the transition itself only under yes
+JIRA_READS='get search comments whoami fields children transitions where meta md2wiki api'
+reads_ok(){ local s; for s in $JIRA_READS; do allows "Bash(desk-jira $s:*)" || return 1; done; }
+settings '`bash tests/run.sh`' '' "$(perm3 yes)"
+check "jira-transition yes: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
+check "jira-transition yes: transition allowed"           'allows "Bash(desk-jira transition:*)" && ! denies "Bash(desk-jira transition:*)"'
+check "desk-jira link never allowed"                      '! allows "Bash(desk-jira link:*)" && denies "Bash(desk-jira link:*)"'
+check "desk-jira unlink never allowed"                    '! allows "Bash(desk-jira unlink:*)" && denies "Bash(desk-jira unlink:*)"'
+settings '`bash tests/run.sh`' '' "$(perm3 ask)"
+check "jira-transition ask: reads allowed"                '[ $rc -eq 0 ] && reads_ok'
+check "jira-transition ask: transition denied"            'denies "Bash(desk-jira transition:*)" && ! allows "Bash(desk-jira transition:*)"'
+check "jira-transition ask: CONFIG_DENIED names it"       '[[ "$out" == *jira-transition* ]]'
+triage
+check "triage: reads allowed"                             '[ $rc -eq 0 ] && reads_ok'
+check "triage: transition denied"                         'denies "Bash(desk-jira transition:*)" && ! allows "Bash(desk-jira transition:*)"'
+settings '`bash tests/run.sh`' '' "$(perm3 yes)"
+triage
+check "triage: transition denied even under yes"          'denies "Bash(desk-jira transition:*)" && allows "Bash(desk-jira transitions:*)"'
 
 for item in 'bash -c tests/run.sh' 'bash' 'bash /abs/run.sh' 'bash ../run.sh' 'bash tests/../../x.sh' 'zsh tests/run.sh' 'bash tests/run.py' 'bash -x tests/run.sh'; do
   settings "\`$item\`"

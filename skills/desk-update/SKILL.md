@@ -62,10 +62,14 @@ agents, scripts and the skill index are copies made by `install.sh`. After any p
 `skills-upstream verify` reports DRIFTED below), run:
 
 ```bash
-(cd "$D" && ./install.sh </dev/null)       # files only: with no terminal every settings prompt is skipped
+(cd "$D" && ./install.sh </dev/null)       # files only: with stdin not a terminal every settings prompt is skipped
 ```
 
-and report its warning count. The settings it skipped are offered in §3, never applied silently.
+and report its warning count. Its output ends with a `Skipped (no terminal): <n> prompt(s)` block
+listing every prompt it skipped, each as a `SKIP  <question>` line followed by an
+`apply: <command>` line (the exact command that does it, or `run in a terminal: cd … && ./install.sh`
+where there is none). Each one becomes a SETTING row in §2 and an option in §3, never applied
+silently.
 
 ## 2. Check everything
 
@@ -81,6 +85,9 @@ skills-upstream plugins                   # each installed plugin vs its refresh
 skills-upstream index --quiet --name-only --check   # exit 1: skills still listed in full every turn
 jq -e '[.hooks.SessionStart[]?.hooks[]?.command] | any(test("desk-update-check"))' ~/.claude/settings.json
                                                     # false: no once-a-day update notice at session start
+jq -e '[.hooks.UserPromptSubmit, .hooks.PostToolUse, .hooks.Stop, .hooks.SessionStart]
+  | all([.[]?.hooks[]?.command] | any(test("desk-handoff")))' ~/.claude/settings.json
+                                                    # false: no context handoff on one or more events
 eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a configured repo
 python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" suggest
                                                     # only when EXISTS=yes: rows with suggest off, now on
@@ -121,8 +128,17 @@ UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt
 UNTRACKED     <names>: no recorded source, so no update check
 SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
 SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
+SETTING       no context handoff: past §2 Handoff at context % the session would write .handoffs/<date>.md,
+              and the session after /clear or a compaction would pick it up
+SETTING       skipped by install.sh: <question>
+              apply: <the apply line install.sh printed under it, verbatim>
 PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills listed every turn
 ```
+
+One `skipped by install.sh` row per `SKIP` line in §1's block, none dropped. Where a skipped prompt is
+the same setting as one of the three checked rows above (the update notice, the context handoff,
+name-only listing), report it once: the checked row, with the skipped row's `skipped by install.sh:
+<question>` and `apply:` lines under it.
 
 For each OUTDATED pinned skill, say in one or two lines **what changed upstream** (GitHub: the
 commit subjects since the pin, `gh api "repos/<repo>/compare/<pin>...<latest>" --jq
@@ -169,9 +185,13 @@ by pushing to `main`. On no, report the branch as local only.
 
 For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
-first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
+first). For the context handoff: the same, or register it the way install.sh does (an entry running
+`python3 ~/.claude/hooks/desk-handoff.py`, timeout 15, on each of `UserPromptSubmit`, `PostToolUse`,
+`Stop` and `SessionStart` that lacks one, settings backed up first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
 copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` first). For a chosen
 PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
+For any other chosen `skipped by install.sh` row: run its `apply:` command; where that says
+`run in a terminal`, tell the user to run it there rather than doing it for them.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show
 the new version. Say that plugin and skill changes load in the **next** Claude Code session.
