@@ -33,7 +33,10 @@ check "have_tty is found in install.sh" '[ -n "$fn" ]'
 eval "$fn"
 check "have_tty is false with stdin from /dev/null" '! have_tty </dev/null'
 
-out="$("$SH" "$S/../install.sh" </dev/null 2>&1)"; rc=$?
+out="$("$SH" "$S/../install.sh" </dev/null 2>&1)"
+# shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
+rc=$?
+# shellcheck disable=SC2034
 summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
 check "install.sh exits 0" '[ $rc -eq 0 ]'
 check "summary has a Skipped (no terminal) block with the count" \
