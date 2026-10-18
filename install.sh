@@ -8,8 +8,9 @@
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
-# is backed up first. Repo configs under ~/.config/desk/repos are never touched. settings.json is
-# backed up before it is touched.
+# is backed up first. Repo configs under ~/.config/desk/repos are never touched, apart from dropping
+# retired allow rules /desk-setup recorded (backed up first). settings.json is backed up before it
+# is touched.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -635,6 +636,7 @@ case "$rc" in
         "python3 \"$HARNESS\" --settings \"$SETTINGS\" baseline"; then
       if out="$(python3 "$HARNESS" --settings "$SETTINGS" baseline 2>&1)"; then
         ok "always-on deny rules applied, and any retired allow rules dropped (recorded in ~/.claude/desk/harness-rules.json)"
+        printf '%s\n' "$out" | grep -E '^(RETIRED|retired) ' | sed 's/^/        /' || true
       else
         warn "could not add the deny rules"; show_err "$out"
       fi
@@ -643,6 +645,26 @@ case "$rc" in
     fi
     ;;
 esac
+
+# Allow rules /desk-setup recorded in a repo's own settings.local.json that no row grants any more
+# (unpinned gh pr merge). Retiring them only takes capability away, so it is not a question.
+for ledger in "$CONFIG_ROOT"/repos/*/harness-rules.json; do
+  [ -f "$ledger" ] || continue
+  slug="$(basename "$(dirname "$ledger")")"
+  root="$(DESK_CONFIG="$(dirname "$ledger")/config.md" node "$DESKDIR/bin/desk-env.mjs" get repo-root 2>/dev/null || true)"
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    warn "$slug: its §2 Primary repo root is not a directory, so its retired allow rules were not checked (run /desk-setup there)"
+    continue
+  fi
+  rc=0; out="$(python3 "$HARNESS" --settings "$root/.claude/settings.local.json" --ledger "$ledger" retire 2>&1)" || rc=$?
+  lines="$(printf '%s\n' "$out" | grep -E '^(RETIRED|retired|backup|synced|differs|FAILED) ' || true)"
+  if [ "$rc" -ne 0 ]; then
+    warn "$slug: could not finish retiring its unpinned merge allows"; show_err "$out"
+  elif [ -n "$lines" ]; then
+    ok "$slug: retired allow rules checked in $root/.claude/settings.local.json"
+    printf '%s\n' "$lines" | sed 's/^/        /'
+  fi
+done
 
 # ---------------------------------------------------------------------------------------------
 section "Claude Code plugins"
