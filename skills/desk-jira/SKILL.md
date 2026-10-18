@@ -186,9 +186,7 @@ Keep it simple and readable: short sections, real file paths, no padding. **Ever
 `references/ticket-template.md`**: one layout each for Story and Task, Bug, Epic and Subtask, with
 its rules for criteria, dependencies, design links and decisions. That holds for a ticket written by
 hand, by Bea, or by a machine path (a spin-off, a follow-up, an L split, an epic close-out child).
-§5 Ticket format `default` means that file. A repo whose §5 Ticket format names its own sections
-uses those headings with the template's substance in them. `TODO` means ask, not invent a house
-style. Read two or three recent tickets of the same type in §4 Jira project before writing a new
+The template says how §5 Ticket format overrides it. Read two or three recent tickets of the same type in §4 Jira project before writing a new
 one, and match their summary style (an `[Area]` prefix, a verb-first phrase, whatever they use).
 
 **Never invent the substance.** If the real name, price, business rule or product data isn't in the

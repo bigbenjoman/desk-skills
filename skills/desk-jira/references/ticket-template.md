@@ -16,12 +16,10 @@ That is the render check's count.
 
 ## Rules for every type
 
-- **No status, priority or size in the body.** They are fields, and `desk-jira create` refuses a
-  `Status:`, `Priority:`, `P0`–`P4` or `Size:` line. The one exception is the first-line `Size: M`
-  fallback for a project with no Size field (desk-jira *Epics*).
-- **Dependencies are Blocks links, never prose.** File the ticket, then `desk-jira link <KEY>
-  blocked-by <OTHER>`. Autopilot reads only the links, so "needs ABC-1 first" in the body does
-  nothing.
+- **No status, priority or size in the body.** They are fields (desk-jira *Fields*).
+- **Dependencies are Blocks links, never prose** (desk-jira *Epics*). With §4 Tracker `none` a
+  GitHub issue has no Blocks link, so it carries one `Blocked by #<n>` line per dependency, first in
+  the body: the one dependency written as text.
 - **Every acceptance criterion is one the worker who picks the ticket up can do and check**, in its
   branch and its PR. These are never acceptance criteria: creating or editing Jira links (the filer
   does that when filing), a live production measurement, a run only an operator can do, or someone's
@@ -31,10 +29,12 @@ That is the render check's count.
 - **Decisions are dated and name who made them. None of them is open.** An open question is asked
   before the ticket is filed, never written into it. No `TBD`, `TODO`, "to confirm" or "pending
   sign-off" anywhere in the body.
+- **Waiting on someone else's input is a precondition, not an open decision.** A legal follow-up
+  waits for sign-off, and a placeholder-copy spin-off waits for the final copy. Name the input and
+  who supplies it as the first line of Verification, `Precondition: <person or role> supplies
+  <what>`. Then keep the ticket out of autopilot batches until it arrives.
 - **Behaviour in the criteria, mechanism elsewhere.** File paths, component or library names and
   regexes go in Build on (or a Bug's Diagnosis), never in a criterion.
-- **Never invent the substance.** A name, price, business rule or piece of product data that is not
-  in the source, a sheet or the database is a question.
 - **No section is dropped.** `None.` is an answer for Out of scope, Decisions and Build on.
 
 ## Acceptance criteria
@@ -170,4 +170,5 @@ it off and size the parent.
 3. No status, priority or size line; no open decision; no dependency in prose.
 4. After `create`: `desk-jira get <KEY>` reads the fields back. The render check (desk-jira
    *Transport*) counts one `<h2` per `##` heading sent and no `<del`.
-5. After `create`: `desk-jira link` each dependency.
+5. After `create`: `desk-jira link` each dependency (with Tracker `none`, the `Blocked by #<n>`
+   lines carry them).

@@ -33,7 +33,8 @@ win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 
   finding, or any other ticket this ticket's work raises uses desk-jira's
   `references/ticket-template.md` for its type (or §5 Ticket format's own sections, where it names
   them), written through `desk-jira`'s gate. Its criteria are ones the next worker can do. Its
-  dependency on this ticket is a link, not a sentence.
+  dependency on this ticket is a link, not a sentence. The sign-off a legal follow-up waits for, or
+  the final copy a placeholder spin-off waits for, is the template's `Precondition:` line.
 - **Legal or compliance content is findings-first.** Deliver the recommended change as a ticket
   comment (with no tracker, as findings to the user) and split implementation into a follow-up that
   waits for team sign-off, even when the fix is tested. When a legal change does ship, any

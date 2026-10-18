@@ -80,16 +80,14 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
 
 5. **Before You Draft — Check for Duplicates**: search the tracker for existing tickets covering the same ground and surface anything close — `desk-jira search` (JQL) with Tracker `jira`, `gh issue list --search "<terms>" --state all` otherwise. Raising a duplicate wastes more time than the search costs. `desk-jira search` checks its credentials before it searches and exits non-zero on a bad or expired token, so an empty result with exit 0 genuinely means no matches; a non-zero exit means the search did not run, and you say so rather than reporting "no duplicates".
 
-6. **Ticket Authoring**: once you have sufficient detail, draft the issue. **The body follows the desk ticket template**: read `references/ticket-template.md` in the desk-jira skill (`desk-env paths` prints `DESK_SKILLS_DIR`; it is `$DESK_SKILLS_DIR/desk-jira/references/ticket-template.md`) and use its layout for the issue type, with its rules: numbered Given / When / Then criteria a worker can do, Verification naming the environment and who does any human or device step, a Design link or "No UI.", Out of scope, and dated Decisions with none open. Where §5 Ticket format names the repo's own sections, use those headings with the same substance in them. Around the body:
+6. **Ticket Authoring**: once you have sufficient detail, draft the issue. **The body follows the desk ticket template**: read `references/ticket-template.md` in the desk-jira skill (`desk-env paths` prints `DESK_SKILLS_DIR`; it is `$DESK_SKILLS_DIR/desk-jira/references/ticket-template.md`) and use its layout and rules for the issue type; where §5 Ticket format names the repo's own sections, use those headings. Around the body:
    - **Project**: §4 Jira project unless told otherwise; with Tracker `none`, the current GitHub repo
    - **Issue Type**: Story, Task, Bug, Epic or Subtask (or the types §4 Jira project lists) — chosen deliberately, not defaulted. For a GitHub issue, express the type as a label if the repo has one.
    - **Summary**: clear, concise, action-oriented (e.g. "Allow users to export their account data as CSV")
    - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank. Priority, status and size go in their fields, never as a line in the description (`desk-jira create` refuses one); the only exception is the `Size: M` first line below
    - **Size**: XS, S, M, L or XL on desk-jira's scale (its *Epics* section), in the project's `Size` field where there is one (`desk-jira fields size`), otherwise as the description's first line `Size: M`. Anything L or bigger is split: see *Epic Mode*
    - **Other fields**: every field §4 Other fields lists, filled in the same create — a blank one is never flagged later
-   - **Labels / Links**: from §4 Labels; each dependency is a Blocks link you plan and file with `desk-jira link`, never a sentence in the body
-
-   For a **Bug**, the template adds Problem, Where seen, Steps to reproduce with expected and actual, and a Diagnosis marked with the commit it was read at. Name the affected persona in Problem.
+   - **Labels / Links**: from §4 Labels; each dependency is a Blocks link you plan and file with `desk-jira link`, never a sentence in the body (with Tracker `none`, the template's `Blocked by #<n>` line)
 
    **An open decision blocks the create.** Anything you would be tempted to write as "open question", "TBD" or "to confirm" is a question for the user (or the owner §4 People names) now. Ask it, record the answer as a dated decision, and only then draft. Never file a ticket that carries an open question.
 
