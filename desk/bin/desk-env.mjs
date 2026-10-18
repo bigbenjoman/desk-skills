@@ -158,6 +158,7 @@ export const PERMISSION_KEYS = Object.freeze({
   'pr-conflict-reviewed': 'pr-conflict-reviewed',
   'ci-rerun': 'ci-rerun',
   'codex-review': 'codex-review',
+  'ci-protection': 'ci-protection',
   'autopilot-workers': 'autopilot-workers',
   'autopilot-worker-mode': 'autopilot-worker-mode',
   'autopilot-merge': 'autopilot-merge',
