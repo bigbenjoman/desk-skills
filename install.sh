@@ -630,10 +630,11 @@ case "$rc" in
     note "Adds deny rules at user level: the Slack connector's send and write tools (drafts stay"
     note "possible), gh pr merge --admin, and git push with --force, -f, +refspec, --delete, -d or"
     note "--mirror. The push patterns are best-effort: git also takes -qf, --forc, --delet. Other rules are kept."
+    note "It also drops allow rules an earlier setup granted that no row grants any more (unpinned gh pr merge)."
     if confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
         "python3 \"$HARNESS\" --settings \"$SETTINGS\" baseline"; then
       if out="$(python3 "$HARNESS" --settings "$SETTINGS" baseline 2>&1)"; then
-        ok "deny rules added (recorded in ~/.claude/desk/harness-rules.json)"
+        ok "always-on deny rules applied, and any retired allow rules dropped (recorded in ~/.claude/desk/harness-rules.json)"
       else
         warn "could not add the deny rules"; show_err "$out"
       fi

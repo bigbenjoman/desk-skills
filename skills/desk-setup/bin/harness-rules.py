@@ -6,6 +6,8 @@
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
                                             if every rule is already in settings.json, 1 if not
+  harness-rules.py retire                   drop the RETIRED rules setup recorded (add and
+                                            baseline do this first too; --check reports them)
   harness-rules.py remove <row> [<row>...]  revoke rows: drop every rule any of them owns
   harness-rules.py remove --all             drop everything setup ever recorded
   harness-rules.py list [--markdown]        the ledger (--markdown: rows for config §3c)
@@ -40,7 +42,7 @@ Exit 2 on an unreadable settings.json, ledger or plan, or a refused destination;
 then. `remove` never creates a settings file: when the file does not exist it says no rule was
 removed from it and drops only the ledger records.
 
-A revoke also reaches the worktrees. When `remove` changes a repo-level <root>/.claude/<file>, the
+A revoke also reaches the worktrees. When `remove` or `retire` changes a repo-level <root>/.claude/<file>, the
 same file in every other worktree `git worktree list` shows is checked: a copy that matched the
 file byte for byte before the revoke is backed up and replaced with the new file (removed, if the
 file was); a copy that differs is left alone and named, for revoking there by hand. A copy that
@@ -364,13 +366,47 @@ def apply_plan(st, plan):
         st.log.append(f"UNGUARD  {lst:5} {rule}  (removed for {', '.join(rows)}; back on revoke)")
 
 
+# Rules an earlier version of setup granted and no row grants any more. `add`, `baseline` and
+# `retire` drop them when setup recorded them (a copy the user added themselves is reported, never
+# touched), so re-running setup or install.sh migrates an existing install.
+RETIRED = [
+    # Merges are pinned with --match-head-commit; these let an unpinned merge run unprompted.
+    ("allow", rule)
+    for m in ("--squash", "--merge", "--rebase")
+    for rule in (f"Bash(gh pr merge * {m})", f"Bash(gh pr merge * --auto {m})", f"Bash(gh pr merge * {m} --auto)")
+]
+
+
+def retire(st):
+    """Drop retired rules setup recorded; report a copy the user added themselves."""
+    for lst, rule in RETIRED:
+        cur = st.perm_list(lst, create=False) or []
+        rec = st.recorded(lst, rule)
+        if rec:
+            if rule in cur:
+                cur.remove(rule)
+            st.ledger["rules"].remove(rec)
+            st.log.append(f"RETIRED  {lst:5} {rule}  (no row grants it any more)")
+        elif rule in cur:
+            st.log.append(f"retired  {lst:5} {rule}  (yours, left alone: it still lets an unpinned merge "
+                          "run unprompted, so remove it by hand to enforce the pin)")
+
+
 def cmd_add(st, plan_path):
     plan = read_plan(plan_path)
     note = check_destination(st.settings_path, plan)
     if note:
         st.log.append(f"gitignore {st.settings_path}: {note}")
+    retire(st)
     apply_plan(st, plan)
     st.save()
+
+
+def cmd_retire(st):
+    before = read_bytes(st.settings_path)
+    retire(st)
+    st.save()
+    return sync_copies(st, before)
 
 
 def baseline_plan(plan_path, prefixes):
@@ -391,7 +427,11 @@ def cmd_baseline(st, plan_path, prefixes, check):
         missing = [e["rule"] for e in plan["add"] if e["rule"] not in deny]
         for rule in missing:
             print(f"missing  deny  {rule}")
-        return 1 if missing else 0
+        stale = [(lst, r) for lst, r in RETIRED if st.recorded(lst, r)]
+        for lst, rule in stale:
+            print(f"retired  {lst:5} {rule}  (recorded by setup; baseline drops it)")
+        return 1 if missing or stale else 0
+    retire(st)
     apply_plan(st, plan)
     st.save()
     return None
@@ -463,7 +503,7 @@ def cmd_list(st, markdown):
 
 
 USAGE = ("usage: harness-rules.py [--settings P] [--ledger P] add <plan.json> | "
-         "baseline [--check] [--slack-prefix P]... [<plan.json>] | remove <row>...|--all | list [--markdown] | "
+         "baseline [--check] [--slack-prefix P]... [<plan.json>] | retire | remove <row>...|--all | list [--markdown] | "
          "unset-default-mode")
 
 
@@ -525,6 +565,8 @@ def main(argv):
         checked = cmd_baseline(st, plan, prefixes, check)
         if checked is not None:
             return checked
+    elif cmd == "retire" and not rest:
+        code = 1 if cmd_retire(st) else 0
     elif cmd == "remove" and rest == ["--all"]:
         code = 1 if cmd_remove(st, [], True) else 0
     elif cmd == "remove" and rest and "--all" not in rest:

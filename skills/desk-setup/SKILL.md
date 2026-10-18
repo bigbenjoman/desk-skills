@@ -586,6 +586,11 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
    lines, say it only takes capability away, then run `python3 $H baseline` (add
    `--slack-prefix <prefix>` for any other Slack prefix the session shows). Not a question. Exit 2:
    the settings file is unreadable; stop §4 and say so.
+   Then `python3 $H "${REPO_RULES[@]}" retire`, also not a question: it only takes capability away.
+   `retire`, `add` and `baseline` all first drop any rule in the script's `RETIRED` list that setup
+   recorded (printed `RETIRED`, backed up first; today the unpinned `gh pr merge` allows), and
+   `baseline --check` lists them as `retired`. A retired rule the user added themselves is printed
+   `retired … yours` and left alone: tell the user it still lets an unpinned merge run unprompted.
 2. **Build the allow plan** (JSON; shape in the script's header), replacing `<merge>` with this
    repo's §4 Merge method flag:
    - an `add` entry for each rule whose **every** owner row is `yes`, `rows` = all its owners.
