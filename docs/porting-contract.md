@@ -137,8 +137,10 @@ reruns). What changed, and why:
 
 ## desk-kiss, ported from kiss
 
-`skills/desk-kiss` is studia-web's `/kiss` deep pass made repo-generic. The phases, the false-clean
+`skills/desk-kiss` is studia-web's `/kiss` made repo-generic. The phases, the false-clean
 rails (no `@{upstream}`, searches at `$TIP`, every band printed) and the per-finding fix offer stay.
+As in studia-web, its Phases 2–5 run on every `desk-review` as the simplicity finder, and
+`/desk-kiss` on its own is for offering and applying the fixes.
 
 | kiss | desk-kiss |
 |---|---|
