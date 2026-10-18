@@ -326,14 +326,16 @@ export function breakpoints() {
   return [...new Set(v.map(asWidth))].sort((a, b) => a - b);
 }
 
-// A board's name as a file name: lower-case words joined by `-`, numbered on a clash.
+// A board's name as a file name: lower-case words joined by `-`, numbered on a clash with any name
+// already given, so two boards never share a file.
 export function screenNames(boards) {
-  const used = new Map();
+  const used = new Set();
   return boards.map((b) => {
     const base = String(b.name).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'board';
-    const n = (used.get(base) ?? 0) + 1;
-    used.set(base, n);
-    return n === 1 ? base : `${base}-${n}`;
+    let name = base;
+    for (let n = 2; used.has(name); n++) name = `${base}-${n}`;
+    used.add(name);
+    return name;
   });
 }
 

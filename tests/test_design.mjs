@@ -4,7 +4,7 @@
 // the Design canvases directory, once per artifact; status sees a newer version; check reports a
 // Claude Design link with no saved copy. Scratch git repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,6 +170,7 @@ t('plan: a board off the breakpoints also at its own width', plan.shots.filter((
 t('plan: screens/<board>@<width>.png', plan.shots[0].file, 'screens/test-390@390.png');
 t('plan: drawn and interpolated widths', plan.widths.map((w) => `${w.width}:${w.label}${w.breakpoint ? '' : '*'}`).join(' '), '390:drawn 768:interpolated 960:drawn* 1024:interpolated 1280:interpolated 1440:interpolated');
 t('screenNames: a clash is numbered', screenNames([{ name: 'Home' }, { name: 'home' }, { name: '!!' }]).join(' '), 'home home-2 board');
+t('screenNames: a number never reuses another board\'s name', screenNames([{ name: 'Home' }, { name: 'home' }, { name: 'Home 2' }]).join(' '), 'home home-2 home-2-2');
 const scr = { version: '7', rendered_at: '2026-10-18T10:00:00Z', breakpoints: BPS, widths: plan.widths, images: plan.shots.map(({ png, ...s }) => s) };
 const rs = readme({ url: URL1, version: '7', fetched_at: 'x', tickets: [], boards: drawn, screens: scr });
 t('README: a breakpoint with no board is interpolated', rs.includes('| 1024px | interpolated | - |'), true);
@@ -206,13 +207,15 @@ if (!pw.entry) {
 } else {
   const { chromium } = await importPlaywright(pw);
   // Boards that paint from a local stylesheet and font, as a saved canvas does, with no network.
-  const canvasAt = (name, { font = true } = {}) => {
+  // Only the 960 board loads img/b960.svg, so its failure comes after the 390 board's shots.
+  const canvasAt = (name) => {
     const s = join(T, name);
     put(join(s, 'project/canvas.json'), JSON.stringify({ boards: [
       { title: 'Test 390', width: 390, file: 'test-390.dc.html' }, { title: 'Test 960', width: 960, file: 'test-960.dc.html' }] }));
-    for (const w of [390, 960]) put(join(s, `project/test-${w}.dc.html`), `<!doctype html><link rel="stylesheet" href="styles/app.css"><main>Board ${w}</main>`);
+    for (const w of [390, 960]) put(join(s, `project/test-${w}.dc.html`), `<!doctype html><link rel="stylesheet" href="styles/app.css"><main>Board ${w}${w === 960 ? '<img src="img/b960.svg">' : ''}</main>`);
     put(join(s, 'project/styles/app.css'), "@font-face { font-family: T; src: url('../fonts/T.woff2'); } main { font-family: T; height: 600px; background: #234; color: #fff; }");
-    if (font) put(join(s, 'project/fonts/T.woff2'), 'FONT');
+    put(join(s, 'project/fonts/T.woff2'), 'FONT');
+    put(join(s, 'project/img/b960.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>');
     const r = repo(`${name}-repo`);
     return join(r, save(s, { root: r, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL1, version: '3' }).path);
   };
@@ -224,13 +227,21 @@ if (!pw.entry) {
   t('render: at the width', png.readUInt32BE(16), 960);
   t('render: README labels 1440 interpolated', read(join(good, 'README.md')).includes('| 1440px | interpolated | - |'), true);
 
-  // AC3: a missing font fails the render naming board and file, and writes nothing.
+  // AC3: a missing asset fails the render naming board and file, and writes nothing: the earlier
+  // board's shots succeed first, and the previous render's screens and README stay as they were.
   const broken = canvasAt('rb');
-  rmSync(join(broken, 'project/fonts/T.woff2'));
+  await render(broken, { chromium, bps: BPS, now: '2026-10-18T09:00:00Z' });
+  // A re-render writes the same bytes, so the file's mtime is what shows whether it was written.
+  const before = { readme: read(join(broken, 'README.md')), png: statSync(join(broken, 'screens/test-390@390.png')).mtimeMs };
+  rmSync(join(broken, 'project/img/b960.svg'));
   const err = await render(broken, { chromium, bps: BPS }).then(() => 'no error', (e) => `${e.code}:${e.message}`);
-  t('render: a missing asset fails with exit 4', err.startsWith('4:not rendered: board "Test 390"'), true);
-  t('render: the asset is named', err.includes('project/fonts/T.woff2 (HTTP 404)'), true);
-  t('render: no image written', existsSync(join(broken, 'screens')), false);
+  t('render: a missing asset fails with exit 4', err.startsWith('4:not rendered: board "Test 960"'), true);
+  t('render: the asset is named', err.includes('project/img/b960.svg (HTTP 404)'), true);
+  t('render: no image written', statSync(join(broken, 'screens/test-390@390.png')).mtimeMs === before.png && read(join(broken, 'README.md')) === before.readme, true);
+  const fresh = canvasAt('rf');
+  rmSync(join(fresh, 'project/img/b960.svg'));
+  await render(fresh, { chromium, bps: BPS }).catch(() => null);
+  t('render: a first render that fails leaves no screens', existsSync(join(fresh, 'screens')), false);
   const cliR = run('render', good);
   t('cli render: exit 0, labels each width', cliR.status === 0 && cliR.stdout.includes('1024px interpolated'), true);
   t('cli render: a missing asset exits 4', run('render', broken).status, 4);
