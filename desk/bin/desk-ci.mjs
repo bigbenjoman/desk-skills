@@ -1048,8 +1048,11 @@ export function restorePlan(snap, cur) {
 // A repo whose CI rewrites its own protection from a committed file undoes a pin on its next run.
 // A JSON file is read for each required check it writes; any other file that calls the protection or
 // rulesets endpoint must name the Actions app id itself, or name a JSON file that is checked here.
-const PROTECTION_CALL = /branches\/\S*\/protection\b|\/rulesets\b/;
-const WRITE_VERB = /\b(PUT|POST|PATCH)\b|--input\b|(^|\s)-[fF]\s|--(raw-)?field\b/;
+// The REST path (an expression such as `${{ github.repository }}` may sit inside it) with a method or
+// body flag near it, or an Octokit method that writes protection (actions/github-script).
+const PROTECTION_CALL = /branches\/.{0,160}?\/protection\b|\/rulesets\b/;
+const WRITE_VERB = /\b(PUT|POST|PATCH)\b|--input\b|(^|\s)-[fFd]\b|--(raw-)?field\b|--data(-raw|-binary)?\b|--method\b/;
+export const OCTOKIT_WRITE = /\b(updateBranchProtection|updateStatusCheckProtection|setStatusCheckContexts|addStatusCheckContexts|(create|update)(Repo|Org)Ruleset)\b/;
 
 function jsonChecks(v, out = []) {
   if (Array.isArray(v)) { v.forEach((x) => jsonChecks(x, out)); return out; }
@@ -1087,7 +1090,7 @@ export function protectionFiles(files, actionsAppId) {
   for (const f of files.filter((x) => !/\.json$/i.test(x.path))) {
     const lines = f.text.split('\n');
     // The call and its method or body flag, on the same line or within three of it.
-    const at = lines.findIndex((l, i) => PROTECTION_CALL.test(l) && lines.slice(Math.max(0, i - 3), i + 4).some((x) => WRITE_VERB.test(x)));
+    const at = lines.findIndex((l, i) => OCTOKIT_WRITE.test(l) || (PROTECTION_CALL.test(l) && lines.slice(Math.max(0, i - 3), i + 4).some((x) => WRITE_VERB.test(x))));
     if (at < 0) continue;
     if (actionsAppId != null && pin.test(f.text) && !/\bcontexts\b/.test(f.text)) continue;
     if ([...jsonWriters].some((p) => f.text.includes(p) || f.text.includes(basename(p)))) continue;
@@ -1097,9 +1100,10 @@ export function protectionFiles(files, actionsAppId) {
 }
 
 // The writes that make every required check on the snapshot's branches accept only GitHub Actions.
-// A check no Actions check run carries is not pinned (pinning another app's check to Actions would
-// block every merge): one any app may satisfy is `left`, and keeps the pin from reporting success;
-// one already bound to another app cannot be satisfied by a personal token either, so is `other`.
+// Only a check any app may satisfy, and that an Actions check run carries, is repointed: one no
+// Actions run carries is `left` (pinning it would block every merge), and one already bound to
+// another app is `other` (repointing it would let a PR's own workflow satisfy it). Either keeps the
+// pin from reporting success, since that check does not accept only GitHub Actions.
 export function pinPlan(cur, { actionsAppId, actionsNames, files = [] }) {
   if (actionsAppId == null) throw new Error(`no check run from GitHub Actions found on ${cur.repo}: the app id cannot be read, so nothing can be pinned`);
   const repo = cur.repo;
@@ -1112,7 +1116,7 @@ export function pinPlan(cur, { actionsAppId, actionsNames, files = [] }) {
     if (!st.exists) continue;
     for (const c of st.requiredChecks) {
       if (c.appId === actionsAppId) continue;
-      if (c.appId != null && !actionsNames.has(c.context)) { other.push(`${b}: ${c.context} (${c.via}) accepts only ${c.source}`); continue; }
+      if (c.appId != null) { other.push(`${b}: ${c.context} (${c.via}) accepts only ${c.source}, not GitHub Actions; it is left as it is`); continue; }
       if (c.org) { left.push(`${b}: ${c.context} (${c.via}, ${c.source}): set at the organisation; pin it there`); continue; }
       if (c.rulesetId != null) rulesetIds.add(c.rulesetId);
       if (actionsNames.has(c.context)) pinned.push(`${b}: ${c.context} (${c.via}): ${c.source} -> app ${actionsAppId} (${ACTIONS_SLUG})`);
@@ -1121,25 +1125,25 @@ export function pinPlan(cur, { actionsAppId, actionsNames, files = [] }) {
     const rsc = st.classic?.required_status_checks;
     if (!rsc) continue;
     const before = classicBody(st.classic).required_status_checks;
-    const after = { strict: before.strict, checks: before.checks.map((c) => (actionsNames.has(c.context) ? { ...c, app_id: actionsAppId } : c)) };
+    const after = { strict: before.strict, checks: before.checks.map((c) => (c.app_id === -1 && actionsNames.has(c.context) ? { ...c, app_id: actionsAppId } : c)) };
     if (stable(after) !== stable(before)) writes.push({ method: 'PATCH', path: `repos/${repo}/branches/${enc(b)}/protection/required_status_checks`, body: after });
   }
   for (const r of cur.rulesets.filter((x) => rulesetIds.has(x.id))) {
     const body = rulesetBody(r);
     const next = { ...body, rules: body.rules.map((x) => (x.type !== 'required_status_checks' ? x : {
-      ...x, parameters: { ...x.parameters, required_status_checks: x.parameters.required_status_checks.map((c) => (actionsNames.has(c.context) ? { ...c, integration_id: actionsAppId } : c)) },
+      ...x, parameters: { ...x.parameters, required_status_checks: x.parameters.required_status_checks.map((c) => (c.integration_id == null && actionsNames.has(c.context) ? { ...c, integration_id: actionsAppId } : c)) },
     })) };
     if (stable(next) !== stable(body)) writes.push({ method: 'PUT', path: `repos/${repo}/rulesets/${r.id}`, body: next });
   }
   return { writes, left, other, pinned, files: protectionFiles(files, actionsAppId) };
 }
 
-// After a pin: every required check that has an Actions check run accepts only Actions.
-export function pinUnverified(cur, { actionsAppId, actionsNames }) {
+// After a pin: no repo-level check an Actions check run carries still accepts any app.
+export function pinUnverified(cur, { actionsNames }) {
   const out = [];
   for (const [b, st] of Object.entries(cur.branches)) {
     if (!st.exists) continue;
-    for (const c of st.requiredChecks) if (!c.org && actionsNames.has(c.context) && c.appId !== actionsAppId) out.push(`${b}: ${c.context} (${c.via}) still accepts ${c.source}`);
+    for (const c of st.requiredChecks) if (!c.org && actionsNames.has(c.context) && c.appId == null) out.push(`${b}: ${c.context} (${c.via}) still accepts ${c.source}`);
   }
   return out;
 }
@@ -1191,9 +1195,23 @@ export function applyWrites(api, writes) {
 
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 
-// What the default branch carries, as GitHub runs it: origin/<default> where it is fetched.
-function committedRef(def) {
-  try { git('rev-parse', '--verify', '-q', `origin/${def}`); return `origin/${def}`; } catch { return 'HEAD'; }
+// What the default branch carries, as GitHub runs it: origin/<default>, fetched and checked against
+// the head GitHub reports, so a stale or missing ref is refused rather than read.
+function committedRef(api, repo, def) {
+  const head = api(`repos/${repo}/branches/${enc(def)}`).commit.sha;
+  try { git('fetch', '--quiet', 'origin', def); } catch (e) { throw new Error(`cannot fetch origin/${def} to read its committed files: ${String(e.stderr ?? e.message).trim()}`); }
+  let sha = '';
+  try { sha = git('rev-parse', '--verify', '-q', `refs/remotes/origin/${def}`).trim(); } catch { /* compared below */ }
+  if (sha !== head) throw new Error(`origin/${def} here is ${sha || 'missing'} but GitHub's ${def} is ${head}: fetch it, then run this again`);
+  console.log(`committed files read at origin/${def} ${head.slice(0, 12)}`);
+  return `origin/${def}`;
+}
+
+// The committed files checked are this checkout's, so the repo written must be this checkout's too.
+function targetRepo(f) {
+  const repo = originRepo();
+  if (f.repo && f.repo !== repo) throw new Error(`this checkout is ${repo}, not ${f.repo}: run it from a checkout of ${f.repo}, whose committed files and config are the ones that decide`);
+  return repo;
 }
 const treePaths = (ref) => git('ls-tree', '-r', '--name-only', ref).split('\n').filter(Boolean);
 const committedWorkflows = (ref) => treePaths(ref).filter((p) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p)).map((file) => ({ file, text: git('show', `${ref}:${file}`) }));
@@ -1202,7 +1220,7 @@ const committedWorkflows = (ref) => treePaths(ref).filter((p) => /^\.github\/wor
 // names, that mentions required checks or the protection endpoints.
 function committedProtectionFiles(ref) {
   let hits = [];
-  try { hits = git('grep', '-l', '-I', '-E', 'required_status_checks|/protection|/rulesets', ref).split('\n').filter(Boolean).map((l) => l.slice(ref.length + 1)); } catch { /* no match */ }
+  try { hits = git('grep', '-l', '-I', '-E', `required_status_checks|/protection|/rulesets|${OCTOKIT_WRITE.source.replace(/\\b/g, '')}`, ref).split('\n').filter(Boolean).map((l) => l.slice(ref.length + 1)); } catch { /* no match */ }
   const workflows = committedWorkflows(ref).map((w) => w.text).join('\n');
   return hits.filter((p) => p.startsWith('.github/') || /\.json$/i.test(p) || workflows.includes(p)).map((path) => ({ path, text: git('show', `${ref}:${path}`) }));
 }
@@ -1240,6 +1258,7 @@ function runProtection(args) {
   const needSnapshot = (repo) => { if (!hasSnapshot(dir, repo)) throw new Error(`no protection snapshot of ${repo} in ${dir}: run \`protection snapshot\` before changing anything`); };
 
   if (sub === 'snapshot') {
+    if (!f.ticket) throw new Error('pass --ticket <the cut-over ticket> to attach the snapshot to, or --ticket none to save it only');
     const repo = f.repo ?? originRepo();
     const snap = snapshot({ repo, branches });
     printChecks(snap);
@@ -1247,15 +1266,20 @@ function runProtection(args) {
     const path = join(dir, `${snap.takenAt.replace(/[:]/g, '').replace(/\.\d+Z$/, 'Z')}${snapshotSuffix(repo)}`);
     writeFileSync(path, `${JSON.stringify(snap, null, 2)}\n`, { flag: 'wx' });
     console.log(`saved: ${path}`);
-    if (f.ticket) { execFileSync('desk-jira', ['attach', f.ticket, path], { stdio: 'inherit' }); console.log(`attached to ${f.ticket}`); }
-    else console.log('not attached to a ticket: pass --ticket <the cut-over ticket> to attach it');
+    if (/^none$/i.test(f.ticket)) { console.log('not attached to a ticket (--ticket none)'); return 0; }
+    // desk-jira sends only files inside the checkout it runs in, and the snapshot is in the main one.
+    try { execFileSync('desk-jira', ['attach', f.ticket, path], { stdio: 'inherit', cwd: f.out ? undefined : mainCheckout() }); } catch {
+      console.log(`saved but not attached to ${f.ticket}. Attach it with: desk-jira attach ${f.ticket} ${path}`);
+      return 1;
+    }
+    console.log(`attached to ${f.ticket}`);
     return 0;
   }
 
   if (sub === 'restore') {
     const snap = JSON.parse(readFileSync(file, 'utf8'));
     if (snap.kind !== 'desk-ci protection snapshot') throw new Error(`${file} is not a desk-ci protection snapshot`);
-    if (f.repo && f.repo !== snap.repo) throw new Error(`${file} is a snapshot of ${snap.repo}, not ${f.repo}`);
+    if (snap.repo !== targetRepo(f)) throw new Error(`${file} is a snapshot of ${snap.repo}: restore it from a checkout of ${snap.repo}, whose config gates the write`);
     const read = () => snapshot({ repo: snap.repo, branches: Object.keys(snap.branches) });
     const { writes, notes } = restorePlan(snap, read());
     for (const n of notes) console.log(`note: ${n}`);
@@ -1275,9 +1299,9 @@ function runProtection(args) {
   }
 
   if (sub === 'pin') {
-    const repo = f.repo ?? originRepo();
+    const repo = targetRepo(f);
     const cur = snapshot({ repo, branches });
-    const files = committedProtectionFiles(committedRef(cur.defaultBranch));
+    const files = committedProtectionFiles(committedRef(ghCall, repo, cur.defaultBranch));
     const ctx = { actionsAppId: cur.actionsAppId, actionsNames: new Set(cur.actionsChecks) };
     const plan = pinPlan(cur, { ...ctx, files });
     console.log(`GitHub Actions app id ${cur.actionsAppId}, read from a check run on ${repo}`);
@@ -1296,16 +1320,16 @@ function runProtection(args) {
     }
     const unverified = pinUnverified(after, ctx);
     for (const u of unverified) console.log(`not pinned: ${u}`);
-    const ok = !unverified.length && !plan.left.length && !plan.files.length;
+    const ok = !unverified.length && !plan.left.length && !plan.other.length && !plan.files.length;
     console.log(ok
-      ? `pinned: every required check GitHub Actions runs accepts only GitHub Actions (app ${cur.actionsAppId}), read back${plan.other.length ? `; ${plan.other.length} more accept only another app` : ''}`
-      : `not pinned: ${[unverified.length && `${unverified.length} check(s) did not read back pinned`, plan.left.length && `${plan.left.length} check(s) left`, plan.files.length && `${plan.files.length} committed file(s) would undo the pin`].filter(Boolean).join('; ')}`);
+      ? `pinned: every required check accepts only GitHub Actions (app ${cur.actionsAppId}), read back`
+      : `not pinned: ${[unverified.length && `${unverified.length} check(s) did not read back pinned`, plan.left.length && `${plan.left.length} check(s) left`, plan.other.length && `${plan.other.length} check(s) bound to another app`, plan.files.length && `${plan.files.length} committed file(s) would undo the pin`].filter(Boolean).join('; ')}`);
     return ok ? 0 : 1;
   }
 
   if (sub === 'token') {
-    const repo = f.repo ?? originRepo();
-    const ref = committedRef(ghCall(`repos/${repo}`).default_branch);
+    const repo = targetRepo(f);
+    const ref = committedRef(ghCall, repo, ghCall(`repos/${repo}`).default_branch);
     const current = ghCall(`repos/${repo}/actions/permissions/workflow`);
     const plan = tokenPlan(repo, committedWorkflows(ref), current);
     console.log(`default workflow token on ${repo}: ${current.default_workflow_permissions}`);

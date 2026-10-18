@@ -216,7 +216,7 @@ printed as a plan first and applies only by that plan's id, under §3 `ci-protec
 node ~/.claude/desk/bin/desk-ci.mjs classify     placement per job, with file:line
 node ~/.claude/desk/bin/desk-ci.mjs ci-lint      exit 1 on any finding
 node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 days, sampled to a call budget
-node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot | restore <file> | pin | token  [--apply <plan id>]
+node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
 **`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile

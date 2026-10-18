@@ -205,6 +205,12 @@ const T = '2026-10-18T10:00:00.000Z';
   t('the ruleset kept its other rules', s.rulesets[0].rules.map((r) => r.type).join(','), 'deletion,required_status_checks');
 }
 {
+  const { api } = fakeGitHub({ protection: stored({ required_status_checks: { strict: false, checks: [{ context: 'tests', app_id: VERCEL }] }, enforce_admins: false }), runs: RUNS });
+  const cur = snapshot({ repo: REPO, api, takenAt: T });
+  const plan = pinPlan(cur, { actionsAppId: cur.actionsAppId, actionsNames: new Set(cur.actionsChecks) });
+  t('a check bound to another app is not repointed even when an Actions job shares its name', `${plan.writes.length}/${plan.other.length}`, '0/1');
+}
+{
   const { api } = fakeGitHub({ protection: stored({ required_status_checks: { strict: false, checks: [{ context: 'e2e', app_id: -1 }] }, enforce_admins: false }), runs: RUNS });
   const cur = snapshot({ repo: REPO, api, takenAt: T });
   const plan = pinPlan(cur, { actionsAppId: cur.actionsAppId, actionsNames: new Set(cur.actionsChecks) });
@@ -228,7 +234,14 @@ const T = '2026-10-18T10:00:00.000Z';
     f('scripts/protect.sh', 'gh api repos/o/r/branches/production/protection \\\n  -X PUT \\\n  -f "required_status_checks[contexts][]=tests"\n'),
     f('scripts/pinned.sh', `gh api -X PATCH repos/o/r/branches/main/protection/required_status_checks -F 'checks[][context]=tests' -F 'checks[][app_id]=${ACTIONS}'\n`),
     f('scripts/read.sh', 'gh api repos/o/r/branches/main/protection | jq .\n'),
+    f('.github/workflows/script.yml', 'jobs:\n  p:\n    steps:\n      - uses: actions/github-script@v7\n        with:\n          script: |\n            await github.rest.repos.updateBranchProtection({ owner, repo, branch: "main",\n              required_status_checks: { strict: true, contexts: ["tests"] } })\n'),
+    f('.github/workflows/expr.yml', 'jobs:\n  p:\n    steps:\n      - run: gh api -X PUT "repos/${{ github.repository }}/branches/${{ github.event.repository.default_branch }}/protection" -f "required_status_checks[contexts][]=tests"\n'),
+    f('.github/workflows/curl.yml', 'jobs:\n  p:\n    steps:\n      - run: |\n          curl -sS https://api.github.com/repos/o/r/rulesets \\\n            -d \'{"name":"prod","rules":[]}\'\n'),
   ], ACTIONS);
+  const reported = (p) => found.some((x) => x.path === p);
+  t('an Octokit updateBranchProtection in github-script is reported', reported('.github/workflows/script.yml'), true);
+  t('a protection path with a ${{ }} expression in it is reported', reported('.github/workflows/expr.yml'), true);
+  t('curl -d to the rulesets endpoint is reported', reported('.github/workflows/curl.yml'), true);
   const at = Object.fromEntries(found.map((x) => [x.path, x]));
   t('a JSON file with bare contexts needs checks with app_id', /replace "contexts" with "checks" and set "app_id": 15368 on tests/.test(at['.github/protection/production.json']?.change), true);
   t('a JSON file that carries the pin is not reported', '.github/protection/main.json' in at, false);
