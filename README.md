@@ -33,7 +33,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-ticket` | One ticket, from triage to merged PR | `/desk-ticket ABC-123` |
 | `desk-autopilot` | A batch of tickets (or an epic's children), one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2`, `/desk-autopilot ABC-900` |
 | `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
-| `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub | `/desk-cleanup` |
+| `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub, leaked memory (scripted scans in `bin/`) | `/desk-cleanup` |
 | `desk-checkout` | Drafts your end-of-day check-out from calendar, meeting notes, Jira, GitHub, Slack and Claude Code; never sends it | `/desk-checkout` |
 | `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
 | `desk-jira` | Ticket comments, edits, transitions | loads itself |
