@@ -102,9 +102,11 @@ When a design is the specification:
 3. Placeholder copy in the design does not block the build (working-style reference).
 4. Reading the frame needs §3 `read-figma` (or the equivalent read for the design tool); without it,
    ask the user for the frame's content rather than guessing it.
-5. **A Claude Design artifact** is read with the Artifact tool (`action:list scope:files`, then the
-   files under `project/`), or, in an autopilot batch, from the snapshot the orchestrator saved in
-   `$DESK_STATE/designs/<TICKET>/project/`. `canvas.json` names each board and its width; each
+5. **A Claude Design artifact** is read from its saved copy in the repo, `<§2 Design canvases
+   directory>/<EPIC or KEY>/` (SKILL.md, "A Claude Design canvas is saved into the repo"), which the
+   Artifact tool fills (`action:list scope:files`, then the files under `project/`) and, in an
+   autopilot batch, the worker copies from the orchestrator's snapshot in
+   `$DESK_STATE/designs/<TICKET>/`. `canvas.json` names each board and its width; each
    `project/*.dc.html` board states the exact copy, colours and sizes. An artifact the user does not
    own reads as a summary, not the files: ask for access or an export rather than building from it.
    Verify against it at **every board width**: capture the build at each, and check every string,

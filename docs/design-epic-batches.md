@@ -187,8 +187,11 @@ DEPENDENCIES — from Jira links
   - never transition the epic.
 - **Lane C on size**: offer Bea's epic mode to split it, then batch the epic.
 - **Claude Design**: Stage 1, before triage, for a ticket that links a Claude Design artifact the
-  user owns: list its files and save `project/canvas.json` and `project/*.dc.html` to
-  `$DESK_STATE/designs/<KEY>/` (`Artifact read` with `paths` and `out_dir`). An artifact the user
+  user owns: list its files and save `project/canvas.json`, `project/*.dc.html` and the
+  `support.js`, stylesheets and fonts they load to `$DESK_STATE/designs/<KEY>/` (`Artifact read`
+  with `paths` and `out_dir`), then `desk-design.mjs write` records the URL, version and every
+  batch ticket using it. The worker's `desk-design.mjs save` commits it to
+  `<Design canvases directory>/<EPIC or KEY>/` on its branch (DS-51). An artifact the user
   does not own, or one that will not read, is a Stage 3 question; a worker never builds from a
   summary.
 - Red flags / rationalizations: batching an epic without stating the list; touching the epic's
@@ -201,8 +204,9 @@ DEPENDENCIES — from Jira links
 - `triage.sh` (tracker): "if it has a parent, read the parent's description for context only".
   desk-ticket Stage 0: linked issues "and, for context only, its parent".
 - **Claude Design** (`desk-ticket-routing.md`, triage's two design paragraphs, Muriel): a design
-  source is a Figma node **or a Claude Design artifact**. Read it with the Artifact tool when
-  interactive, or from `$DESK_STATE/designs/<KEY>/` in a batch. `canvas.json` gives the boards and
+  source is a Figma node **or a Claude Design artifact**. Read it from its saved copy under the
+  repo's Design canvases directory, which the Artifact tool fills when interactive and the worker
+  copies from `$DESK_STATE/designs/<KEY>/` in a batch. `canvas.json` gives the boards and
   their widths; each board's HTML gives the exact copy, colours and sizes. Verification for a Claude
   Design source: capture the build at every board width; check every visible string, colour and
   size the board states (or its copy key); a pixel diff needs the canvas runtime, so it is

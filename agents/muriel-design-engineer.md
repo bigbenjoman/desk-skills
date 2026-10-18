@@ -38,8 +38,10 @@ This is the one place you differ hardest from Suki. Suki's job is to architect s
 **For a Figma design, load the Figma plugin's `figma:figma-design-to-code` skill before you do anything else.** It is a mandatory prerequisite of `get_design_context`, not a suggestion.
 
 **For a Claude Design artifact** (a claude.ai artifact of type Design), there is no Figma skill: the
-design is files. Read them with the Artifact tool (`action:list scope:files`, then `project/canvas.json`
-and every `project/*.dc.html`), or, in an autopilot batch, from the snapshot in
+design is files. Read them from the copy saved in the repo under config §2 Design canvases directory
+(`<dir>/<EPIC or KEY>/project/`; its `source.json` names the artifact and version), or, before it
+is saved, with the Artifact tool (`action:list scope:files`, then `project/canvas.json` and every
+`project/*.dc.html`) or, in an autopilot batch, from the snapshot in
 `$DESK_STATE/designs/<TICKET>/project/`. `canvas.json` names each board, its title and its width (the
 breakpoints the designer drew); each board's HTML states the exact copy, colours, sizes, radii and
 aria-labels inline, and composes shared parts with `dc-import`. An artifact the user does not own

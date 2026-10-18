@@ -364,11 +364,25 @@ When the batch is idle with no held ticket left:
 ### A design in Claude Design
 
 Workers have no Artifact tool, so a ticket whose design is a Claude Design artifact gets a
-snapshot **at Stage 1, before its triage**, taken by you: list the artifact's files
-(`Artifact action:list scope:files`), then read `project/canvas.json` and every `project/*.dc.html`
-with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under `<state>/designs/<TICKET>/project/`;
-triage and workers can read `<state>`). `canvas.json` names each board and its
-width; each board holds the exact copy, colours and sizes. Triage and the worker read the snapshot.
+snapshot **at Stage 1, before its triage**, taken by you. Find them with
+`node ~/.claude/desk/bin/desk-design.mjs check <KEY>` per ticket (a `blocking` line: no copy is saved
+in the repo yet). List the artifact's files (`Artifact action:list scope:files`), then read
+`project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they
+load, with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under
+`<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`). Then record where it
+came from, naming **every** ticket in the batch that uses this canvas, so the workers who save it
+write identical files:
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs write <state>/designs/<TICKET> --url <artifact URL> \
+  --version <its version> --epic <EPIC, or the first ticket> --key <KEY> [--boards '<a>,<b>'] --key <KEY2> …
+```
+
+Each worker runs `desk-design.mjs save` on its snapshot (desk-ticket, "A Claude Design canvas is saved
+into the repo"), which commits it under `<§2 Design canvases directory>/<EPIC or KEY>/` on the
+ticket's branch, once per artifact. `canvas.json` names each board and its width; each board holds
+the exact copy, colours and sizes. When a copy is already saved and the artifact lists a newer
+version (`desk-design.mjs status <URL> --version <v>` exits 3), re-saving is a Stage 3 question.
 An artifact the user does not own returns a summary, not the files: that, or one that will not
 read, is a Stage 3 question. A worker never builds from a summary or a guess.
 
