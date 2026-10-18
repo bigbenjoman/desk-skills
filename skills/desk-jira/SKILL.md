@@ -197,7 +197,8 @@ It prints one line per finding and exits 1 on any blocking one:
   (TBD, TODO, decide, proposal for, needs a decision, or a question mark in Outcome, the criteria or
   Out of scope); no design link and no `No UI.` line; Size unset (not asked of a Subtask); a
   criterion that needs a Jira write, a live production run or an operator step; and `desk-design`'s
-  finding for a Claude Design link with no saved copy.
+  finding for a Claude Design link with no saved copy (advisory once autopilot has snapshotted the
+  canvas, since the worker saves it).
 - **Advisory**: no Out of scope or Verification section; a ticket key or a sibling's title named
   with no Blocks link; a status or priority line in the body; markdown that will not render (a `##`
   heading, `**bold**` or backticks in wiki markup, an unescaped `--` inside `{{ }}`).

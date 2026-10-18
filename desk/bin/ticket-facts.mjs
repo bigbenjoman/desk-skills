@@ -13,12 +13,12 @@
 // question: an unread link list must never read as "no blockers".
 // A key that is not a tracker key gets links: "n/a".
 // Every ticket also gets lint, desk-jira lint's findings [{severity, rule, message}] (a ticket file
-// is linted here, with no size), or lint_error when the lint could not run.
+// or GitHub issue is linted here, with no size), or lint_error when the lint could not run.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, ticketKind } from './desk-env.mjs';
-import { lintTicket, designRoot } from './ticket-lint.mjs';
+import { configValue, stateDir, ticketKind } from './desk-env.mjs';
+import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 
 const key = process.argv[2];
 const kind = ticketKind(key);
@@ -37,9 +37,15 @@ const asSize = (v) => {
 
 if (kind.kind !== 'tracker') {
   rec.links = 'n/a';
+  // A GitHub issue's text is the issue; every other key that is not a tracker key has a ticket file.
   const file = join(stateDir(), 'tickets', `${key}.md`);
-  if (existsSync(file)) rec.lint = lintTicket({ key, text: readFileSync(file, 'utf8'), wiki: false }, designRoot());
+  let text = null;
+  if (kind.kind === 'issue') {
+    try { text = execFileSync('gh', ['issue', 'view', key.replace(/^issue-/, ''), '--repo', String(configValue('gh-repo') ?? ''), '--json', 'body', '--jq', '.body'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (e) { rec.lint_error = lastLine(e) || 'gh issue view failed'; }
+  } else if (existsSync(file)) text = readFileSync(file, 'utf8');
   else rec.lint_error = `no ticket file at ${file}`;
+  if (text !== null) rec.lint = lintTicket({ key, text, wiki: false }, designRoot());
 } else {
   let issue = null;
   try {
@@ -56,7 +62,7 @@ if (kind.kind !== 'tracker') {
     const sizeField = Object.entries(issue.names ?? {}).find(([, n]) => /^(t-shirt )?size$/i.test(String(n).trim()))?.[0];
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
-      ?? asSize(/^\s*\**size\**\s*:\s*\**\s*([a-z]+)/i.exec(firstLine)?.[1]);
+      ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint
     // that did not run.
     try { rec.lint = JSON.parse(execFileSync('desk-jira', ['lint', key, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 })); }

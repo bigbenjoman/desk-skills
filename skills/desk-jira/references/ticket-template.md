@@ -171,8 +171,10 @@ it off and size the parent.
 1. Every section of the type is there, under its `##` heading, in this order.
 2. Every criterion is Given / When / Then, one `when` each, and a worker can do it.
 3. No status or priority line, and no size line beyond the allowed first one; no open decision; no
-   dependency in prose. `desk-jira lint body.md <type> [field=value ...]` checks these and items 1
-   and 2, and `create` refuses a blocking finding (desk-jira *House ticket format*).
+   dependency in prose. `desk-jira lint body.md <type> [field=value ...]` checks these, that the
+   criteria exist and a worker can do each one, the Design link and the Size; it does not check the
+   order of sections or the Given / When / Then shape. `create` refuses a blocking finding (desk-jira
+   *House ticket format*).
 4. After `create`: `desk-jira get <KEY>` reads the fields back. The render check (desk-jira
    *Transport*) counts one `<h2` per `##` heading sent and no `<del`.
 5. After `create`: `desk-jira link` each dependency (with Tracker `none`, the `Blocked by #<n>`

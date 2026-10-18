@@ -13,18 +13,16 @@
 //   facts     [{line, text}]: the status, priority and size lines desk-jira refuses in a body
 // Prints one `blocking: …` or `advisory: …` line per finding (or a JSON array with --json) and exits
 // 1 when any is blocking, 0 otherwise, 2 on unreadable input.
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkTicket, designDir } from './desk-design.mjs';
-import { configValue, isNone } from './desk-env.mjs';
-
-const WIKI_HEAD = /^\s*h[1-6]\.\s+(.*)$/i;
-const MD_HEAD = /^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/;
+import { canonicalUrl, checkTicket, designDir, sections } from './desk-design.mjs';
+import { configValue, isNone, stateDir } from './desk-env.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
 // code reads as prose and line numbers still match the source.
-export function blankCode(text) {
+function blankCode(text) {
   let fence = null; let macro = false;
   return String(text ?? '').split(/\r?\n/).map((l) => {
     if (macro) { if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
@@ -35,19 +33,6 @@ export function blankCode(text) {
     if (m) { if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
     return l;
   });
-}
-
-// [{name, lines: [{n, text}]}], text before the first heading under ''. Text with any `hN.` heading
-// is wiki markup, where `# item` is a list item, so only `hN.` heads it.
-export function sections(lines) {
-  const head = lines.some((l) => WIKI_HEAD.test(l)) ? WIKI_HEAD : MD_HEAD;
-  const out = [{ name: '', lines: [] }];
-  lines.forEach((text, i) => {
-    const m = head.exec(text);
-    if (m) out.push({ name: m[1].replace(/[*_]/g, '').trim(), lines: [] });
-    else out.at(-1).lines.push({ n: i + 1, text });
-  });
-  return out;
 }
 
 // Prose only: monospace, code spans and URLs say nothing about the ticket's own state.
@@ -63,7 +48,18 @@ const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|mov
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
 const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|measurement|environment)\b/i;
 const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-off\b/i;
-const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
+// The Size fallback, a first line `Size: M`, for a project with no Size field.
+export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
+
+// An artifact autopilot snapshotted into <state>/designs/ before triage: the worker saves it on its
+// branch, so its missing repo copy is not a park.
+function snapshotted(url) {
+  const base = join(stateDir(), 'designs');
+  if (!existsSync(base)) return false;
+  return readdirSync(base).some((d) => {
+    try { return canonicalUrl(JSON.parse(readFileSync(join(base, d, 'source.json'), 'utf8')).url) === canonicalUrl(url); } catch { return false; }
+  });
+}
 
 // §4 Ticket key pattern, else <§4 Jira project>-<n>; null when neither is set.
 function keyRegex() {
@@ -74,11 +70,12 @@ function keyRegex() {
   return project ? `${project}-[0-9]+` : null;
 }
 
-export function lintTicket(t, { root, dir, keyPattern = keyRegex() } = {}) {
+export function lintTicket(t, { root, dir } = {}) {
   const findings = [];
   const add = (severity, rule, message) => findings.push({ severity, rule, message });
   const lines = blankCode(t.text);
-  const secs = sections(lines);
+  const secs = sections(lines.join('\n'));
+  const keyPattern = keyRegex();
   const sec = (re) => secs.find((s) => re.test(s.name));
   const filled = (s) => !!s && s.lines.some((l) => l.text.trim());
   const all = secs.flatMap((s) => s.lines);
@@ -162,7 +159,11 @@ export function lintTicket(t, { root, dir, keyPattern = keyRegex() } = {}) {
 
   if (root && dir) {
     const issue = { key: t.key, text: t.text, fields: { parent: t.parent ?? undefined } };
-    for (const f of checkTicket(issue, { root, dir })) add(f.severity, 'design', f.message);
+    for (const f of checkTicket(issue, { root, dir })) {
+      const url = /artifact (\S+), but no copy is saved/.exec(f.message)?.[1];
+      if (f.severity === 'blocking' && url && snapshotted(url)) add('advisory', 'design', `${f.message}; autopilot has snapshotted it, so the worker saves it`);
+      else add(f.severity, 'design', f.message);
+    }
   }
   return findings;
 }

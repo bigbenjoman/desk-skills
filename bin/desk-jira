@@ -894,16 +894,19 @@ LINT_MJS="${DESK_TICKET_LINT_MJS:-$(dirname "$DESK_ENV_MJS")/ticket-lint.mjs}"
 
 # The size field's id: config §4 Size field, else the field this site names Size. Takes the names
 # map of a get with expand=names when there is one, else reads the site's field list.
+SIZE_NAME='^\s*(t-shirt )?size\s*$'
 size_field() {  # [names json]
   load_rules
   if [[ -n "$RULES_SIZE" ]]; then printf '%s' "$RULES_SIZE"; return 0; fi
   if [[ -n "${1:-}" ]]; then
-    printf '%s' "$1" | jq -r '[to_entries[] | select(.value | test("^\\s*(t-shirt )?size\\s*$"; "i")) | .key][0] // empty'
+    printf '%s' "$1" | jq -r --arg re "$SIZE_NAME" '[to_entries[] | select(.value | test($re; "i")) | .key][0] // empty'
     return 0
   fi
   if [[ -z "$FIELD_SCHEMA" ]]; then FIELD_SCHEMA=$(api GET 'api/3/field') || return 1; fi
-  printf '%s' "$FIELD_SCHEMA" | jq -r '[.[] | select(.name | test("^\\s*(t-shirt )?size\\s*$"; "i")) | .id][0] // empty'
+  printf '%s' "$FIELD_SCHEMA" | jq -r --arg re "$SIZE_NAME" '[.[] | select(.name | test($re; "i")) | .id][0] // empty'
 }
+# jq: the size field's value from a fields object, by option name; null with no size field.
+JQ_SIZE='def size_of($sf): if $sf == "" then null else (.[$sf] | if type == "object" then (.value // .name) else . end) end;'
 
 # The parent's children as [{key, summary}], or [] with no parent.
 siblings_of() {  # parent key or empty
@@ -925,9 +928,9 @@ lint_issue() {  # <issue json from get with expand=names> [--json]
   sf=$(size_field "$(printf '%s' "$1" | jq -c '.names // {}')") || return 2
   parent=$(printf '%s' "$1" | jq -r '.fields.parent.key // empty')
   sib=$(siblings_of "$parent") || return 2
-  t=$(printf '%s\n%s' "$1" "$sib" | jq -cs --arg sf "$sf" '.[0] as $i | $i.fields as $f | {
+  t=$(printf '%s\n%s' "$1" "$sib" | jq -cs --arg sf "$sf" "$JQ_SIZE"'.[0] as $i | $i.fields as $f | {
     key: $i.key, type: ($f.issuetype.name // ""), text: ($f.description // ""), wiki: true,
-    size: (if $sf == "" then null else ($f[$sf] | if type == "object" then (.value // .name) else . end) end),
+    size: ($f | size_of($sf)),
     blocks: [($f.issuelinks // [])[] | select(.type.name == "Blocks") | (.inwardIssue // .outwardIssue).key],
     parent: $f.parent, siblings: .[1]}') || return 2
   lint_run "$t" "$(printf '%s' "$1" | jq -r '.fields.description // ""')" ${2:+"$2"}
@@ -939,9 +942,9 @@ lint_draft() {  # <type> <description as sent> <fields json> [--json]
   parent=$(printf '%s' "$3" | jq -r '.parent.key // empty')
   if [[ -n "$parent" ]]; then ptype=$(api GET "api/2/issue/$parent?fields=issuetype,summary") || return 2; fi
   sib=$(siblings_of "$parent") || return 2
-  t=$(printf '%s\n%s\n%s' "$3" "$ptype" "$sib" | jq -cs --arg type "$1" --arg text "$2" --arg sf "$sf" '.[0] as $f | {
+  t=$(printf '%s\n%s\n%s' "$3" "$ptype" "$sib" | jq -cs --arg type "$1" --arg text "$2" --arg sf "$sf" "$JQ_SIZE"'.[0] as $f | {
     key: "the new ticket", type: $type, text: $text, wiki: true,
-    size: (if $sf == "" then null else ($f[$sf] | if type == "object" then (.value // .name) else . end) end),
+    size: ($f | size_of($sf)),
     blocks: [], parent: .[1], siblings: .[2]}') || return 2
   lint_run "$t" "$2" ${4:+"$4"}
 }
