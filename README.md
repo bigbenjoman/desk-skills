@@ -106,7 +106,7 @@ a filled-in proof block from live output, and it never writes to real staging wi
 and P2 only, against this repo's review bar (§4 Review bar, else the default in
 [`skills/desk-review/references/review-bar.md`](skills/desk-review/references/review-bar.md)).
 Read-only finder subagents are routed by path (Lena always; Nadia, Theo, Mira, Jim, Suki or a §4
-Review domain experts skill when their paths change, and desk-kiss's simplicity passes always),
+Review domain experts skill when their paths change, and desk-kiss's simplicity passes on every diff),
 codex refutes each finding from a different vendor, and Bea checks the diff against its ticket in both directions. Where §3 allows, it posts one
 `COMMENTED` review with a machine-readable verdict a required check can read. It never approves or
 blocks.

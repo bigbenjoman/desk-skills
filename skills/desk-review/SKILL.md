@@ -214,7 +214,7 @@ patterns err wide.
 | infra | `jim-solution-architect` | CI workflows, infrastructure as code, Dockerfiles, compose files, deploy config |
 | frontend | `suki-frontend-architect` | `*.tsx` `*.jsx` `*.vue` `*.svelte` `*.css`, message catalogues |
 | requirements | `bea-business-analyst` | a ticket, or an author-written PR description (Phase 5). **Not counted against the fleet cap.** |
-| simplicity | `general-purpose`, told to read desk-kiss's Phases 2–5 | always (below). **Not counted against the fleet cap.** |
+| simplicity | `general-purpose`, told to read desk-kiss's Phases 2–5 | every target with a diff, so not `path/to/file` (below). **Not counted against the fleet cap.** |
 
 | Tier | Fleet |
 | --- | --- |
@@ -236,7 +236,7 @@ routes to, **before** reading the diff, then to report in this bar's scale. A do
 moves money, a trade, a valuation or a regulated decision is P0. Adopting the persona from memory is
 not loading the skill; say so in the prompt.
 
-**The simplicity finder** asks "should this be smaller?" on every review, so it does not depend on
+**The simplicity finder** asks "should this be smaller?" on every review of a diff, so it does not depend on
 someone remembering to run `/desk-kiss`. Its first instruction is to Read
 `$DESK_SKILLS_DIR/desk-kiss/SKILL.md` (`desk-env paths` prints it; the default is `~/.agents/skills`)
 and run **Phases 2–5 only**: intent, the scope, speculation, duplication and commentary passes, the
