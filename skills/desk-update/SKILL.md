@@ -23,6 +23,7 @@ own source of truth; this skill checks all three and upgrades only what the user
 | **pinned third-party** (e.g. Yummy's ux/ui-designer, context-audit) | `~/.agents/skills/<name>`, linked from `~/.claude/skills` | `vendor/sources.json`: a GitHub repo path or a Google Drive folder | `skills-upstream upgrade` + review + `./install.sh` |
 | **your own / tracked live** (`checkout` entries, e.g. clerk) | a git clone at `~/.agents/skills/<name>`, or `~/.agents/sources/<name>` with `subskills` linked in | `vendor/sources.json`: `{repo, branch}` | `skills-upstream upgrade <name>` (`git pull --ff-only`; nothing to commit in desk-skills) |
 | plugin skills (superpowers, vercel, …) | the plugin cache | the plugin's marketplace | `claude plugin marketplace update` + `claude plugin update` |
+| **the status line** (a `tools` entry, not a skill) | `~/.claude/statusline-command.sh` and settings.json's `statusLine` | `vendor/sources.json` `tools.claude-statusline`: the whole repo at a pinned commit | `skills-upstream upgrade claude-statusline` (the pin only) + review, then `skills-upstream statusline install` (its own installer) |
 
 Anything else in `~/.agents/skills` or `~/.claude/skills` is **untracked**: its source is not
 recorded, so it cannot be checked. Report those; never guess a source for one.
@@ -74,7 +75,9 @@ silently.
 ## 2. Check everything
 
 ```bash
-skills-upstream outdated                  # pinned third-party skills; exit 10 = something is outdated
+skills-upstream outdated                  # pinned third-party skills and the status line; exit 10 = outdated
+skills-upstream statusline check          # exit 1: the installed status line is missing or not at the pin
+skills-upstream statusline other          # exit 0: settings.json runs another statusLine command (printed)
 skills-upstream verify                    # installed copies match vendor/ (drift, hand edits), and every
                                           # skill is reachable from ~/.claude/skills (else "Unknown skill")
 claude plugin marketplace update          # refresh the marketplaces' copies (installs nothing)
@@ -111,7 +114,9 @@ Report as one table, brew-style:
 DESK UPDATE — <date>
 desk-skills   <n> new commits pulled | up to date | skipped: <reason>
 OUTDATED      context-audit     8560b4f (2026-04-13) -> 8928560 (2026-04-13)  Vesely/skills  2 commits: "Add README…", "…"
+OUTDATED      claude-statusline 8eeb63190 (2026-08-15) -> <latest>  bigbenjoman/claude-statusline  <n> commits: "…"
 OUTDATED      plugin vercel     1.4.0 -> 1.5.1
+STATUSLINE    not at the pin: <what `statusline check` printed>; or: another statusLine command: <command>
 UNBUMPED      plugin code-simplifier  1.0.0: +LICENSE (no version bump, so nothing to update yet)
 ok            ux-designer, ui-designer, ux-copywriter, <plugins…>
 UNREACHABLE   <name>: <error>
@@ -136,18 +141,18 @@ PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills li
 ```
 
 One `skipped by install.sh` row per `SKIP` line in §1's block, none dropped. Where a skipped prompt is
-the same setting as one of the three checked rows above (the update notice, the context handoff,
-name-only listing), report it once: the checked row, with the skipped row's `skipped by install.sh:
+the same setting as one of the checked rows above (the update notice, the context handoff,
+name-only listing, the status line), report it once: the checked row, with the skipped row's `skipped by install.sh:
 <question>` and `apply:` lines under it.
 
-For each OUTDATED pinned skill, say in one or two lines **what changed upstream** (GitHub: the
+For each OUTDATED pinned skill or tool, say in one or two lines **what changed upstream** (GitHub: the
 commit subjects since the pin, `gh api "repos/<repo>/compare/<pin>...<latest>" --jq
 '.commits[].commit.message'`; Drive: the new file name and date, and the publisher's page for
 release notes).
 
 ## 3. Ask, then upgrade
 
-One `AskUserQuestion` (multi-select): which to upgrade, plus one option per SETTING and PLUGINS line
+One `AskUserQuestion` (multi-select): which to upgrade, plus one option per SETTING, STATUSLINE and PLUGINS line
 (so a run that finds nothing outdated can still offer them). First option "All outdated (Recommended)"
 only when every change reads as routine; otherwise recommend the specific ones and say why a
 particular upgrade deserves a look first (a rewritten SKILL.md, a new tool it asks to use, a
@@ -192,6 +197,15 @@ copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` firs
 PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
 For any other chosen `skipped by install.sh` row: run its `apply:` command; where that says
 `run in a terminal`, tell the user to run it there rather than doing it for them.
+
+For the status line, an upgrade is the same branch-and-PR flow as a vendored skill:
+`skills-upstream upgrade claude-statusline` moves only the pin in `vendor/sources.json` (there is no
+`vendor/` copy; show the commits from the compare above instead of a diff), and the first run on
+`main` after it merges installs it. A chosen STATUSLINE row (or its `skipped by install.sh` row) is
+installed on confirmation: copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>`,
+then `skills-upstream statusline install`, which runs the repo's own installer at the pin. Where
+`statusline other` printed a command, the row says it **replaces** that command, and it is never part
+of "All outdated": the user picks it on its own or it stays.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show
 the new version. Say that plugin and skill changes load in the **next** Claude Code session.

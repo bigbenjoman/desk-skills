@@ -36,6 +36,7 @@ run "pass (screenshots go to the current round's PR; requeue)" "$SH" "$T/test_pa
 run "queue set (JSON objects and arrays)" "$SH" "$T/test_queue_set.sh"
 run "skill links (skills-upstream links)" "$SH" "$T/test_links.sh"
 run "plugins (unbumped vs outdated)" "$SH" "$T/test_plugins.sh"
+run "status line (pinned tool, its installer, another statusLine command)" "$SH" "$T/test_statusline.sh"
 run "install_file (rename over a running script)" "$SH" "$T/test_install_file.sh"
 run "install.sh with no terminal (every skipped prompt listed)" "$SH" "$T/test_install_skips.sh"
 run "pre-push hook (stdin, no row, lock timeout)" "$SH" "$T/test_pre_push.sh"

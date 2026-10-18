@@ -895,6 +895,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
+section "Status line  -> ~/.claude/statusline-command.sh (claude-statusline)"
+
+# The status line stays its own repo; vendor/sources.json pins a commit (`tools`), and this runs the
+# repo's own installer at that commit. /desk-update moves the pin. A statusLine command that is not
+# claude-statusline's is the user's, so replacing it is its own question, never taken by --yes.
+rc=0; out="$(python3 "$SRC/bin/skills-upstream" statusline check 2>&1)" || rc=$?
+orc=0; other="$(python3 "$SRC/bin/skills-upstream" statusline other 2>/dev/null)" || orc=$?
+if [ "$orc" = 2 ]; then
+  warn "$SETTINGS is not valid JSON; fix it, then re-run to check the status line"
+elif [ "$rc" = 0 ] && [ "$orc" = 1 ]; then
+  ok "claude-statusline $out"
+elif [ "$rc" != 0 ] && [ "$rc" != 1 ]; then
+  warn "could not check the status line"; show_err "$out"
+else
+  sl_apply="cp -p \"$SETTINGS\" \"$SETTINGS.bak-desk-$TS\"; python3 \"$SRC/bin/skills-upstream\" statusline install"
+  if [ "$orc" = 0 ]; then
+    warn "$SETTINGS runs another statusLine command: $other"
+    note "claude-statusline ($out) would replace it; your command is not changed unless you say so."
+    sl_q="Replace your statusLine command with claude-statusline (settings.json backed up first)?"; sl_big=1
+  else
+    note "claude-statusline: $out"
+    note "Runs its own installer at the pinned commit: it writes ~/.claude/statusline-command.sh and"
+    note "merges a statusLine entry into ~/.claude/settings.json. Other settings are kept."
+    sl_q="Install claude-statusline (settings.json backed up first)?"; sl_big=0
+  fi
+  if confirm "$sl_q" "$sl_big" "$sl_apply"; then
+    backup_settings
+    if out="$(python3 "$SRC/bin/skills-upstream" statusline install 2>&1)"; then
+      ok "$out"; note "takes effect in the next Claude Code session"
+    else
+      warn "could not install claude-statusline"; show_err "$out"
+    fi
+  else
+    note "not installed. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------------------------
 section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
 mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
@@ -914,7 +952,7 @@ note "template /desk-setup writes from: ~/.agents/skills/desk-setup/references/d
 [ "$OS" = wsl ] && note "WSL: /desk-setup will ask for a Windows-visible handoff directory and a memory ceiling"
 
 # ---------------------------------------------------------------------------------------------
-section "Pinned third-party skills: upstream check"
+section "Pinned third-party skills and the status line: upstream check"
 
 # Upstreams change rarely, so this runs at most every 30 days; `/desk-update` or
 # `skills-upstream outdated` checks on demand. It only reports; nothing is upgraded here.
@@ -926,7 +964,7 @@ if [ -f "$SRC/vendor/sources.json" ]; then
     rc=0; out="$(python3 "$SRC/bin/skills-upstream" outdated 2>&1)" || rc=$?
     printf '%s\n' "$out" | sed 's/^/        /'
     case "$rc" in
-      0)  ok "every pinned skill matches its upstream" ;;
+      0)  ok "every pinned skill and tool matches its upstream" ;;
       10) warn "upstream has newer versions (above). Review and adopt them with /desk-update" ;;
       *)  warn "could not reach every source (above); try /desk-update later" ;;
     esac

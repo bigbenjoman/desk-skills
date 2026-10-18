@@ -51,14 +51,15 @@ rc=$?
 summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
 check "install.sh exits 0" '[ $rc -eq 0 ]'
 check "summary has a Skipped (no terminal) block with the count" \
-  '[[ "$summary" == "Skipped (no terminal): 7 prompt(s)"* ]]'
+  '[[ "$summary" == "Skipped (no terminal): 8 prompt(s)"* ]]'
 for q in "Make one real codex call to prove it can answer?" \
          "Register the attribution hook in ~/.claude/settings.json (backed up first)?" \
          "Register the update notice in ~/.claude/settings.json (backed up first)?" \
          "Register the context handoff in ~/.claude/settings.json (backed up first)?" \
          "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" \
          "Install the missing plugins now, user scope?" \
-         "List skills by name only in ~/.claude/settings.json (backed up first)?"; do
+         "List skills by name only in ~/.claude/settings.json (backed up first)?" \
+         "Install claude-statusline (settings.json backed up first)?"; do
   check "listed: $q" '[[ "$summary" == *"  SKIP  $q"* ]]'
 done
 check "every skip line is followed by an apply line" \
