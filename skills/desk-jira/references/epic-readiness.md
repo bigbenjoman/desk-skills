@@ -17,7 +17,8 @@ behind it, or merges a feature that does not hang together.
    "works well", no mechanism (file paths, component or library names, regexes) in place of
    behaviour.
 3. **Decided.** No open question, "TBD", or "pending sign-off" anywhere. Each decision is dated and
-   names its owner.
+   names its owner. A `Precondition:` line under Verification (the template's input someone else
+   supplies) is not an open question.
 4. **Order.** The planned Blocks links form no cycle and match the order the epic states.
 5. **Hidden dependencies.** Wherever one child calls, reads or renders something another child adds
    (an endpoint, a table, a component, a copy key), there is a Blocks link between them.
@@ -29,3 +30,6 @@ behind it, or merges a feature that does not hang together.
 9. **Design.** Every child that changes what a user sees links its design (Figma or Claude Design)
    or says "no UI".
 10. **Scope.** No out-of-scope line contradicts an acceptance criterion, in the epic or a child.
+11. **Template.** The epic and every child carry every section `references/ticket-template.md`
+    gives their type. No criterion is one a worker cannot do (creating Jira links, a live production
+    measurement, an operator run, a sign-off). No status, priority or dependency is written in a body.

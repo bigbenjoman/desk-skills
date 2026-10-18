@@ -221,7 +221,9 @@ read". That feedback is about the **prose**, not the content.
 
 A reviewer should never have to ask "and what about X?" about something you knew and left out. If a
 point genuinely doesn't belong in the PR, it goes in the ticket comment or a follow-up ticket (or,
-with §4 Tracker `none`, a follow-up issue or the user's notes) — never nowhere.
+with §4 Tracker `none`, a follow-up issue or the user's notes) — never nowhere. A follow-up ticket
+is written in desk-jira's `references/ticket-template.md` layout for its type, through `desk-jira`'s
+gate.
 
 ## 3. Screenshots — only when a picture shows what words can't
 

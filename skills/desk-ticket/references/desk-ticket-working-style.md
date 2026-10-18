@@ -29,6 +29,12 @@ win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 
   real copy keys (the repo's i18n keys, where it has i18n), so the follow-up is copy-only, and raise
   **one** spin-off ticket for every gap, linked `Relates` (with no tracker, list the gaps in the PR
   body for the user to raise).
+- **A ticket you file follows the desk ticket template.** A spin-off, the follow-up of a legal
+  finding, or any other ticket this ticket's work raises uses desk-jira's
+  `references/ticket-template.md` for its type (or §5 Ticket format's own sections, where it names
+  them), written through `desk-jira`'s gate. Its criteria are ones the next worker can do. Its
+  dependency on this ticket is a link, not a sentence. The sign-off a legal follow-up waits for, or
+  the final copy a placeholder spin-off waits for, is the template's `Precondition:` line.
 - **Legal or compliance content is findings-first.** Deliver the recommended change as a ticket
   comment (with no tracker, as findings to the user) and split implementation into a follow-up that
   waits for team sign-off, even when the fix is tested. When a legal change does ship, any

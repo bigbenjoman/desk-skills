@@ -182,27 +182,12 @@ colleague, costs a public retraction. When unsure whether a write sits inside a 
 
 ## House ticket format
 
-Keep it simple and readable: short sections, real file paths, no padding. **The sections come from
-§5 Ticket format**, per issue type where it distinguishes them. Read two or three recent tickets of
-the same type in §4 Jira project before writing a new one, and match their summary style (an
-`[Area]` prefix, a verb-first phrase, whatever they use). §5 Ticket format `TODO` means ask, not
-invent a house style.
-
-Whatever sections §5 names, a **Bug** needs this substance somewhere in them:
-
-- what's wrong, in two or three sentences;
-- where it was seen: the URL on §4 Staging (or §4 Production, or "local" when both are `none`),
-  the browser if relevant, the date audited;
-- numbered steps to reproduce, and expected against actual;
-- the diagnosis from the code: file:line references and the actual mechanism, and a one- or
-  two-sentence suggested fix;
-- acceptance criteria that can be checked, e.g. Given / When / Then;
-- references: related tickets, the design link, the audit id.
-
-A **Task** drops the reproduction and states its scope as a numbered list of what to do, plus the
-design link when there is one and the testing approach when it matters. A **Story**, where the
-project uses them, carries whatever richer sections §5 Ticket format gives it; use a recent Story in
-the project as the reference example.
+Keep it simple and readable: short sections, real file paths, no padding. **Every ticket follows
+`references/ticket-template.md`**: one layout each for Story and Task, Bug, Epic and Subtask, with
+its rules for criteria, dependencies, design links and decisions. That holds for a ticket written by
+hand, by Bea, or by a machine path (a spin-off, a follow-up, an L split, an epic close-out child).
+The template says how §5 Ticket format overrides it. Read two or three recent tickets of the same type in §4 Jira project before writing a new
+one, and match their summary style (an `[Area]` prefix, a verb-first phrase, whatever they use).
 
 **Never invent the substance.** If the real name, price, business rule or product data isn't in the
 ticket, a sheet or the database, ask. Invented product data costs a full revert.
@@ -309,10 +294,8 @@ it in the `create`), otherwise as the description's first line, `Size: M`. Jira'
 field to a team-managed project: it is a manual step in the project (Project settings → Issue types
 → add a Dropdown field `Size` with XS, S, M, L, XL to each type). Say so once if it is missing.
 
-**Writing an epic** (usually Bea): an epic body with the outcome, a definition of done as numbered
-Given/When/Then criteria for the feature end to end, out of scope, and decisions (dated, with the
-owner); children of size M or less, each with its own Given/When/Then criteria, out of scope, no open
-decisions, what to build on, and its design link or "no UI". **Before the user approves the set,
+**Writing an epic** (usually Bea): the epic and each child in `references/ticket-template.md`'s
+layouts, children of size M or less. **Before the user approves the set,
 run the readiness review in `references/epic-readiness.md`.** File in this order: the epic, the
 children (`parent=`), the links, then read it all back (`desk-jira children <EPIC>`). Every write
 goes through the gate above.

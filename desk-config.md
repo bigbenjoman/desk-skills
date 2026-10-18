@@ -368,7 +368,7 @@ House style for this repo. Setup proposes values from recent merged PRs and bran
 | PR body | `TODO` (sections, e.g. intro · `### Changes` · `### Testing` · optional `### Before / after`) |
 | PR lifecycle | `TODO` (e.g. draft → local review until clean → post the sweep → undraft → merge on green) |
 | Batches | serial to the merge: each PR merges as soon as it is green; a ticket sharing files starts once its predecessor merges |
-| Ticket format | `TODO` (sections a new ticket carries) |
+| Ticket format | `TODO` (`default`: desk-jira's `references/ticket-template.md`, one layout each for Story and Task, Bug, Epic and Subtask; or the repo's own sections per issue type, which carry the template's substance under their headings) |
 | Ticket comment | root cause in one sentence, fix in one sentence, PR link; skip it if a comment already carries the link |
 | Code comments | `TODO` (e.g. default none; at most one short line) |
 | User-facing copy you write | `TODO` (e.g. copy supplied by design or product ships verbatim) |
