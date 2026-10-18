@@ -341,7 +341,9 @@ codex exec --sandbox read-only 'Read the review brief in <brief> and do exactly 
 ```
 
 `<brief>` is the brief's full scratchpad path, or `desk-review-codex-brief.txt` in a worker, where
-codex runs at the worktree root beside it. On a PR also add `--cd <the PR's worktree>` after
+codex runs at the worktree root beside it. Give the call your longest foreground tool timeout
+(600000 ms), not the probe's ~120s: a cold read takes minutes, and a call cut off by a short timeout
+is a dead seat. On a PR also add `--cd <the PR's worktree>` after
 `--sandbox read-only`. The prompt stays single-quoted with no flags in its text (Phase 4's rules): the git
 commands live in the brief, never on the command line. Codex's findings are refuted by Claude
 (Phase 4). If it dies (above), the run is `same-vendor` as well as partial: codex did not read the
