@@ -137,7 +137,8 @@ PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills li
 
 One `skipped by install.sh` row per `SKIP` line in §1's block, none dropped. Where a skipped prompt is
 the same setting as one of the three checked rows above (the update notice, the context handoff,
-name-only listing), report it once, as the checked row with the skipped row's `apply:` line under it.
+name-only listing), report it once: the checked row, with the skipped row's `skipped by install.sh:
+<question>` and `apply:` lines under it.
 
 For each OUTDATED pinned skill, say in one or two lines **what changed upstream** (GitHub: the
 commit subjects since the pin, `gh api "repos/<repo>/compare/<pin>...<latest>" --jq
