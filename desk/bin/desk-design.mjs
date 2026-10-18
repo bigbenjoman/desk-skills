@@ -301,7 +301,9 @@ export function claudeDesignLinks(section) {
 // has one, else under the ticket itself.
 export function checkTicket(issue, { root, dir }) {
   const key = issue.key;
-  const text = issue.text ?? issue.fields?.description ?? '';
+  // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
+  // a code span ({{…/p/1a2b\-3c4d}}); unescaped, the link and the repo path read as written.
+  const text = String(issue.text ?? issue.fields?.description ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
   const parent = issue.fields?.parent;
   const epic = parent && (parent.fields?.issuetype?.hierarchyLevel === 1 || /epic/i.test(parent.fields?.issuetype?.name ?? '')) ? parent.key : null;
   const section = designSection(text);
@@ -325,6 +327,13 @@ function loadIssue(arg, keyOpt) {
     return { key: keyOpt ?? basename(arg).replace(/\.[^.]*$/, ''), text: raw };
   }
   if (!safeId(arg)) fail(`not a ticket key or file: ${arg}`);
+  // A work id, issue-<n> or slug has no tracker: its text is the ticket file the session wrote.
+  const kind = E.ticketKind(arg);
+  if (kind.ok && kind.kind !== 'tracker') {
+    const file = join(E.stateDir(), 'tickets', `${arg}.md`);
+    if (!existsSync(file)) fail(`${arg} is not a tracker key and has no ticket file at ${file}: write it first`);
+    return { key: arg, text: readFileSync(file, 'utf8') };
+  }
   let out;
   try { out = execFileSync('desk-jira', ['get', arg, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (e) { fail(`desk-jira get ${arg} failed: ${String(e.stderr ?? e.message).trim()}`, 2); }
