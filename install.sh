@@ -26,7 +26,8 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 HOOK="$CLAUDE_DIR/hooks/deny-ai-attribution.py"
 PROFILE_DIR="$HOME/.cache/ms-playwright-mcp/desk-profile"
 # The playwright @playwright/mcp depends on, so desk's uploader and the MCP drive one Chromium build.
-PLAYWRIGHT_VERSION="TODO"
+# Taken from @playwright/mcp 0.0.83, which pins this alpha prerelease: it moves whenever @latest does.
+PLAYWRIGHT_VERSION="1.64.0-alpha-1790635538000"
 
 PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official playwright@claude-plugins-official codex@openai-codex"
 
