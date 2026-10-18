@@ -109,10 +109,11 @@ When a design is the specification:
    `$DESK_STATE/designs/<TICKET>/`. `canvas.json` names each board and its width; each
    `project/*.dc.html` board states the exact copy, colours and sizes. An artifact the user does not
    own reads as a summary, not the files: ask for access or an export rather than building from it.
-   Verify against it at **every board width**: capture the build at each, and check every string,
-   colour and size the board states (or its copy key). Boards render only inside the canvas, so a
-   pixel diff is `UNVERIFIABLE` unless you rendered the board yourself, never `PASS`. Figma frames
-   keep the procedure above.
+   Verify against it at **every configured breakpoint and every board width**: capture the build at
+   each, put it beside the board's `screens/<board>@<width>.png` (`desk-design render`), and check
+   every string, colour and size the board states (or its copy key). A width with no image, or a
+   pair not actually compared, is `UNVERIFIABLE`, never `PASS`. The results fill desk-pr's canvas
+   table. Figma frames keep the procedure above.
 
 The build goes to that agent rather than being written here because a design node carries its own
 specification, so little of the context a handoff usually loses is at risk.

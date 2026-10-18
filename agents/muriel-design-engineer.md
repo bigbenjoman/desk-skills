@@ -87,6 +87,8 @@ Her non-negotiable rules live in her agent definition — the repo's `.claude/ag
 
 Confirm you have a `node-id`. Load the node once, sequentially — Figma rate-limits hard, and parallel calls will fail in ways that look like missing design. Capture the screenshot baseline now; you will need it at the end and re-fetching later wastes a call.
 
+For a Claude Design canvas the baseline is already in the saved copy: `screens/<board>@<width>.png`, listed in `source.json` under `screens.images`, one per board at every configured breakpoint and at the board's own width. If `source.json` has no `screens` record, or its `breakpoints` differ from the desk config's §5 Breakpoints (`desk-env list breakpoints`; unset is `390` `768` `1024` `1280` `1440`), render it first with `node ~/.claude/desk/bin/desk-design.mjs render <saved folder>` (under `with-lock.sh browser` in an autopilot batch).
+
 ### 2. Inventory Before You Type
 
 Read the comp and list, explicitly, what it is made of: which existing design-system components cover it, which tokens each colour resolves to **by role**, which typography utility each text style is, which strings need keys, which assets need exporting. Most of the mistakes in design-to-code are made in this step, not in the code.
@@ -97,7 +99,7 @@ Compose from the repo's design system, through its public entry point where it h
 
 ### 4. Verify by Looking
 
-Render it, screenshot it at the widths Figma gave you (for a Claude Design artifact: every board width in `canvas.json`), and put the two side by side. Check layout, spacing, typography, colour, radius, shadow, and alignment in that order. Iterate until it matches.
+Render it, screenshot it at the widths Figma gave you (for a Claude Design artifact: every configured breakpoint and every board width, as in "Checking a Claude Design Build" below), and put the two side by side. Check layout, spacing, typography, colour, radius, shadow, and alignment in that order. Iterate until it matches.
 
 **Never claim a visual match you have not actually looked at.** "It should match" is not a result.
 
@@ -109,7 +111,8 @@ Close the pass with an attestation. It is short by design, and its job is to mak
 ## Visual Comparison
 Design reference: <fileKey / nodeId, or path to the image>
 Loaded via:       <the exact tool call you made>
-Widths compared:  <e.g. 375, 1440>
+Widths compared:  <e.g. 375, 1440; for a Claude Design canvas one line per width:
+                   390 (interpolated): PASS | FAIL | UNVERIFIABLE — <what was compared, or why not>>
 Verdict:          PASS | FAIL | UNCERTAIN
 Differences:      <concrete numbers, or "none observed">
 ```
@@ -138,16 +141,22 @@ Where the two genuinely conflict, the design system wins on mechanism and the co
 
 ## Checking a Claude Design Build
 
-A board renders only inside the canvas, so there is usually no reference image to diff against.
-Check what the board states instead, at **every board width**, in the running build:
+Compare at **every configured breakpoint** (§5 Breakpoints) and at each board's own width, against
+that board's `screens/<board>@<width>.png` (see step 1). A width no board was drawn at is the board
+reflowed by the browser (`drawn: false` in `screens.images`): it shows what the design does there,
+not what the designer chose, so say which it was. At each width, capture the running build at the
+same viewport, put it beside the image, and check what the board states:
 
 - every visible string, verbatim, or the copy key that renders it;
 - every colour against the token it resolves to, and type size, weight and line height;
 - spacing, radius and target sizes (44px for anything tappable), with computed styles from the browser;
 - the states the boards draw (a board per state: empty, loading, error, success), each reached in the build.
 
-Record each as PASS with the measured value, FAIL with expected against actual, or `UNVERIFIABLE`
-with why. A pixel diff you could not run is `UNVERIFIABLE`, never PASS.
+Give each width one result: PASS with what you compared and the measured values, FAIL with expected
+against actual, or `UNVERIFIABLE` with why. **A comparison that did not run is never PASS**: no
+image at that width, a build you could not capture there, or a pair you did not actually look at is
+`UNVERIFIABLE`. Put the per-width results in the attestation, one line each under `Widths compared`;
+its overall verdict is PASS only when every width is. desk-pr's canvas table is built from these.
 
 ## Deviations You Must Always Report
 
