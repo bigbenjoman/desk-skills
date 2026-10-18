@@ -276,11 +276,13 @@ export function status(target, version, { root, dir } = {}) {
 // ---- check (the lint finding) -----------------------------------------------------------------
 
 // The ticket's Design section: from a `h2. Design` (Jira wiki) or `## Design` heading to the next
-// heading. Null when there is none.
+// heading. Null when there is none. Text with any `hN.` heading is wiki markup, where `# item` is a
+// numbered list item (desk-jira writes markdown's `1. item` that way), so only `hN.` heads it.
 export function designSection(text) {
   const lines = String(text ?? '').split(/\r?\n/);
-  const head = (l) => /^\s*(?:h[1-6]\.\s+|#{1,6}\s+)/i.test(l);
-  const start = lines.findIndex((l) => /^\s*(?:h[1-6]\.\s+|#{1,6}\s+)design\b/i.test(l));
+  const mark = lines.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? 'h[1-6]\\.\\s+' : '#{1,6}\\s+';
+  const head = (l) => new RegExp(`^\\s*${mark}`, 'i').test(l);
+  const start = lines.findIndex((l) => new RegExp(`^\\s*${mark}design\\b`, 'i').test(l));
   if (start < 0) return null;
   let end = lines.findIndex((l, i) => i > start && head(l));
   if (end < 0) end = lines.length;

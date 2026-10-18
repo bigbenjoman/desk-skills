@@ -127,6 +127,8 @@ t('check: No UI is clean', checkTicket(issue('h2. Design\nNo UI.'), { root: r5, 
 t('check: a markdown ticket file', checkTicket({ key: 'fix-x', text: `## Design\n${URL1}\n## Out of scope` }, { root: r5, dir: DIR })[0].severity, 'blocking');
 // desk-jira's .md conversion escapes - and _ inside a code span, so Jira holds {{docs/design/DS\-50/}}.
 t('check: wiki-escaped code spans read as written', checkTicket(issue(`h2. Design\n{{${URL1}}} · {{docs/design/DS\\-50/}}`), { root: r1, dir: DIR }).length, 0);
+// In wiki markup `# item` is a numbered item (desk-jira writes markdown's `1. item` so), not a heading.
+t('check: a wiki numbered item stays in the Design section', checkTicket(issue(`h2. Design\n# Canvas: ${URL1}\nh2. Out of scope`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
 const esc = checkTicket(issue('h2. Design\n{{https://claude.ai/design/p/ab\\-c\\_d}}'), { root: r5, dir: DIR });
 t('check: an escaped link names the unescaped URL', esc.length === 1 && esc[0].message.includes('https://claude.ai/design/p/ab-c_d,'), true);
 
