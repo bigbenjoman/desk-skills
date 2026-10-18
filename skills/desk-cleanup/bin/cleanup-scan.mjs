@@ -356,9 +356,14 @@ function removeWorktrees(o) {
     const tip = gitOut(wt, 'rev-parse', 'HEAD'); const br = gitOut(wt, 'symbolic-ref', '--short', '-q', 'HEAD') ?? 'detached'
     const copies = [...new Set([...resume, ...st.ignored.filter(isExtra), ...st.untracked])]
     const copied = []; let failed = ''
+    // One directory per worktree, never shared: two worktrees can have the same basename (one under
+    // .claude/worktrees, one in the worktrees directory), and the first's originals are gone by the
+    // time the second copies.
+    let slot = basename(wt)
+    for (let n = 2; existsSync(join(run, slot)); n++) slot = `${basename(wt)}-${n}`
     for (const f of copies) {
       const src = join(wt, f.replace(/\/$/, ''))
-      const dest = isResume(f) ? join(backups, 'resume', basename(f)) : join(run, basename(wt), f.replace(/\/$/, ''))
+      const dest = isResume(f) ? join(backups, 'resume', basename(f)) : join(run, slot, f.replace(/\/$/, ''))
       try { mkdirSync(dirname(dest), { recursive: true }); cpSync(src, dest, { recursive: true, force: true }); copied.push(`${f} -> ${dest}`) } catch (e) { failed = `${f}: ${e.message}`; break }
     }
     if (failed) { console.log(`SKIP  ${wt}: a backup copy failed (${failed}); nothing removed`); continue }

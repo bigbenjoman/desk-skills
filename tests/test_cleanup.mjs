@@ -152,6 +152,13 @@ t('remove: modified tracked file is SKIP', /^SKIP .*modified tracked files now/m
 t('remove: a live process is SKIP', /^SKIP .*a process is running inside it now \(node\(4242\)\)/m.test(rmv(live).stdout) && existsSync(live), true)
 t('remove: an unregistered path is SKIP', /^SKIP .*not a registered worktree/m.test(rmv(join(W, 'orphan-DS-21')).stdout), true)
 t('remove: the main worktree is SKIP', /^SKIP .*the main worktree/m.test(rmv(R).stdout), true)
+// two worktrees with the same basename, removed in one call: neither backup overwrites the other
+const dupA = join(W, 'dup'), dupB = join(R, '.claude', 'worktrees', 'dup')
+git(R, 'worktree', 'add', '-q', '-b', 'feat/DS-23-a', dupA); git(R, 'worktree', 'add', '-q', '-b', 'feat/DS-24-b', dupB)
+writeFileSync(join(dupA, 'SPEC.md'), 'spec A'); writeFileSync(join(dupB, 'SPEC.md'), 'spec B')
+const r3 = rmv(dupA, dupB)
+const specs = readdirSync(join(B, 'worktree-extras')).flatMap((d) => readdirSync(join(B, 'worktree-extras', d)).map((s) => join(B, 'worktree-extras', d, s, 'SPEC.md'))).filter((p) => p.includes('/dup') && existsSync(p)).map((p) => readFileSync(p, 'utf8')).sort().join(',')
+t('remove: same-named worktrees keep separate backups', `${(r3.stdout.match(/^DONE/gm) ?? []).length} ${specs}`, '2 spec A,spec B')
 const wlog = existsSync(join(T, 'watchman.log')) ? readFileSync(join(T, 'watchman.log'), 'utf8') : ''
 t('remove: watchman dropped for removed trees only, never spawned', wlog.includes(`--no-spawn watch-del ${merged}\n`) && wlog.includes(`--no-spawn watch-del ${untracked}\n`) && !/watch-del .*(dirty|live)/.test(wlog) && !/^watch-del/m.test(wlog), true)
 
