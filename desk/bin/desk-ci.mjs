@@ -182,14 +182,15 @@ function serviceHits(job) {
 
 // Images published for amd64 only, which the arm64 runner VM cannot run natively.
 const AMD64_ONLY = [/^(docker\.io\/)?postgis\/postgis(:|$)/i, /^mcr\.microsoft\.com\/mssql\/server(:|$)/i];
+// Every line of a job's `container:` and `services:` blocks, with the image it names, if any.
+function imageLines(job) {
+  return [job.keys.container, job.keys.services].filter(Boolean).flatMap(all)
+    .map((l) => ({ line: l, image: /^(?:-\s+)?(?:image|container)\s*:\s*['"]?([^'"\s]+)/.exec(l.text)?.[1] ?? null }));
+}
 function imageHits(job) {
-  const where = [job.keys.container, job.keys.services].filter(Boolean);
-  for (const k of where) {
-    for (const l of all(k)) {
-      const img = /^(?:-\s+)?(?:image|container)\s*:\s*['"]?([^'"\s]+)/.exec(l.text);
-      if (img && AMD64_ONLY.some((re) => re.test(img[1]))) return [{ line: l, kind: 'image', why: `image ${img[1]} has no arm64 build` }];
-      if (/--platform[=\s]+linux\/amd64\b/.test(l.text)) return [{ line: l, kind: 'image', why: 'container pinned to linux/amd64' }];
-    }
+  for (const { line: l, image } of imageLines(job)) {
+    if (image && AMD64_ONLY.some((re) => re.test(image))) return [{ line: l, kind: 'image', why: `image ${image} has no arm64 build` }];
+    if (/--platform[=\s]+linux\/amd64\b/.test(l.text)) return [{ line: l, kind: 'image', why: 'container pinned to linux/amd64' }];
   }
   return [];
 }
@@ -227,16 +228,24 @@ export function hostedReasons(job, wf) {
   ];
 }
 
+// A job that calls a reusable workflow, in this repo (`./…`, read in its own file) or outside it.
+function reusableCall(job) {
+  const uses = job.keys.uses;
+  if (!uses || job.keys['runs-on']) return null;
+  const local = uses.value.startsWith('./');
+  return { line: uses.line.n, uses: uses.value, local, why: local ? null : `calls ${uses.value}, a workflow outside this repo that cannot be read here` };
+}
+
 export function classify(text) {
   const wf = parseWorkflow(text);
   return wf.jobs.map((job) => {
     const reasons = hostedReasons(job, wf);
     if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: reasons[0].why, also: reasons.slice(1) };
-    const uses = job.keys.uses;
-    if (uses && !job.keys['runs-on']) {
-      return uses.value.startsWith('./')
-        ? { job: job.id, placement: 'self-hosted', line: uses.line.n, why: `calls ${uses.value}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
-        : { job: job.id, placement: 'hosted', line: uses.line.n, why: `calls ${uses.value}, a workflow outside this repo that cannot be read here`, also: [] };
+    const call = reusableCall(job);
+    if (call) {
+      return call.local
+        ? { job: job.id, placement: 'self-hosted', line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
+        : { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
     }
     const ro = job.keys['runs-on'];
     return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : ''}`, also: [] };
@@ -1006,11 +1015,9 @@ function lineHit(lines, re, kind, why) {
 
 // Everything in a job that needs a database, a preview or a browser, in line order.
 export function fullReasons(job, wf) {
-  const images = [job.keys.container, job.keys.services].filter(Boolean).flatMap(all);
-  const img = images.map((l) => ({ l, m: /^(?:-\s+)?(?:image|container)\s*:\s*['"]?([^'"\s]+)/.exec(l.text) }))
-    .find((x) => x.m && DB_IMAGE.test(x.m[1]));
+  const img = imageLines(job).find((x) => x.image && DB_IMAGE.test(x.image));
   return [
-    ...(img ? [{ line: img.l, kind: 'database', why: `database service ${img.m[1]}` }] : []),
+    ...(img ? [{ line: img.line, kind: 'database', why: `database service ${img.image}` }] : []),
     ...lineHit(job.lines, DB_ACTION, 'database', (m) => `database action ${m[1]}`),
     ...lineHit(job.lines, DB_CMD, 'database', (m) => `database command ${m[0]}`),
     ...lineHit(job.lines, DB_URL, 'database', (m) => `database URL ${m[0]}`),
@@ -1035,28 +1042,33 @@ export function checkIsJob(check, name) {
 }
 
 // The PR trigger: whether the workflow runs on pull requests, and the base branches it is limited to.
+// A reusable workflow (`workflow_call`) runs on whatever its caller runs on, PRs included, and sees
+// the caller's `github` context, so it counts as running on them with no branch filter of its own.
 function prTrigger(on) {
-  if (!on) return { runs: true, branches: null, line: null };
-  if (on.value) return { runs: /\bpull_request(_target)?\b/.test(on.value), branches: null, line: on.line.n };
+  if (!on) return { runs: true, called: false, branches: null, line: null };
+  if (on.value) {
+    const called = /\bworkflow_call\b/.test(on.value);
+    return { runs: called || /\bpull_request(_target)?\b/.test(on.value), called, branches: null, line: on.line.n };
+  }
   const m = mapping(on.block);
+  const called = 'workflow_call' in m;
   const k = m.pull_request ?? m.pull_request_target;
-  if (!k) return { runs: false, branches: null, line: on.line.n };
+  if (!k) return { runs: called, called, branches: null, line: on.line.n };
   const flow = /\bbranches\s*:\s*\[([^\]]*)\]/.exec(k.value);
-  if (flow) return { runs: true, branches: tokens(flow[1]), line: k.line.n };
+  if (flow) return { runs: true, called, branches: tokens(flow[1]), line: k.line.n };
   const b = mapping(k.block).branches;
-  return { runs: true, branches: b ? tokens(textOf(b)) : null, line: (b ?? k).line.n };
+  return { runs: true, called, branches: b ? tokens(textOf(b)) : null, line: (b ?? k).line.n };
 }
 
 export function profileJobs(text) {
   const wf = parseWorkflow(text);
   const rows = new Map(wf.jobs.map((job) => {
     const hits = fullReasons(job, wf);
-    const uses = job.keys.uses;
-    const call = uses && !job.keys['runs-on'];
+    const call = reusableCall(job);
     let r;
     if (hits.length) r = { profile: 'full', line: hits[0].line.n, why: hits[0].why, also: hits.slice(1) };
-    else if (call && !uses.value.startsWith('./')) r = { profile: 'full', line: uses.line.n, why: `calls ${uses.value}, a workflow outside this repo that cannot be read here`, also: [] };
-    else if (call) r = { profile: 'light', line: uses.line.n, why: `calls ${uses.value}: its own jobs are profiled in that file`, also: [] };
+    else if (call && !call.local) r = { profile: 'full', line: call.line, why: call.why, also: [] };
+    else if (call) r = { profile: 'light', line: call.line, why: `calls ${call.uses}: its own jobs are profiled in that file`, also: [] };
     else r = { profile: 'light', line: job.line.n, why: 'no database, preview or browser', also: [] };
     const needs = job.keys.needs;
     return [job.id, { job: job.id, name: checkNameOf(job), jobLine: job.line.n, cond: job.keys.if, needs: needs ? tokens(textOf(needs)) : [], needsLine: needs?.line.n, ...r }];
@@ -1078,9 +1090,10 @@ export function profileJobs(text) {
 export function fullIf(cond, def) {
   const gate = `!github.base_ref || github.base_ref == '${def}'`;
   if (!cond) return { action: 'add', line: null, text: `if: \${{ ${gate} }}` };
-  const raw = /^[|>]/.test(cond.value) ? cond.block.map((l) => l.text).join(' ') : cond.value;
+  const body = /^[|>]/.test(cond.value) ? cond.block.filter((l) => !l.blank) : [];
+  const raw = body.length ? body.map((l) => l.text).join(' ') : cond.value;
   const cur = unquote(raw.trim()).replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, '$1');
-  return { action: 'replace', line: cond.line.n, was: `if: ${cond.value}`, text: `if: \${{ (${cur}) && (${gate}) }}` };
+  return { action: 'replace', line: cond.line.n, end: body.length ? body.at(-1).n : cond.line.n, was: `if: ${cond.value}`, text: `if: \${{ (${cur}) && (${gate}) }}` };
 }
 
 // files: [{ file, text }]. measure: a saved measure report's JSON, or null.
@@ -1103,6 +1116,14 @@ export function profile(files, { defaultBranch, required = [], measure: m = null
     const j = skipped.find((x) => checkIsJob(check, x.name));
     return j ? [{ check, job: j.job, file: j.file, line: j.jobLine }] : [];
   });
+  // A name that is all expression reports checks no name can be matched to: any required check no
+  // job claims may be one of them.
+  const opaque = skipped.filter((j) => j.name.startsWith('${{'));
+  const everyJob = wfs.flatMap((w) => w.jobs);
+  for (const check of required) {
+    if (!opaque.length || everyJob.some((j) => checkIsJob(check, j.name))) continue;
+    for (const j of opaque) requiredFull.push({ check, job: j.job, file: j.file, line: j.jobLine, maybe: true });
+  }
   let saving = null;
   if (m) {
     let billed = 0;
@@ -1110,8 +1131,9 @@ export function profile(files, { defaultBranch, required = [], measure: m = null
     const unmatched = [];
     for (const j of skipped) {
       const w = wfs.find((x) => x.file === j.file);
-      const rows = (m.jobs ?? []).filter((r) => (r.workflow === w.name || r.workflow === w.file || r.workflow.endsWith(`/${basename(w.file)}`))
-        && checkIsJob(r.job, j.name));
+      // A called workflow's jobs are reported under the caller's workflow, as `caller / job`.
+      const rows = (m.jobs ?? []).filter((r) => (r.workflow === w.name || r.workflow === w.file || r.workflow.endsWith(`/${basename(w.file)}`)
+        || (w.trigger.called && r.job.includes(' / '))) && checkIsJob(r.job, j.name));
       if (!rows.length) unmatched.push(`${j.file} ${j.job}`);
       for (const r of rows) { billed += r.billed; self += r.self; }
     }
@@ -1133,10 +1155,16 @@ export function profileReport(p, { measureFile = null, measureHint = '', checksR
   for (const c of p.changes) {
     out.push(c.action === 'add'
       ? `  ${c.file}:${c.at}  ${c.job}  add under the job:  ${c.text}`
-      : `  ${c.file}:${c.line}  ${c.job}  replace \`${c.was}\` with:  ${c.text}`);
+      : c.end > c.line
+        ? `  ${c.file}:${c.line}-${c.end}  ${c.job}  replace \`${c.was}\` and the ${c.end - c.line} lines under it with:  ${c.text}`
+        : `  ${c.file}:${c.line}  ${c.job}  replace \`${c.was}\` with:  ${c.text}`);
   }
   for (const x of p.notes) out.push(`  ${x}`);
   for (const r of p.requiredFull) {
+    if (r.maybe) {
+      out.push(`REQUIRED CHECK MAY BE ONLY IN FULL: "${r.check}" matches no job by name, and ${r.job} (${r.file}:${r.line}) is full with a name that is an expression, so the check may be its. If it is, the plan skips it on PRs into a batch base and green blocks their merge.`);
+      continue;
+    }
     out.push(`REQUIRED CHECK ONLY IN FULL: "${r.check}" comes from ${r.job} (${r.file}:${r.line}), which the plan skips on PRs into a batch base, so the check never passes on them and green blocks their merge. Keep ${r.job} light, or leave its workflow unchanged.`);
   }
   if (!checksRead) out.push('note: no required checks read (config §4 Required checks unset or none); pass --required <check> for each to check them');

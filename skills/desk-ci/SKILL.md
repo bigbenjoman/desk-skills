@@ -217,15 +217,20 @@ It prints one line per job, the line being the one that decided it (the job's ow
 Then the plan. Every full job in a workflow that runs on pull requests gets
 `if: ${{ !github.base_ref || github.base_ref == '<default>' }}`, or its existing `if:` combined with
 that condition, so a PR into the default branch, a push, a schedule or a manual run still runs every
-job, and a PR into any other branch (a batch base) runs the light ones only. A workflow that does not
-run on pull requests needs no change. A `pull_request` trigger limited to literal branches is named,
+job, and a PR into any other branch (a batch base) runs the light ones only. A block-scalar `if:` is
+replaced together with the lines under it. A reusable workflow (`workflow_call`) runs on its
+callers' PRs and sees their `github` context, so its full jobs are gated the same way, and its
+minutes are read from the caller's `caller / job` rows. Any other workflow that does not run on pull
+requests needs no change. A `pull_request` trigger limited to literal branches is named,
 since light jobs will not run on PRs into a batch base it does not list.
 
 - **A required check only a full job reports** prints `REQUIRED CHECK ONLY IN FULL`: it would be
   skipped on every light PR, and green counts a skipped required check as not passed
   (`desk/bin/gate.mjs`), so those PRs could never merge. The checks are config §4 Required checks,
   or each `--required <check>`. A check is a job's when it is its name (`name:`, else its id), one of
-  its matrix legs `name (…)`, or `caller / job` for a reusable workflow.
+  its matrix legs `name (…)`, or `caller / job` for a reusable workflow. A full job whose name is
+  all expression (`name: ${{ matrix.suite }}`) cannot be matched, so a required check that matches
+  no job prints `REQUIRED CHECK MAY BE ONLY IN FULL` against it.
 - **The saving** comes from the newest `measure` report for the repo in the main checkout's
   `.handoffs/` (or `--measure`): the full jobs' minutes in its window ÷ its PRs with CI, per PR, times
   the child PRs per batch (`--batch-prs`, else the autopilot queue's ticket count). It is an estimate

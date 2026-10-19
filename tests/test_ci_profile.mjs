@@ -111,6 +111,37 @@ t('another name is not', checkIsJob('lint-extra', 'lint'), false);
 const text = profileReport(p);
 t('report flags the required check', text.includes('REQUIRED CHECK ONLY IN FULL: "report" comes from report (ci.yml:29)'), true);
 
+// A reusable workflow in this repo runs on its caller's PRs, so its full jobs are gated, counted
+// for required checks and saved as the caller reports them (`caller / job`).
+const shared = `name: shared
+on:
+  workflow_call:
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npx playwright test
+`;
+const pc = profile([{ file: 'ci.yml', text: ci }, { file: 'shared.yml', text: shared }], {
+  defaultBranch: 'main', required: ['shared / e2e'],
+  measure: { coveredSince: '2026-09-01', until: '2026-09-28', runs: { read: 1, completed: 1 }, prs: { withCi: 2 }, jobs: [{ workflow: 'ci', job: 'shared / e2e', runs: 2, billed: 20, self: 0 }] },
+});
+t('a called workflow\'s full job is gated', pc.changes.filter((c) => c.file === 'shared.yml').map((c) => `${c.job}:${c.action}@${c.at}`).join(' '), 'e2e:add@5');
+t('a called workflow\'s required check is flagged', pc.requiredFull.map((r) => `${r.file} ${r.job}`).join(' '), 'shared.yml e2e');
+t('a called workflow\'s minutes come from its caller\'s rows', pc.saving.billed, 20);
+
+// A block-scalar if is replaced whole, its body lines with it.
+const blockIf = "on: pull_request\njobs:\n  a:\n    if: >-\n      github.event_name == 'push' ||\n      github.actor == 'me'\n    runs-on: x\n    steps:\n      - run: npx cypress run\n";
+const pb = profile([{ file: 'b.yml', text: blockIf }], { defaultBranch: 'main' });
+t('a block-scalar if is combined from its body', pb.changes[0].text, "if: ${{ (github.event_name == 'push' || github.actor == 'me') && (!github.base_ref || github.base_ref == 'main') }}");
+t('a block-scalar if is replaced with its body lines', profileReport(pb).includes("  b.yml:4-6  a  replace `if: >-` and the 2 lines under it with:  if: ${{"), true);
+
+// A name that is all expression cannot be matched, so a required check no job claims may be its.
+const opaque = "on: pull_request\njobs:\n  suite:\n    name: ${{ matrix.suite }}\n    runs-on: x\n    steps:\n      - run: npx cypress run\n  lint:\n    runs-on: x\n    steps: [{ run: 'true' }]\n";
+const po = profile([{ file: 'o.yml', text: opaque }], { defaultBranch: 'main', required: ['integration', 'lint'] });
+t('an unclaimed required check may be an expression-named full job\'s', po.requiredFull.map((r) => `${r.check}->${r.job}${r.maybe ? ' maybe' : ''}`).join(' '), 'integration->suite maybe');
+t('report says it may be', profileReport(po).includes('REQUIRED CHECK MAY BE ONLY IN FULL: "integration" matches no job by name, and suite (o.yml:3)'), true);
+
 // ---- AC4 and AC5: the saving, from a measure report or not at all
 t('no measure: says not estimated and how to measure', /^saving: not estimated: no measure report\. Run `node ~\/\.claude\/desk\/bin\/desk-ci\.mjs measure`/m.test(text), true);
 t('no measure: summary has no saving', text.split('\n').at(-1), 'summary: jobs=9 light=3 full=6 changes=5 required_full=3 saving_per_pr=none');
