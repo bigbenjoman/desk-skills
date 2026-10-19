@@ -43,6 +43,12 @@
 # merge driver is running. Where the grants are missing, the orchestrator reports green PRs and the
 # user merges.
 #
+# Environment, for tests and for checking by hand:
+#   MERGE_DRIVER_RELEASE_ONLY=1  one release pass, then exit 0
+#   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
+#                                sleeping: 0, or 1 when the PR list could not be read
+#   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
+#
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, or another driver running.
 set -uo pipefail
 
@@ -343,14 +349,16 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
 log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
+# pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run.
+pause(){ if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-0}"; fi; sleep "$1"; }
 while true; do
   join_queue_tickets
   release_chain
 
-  list=$(prs open) || { log "could not list PRs"; sleep 120; continue; }
+  list=$(prs open) || { log "could not list PRs"; pause 120 1; continue; }
   drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 }')
-  [ -z "$ready" ] && { log "no ready batch PRs"; sleep 60; continue; }
+  [ -z "$ready" ] && { log "no ready batch PRs"; pause 60; continue; }
 
   merged=""
   while IFS="$(printf '\t')" read -r n key; do
@@ -360,5 +368,5 @@ while true; do
   done <<EOF_READY
 $ready
 EOF_READY
-  if [ -n "$merged" ]; then sleep 30; else sleep 120; fi
+  if [ -n "$merged" ]; then pause 30; else pause 120; fi
 done
