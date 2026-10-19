@@ -419,8 +419,8 @@ prints `FEATURE MODE — on` or `— off: <why>` for every epic batch; an ordina
   set its `close_out` to `true`.
 
 The plan prints the draft and one row per criterion id with its owner; a criterion with no owner, an
-owner or contributor the batch does not build, or an id the epic does not have, is a question on
-the epic. Put the draft, the table and those questions to the person at Stage 3.
+owner or contributor the batch does not build, an id the epic does not have, or owners and
+contributors that hold each other in a cycle, is a question on the epic. Put the draft, the table and those questions to the person at Stage 3.
 
 **Stage 3: approved.** File the spine under the epic through `desk-jira`'s gate (`create … parent=<EPIC>`),
 triage it (fetch as at Stage 1, `triage.sh <SPINE>`), set `"spine": "<SPINE>"` in `feature.json`,

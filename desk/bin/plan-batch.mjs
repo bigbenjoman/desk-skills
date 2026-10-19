@@ -213,10 +213,17 @@ const onCycle = new Map();
   };
   for (const r of admitted) if (idx[r.ticket] === undefined) strong(r.ticket);
 }
+// A cycle with a feature-plan hold in it is the owner table's to fix, and keeps the queue unseeded.
+const featureCycles = new Set();
+for (const [t, label] of onCycle) {
+  for (const p of preds[t] ?? []) if (onCycle.get(p) === label && holdWhy[t][p] !== 'Jira link') featureCycles.add(label);
+}
+for (const label of featureCycles) featureQs.push(`the owner table makes a dependency cycle (${label}): change an owner or a contributor in feature.json`);
+const cycleFix = (label) => (featureCycles.has(label) ? 'fix the owner table in feature.json, or the Jira links' : 'fix the Jira links');
 for (const [t] of onCycle) delete preds[t];
 for (const [t, ps] of Object.entries(preds)) {
   const bad = ps.filter((p) => onCycle.has(p));
-  for (const p of bad) ask(t, `${t} is blocked by ${p}, which is on a dependency cycle: fix the Jira links first`);
+  for (const p of bad) ask(t, `${t} is blocked by ${p}, which is on a dependency cycle: ${cycleFix(onCycle.get(p))} first`);
   preds[t] = ps.filter((p) => !onCycle.has(p));
   if (!preds[t].length) delete preds[t];
 }
@@ -385,7 +392,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
     const park = lanePark(r)
       ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
-      : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — fix the Jira links`
+      : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`
       : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once their PRs merge`
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });

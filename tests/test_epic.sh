@@ -448,6 +448,12 @@ check "a criterion with no owner, and an id the epic does not have, are question
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-1003 KAN-1050 2>&1); rc=$?
 check "an owner table with questions is not seeded" '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "question(s) on the owner table"'
 
+fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1002"},"contributors":{"DoD1":["KAN-1002"],"DoD2":["KAN-1001"]},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
+fbatch feat/epic
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-1003 KAN-1050 2>&1); rc=$?
+check "a cycle the owner table makes is a question on it, names feature.json, and is not seeded" \
+  '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "\[KAN-1000\] the owner table makes a dependency cycle (KAN-100[12] ↔ KAN-100[12])" && printf "%s" "$out" | grep -q "queue is not seeded" && [ "$(jq ".tickets | length" "$DESK_QUEUE")" = 0 ]'
+
 fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
 for v in 'C|' 'A|"size":"L"'; do
   r KAN-1050 "${v%%|*}" '[]' "${v#*|}"
