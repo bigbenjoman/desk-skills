@@ -1071,7 +1071,7 @@ export function profileJobs(text) {
     else if (call) r = { profile: 'light', line: call.line, why: `calls ${call.uses}: its own jobs are profiled in that file`, also: [] };
     else r = { profile: 'light', line: job.line.n, why: 'no database, preview or browser', also: [] };
     const needs = job.keys.needs;
-    return [job.id, { job: job.id, name: checkNameOf(job), jobLine: job.line.n, cond: job.keys.if, needs: needs ? tokens(textOf(needs)) : [], needsLine: needs?.line.n, ...r }];
+    return [job.id, { job: job.id, name: checkNameOf(job), jobLine: job.line.n, cond: job.keys.if, calls: call?.local ? call.uses : null, needs: needs ? tokens(textOf(needs)) : [], needsLine: needs?.line.n, ...r }];
   }));
   // A job that needs a full one is skipped with it, or runs and finds it skipped.
   for (let changed = true; changed;) {
@@ -1129,13 +1129,16 @@ export function profile(files, { defaultBranch, required = [], measure: m = null
     let billed = 0;
     let self = 0;
     const unmatched = [];
+    const used = new Set();
+    const ofWorkflow = (r, w) => r.workflow === w.name || r.workflow === w.file || r.workflow.endsWith(`/${basename(w.file)}`);
     for (const j of skipped) {
       const w = wfs.find((x) => x.file === j.file);
-      // A called workflow's jobs are reported under the caller's workflow, as `caller / job`.
-      const rows = (m.jobs ?? []).filter((r) => (r.workflow === w.name || r.workflow === w.file || r.workflow.endsWith(`/${basename(w.file)}`)
-        || (w.trigger.called && r.job.includes(' / '))) && checkIsJob(r.job, j.name));
+      // A called workflow's jobs are reported under each caller's workflow, as `<caller job> / job`.
+      const callers = wfs.flatMap((c) => c.jobs.filter((x) => x.calls && basename(x.calls) === basename(w.file)).map((x) => ({ wf: c, name: x.name })));
+      const rows = (m.jobs ?? []).filter((r) => !used.has(r) && checkIsJob(r.job, j.name)
+        && (ofWorkflow(r, w) || callers.some((c) => ofWorkflow(r, c.wf) && r.job.startsWith(`${c.name} / `))));
       if (!rows.length) unmatched.push(`${j.file} ${j.job}`);
-      for (const r of rows) { billed += r.billed; self += r.self; }
+      for (const r of rows) { used.add(r); billed += r.billed; self += r.self; }
     }
     const withCi = m.prs?.withCi ?? 0;
     const perPr = withCi ? (billed + self) / withCi : null;

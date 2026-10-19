@@ -124,11 +124,11 @@ jobs:
 `;
 const pc = profile([{ file: 'ci.yml', text: ci }, { file: 'shared.yml', text: shared }], {
   defaultBranch: 'main', required: ['shared / e2e'],
-  measure: { coveredSince: '2026-09-01', until: '2026-09-28', runs: { read: 1, completed: 1 }, prs: { withCi: 2 }, jobs: [{ workflow: 'ci', job: 'shared / e2e', runs: 2, billed: 20, self: 0 }] },
+  measure: { coveredSince: '2026-09-01', until: '2026-09-28', runs: { read: 1, completed: 1 }, prs: { withCi: 2 }, jobs: [{ workflow: 'ci', job: 'shared / e2e', runs: 2, billed: 20, self: 0 }, { workflow: 'ci', job: 'outside / e2e', runs: 2, billed: 50, self: 0 }] },
 });
 t('a called workflow\'s full job is gated', pc.changes.filter((c) => c.file === 'shared.yml').map((c) => `${c.job}:${c.action}@${c.at}`).join(' '), 'e2e:add@5');
 t('a called workflow\'s required check is flagged', pc.requiredFull.map((r) => `${r.file} ${r.job}`).join(' '), 'shared.yml e2e');
-t('a called workflow\'s minutes come from its caller\'s rows', pc.saving.billed, 20);
+t('a called workflow\'s minutes come from its own caller\'s rows, each row once', `${pc.saving.billed} ${pc.saving.unmatched.includes('shared.yml e2e')}`, '70 false');
 
 // A block-scalar if is replaced whole, its body lines with it.
 const blockIf = "on: pull_request\njobs:\n  a:\n    if: >-\n      github.event_name == 'push' ||\n      github.actor == 'me'\n    runs-on: x\n    steps:\n      - run: npx cypress run\n";
