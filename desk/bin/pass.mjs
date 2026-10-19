@@ -8,14 +8,30 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, st
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
-import { batchIdle, waitingOnMerge, isHeld } from './batch-state.mjs';
+import { batchIdle, waitingOnMerge, isHeld, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
+
+// The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
+// the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
+// finished batch, or an error). With --json, stdout is one object carrying the same verdict.
+const AS_JSON = process.argv.includes('--json');
+const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: EXIT.SHOW_PERSON, idle: EXIT.SHOW_PERSON, error: EXIT.SHOW_PERSON };
+function verdict(status, message, fields = {}) {
+  const code = CODES[status];
+  if (AS_JSON) {
+    console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, release_due: [], stuck: [], ...fields }));
+  } else if (status === 'error') console.error(message);
+  else console.log(message);
+  return code;
+}
+const refuse = (message) => process.exit(verdict('error', message));
+crashShowsPerson((e) => verdict('error', e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`));
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
 // DESK_DEFAULT_BRANCH here, and setup-worktree, spawn-worker and the worker all inherit it.
-try { E.applyBatchBase(); MAIN = E.repoRoot(); WORKTREES = E.worktreesDir(); } catch (e) { console.error(e.message); process.exit(4); }
+try { E.applyBatchBase(); MAIN = E.repoRoot(); WORKTREES = E.worktreesDir(); } catch (e) { refuse(e.message); }
 const BIN = E.binDir();
 const STATE = E.stateDir();
 const QUEUE_FILE = E.queueFile();
@@ -24,9 +40,10 @@ const DEFAULT_BRANCH = E.defaultBranch();
 const DRY = !!process.env.AUTOPILOT_DRY_RUN;
 
 if (!existsSync(QUEUE_FILE)) {
-  console.error(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
-  process.exit(1);
+  refuse(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
 }
+// A corrupt queue refuses here, before the pass touches anything, rather than mid-pass as a stack.
+try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
 
 // Headless workers cannot ask, so spawning needs the grant up front. Harvesting what is already
 // running does not, so a revoked or unset grant stops spawns, never the report.
@@ -59,11 +76,7 @@ function claim() {
     try {
       const { pid, since } = JSON.parse(readFileSync(LOCK, 'utf8'));
       process.kill(pid, 0);                       // throws if that process is gone
-      if (pid !== process.pid) {
-        console.error(`another orchestrator holds the lock (pid ${pid}, since ${since}).`);
-        console.error(`if it is dead, remove ${LOCK}`);
-        process.exit(1);
-      }
+      if (pid !== process.pid) refuse(`another orchestrator holds the lock (pid ${pid}, since ${since}).\nif it is dead, remove ${LOCK}`);
     } catch { /* stale lock from a dead process — take it */ }
   }
   writeFileSync(LOCK, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
@@ -91,7 +104,7 @@ const shOut = (cmd, args, opts = {}) => {
   catch (e) { return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
 const q = (...args) => sh('node', [join(BIN, 'queue.mjs'), ...args], { tolerant: true });
-const queue = () => JSON.parse(readFileSync(QUEUE_FILE, 'utf8'));
+const queue = () => readQueue(QUEUE_FILE);
 
 // ---- liveness ------------------------------------------------------------
 let live = [];
@@ -105,7 +118,10 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [] };
+// A stall only the person can clear (a budget, a config row, a grant, a deliberate re-run), unlike low
+// memory, which drains by itself.
+const personStall = (line) => { report.stalled.push(line); report.personStalls.push(line); };
 const uploadPerm = E.permission('pr-images');
 
 // ---- advance running tickets --------------------------------------------
@@ -262,16 +278,16 @@ try {
   const b = fresh.budget_usd != null ? E.parseBudget(fresh.budget_usd, 'the queue\'s budget_usd') : E.batchBudget();
   cap = b.off ? 0 : b.usd;
 } catch (e) { budgetBad = e.message; }
-if (budgetBad) report.stalled.push(`${budgetBad} — not spawning until it is fixed`);
+if (budgetBad) personStall(`${budgetBad} — not spawning until it is fixed`);
 const overBudget = !!budgetBad || (cap > 0 && spent >= cap);
-if (cap > 0 && spent >= cap) report.stalled.push(`batch budget reached: $${spent.toFixed(2)} of $${cap} — not spawning anything further`);
+if (cap > 0 && spent >= cap) personStall(`batch budget reached: $${spent.toFixed(2)} of $${cap} — not spawning anything further`);
 
 // Config §3b "Worker models": each worker runs on its ticket's tier, or on the session default
 // when the row is `default`. A malformed row holds every spawn, the way a malformed budget does.
 let models = { off: true };
 let modelsBad = null;
 try { models = E.workerModels(); } catch (e) { modelsBad = e.message; }
-if (modelsBad) report.stalled.push(`${modelsBad} — not spawning until it is fixed`);
+if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -341,12 +357,12 @@ const eligibleBase = all.filter((r) =>
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 const eligible = eligibleBase.filter((r) => !alreadyFinished(r));
 if (!maySpawn && eligible.length) {
-  report.stalled.push(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
+  personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
     (headlessPerm === 'ask' ? ' — confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1' : ' — run /desk-setup to grant it'));
 }
 // Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
 if (blockedByDone.length) {
-  report.stalled.push(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
+  personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
@@ -508,6 +524,12 @@ for (const t of releaseDue) {
   else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running: release it (queue.mjs set ${t.key} state=triaged park=null held_by=null, then queue.mjs front ${t.key})`);
 }
 for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (failed, parked, no PR, or a closed PR): decide whether it waits, is released, or is dropped`);
+// A failed ticket waits on the person until it is requeued or dropped. This pass's failures are
+// printed under `failed:` with their reason, and reach the verdict's `waiting` from there.
+const failedThisPass = new Set(report.failed.map((x) => x.split(':')[0]));
+for (const t of Object.values(qNow.tickets).filter((r) => r.state === 'failed' && !failedThisPass.has(r.key))) {
+  report.waiting.push(`${t.key}: FAILED — requeue it (queue.mjs requeue ${t.key}), finish it by hand, or drop it`);
+}
 
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 
@@ -519,12 +541,31 @@ const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ??
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
-const needsHuman = [...report.waiting, ...report.parked];
-if (needsHuman.length) console.log(`NOTIFY: ${needsHuman.length} ticket(s) need you — ${needsHuman.map((x) => x.split(':')[0]).join(', ')}`);
-console.log(out.length ? out.join('\n') : 'no change this pass');
-console.log(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
-console.log('');
-console.log(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 
-const idle = batchIdle(queue(), prState);
-if (idle) console.log('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+// ---- verdict -------------------------------------------------------------
+// Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can
+// clear, unanswered questions, and every ticket parked for its own reason (a hold is not one: it
+// releases by itself).
+const qEnd = queue();
+const waiting = [
+  ...report.failed,
+  ...report.waiting,
+  ...report.personStalls,
+  ...blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
+];
+const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
+const idle = batchIdle(qEnd, prState);
+const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : report.spawned.length ? 'go_on' : 'nothing_yet';
+const lines = [];
+const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
+if (needsYou.length) lines.push(`NOTIFY: ${needsYou.length} item(s) need you — ${[...new Set(needsYou)].join(', ')}`);
+else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run');
+lines.push(out.length ? out.join('\n') : 'no change this pass');
+lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
+lines.push('');
+lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
+if (idle) lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+// exitCode, not exit(): a long report to a pipe must flush before the process ends.
+process.exitCode = verdict(status, lines.join('\n'), {
+  waiting, parked, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
+});

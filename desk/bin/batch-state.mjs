@@ -1,5 +1,37 @@
 // What a batch's queue says about itself, shared by pass.mjs and queue.mjs. Pure: takes the parsed
-// queue, reads nothing.
+// queue, reads nothing. Also the exit-code contract every orchestration script shares, and the one
+// place they read the queue and triage records, so a corrupt file refuses the same way in all four.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+// pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
+// on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
+// error, a refusal, a ticket that needs them, or a finished batch).
+export const EXIT = Object.freeze({ GO_ON: 0, NOTHING_YET: 10, SHOW_PERSON: 11 });
+
+// A refusal the person can act on: thrown where a predictable bad input is met, it reaches them as its
+// message, never as a stack.
+export class Refusal extends Error {}
+export const describeCrash = (e) => (e instanceof Refusal ? e.message : e?.stack ?? String(e));
+
+// A JSON state file read at the point of use: a missing, unreadable or corrupt one refuses with the
+// action that fixes it, never a bare JSON.parse stack.
+export function readJsonOrRefuse(path, action) {
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch (e) { throw new Refusal(`${path} could not be read (${e.code ?? e.message}): ${action}`); }
+  try { return JSON.parse(text); } catch (e) { throw new Refusal(`${path} is not valid JSON (${e.message}): ${action}`); }
+}
+// The two every script reads: the batch queue and a ticket's triage record.
+export const readQueue = (path) => readJsonOrRefuse(path,
+  `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`);
+export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
+
+// A crash is a refusal like any other: it exits SHOW_PERSON, never node's own 1. `report` prints it.
+export function crashShowsPerson(report = (e) => console.error(describeCrash(e))) {
+  const die = (e) => { try { report(e); } finally { process.exit(EXIT.SHOW_PERSON); } };
+  process.on('uncaughtException', die);
+  process.on('unhandledRejection', die);
+}
 
 export const HELD_PREFIX = 'held by orchestrator';
 

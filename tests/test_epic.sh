@@ -330,7 +330,7 @@ printf '{"parent":"KAN-100","containers":{"KAN-120":{"subtasks":["KAN-121","KAN-
 node "$B/queue.mjs" init t >/dev/null; node "$B/queue.mjs" set-batch epic=KAN-100 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-103 KAN-102 KAN-101 KAN-104 KAN-105 KAN-106 KAN-107 KAN-108 KAN-109 KAN-110 KAN-111 KAN-131 KAN-132 KAN-133 KAN-134 KAN-121 KAN-122 KAN-123 KAN-124 2>&1); rc=$?
 qg(){ jq -r ".tickets[\"$1\"]$2" "$DESK_QUEUE"; }
-check "plan-batch ran" '[ $rc -eq 0 ]'
+check "plan-batch ran, and exits 11: parks and questions need the person" '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "^NEEDS YOU BEFORE STAGE 3"'
 check "in-batch blocker: successor held with release_chain's prefix" \
   '[ "$(qg KAN-102 .state)" = parked ] && [[ "$(qg KAN-102 .park.question)" == "held by orchestrator"* ]] && [ "$(qg KAN-102 .held_by)" = KAN-101 ]'
 check "held_by unions every in-batch blocker" '[ "$(qg KAN-103 .held_by)" = "KAN-101|KAN-102" ]'
@@ -375,7 +375,7 @@ r KAN-303 A '[]' '"lint":[{"severity":"blocking","rule":"criteria","message":"no
 node "$B/queue.mjs" init t3 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-301 KAN-302 KAN-303 2>&1); rc=$?
 check "inconclusive challenge: plan marks the lane UNCHECKED" \
-  '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^KAN-301  lane C .*UNCHECKED" && printf "%s" "$out" | grep -q "challenge INCONCLUSIVE.*git show main:src/a.ts: denied"'
+  '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "^KAN-301  lane C .*UNCHECKED" && printf "%s" "$out" | grep -q "challenge INCONCLUSIVE.*git show main:src/a.ts: denied"'
 check "inconclusive challenge: listed as a question to confirm or re-lane, with the failed reads" \
   'printf "%s" "$out" | grep -q "\[KAN-301\] lane C is unchecked.*git show main:src/a.ts: denied.*re-lane"'
 check "a confirmed challenge is not asked again" \

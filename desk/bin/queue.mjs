@@ -4,11 +4,14 @@
 // Lives outside any repo so worktree churn cannot take it. Single writer (the
 // orchestrator); workers never touch it — their state is derived from their own
 // logs plus `claude agents --json`. Created on first use; never shipped.
+// Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, waitingOnMerge, lanePark } from './batch-state.mjs';
+import { isHeld, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING } from './desk-env.mjs';
+
+crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
 // The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
 // real branch on origin, never the config's default (that is no override) and never a production
@@ -35,13 +38,9 @@ const empty = () => ({ version: 1, batch: null, concurrency: concurrencyLimits()
 
 function load() {
   if (!existsSync(QUEUE)) return empty();
-  try {
-    return JSON.parse(readFileSync(QUEUE, 'utf8'));
-  } catch (e) {
-    // A torn or hand-mangled queue must never read as "no tickets" — that would
-    // silently re-spawn work that is already running.
-    throw new Error(`queue at ${QUEUE} is unreadable (${e.message}). Fix or move it; refusing to continue.`);
-  }
+  // A torn or hand-mangled queue must never read as "no tickets" — that would
+  // silently re-spawn work that is already running.
+  return readQueue(QUEUE);
 }
 
 function save(q) {
@@ -194,7 +193,7 @@ switch (cmd) {
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
-    const r = JSON.parse(readFileSync(recPath, 'utf8'));
+    const r = readTriage(stateDir(), key);
     const size = String(r.size ?? '').toUpperCase();
     const park = lanePark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
     const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
@@ -206,7 +205,7 @@ switch (cmd) {
       if (['done', 'failed'].includes(other.state)) continue;
       const op = join(stateDir(), 'triage', `${k}.json`);
       if (!existsSync(op)) continue;
-      const files = JSON.parse(readFileSync(op, 'utf8')).files_in_scope ?? [];
+      const files = readTriage(stateDir(), k).files_in_scope ?? [];
       if (files.some((f) => mine.has(f))) {
         collides.push(k);
         other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
@@ -355,10 +354,9 @@ switch (cmd) {
   }
 
   default:
-    console.log('usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|front|drop|get|list|render');
-    process.exit(cmd ? 1 : 0);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|front|drop|get|list|render`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
-  process.exit(1);
+  process.exit(EXIT.SHOW_PERSON);
 }

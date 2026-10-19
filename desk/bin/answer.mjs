@@ -6,12 +6,15 @@
 // it resumes, is requeued, or is finished by hand is the orchestrator's decision (the autopilot
 // skill and orchestrator-recovery.md), because a park can be a lane C/D ticket that must not run
 // unattended at all, and un-parking here once sent exactly such a ticket to a headless worker.
+// Exits 0 once the answer is recorded, or 11 (show the person) on any refusal or error: EXIT in
+// batch-state.mjs.
 import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, SAFE_ID } from './desk-env.mjs';
-import { isHeld, HELD_PREFIX } from './batch-state.mjs';
+import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue } from './batch-state.mjs';
 
+crashShowsPerson();
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
 
@@ -19,11 +22,11 @@ const [ticket, ...rest] = process.argv.slice(2);
 const text = rest.join(' ').trim();
 if (!ticket || !text) {
   console.error('usage: answer.mjs <TICKET> "<the answer>"');
-  process.exit(1);
+  process.exit(EXIT.SHOW_PERSON);
 }
 if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
   console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
-  process.exit(2);
+  process.exit(EXIT.SHOW_PERSON);
 }
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
@@ -86,7 +89,7 @@ else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 // to spawn, and answering them is exactly what the user was asked to do. A parked ticket's count
 // clears too, but it is left parked, with its park intact, for the orchestrator to decide.
 try {
-  const Q = existsSync(queueFile()) ? JSON.parse(readFileSync(queueFile(), 'utf8')) : { tickets: {} };
+  const Q = existsSync(queueFile()) ? readQueue(queueFile()) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
     const st = Q.tickets[ticket].state;
     if (isHeld(Q.tickets[ticket])) {
@@ -112,5 +115,5 @@ try {
   }
 } catch (e) {
   console.error(`answer recorded, but the queue could not be updated: ${e.message}`);
-  process.exit(1);
+  process.exit(EXIT.SHOW_PERSON);
 }

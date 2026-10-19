@@ -67,6 +67,8 @@ const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
   out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && p.base === at('--base'))
     .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft })));
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
+  out(String(prs[a[2]]?.state ?? '').toUpperCase());
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
@@ -93,7 +95,9 @@ cat > "$T/stub/sleep" <<'EOF'
 echo "$*" >> "$FAKE_SLEEPS"
 kill -TERM "$PPID"
 EOF
-chmod +x "$T/stub/gh" "$T/stub/sleep"
+# pass.mjs runs beside the driver: the fake registry has no live session.
+printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
+chmod +x "$T/stub/gh" "$T/stub/sleep" "$T/stub/claude"
 
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" FAKE_SLEEPS="$T/sleeps"
@@ -101,6 +105,9 @@ cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 qf(){ jq -r --arg k "$1" ".tickets[\$k]$2" "$DESK_QUEUE"; }
 loop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" 2>&1); rc=$?; }
+# One orchestrator pass, its verdict as JSON on stdout.
+pj(){ out=$(AUTOPILOT_MIN_AVAIL_GB=0 node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
+js(){ printf '%s' "$out" | jq -r "$1" 2>/dev/null; }
 merged(){ cut -d' ' -f1 "$T/merges.log" 2>/dev/null | paste -sd' ' -; }
 SHA1=1111111111111111111111111111111111111111; SHA2=2222222222222222222222222222222222222222
 SHA4=4444444444444444444444444444444444444444; SHA5=5555555555555555555555555555555555555555
@@ -114,7 +121,7 @@ cat > "$T/prs.json" <<EOF
 EOF
 q init merge-driver
 for k in T-1 T-2 T-3 T-4 T-5; do q add "$k" Task A; q set "$k" "branch=fix/$k"; done
-for k in T-1 T-2 T-4 T-5; do q set "$k" state=done; done
+for k in T-1 T-2 T-4 T-5; do q set "$k" state=done "result.pr=10${k#T-}"; done
 q set T-3 state=triaged; q hold T-3 T-1
 
 # ---- loop 1: every PR is evaluated, nothing merges yet ------------------------------------------
@@ -124,6 +131,8 @@ check "AC5: the driver targets the default branch with no batch base" 'echo "$ou
 check "AC2: a first green loop records the heads and merges nothing" '[ -z "$(merged)" ] && echo "$out" | grep -q "#101 green at 111111111" && echo "$out" | grep -q "#102 green at 222222222"'
 check "AC3: the red PR is not merged and the log names its failing check" 'echo "$out" | grep -q "#104 red at 444444444: \"lint\" failure"'
 check "AC4: the held ticket stays held while its blocker is open"   '[ "$(qf T-3 .state)" = parked ]'
+pj
+check "pass: held behind an open PR, nothing else left, exits 10"  '[ $rc -eq 10 ] && [ "$(js .status)" = nothing_yet ] && [ "$(js "[.release_due, .stuck] | flatten | length")" = 0 ]'
 
 # ---- loop 2: the first green PR merges, pinned, and its held ticket is released -----------------
 loop
@@ -136,7 +145,14 @@ check "AC4: the released ticket is at the front of the queue"        '[ "$(jq -r
 loop
 check "AC2: both green PRs merged within three loops, one per loop" '[ "$(merged)" = "101 102" ] && grep -qx "102 main $SHA2" "$T/merges.log"'
 
+# ---- pass.mjs: a release due with no driver running is the person's; the next loop releases it -----
+q set T-3 state=done
+q add T-6 Task A; q set T-6 state=triaged branch=fix/T-6; q hold T-6 T-2
+pj
+check "pass: every blocker merged and no driver running exits 11, release due" '[ $rc -eq 11 ] && [ "$(js .notify)" = true ] && [ "$(js ".release_due | join(\",\")")" = T-6 ] && js ".waiting[]" | grep -q "^T-6: RELEASE DUE"'
+
 loop
+check "the driver releases the ticket pass.mjs reported due"         '[ "$(qf T-6 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-6"'
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'

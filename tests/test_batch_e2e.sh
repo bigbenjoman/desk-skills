@@ -152,7 +152,7 @@ export PATH="$T/stub:/usr/bin:/bin:/usr/sbin:/sbin" DESK_CONFIG="$T/config.md" D
   AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test-orchestrator
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-pass(){ out=$(node "$B/pass.mjs" 2>&1); }
+pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
 state(){ field "$1" state | tr -d '"'; }
 # A triage record as triage.sh writes one: the fields queue.mjs admit reads, and pass.mjs's size.
@@ -179,25 +179,25 @@ for k in T-1 T-2 T-3; do q admit "$k"; done
 check "admit reads the fixture records and marks the collision" '[ "$(state T-3)" = triaged ] && [ "$(field T-3 collides_with)" = "\"T-1\"" ]'
 
 pass
-check "the first pass spawns both independent tickets"       '[ "$(state T-1)" = running ] && [ "$(state T-2)" = running ] && live T-1 && live T-2'
+check "the first pass spawns both independent tickets, and exits 0" '[ $rc -eq 0 ] && [ "$(state T-1)" = running ] && [ "$(state T-2)" = running ] && live T-1 && live T-2'
 check "the colliding ticket does not spawn beside its blocker" '[ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ] && echo "$out" | grep -q "held back by a collision: T-3"'
 check "each worker runs in its own worktree on its own branch"  'grep -q "\"cwd\":\"$T/wt/T-1\"" "$T/runs/T-1.1" && [ "$(git -C "$T/wt/T-1" branch --show-current)" = fix/T-1 ]'
 check "each worker passed a real preflight first"               '[ "$(grep -c "^claude preflight" "$T/calls.log")" = 2 ]'
 check "with no Worker models row, no worker or preflight is passed a model" '[ "$(ran_on T-1 1)" = none ] && [ "$(ran_on T-2 1)" = none ] && [ "$(grep -c "^claude preflight model=none$" "$T/calls.log")" = 2 ] && [ "$(field T-1 model)" = "\"default\"" ]'
 
 pass
-check "a pass while both run spawns nothing more"               '[ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ]'
+check "a pass while both run spawns nothing more, and exits 10" '[ $rc -eq 10 ] && [ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ]'
 
 finish T-1; finish T-2
 pass
 check "both tickets reach done with the PRs their workers printed" '[ "$(state T-1)" = done ] && [ "$(field T-1 result.pr)" = 101 ] && [ "$(state T-2)" = done ] && [ "$(field T-2 result.pr)" = 102 ]'
 check "the stage a worker printed is recorded"                  '[ "$(field T-1 stage)" = "\"4/9\"" ]'
-check "the held ticket spawns once its blocker has finished"    '[ "$(state T-3)" = running ] && live T-3'
+check "the held ticket spawns once its blocker has finished"    '[ $rc -eq 0 ] && [ "$(state T-3)" = running ] && live T-3'
 
 finish T-3
 pass
 check "the held ticket reaches done"                            '[ "$(state T-3)" = done ] && [ "$(field T-3 result.pr)" = 103 ]'
-check "the batch stops spawning: IDLE"                          'echo "$out" | grep -q "^IDLE"'
+check "the batch stops spawning: IDLE, and the finished batch exits 11" '[ $rc -eq 11 ] && echo "$out" | grep -q "^IDLE"'
 pass
 check "a further pass spawns nothing"                           '[ "$(grep -c "^claude worker" "$T/calls.log")" = 3 ] && echo "$out" | grep -q "^IDLE"'
 
@@ -207,7 +207,7 @@ printf 'WAIT\nAUTOPILOT_DONE: pr=104 jira=none\n' > "$T/scripts/T-4.1"
 q admit T-4; q admit T-5; q hold T-5 T-4
 pass; finish T-4
 pass
-check "a finished blocker with an open PR keeps the batch waiting on its merge" '[ "$(state T-4)" = done ] && [ "$(state T-5)" = parked ] && [ ! -e "$T/runs/T-5.1" ] && echo "$out" | grep -q "WAITING ON MERGE: T-5 (T-4)" && ! echo "$out" | grep -q "^IDLE"'
+check "a finished blocker with an open PR keeps the batch waiting on its merge, exit 10" '[ $rc -eq 10 ] && [ "$(state T-4)" = done ] && [ "$(state T-5)" = parked ] && [ ! -e "$T/runs/T-5.1" ] && echo "$out" | grep -q "WAITING ON MERGE: T-5 (T-4)" && ! echo "$out" | grep -q "^IDLE"'
 q drop T-5
 
 # ---- AC3: a worker parks with a question; answered and requeued, a second worker finishes it ------
@@ -217,12 +217,12 @@ printf 'WAIT\nAUTOPILOT_DONE: pr=106 jira=none\n' > "$T/scripts/T-6.2"
 q admit T-6
 pass; finish T-6
 pass
-check "a worker that parks leaves the ticket parked with its question" '[ "$(state T-6)" = parked ] && field T-6 park | grep -q "which fixture helper"'
-out=$(node "$B/answer.mjs" T-6 "use makeFixture from tests/helpers" 2>&1)
-out=$(node "$B/queue.mjs" requeue T-6 2>&1)
-check "the answered ticket requeues"                            '[ "$(state T-6)" = triaged ]'
+check "a worker that parks leaves the ticket parked with its question, exit 11" '[ $rc -eq 11 ] && [ "$(state T-6)" = parked ] && field T-6 park | grep -q "which fixture helper"'
+out=$(node "$B/answer.mjs" T-6 "use makeFixture from tests/helpers" 2>&1); arc=$?
+out=$(node "$B/queue.mjs" requeue T-6 2>&1); rc=$?
+check "the answered ticket requeues, answer and requeue exit 0" '[ $arc -eq 0 ] && [ $rc -eq 0 ] && [ "$(state T-6)" = triaged ]'
 pass
-check "a second worker spawns for the requeued ticket"          '[ "$(state T-6)" = running ] && [ -e "$T/runs/T-6.2" ]'
+check "a second worker spawns for the requeued ticket, exit 0"  '[ $rc -eq 0 ] && [ "$(state T-6)" = running ] && [ -e "$T/runs/T-6.2" ]'
 check "the second worker's briefing carries the answer"         'grep -q "use makeFixture from tests/helpers" "$T/runs/T-6.2"'
 finish T-6
 pass
@@ -234,7 +234,7 @@ printf 'WAIT\nAUTOPILOT_STAGE: 3/9 implement\n' > "$T/scripts/T-7.1"
 q admit T-7
 pass; finish T-7
 pass
-check "a worker with no done marker and no PR is reported failed" '[ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
+check "a worker with no done marker and no PR is reported failed, exit 11 naming it" '[ $rc -eq 11 ] && echo "$out" | grep -q "^NOTIFY: .*T-7" && [ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
 out=$(node "$B/queue.mjs" requeue T-7 2>&1)
 check "with no Worker models row, a requeue after a failure claims no model change" '[ "$(field T-7 model_tier)" = null ] && [ "$(field T-7 model_note)" = null ] && ! echo "$out" | grep -q "high model"'
 q drop T-7
