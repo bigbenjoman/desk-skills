@@ -143,12 +143,20 @@ node ~/.claude/desk/bin/desk-ci.mjs measure [--repo owner/name] [--days 90] [--b
 smaller of `--budget` and what the rate limit has left above a reserve (a tenth of the limit, at
 least 100), re-reads the limit every 100 calls because other sessions spend it too, and refuses to
 start when the limit is already under the reserve. The run and PR lists take at most half and a
-further 15% of the calls; what remains reads jobs. When that cannot cover every run, it reads at
-least one run of every stratum (a workflow's red or re-run runs, and its others, in one calendar
-month by run creation date), then every red or re-run run, then shares the rest out in proportion to
-each stratum's unread runs, spread evenly within it. It scales minutes back up per stratum, each read
-run standing for its stratum's unread ones, so each month's minutes, and its minutes per merged PR,
-come from that month's own runs; it marks those figures `(est.)`. A stratum with no run read carries
+further 15% of the calls; what remains reads jobs. When that cannot cover every run, it samples per
+stratum: a workflow's red or re-run runs, and its others, in one calendar month by run creation
+date. A workflow is its file (the run's `path`), so Dependabot's runs, each named after its update,
+are one workflow; the report names a workflow by its runs' name when they share one, else by its
+file. It reads first every run that did not pass and lasted (run start to last update) past the 6 h
+hosted cap, since only such a run can hold a stuck job; then at least one run of every stratum; then
+every red or re-run run. The rest go to the other strata: each first gets 3 reads (or all its runs,
+if fewer), then each further read goes where it most narrows its month's minutes, in proportion to
+the stratum's runs times the spread of their lengths over its month's total length (Neyman
+allocation, per month). Within a stratum, the reads are spread evenly over its runs ordered by
+length. It scales minutes back up per stratum, each read run standing for its stratum's unread ones,
+so each month's minutes, and its minutes per merged PR, come from that month's own runs; it marks
+those figures `(est.)`. A run read with a capped job stands for itself alone, so its 360 minutes are
+never multiplied by its stratum's weight. A stratum with no run read carries
 no minutes and the header counts its runs. An unread run is red or green by its own conclusion alone. The report's header states the calls made, the allowance, whether
 it sampled, and any narrowing of the window. Repeat with a larger `--budget` (or after the limit
 resets) rather than trusting a sampled figure close to a decision.

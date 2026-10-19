@@ -169,6 +169,55 @@ t('and the full recount is per month', JSON.stringify(full.months.map((x) => x.b
 const one = measure({ runs: allRuns, jobs: new Map([[200, fullJobs.get(200)]]), prs: [], since: '2026-07-20', until: '2026-10-17' });
 t('a month with no run read is unmeasured, not borrowed', `${JSON.stringify(one.months.map((x) => [x.month, x.billed]))} ${one.runs.unmeasured}`, '[["2026-07",100]] 20');
 
+// ---- sampling: a workflow is its file, not its run name
+// Dependabot names every run after its update. Grouped by name, each would be a stratum of one taking
+// a read of its own; grouped by file they are one stratum, and one row of the report.
+const T6 = '2026-09-05T00:00:00Z';
+const depRuns = Array.from({ length: 12 }, (_, i) => run({ id: 300 + i, name: `npm_and_yarn in /. - Update #${i}`, path: 'dynamic/dependabot/dependabot-updates',
+  event: 'dynamic', head_sha: `d${i}`, head_branch: 'main', conclusion: 'success', created_at: iso(T6, i * 3600), updated_at: iso(T6, i * 3600 + 120) }));
+const ciRuns = Array.from({ length: 30 }, (_, i) => run({ id: 320 + i, path: '.github/workflows/ci.yml', event: 'push', head_sha: `c${i}`, head_branch: 'main',
+  conclusion: 'success', created_at: iso(T6, i * 3600), updated_at: iso(T6, i * 3600 + 60 * (2 + (i % 5) * 4)) }));
+const byFile = pickSample([...depRuns, ...ciRuns], 10);
+t('runs of one workflow file share a stratum whatever their names', byFile.filter((r) => r.id < 320).length, 3);
+const fileJobs = new Map([...depRuns, ...ciRuns].map((r) => [r.id, [job(r.created_at, { name: 'j', conclusion: 'success', start: 0, end: (Date.parse(r.updated_at) - Date.parse(r.created_at)) / 1000 })]]));
+const fileM = measure({ runs: [...depRuns, ...ciRuns], jobs: fileJobs, prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('and are one workflow, shown by its file when the names differ', JSON.stringify(fileM.workflows.map((w) => [w.workflow, w.runs]).sort()), '[["CI",30],["dynamic/dependabot/dependabot-updates",12]]');
+
+// ---- sampling: each stratum gets a minimum, then reads go where run lengths vary
+// August's 20 runs take 2 or 30 minutes; October's 100 take 5 each. Shared by count, August would get
+// 2 of 12 reads; by spread, October gets its minimum and August the rest.
+const spreadRuns = [
+  ...Array.from({ length: 20 }, (_, i) => run({ id: 400 + i, name: 'Validate', event: 'push', head_sha: `v${i}`, head_branch: 'main', conclusion: 'success',
+    created_at: iso('2026-08-10T00:00:00Z', i * 3600), updated_at: iso('2026-08-10T00:00:00Z', i * 3600 + (i % 2 ? 1800 : 120)) })),
+  ...Array.from({ length: 100 }, (_, i) => run({ id: 500 + i, name: 'Validate', event: 'push', head_sha: `w${i}`, head_branch: 'main', conclusion: 'success',
+    created_at: iso('2026-10-02T00:00:00Z', i * 3600), updated_at: iso('2026-10-02T00:00:00Z', i * 3600 + 300) })),
+];
+const bySpread = pickSample(spreadRuns, 12);
+t('a stratum whose run lengths vary gets more reads, an even one its minimum',
+  `${bySpread.filter((r) => r.created_at < '2026-09').length} ${bySpread.filter((r) => r.created_at > '2026-09').length}`, '9 3');
+t('and both lengths of the varied stratum are read', [...new Set(bySpread.filter((r) => r.created_at < '2026-09').map((r) => r.id % 2))].sort().join(','), '0,1');
+const tiny = [...spreadRuns.slice(0, 2), ...spreadRuns.slice(20)];
+t('a stratum smaller than the minimum is read whole', pickSample(tiny, 8).filter((r) => r.created_at < '2026-09').length, 2);
+
+// ---- sampling: a stuck job is read and never multiplied up
+// Twenty 2-minute deploys and one cancelled after 69 hours: the long run is read before the rest and
+// stands for itself, so it adds 360 minutes, not 360 times its stratum's weight.
+const T7 = '2026-10-05T00:00:00Z';
+const deploys = [
+  ...Array.from({ length: 20 }, (_, i) => run({ id: 600 + i, name: 'Deploy Storybook', event: 'push', head_sha: `s${i}`, head_branch: 'main', conclusion: 'success',
+    created_at: iso(T7, i * 3600), updated_at: iso(T7, i * 3600 + 120) })),
+  run({ id: 620, name: 'Deploy Storybook', event: 'push', head_sha: 'stuck', head_branch: 'main', conclusion: 'cancelled', created_at: iso(T7, 30), updated_at: iso(T7, 30 + 248280) }),
+];
+const deployJobs = new Map(deploys.map((r) => [r.id, [job(r.created_at, { name: 'deploy', conclusion: r.conclusion, start: 0, end: r.id === 620 ? 248280 : 120 })]]));
+const deploySample = pickSample(deploys, 5);
+t('a run that may hold a stuck job is always read', deploySample.some((r) => r.id === 620), true);
+const deployM = measure({ runs: deploys, jobs: new Map(deploySample.map((r) => [r.id, deployJobs.get(r.id)])), prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('and its capped minutes are not scaled by the stratum', Math.round(deployM.totals.billed), 360 + 20 * 2);
+// A run whose record does not show how long it lasted is found by its capped job once read.
+const noSpan = deploys.slice(10).map((r) => (r.id === 620 ? { ...r, updated_at: null } : r));
+const noSpanM = measure({ runs: noSpan, jobs: new Map([620, 610, 611, 612].map((id) => [id, deployJobs.get(id)])), prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('a read run with a capped job stands for itself alone', Math.round(noSpanM.totals.billed), 360 + 10 * 2);
+
 // ---- sampling: red and re-run runs are read first, the rest scale back up
 const nightly = Array.from({ length: 11 }, (_, i) => run({ id: 100 + i, name: 'Nightly', event: 'schedule', head_sha: `n${i}`, head_branch: 'main',
   conclusion: i === 7 ? 'failure' : 'success', created_at: iso(T0, i * 86400), updated_at: iso(T0, i * 86400 + 61) }));
