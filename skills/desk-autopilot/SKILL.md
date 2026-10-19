@@ -56,6 +56,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
+| §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |
 | §4 "Local database", "Database URL variable", "Local services", "Vercel" | per-ticket databases (or blanked database variables); what workers must not rebuild; preview-build logs |
 | §5 "Branch names" | the branch each worker's worktree is created on |
 | §4 People | whose call a parked question is |
@@ -204,8 +205,8 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
-| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
-| 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
+| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
+| 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge), and in feature mode the drafted spine and owner table for approval. Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
@@ -255,7 +256,7 @@ Run `plan-batch.mjs --json` too. It exits 0 when every ticket can start with not
 |---|---|
 | `status` | `go_on` (0), `show_person` (11: the plan is made, and `needs_person` lists what to settle at Stage 3), `error` (11: it refused or failed; `message` says what to do) |
 | `message` | the plan, for the person |
-| `needs_person` | `{ticket, why, detail}`. `why` is `question` (ask it at Stage 3), `lint` (a blocking lint finding: fix the ticket or ask), `challenge_inconclusive` (the lane challenge could not read the code: ask the user to confirm or re-lane), `challenge_not_run` (the park is one unreviewed opinion: report it as that, never as settled), or `parked` (lane C or D, size, or a dependency cycle: report it; a hold is not one) |
+| `needs_person` | `{ticket, why, detail}`. `why` is `question` (ask it at Stage 3), `lint` (a blocking lint finding: fix the ticket or ask), `challenge_inconclusive` (the lane challenge could not read the code: ask the user to confirm or re-lane), `challenge_not_run` (the park is one unreviewed opinion: report it as that, never as settled), `parked` (lane C or D, size, or a dependency cycle: report it; a hold is not one), or `feature_plan` (on the epic: draft the spine and owner table, or put the draft to the person for approval; *Feature mode*) |
 | `notify` | true exactly when the exit is 11 |
 
 `queue.mjs` and `answer.mjs` exit 0 or 11 only, and say what to do on 11. `expand-parent.mjs` and
@@ -388,6 +389,51 @@ Every ticket should carry a size (desk-jira's scale: XS, S, M, L, XL), from the 
 field or a first description line `Size: M`. **L and XL park** (`size L — split it before
 batching`): they are split into smaller tickets, not run. A ticket with no size is reported
 `! no size` and runs on its lane as before.
+
+### Feature mode
+
+Children of one epic that share a schema or contract build it in parallel and collide, and nothing
+tests the epic's criteria until the last one merges. So an epic gets feature mode when **all** of
+these hold: the batch has a base (*A batch that targets a feature branch*), config §4 Acceptance
+specs names the spec directory and a command taking `{ids}`, and the epic has numbered criteria
+(its DoD ids, else its AC ids, which `expand-parent.mjs` records in `expansion.json`). `plan-batch`
+prints `FEATURE MODE — on` or `— off: <why>` for every epic batch; an ordinary batch says nothing.
+
+**Stage 2: draft it.** On, with no plan yet, `plan-batch` puts a `feature_plan` entry on the epic in
+`needs_person`. Draft two things into `<state>/feature.json`, then re-run `plan-batch`:
+
+```json
+{"epic": "ABC-900", "spine": null,
+ "draft": "<the spine ticket, as it would be filed: one strict expected-fail spec per criterion id, titled with the id, plus the shared contracts the children need>",
+ "owners": {"DoD1": "ABC-901", "DoD2": "ABC-903"},
+ "contributors": {"DoD2": ["ABC-902"]},
+ "untestable": {"DoD3": {"why": "about Jira state, not code"}}}
+```
+
+- **The spine** is a dedicated ticket, drafted in desk-jira's ticket template; nothing is filed yet.
+- **One owner per criterion**: the child whose PR makes that criterion's spec pass. Where several
+  children contribute, the owner is the one that completes it, and the rest go under `contributors`:
+  `plan-batch` holds the owner behind each of them.
+- **A criterion that cannot be written as a test** (for example "all children Done") goes under
+  `untestable` with why. `plan-batch` asks whether to leave it to the close-out check; on a yes,
+  set its `close_out` to `true`.
+
+The plan prints the draft and one row per criterion id with its owner; a criterion with no owner, an
+owner or contributor the batch does not build, an id the epic does not have, or owners and
+contributors that hold each other in a cycle, is a question on the epic. Put the draft, the table and those questions to the person at Stage 3.
+
+**Stage 3: approved.** File the spine under the epic through `desk-jira`'s gate (`create … parent=<EPIC>`),
+triage it (fetch as at Stage 1, `triage.sh <SPINE>`), set `"spine": "<SPINE>"` in `feature.json`,
+and seed the queue with the spine named among the children:
+`AUTOPILOT_WRITE_QUEUE=1 plan-batch.mjs <SPINE> <children…>`. The spine is seeded first and runnable,
+and every other child is held behind it (`held by orchestrator: blocked by <SPINE> (feature spine)`),
+so nothing else spawns until its PR merges. Pass the printed `--deps` to the merge driver as usual.
+
+- `plan-batch` **refuses to seed** while feature mode is on and the spine is not filed and planned,
+  or the owner table still has questions: seeded early, the children would start with nothing held.
+- **A spine that triage parks** (lane C or D, or size L or XL) stops feature mode for the batch:
+  the plan says so, and the children are planned as an ordinary epic batch. Report it; the person
+  decides whether to work the spine interactively first.
 
 ### Epic close-out
 
