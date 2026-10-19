@@ -30,8 +30,15 @@ cat > "$T/config.md" <<EOF
 | Primary repo root | \`$T/repo\` |
 EOF
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json" DESK_REPO_DIR="$T/repo"
-unset DESK_DEFAULT_BRANCH
+# An autopilot worker inherits spawn-worker's desk_load_paths exports, and DESK_REPO_ROOT would point
+# set-batch's ls-remote at the real repo's origin instead of this one.
+unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH
 cd "$T/repo" || exit 1
+# Every check that needs feat/x reads it through set-batch's ls-remote against repoRoot()'s origin, so
+# a setup that cannot reach this suite's origin would fail them all for one reason: say it and stop.
+root=$(node --input-type=module -e "import { repoRoot } from '$B/desk-env.mjs'; console.log(repoRoot())" 2>&1)
+[ "$root" = "$T/repo" ] || { echo "FAIL setup: the repo root resolves to $root, not $T/repo"; rm -rf "$T"; exit 1; }
+git ls-remote --heads origin refs/heads/feat/x | grep -q . || { echo "FAIL setup: $T/origin.git does not hold feat/x"; rm -rf "$T"; exit 1; }
 q(){ out=$(node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
 e(){ out=$(node "$B/desk-env.mjs" "$@" 2>&1); rc=$?; }
 
