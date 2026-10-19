@@ -28,7 +28,10 @@
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
-//   node desk-env.mjs mem <avail|used|rss|status>
+//   node desk-env.mjs mem <avail|used|rss|status>   status adds runner= and ladder= while the runner VM
+//                                             runs with a reservation in the machine profile
+//   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
+//                                             reason=, changed=, then DIR<TAB>CMD<TAB>FILES per suite to run
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running
@@ -52,6 +55,7 @@ import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
+import * as TS from './test-scope.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -229,6 +233,7 @@ export const CONFIG_ROWS = Object.freeze({
   'typecheck-cmd': { section: '4', row: 'Typecheck' },
   'lint-cmd': { section: '4', row: 'Lint' },
   'test-cmd': { section: '4', row: 'Unit tests' },
+  'related-test-cmd': { section: '4', row: 'Related tests' },
   'e2e-cmd': { section: '4', row: 'E2E tests' },
   'build-cmd': { section: '4', row: 'Build' },
   'codegen-cmd': { section: '4', row: 'Codegen' },
@@ -692,6 +697,51 @@ export function rssGiB() {
     return out.split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0) * 1024 / GiB;
   } catch { return NaN; }
 }
+// The runner VM's reservation, which the autopilot ladder holds back from `avail`. Where the
+// desk-runner VM runs, its memory from the machine profile (`runner-memory-reserved-gb`) is a fixed
+// reservation: CI can fill it at any moment, so a worker spawned into it is spawned into memory
+// that is already promised. A VM's guest memory comes out of the Mac only as the guest touches it,
+// so what it has touched is already missing from `avail`; holding back the whole reservation on top
+// would count that part twice. Held back is the reservation less the VM's resident memory. Without
+// a running VM, or with no reservation in the profile, nothing is held back.
+// -> null | { reservedGiB, residentGiB, heldGiB }
+export function runnerReservation({ running, reservedGiB, residentGiB }) {
+  if (!running || !(reservedGiB > 0)) return null;
+  const resident = Number.isFinite(residentGiB) && residentGiB > 0 ? residentGiB : 0;
+  return { reservedGiB, residentGiB: resident, heldGiB: Math.max(0, reservedGiB - resident) };
+}
+const runnerVm = () => process.env.DESK_RUNNER_VM || 'desk-runner';
+// Whether the VM runs (`tart get`), and the resident memory of the process holding its disk image
+// open (the Virtualization framework's VM process). An unreadable size reads as 0 resident, so the
+// whole reservation is held back: a wrong read only ever delays a spawn.
+export function runnerState() {
+  const reservedGiB = Number(machineValue('runner-memory-reserved-gb'));
+  if (!(reservedGiB > 0)) return { running: false, reservedGiB: 0, residentGiB: 0 };
+  const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 };
+  let running = false;
+  try { running = JSON.parse(execFileSync('tart', ['get', runnerVm(), '--format', 'json'], quiet)).Running === true; } catch { running = false; }
+  if (!running) return { running, reservedGiB, residentGiB: 0 };
+  let residentGiB = 0;
+  try {
+    const disk = join(expandHome(process.env.TART_HOME ?? join(HOME, '.tart')), 'vms', runnerVm(), 'disk.img');
+    const pids = execFileSync('lsof', ['-t', disk], quiet).split('\n').map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
+    if (pids.length) {
+      const kb = execFileSync('ps', ['-o', 'rss=', '-p', pids.join(',')], quiet).split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0);
+      residentGiB = (kb * 1024) / GiB;
+    }
+  } catch { residentGiB = 0; }
+  return { running, reservedGiB, residentGiB };
+}
+// `avail` with the runner's reservation held back: what the ladder gates a spawn on.
+export function ladderMemory(avail = availableGiB(), state = runnerState()) {
+  const reservation = runnerReservation(state);
+  return { avail, reservation, gate: Math.max(0, avail - (reservation?.heldGiB ?? 0)) };
+}
+// The status-line segment for a ladderMemory() result, or '' with no reservation.
+export const runnerSegment = ({ reservation: r, gate }) => (r
+  ? ` runner=${r.reservedGiB.toFixed(1)}G reserved (${r.residentGiB.toFixed(1)}G resident, ${r.heldGiB.toFixed(1)}G held back) ladder=${gate.toFixed(1)}G`
+  : '');
+
 export const memCeilingGiB = () => Number(/\d+(\.\d+)?/.exec(resolve({ env: 'DESK_MEM_CEILING_GB', id: 'memory-ceiling', fallback: '16' }))?.[0]) || 16;
 
 // Heavy processes (suites, typecheck, dev servers) counted by argv[0]/argv[1], never `pgrep -f`:
@@ -882,12 +932,35 @@ if (isMain) {
             await new Promise((res) => setTimeout(res, intervalMs));
           }
         }
-        else console.log(`vmmem=${usedGiB().toFixed(1)}G avail=${availableGiB().toFixed(1)}G rss=${rssGiB().toFixed(1)}G`);
+        else {
+          const l = ladderMemory();
+          console.log(`vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`);
+        }
         break;
       }
       case 'heavy':
         for (const p of heavyProcesses()) console.log(`${p.pid} ${p.args}`);
         break;
+      case 'test-scope': {
+        // What a worker tests before it pushes: the branch's changes against the merge base with
+        // origin/<default> (committed, staged, unstaged and untracked), decided by test-scope.mjs.
+        const top = git(process.cwd(), 'rev-parse', '--show-toplevel');
+        if (!top) throw new Error('desk-env test-scope: not inside a git work tree');
+        const i = args.indexOf('--base');
+        const ref = i >= 0 && args[i + 1] ? args[i + 1] : `origin/${defaultBranch()}`;
+        const mergeBase = git(top, 'merge-base', 'HEAD', ref);
+        if (!mergeBase) throw new Error(`desk-env test-scope: no merge base between HEAD and ${ref}`);
+        const changes = TS.parseNameStatus([git(top, 'diff', '--name-status', '-M', mergeBase),
+          ...git(top, 'ls-files', '--others', '--exclude-standard').split('\n').filter(Boolean).map((p) => `?? ${p}`)].join('\n'));
+        const items = (id) => { const v = configValues(id); return v && !isNone(v) ? v.map(parseCommandItem) : []; };
+        const relatedItems = items('related-test-cmd');
+        const d = TS.decide(changes, { shared: TS.sharedPackages(TS.workspacePackages(top)), related: relatedItems.length > 0 });
+        console.log(`scope=${d.scope}`);
+        console.log(`reason=${d.reason}`);
+        console.log(`changed=${d.files.length}`);
+        for (const r of TS.runs(d, { relatedItems, fullItems: items('test-cmd') })) console.log(`${r.dir}\t${r.cmd}\t${r.files.join(' ')}`);
+        break;
+      }
       case 'uuid':
         console.log(uuid());
         break;

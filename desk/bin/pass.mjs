@@ -281,15 +281,21 @@ const concurrency = Math.min(Number(fresh.concurrency ?? concDefault), concCap);
 // between `hold` and `start` nothing new starts; below `hold` the batch is meant to run at `dropTo`
 // workers, so nothing new starts until it has drained to that. AUTOPILOT_MIN_AVAIL_GB overrides
 // `start` (0 disables the gate).
+// While the runner VM runs, its machine-profile memory is a fixed reservation held back from
+// `avail` (less what the VM already holds, which `avail` has already lost): CI can fill it at any
+// moment, so the ladder reads the rest. Without a runner nothing is held back.
 const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
-const availGB = E.availableGiB();
-const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+const LADDER = E.ladderMemory();
+const availGB = LADDER.avail;
+const gateGB = LADDER.gate;
+const reserved = LADDER.reservation ? ` after the runner's ${LADDER.reservation.heldGiB.toFixed(1)}G held back` : '';
+const lowMemory = MIN_AVAIL_GB > 0 && gateGB < MIN_AVAIL_GB;
 if (lowMemory) {
-  report.stalled.push(availGB < GATE.hold
-    ? `memory: ${availGB.toFixed(1)}G available, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
+  report.stalled.push(gateGB < GATE.hold
+    ? `memory: ${gateGB.toFixed(1)}G available${reserved}, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
       `holding spawns (${running.length} running; a worker mid-suite will drain)`
-    : `memory: ${availGB.toFixed(1)}G available, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
+    : `memory: ${gateGB.toFixed(1)}G available${reserved}, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
       `(${running.length} running; a worker mid-suite will drain)`);
 }
 const slots = (overBudget || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
@@ -495,7 +501,7 @@ if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 const needsHuman = [...report.waiting, ...report.parked];
 if (needsHuman.length) console.log(`NOTIFY: ${needsHuman.length} ticket(s) need you — ${needsHuman.map((x) => x.split(':')[0]).join(', ')}`);
 console.log(out.length ? out.join('\n') : 'no change this pass');
-console.log(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`);
+console.log(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 console.log('');
 console.log(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 

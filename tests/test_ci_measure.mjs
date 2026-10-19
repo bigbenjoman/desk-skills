@@ -3,7 +3,10 @@
 // hosted one stops at 6 h, red rate, round trips and time to green read a PR's pushes and re-runs,
 // sampled jobs scale back up within their month, and the API collector stays inside its call budget
 // and the rate limit's reserve.
-import { quantile, jobMinutes, pickSample, measure, collect, report } from '../desk/bin/desk-ci.mjs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { quantile, jobMinutes, pickSample, measure, collect, report, collectBatch, batchRed, compareRed, batchReport, newestBaseline, queuePrs } from '../desk/bin/desk-ci.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -292,6 +295,44 @@ s = stub({ remaining: 5000, count: 20, redId: 20, jobPages: 2 });
 c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 14, api: s.api });
 t('a red run last in the list is still read when job pages run the budget out', `${c.jobs.has(20)} ${c.jobs.size < 10}`, 'true true');
 
+// ---- batch-red: a batch's PRs against the measured baseline
+// The window's three PRs as a batch: the API lists each PR, the runs on its branch, and jobs only for
+// a re-run run (run 1), whose first attempt is red only through its jobs.
+const batchCalls = [];
+const batchApi = (path) => {
+  batchCalls.push(path);
+  const pr = /pulls\/(\d+)$/.exec(path);
+  if (pr) return prs.find((p) => p.number === Number(pr[1]));
+  const br = /actions\/runs\?branch=([^&]+)&/.exec(path);
+  if (br) return { workflow_runs: runs.filter((r) => r.head_branch === decodeURIComponent(br[1])) };
+  const jb = /actions\/runs\/(\d+)\/jobs/.exec(path);
+  if (jb) { const js = jobs.get(Number(jb[1])) ?? []; return { total_count: js.length, jobs: js }; }
+  throw new Error(`unexpected ${path}`);
+};
+const cb = collectBatch({ repo: 'o/r', prs: [1, 2, 3], api: batchApi });
+const br = batchRed(cb);
+t('batch-red: the same red rate measure gives for these PRs', `${br.red} of ${br.withCi}`, `${m.prs.red} of ${m.prs.withCi}`);
+t('batch-red: jobs read only for the re-run run', batchCalls.filter((p) => p.includes('/jobs')).join(' '), 'repos/o/r/actions/runs/1/jobs?filter=all&per_page=100&page=1');
+t('batch-red: the branch is URL-encoded', batchCalls.includes('repos/o/r/actions/runs?branch=feat%2Fone&per_page=100&page=1'), true);
+const noRerunJobs = batchRed({ ...cb, jobs: new Map() });
+t('batch-red: without its jobs, a re-run that ended green is not red', noRerunJobs.red, 1);
+const base = (red, withCi) => ({ coveredSince: '2026-07-20', until: '2026-10-17', prs: { red, withCi } });
+t('compare: 66.7% against 60% is a rise of 6.7 pp', JSON.stringify(compareRed(br, base(6, 10))), JSON.stringify({ rate: 2 / 3, base: 0.6, deltaPp: 6.7, flag: 'rise' }));
+t('compare: exactly 5 pp is not a rise', compareRed({ red: 1, withCi: 4 }, base(1, 5)).flag, 'ok');
+t('compare: a fall is ok', compareRed({ red: 0, withCi: 3 }, base(1, 5)).deltaPp, -20);
+t('compare: no baseline', compareRed(br, null).flag, 'no-baseline');
+t('compare: no CI in the batch', compareRed({ red: 0, withCi: 0 }, base(1, 5)).flag, 'no-ci');
+const rep = batchReport(br, compareRed(br, base(1, 10)), '/x/2026-10-17-ci-measure-o__r.json', base(1, 10)).split('\n');
+t('report: the batch line names the red PRs', rep[0], 'batch: 2 of 3 PRs with CI went red at least once (66.7%); 3 PRs read; red: #1 #2');
+t('report: the rise is flagged', rep[2], 'RED RATE ROSE: +56.7 pp against the baseline, more than 5 pp');
+t('report: summary line', rep[3], 'summary: red=2 with_ci=3 rate=66.7% baseline=10% delta_pp=56.7 flag=rise');
+t('report: no baseline says how to get one', batchReport(br, compareRed(br, null), null, null).split('\n')[1], 'baseline: none — run `desk-ci.mjs measure` to record one');
+t('queuePrs: finished tickets\' PRs, once each, in order', queuePrs({ tickets: { A: { result: { pr: 12 } }, B: { result: { pr: '9' } }, C: { state: 'running' }, D: { result: { pr: 12 } } } }).join(','), '9,12');
+const hand = mkdtempSync(join(tmpdir(), 'desk-batch-red-'));
+for (const f of ['2026-09-01-ci-measure-o__r.json', '2026-10-17-ci-measure-o__r.json', '2026-10-18-ci-measure-x__y.json', '2026-10-17-ci-measure-o__r.md']) writeFileSync(join(hand, f), '{}');
+t('newestBaseline: the latest measure JSON for this repo', newestBaseline(hand, 'o/r'), join(hand, '2026-10-17-ci-measure-o__r.json'));
+t('newestBaseline: none for another repo', newestBaseline(hand, 'q/z'), null);
+rmSync(hand, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'all measure checks passed');
 process.exit(fails ? 1 : 0);

@@ -10,6 +10,10 @@
 //   node desk-ci.mjs measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>]
 // measure reads a window of Actions runs, jobs and pull requests over the GitHub API within a call
 // budget, prints what CI cost and how often it held PRs up, and saves the report under .handoffs/.
+//   node desk-ci.mjs batch-red [--prs 12,13 | --queue <queue.json>] [--baseline <measure json>] [--repo owner/name]
+// batch-red measures an autopilot batch's PRs (default: the queue's finished tickets) the way measure
+// does and compares their CI red rate per PR with the newest measure baseline; exit 1 on a rise of
+// more than 5 percentage points.
 //   node desk-ci.mjs protection snapshot|restore <file>|pin|token [--repo owner/name] [--apply <plan id>]
 // protection saves and restores branch protection and rulesets, pins required checks to the GitHub
 // Actions app and makes the default workflow token read-only. Every write is gated on config §3
@@ -19,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { permissionOrUnset } from './desk-env.mjs';
+import { permissionOrUnset, queueFile } from './desk-env.mjs';
 
 // ---- a line scanner for workflow YAML ---------------------------------------------------------
 // Workflows are block YAML, and every rule here needs the line it fired on, which a YAML parser
@@ -658,7 +662,7 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], since, until
     workflows: wfs.map((w) => ({ ...w, failureRate: w.decided ? w.failed / w.decided : null })),
     jobs: [...jobRows.values()].sort((a, b) => b.billed + b.self - (a.billed + a.self)),
     prs: {
-      withCi: perPr.length, red: perPr.filter((p) => p.red).length,
+      withCi: perPr.length, red: perPr.filter((p) => p.red).length, redNumbers: perPr.filter((p) => p.red).map((p) => p.number).sort((a, b) => a - b),
       roundTrips: { n: trips.length, unresolved: perPr.filter((p) => p.unresolved).length,
         medianMinutes: quantile(trips.map((t) => t.minutes), 0.5), medianWait: quantile(trips.map((t) => t.end - t.start), 0.5) },
       timeToGreen: spread(perPr.map((p) => p.timeToGreen).filter((x) => x !== null)),
@@ -683,6 +687,19 @@ function ghApi(path) {
   const out = execFileSync('gh', ['api', '-H', 'Accept: application/vnd.github+json', path],
     { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   return JSON.parse(out);
+}
+
+// Every job of a run, every attempt included, or null when a page could not be read (the budget ran
+// out, or the call failed).
+function readJobs(get, repo, id) {
+  const js = [];
+  for (let p = 1; ; p++) {
+    let page;
+    try { page = get(`repos/${repo}/actions/runs/${id}/jobs?filter=all&per_page=100&page=${p}`); } catch { return null; }
+    if (!page) return null;
+    js.push(...page.jobs);
+    if (page.jobs.length < 100 || js.length >= page.total_count) return js;
+  }
 }
 
 // Every call is counted against the smaller of the budget and what the rate limit can spare above a
@@ -755,16 +772,8 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
   const jobs = new Map();
   const sample = pickSample(completed, Math.max(0, allowance - calls));
   for (const r of [...sample.filter(isLong), ...sample.filter((x) => !isLong(x) && mustRead(x)), ...sample.filter((x) => !isLong(x) && !mustRead(x))]) {
-    const js = [];
-    let whole = true;
-    for (let p = 1; ; p++) {
-      let page;
-      try { page = get(`repos/${repo}/actions/runs/${r.id}/jobs?filter=all&per_page=100&page=${p}`); } catch { whole = false; break; }
-      if (!page) { whole = false; break; }
-      js.push(...page.jobs);
-      if (page.jobs.length < 100 || js.length >= page.total_count) break;
-    }
-    if (whole) jobs.set(r.id, js);
+    const js = readJobs(get, repo, r.id);
+    if (js) jobs.set(r.id, js);
     else if (calls >= allowance) break;
   }
   return { repo, since, until, coveredSince, runs: [...runs.values()], jobs, prs, calls, budget, allowance, reserve, rate: start, notes };
@@ -884,6 +893,94 @@ function runMeasure(args) {
   writeFileSync(`${base}.md`, text);
   writeFileSync(`${base}.json`, `${JSON.stringify({ repo, measuredAt: now.toISOString(), calls: c.calls, budget, allowance: c.allowance, notes: c.notes, ...m }, null, 2)}\n`);
   console.log(`saved: ${base}.md and ${base}.json`);
+}
+
+// ---- batch-red: an autopilot batch's red rate against the measured baseline ---------------------
+// The batch's PRs measured exactly as `measure` measures a window (same red, same PR matching), so
+// the two rates compare. A run's earlier attempts are known only from its jobs, so jobs are read for
+// every re-run run and for no other. The baseline is the newest `measure` JSON for the repo.
+
+export const RED_RISE_PP = 5;
+
+export function collectBatch({ repo, prs: numbers, api = ghApi }) {
+  const prs = [];
+  const runs = new Map();
+  let calls = 0;
+  const get = (path) => { calls++; return api(path); };
+  for (const n of numbers) {
+    const p = get(`repos/${repo}/pulls/${n}`);
+    prs.push(p);
+    for (let page = 1; ; page++) {
+      const r = get(`repos/${repo}/actions/runs?branch=${enc(p.head.ref)}&per_page=100&page=${page}`);
+      for (const x of r.workflow_runs) runs.set(x.id, x);
+      if (r.workflow_runs.length < 100) break;
+    }
+  }
+  const jobs = new Map();
+  for (const r of runs.values()) {
+    if (r.status !== 'completed' || (r.run_attempt ?? 1) < 2) continue;
+    // Without its jobs a re-run's earlier attempts are unknown, which would undercount red.
+    const js = readJobs(get, repo, r.id);
+    if (!js) throw new Error(`batch-red: could not read the jobs of run ${r.id}; the red rate would undercount`);
+    jobs.set(r.id, js);
+  }
+  return { prs, runs: [...runs.values()], jobs, calls };
+}
+
+export function batchRed(c) {
+  const dates = c.runs.map((r) => (r.created_at ?? '').slice(0, 10)).filter(Boolean).sort();
+  const m = measure({ runs: c.runs, jobs: c.jobs, prs: c.prs, since: dates[0] ?? '', until: dates[dates.length - 1] ?? '' });
+  return { prs: c.prs.length, withCi: m.prs.withCi, red: m.prs.red, redNumbers: m.prs.redNumbers };
+}
+
+// The newest `<date>-ci-measure-<owner>__<name>.json` in a directory, or null.
+export function newestBaseline(dir, repo) {
+  const tail = `-ci-measure-${repo.replace('/', '__')}.json`;
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => f.endsWith(tail)).sort(); } catch { return null; }
+  return names.length ? join(dir, names[names.length - 1]) : null;
+}
+
+// -> { rate, base, deltaPp, flag: 'rise' | 'ok' | 'no-baseline' | 'no-ci' }
+export function compareRed(batch, baseline) {
+  const rate = batch.withCi ? batch.red / batch.withCi : null;
+  const base = baseline?.prs?.withCi ? baseline.prs.red / baseline.prs.withCi : null;
+  if (rate === null) return { rate, base, deltaPp: null, flag: 'no-ci' };
+  if (base === null) return { rate, base, deltaPp: null, flag: 'no-baseline' };
+  const deltaPp = Math.round((rate - base) * 1000) / 10;
+  return { rate, base, deltaPp, flag: deltaPp > RED_RISE_PP ? 'rise' : 'ok' };
+}
+
+export function batchReport(batch, cmp, baselineFile, baseline) {
+  const sign = (x) => (x > 0 ? `+${x}` : `${x}`);
+  return [
+    `batch: ${batch.red} of ${batch.withCi} PRs with CI went red at least once (${pct(batch.red, batch.withCi)}); ${batch.prs} PRs read${batch.redNumbers?.length ? `; red: ${batch.redNumbers.map((n) => `#${n}`).join(' ')}` : ''}`,
+    baseline
+      ? `baseline: ${baseline.prs.red} of ${baseline.prs.withCi} (${pct(baseline.prs.red, baseline.prs.withCi)}), ${baseline.coveredSince} to ${baseline.until}, from ${baselineFile}`
+      : 'baseline: none — run `desk-ci.mjs measure` to record one',
+    cmp.flag === 'rise' ? `RED RATE ROSE: ${sign(cmp.deltaPp)} pp against the baseline, more than ${RED_RISE_PP} pp`
+      : cmp.flag === 'ok' ? `change: ${sign(cmp.deltaPp)} pp against the baseline, within ${RED_RISE_PP} pp`
+        : cmp.flag === 'no-ci' ? 'change: n/a — no PR in the batch has a completed CI run' : 'change: n/a — no baseline',
+    `summary: red=${batch.red} with_ci=${batch.withCi} rate=${pct(batch.red, batch.withCi)} baseline=${cmp.base === null ? 'none' : `${Math.round(cmp.base * 1000) / 10}%`} delta_pp=${cmp.deltaPp ?? 'n/a'} flag=${cmp.flag}`,
+  ].join('\n');
+}
+
+// The PRs of a batch: every ticket in the queue whose worker finished with one.
+export const queuePrs = (q) => [...new Set(Object.values(q?.tickets ?? {}).map((t) => Number(t.result?.pr)).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+
+function runBatchRed(args) {
+  const f = flagsOf(args);
+  const repo = f.repo ?? originRepo();
+  const numbers = f.prs
+    ? String(f.prs).split(',').map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
+    : queuePrs(JSON.parse(readFileSync(f.queue ?? queueFile(), 'utf8')));
+  if (!numbers.length) throw new Error('batch-red: no PRs (pass --prs 12,13, or --queue <queue.json> with finished tickets)');
+  const file = f.baseline ?? newestBaseline(join(mainCheckout(), '.handoffs'), repo);
+  const baseline = file ? JSON.parse(readFileSync(file, 'utf8')) : null;
+  const batch = batchRed(collectBatch({ repo, prs: numbers }));
+  const cmp = compareRed(batch, baseline);
+  console.log(batchReport(batch, cmp, file, baseline));
+  return cmp.flag === 'rise' ? 1 : 0;
 }
 
 // ---- protection: snapshot, restore, pin, token --------------------------------------------------
@@ -1445,10 +1542,12 @@ if (isMain) {
       process.exit(n ? 1 : 0);
     } else if (cmd === 'measure') {
       runMeasure(rest);
+    } else if (cmd === 'batch-red') {
+      process.exit(runBatchRed(rest));
     } else if (cmd === 'protection') {
       process.exit(runProtection(rest));
     } else {
-      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | protection snapshot|restore <file>|pin|token');
+      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | protection snapshot|restore <file>|pin|token');
     }
   } catch (e) {
     console.error(e.message);

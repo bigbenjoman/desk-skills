@@ -154,10 +154,10 @@ const HAS_TICKET_DB = /^[a-z0-9_]{1,63}$/.test(DATABASE) && !['none', 'shared', 
 const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? '').trim())?.[1] ?? null;
 
 // The §4 command rows a worker may run, and the lock each takes when wrapped by with-lock.sh.
-const LOCK_OF = { 'test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
+const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 // §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
-const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
+const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
   'pr-description-checks', ...(HAS_TICKET_DB ? ['db-migrate-cmd', 'seed-cmd'] : [])];
 const warns = [];
 const items = [];

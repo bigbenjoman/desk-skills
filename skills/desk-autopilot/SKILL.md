@@ -533,8 +533,23 @@ unpark, a PR landing. Not on memory jitter, and not on a pass that changed nothi
 
 - **Every ticket in the batch, every time**: parked and queued rows included.
 - **Mark what changed** (an arrow, a bold cell) so the delta is findable without diffing.
-- **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers.
+- **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers,
+  and the `runner=` and `ladder=` figures whenever the pass line carries them.
 - **Notes stay to one line.** The full park reason lives in the queue.
+
+**The batch report (Stage 8) carries the batch's CI red rate.** Workers now run related tests rather
+than full suites, so a rise in red PRs is the cost of that showing up. Once the batch has PRs, run
+
+```bash
+node ~/.claude/desk/bin/desk-ci.mjs batch-red      # the queue's finished tickets; --prs 12,13 for others
+```
+
+It measures those PRs exactly as `desk-ci measure` measures a window (a PR is red when any attempt
+of any run on it went red) and compares the rate with the newest `measure` report for the repo, the
+D6 baseline, in the main checkout's `.handoffs/`. Put its `batch:` and `baseline:` lines in the
+report. **`RED RATE ROSE`** (more than 5 percentage points above the baseline, exit 1) is a finding:
+say it first, with the PRs that went red, and do not lower it to a note. With no baseline it says so;
+offer `desk-ci measure` rather than reporting the rate as normal.
 
 ## Why C and D get a second look
 
@@ -699,6 +714,14 @@ the bands):
 | 4–8 GiB | hold: finish what is running, spawn nothing new this pass |
 | < 4 GiB | drop to 1; a worker mid-suite will drain, so wait a pass before touching anything |
 | < 2 GiB **and** sustained | reclaim (where §3 `autopilot-reclaim` is `yes`): kill an orphaned dev server or a stale typecheck first, never a worker mid-commit, never a process another session owns |
+
+**On a computer running the runner VM, its memory is a fixed reservation.** While the desk-runner VM
+runs, the machine profile's `runner-memory-reserved-gb` is held back from `avail` before the ladder
+reads it, less what the VM already holds (which `avail` has already lost), because CI can fill the
+rest at any moment. `pass.mjs` gates on that figure and its memory line, like `desk-env mem status`,
+shows `runner=<n>G reserved (<r>G resident, <h>G held back) ladder=<x>G`; read the bands against
+`ladder=`. Without a running VM, or with no reservation in the profile, nothing is held back and the
+line carries neither.
 
 Lowering is silent but **reported**: say which number caused it. Raising back needs the same
 evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the
