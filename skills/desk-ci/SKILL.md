@@ -10,7 +10,9 @@ description: >-
   within a stated API call budget and saves the figures. Also before any CI change, to save a repo's
   branch protection and rulesets and restore them, to pin required checks to the GitHub Actions app,
   or to make the default workflow token read-only ("/desk-ci protection snapshot|restore|pin|token").
-argument-hint: "classify | ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token"
+  Also when asking which jobs a batch's child PRs into a batch base could skip ("/desk-ci profile"):
+  proposes a light profile for those PRs and a full one for the rest, with an estimated saving.
+argument-hint: "classify | ci-lint | profile [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token"
 ---
 
 # desk-ci
@@ -185,6 +187,55 @@ in the main checkout's `.handoffs/`, unless `--baseline` names one), the change 
 and a `summary:` line. A rise of more than 5 points prints `RED RATE ROSE` and exits 1. It reads
 only, and spends one call per PR, one per page of its runs and one per page of a re-run's jobs.
 
+## profile: light CI on PRs into a batch base
+
+A batch's child PRs merge into its batch base, and the promotion PR into the default branch runs
+every job again, so a child PR needs only the jobs that need no database, preview or browser.
+`profile` proposes that split and writes nothing:
+
+```bash
+node ~/.claude/desk/bin/desk-ci.mjs profile [<file or dir>...] [--required <check>]... [--measure <measure json>] [--batch-prs <n>] [--default <branch>] [--repo owner/name]
+```
+
+A job is **full** if any of these holds, and **light** otherwise:
+
+| Needs | What fires it |
+|---|---|
+| a database | a `services:` or `container:` image of Postgres, PostGIS, MySQL, MariaDB, MongoDB, Redis, Valkey, SQL Server, CockroachDB or ClickHouse; a database setup action; `psql`, `pg_isready`, `mysqladmin`, `mongosh`, `redis-cli`, `prisma migrate`/`db push`, `supabase start`/`db`, `manage.py migrate` or `rails db:`; a `*DATABASE_URL`, `PGHOST`, `PGDATABASE` or `PGURL` variable |
+| a preview | a staging or preview URL (as in the placement rule, workflow-level `env:` included), or a `vercel` or `netlify` action or CLI |
+| a browser | Playwright, Cypress, Puppeteer, Selenium, WebdriverIO, TestCafe, a browser driver or a browser setup action |
+| a full job | a `needs:` naming a full job, which would be skipped with it |
+| what cannot be read here | a call to a reusable workflow outside this repo |
+
+It prints one line per job, the line being the one that decided it (the job's own line for light):
+
+```
+<file>:<line>  <job>  full   <the first reason>  (also <kind> :<line>, …)
+<file>:<line>  <job>  light  no database, preview or browser
+```
+
+Then the plan. Every full job in a workflow that runs on pull requests gets
+`if: ${{ !github.base_ref || github.base_ref == '<default>' }}`, or its existing `if:` combined with
+that condition, so a PR into the default branch, a push, a schedule or a manual run still runs every
+job, and a PR into any other branch (a batch base) runs the light ones only. A workflow that does not
+run on pull requests needs no change. A `pull_request` trigger limited to literal branches is named,
+since light jobs will not run on PRs into a batch base it does not list.
+
+- **A required check only a full job reports** prints `REQUIRED CHECK ONLY IN FULL`: it would be
+  skipped on every light PR, and green counts a skipped required check as not passed
+  (`desk/bin/gate.mjs`), so those PRs could never merge. The checks are config §4 Required checks,
+  or each `--required <check>`. A check is a job's when it is its name (`name:`, else its id), one of
+  its matrix legs `name (…)`, or `caller / job` for a reusable workflow.
+- **The saving** comes from the newest `measure` report for the repo in the main checkout's
+  `.handoffs/` (or `--measure`): the full jobs' minutes in its window ÷ its PRs with CI, per PR, times
+  the child PRs per batch (`--batch-prs`, else the autopilot queue's ticket count). It is an estimate
+  and says so: every run of those jobs counts, pushes and schedules too, so it reads high. A full job
+  the report has no minutes for is named. With no report it prints the plan without a saving and says
+  to run `measure`.
+
+`--default` defaults to config §0 Default branch, never a batch base. Never apply the plan from this
+skill: the workflow change is separate work, done after the user has read it.
+
 ## protection
 
 Moving checks to a self-hosted runner changes what can satisfy a required check, so protection is
@@ -256,7 +307,7 @@ A write that fails stops the run and says how many applied before it: restore fr
 
 ## Red flags — stop
 
-- About to edit a workflow, `runs-on`, or a runner setting from this skill
+- About to edit a workflow, `runs-on`, or a runner setting from this skill, `profile`'s `if:` included
 - Calling a self-hosted placement final for a job running an image nobody has checked for arm64
 - Moving a job self-hosted because "the secret is only used in one step": the whole job's runner
   receives it
