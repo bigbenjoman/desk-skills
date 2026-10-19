@@ -144,6 +144,7 @@ for (const r of admitted) {
 //    contributors: {<id>: [<KEY>]}, untestable: {<id>: {why, close_out: true once agreed}}}
 const featurePath = join(STATE, 'feature.json');
 const featureQs = [];  // questions on the epic's feature plan
+const tableHolds = new Set();  // `<owner>><contributor>`: holds the owner table made
 const feature = (() => {
   if (!batchEpic) return null;
   const off = (why) => ({ on: false, why });
@@ -186,7 +187,7 @@ if (feature?.on && feature.plan) {
     else if (!o && !u) featureQs.push(`${id} has no owner: name the child whose PR makes its spec pass`);
     for (const p of contributors[id] ?? []) {
       if (!child(p)) featureQs.push(`${id}'s contributor ${p} is not a child this batch builds: drop it from the table or add it to the batch`);
-      else if (o && child(o)) holdBehind(o, p, `${id}: completes what ${p} contributes`);
+      else if (o && child(o)) { holdBehind(o, p, `${id}: completes what ${p} contributes`); tableHolds.add(`${o}>${p}`); }
     }
   }
   if (feature.filed) for (const r of admitted) if (r.ticket !== spine) holdBehind(r.ticket, spine, 'feature spine');
@@ -213,13 +214,22 @@ const onCycle = new Map();
   };
   for (const r of admitted) if (idx[r.ticket] === undefined) strong(r.ticket);
 }
-// A cycle with a feature-plan hold in it is the owner table's to fix, and keeps the queue unseeded.
-const featureCycles = new Set();
+// A cycle through a feature-plan hold keeps the queue unseeded: one through an owner-table hold is the
+// table's to fix; one through the spine hold alone is the spine's Jira links to a child.
+const tableCycles = new Set();
+const spineCycles = new Set();
 for (const [t, label] of onCycle) {
-  for (const p of preds[t] ?? []) if (onCycle.get(p) === label && holdWhy[t][p] !== 'Jira link') featureCycles.add(label);
+  for (const p of preds[t] ?? []) {
+    if (onCycle.get(p) !== label) continue;
+    if (tableHolds.has(`${t}>${p}`)) tableCycles.add(label);
+    else if (p === feature?.spine && feature.filed) spineCycles.add(label);
+  }
 }
-for (const label of featureCycles) featureQs.push(`the owner table makes a dependency cycle (${label}): change an owner or a contributor in feature.json`);
-const cycleFix = (label) => (featureCycles.has(label) ? 'fix the owner table in feature.json, or the Jira links' : 'fix the Jira links');
+for (const label of tableCycles) featureQs.push(`the owner table makes a dependency cycle (${label}): change an owner or a contributor in feature.json`);
+for (const label of spineCycles) {
+  if (!tableCycles.has(label)) featureQs.push(`the spine ${feature.spine} is on a dependency cycle (${label}) through its Jira links to a child: drop the link, or choose another spine`);
+}
+const cycleFix = (label) => (tableCycles.has(label) ? 'fix the owner table in feature.json, or the Jira links' : 'fix the Jira links');
 for (const [t] of onCycle) delete preds[t];
 for (const [t, ps] of Object.entries(preds)) {
   const bad = ps.filter((p) => onCycle.has(p));

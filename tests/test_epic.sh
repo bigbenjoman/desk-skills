@@ -455,6 +455,13 @@ check "a cycle the owner table makes is a question on it, names feature.json, an
   '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "\[KAN-1000\] the owner table makes a dependency cycle (KAN-100[12] ↔ KAN-100[12])" && printf "%s" "$out" | grep -q "queue is not seeded" && [ "$(jq ".tickets | length" "$DESK_QUEUE")" = 0 ]'
 
 fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
+r KAN-1050 A "[$(nb KAN-1001)]"
+P KAN-1001 KAN-1002 KAN-1003 KAN-1050
+check "a spine blocked by a child through a Jira link names the link, not the owner table" \
+  '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "\[KAN-1000\] the spine KAN-1050 is on a dependency cycle .* through its Jira links to a child" && ! printf "%s" "$out" | grep -q "owner table makes a dependency cycle"'
+r KAN-1050 A '[]'
+
+fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
 for v in 'C|' 'A|"size":"L"'; do
   r KAN-1050 "${v%%|*}" '[]' "${v#*|}"
   fbatch feat/epic
