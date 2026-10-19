@@ -707,7 +707,7 @@ git / PR  : commit <a> · push <a> · force-with-lease <a> · open <a> · edit <
             reply <a> · request-review <a> · ready <a> · auto-merge <a> · merge-green <a> · feedback-first <a> ·
             update-branch <a> · conflict-unreviewed <a> · conflict-reviewed <a> · ci-rerun <a> · codex <a> ·
             ci-protection <a>
-autopilot : workers <a> · mode <a> · merge <a> · judgement <a> · reclaim <a>
+autopilot : workers <a> · mode <a> · merge <a> · base-push <a> · judgement <a> · reclaim <a>
 local     : db-per-ticket <a> · clone-staging <a> · staging-write <a> · reindex <a> · tests-shared-db <a> ·
             worktree-remove <a> · branch-delete <a> · server-stop <a> · skills-edit <a> · vercel-env <a> ·
             slack-draft <a>

@@ -166,6 +166,7 @@ export const PERMISSION_KEYS = Object.freeze({
   'autopilot-workers': 'autopilot-workers',
   'autopilot-worker-mode': 'autopilot-worker-mode',
   'autopilot-merge': 'autopilot-merge',
+  'batch-base-push': 'batch-base-push',
   'autopilot-judgement': 'autopilot-judgement',
   'autopilot-reclaim': 'autopilot-reclaim',
   'db-per-ticket': 'db-per-ticket',

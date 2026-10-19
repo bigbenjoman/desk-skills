@@ -174,6 +174,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | §3 key | `yes` | anything else |
 |---|---|---|
 | `autopilot-workers` | `pass.mjs` spawns workers; `triage.sh` runs | `ask`: `triage.sh` still runs (read-only, foreground); confirm the batch at Stage 3, then run passes with `AUTOPILOT_USER_APPROVED=1`. `no`: neither runs; say so |
+| `batch-base-push` | `pass.mjs` merges §0 Default branch into a batch base and pushes it before a pass that spawns | unset or `ask`: ask once at Stage 3, then run passes with `AUTOPILOT_BASE_PUSH_APPROVED=1`. `no`: the base is not synced; the report says so, and a feature-mode batch spawns nothing |
 | `git-push`, `pr-open`, `pr-edit` | worker pushes / opens the draft / edits the body | worker parks at that step with the branch or PR body; you ask, then do it |
 | `pr-self-review-comment` | worker posts the §4 Local review command's report (`gh pr review`, `gh pr comment`) | worker parks with the report; you ask, then post it |
 | `pr-reply` | a worker may reply with `gh pr comment`; resolving threads (GraphQL, `gh api`) is yours, since workers never get `gh api` whatever this row says | the worker parks with its replies; you post them or report the threads to the user |
@@ -206,7 +207,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
-| 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge), and in feature mode the drafted spine and owner table for approval. Wait. This is the whole promise. See *Asking*. |
+| 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base), and in feature mode the drafted spine and owner table for approval. Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
@@ -498,8 +499,20 @@ node ~/.claude/desk/bin/queue.mjs set-batch base=feat/<branch>   # base= clears 
 
 **Check before the first spawn that CI runs on PRs into that branch.** A workflow filtered to
 `branches: [<default>]` reports nothing on such a PR, so every required check reads "has not
-reported" and nothing ever merges. Also bring `<default>` into the branch before the batch starts,
-so the workers are not based on a stale tree.
+reported" and nothing ever merges.
+
+**`pass.mjs` keeps the base current; do not merge into it by hand.** Every pass makes sure the base
+has its own worktree, `<§2 Worktrees directory>/base-<branch>` (a plain `git worktree add`, no
+database or env files). Before a pass that will spawn, and only then, it merges §0 Default branch into
+the base there as a merge commit (never a rebase, so running workers' bases stay valid) and pushes
+it, and the report says how many commits came in. A push refused as non-fast-forward (the merge
+driver just merged into the base) is fetched, merged again and retried once. Pushing is config §3
+`batch-base-push`: unset or `ask` is one approval per batch, so ask it at Stage 3 and run passes with
+`AUTOPILOT_BASE_PUSH_APPROVED=1`. A sync that cannot run pushes nothing and goes under `WAITING ON
+YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push), a
+refused push, the row, or the primary checkout having the base checked out (switch it off that
+branch; no base worktree is made until then). In feature mode that pass spawns nothing; otherwise
+spawning carries on from the base as it stands.
 
 ## Merge each PR the moment it goes green
 
@@ -906,6 +919,7 @@ node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one t
 node ~/.claude/desk/bin/harvest.mjs <state>/logs/ABC-123.log
 AUTOPILOT_DRY_RUN=1 …                                                 # no push, no PR, no review post, no Jira writes
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
+AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only when §3 batch-base-push is `ask`/unset and the user approved syncing this batch's base
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
 nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" >> <state>/merge-driver.log 2>&1 &
 
