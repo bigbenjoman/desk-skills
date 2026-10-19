@@ -118,16 +118,30 @@ export function decide(changes, { shared = [], related = true } = {}) {
 // as written, once a changed file sits under its directory.
 export const takesFiles = (cmd) => /(^|[\s/])(vitest|jest)(\s|$)/.test(cmd);
 
-// What to run. `items` are { dir, cmd } from §4 Related tests (related) or §4 Unit tests (full).
+// What to run. `relatedItems` and `fullItems` are { dir, cmd } from §4 Related tests and §4 Unit
+// tests. With scope related, each changed file goes to the item whose directory holds it most
+// closely, a Related tests item winning a tie with a Unit tests item in the same directory. A file
+// that lands on a Unit tests item has no related form for its suite, so that suite runs in full:
+// a suite left out of §4 Related tests is never skipped.
 // -> [{ dir, cmd, files: [paths relative to dir] }]
+const depth = (dir) => (dir === '.' ? 0 : dir.split('/').length);
 export function runs(decision, { relatedItems = [], fullItems = [] } = {}) {
   if (decision.scope === 'none') return [];
   if (decision.scope === 'full') return fullItems.map((i) => ({ dir: i.dir, cmd: i.cmd, files: [] }));
-  const out = [];
-  for (const i of relatedItems) {
-    const mine = decision.files.filter((f) => under(f, i.dir)).map((f) => (i.dir === '.' ? f : f.slice(i.dir.length + 1)));
-    if (!mine.length) continue;
-    out.push({ dir: i.dir, cmd: i.cmd, files: takesFiles(i.cmd) ? mine : [] });
+  const related = new Map();
+  const full = new Set();
+  for (const f of decision.files) {
+    let best = null;
+    for (const [kind, list] of [['related', relatedItems], ['full', fullItems]]) {
+      for (const i of list) if (under(f, i.dir) && (!best || depth(i.dir) > depth(best.i.dir))) best = { kind, i };
+    }
+    if (!best) continue;
+    if (best.kind === 'full') { full.add(best.i); continue; }
+    if (!related.has(best.i)) related.set(best.i, []);
+    related.get(best.i).push(best.i.dir === '.' ? f : f.slice(best.i.dir.length + 1));
   }
-  return out;
+  return [
+    ...relatedItems.filter((i) => related.has(i)).map((i) => ({ dir: i.dir, cmd: i.cmd, files: takesFiles(i.cmd) ? related.get(i) : [] })),
+    ...fullItems.filter((i) => full.has(i)).map((i) => ({ dir: i.dir, cmd: i.cmd, files: [] })),
+  ];
 }

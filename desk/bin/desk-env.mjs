@@ -737,9 +737,9 @@ export function ladderMemory(avail = availableGiB(), state = runnerState()) {
   const reservation = runnerReservation(state);
   return { avail, reservation, gate: Math.max(0, avail - (reservation?.heldGiB ?? 0)) };
 }
-// The status-line segment, or '' with no reservation.
-export const runnerSegment = (r) => (r
-  ? ` runner=${r.reservedGiB.toFixed(1)}G reserved (${r.residentGiB.toFixed(1)}G resident, ${r.heldGiB.toFixed(1)}G held back)`
+// The status-line segment for a ladderMemory() result, or '' with no reservation.
+export const runnerSegment = ({ reservation: r, gate }) => (r
+  ? ` runner=${r.reservedGiB.toFixed(1)}G reserved (${r.residentGiB.toFixed(1)}G resident, ${r.heldGiB.toFixed(1)}G held back) ladder=${gate.toFixed(1)}G`
   : '');
 
 export const memCeilingGiB = () => Number(/\d+(\.\d+)?/.exec(resolve({ env: 'DESK_MEM_CEILING_GB', id: 'memory-ceiling', fallback: '16' }))?.[0]) || 16;
@@ -934,8 +934,7 @@ if (isMain) {
         }
         else {
           const l = ladderMemory();
-          const gate = l.reservation ? ` ladder=${l.gate.toFixed(1)}G` : '';
-          console.log(`vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l.reservation)}${gate}`);
+          console.log(`vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`);
         }
         break;
       }

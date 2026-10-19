@@ -226,7 +226,8 @@ desk-env test-scope   # scope=related|full|none, reason=, changed=, then DIR<TAB
 
 Run each suite line it prints under the lock exactly as above, with its FILES (if any) after the cap:
 `with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> <FILES>` for Vitest or Jest, `<CMD>` alone
-for anything else. `scope=related` runs §4 Related tests through the import graph; `scope=full` runs
+for anything else. `scope=related` runs §4 Related tests through the import graph, plus in full any
+§4 Unit tests suite holding a changed file that no Related tests item covers; `scope=full` runs
 §4 Unit tests, because the change touches a lockfile, a root or test config, a shared workspace
 package, or deletes or renames a file (the `reason=` line says which), or §4 Related tests is `none`.
 Never narrow a `full` to the files you think matter, and say the scope and reason in the PR's Testing.

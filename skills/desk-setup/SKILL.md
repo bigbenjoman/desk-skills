@@ -272,12 +272,14 @@ How to turn what you find into rows:
   §4 Database migrate candidate. Propose, then confirm; a guessed test command that does not exist
   wastes a worker's whole run.
 - **Related tests.** For each Unit tests item, the same runner in its related form, in the same
-  directory: Vitest `vitest related --run`, Jest `jest --findRelatedTests` (through the package
-  manager as the Unit tests item runs it, e.g. `` `pnpm vitest related --run` ``). Workers append the
-  changed files to a Vitest or Jest item. For pytest, propose an affected-set command only where the
-  repo already has the plugin (`pytest-testmon` in its dependencies: `` `apps/api: uv run pytest
-  --testmon` ``); otherwise leave that suite out. A turbo or nx script that fans out over packages
-  has no related form: propose the per-package runner or `none`. `none` keeps workers on the full
+  directory: Vitest `vitest related --run --passWithNoTests`, Jest `jest --findRelatedTests
+  --passWithNoTests` (through the package manager as the Unit tests item runs it, e.g.
+  `` `pnpm vitest related --run --passWithNoTests` ``; the flag makes a change no test imports pass).
+  Workers append the changed files to a Vitest or Jest item. For pytest, propose an affected-set
+  command only where the repo already has the plugin (`pytest-testmon` in its dependencies:
+  `` `apps/api: uv run pytest --testmon` ``); otherwise leave that suite out, and a change under it
+  runs that suite in full. A turbo or nx script that fans out over packages has no related form:
+  propose each package's runner in its directory, or `none`. `none` keeps workers on the full
   suites, and changes nothing else.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a

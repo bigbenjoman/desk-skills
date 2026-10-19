@@ -492,7 +492,7 @@ if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 const needsHuman = [...report.waiting, ...report.parked];
 if (needsHuman.length) console.log(`NOTIFY: ${needsHuman.length} ticket(s) need you — ${needsHuman.map((x) => x.split(':')[0]).join(', ')}`);
 console.log(out.length ? out.join('\n') : 'no change this pass');
-console.log(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER.reservation)}${LADDER.reservation ? ` ladder=${gateGB.toFixed(1)}G` : ''}`);
+console.log(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 console.log('');
 console.log(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 

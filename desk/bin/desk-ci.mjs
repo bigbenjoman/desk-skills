@@ -689,6 +689,19 @@ function ghApi(path) {
   return JSON.parse(out);
 }
 
+// Every job of a run, every attempt included, or null when a page could not be read (the budget ran
+// out, or the call failed).
+function readJobs(get, repo, id) {
+  const js = [];
+  for (let p = 1; ; p++) {
+    let page;
+    try { page = get(`repos/${repo}/actions/runs/${id}/jobs?filter=all&per_page=100&page=${p}`); } catch { return null; }
+    if (!page) return null;
+    js.push(...page.jobs);
+    if (page.jobs.length < 100 || js.length >= page.total_count) return js;
+  }
+}
+
 // Every call is counted against the smaller of the budget and what the rate limit can spare above a
 // reserve (a tenth of the limit, at least 100). The limit is re-read every 100 calls, since other
 // sessions spend it too. Lists stop at a share of the allowance so job reads are never starved; what
@@ -759,16 +772,8 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
   const jobs = new Map();
   const sample = pickSample(completed, Math.max(0, allowance - calls));
   for (const r of [...sample.filter(isLong), ...sample.filter((x) => !isLong(x) && mustRead(x)), ...sample.filter((x) => !isLong(x) && !mustRead(x))]) {
-    const js = [];
-    let whole = true;
-    for (let p = 1; ; p++) {
-      let page;
-      try { page = get(`repos/${repo}/actions/runs/${r.id}/jobs?filter=all&per_page=100&page=${p}`); } catch { whole = false; break; }
-      if (!page) { whole = false; break; }
-      js.push(...page.jobs);
-      if (page.jobs.length < 100 || js.length >= page.total_count) break;
-    }
-    if (whole) jobs.set(r.id, js);
+    const js = readJobs(get, repo, r.id);
+    if (js) jobs.set(r.id, js);
     else if (calls >= allowance) break;
   }
   return { repo, since, until, coveredSince, runs: [...runs.values()], jobs, prs, calls, budget, allowance, reserve, rate: start, notes };
@@ -914,12 +919,9 @@ export function collectBatch({ repo, prs: numbers, api = ghApi }) {
   const jobs = new Map();
   for (const r of runs.values()) {
     if (r.status !== 'completed' || (r.run_attempt ?? 1) < 2) continue;
-    const js = [];
-    for (let page = 1; ; page++) {
-      const x = get(`repos/${repo}/actions/runs/${r.id}/jobs?filter=all&per_page=100&page=${page}`);
-      js.push(...x.jobs);
-      if (x.jobs.length < 100 || js.length >= x.total_count) break;
-    }
+    // Without its jobs a re-run's earlier attempts are unknown, which would undercount red.
+    const js = readJobs(get, repo, r.id);
+    if (!js) throw new Error(`batch-red: could not read the jobs of run ${r.id}; the red rate would undercount`);
     jobs.set(r.id, js);
   }
   return { prs, runs: [...runs.values()], jobs, calls };

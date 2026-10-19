@@ -53,10 +53,15 @@ t('isConfig: next.config.mjs is', isConfig('apps/web/next.config.mjs'), true);
 const related = [{ dir: 'apps/web', cmd: 'pnpm vitest related --run' }, { dir: 'apps/api', cmd: 'uv run pytest --testmon' }, { dir: '.', cmd: 'pnpm jest --findRelatedTests' }];
 const full = [{ dir: '.', cmd: 'pnpm turbo run test' }, { dir: 'apps/api', cmd: 'uv run pytest' }];
 const show = (rs) => rs.map((r) => `${r.dir}|${r.cmd}|${r.files.join(',')}`).join(' ; ');
-t('related: files relative to each suite\'s dir; pytest picks its own set', show(runs(decide(ch('apps/web/src/a.ts', 'apps/api/app/m.py'), { shared }), { relatedItems: related, fullItems: full })),
-  'apps/web|pnpm vitest related --run|src/a.ts ; apps/api|uv run pytest --testmon| ; .|pnpm jest --findRelatedTests|apps/web/src/a.ts,apps/api/app/m.py');
+t('related: each file to its closest suite, relative to its dir; pytest picks its own set', show(runs(decide(ch('apps/web/src/a.ts', 'apps/api/app/m.py', 'lib/x.ts'), { shared }), { relatedItems: related, fullItems: full })),
+  'apps/web|pnpm vitest related --run|src/a.ts ; apps/api|uv run pytest --testmon| ; .|pnpm jest --findRelatedTests|lib/x.ts');
 t('related: a suite with no changed file under it is skipped', show(runs(decide(ch('apps/web/src/a.ts'), { shared }), { relatedItems: related.slice(0, 2), fullItems: full })),
   'apps/web|pnpm vitest related --run|src/a.ts');
+t('related: a file whose suite has no related item runs that suite in full', show(runs(decide(ch('apps/web/src/a.ts', 'apps/api/app/m.py'), { shared }), { relatedItems: related.slice(0, 1), fullItems: full })),
+  'apps/web|pnpm vitest related --run|src/a.ts ; apps/api|uv run pytest|');
+t('related: a root related item does not swallow a deeper suite', show(runs(decide(ch('src/a.ts', 'apps/api/app/m.py'), { shared }), { relatedItems: [{ dir: '.', cmd: 'pnpm vitest related --run' }], fullItems: [{ dir: '.', cmd: 'pnpm vitest run' }, { dir: 'apps/api', cmd: 'uv run pytest' }] })),
+  '.|pnpm vitest related --run|src/a.ts ; apps/api|uv run pytest|');
+t('related: a file under no suite runs nothing', show(runs(decide(ch('docs/x.txt'), { shared }), { relatedItems: related.slice(0, 1), fullItems: full.slice(1) })), '');
 t('full: every Unit tests item, no files', show(runs(decide(ch('pnpm-lock.yaml'), { shared }), { relatedItems: related, fullItems: full })),
   '.|pnpm turbo run test| ; apps/api|uv run pytest|');
 t('takesFiles: vitest', takesFiles('pnpm vitest related --run'), true);
@@ -103,8 +108,8 @@ t('an unread resident size holds back all of it', runnerReservation({ running: t
 t('the ladder gates on avail less what is held back', ladderMemory(30, { running: true, reservedGiB: 24, residentGiB: 6 }).gate, 12);
 t('the ladder never goes below zero', ladderMemory(5, { running: true, reservedGiB: 24, residentGiB: 0 }).gate, 0);
 t('without a runner the ladder is avail', ladderMemory(30, { running: false, reservedGiB: 24, residentGiB: 0 }).gate, 30);
-t('status segment', runnerSegment(runnerReservation({ running: true, reservedGiB: 24, residentGiB: 6 })), ' runner=24.0G reserved (6.0G resident, 18.0G held back)');
-t('no status segment without a runner', runnerSegment(null), '');
+t('status segment', runnerSegment(ladderMemory(30, { running: true, reservedGiB: 24, residentGiB: 6 })), ' runner=24.0G reserved (6.0G resident, 18.0G held back) ladder=12.0G');
+t('no status segment without a runner', runnerSegment(ladderMemory(30, { running: false, reservedGiB: 24, residentGiB: 0 })), '');
 
 // `desk-env mem status` with fake tart, lsof and ps on PATH, and a profile reserving 24 GB.
 const fake = join(T, 'bin');
