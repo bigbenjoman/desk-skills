@@ -65,7 +65,7 @@ export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test
 cd "$T/repo" || exit 1
 q(){ out=$(node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
-pass(){ out=$(node "$B/pass.mjs" "$@" 2>&1); rc=$?; }
+pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
 # pass --json: stdout only, so the object is all there is to parse.
 pj(){ out=$(node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
 js(){ printf '%s' "$out" | jq -r "$1" 2>/dev/null; }
@@ -107,6 +107,13 @@ q add T-4; q set T-4 state=triaged lane=A branch=fix/T-4 open_questions=2
 pj
 check "pass: open questions exit 11 and are listed as waiting"  '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^T-4: 2 question(s) open"'
 q drop T-4
+
+# A worker that exits with no marker and no PR fails in this pass, while T-1 still runs.
+q add T-9; q set T-9 state=running lane=A branch=fix/T-9 session_id=gone
+say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state/logs/T-9.log"
+pj
+check "pass: a ticket that fails this pass exits 11 while others run" '[ $rc -eq 11 ] && [ "$(js .status)" = show_person ] && js ".waiting[]" | grep -q "^T-9: exited with no marker"'
+q drop T-9
 
 # A blocker that can no longer merge leaves its held ticket stuck.
 q set T-1 state=failed session_id=null

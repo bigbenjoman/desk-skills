@@ -234,7 +234,7 @@ printf 'WAIT\nAUTOPILOT_STAGE: 3/9 implement\n' > "$T/scripts/T-7.1"
 q admit T-7
 pass; finish T-7
 pass
-check "a worker with no done marker and no PR is reported failed, exit 11" '[ $rc -eq 11 ] && [ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
+check "a worker with no done marker and no PR is reported failed, exit 11 naming it" '[ $rc -eq 11 ] && echo "$out" | grep -q "^NOTIFY: .*T-7" && [ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
 out=$(node "$B/queue.mjs" requeue T-7 2>&1)
 check "with no Worker models row, a requeue after a failure claims no model change" '[ "$(field T-7 model_tier)" = null ] && [ "$(field T-7 model_note)" = null ] && ! echo "$out" | grep -q "high model"'
 q drop T-7

@@ -522,8 +522,8 @@ for (const t of releaseDue) {
   else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running: release it (queue.mjs set ${t.key} state=triaged park=null held_by=null, then queue.mjs front ${t.key})`);
 }
 for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (failed, parked, no PR, or a closed PR): decide whether it waits, is released, or is dropped`);
-// A failed ticket waits on the person until it is requeued or dropped; this pass's failures are
-// already reported above with their reason.
+// A failed ticket waits on the person until it is requeued or dropped. This pass's failures are
+// printed under `failed:` with their reason, and reach the verdict's `waiting` from there.
 const failedThisPass = new Set(report.failed.map((x) => x.split(':')[0]));
 for (const t of Object.values(qNow.tickets).filter((r) => r.state === 'failed' && !failedThisPass.has(r.key))) {
   report.waiting.push(`${t.key}: FAILED — requeue it (queue.mjs requeue ${t.key}), finish it by hand, or drop it`);
@@ -541,10 +541,12 @@ if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 
 // ---- verdict -------------------------------------------------------------
-// Everything that waits on the person: WAITING ON YOU, the stalls only they can clear, unanswered
-// questions, and every ticket parked for its own reason (a hold is not one: it releases by itself).
+// Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can
+// clear, unanswered questions, and every ticket parked for its own reason (a hold is not one: it
+// releases by itself).
 const qEnd = queue();
 const waiting = [
+  ...report.failed,
   ...report.waiting,
   ...report.personStalls,
   ...blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
