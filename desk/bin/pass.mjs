@@ -328,7 +328,11 @@ if (blockedByDone.length) {
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
-for (const t of eligible.slice(0, Math.max(0, slots))) {
+let spawnedThisPass = 0;
+for (const t of eligible) {
+  if (spawnedThisPass >= slots) break;
+  // A ticket spawned earlier in this pass is running too: two that collide never start together.
+  if ((t.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k))) continue;
   const wt = join(WORKTREES, t.key);
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
@@ -427,6 +431,8 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
     continue;
   }
   report.spawned.push(`${t.key} port=${port} db=${database}`);
+  runningKeys.add(t.key);
+  spawnedThisPass += 1;
 }
 
 // ---- base drift ----------------------------------------------------------
