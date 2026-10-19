@@ -4,7 +4,7 @@ DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
 # "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
 # "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field], "fields": [field list GET /field
-# answers], "unlink_readback": "normal"|"keep"}. Issue links posted are kept in memory, on both
+# answers], "unlink_readback": "normal"|"keep", "projects": {KEY: id}}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view. A DELETE of a
 # link id removes it from both.
 FIX = {"issues": {}, "children": {}}
@@ -53,6 +53,10 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"accountId": "abc", "displayName": "Me", "emailAddress": "me@example.com"}) if authed else self._send(401, {"errorMessages": ["unauthorized"]})
         if path == "/rest/api/3/field" and self.command == "GET":
             return self._send(200, FIX.get("fields", []))
+        m = re.match(r"/rest/api/3/project/([A-Z][A-Z0-9]*)$", path)
+        if m and self.command == "GET":
+            pid = FIX.get("projects", {}).get(m.group(1))
+            return self._send(200, {"id": pid, "key": m.group(1)}) if pid else self._send(404, {"errorMessages": ["No project could be found with key '%s'." % m.group(1)]})
         if path.startswith("/rest/api/3/search/jql"):
             if not authed:
                 return self._send(200, {"issues": []})  # Jira's anonymous behaviour

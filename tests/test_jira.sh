@@ -532,6 +532,32 @@ check "lint: a priority line in the body is advisory" 'printf "%s\n" "$out" | gr
 lint "$LD/nocrit.md" customfield_10208=M --json
 check "lint --json: an array of findings with severity" '[ $rc -eq 1 ] && printf "%s" "$out" | jq -e "map(select(.severity == \"blocking\" and .rule == \"criteria\")) | length == 1" >/dev/null'
 
+# With no §4 Size field row, the Size field is the one that fits the project (KAN, id 10101 here):
+# global, or scoped to it. Repo A has no row; repo C names customfield_10208.
+jq -n '{projects: {KAN: "10101"}, issues: {
+    "KAN-50": {issuetype: {name: "Story"}, customfield_10174: {value: "M"}, customfield_10208: {value: "M"},
+               _names: {customfield_10174: "Size", customfield_10208: "Size"}}},
+  fields: [
+    {id: "customfield_10174", name: "Size", custom: true, schema: {type: "option"}, scope: {type: "PROJECT", project: {id: "10034"}}},
+    {id: "customfield_10208", name: "Size", custom: true, schema: {type: "option"}, scope: {type: "PROJECT", project: {id: "10101"}}}]}' > "$T/scoped.json"
+jq '.fields[0] |= del(.scope)' "$T/scoped.json" > "$T/both.json"
+SPORT=$((PORT + 5)); python3 "$S/stub_jira.py" "$SPORT" "$T/scoped.log" "" "$T/scoped.json" & SSTUB=$!
+BPORT=$((PORT + 6)); python3 "$S/stub_jira.py" "$BPORT" "$T/both.log" "" "$T/both.json" & BSTUB=$!
+trap 'kill $STUB $SLOW $KEEP $SSTUB $BSTUB 2>/dev/null' EXIT
+sleep 0.5
+slint(){ out=$(cd "$1" && JIRA_SITE="http://127.0.0.1:$2" "$J" lint "${@:3}" 2>&1); rc=$?; }
+slint "$A" "$SPORT" "$LD/clean.md" customfield_10208=M
+check "lint: with no Size field row, Size is read from the field scoped to the project, not another's" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+slint "$A" "$SPORT" "$LD/clean.md" customfield_10174=M
+check "lint: another project's Size field does not count as Size" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
+slint "$A" "$BPORT" "$LD/clean.md" customfield_10208=M
+check "lint: two Size fields that fit the project are named with the config row, and neither is picked" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -qx "desk-jira: more than one field named Size fits project KAN (customfield_10174, customfield_10208): add the \"Size field\" row to config §4 to name one" && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
+slint "$A" "$BPORT" KAN-50
+check "lint KEY: two Size fields on the issue are named, and neither is picked" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "more than one field named Size fits project KAN (customfield_10174, customfield_10208)"'
+slint "$C" "$BPORT" "$LD/clean.md" customfield_10208=M
+check "lint: a Size field row is used as it is, whatever the site holds" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+kill $SSTUB $BSTUB 2>/dev/null
+
 # Tickets read from Jira: KAN-45 is clean; KAN-46 has every advisory; KAN-47 links an unsaved
 # Claude Design canvas.
 cat > "$LD/45.wiki" <<'EOF'
