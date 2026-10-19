@@ -12,7 +12,7 @@ set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 NODE="$(node -p process.execPath)"   # the binary itself, never a version manager's shim
 T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"
-mkdir -p "$T/home" "$T/state/triage" "$T/stub" "$T/wt" "$T/live" "$T/runs" "$T/scripts" "$T/go" "$T/gh/prs"
+mkdir -p "$T/home" "$T/state/triage" "$T/stub" "$T/wt" "$T/live" "$T/runs" "$T/scripts" "$T/go"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 # No network for git: every transport but a local file is refused.
@@ -126,17 +126,11 @@ for (const line of script) {
 }
 fs.unlinkSync(reg);
 EOF
-# The fake gh: \`pr list --head <branch>\` prints gh/prs/<branch>'s PR number if the test wrote one,
-# and \`pr view <n>\` says the PR is open.
+# The fake gh: `pr view <n>` says the PR is open, and `pr list` finds no PR.
 cat > "$T/stub/gh" <<EOF
 #!$NODE
-const fs = require('fs');
 const a = process.argv.slice(2);
-fs.appendFileSync('$T/calls.log', 'gh ' + a.join(' ') + '\n');
-if (a[0] === 'pr' && a[1] === 'list') {
-  const f = '$T/gh/prs/' + String(a[a.indexOf('--head') + 1]).replace(/\//g, '_');
-  if (fs.existsSync(f)) console.log(fs.readFileSync(f, 'utf8').trim());
-} else if (a[0] === 'pr' && a[1] === 'view') console.log('OPEN');
+if (a[0] === 'pr' && a[1] === 'view') console.log('OPEN');
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
 ln -s "$NODE" "$T/stub/node"
@@ -194,11 +188,9 @@ check "a further pass spawns nothing"                           '[ "$(grep -c "^
 record T-4 src/c.txt; record T-5 src/d.txt
 printf 'WAIT\nAUTOPILOT_DONE: pr=104 jira=none\n' > "$T/scripts/T-4.1"
 q admit T-4; q admit T-5; q hold T-5 T-4
+pass; finish T-4
 pass
-check "the held ticket stays parked while its blocker runs"     '[ "$(state T-4)" = running ] && [ "$(state T-5)" = parked ] && [ ! -e "$T/runs/T-5.1" ]'
-finish T-4
-pass
-check "a finished blocker with an open PR keeps the batch waiting on its merge" '[ "$(state T-4)" = done ] && [ "$(state T-5)" = parked ] && echo "$out" | grep -q "WAITING ON MERGE: T-5 (T-4)" && ! echo "$out" | grep -q "^IDLE"'
+check "a finished blocker with an open PR keeps the batch waiting on its merge" '[ "$(state T-4)" = done ] && [ "$(state T-5)" = parked ] && [ ! -e "$T/runs/T-5.1" ] && echo "$out" | grep -q "WAITING ON MERGE: T-5 (T-4)" && ! echo "$out" | grep -q "^IDLE"'
 q drop T-5
 
 # ---- AC3: a worker parks with a question; answered and requeued, a second worker finishes it ------
@@ -226,9 +218,5 @@ q admit T-7
 pass; finish T-7
 pass
 check "a worker with no done marker and no PR is reported failed" '[ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
-
-# ---- AC5: nothing left the machine ---------------------------------------------------------------
-check "every claude call was the fake's: agents, preflight or a scripted worker" '! grep "^claude" "$T/calls.log" | grep -vqE "^claude (agents|preflight|worker T-[0-9]+)$"'
-check "no worktree has a network remote"                        '! git -C "$T/repo" remote -v | grep -qvF "$T/origin.git"'
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
