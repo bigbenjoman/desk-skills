@@ -239,6 +239,7 @@ export const CONFIG_ROWS = Object.freeze({
   'build-cmd': { section: '4', row: 'Build' },
   'codegen-cmd': { section: '4', row: 'Codegen' },
   'integration-cmd': { section: '4', row: 'Integration tests' },
+  'acceptance-specs': { section: '4', row: 'Acceptance specs' },
   'pre-push-checks': { section: '4', row: 'Pre-push checks' },
   'pr-description-checks': { section: '4', row: 'PR-description checks' },
   'seed-cmd': { section: '4', row: 'Seed' },

@@ -285,6 +285,13 @@ How to turn what you find into rows:
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
   wider, with no lock. `none` is a fine answer, and changes nothing.
+- **Acceptance specs.** Always ask. Two spans: the directory an epic's acceptance specs go in, then
+  the command that runs some of them, with `{ids}` where the criterion ids go, in the Unit tests
+  form, e.g. `` `tests/acceptance/` `pnpm vitest run tests/acceptance -t "{ids}"` `` or
+  `` `tests/acceptance/` `uv run pytest tests/acceptance -k "{ids}"` ``. Propose the repo's own
+  runner filtered by test name, and say the specs are titled with their criterion id. Set, an epic
+  run on a batch base goes through autopilot feature mode; `none` is a fine answer, and keeps every
+  epic an ordinary batch.
 - **Pre-push checks.** From the steps the CI workflows run on a pull request, take the fast,
   local ones (code generation, format, lint, typecheck) and map each onto the repo's own command
   (a `package.json` script, a Makefile target), one span each in the Unit tests form, generate steps

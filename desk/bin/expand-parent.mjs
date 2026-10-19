@@ -5,8 +5,9 @@
 //   expand-parent.mjs <STORY> --subtasks  a story's open subtasks, only when the user asked for that
 //
 // stdout: the batch keys, one per line, in Jira rank order. stderr: what was dropped and why.
-// Writes $DESK_STATE/expansion.json ({parent, containers: {<story>: {subtasks, blocked_by}}}) so
-// plan-batch can carry a container's Blocks links over to the subtasks that replace it.
+// Writes $DESK_STATE/expansion.json ({parent, containers: {<story>: {subtasks, blocked_by}}, criteria})
+// so plan-batch can carry a container's Blocks links over to the subtasks that replace it. `criteria`
+// is the parent's numbered criteria ([{id, text}]: its DoD ids, else its AC ids), for feature mode.
 //
 // Exit: 0 keys printed · 3 nothing open under it · 4 not an epic (run it as an ordinary ticket) ·
 // 1/2 a read failed or the argument is unusable. A failure never prints an empty batch.
@@ -14,6 +15,7 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, ticketKind } from './desk-env.mjs';
+import { sections } from './desk-design.mjs';
 
 const [key, ...flags] = process.argv.slice(2);
 const subtasks = flags.includes('--subtasks');
@@ -37,6 +39,26 @@ const isStory = (i) => !isSubtask(i) && /story/i.test(i.fields?.issuetype?.name 
 const blockersOf = (i) => (i.fields?.issuelinks ?? [])
   .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
   .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new' }));
+
+// The numbered criteria of a description: the Definition of done's DoD<n> items, else the Acceptance
+// criteria's AC<n> items, the ids the epic close-out checks. An id named twice keeps its first text.
+function criteriaOf(description) {
+  const text = String(description ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
+  const secs = sections(text);
+  for (const [heading, prefix] of [[/^definition of done\b/i, 'DoD'], [/^acceptance criteria\b/i, 'AC']]) {
+    const item = new RegExp(`^(?:\\d+[.)]|[^A-Za-z0-9])*(${prefix}\\d+)\\s*[:.)\\-]\\s*(.+)$`, 'i');
+    const out = [];
+    for (const s of secs.filter((x) => heading.test(x.name))) {
+      for (const l of s.lines) {
+        const m = item.exec(l.text.trim());
+        const id = m && `${prefix}${m[1].slice(prefix.length)}`;
+        if (m && !out.some((c) => c.id === id)) out.push({ id, text: m[2].trim() });
+      }
+    }
+    if (out.length) return out;
+  }
+  return [];
+}
 
 // A previous run's file must never outlive it: plan-batch would apply another epic's containers.
 rmSync(join(stateDir(), 'expansion.json'), { force: true });
@@ -93,6 +115,8 @@ for (const c of jira('children', key, '--json')) {
 
 if (!keys.length) { say(`nothing open under ${key}`); process.exit(3); }
 mkdirSync(stateDir(), { recursive: true });
-writeFileSync(join(stateDir(), 'expansion.json'), `${JSON.stringify({ parent: key, containers }, null, 2)}\n`);
+const criteria = criteriaOf(top.fields?.description);
+writeFileSync(join(stateDir(), 'expansion.json'), `${JSON.stringify({ parent: key, containers, criteria }, null, 2)}\n`);
+say(`${key}: ${criteria.length ? `criteria ${criteria.map((c) => c.id).join(' ')}` : 'no numbered criteria (DoD or AC ids)'}`);
 say(`${key}: ${keys.length} ticket(s)`);
 console.log(keys.join('\n'));

@@ -2,17 +2,18 @@
 // Turn a set of triage records into a batch plan: admission, collisions, Jira dependencies, and the
 // one batch of questions to put to the user before any code is written. Offline: it reads only the
 // triage records (with the facts ticket-facts.mjs merged into them) and, for an epic batch,
-// $DESK_STATE/expansion.json from expand-parent.mjs.
+// $DESK_STATE/expansion.json from expand-parent.mjs and the feature plan the orchestrator drafts into
+// $DESK_STATE/feature.json.
 // Exits 0 when every ticket can start with nothing to put to the person first, or 11 (show the
 // person) when one needs them before Stage 3 (`needs_person`) and on any refusal or error: EXIT in
 // batch-state.mjs. With --json, stdout is one object: status (go_on | show_person | error), code,
 // message (the plan), needs_person ({ticket, why, detail}; why is question, lint,
-// challenge_inconclusive, challenge_not_run or parked) and notify.
+// challenge_inconclusive, challenge_not_run, parked or feature_plan) and notify.
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, permission, ticketKind, SAFE_ID } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID } from './desk-env.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 const plan = [];
@@ -97,6 +98,13 @@ const admittedKeys = new Set(admitted.map((r) => r.ticket));
 const added = {};      // ticket -> questions plan-batch adds
 const notes = {};      // ticket -> plan lines
 const preds = {};      // ticket -> in-batch blockers it is held behind
+const holdWhy = {};    // ticket -> blocker -> what makes it one (a Jira link, or the feature plan)
+const holdBehind = (t, p, why) => {
+  if (t === p) return;
+  const w = (holdWhy[t] ??= {});
+  if (!w[p]) (preds[t] ??= []).push(p);
+  w[p] = w[p] ? `${w[p]}; ${why}` : why;
+};
 const ask = (t, q) => (added[t] ??= []).push(q);
 const note = (t, n) => (notes[t] ??= []).push(n);
 let otherLinks = 0;
@@ -116,7 +124,7 @@ for (const r of admitted) {
       if (k === t || seen.has(k)) continue;
       seen.add(k);
       const br = byKey[k];
-      if (br && admittedKeys.has(k)) (preds[t] ??= []).push(k);
+      if (br && admittedKeys.has(k)) holdBehind(t, k, 'Jira link');
       else if (br) {
         const why = !ours.includes(br) ? `assigned to ${br.assignee}` : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
@@ -124,6 +132,64 @@ for (const r of admitted) {
       else ask(t, `${t} is blocked by ${k} (${b.category === 'indeterminate' ? 'in progress' : 'not started'}), which is not in this batch: add ${k} to the batch, or confirm ${t} can start without it`);
     }
   }
+}
+
+// Feature mode: an epic run on a batch base, in a repo whose §4 Acceptance specs names the spec
+// directory and a command taking {ids}, with numbered criteria read by expand-parent. A spine child
+// lands one expected-fail spec per criterion and every other child is held behind it; each criterion
+// has one owning child, held behind every other child that contributes to it. The orchestrator drafts
+// the spine and the owner table into feature.json at Stage 2; the spine is filed once the person
+// approves it at Stage 3 and is planned with the rest. An ordinary batch says nothing about it.
+//   {epic, spine: <KEY> | null, draft: "<the spine ticket as drafted>", owners: {<id>: <KEY>},
+//    contributors: {<id>: [<KEY>]}, untestable: {<id>: {why, close_out: true once agreed}}}
+const featurePath = join(STATE, 'feature.json');
+const featureQs = [];  // questions on the epic's feature plan
+const feature = (() => {
+  if (!batchEpic) return null;
+  const off = (why) => ({ on: false, why });
+  let base; let specs;
+  try { base = batchBase(); specs = configValues('acceptance-specs'); } catch (e) { return off(e.message); }
+  if (!base) return off('the batch has no base branch (queue.mjs set-batch base=<branch>), so each child merges to the default branch on its own');
+  if (!specs) return off('config §4 Acceptance specs is unset (run /desk-setup, or set it to `none`)');
+  if (isNone(specs)) return off('config §4 Acceptance specs is none');
+  if (!specs.some((s) => s.includes('{ids}'))) return off('config §4 Acceptance specs has no command taking {ids}');
+  const criteria = expansion?.parent === batchEpic ? expansion.criteria : null;
+  if (!Array.isArray(criteria)) return off(`the criteria of ${batchEpic} were not read: re-run expand-parent.mjs ${batchEpic}`);
+  if (!criteria.length) return off(`${batchEpic} has no numbered criteria (DoD or AC ids)`);
+  let plan = existsSync(featurePath) ? readJsonOrRefuse(featurePath, `rewrite it for ${batchEpic}`) : null;
+  const stale = plan && plan.epic !== batchEpic ? `feature.json is for ${plan.epic ?? 'no epic'}, not ${batchEpic}` : null;
+  if (stale) plan = null;
+  const spine = plan?.spine ?? null;
+  const sr = spine ? byKey[spine] : null;
+  if (sr && !admittedKeys.has(spine)) {
+    const why = !ours.includes(sr) ? `assigned to ${sr.assignee}` : sizeParked(sr) ? `size ${String(sr.size).toUpperCase()}` : `lane ${sr.lane}`;
+    return off(`the spine ${spine} is parked at triage (${why}), so feature mode stops for this batch and its children run as an ordinary batch`);
+  }
+  return { on: true, base, specs, criteria, plan, stale, spine, filed: !!sr };
+})();
+
+if (feature?.on && feature.plan) {
+  const { criteria, plan, spine } = feature;
+  const ids = new Set(criteria.map((c) => c.id));
+  const child = (k) => admittedKeys.has(k) && k !== spine;
+  const owners = plan.owners ?? {};
+  const contributors = plan.contributors ?? {};
+  const untestable = plan.untestable ?? {};
+  for (const id of new Set([...Object.keys(owners), ...Object.keys(contributors), ...Object.keys(untestable)])) {
+    if (!ids.has(id)) featureQs.push(`${id} in feature.json is not one of ${batchEpic}'s criteria (${[...ids].join(', ')}): fix the owner table`);
+  }
+  for (const { id } of criteria) {
+    const o = owners[id];
+    const u = untestable[id];
+    if (o && !child(o)) featureQs.push(`${id}'s owner ${o} is not a child this batch builds${o === spine ? ' (the spine writes the spec, a child makes it pass)' : ''}: name another owner`);
+    else if (!o && u && u.close_out !== true) featureQs.push(`${id} cannot be written as a test (${(typeof u === 'string' ? u : u.why) || 'no reason given'}): leave it to the epic close-out check?`);
+    else if (!o && !u) featureQs.push(`${id} has no owner: name the child whose PR makes its spec pass`);
+    for (const p of contributors[id] ?? []) {
+      if (!child(p)) featureQs.push(`${id}'s contributor ${p} is not a child this batch builds: drop it from the table or add it to the batch`);
+      else if (o && child(o)) holdBehind(o, p, `${id}: completes what ${p} contributes`);
+    }
+  }
+  if (feature.filed) for (const r of admitted) if (r.ticket !== spine) holdBehind(r.ticket, spine, 'feature spine');
 }
 
 // A cycle can never release, so everything on one is parked for the user to fix the links. Every
@@ -156,6 +222,7 @@ for (const [t, ps] of Object.entries(preds)) {
 }
 admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 const held = (t) => !!preds[t]?.length;
+const heldBy = (t) => preds[t].map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
 const depsArg = Object.entries(preds).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
 
 // Spawn order: blockers before what they block; otherwise the order the tickets were named in.
@@ -211,6 +278,29 @@ for (const r of order) {
   for (const n of notes[r.ticket] ?? []) say(`  ~ ${n}`);
 }
 
+if (feature && !feature.on) say(`\n${'='.repeat(60)}\nFEATURE MODE — off: ${feature.why}`);
+if (feature?.on) {
+  const { criteria, plan, spine, base, specs } = feature;
+  say(`\n${'='.repeat(60)}\nFEATURE MODE — on: ${batchEpic} on base ${base}, ${criteria.length} criteria, specs ${specs.map((s) => `\`${s}\``).join(' ')}`);
+  if (!plan) say(`  no feature plan yet${feature.stale ? ` (${feature.stale})` : ''}: draft the spine ticket and the owner table into ${featurePath}, then re-run plan-batch`);
+  else {
+    if (feature.filed) say(`  spine ${spine}: lands first, and every other child is held behind it`);
+    else {
+      say(`  spine${spine ? ` ${spine}` : ''}: ${spine ? 'not in this batch: triage it and plan it with the rest' : 'not filed yet; filed under the epic through desk-jira once approved at Stage 3'}. Drafted:`);
+      for (const l of String(plan.draft ?? '(no draft in feature.json)').split('\n')) say(`    | ${l}`);
+    }
+    const width = Math.max(9, ...criteria.map((c) => c.id.length));
+    say(`  ${'criterion'.padEnd(width)}  ${'owner'.padEnd(10)}  held behind`);
+    for (const { id, text } of criteria) {
+      const o = plan.owners?.[id];
+      const u = plan.untestable?.[id];
+      const who = o ?? (u?.close_out === true ? 'close-out' : u ? 'close-out?' : '?');
+      const behind = o ? (plan.contributors?.[id] ?? []).filter((p) => p !== o).join(', ') : '';
+      say(`  ${id.padEnd(width)}  ${who.padEnd(10)}  ${behind || '-'}   ${text.length > 70 ? `${text.slice(0, 67)}...` : text}`);
+    }
+  }
+}
+
 const linted = ours.filter((r) => lintBlocking(r).length || r.lint_error);
 if (linted.length) {
   say(`\n${'='.repeat(60)}\nLINT — ${linted.length} ticket(s) a worker would park on; fix each ticket (desk-jira lint <KEY>) before spawning:`);
@@ -243,6 +333,7 @@ const qsOf = (r) => [...(r.unknowns ?? []), ...(added[r.ticket] ?? [])];
 const questions = [
   ...admitted.flatMap((r) => qsOf(r).map((u) => ({ ticket: r.ticket, q: u }))),
   ...unchecked.flatMap((r) => (added[r.ticket] ?? []).map((u) => ({ ticket: r.ticket, q: u }))),
+  ...featureQs.map((u) => ({ ticket: batchEpic, q: u })),
 ];
 say(`\n${'='.repeat(60)}`);
 if (questions.length) {
@@ -259,8 +350,8 @@ if (collisions.length) {
 }
 
 if (depsArg) {
-  say(`\nDEPENDENCIES — from Jira links (held tickets start once every blocker's PR merges):`);
-  for (const [t, ps] of Object.entries(preds)) say(`  ${t} held: blocked by ${ps.join(', ')}`);
+  say(`\nDEPENDENCIES — from Jira links${feature?.on ? ' and the feature plan' : ''} (held tickets start once every blocker's PR merges):`);
+  for (const [t, ps] of Object.entries(preds)) say(`  ${t} held: blocked by ${heldBy(t)}`);
   say(`--deps "${depsArg}"`);
   say('Pass it to merge-driver.sh, joined with any collision chain (one entry per successor, predecessors unioned).');
 }
@@ -271,6 +362,14 @@ if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — 
 // Seed the queue in spawn order: blockers first, then the order the tickets were named in (pass
 // gates first). A ticket that collides with another is marked so the spawn loop will not run them
 // together. Park precedence: lane, size, cycle, then the dependency hold.
+// In feature mode nothing is seeded until the spine is filed and planned and the owner table is
+// settled: seeded without them, every child would start with nothing held behind the spine.
+const featureUnsettled = feature?.on && (!feature.filed || featureQs.length)
+  ? (!feature.plan ? `no feature plan: draft the spine and the owner table into ${featurePath}`
+    : !feature.filed ? 'the spine is not filed and planned: file it once approved, triage it, set its key as spine in feature.json and plan it with the rest'
+      : `${featureQs.length} question(s) on the owner table: settle them in feature.json`)
+  : null;
+if (process.env.AUTOPILOT_WRITE_QUEUE && featureUnsettled) refuse(`feature mode is on for ${batchEpic}, so the queue is not seeded: ${featureUnsettled}, then re-run plan-batch`);
 if (process.env.AUTOPILOT_WRITE_QUEUE) {
   for (const r of order) {
     const t = r.ticket;
@@ -287,7 +386,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     const park = lanePark(r)
       ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — fix the Jira links`
-      : held(t) ? `held by orchestrator: blocked by ${preds[t].join(', ')} (Jira link) — starts once their PRs merge`
+      : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once their PRs merge`
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
   }
@@ -307,6 +406,8 @@ const needsPerson = [
     ? { ticket: r.ticket, why: 'challenge_inconclusive', detail: `lane ${r.lane} is unchecked, reads failed: ${failedReads(r)}` }
     : { ticket: r.ticket, why: 'challenge_not_run', detail: `lane ${r.lane} is unreviewed: ${r.lane_challenge?.reason ?? 'no challenge recorded'}` })),
   ...[...parked, ...sized, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
+  ...(feature?.on && !feature.filed ? [{ ticket: batchEpic, why: 'feature_plan',
+    detail: feature.plan ? 'approve the drafted spine and owner table, then file the spine under the epic and plan it with the rest' : `draft the spine and the owner table into ${featurePath}, then re-run plan-batch` }] : []),
 ];
 if (needsPerson.length) say(`\nNEEDS YOU BEFORE STAGE 3: ${needsPerson.length} item(s) — ${[...new Set(needsPerson.map((n) => n.ticket))].join(', ')}`);
 // exitCode, not exit(): a long plan to a pipe must flush before the process ends.

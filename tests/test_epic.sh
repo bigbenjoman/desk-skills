@@ -85,7 +85,11 @@ cat > "$T/fixture.json" <<'EOF'
                   "inwardIssue": {"key": "KAN-54"}},
                  {"id": "24", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
                   "outwardIssue": {"key": "KAN-55"}}]},
-    "KAN-53": {"description": "Size: M\nThe rest of the body."}
+    "KAN-53": {"description": "Size: M\nThe rest of the body."},
+    "KAN-1100": {"summary": "epic with a definition of done", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
+                 "description": "h2. Outcome\nA feature.\n\nh2. Definition of done\n# DoD1: Given a, then b.\n# DoD2: Given c, then d.\n# DoD1: named twice\n\nh2. Acceptance criteria\n# AC1: not read while a DoD exists"},
+    "KAN-1110": {"summary": "epic with acceptance criteria only", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
+                 "description": "## Acceptance criteria\n1. AC1: first\n2. AC2: second\n\n## Out of scope\n* AC9: not a criterion"}
   },
   "children": {
     "KAN-10": ["KAN-11", "KAN-12", "KAN-13", "KAN-14", "KAN-17", "OTH-1", "KAN-19"],
@@ -100,7 +104,9 @@ cat > "$T/fixture.json" <<'EOF'
     "KAN-70": ["KAN-71", "KAN-75", "KAN-77", "KAN-78", "KAN-79"],
     "KAN-71": ["KAN-72", "KAN-73", "KAN-74"],
     "KAN-75": ["KAN-76"],
-    "KAN-79": ["KAN-80"]
+    "KAN-79": ["KAN-80"],
+    "KAN-1100": ["KAN-11"],
+    "KAN-1110": ["KAN-19"]
   }
 }
 EOF
@@ -117,7 +123,7 @@ git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
 git -C "$T/repo" remote add origin "git@github.com:acme/epic.git"
 SLUG=$(cd "$T/repo" && node "$DESK_ENV_MJS" where | sed -n "s/^SLUG='\(.*\)'$/\1/p")
 CD="$DESK_CONFIG_ROOT/repos/$SLUG"; mkdir -p "$CD"
-mkcfg(){  # site edit-perm
+mkcfg(){  # site edit-perm [acceptance-specs value]
   cat > "$CD/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -158,6 +164,7 @@ mkcfg(){  # site edit-perm
 | Required checks | \`none\` |
 | Merge holds | \`none\` |
 | Unit tests | \`pnpm test\` |
+| Acceptance specs | ${3:-\`none\`} |
 EOF
 }
 mkcfg "http://127.0.0.1:$PORT" yes
@@ -244,6 +251,14 @@ check "epic expands to open, in-repo children, containers replaced by open subta
 check "the report names each drop and why" 'printf "%s" "$err" | grep -q "KAN-12.*done" && printf "%s" "$err" | grep -q "KAN-13.*in progress" && printf "%s" "$err" | grep -q "OTH-1.*not this repo" && printf "%s" "$err" | grep -q "KAN-14.*KAN-15"'
 check "expansion.json records the container, its subtasks and its blockers" \
   '[ "$(jq -c ".containers[\"KAN-14\"]" "$T/state/expansion.json")" = "{\"subtasks\":[\"KAN-15\"],\"blocked_by\":[{\"key\":\"KAN-11\",\"category\":\"new\"}]}" ] && [ "$(jq -r .parent "$T/state/expansion.json")" = KAN-10 ]'
+check "an epic with no numbered criteria records none, and says so" \
+  '[ "$(jq -c .criteria "$T/state/expansion.json")" = "[]" ] && printf "%s" "$err" | grep -q "KAN-10: no numbered criteria"'
+E KAN-1100
+check "an epic's DoD ids are its criteria, an id named twice kept once, its AC ids not read" \
+  '[ $rc -eq 0 ] && [ "$(jq -c "[.criteria[].id]" "$T/state/expansion.json")" = "[\"DoD1\",\"DoD2\"]" ] && [ "$(jq -r ".criteria[0].text" "$T/state/expansion.json")" = "Given a, then b." ]'
+E KAN-1110
+check "with no DoD, the AC ids are the criteria (markdown numbering), other sections not read" \
+  '[ $rc -eq 0 ] && [ "$(jq -c "[.criteria[].id]" "$T/state/expansion.json")" = "[\"AC1\",\"AC2\"]" ] && printf "%s" "$err" | grep -q "criteria AC1 AC2"'
 E KAN-30
 check "a bug with subtasks is not expanded (exit 4)" '[ $rc -eq 4 ] && [ -z "$out" ]'
 check "a run that expands nothing leaves no expansion.json behind" '[ ! -e "$T/state/expansion.json" ]'
@@ -385,6 +400,85 @@ check "plan: a blocking lint finding is shown under its ticket, an advisory one 
 check "plan: the LINT section lists the ticket before spawning" 'printf "%s\n" "$out" | grep -A1 "^LINT — 1 ticket" | grep -qxF "  KAN-303: 1 blocking finding(s)"'
 check "inconclusive challenge: parked, park question says unchecked, no open answers to block a re-lane" \
   '[ "$(qg KAN-301 .state)" = parked ] && [[ "$(qg KAN-301 .park.question)" == "lane C UNCHECKED"* ]] && [ "$(qg KAN-301 .open_questions)" = 0 ] && [[ "$(qg KAN-302 .park.question)" == "lane C —"* ]] && [ "$(qg KAN-303 .state)" = triaged ]'
+
+# ---------------------------------------------------------------------------------------------------
+# F feature mode: an epic on a batch base, with criteria and an acceptance-spec command
+mkcfg "http://127.0.0.1:$PORT" yes '`tests/acceptance/` `pnpm vitest run tests/acceptance -t "{ids}"`'
+rm -f "$T/state/triage/"*.json "$T/state/feature.json"
+crit='[{"id":"DoD1","text":"one"},{"id":"DoD2","text":"two"},{"id":"DoD3","text":"all children Done"}]'
+printf '{"parent":"KAN-1000","containers":{},"criteria":%s}' "$crit" > "$T/state/expansion.json"
+r KAN-1001 A '[]'; r KAN-1002 A '[]'; r KAN-1003 A '[]'; r KAN-1050 A '[]'
+fbatch(){ # [base]
+  node "$B/queue.mjs" init "f$RANDOM" >/dev/null; node "$B/queue.mjs" set-batch epic=KAN-1000 >/dev/null
+  if [ -n "${1:-}" ]; then jq --arg b "$1" '.base = $b' "$DESK_QUEUE" > "$T/q.tmp" && mv "$T/q.tmp" "$DESK_QUEUE"; fi; }
+P(){ out=$(node "$B/plan-batch.mjs" "$@" 2>&1); rc=$?; }
+PJ(){ out=$(node "$B/plan-batch.mjs" --json "$@" 2>/dev/null); rc=$?; }
+fplan(){ printf '%s' "$1" > "$T/state/feature.json"; }
+
+fbatch feat/epic
+PJ KAN-1001 KAN-1002 KAN-1003
+check "feature mode on with no plan yet: it says so and the person is needed (feature_plan)" \
+  '[ $rc -eq 11 ] && printf "%s" "$out" | jq -r .message | grep -q "^FEATURE MODE — on: KAN-1000 on base feat/epic, 3 criteria" && [ "$(printf "%s" "$out" | jq -r "[.needs_person[] | select(.why == \"feature_plan\") | .ticket] | join(\",\")")" = KAN-1000 ]'
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-1003 2>&1); rc=$?
+check "feature mode refuses to seed the queue before the spine is filed" \
+  '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "queue is not seeded" && [ "$(jq ".tickets | length" "$DESK_QUEUE")" = 0 ]'
+
+fplan '{"epic":"KAN-1000","spine":null,"draft":"Spine: shared contracts and one spec per criterion","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"contributors":{"DoD2":["KAN-1002","KAN-1003"]},"untestable":{"DoD3":{"why":"it is about Jira state"}}}'
+P KAN-1001 KAN-1002 KAN-1003
+check "AC1: the plan prints the drafted spine and each criterion's owner" \
+  'printf "%s\n" "$out" | grep -q "Drafted:" && printf "%s\n" "$out" | grep -qF "    | Spine: shared contracts and one spec per criterion" && printf "%s\n" "$out" | grep -q "^  DoD1 .*KAN-1001" && printf "%s\n" "$out" | grep -q "^  DoD2 .*KAN-1003 .*KAN-1002"'
+check "AC3: an untestable criterion is named and asked about the close-out check" \
+  'printf "%s\n" "$out" | grep -q "\[KAN-1000\] DoD3 cannot be written as a test (it is about Jira state): leave it to the epic close-out check?"'
+check "AC6: a criterion's owner is held behind every other contributor" \
+  'printf "%s\n" "$out" | grep -q "^KAN-1003 .*HELD (blocked by KAN-1002" && ! printf "%s\n" "$out" | grep -q "^KAN-1002 .*HELD"'
+
+fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"contributors":{"DoD2":["KAN-1002"]},"untestable":{"DoD3":{"why":"Jira state","close_out":true}}}'
+fbatch feat/epic
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-1003 KAN-1050 2>&1); rc=$?
+check "AC2: once approved and filed, the spine is seeded first and runnable" \
+  '[ $rc -eq 0 ] && [ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = KAN-1050 ] && [ "$(qg KAN-1050 .state)" = triaged ] && [ "$(qg KAN-1050 .held_by)" = null ]'
+check "AC2: every other child is held behind the spine" \
+  '[ "$(qg KAN-1001 .held_by)" = KAN-1050 ] && [ "$(qg KAN-1002 .held_by)" = KAN-1050 ] && [ "$(qg KAN-1003 .held_by)" = "KAN-1002|KAN-1050" ] && [[ "$(qg KAN-1001 .park.question)" == "held by orchestrator: blocked by KAN-1050 (feature spine)"* ]]'
+check "a criterion agreed for the close-out is not asked again" '! printf "%s" "$out" | grep -q "close-out check?" && printf "%s\n" "$out" | grep -q "^  DoD3 .*close-out "'
+
+fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD9":"KAN-1002"},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
+P KAN-1001 KAN-1002 KAN-1003 KAN-1050
+check "a criterion with no owner, and an id the epic does not have, are questions" \
+  '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "\[KAN-1000\] DoD2 has no owner" && printf "%s" "$out" | grep -q "\[KAN-1000\] DoD9 in feature.json is not one of KAN-1000"'
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-1003 KAN-1050 2>&1); rc=$?
+check "an owner table with questions is not seeded" '[ $rc -eq 11 ] && printf "%s" "$out" | grep -q "question(s) on the owner table"'
+
+fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
+for v in 'C|' 'A|"size":"L"'; do
+  r KAN-1050 "${v%%|*}" '[]' "${v#*|}"
+  fbatch feat/epic
+  out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-1003 KAN-1050 2>&1); rc=$?
+  check "AC7: a spine parked at triage ($v) stops feature mode, and the plan says why" \
+    'printf "%s" "$out" | grep -q "FEATURE MODE — off: the spine KAN-1050 is parked at triage" && [ "$(qg KAN-1001 .held_by)" = null ] && [ "$(qg KAN-1001 .state)" = triaged ]'
+done
+r KAN-1050 A '[]'
+
+fbatch feat/epic
+printf '{"parent":"KAN-1000","containers":{},"criteria":[]}' > "$T/state/expansion.json"
+P KAN-1001
+check "AC4: an epic with no numbered criteria keeps feature mode off, saying why" 'printf "%s" "$out" | grep -q "FEATURE MODE — off: KAN-1000 has no numbered criteria"'
+printf '{"parent":"KAN-1000","containers":{},"criteria":%s}' "$crit" > "$T/state/expansion.json"
+mkcfg "http://127.0.0.1:$PORT" yes
+P KAN-1001
+check "AC4: a repo with Acceptance specs none keeps feature mode off, saying why" 'printf "%s" "$out" | grep -q "FEATURE MODE — off: config §4 Acceptance specs is none"'
+mkcfg "http://127.0.0.1:$PORT" yes '`tests/acceptance/`'
+P KAN-1001
+check "AC4: an Acceptance specs row with no {ids} command keeps it off" 'printf "%s" "$out" | grep -q "FEATURE MODE — off: .*no command taking {ids}"'
+mkcfg "http://127.0.0.1:$PORT" yes '`tests/acceptance/` `pnpm vitest run -t "{ids}"`'
+fbatch
+P KAN-1001
+check "AC5: an epic with no batch base keeps feature mode off, saying why" 'printf "%s" "$out" | grep -q "FEATURE MODE — off: the batch has no base branch"'
+node "$B/queue.mjs" init "f$RANDOM" >/dev/null; jq '.base = "feat/epic"' "$DESK_QUEUE" > "$T/q.tmp" && mv "$T/q.tmp" "$DESK_QUEUE"
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 2>&1); rc=$?
+check "AC5: a batch of ordinary tickets says nothing of feature mode and seeds as before" \
+  '[ $rc -eq 0 ] && ! printf "%s" "$out" | grep -q "FEATURE MODE" && [ "$(qg KAN-1001 .state)" = triaged ] && [ "$(qg KAN-1002 .held_by)" = null ]'
+mkcfg "http://127.0.0.1:$PORT" yes
+rm -f "$T/state/feature.json" "$T/state/expansion.json"
 
 # ---------------------------------------------------------------------------------------------------
 # E idle rule and answer.mjs on a held ticket
