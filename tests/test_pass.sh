@@ -185,4 +185,24 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "a marker only in a tool call or result does not block a respawn" '[ "$(field T-13 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning.*T-13"'
 check "a marker the worker printed still blocks a respawn, and says why" '[ "$(field T-14 state)" = "\"triaged\"" ] && echo "$out" | grep -q "not respawning (its worker already printed AUTOPILOT_DONE): T-14"'
 
+# T-15 and T-16 finish with real branches: T-15 changed a file outside its triaged scope, T-16 only its
+# scope, a test and a lockfile. Report only: both are recorded done, and the idle batch gives the total.
+git -C "$T/repo" update-ref refs/remotes/origin/main main; mkdir -p "$T/state/triage"
+for k in T-15 T-16; do
+  git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k" main
+  echo x > "$T/wt/$k/a.js"; mkdir -p "$T/wt/$k/tests"; echo x > "$T/wt/$k/tests/test_a.sh"; echo x > "$T/wt/$k/yarn.lock"
+  echo '{"ticket":"'"$k"'","files_in_scope":["a.js"]}' > "$T/state/triage/$k.json"
+done
+echo x > "$T/wt/T-15/README.md"; mkdir -p "$T/wt/T-15/lib"; echo x > "$T/wt/T-15/lib/b.js"
+for k in T-15 T-16; do git -C "$T/wt/$k" add -A; git -C "$T/wt/$k" commit -q -m work
+  q add "$k"; q set "$k" state=running "branch=fix/$k" "worktree=$T/wt/$k" session_id=gone
+  say "AUTOPILOT_DONE: pr=${k#T-} jira=none" > "$T/state/logs/$k.log"; done
+out=$(node "$B/pass.mjs" 2>&1)
+check "AC2 a finished ticket's out-of-scope files are listed against it" 'echo "$out" | grep -q "T-15: README.md, lib/b.js" && [ "$(field T-15 out_of_scope)" = "[\"README.md\",\"lib/b.js\"]" ]'
+check "AC2 the ticket proceeds as today"                 '[ "$(field T-15 state)" = "\"done\"" ] && [ "$(field T-15 result.pr)" = 15 ] && ! echo "$out" | grep -q "NOTIFY.*T-15"'
+check "AC1 scope, a test and a lockfile report nothing"  '[ "$(field T-16 out_of_scope)" = "[]" ] && ! echo "$out" | grep -qE "T-16: (a.js|tests/|yarn.lock)"'
+node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "AC3 an idle batch gives the scope total"         'echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "scope: 1 of 2 checked ticket(s) changed files outside their triaged scope, 2 file(s) in all"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

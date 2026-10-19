@@ -11,6 +11,7 @@ import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -118,7 +119,22 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [] };
+
+// Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
+// the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
+// once and read as its default rather than stopping the pass.
+let incidental = incidentalGlobs(null);
+let incidentalBad = null;
+try { incidental = incidentalGlobs(E.configValues('incidental-paths')); } catch (e) { incidentalBad = e.message; }
+function recordScope(t) {
+  const scope = triagedScope(STATE, t.key);
+  const changed = scope && t.worktree && existsSync(t.worktree) ? changedFiles(t.worktree, `origin/${DEFAULT_BRANCH}`) : null;
+  if (!changed) return;
+  const extra = outOfScope(changed, scope, incidental);
+  q('set', t.key, `out_of_scope=${JSON.stringify(extra)}`);
+  if (extra.length) report.outOfScope.push(`${t.key}: ${extra.join(', ')}`);
+}
 // A stall only the person can clear (a budget, a config row, a grant, a deliberate re-run), unlike low
 // memory, which drains by itself.
 const personStall = (line) => { report.stalled.push(line); report.personStalls.push(line); };
@@ -234,6 +250,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
     q('set', t.key, 'state=done', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
     report.done.push(`${t.key}: ${done.trim()}${stopped}`);
+    recordScope(t);
   } else {
     // No marker is not evidence of failure. A worker can do everything and exit without
     // announcing it. Ask GitHub what actually exists before believing the silence. An open PR
@@ -243,6 +260,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     if (/^\d+$/.test(pr)) {
       q('set', t.key, 'state=done', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
       report.done.push(`${t.key}: PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`);
+      recordScope(t);
     } else {
       q('set', t.key, 'state=failed');
       report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch} — check ${log}`);
@@ -467,7 +485,7 @@ for (const t of eligible) {
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
-    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null');
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -495,6 +513,8 @@ if (!registryOk) out.push('! could not read the session registry — no ticket w
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {
   if (items.length) out.push(`${label}: ${items.join(' | ')}`);
 }
+if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
+if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);
 if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 // Held tickets. Each finished blocker's PR is looked up once per pass, so a hold behind a PR that was
@@ -564,7 +584,11 @@ lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 lines.push('');
 lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
-if (idle) lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+if (idle) {
+  lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+  const sc = batchScopeTotals(Object.values(qEnd.tickets));
+  lines.push(`scope: ${sc.tickets} of ${sc.checked} checked ticket(s) changed files outside their triaged scope, ${sc.files} file(s) in all (report only)`);
+}
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
   waiting, parked, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
