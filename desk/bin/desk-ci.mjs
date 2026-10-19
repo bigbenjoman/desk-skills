@@ -1102,14 +1102,14 @@ export function profile(files, { defaultBranch, required = [], measure: m = null
   const changes = [];
   const notes = [];
   for (const w of wfs) {
+    const b = w.trigger.branches;
+    if (w.trigger.runs && b && !b.some((x) => x.includes('*'))) {
+      notes.push(`${w.file}:${w.trigger.line}  pull_request runs only on PRs into ${b.join(', ')}: add the batch base branches (for example 'feat/**') so the light jobs run on PRs into them`);
+    }
     const full = w.jobs.filter((j) => j.profile === 'full');
     if (!full.length) continue;
     if (!w.trigger.runs) { notes.push(`${w.file}  does not run on pull requests: no change`); continue; }
     for (const j of full) changes.push({ file: w.file, job: j.job, at: j.jobLine, ...fullIf(j.cond, defaultBranch) });
-    const b = w.trigger.branches;
-    if (b && !b.some((x) => x.includes('*'))) {
-      notes.push(`${w.file}:${w.trigger.line}  pull_request runs only on PRs into ${b.join(', ')}: add the batch base branches (for example 'feat/**') so the light jobs run on PRs into them`);
-    }
   }
   const skipped = wfs.filter((w) => w.trigger.runs).flatMap((w) => w.jobs.filter((j) => j.profile === 'full').map((j) => ({ ...j, file: w.file })));
   const requiredFull = required.flatMap((check) => {

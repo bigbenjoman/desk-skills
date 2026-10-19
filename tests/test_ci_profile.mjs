@@ -101,6 +101,7 @@ t('a quoted if is unquoted', ifOf("on: pull_request\njobs:\n  a:\n    if: \"gith
 t('a workflow not run on PRs needs no change', p.notes.includes('nightly.yml  does not run on pull requests: no change'), true);
 t('a PR trigger limited to the default branch is named', p.notes.some((n) => n.startsWith("ci.yml:4  pull_request runs only on PRs into main: add the batch base branches")), true);
 t('a light-only workflow has no change', p.changes.some((c) => c.file === 'light.yml'), false);
+t('a light-only workflow limited to the default branch is named', profile([{ file: 'l.yml', text: lightOnly.replace('on: [push, pull_request]', 'on:\n  pull_request:\n    branches: [main]') }], { defaultBranch: 'main' }).notes.join(), "l.yml:4  pull_request runs only on PRs into main: add the batch base branches (for example 'feat/**') so the light jobs run on PRs into them");
 t('a wildcard PR branch filter is left alone', profile([{ file: 'w.yml', text: ci.replace('branches: [main]', "branches: ['**']") }], { defaultBranch: 'main' }).notes.length, 0);
 
 // ---- AC3: a required check only a full job reports
