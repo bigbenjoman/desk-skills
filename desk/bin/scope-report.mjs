@@ -8,18 +8,13 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { globToRegExp } from './gate.mjs';
+import { LOCKFILES } from './test-scope.mjs';
 
 // Always incidental, whatever the row says.
 export const TEST_GLOBS = Object.freeze(['**/*.test.*', '**/*.spec.*', 'test/**', 'tests/**']);
 
-// The incidental default while §4 Incidental paths is unset: a dependency bump rewrites these.
-export const LOCKFILES = Object.freeze([
-  'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb',
-  'poetry.lock', 'uv.lock', 'Pipfile.lock', 'pdm.lock', 'Cargo.lock', 'Gemfile.lock', 'go.sum',
-  'composer.lock', 'mix.lock', 'pubspec.lock', 'Podfile.lock', 'packages.lock.json',
-]);
-
-// The row's items (configValues: null when unset, ['none'] for none) -> the incidental globs.
+// The row's items (configValues: null when unset, ['none'] for none) -> the incidental globs. Unset
+// is the lockfiles, which a dependency bump rewrites; a name with no `/` matches at any depth.
 export function incidentalGlobs(items) {
   if (items == null) return [...LOCKFILES];
   if (items.length === 1 && /^none$/i.test(String(items[0]).trim())) return [];

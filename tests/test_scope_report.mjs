@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { incidentalGlobs, LOCKFILES, outOfScope, triagedScope, changedFiles, batchScopeTotals } from '../desk/bin/scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from '../desk/bin/scope-report.mjs';
+import { LOCKFILES } from '../desk/bin/test-scope.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const S = (xs) => JSON.stringify(xs);
@@ -28,8 +29,8 @@ t('AC2 a set row replaces the lockfile default', S(outOfScope(['pnpm-lock.yaml']
 t('AC2 none leaves only test files incidental', S(outOfScope(['pnpm-lock.yaml', 'x.spec.js'], scope, incidentalGlobs(['none']))), '["pnpm-lock.yaml"]');
 
 // AC4: an unset row reads as the lockfiles.
-t('AC4 unset row is the lockfiles', S(incidentalGlobs(null)), S(LOCKFILES));
-t('AC4 lockfiles include the common managers', ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'poetry.lock', 'Cargo.lock', 'go.sum'].every((f) => LOCKFILES.includes(f)), true);
+t('AC4 unset row is the lockfiles', S(incidentalGlobs(null)), S([...LOCKFILES]));
+t('AC4 every lockfile is incidental at any depth', S(outOfScope(['package-lock.json', 'yarn.lock', 'poetry.lock', 'a/Cargo.lock', 'b/c/go.sum'], [], incidentalGlobs(null))), '[]');
 
 // AC3: the batch total counts tickets with any file and the files in all; unchecked tickets are not counted.
 const totals = batchScopeTotals([{ out_of_scope: ['a', 'b'] }, { out_of_scope: [] }, { out_of_scope: ['c'] }, { out_of_scope: null }, {}]);

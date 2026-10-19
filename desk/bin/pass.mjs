@@ -11,7 +11,7 @@ import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
-import { incidentalGlobs, LOCKFILES, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -124,7 +124,7 @@ const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], wa
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
 // once and read as its default rather than stopping the pass.
-let incidental = [...LOCKFILES];
+let incidental = incidentalGlobs(null);
 let incidentalBad = null;
 try { incidental = incidentalGlobs(E.configValues('incidental-paths')); } catch (e) { incidentalBad = e.message; }
 function recordScope(t) {
