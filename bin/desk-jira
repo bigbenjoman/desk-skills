@@ -892,18 +892,36 @@ desc_errors() {  # description text
 # The ticket checks (desk/bin/ticket-lint.mjs, beside desk-env.mjs) behind lint and create.
 LINT_MJS="${DESK_TICKET_LINT_MJS:-$(dirname "$DESK_ENV_MJS")/ticket-lint.mjs}"
 
-# The size field's id: config §4 Size field, else the field this site names Size. Takes the names
-# map of a get with expand=names when there is one, else reads the site's field list.
+# The size field's id: config §4 Size field, else the one field named Size that fits the project.
+# Takes the names map of a get with expand=names when there is one (an issue carries only its own
+# project's fields), else reads the site's field list, which holds every project's fields: there it
+# keeps the global ones and those scoped to §4 Jira project. Two that fit, or none of several, pick
+# nothing and say which row to add.
 SIZE_NAME='^\s*(t-shirt )?size\s*$'
 size_field() {  # [names json]
   load_rules
   if [[ -n "$RULES_SIZE" ]]; then printf '%s' "$RULES_SIZE"; return 0; fi
+  local all fit pid=''
   if [[ -n "${1:-}" ]]; then
-    printf '%s' "$1" | jq -r --arg re "$SIZE_NAME" '[to_entries[] | select(.value | test($re; "i")) | .key][0] // empty'
-    return 0
+    fit=$(printf '%s' "$1" | jq -c --arg re "$SIZE_NAME" '[to_entries[] | select(.value | test($re; "i")) | .key]')
+    all="$fit"
+  else
+    if [[ -z "$FIELD_SCHEMA" ]]; then FIELD_SCHEMA=$(api GET 'api/3/field') || return 1; fi
+    all=$(printf '%s' "$FIELD_SCHEMA" | jq -c --arg re "$SIZE_NAME" '[.[] | select(.name | test($re; "i"))]')
+    if [[ -n "$PROJECT" ]] && jq -e 'any(.[]; .scope.project.id != null)' >/dev/null <<<"$all"; then
+      pid=$(api GET "api/3/project/$PROJECT" | jq -r '.id // empty') || return 1
+    fi
+    fit=$(jq -c --arg pid "$pid" '[.[] | select(.scope.project.id == null or (.scope.project.id | tostring) == $pid) | .id]' <<<"$all")
+    all=$(jq -c 'map(.id)' <<<"$all")
   fi
-  if [[ -z "$FIELD_SCHEMA" ]]; then FIELD_SCHEMA=$(api GET 'api/3/field') || return 1; fi
-  printf '%s' "$FIELD_SCHEMA" | jq -r --arg re "$SIZE_NAME" '[.[] | select(.name | test($re; "i")) | .id][0] // empty'
+  case "$(jq length <<<"$fit")" in
+    1) jq -r '.[0]' <<<"$fit"; return 0 ;;
+    0) [[ "$(jq length <<<"$all")" -eq 0 ]] && return 0
+       printf 'desk-jira: no field named Size belongs to project %s (%s): add the "Size field" row to config §4\n' \
+         "${PROJECT:-none}" "$(jq -r 'join(", ")' <<<"$all")" >&2 ;;
+    *) printf 'desk-jira: more than one field named Size fits project %s (%s): add the "Size field" row to config §4 to name one\n' \
+         "${PROJECT:-none}" "$(jq -r 'join(", ")' <<<"$fit")" >&2 ;;
+  esac
 }
 # jq: the size field's value from a fields object, by option name; null with no size field.
 JQ_SIZE='def size_of($sf): if $sf == "" then null else (.[$sf] | if type == "object" then (.value // .name) else . end) end;'
