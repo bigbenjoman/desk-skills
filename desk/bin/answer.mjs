@@ -12,7 +12,7 @@ import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } fr
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, SAFE_ID } from './desk-env.mjs';
-import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson } from './batch-state.mjs';
+import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue } from './batch-state.mjs';
 
 crashShowsPerson();
 const STATE = stateDir();
@@ -89,7 +89,7 @@ else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 // to spawn, and answering them is exactly what the user was asked to do. A parked ticket's count
 // clears too, but it is left parked, with its park intact, for the orchestrator to decide.
 try {
-  const Q = existsSync(queueFile()) ? JSON.parse(readFileSync(queueFile(), 'utf8')) : { tickets: {} };
+  const Q = existsSync(queueFile()) ? readQueue(queueFile()) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
     const st = Q.tickets[ticket].state;
     if (isHeld(Q.tickets[ticket])) {

@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, st
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
-import { batchIdle, waitingOnMerge, isHeld, EXIT, crashShowsPerson } from './batch-state.mjs';
+import { batchIdle, waitingOnMerge, isHeld, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 
@@ -26,7 +26,7 @@ function verdict(status, message, fields = {}) {
   return code;
 }
 const refuse = (message) => process.exit(verdict('error', message));
-crashShowsPerson((e) => verdict('error', `pass.mjs crashed: ${e?.stack ?? e}`));
+crashShowsPerson((e) => verdict('error', e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`));
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
@@ -42,6 +42,8 @@ const DRY = !!process.env.AUTOPILOT_DRY_RUN;
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
 }
+// A corrupt queue refuses here, before the pass touches anything, rather than mid-pass as a stack.
+try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
 
 // Headless workers cannot ask, so spawning needs the grant up front. Harvesting what is already
 // running does not, so a revoked or unset grant stops spawns, never the report.
@@ -102,7 +104,7 @@ const shOut = (cmd, args, opts = {}) => {
   catch (e) { return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
 const q = (...args) => sh('node', [join(BIN, 'queue.mjs'), ...args], { tolerant: true });
-const queue = () => JSON.parse(readFileSync(QUEUE_FILE, 'utf8'));
+const queue = () => readQueue(QUEUE_FILE);
 
 // ---- liveness ------------------------------------------------------------
 let live = [];

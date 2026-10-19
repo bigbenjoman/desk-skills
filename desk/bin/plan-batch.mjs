@@ -3,26 +3,38 @@
 // one batch of questions to put to the user before any code is written. Offline: it reads only the
 // triage records (with the facts ticket-facts.mjs merged into them) and, for an epic batch,
 // $DESK_STATE/expansion.json from expand-parent.mjs.
-// Exits 0 with the plan printed, or 11 (show the person) on any refusal or error: EXIT in
-// batch-state.mjs.
+// Exits 0 when every ticket can start with nothing to put to the person first, or 11 (show the
+// person) when one needs them before Stage 3 (`needs_person`) and on any refusal or error: EXIT in
+// batch-state.mjs. With --json, stdout is one object: status (go_on | show_person | error), code,
+// message (the plan), needs_person ({ticket, why, detail}; why is question, lint,
+// challenge_inconclusive, challenge_not_run or parked) and notify.
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, EXIT, crashShowsPerson } from './batch-state.mjs';
+import { laneUnchecked, lanePark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, permission, ticketKind, SAFE_ID } from './desk-env.mjs';
 
-crashShowsPerson();
+const AS_JSON = process.argv.includes('--json');
+const plan = [];
+const say = (s) => (AS_JSON ? plan.push(s) : console.log(s));
+function verdict(status, message, needsPerson = []) {
+  const code = status === 'go_on' ? EXIT.GO_ON : EXIT.SHOW_PERSON;
+  if (AS_JSON) console.log(JSON.stringify({ status, code, message, needs_person: needsPerson, notify: code === EXIT.SHOW_PERSON }));
+  else if (status === 'error') console.error(message);
+  return code;
+}
+const refuse = (message) => process.exit(verdict('error', message));
+crashShowsPerson((e) => verdict('error', describeCrash(e)));
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
-const tickets = process.argv.slice(2);
-if (!tickets.length) { console.error('usage: plan-batch.mjs <TICKET> [<TICKET> ...]'); process.exit(EXIT.SHOW_PERSON); }
+const tickets = process.argv.slice(2).filter((a) => a !== '--json');
+if (!tickets.length) refuse('usage: plan-batch.mjs [--json] <TICKET> [<TICKET> ...]');
 
 const records = [];
 for (const t of tickets) {
-  if (!SAFE_ID.test(t) || t.includes('..')) { console.error(`'${t}' is not usable as a ticket id`); process.exit(EXIT.SHOW_PERSON); }
-  const p = join(STATE, 'triage', `${t}.json`);
-  if (!existsSync(p)) { console.error(`missing triage record for ${t} — run triage.sh ${t}`); process.exit(EXIT.SHOW_PERSON); }
-  records.push(JSON.parse(readFileSync(p, 'utf8')));
+  if (!SAFE_ID.test(t) || t.includes('..')) refuse(`'${t}' is not usable as a ticket id`);
+  if (!existsSync(join(STATE, 'triage', `${t}.json`))) refuse(`missing triage record for ${t} — run triage.sh ${t}`);
+  records.push(readTriage(STATE, t));
 }
 
 // Ownership boundary, the ticket equivalent of desk-clearance's "only your own PRs".
@@ -34,7 +46,7 @@ for (const t of tickets) {
 // GitHub handle (logins are case-insensitive), or a plain description, which has no assignee.
 const noTracker = /^none\b/i.test(configValue('tracker') ?? '');
 let OWNER;
-try { OWNER = noTracker ? githubHandle() : jiraName(); } catch (e) { console.error(e.message); process.exit(EXIT.SHOW_PERSON); }
+try { OWNER = noTracker ? githubHandle() : jiraName(); } catch (e) { refuse(e.message); }
 const isOwner = (a) => (noTracker ? String(a).toLowerCase() === OWNER.toLowerCase() : a === OWNER);
 const notOurs = records.filter((r) => r.assignee && !isOwner(r.assignee));
 const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));
@@ -74,7 +86,9 @@ const expansionPath = join(STATE, 'expansion.json');
 // Only the expansion of this batch's own epic (queue.mjs set-batch epic=<KEY>): a file left by an
 // earlier epic must not reshape an unrelated batch.
 const batchEpic = (() => { try { return JSON.parse(readFileSync(queueFile(), 'utf8')).epic ?? null; } catch { return null; } })();
-const expansion = existsSync(expansionPath) ? JSON.parse(readFileSync(expansionPath, 'utf8')) : null;
+const expansion = existsSync(expansionPath)
+  ? readJsonOrRefuse(expansionPath, `re-run expand-parent.mjs ${batchEpic ?? '<epic>'}`)
+  : null;
 const containers = expansion && batchEpic && expansion.parent === batchEpic ? (expansion.containers ?? {}) : {};
 const containerOf = {};
 for (const [c, v] of Object.entries(containers)) for (const sub of v.subtasks ?? []) containerOf[sub] = c;
@@ -171,13 +185,13 @@ const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b =
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 
-console.log(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
+say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (notOurs.length) {
-  console.log('\nNOT YOURS — excluded from the batch:');
-  for (const r of notOurs) console.log(`  ${r.ticket}: assigned to ${r.assignee}`);
+  say('\nNOT YOURS — excluded from the batch:');
+  for (const r of notOurs) say(`  ${r.ticket}: assigned to ${r.assignee}`);
 }
 
-const verdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
+const ticketVerdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
   : ['C', 'D'].includes(r.lane) ? `PARK (lane ${r.lane} — run manually)`
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
   : onCycle.has(r.ticket) ? `PARK (dependency cycle: ${onCycle.get(r.ticket)})`
@@ -185,39 +199,39 @@ const verdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — 
   : 'ADMIT');
 for (const r of order) {
   const co = collidesWith(r.ticket);
-  console.log(`\n${r.ticket}  lane ${r.lane}  size ${r.size ?? '-'}  ${verdict(r)}`);
-  console.log(`  ${r.summary}`);
-  console.log(`  branch: ${r.branch}`);
-  if (r.needs_db) console.log(`  ! needs a database — ${DB_NOTE}`);
-  if (co.length) console.log(`  ! collides with ${co.join(', ')} — must run sequentially`);
-  for (const pa of r.prior_art ?? []) console.log(`  ! prior art: ${pa}`);
-  for (const f of lintBlocking(r)) console.log(`  ! lint (blocking): ${f.message}`);
-  if (r.lint_error) console.log(`  ! lint did not run: ${r.lint_error}`);
-  if (r.lane_original) console.log(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);
-  for (const n of notes[r.ticket] ?? []) console.log(`  ~ ${n}`);
+  say(`\n${r.ticket}  lane ${r.lane}  size ${r.size ?? '-'}  ${ticketVerdict(r)}`);
+  say(`  ${r.summary}`);
+  say(`  branch: ${r.branch}`);
+  if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
+  if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
+  for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
+  for (const f of lintBlocking(r)) say(`  ! lint (blocking): ${f.message}`);
+  if (r.lint_error) say(`  ! lint did not run: ${r.lint_error}`);
+  if (r.lane_original) say(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);
+  for (const n of notes[r.ticket] ?? []) say(`  ~ ${n}`);
 }
 
 const linted = ours.filter((r) => lintBlocking(r).length || r.lint_error);
 if (linted.length) {
-  console.log(`\n${'='.repeat(60)}\nLINT — ${linted.length} ticket(s) a worker would park on; fix each ticket (desk-jira lint <KEY>) before spawning:`);
-  for (const r of linted) console.log(`  ${r.ticket}: ${r.lint_error ? `lint did not run (${r.lint_error})` : `${lintBlocking(r).length} blocking finding(s)`}`);
+  say(`\n${'='.repeat(60)}\nLINT — ${linted.length} ticket(s) a worker would park on; fix each ticket (desk-jira lint <KEY>) before spawning:`);
+  for (const r of linted) say(`  ${r.ticket}: ${r.lint_error ? `lint did not run (${r.lint_error})` : `${lintBlocking(r).length} blocking finding(s)`}`);
 }
 if (sized.length) {
-  console.log(`\n${'='.repeat(60)}\nPARKED ON SIZE (${sized.length}) — L and XL are split before they are batched:`);
-  for (const r of sized) console.log(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
+  say(`\n${'='.repeat(60)}\nPARKED ON SIZE (${sized.length}) — L and XL are split before they are batched:`);
+  for (const r of sized) say(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
 }
 if (parked.length) {
-  console.log(`\n${'='.repeat(60)}\nPARKED AT TRIAGE (${parked.length}) — lanes C and D need a person, not run unattended:`);
+  say(`\n${'='.repeat(60)}\nPARKED AT TRIAGE (${parked.length}) — lanes C and D need a person, not run unattended:`);
   for (const r of parked) {
-    console.log(`  ${r.ticket}: ${r.lane_reason}`);
+    say(`  ${r.ticket}: ${r.lane_reason}`);
     // A park is only trustworthy if the challenge actually ran. UNAVAILABLE means
     // it did not, so the lane is one unreviewed opinion — say so rather than let
     // it read as double-checked.
     const c = r.lane_challenge;
-    if (!c) console.log('      (no challenge recorded)');
-    else if (c.verdict === 'CONFIRM') console.log(`      challenge CONFIRMED: ${c.reason ?? ''}`);
-    else if (laneUnchecked(r)) console.log(`      ! challenge INCONCLUSIVE — lane is unchecked, reads failed: ${failedReads(r)}`);
-    else console.log(`      ! challenge did not run (${c.reason ?? ''}) — lane is unreviewed`);
+    if (!c) say('      (no challenge recorded)');
+    else if (c.verdict === 'CONFIRM') say(`      challenge CONFIRMED: ${c.reason ?? ''}`);
+    else if (laneUnchecked(r)) say(`      ! challenge INCONCLUSIVE — lane is unchecked, reads failed: ${failedReads(r)}`);
+    else say(`      ! challenge did not run (${c.reason ?? ''}) — lane is unreviewed`);
   }
 }
 
@@ -230,29 +244,29 @@ const questions = [
   ...admitted.flatMap((r) => qsOf(r).map((u) => ({ ticket: r.ticket, q: u }))),
   ...unchecked.flatMap((r) => (added[r.ticket] ?? []).map((u) => ({ ticket: r.ticket, q: u }))),
 ];
-console.log(`\n${'='.repeat(60)}`);
+say(`\n${'='.repeat(60)}`);
 if (questions.length) {
-  console.log(`QUESTIONS — ${questions.length} across ${new Set(questions.map((q) => q.ticket)).size} ticket(s).`);
-  console.log('Answer these before spawning; nothing is built until they are settled.\n');
-  questions.forEach((q, i) => console.log(`  ${i + 1}. [${q.ticket}] ${q.q}`));
+  say(`QUESTIONS — ${questions.length} across ${new Set(questions.map((q) => q.ticket)).size} ticket(s).`);
+  say('Answer these before spawning; nothing is built until they are settled.\n');
+  questions.forEach((q, i) => say(`  ${i + 1}. [${q.ticket}] ${q.q}`));
 } else {
-  console.log('QUESTIONS — none. Every admitted ticket can start immediately.');
+  say('QUESTIONS — none. Every admitted ticket can start immediately.');
 }
 
 if (collisions.length) {
-  console.log(`\nCOLLISIONS — ${collisions.length}:`);
-  for (const c of collisions) console.log(`  ${c.a} ~ ${c.b}: ${c.shared.join(', ')}`);
+  say(`\nCOLLISIONS — ${collisions.length}:`);
+  for (const c of collisions) say(`  ${c.a} ~ ${c.b}: ${c.shared.join(', ')}`);
 }
 
 if (depsArg) {
-  console.log(`\nDEPENDENCIES — from Jira links (held tickets start once every blocker's PR merges):`);
-  for (const [t, ps] of Object.entries(preds)) console.log(`  ${t} held: blocked by ${ps.join(', ')}`);
-  console.log(`--deps "${depsArg}"`);
-  console.log('Pass it to merge-driver.sh, joined with any collision chain (one entry per successor, predecessors unioned).');
+  say(`\nDEPENDENCIES — from Jira links (held tickets start once every blocker's PR merges):`);
+  for (const [t, ps] of Object.entries(preds)) say(`  ${t} held: blocked by ${ps.join(', ')}`);
+  say(`--deps "${depsArg}"`);
+  say('Pass it to merge-driver.sh, joined with any collision chain (one entry per successor, predecessors unioned).');
 }
 const unsized = ours.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
-if (unsized.length) console.log(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
-if (otherLinks) console.log(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);
+if (unsized.length) say(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
+if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);
 
 // Seed the queue in spawn order: blockers first, then the order the tickets were named in (pass
 // gates first). A ticket that collides with another is marked so the spawn loop will not run them
@@ -277,5 +291,23 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
   }
-  console.log('\nqueue seeded.');
+  say('\nqueue seeded.');
 }
+
+// ---- verdict -------------------------------------------------------------
+// Everything the person settles before Stage 3, so the orchestrator branches on this rather than on
+// the plan's wording: each question, each ticket a worker would park on for its lint, each lane C or D
+// park whose challenge did not confirm it, and each park (lane, size, cycle; a hold is not one).
+const cycled = ours.filter((r) => onCycle.has(r.ticket));
+const needsPerson = [
+  ...questions.map((q) => ({ ticket: q.ticket, why: 'question', detail: q.q })),
+  ...linted.map((r) => ({ ticket: r.ticket, why: 'lint',
+    detail: r.lint_error ? `lint did not run (${r.lint_error})` : `${lintBlocking(r).length} blocking finding(s): fix the ticket (desk-jira lint ${r.ticket})` })),
+  ...parked.filter((r) => r.lane_challenge?.verdict !== 'CONFIRM').map((r) => (laneUnchecked(r)
+    ? { ticket: r.ticket, why: 'challenge_inconclusive', detail: `lane ${r.lane} is unchecked, reads failed: ${failedReads(r)}` }
+    : { ticket: r.ticket, why: 'challenge_not_run', detail: `lane ${r.lane} is unreviewed: ${r.lane_challenge?.reason ?? 'no challenge recorded'}` })),
+  ...[...parked, ...sized, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
+];
+if (needsPerson.length) say(`\nNEEDS YOU BEFORE STAGE 3: ${needsPerson.length} item(s) — ${[...new Set(needsPerson.map((n) => n.ticket))].join(', ')}`);
+// exitCode, not exit(): a long plan to a pipe must flush before the process ends.
+process.exitCode = verdict(needsPerson.length ? 'show_person' : 'go_on', plan.join('\n'), needsPerson);

@@ -131,12 +131,16 @@ q drop T-2
 pj
 check "pass: a finished batch exits 11 with status idle"        '[ $rc -eq 11 ] && [ "$(js .status)" = idle ] && [ "$(js .notify)" = true ] && js .message | grep -q "^IDLE"'
 
-# A crash is shown to the person, not node's own exit 1.
+# A corrupt queue refuses at the read, naming what to do, never a stack (node prints frames as "    at ").
 cp "$DESK_QUEUE" "$T/queue.good"; echo 'not json' > "$DESK_QUEUE"
 pass
-check "pass: a crash exits 11"                                  '[ $rc -eq 11 ] && echo "$out" | grep -q "pass.mjs crashed"'
+check "pass: a corrupt queue exits 11 and says to re-create it" '[ $rc -eq 11 ] && echo "$out" | grep -q "is not valid JSON.*re-create $DESK_QUEUE (queue.mjs init" && ! echo "$out" | grep -q "^    at " && ! echo "$out" | grep -q crashed'
 pj
-check "pass --json: a crash is still one object"                '[ $rc -eq 11 ] && [ "$(js .status)" = error ]'
+check "pass --json: a corrupt queue is still one object"        '[ $rc -eq 11 ] && [ "$(js .status)" = error ] && js .message | grep -q "re-create"'
+q list
+check "queue: a corrupt queue exits 11 and says to re-create it" '[ $rc -eq 11 ] && echo "$out" | grep -q "re-create $DESK_QUEUE" && ! echo "$out" | grep -q "^    at "'
+out=$(node "$B/answer.mjs" T-1 "an answer" 2>&1); rc=$?
+check "answer: a corrupt queue exits 11 and says to re-create it" '[ $rc -eq 11 ] && echo "$out" | grep -q "re-create $DESK_QUEUE" && ! echo "$out" | grep -q "^    at "'
 cp "$T/queue.good" "$DESK_QUEUE"
 
 # ---- queue.mjs -----------------------------------------------------------------------------------
@@ -147,6 +151,8 @@ q set T-5 state=bogus;      check "queue: a bad argument exits 11"             '
 q admit T-99;               check "queue: a missing triage record exits 11, naming triage.sh" '[ $rc -eq 11 ] && echo "$out" | grep -q "run triage.sh T-99"'
 q set T-5 state=triaged lane=A; q add T-6; q set T-6 state=triaged lane=A; q hold T-6 T-5
 q requeue T-6;              check "queue: requeueing a held ticket exits 11 and says to release it" '[ $rc -eq 11 ] && echo "$out" | grep -q "release it rather than requeue it"'
+echo '{"ticket": "T-50",' > "$T/state/triage/T-50.json"
+q admit T-50;               check "queue: a corrupt triage record exits 11, naming triage.sh" '[ $rc -eq 11 ] && echo "$out" | grep -q "T-50.json is not valid JSON.*re-run triage.sh T-50" && ! echo "$out" | grep -q "^    at "'
 
 # ---- answer.mjs ----------------------------------------------------------------------------------
 out=$(node "$B/answer.mjs" T-5 "use the helper" 2>&1); rc=$?
@@ -166,5 +172,29 @@ out=$(node "$B/plan-batch.mjs" T-7 T-404 2>&1); rc=$?
 check "plan-batch: a missing triage record exits 11, naming triage.sh" '[ $rc -eq 11 ] && echo "$out" | grep -q "run triage.sh T-404"'
 out=$(node "$B/plan-batch.mjs" ../x 2>&1); rc=$?
 check "plan-batch: a bad ticket id exits 11"                    '[ $rc -eq 11 ]'
+out=$(node "$B/plan-batch.mjs" T-7 T-50 2>&1); rc=$?
+check "plan-batch: a corrupt triage record exits 11, naming triage.sh" '[ $rc -eq 11 ] && echo "$out" | grep -q "T-50.json is not valid JSON.*re-run triage.sh T-50" && ! echo "$out" | grep -q "^    at "'
+
+# plan-batch --json: needs_person is what the skill branches on before Stage 3, never the plan's wording.
+pbj(){ out=$(node "$B/plan-batch.mjs" --json "$@" 2>/dev/null); rc=$?; }
+why(){ js "[.needs_person[] | select(.ticket == \"$1\") | .why] | join(\",\")"; }
+pbj T-7 T-8
+check "plan-batch --json: nothing for the person exits 0, needs_person empty" '[ $rc -eq 0 ] && [ "$(js .status)" = go_on ] && [ "$(js .notify)" = false ] && [ "$(js ".needs_person | length")" = 0 ] && js .message | grep -q "BATCH PLAN — 2 ticket(s)"'
+pbj T-7 T-404
+check "plan-batch --json: a refusal is one object"              '[ $rc -eq 11 ] && [ "$(js .status)" = error ] && js .message | grep -q "run triage.sh T-404"'
+printf '{"ticket": "T-10", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-10", "files_in_scope": ["src/T-10"], "unknowns": ["which helper?"], "links": "n/a"}\n' > "$T/state/triage/T-10.json"
+printf '{"ticket": "T-11", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-11", "files_in_scope": ["src/T-11"], "unknowns": [], "links": "n/a", "lint": [{"severity": "blocking", "message": "no acceptance criteria"}]}\n' > "$T/state/triage/T-11.json"
+printf '{"ticket": "T-12", "type": "Bug", "lane": "C", "size": "S", "branch": "fix/T-12", "lane_reason": "needs a product call", "unknowns": [], "links": "n/a", "lane_challenge": {"verdict": "INCONCLUSIVE", "failed_reads": ["git show main:src/a.ts: denied"]}}\n' > "$T/state/triage/T-12.json"
+printf '{"ticket": "T-13", "type": "Bug", "lane": "D", "size": "S", "branch": "fix/T-13", "lane_reason": "a design build", "unknowns": [], "links": "n/a", "lane_challenge": {"verdict": "UNAVAILABLE", "reason": "timed out"}}\n' > "$T/state/triage/T-13.json"
+printf '{"ticket": "T-14", "type": "Bug", "lane": "C", "size": "S", "branch": "fix/T-14", "lane_reason": "needs a plan", "unknowns": [], "links": "n/a", "lane_challenge": {"verdict": "CONFIRM", "reason": "it does"}}\n' > "$T/state/triage/T-14.json"
+pbj T-7 T-10 T-11 T-12 T-13 T-14
+check "plan-batch --json: a ticket that needs the person exits 11, notify set" '[ $rc -eq 11 ] && [ "$(js .status)" = show_person ] && [ "$(js .notify)" = true ]'
+check "plan-batch --json: a triage question is why=question"   '[ "$(why T-10)" = question ] && [ "$(js "[.needs_person[] | select(.ticket == \"T-10\")][0].detail")" = "which helper?" ]'
+check "plan-batch --json: a blocking lint finding is why=lint"  '[ "$(why T-11)" = lint ]'
+check "plan-batch --json: an INCONCLUSIVE challenge is asked, unchecked and parked" '[ "$(why T-12)" = question,challenge_inconclusive,parked ]'
+check "plan-batch --json: a challenge that did not run is challenge_not_run and parked" '[ "$(why T-13)" = challenge_not_run,parked ]'
+check "plan-batch --json: a confirmed park is parked only, and a clean ticket is absent" '[ "$(why T-14)" = parked ] && [ -z "$(why T-7)" ]'
+out=$(node "$B/plan-batch.mjs" T-7 T-10 2>&1); rc=$?
+check "plan-batch: the text form exits 11 too and names them"   '[ $rc -eq 11 ] && echo "$out" | grep -q "^NEEDS YOU BEFORE STAGE 3: 1 item(s) — T-10"'
 
 echo "exit codes: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

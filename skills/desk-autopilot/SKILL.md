@@ -203,7 +203,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
-| 2 | Plan | `plan-batch.mjs`: ownership, admission, collisions, and the question batch. It also shows each ticket's blocking `desk-jira lint` findings (recorded at triage) and lists those tickets under `LINT`: each is a park waiting to happen, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
+| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
@@ -246,8 +246,19 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 On 11 from `pass.mjs`, put `waiting` and `parked` in front of the person, then keep the loop going
 unless `status` is `idle` or `error`. The person stays needed on every pass until each entry is dealt
 with, so notify only for the entries the last notification did not already carry (Stage 6b).
-`plan-batch`, `queue.mjs` and `answer.mjs` exit 0 or 11 only. `expand-parent.mjs` and `desk-env`
-keep their own codes.
+
+Run `plan-batch.mjs --json` too. It exits 0 when every ticket can start with nothing to settle, and
+11 when something needs the person before Stage 3, or on a refusal. Its stdout is one object:
+
+| Field | Holds |
+|---|---|
+| `status` | `go_on` (0), `show_person` (11: the plan is made, and `needs_person` lists what to settle at Stage 3), `error` (11: it refused or failed; `message` says what to do) |
+| `message` | the plan, for the person |
+| `needs_person` | `{ticket, why, detail}`. `why` is `question` (ask it at Stage 3), `lint` (a blocking lint finding: fix the ticket or ask), `challenge_inconclusive` (the lane challenge could not read the code: ask the user to confirm or re-lane), `challenge_not_run` (the park is one unreviewed opinion: report it as that, never as settled), or `parked` (lane C or D, size, or a dependency cycle: report it; a hold is not one) |
+| `notify` | true exactly when the exit is 11 |
+
+`queue.mjs` and `answer.mjs` exit 0 or 11 only, and say what to do on 11. `expand-parent.mjs` and
+`desk-env` keep their own codes.
 
 ## Order the batch by blast radius
 
@@ -612,10 +623,10 @@ INCONCLUSIVE, with the failed reads recorded, and the lane is left exactly as th
 size CONFIRMED by counting new things to build can be lane A in a handful of files when every one has
 an existing pattern on `origin/<default>` to copy. Before reporting any park on size, check each
 thing the challenge calls "new" against `origin/<default>` and say what you found: report the doubt,
-not the verdict. **Read the challenge line**: `plan-batch` prints `challenge CONFIRMED`,
-`! challenge INCONCLUSIVE` with the reads that failed, or `! challenge did not run`. The last two are
-a single unchecked opinion that must not be reported as settled. An INCONCLUSIVE park's lane is
-marked `UNCHECKED` and is listed under QUESTIONS: put it to the user to confirm or re-lane.
+not the verdict. **Branch on the challenge's `needs_person` entry**, not the plan's wording: a park
+with `challenge_inconclusive` (its reads failed, named in `detail`) or `challenge_not_run` is a single
+unchecked opinion that must not be reported as settled, and a confirmed park has neither. An
+INCONCLUSIVE park is also a `question`: put it to the user to confirm or re-lane.
 
 **A lane is a proposal.** When the user rules that a park's lane is wrong (it is really A, B or E),
 re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then
@@ -838,7 +849,7 @@ after `init`. The rules also live in the worker contract, which is never truncat
 # `desk-env paths`, written out in full.
 node ~/.claude/desk/bin/expand-parent.mjs ABC-900                     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
-AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
+AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
 node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs render                              # status
