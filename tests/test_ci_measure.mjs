@@ -1,7 +1,8 @@
 // suite: desk-ci measure (minutes, red rate, round trips, call budget)
-// desk-ci.mjs measure on fixture runs, jobs and pull requests: each job rounds up to the minute,
-// red rate, round trips and time to green read a PR's pushes and re-runs, sampled jobs scale back
-// up, and the API collector stays inside its call budget and the rate limit's reserve.
+// desk-ci.mjs measure on fixture runs, jobs and pull requests: each job rounds up to the minute and a
+// hosted one stops at 6 h, red rate, round trips and time to green read a PR's pushes and re-runs,
+// sampled jobs scale back up within their month, and the API collector stays inside its call budget
+// and the rate limit's reserve.
 import { quantile, jobMinutes, pickSample, measure, collect, report } from '../desk/bin/desk-ci.mjs';
 
 let fails = 0;
@@ -96,7 +97,7 @@ const cm = measure({ runs: cancelled, prs: [{ number: 4, created_at: T3, head: {
 t('a cancelled push does not end a round trip', cm.prs.roundTrips.medianWait, 940 * 1000);
 t('nor count as time to green', cm.prs.timeToGreen.median, 1000 * 1000);
 
-// ---- red as GitHub shows it: a continue-on-error job or a check the branch does not require
+// ---- red as GitHub shows it: a continue-on-error job, and a check today's ruleset does not require
 const T4 = '2026-09-25T10:00:00Z';
 const pr5 = [{ number: 5, created_at: T4, head: { ref: 'feat/five' } }];
 const coe = (o) => run({ head_sha: 'p', head_branch: 'feat/five', pull_requests: [{ number: 5 }], created_at: T4, updated_at: iso(T4, 300), ...o });
@@ -116,26 +117,107 @@ t('an earlier attempt failing only a continue-on-error job is green', `${quiet.t
 const loud = rerun([job(T4, { name: 'test', conclusion: 'failure', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 100 })]);
 t('an earlier attempt failing a blocking job is red', `${loud.totals.failed} ${loud.prs.red} ${loud.prs.roundTrips.n}`, '1 1 1');
 t('and its first failing job is the blocking one', JSON.stringify(loud.workflows[0].firstFailing), '{"test":1}');
-// Where the default branch requires checks, a failure in a job that is not one is not red.
-const req = (failing, required) => measure({ runs: [coe({ id: 32, conclusion: 'failure' })], prs: pr5, required, since: '2026-07-20', until: '2026-10-17',
-  jobs: new Map([[32, ['test', 'lint'].map((n) => job(T4, { name: n, conclusion: n === failing ? 'failure' : 'success', start: 0, end: 60 }))]]) });
-t('a failed job that is not a required check does not make a run red', `${req('lint', ['test']).totals.failed} ${req('lint', ['test']).prs.red}`, '0 0');
-t('a failed required check does', `${req('test', ['test']).totals.failed} ${req('test', ['test']).prs.red}`, '1 1');
-// Required checks gate a PR's merge only: a failed push to main is red whatever its job is called.
-const push = measure({ runs: [run({ id: 33, name: 'Deploy', event: 'push', head_sha: 'q', head_branch: 'main', conclusion: 'failure', created_at: T4, updated_at: iso(T4, 60) }),
-  coe({ id: 36, conclusion: 'failure' })], prs: pr5, required: ['test'], since: '2026-07-20', until: '2026-10-17',
-  jobs: new Map([[33, [job(T4, { name: 'ship', conclusion: 'failure', start: 0, end: 60 })]],
-    [36, ['test', 'ship'].map((n) => job(T4, { name: n, conclusion: n === 'ship' ? 'failure' : 'success', start: 0, end: 60 }))]]) });
-const deploy = push.workflows.find((w) => w.workflow === 'Deploy');
-t('a failed run that tests no PR is red by its conclusion', `${deploy.failed} ${JSON.stringify(deploy.firstFailing)}`, '1 {"ship":1}');
-t('while the same failure on a PR is not a required check', `${push.workflows.find((w) => w.workflow === 'CI').failed} ${push.prs.red}`, '0 0');
+// Red follows what GitHub shows: a run on a PR that failed in a job the ruleset does not require is
+// red (a `required` list passed in changes nothing), and so is a failed push.
+const lintFails = measure({ runs: [coe({ id: 32, conclusion: 'failure' })], prs: pr5, required: ['test'], since: '2026-07-20', until: '2026-10-17',
+  jobs: new Map([[32, ['test', 'lint'].map((n) => job(T4, { name: n, conclusion: n === 'lint' ? 'failure' : 'success', start: 0, end: 60 }))]]) });
+t('a failed job that is not a required check today still makes a PR run red', `${lintFails.totals.failed} ${lintFails.prs.red} ${JSON.stringify(lintFails.workflows[0].firstFailing)}`, '1 1 {"lint":1}');
+const push = measure({ runs: [run({ id: 33, name: 'Deploy', event: 'push', head_sha: 'q', head_branch: 'main', conclusion: 'failure', created_at: T4, updated_at: iso(T4, 60) })],
+  prs: pr5, since: '2026-07-20', until: '2026-10-17', jobs: new Map([[33, [job(T4, { name: 'ship', conclusion: 'failure', start: 0, end: 60 })]]]) });
+t('a failed run that tests no PR is red by its conclusion', `${push.workflows[0].failed} ${JSON.stringify(push.workflows[0].firstFailing)}`, '1 {"ship":1}');
+// An earlier attempt failing a job no ruleset requires is red too.
+const early = rerun([job(T4, { name: 'lint', conclusion: 'failure', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 100 })]);
+t('an earlier attempt failing any job that is not continue-on-error is red', `${early.totals.failed} ${JSON.stringify(early.workflows[0].firstFailing)}`, '1 {"lint":1}');
 // A continue-on-error job that failed first is not named as the first failing job.
 const coeFirst = measure({ runs: [coe({ id: 34, conclusion: 'success' }), coe({ id: 35, head_sha: 'p2', conclusion: 'failure', created_at: iso(T4, 600), updated_at: iso(T4, 900) })],
   prs: pr5, since: '2026-07-20', until: '2026-10-17', jobs: new Map([
     [34, [job(T4, { name: 'test', conclusion: 'success', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 90 })]],
     [35, [job(T4, { name: 'e2e', conclusion: 'failure', created: 600, start: 600, end: 650 }), job(T4, { name: 'test', conclusion: 'failure', created: 600, start: 600, end: 900 })]]]) });
 t('the first failing job leaves out a continue-on-error job', JSON.stringify(coeFirst.workflows[0].firstFailing), '{"test":1}');
-t('a required check no job carries is ignored', `${req('lint', ['Vercel']).totals.failed} ${req('lint', ['Vercel']).required.length}`, '1 0');
+
+// ---- a job past GitHub's 6 h limit
+const T5 = '2026-09-28T10:00:00Z';
+const stuck = measure({ runs: [run({ id: 40, name: 'Deploy Storybook', event: 'push', head_sha: 'u', head_branch: 'main', conclusion: 'cancelled', created_at: T5, updated_at: iso(T5, 248280) }),
+  run({ id: 41, name: 'Soak', event: 'schedule', head_sha: 'v', head_branch: 'main', conclusion: 'success', created_at: T5, updated_at: iso(T5, 30000) })],
+prs: [], since: '2026-07-20', until: '2026-10-17', jobs: new Map([
+  [40, [job(T5, { name: 'deploy', conclusion: 'cancelled', start: 0, end: 248280 })]],
+  [41, [job(T5, { name: 'soak', conclusion: 'success', start: 0, end: 30000, labels: ['self-hosted', 'arm64'], runner_group_name: 'Default' })]]]) });
+t('a hosted job over 6 h counts as 360 min', stuck.totals.billed, 360);
+t('a self-hosted job over 6 h is not capped', stuck.totals.self, 500);
+t('the capped job is listed', JSON.stringify(stuck.capped.map((x) => [x.workflow, x.job, x.run, x.reported, x.counted])), '[["Deploy Storybook","deploy",40,4138,360]]');
+const cappedReport = report(stuck, { repo: 'o/r', calls: 1, allowance: 1, budget: 1, reserve: 1, rate: { remaining: 1, limit: 1 }, notes: [] }, 'now');
+t('the report lists it under Capped jobs', /## Capped jobs[\s\S]*\| Deploy Storybook \| deploy \| 40 \| 1 \| 4,138 \| 360 \|/.test(cappedReport), true);
+t('a macOS job over 6 h is capped before the multiplier', jobMinutes(job(T5, { name: 'm', start: 0, end: 30000, labels: ['macos-14'] })), 360);
+
+// ---- months: each month's minutes come from that month's own runs
+// One workflow over three months whose runs take 10, 2 and 6 minutes. A sample of one run per
+// workflow would put every month's minutes in the month of the run it read.
+const months3 = [['2026-07-25', 10], ['2026-08-15', 2], ['2026-09-20', 6]].flatMap(([d, mins], mi) => Array.from({ length: 10 }, (_, i) => {
+  const at = iso(`${d}T00:00:00Z`, i * 3600);
+  return { r: run({ id: 200 + mi * 10 + i, name: 'Build', event: 'push', head_sha: `m${mi}${i}`, head_branch: 'main', conclusion: 'success', created_at: at, updated_at: iso(at, mins * 60) }),
+    j: [job(at, { name: 'b', conclusion: 'success', start: 0, end: mins * 60 })] };
+}));
+const allRuns = months3.map((x) => x.r);
+const fullJobs = new Map(months3.map((x) => [x.r.id, x.j]));
+const sample3 = pickSample(allRuns, 6);
+t('a sample reads runs in every month', [...new Set(sample3.map((r) => r.created_at.slice(0, 7)))].join(','), '2026-07,2026-08,2026-09');
+const full = measure({ runs: allRuns, jobs: fullJobs, prs: [], since: '2026-07-20', until: '2026-10-17' });
+const sampled3 = measure({ runs: allRuns, jobs: new Map(sample3.map((r) => [r.id, fullJobs.get(r.id)])), prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('each sampled month matches a full recount', JSON.stringify(sampled3.months.map((x) => [x.month, Math.round(x.billed)])), JSON.stringify(full.months.map((x) => [x.month, x.billed])));
+t('and the full recount is per month', JSON.stringify(full.months.map((x) => x.billed)), '[100,20,60]');
+// Only one run read in all: the months with no run read carry no minutes rather than borrowing another month's.
+const one = measure({ runs: allRuns, jobs: new Map([[200, fullJobs.get(200)]]), prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('a month with no run read is unmeasured, not borrowed', `${JSON.stringify(one.months.map((x) => [x.month, x.billed]))} ${one.runs.unmeasured}`, '[["2026-07",100]] 20');
+
+// ---- sampling: a workflow is its file, not its run name
+// Dependabot names every run after its update. Grouped by name, each would be a stratum of one taking
+// a read of its own; grouped by file (its workflow id, else its path less any `@ref`) they are one
+// stratum, and one row of the report.
+const T6 = '2026-09-05T00:00:00Z';
+const depRuns = Array.from({ length: 12 }, (_, i) => run({ id: 300 + i, name: `npm_and_yarn in /. - Update #${i}`, workflow_id: 9, path: 'dynamic/dependabot/dependabot-updates',
+  event: 'dynamic', head_sha: `d${i}`, head_branch: 'main', conclusion: 'success', created_at: iso(T6, i * 3600), updated_at: iso(T6, i * 3600 + 120) }));
+const ciRuns = Array.from({ length: 30 }, (_, i) => run({ id: 320 + i, path: `.github/workflows/ci.yml@refs/heads/b${i % 3}`, event: 'push', head_sha: `c${i}`, head_branch: 'main',
+  conclusion: 'success', created_at: iso(T6, i * 3600), updated_at: iso(T6, i * 3600 + 60 * (2 + (i % 5) * 4)) }));
+const byFile = pickSample([...depRuns, ...ciRuns], 10);
+t('runs of one workflow file share a stratum whatever their names', byFile.filter((r) => r.id < 320).length, 3);
+const fileJobs = new Map([...depRuns, ...ciRuns].map((r) => [r.id, [job(r.created_at, { name: 'j', conclusion: 'success', start: 0, end: (Date.parse(r.updated_at) - Date.parse(r.created_at)) / 1000 })]]));
+const fileM = measure({ runs: [...depRuns, ...ciRuns], jobs: fileJobs, prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('and are one workflow, shown by its file when the names differ', JSON.stringify(fileM.workflows.map((w) => [w.workflow, w.runs]).sort()), '[["CI",30],["dynamic/dependabot/dependabot-updates",12]]');
+
+// ---- sampling: each stratum gets a minimum, then reads go where run lengths vary
+// August's 20 runs take 2 or 30 minutes; October's 100 take 5 each. Shared by count, August would get
+// 2 of 12 reads; by spread, October gets its minimum and August the rest.
+const spreadRuns = [
+  ...Array.from({ length: 20 }, (_, i) => run({ id: 400 + i, name: 'Validate', event: 'push', head_sha: `v${i}`, head_branch: 'main', conclusion: 'success',
+    created_at: iso('2026-08-10T00:00:00Z', i * 3600), updated_at: iso('2026-08-10T00:00:00Z', i * 3600 + (i % 2 ? 1800 : 120)) })),
+  ...Array.from({ length: 100 }, (_, i) => run({ id: 500 + i, name: 'Validate', event: 'push', head_sha: `w${i}`, head_branch: 'main', conclusion: 'success',
+    created_at: iso('2026-10-02T00:00:00Z', i * 3600), updated_at: iso('2026-10-02T00:00:00Z', i * 3600 + 300) })),
+];
+const bySpread = pickSample(spreadRuns, 12);
+t('a stratum whose run lengths vary gets more reads, an even one its minimum',
+  `${bySpread.filter((r) => r.created_at < '2026-09').length} ${bySpread.filter((r) => r.created_at > '2026-09').length}`, '9 3');
+t('and both lengths of the varied stratum are read', [...new Set(bySpread.filter((r) => r.created_at < '2026-09').map((r) => r.id % 2))].sort().join(','), '0,1');
+const tiny = [...spreadRuns.slice(0, 2), ...spreadRuns.slice(20)];
+t('a stratum smaller than the minimum is read whole', pickSample(tiny, 8).filter((r) => r.created_at < '2026-09').length, 2);
+
+// ---- sampling: a stuck job is read and never multiplied up
+// Twenty 2-minute deploys and one cancelled after 69 hours: the long run is read before the rest and
+// stands for itself, so it adds 360 minutes, not 360 times its stratum's weight.
+const T7 = '2026-10-05T00:00:00Z';
+const deploys = [
+  ...Array.from({ length: 20 }, (_, i) => run({ id: 600 + i, name: 'Deploy Storybook', event: 'push', head_sha: `s${i}`, head_branch: 'main', conclusion: 'success',
+    created_at: iso(T7, i * 3600), updated_at: iso(T7, i * 3600 + 120) })),
+  run({ id: 620, name: 'Deploy Storybook', event: 'push', head_sha: 'stuck', head_branch: 'main', conclusion: 'cancelled', created_at: iso(T7, 30), updated_at: iso(T7, 30 + 248280) }),
+];
+const deployJobs = new Map(deploys.map((r) => [r.id, [job(r.created_at, { name: 'deploy', conclusion: r.conclusion, start: 0, end: r.id === 620 ? 248280 : 120 })]]));
+const deploySample = pickSample(deploys, 5);
+t('a run that may hold a stuck job is always read', deploySample.some((r) => r.id === 620), true);
+const deployM = measure({ runs: deploys, jobs: new Map(deploySample.map((r) => [r.id, deployJobs.get(r.id)])), prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('and its capped minutes are not scaled by the stratum', Math.round(deployM.totals.billed), 360 + 20 * 2);
+// A run whose record does not show how long it lasted is found by its capped job once read.
+const noSpan = deploys.slice(10).map((r) => (r.id === 620 ? { ...r, updated_at: null } : r));
+const noSpanM = measure({ runs: noSpan, jobs: new Map([620, 610, 611, 612].map((id) => [id, deployJobs.get(id)])), prs: [], since: '2026-07-20', until: '2026-10-17' });
+t('a read run with a capped job stands for itself alone', Math.round(noSpanM.totals.billed), 360 + 10 * 2);
 
 // ---- sampling: red and re-run runs are read first, the rest scale back up
 const nightly = Array.from({ length: 11 }, (_, i) => run({ id: 100 + i, name: 'Nightly', event: 'schedule', head_sha: `n${i}`, head_branch: 'main',
@@ -151,16 +233,13 @@ t('the report marks sampled figures', /sampled: jobs read for 3 of 11/.test(repo
 // ---- the call budget, against a stubbed API
 const SINCE = '2026-07-20';
 const UNTIL = '2026-10-17';
-function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity, redId = 0, jobPages = 1, rules = [], protection = null }) {
+function stub({ remaining, limit = 5000, count = 50, spend = 0, cap = Infinity, redId = 0, jobPages = 1 }) {
   const all = Array.from({ length: count }, (_, i) => run({ id: i + 1, head_sha: `s${i}`, head_branch: 'b', conclusion: i + 1 === redId ? 'failure' : 'success',
     created_at: iso(`${SINCE}T12:00:00Z`, Math.floor((i * 89 * 86400) / count)), updated_at: iso(`${SINCE}T12:00:00Z`, 60) }));
   const s = { calls: 0, maxDays: 0, all };
   s.api = (path) => {
     if (path === 'rate_limit') return { resources: { core: { limit, remaining: remaining - spend * s.calls, reset: 0 } } };
     s.calls++;
-    if (path === 'repos/o/r') return { default_branch: 'main' };
-    if (path === 'repos/o/r/rules/branches/main') return rules;
-    if (path === 'repos/o/r/branches/main/protection/required_status_checks') { if (!protection) throw new Error('HTTP 404'); return protection; }
     let mm = /actions\/runs\?created=([\d-]+)\.\.([\d-]+)&per_page=100&page=(\d+)/.exec(path);
     if (mm) {
       const [, from, to, page] = mm;
@@ -189,7 +268,7 @@ t('a rate limit under the reserve stops before any call', `${/too low/.test(thre
 let s = stub({ remaining: 5000 });
 let c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 20, api: s.api });
 t('calls stay within the budget', c.calls <= 20 && s.calls === c.calls, true);
-t('what the lists leave reads jobs, as a sample', `${c.jobs.size} of ${c.runs.length}`, '13 of 50');
+t('what the lists leave reads jobs, as a sample', `${c.jobs.size} of ${c.runs.length}`, '16 of 50');
 t('all runs are listed', c.coveredSince, SINCE);
 
 s = stub({ remaining: 700, count: 300 });
@@ -213,13 +292,6 @@ s = stub({ remaining: 5000, count: 20, redId: 20, jobPages: 2 });
 c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 14, api: s.api });
 t('a red run last in the list is still read when job pages run the budget out', `${c.jobs.has(20)} ${c.jobs.size < 10}`, 'true true');
 
-s = stub({ remaining: 5000, count: 5, rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'tests (aggregate)' }] } }, { type: 'pull_request' }],
-  protection: { contexts: ['lint'], checks: [{ context: 'lint' }] } });
-c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 100, api: s.api });
-t('required checks are read from rulesets and branch protection', c.required.sort().join(','), 'lint,tests (aggregate)');
-s = stub({ remaining: 5000, count: 5 });
-c = collect({ repo: 'o/r', since: SINCE, until: UNTIL, budget: 100, api: s.api });
-t('unreadable branch protection leaves none required, and says so', `${c.required.length} ${c.notes.some((n) => /no required checks found on main/.test(n))}`, '0 true');
 
 console.log(fails ? `${fails} FAILED` : 'all measure checks passed');
 process.exit(fails ? 1 : 0);

@@ -337,58 +337,109 @@ export function quantile(xs, q) {
   return v[lo] + (v[Math.min(lo + 1, v.length - 1)] - v[lo]) * (pos - lo);
 }
 
-// GitHub bills each job in whole minutes, rounded up; a job that never ran bills nothing.
-export function jobMinutes(job) {
-  const d = ms(job.completed_at) - ms(job.started_at);
-  return Number.isFinite(d) && d > 0 ? Math.ceil(d / 60000) : 0;
-}
-
 export const isSelfHosted = (job) => (job.labels ?? []).includes('self-hosted')
   || (!!job.runner_group_name && job.runner_group_name !== 'GitHub Actions');
+
+// A GitHub-hosted job stops at 6 hours, so a longer span (a stuck job's cancelled record) counts as
+// 360 minutes. A self-hosted job has no such limit and is counted as reported.
+export const HOSTED_CAP = 360;
+const rawMinutes = (job) => { const d = ms(job.completed_at) - ms(job.started_at); return Number.isFinite(d) && d > 0 ? Math.ceil(d / 60000) : 0; };
+export const isCapped = (job) => !isSelfHosted(job) && rawMinutes(job) > HOSTED_CAP;
+
+// GitHub bills each job in whole minutes, rounded up; a job that never ran bills nothing.
+export function jobMinutes(job) {
+  return isCapped(job) ? HOSTED_CAP : rawMinutes(job);
+}
 
 // Hosted minutes bill at the runner OS's multiplier.
 const osMultiplier = (job) => { const l = (job.labels ?? []).join(' '); return /macos/i.test(l) ? 10 : /windows/i.test(l) ? 2 : 1; };
 
 // Red and re-run runs are what the PR figures turn on, so their jobs are read first; the rest are
-// sampled per workflow and scaled back up.
+// sampled per workflow, red-or-green and month (by run creation date), and scaled back up within it,
+// so each month's minutes come from that month's own runs. A workflow is its file (its id, else its
+// path without the `@ref` a run may carry): Dependabot names every run after its update, so grouping
+// by name would make each run a workflow of its own.
 const mustRead = (run) => RED.has(run.conclusion) || (run.run_attempt ?? 1) > 1;
-const workflowOf = (run) => run.name ?? run.path ?? '?';
-const stratum = (run) => `${workflowOf(run)}\u0000${mustRead(run) ? 'red' : 'rest'}`;
+const pathOf = (run) => (run.path ?? '').replace(/@.*$/, '');
+const workflowOf = (run) => (run.workflow_id != null ? `id:${run.workflow_id}` : pathOf(run) || run.name || '?');
+const spanMinutes = (run) => { const d = ms(run.updated_at) - ms(run.run_started_at ?? run.created_at); return Number.isFinite(d) && d > 0 ? d / 60000 : 0; };
+// A run that did not pass and lasted past the hosted cap may hold a stuck job (a job GitHub stops at
+// 6 h fails or is cancelled). It is read before anything else and stands for itself alone, as does
+// any run read with a capped job, so a capped job's 360 minutes are never multiplied by a stratum's
+// weight.
+const isLong = (run) => !PASSING.has(run.conclusion) && spanMinutes(run) > HOSTED_CAP;
+const stratum = (run, solo = new Set()) => `${workflowOf(run)}\u0000${isLong(run) || solo.has(run.id) ? `solo:${run.id}` : mustRead(run) ? 'red' : 'rest'}\u0000${(run.created_at ?? '').slice(0, 7)}`;
+
+// The fewest runs of a stratum read when the budget allows, so no month rests on one or two runs.
+const MIN_READS = 3;
 
 export function pickSample(runs, n) {
   if (n >= runs.length) return runs.slice();
-  const groups = new Map();
-  for (const r of runs) { const k = stratum(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  const groupOf = (rs) => { const g = new Map(); for (const r of rs) { const k = stratum(r); if (!g.has(k)) g.set(k, []); g.get(k).push(r); } return g; };
   const picked = new Set();
-  const keys = [...groups.keys()].sort((a, b) => Number(a.endsWith('rest')) - Number(b.endsWith('rest')));
-  for (const k of keys) if (picked.size < n) picked.add(groups.get(k)[0]);
-  for (const r of runs) if (picked.size < n && mustRead(r)) picked.add(r);
-  const rest = runs.filter((r) => !picked.has(r));
-  const k = n - picked.size;
-  for (let i = 0; i < k; i++) picked.add(rest[Math.floor((i * rest.length) / k)]);
+  const take = (r) => { if (picked.size < n) picked.add(r); };
+  for (const r of runs) if (isLong(r)) take(r);
+  const groups = groupOf(runs.filter((r) => !isLong(r)));
+  const keys = [...groups.keys()].sort((a, b) => Number(a.includes('\u0000rest\u0000')) - Number(b.includes('\u0000rest\u0000')));
+  for (const k of keys) take(groups.get(k)[0]);
+  for (const r of runs) if (mustRead(r)) take(r);
+  if (picked.size >= n) return runs.filter((r) => picked.has(r));
+
+  // The rest goes where it most narrows each month's minutes: a stratum's need is its runs times the
+  // spread of their lengths (run start to last update), over its month's total length (Neyman
+  // allocation, per month). Every stratum first gets MIN_READS, then each read goes to the stratum it
+  // helps most, so the reads end up in proportion to need.
+  const monthLen = new Map();
+  for (const r of runs) { const mo = (r.created_at ?? '').slice(0, 7); monthLen.set(mo, (monthLen.get(mo) ?? 0) + spanMinutes(r)); }
+  const strata = keys.filter((k) => k.includes('\u0000rest\u0000')).map((k) => {
+    const rs = groups.get(k);
+    const lens = rs.map(spanMinutes);
+    const avg = lens.reduce((t, x) => t + x, 0) / rs.length;
+    const sd = Math.sqrt(lens.reduce((t, x) => t + (x - avg) ** 2, 0) / rs.length);
+    return { rs, need: (rs.length * sd) / (monthLen.get(k.split('\u0000')[2]) || 1), q: rs.filter((r) => picked.has(r)).length };
+  });
+  if (!strata.some((s) => s.need > 0)) for (const s of strata) s.need = s.rs.length;
+  let left = n - picked.size;
+  for (let round = 1; round <= MIN_READS && left > 0; round++) {
+    for (const s of [...strata].sort((a, b) => b.need - a.need)) if (left > 0 && s.q < Math.min(round, s.rs.length)) { s.q++; left--; }
+  }
+  // Moving a stratum from q to q + 1 reads takes need² × (1/q − 1/(q + 1)) off the summed variance.
+  const gain = (s) => (s.q >= s.rs.length ? -1 : s.need ** 2 / (s.q * (s.q + 1)));
+  while (left > 0) {
+    let best = null;
+    for (const s of strata) if (gain(s) >= 0 && (!best || gain(s) > gain(best))) best = s;
+    if (!best) break;
+    best.q++;
+    left--;
+  }
+  // Within a stratum, the runs read are spread evenly over its runs ordered by length, so short and
+  // long ones are both read.
+  for (const s of strata) {
+    const unread = s.rs.filter((r) => !picked.has(r)).sort((a, b) => spanMinutes(a) - spanMinutes(b));
+    const q = s.q - (s.rs.length - unread.length);
+    for (let i = 0; i < q; i++) picked.add(unread[Math.floor(((i + 0.5) * unread.length) / q)]);
+  }
   return runs.filter((r) => picked.has(r));
 }
 
 // Each read run stands for the runs of its stratum that were not read.
-export function sampleWeights(runs, readIds) {
+export function sampleWeights(runs, readIds, solo = new Set()) {
   const total = new Map();
   const read = new Map();
   for (const r of runs) {
-    const k = stratum(r);
+    const k = stratum(r, solo);
     total.set(k, (total.get(k) ?? 0) + 1);
     if (readIds.has(r.id)) read.set(k, (read.get(k) ?? 0) + 1);
   }
   const w = new Map();
-  for (const r of runs) if (readIds.has(r.id)) w.set(r.id, total.get(stratum(r)) / read.get(stratum(r)));
+  for (const r of runs) if (readIds.has(r.id)) w.set(r.id, total.get(stratum(r, solo)) / read.get(stratum(r, solo)));
   return w;
 }
 
 // A run is red only as GitHub shows it. The latest attempt takes the run's own conclusion, which a
-// continue-on-error job's failure never turns red, and on a run that tests a PR, where the default
-// branch requires checks, a failure in none of them is not red either: only a PR's merge is gated.
-// The API keeps no conclusion for an earlier attempt, so that is read from its jobs: a failure
-// counts only in a job that blocks, which is a required check where those apply, and never a job
-// that has failed in a run GitHub concluded success.
+// continue-on-error job's failure never turns red. The API keeps no conclusion for an earlier
+// attempt, so that is read from its jobs: any failed job counts, except one that has failed in a run
+// GitHub concluded success. Today's required checks are not applied to older runs.
 const jobKey = (run, job) => `${workflowOf(run)}\u0000${job.name}`;
 
 function nonBlockingJobs(runs, jobs) {
@@ -402,9 +453,8 @@ function nonBlockingJobs(runs, jobs) {
 }
 
 // One record per attempt of a run. Without its jobs only the latest attempt is known.
-function attemptsOf(run, jobs, estimate, { required = new Set(), nonBlocking = new Set(), gated = false } = {}) {
-  const isRequired = (j) => !gated || !required.size || required.has(j.name);
-  const blocks = (j) => isRequired(j) && !nonBlocking.has(jobKey(run, j));
+function attemptsOf(run, jobs, estimate, nonBlocking = new Set()) {
+  const blocks = (j) => !nonBlocking.has(jobKey(run, j));
   const latest = run.run_attempt ?? 1;
   const byAttempt = new Map();
   for (const j of jobs ?? []) {
@@ -423,8 +473,8 @@ function attemptsOf(run, jobs, estimate, { required = new Set(), nonBlocking = n
     let passed;
     let decided;
     if (attempt === latest) {
-      red = RED.has(run.conclusion) && (!failed.length || failed.some(isRequired));
-      passed = PASSING.has(run.conclusion) || (RED.has(run.conclusion) && !red);
+      red = RED.has(run.conclusion);
+      passed = PASSING.has(run.conclusion);
       decided = DECIDED.has(run.conclusion);
     } else {
       red = failed.some(blocks);
@@ -438,7 +488,7 @@ function attemptsOf(run, jobs, estimate, { required = new Set(), nonBlocking = n
       red, decided, passed,
       done: js.every((j) => j.status === 'completed'),
       minutes: js.reduce((t, j) => t + jobMinutes(j) * (isSelfHosted(j) ? 1 : osMultiplier(j)), 0), jobs: js,
-      failing: !red ? [] : failed.some(blocks) ? failed.filter(blocks) : failed.filter(isRequired),
+      failing: !red ? [] : failed.some(blocks) ? failed.filter(blocks) : failed,
     };
   });
 }
@@ -488,13 +538,22 @@ export function prTimeline(atts) {
   return { red: order.some((s) => s.redAt !== null), trips, unresolved: open !== null, timeToGreen: greens.length ? Math.min(...greens) - start : null };
 }
 
-export function measure({ runs: listed, jobs = new Map(), prs = [], required = [], since, until, coveredSince = since }) {
+export function measure({ runs: listed, jobs = new Map(), prs = [], since, until, coveredSince = since }) {
   const runs = listed.filter((r) => r.status === 'completed');
   const readIds = new Set(runs.filter((r) => jobs.has(r.id)).map((r) => r.id));
-  // A required check that no Actions job carries (another app's status) cannot gate a run here.
-  const names = new Set([...readIds].flatMap((id) => jobs.get(id).map((j) => j.name)));
-  const blocking = { required: new Set(required.filter((c) => names.has(c))), nonBlocking: nonBlockingJobs(runs, jobs) };
-  const weight = sampleWeights(runs, readIds);
+  const nonBlocking = nonBlockingJobs(runs, jobs);
+  const solo = new Set([...readIds].filter((id) => jobs.get(id).some(isCapped)));
+  const weight = sampleWeights(runs, readIds, solo);
+  // A workflow is shown by its runs' name when they share one, else by its file.
+  const names = new Map();
+  const paths = new Map();
+  for (const r of runs) {
+    const k = workflowOf(r);
+    if (!names.has(k)) names.set(k, new Set());
+    names.get(k).add(r.name ?? pathOf(r) ?? k);
+    if (pathOf(r)) paths.set(k, pathOf(r));
+  }
+  const label = (k) => (names.get(k).size === 1 ? [...names.get(k)][0] : paths.get(k) ?? k);
 
   const runMin = new Map();
   for (const r of runs) {
@@ -507,12 +566,12 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], required = [
   const mean = new Map();
   const byId = new Map(runs.map((r) => [r.id, r]));
   for (const [id, m] of runMin) {
-    const k = stratum(byId.get(id));
+    const k = stratum(byId.get(id), solo);
     const s = mean.get(k) ?? { n: 0, m: 0 };
     s.n++; s.m += m.billed + m.self;
     mean.set(k, s);
   }
-  const estimate = (r) => { const s = mean.get(stratum(r)); return s ? s.m / s.n : 0; };
+  const estimate = (r) => { const s = mean.get(stratum(r, solo)); return s ? s.m / s.n : 0; };
 
   const workflows = new Map();
   const jobRows = new Map();
@@ -524,9 +583,9 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], required = [
   const prOf = new Map(runs.map((r) => [r.id, prOfRun(r, prs, byNumber)]));
   for (const r of runs) {
     const name = workflowOf(r);
-    if (!workflows.has(name)) workflows.set(name, { workflow: name, runs: 0, attempts: 0, decided: 0, failed: 0, billed: 0, self: 0, firstFailing: {} });
+    if (!workflows.has(name)) workflows.set(name, { workflow: label(name), runs: 0, attempts: 0, decided: 0, failed: 0, billed: 0, self: 0, firstFailing: {} });
     const w = workflows.get(name);
-    const atts = attemptsOf(r, jobs.get(r.id), estimate(r), { ...blocking, gated: !!prOf.get(r.id) });
+    const atts = attemptsOf(r, jobs.get(r.id), estimate(r), nonBlocking);
     attemptsByRun.set(r.id, atts);
     w.runs++;
     for (const a of atts) {
@@ -539,7 +598,7 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], required = [
       const label = first?.name ?? '(no job ran)';
       w.firstFailing[label] = (w.firstFailing[label] ?? 0) + 1;
     }
-    if (!readIds.has(r.id)) { if (!mean.has(stratum(r))) unmeasured++; continue; }
+    if (!readIds.has(r.id)) { if (!mean.has(stratum(r, solo))) unmeasured++; continue; }
     const k = weight.get(r.id);
     const m = runMin.get(r.id);
     w.billed += m.billed * k;
@@ -549,7 +608,7 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], required = [
     mo.self += m.self * k;
     for (const j of jobs.get(r.id)) {
       const key = `${name}\u0000${j.name}`;
-      if (!jobRows.has(key)) jobRows.set(key, { workflow: name, job: j.name, runs: 0, billed: 0, self: 0 });
+      if (!jobRows.has(key)) jobRows.set(key, { workflow: label(name), job: j.name, runs: 0, billed: 0, self: 0 });
       const row = jobRows.get(key);
       row.runs += k;
       if (isSelfHosted(j)) row.self += jobMinutes(j) * k; else row.billed += jobMinutes(j) * osMultiplier(j) * k;
@@ -578,11 +637,17 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], required = [
       if (Number.isFinite(q) && q >= 0) (isSelfHosted(j) ? queue.self : queue.hosted).push(q);
     }
   }
+  const capped = [];
+  for (const id of readIds) {
+    for (const j of jobs.get(id)) {
+      if (isCapped(j)) capped.push({ workflow: label(workflowOf(byId.get(id))), job: j.name, run: id, attempt: j.run_attempt ?? 1, reported: rawMinutes(j), counted: HOSTED_CAP });
+    }
+  }
   const spread = (xs) => ({ n: xs.length, median: quantile(xs, 0.5), p90: quantile(xs, 0.9) });
   const wfs = [...workflows.values()].sort((a, b) => b.billed + b.self - (a.billed + a.self));
 
   return {
-    since, until, coveredSince, required: [...blocking.required].sort(),
+    since, until, coveredSince, capped: capped.sort((a, b) => b.reported - a.reported),
     runs: { listed: listed.length, completed: runs.length, read: readIds.size, mustRead: runs.filter(mustRead).length,
       mustReadRead: runs.filter((r) => mustRead(r) && readIds.has(r.id)).length, unmeasured },
     totals: {
@@ -647,27 +712,6 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
     return api(path);
   };
 
-  // The checks the default branch requires, from its rulesets and its branch protection. Reading
-  // protection needs admin rights, so a refusal there only narrows what is known.
-  const required = new Set();
-  let branch = null;
-  try { branch = get(`repos/${repo}`)?.default_branch ?? null; } catch { /* named in the note below */ }
-  if (branch) {
-    try {
-      for (const rule of get(`repos/${repo}/rules/branches/${encodeURIComponent(branch)}`) ?? []) {
-        if (rule.type === 'required_status_checks') for (const c of rule.parameters?.required_status_checks ?? []) required.add(c.context);
-      }
-    } catch { /* no rulesets readable */ }
-    try {
-      const p = get(`repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
-      for (const c of p?.contexts ?? []) required.add(c);
-      for (const c of p?.checks ?? []) required.add(c.context);
-    } catch { /* unprotected, or not readable without admin */ }
-  }
-  notes.push(required.size
-    ? `required checks on ${branch}: ${[...required].sort().join(', ')}; on a run that tests a PR, a failure in any other job does not make it red`
-    : `no required checks found${branch ? ` on ${branch}` : ''}: a run is red by its own conclusion`);
-
   const runs = new Map();
   let coveredSince = since;
   let truncated = false;
@@ -710,7 +754,7 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
   const completed = [...runs.values()].filter((r) => r.status === 'completed');
   const jobs = new Map();
   const sample = pickSample(completed, Math.max(0, allowance - calls));
-  for (const r of [...sample.filter(mustRead), ...sample.filter((x) => !mustRead(x))]) {
+  for (const r of [...sample.filter(isLong), ...sample.filter((x) => !isLong(x) && mustRead(x)), ...sample.filter((x) => !isLong(x) && !mustRead(x))]) {
     const js = [];
     let whole = true;
     for (let p = 1; ; p++) {
@@ -723,7 +767,7 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
     if (whole) jobs.set(r.id, js);
     else if (calls >= allowance) break;
   }
-  return { repo, since, until, coveredSince, runs: [...runs.values()], jobs, prs, required: [...required], calls, budget, allowance, reserve, rate: start, notes };
+  return { repo, since, until, coveredSince, runs: [...runs.values()], jobs, prs, calls, budget, allowance, reserve, rate: start, notes };
 }
 
 // ---- measure: the report ------------------------------------------------------------------------
@@ -744,19 +788,18 @@ export function report(m, c, measuredAt) {
     `- measured ${measuredAt}`,
     `- API calls: ${c.calls} of an allowance of ${c.allowance} (budget ${c.budget}; rate limit ${c.rate.remaining} of ${c.rate.limit} left at the start, ${c.reserve} kept in reserve)`,
     sampled
-      ? `- sampled: jobs read for ${m.runs.read} of ${m.runs.completed} completed runs, including ${m.runs.mustReadRead} of the ${m.runs.mustRead} red or re-run ones; minutes are scaled per workflow and marked (est.)`
+      ? `- sampled: jobs read for ${m.runs.read} of ${m.runs.completed} completed runs, including ${m.runs.mustReadRead} of the ${m.runs.mustRead} red or re-run ones; minutes are scaled per workflow, red-or-green and month (a run that may hold a stuck job stands for itself alone), and marked (est.)`
       : `- not sampled: jobs read for all ${m.runs.completed} completed runs`,
     ...(m.runs.listed > m.runs.completed ? [`- ${m.runs.listed - m.runs.completed} runs still in progress are left out`] : []),
-    ...(m.runs.unmeasured ? [`- ${m.runs.unmeasured} runs are in workflows with no job read, so carry no minutes`] : []),
+    ...(m.runs.unmeasured ? [`- ${m.runs.unmeasured} runs are in a workflow, red-or-green and month with no job read, so carry no minutes`] : []),
+    ...(m.capped.length ? [`- ${m.capped.length} hosted jobs reported more than 6 h and count as ${HOSTED_CAP} min each (listed under Capped jobs)`] : []),
     ...c.notes.map((n) => `- ${n}`),
     '',
     '## Totals',
     '',
     `- billed minutes${est}: ${int(m.totals.billed)} (each job rounded up to the minute; macOS ×10, Windows ×2)`,
     `- self-hosted minutes${est}: ${int(m.totals.self)}`,
-    m.required.length
-      ? `- red as GitHub shows it: by the run's conclusion, and on a run that tests a PR only for a failure in a required check (${m.required.map(cell).join(', ')}); a continue-on-error job never makes a run red`
-      : '- red as GitHub shows it: by the run\'s conclusion (no required check matches a job here); a continue-on-error job never makes a run red',
+    '- red as GitHub shows it: by the run\'s conclusion, and for an earlier attempt of a re-run any failed job that is not continue-on-error; today\'s required checks are not applied to older runs',
     `- attempts: ${m.totals.attempts}, red ${m.totals.failed} (${pct(m.totals.failed, m.totals.decided)} of ${m.totals.decided} that passed or failed)`,
     '',
     '## By workflow',
@@ -788,6 +831,16 @@ export function report(m, c, measuredAt) {
     '|---|---|---|---|---|',
     ...m.months.map((x) => `| ${x.month} | ${int(x.billed)} | ${int(x.self)} | ${x.merged} | ${int(x.perMerged)} |`),
     '',
+    ...(m.capped.length ? [
+      '## Capped jobs',
+      '',
+      `A GitHub-hosted job stops at 6 h, so each of these counts as ${HOSTED_CAP} min (before the OS multiplier). Self-hosted jobs are not capped.`,
+      '',
+      '| workflow | job | run | attempt | reported min | counted min |',
+      '|---|---|---|---|---|---|',
+      ...m.capped.map((x) => `| ${cell(x.workflow)} | ${cell(x.job)} | ${x.run} | ${x.attempt} | ${int(x.reported)} | ${x.counted} |`),
+      '',
+    ] : []),
   ];
   return out.join('\n');
 }
