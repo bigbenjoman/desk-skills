@@ -311,6 +311,7 @@ such thing.
 | Typecheck | `TODO` |
 | Lint | `TODO` |
 | Unit tests | `TODO` (one span per suite, e.g. `` `pnpm turbo run test` `apps/api: uv run pytest` ``; note how to run one file) |
+| Related tests | `TODO` (what an autopilot worker runs instead of a full suite: one span per suite in the Unit tests form, each taking the changed files as arguments and running the tests that import them, e.g. `` `pnpm vitest related --run` `pnpm jest --findRelatedTests` ``; a Vitest or Jest item gets the changed files under its directory appended, any other item, e.g. `` `apps/api: uv run pytest --testmon` ``, picks its own affected set and runs as written; `desk-env test-scope` decides, and a lockfile, root or test config, shared workspace package, deletion or rename still runs the full suites; or `none`, so workers always run the full suites) |
 | E2E tests | `TODO` (or `none`) |
 | Integration tests | `TODO` (database-backed suite, and whether it needs its own database; or `none`) |
 | Build | `TODO` |

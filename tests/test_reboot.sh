@@ -56,7 +56,7 @@ out=$(cd "$T" && node "$B/reboot-check.mjs" 2>&1); rc=$?
 check "no configured repos: still reports, exits 0" '[ $rc -eq 0 ] && grep -q "^worktrees: 0 configured repos, 0 worktrees" <<< "$out"'
 
 # A stopped VM whose keep agent is loaded will be started again, so the agent is reported.
-mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$T/bin/"
+mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$B/test-scope.mjs" "$T/bin/"
 printf '#!/bin/sh\necho "desk-runner: stopped (4 CPUs, 8192 MB, 50 GB disk)"\necho "agents: restart at login and every minute loaded; verify-isolation nightly at 03:30 loaded"\nexit 1\n' > "$T/bin/desk-runner"
 chmod +x "$T/bin/desk-runner"
 out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1); rc=$?

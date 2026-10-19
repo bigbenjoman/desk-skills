@@ -10,7 +10,7 @@ description: >-
   within a stated API call budget and saves the figures. Also before any CI change, to save a repo's
   branch protection and rulesets and restore them, to pin required checks to the GitHub Actions app,
   or to make the default workflow token read-only ("/desk-ci protection snapshot|restore|pin|token").
-argument-hint: "classify | ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | protection snapshot|restore <file>|pin|token"
+argument-hint: "classify | ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token"
 ---
 
 # desk-ci
@@ -168,6 +168,22 @@ else: it calls only read endpoints and changes nothing in any repo.
 1. Run it and print the report.
 2. Offer to attach it to a ticket. Only on the user's yes, and after showing the exact files and the
    target key, `desk-jira attach <KEY> <the .md file>`, under the repo's Jira grants.
+
+### batch-red: a batch against the baseline
+
+`measure`'s saved JSON is the baseline an autopilot batch is held to. `batch-red` reads a set of PRs
+(by default every finished ticket's PR in the autopilot queue), the runs on each PR's head branch, and
+jobs only for re-run runs, then counts red PRs by the same definitions as the *CI red rate per PR*
+row above, so the two rates compare:
+
+```bash
+node ~/.claude/desk/bin/desk-ci.mjs batch-red [--prs 12,13 | --queue <queue.json>] [--baseline <measure json>] [--repo owner/name]
+```
+
+It prints `batch:` (the red PRs named), `baseline:` (the newest `<date>-ci-measure-<owner>__<name>.json`
+in the main checkout's `.handoffs/`, unless `--baseline` names one), the change in percentage points,
+and a `summary:` line. A rise of more than 5 points prints `RED RATE ROSE` and exits 1. It reads
+only, and spends one call per PR, one per page of its runs and one per page of a re-run's jobs.
 
 ## protection
 

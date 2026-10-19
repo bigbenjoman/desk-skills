@@ -33,8 +33,10 @@ Run it in its directory with `--cwd`, never as `cd <dir> && …`:
 
 (Each `<CMD>` with §4 Command prefix in front unless it is `none`.)
 
-**Prefer targeted specs over the full suite.** Run the specs your diff touches while iterating and
-keep the full suite for your final pass: CI runs it on every push regardless.
+**Prefer targeted specs over the full suite.** Run the specs your diff touches while iterating. Before
+pushing, run what `desk-env test-scope` prints (the tests related to your changes, or the full suites
+when a lockfile, config, shared package, deletion or rename reaches past the import graph): CI runs
+the full suites on every push regardless.
 
 **Serialise every suite behind that lock.** The cap bounds one suite. It does nothing about two
 workers, or a worker and an interactive session, hitting Stage 4 in the same minute, which is the
