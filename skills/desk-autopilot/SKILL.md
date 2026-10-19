@@ -50,7 +50,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port" | the ladder, the test cap, spend guards, and the port workers must never take |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models" | the ladder, the test cap, spend guards, the port workers must never take, and each worker's model |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -663,6 +663,17 @@ Spend follows config §3b. Where "Autopilot batch budget (USD)" is `none`, leave
 asked-for work. Precedence: batch: the queue's `budget_usd`, `AUTOPILOT_BATCH_BUDGET_USD`, config,
 `none`; per worker: `AUTOPILOT_BUDGET_USD`, config, `25`. A malformed value holds spawns (batch,
 under `STALLED`) or fails the preflight (per worker); fix the value, never strip it.
+
+**Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
+is absent) no `--model` is passed and every worker runs on the session default. At
+`standard=<model> high=<model>`, `pass.mjs` picks a tier per ticket at spawn: a lane A or E ticket
+sized XS or S runs on `standard`; lane B, size M and an unsized ticket run on `high`. The preflight
+runs on the same model, so a value the CLI rejects fails that ticket's preflight with a `MODEL` line
+naming it. The queue records `model_tier` and `model`, and the status table shows the model of each
+running worker. `queue.mjs requeue` raises a `standard` ticket to `high` when its worker failed or was
+stopped as stalled, and says so in the table; a requeue after a park with a question, or after a
+failed preflight or spawn (no worker ran), keeps the model. A malformed row holds spawns under
+`STALLED`.
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded

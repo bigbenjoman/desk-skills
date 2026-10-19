@@ -269,6 +269,7 @@ export const CONFIG_ROWS = Object.freeze({
   'memory-ceiling': { section: '3b', row: 'Memory ceiling for parallel work (GB)' },
   'worker-budget': { section: '3b', row: 'Autopilot per-worker budget (USD)' },
   'batch-budget': { section: '3b', row: 'Autopilot batch budget (USD)' },
+  'worker-models': { section: '3b', row: 'Worker models' },
 });
 
 export class DeskConfigError extends Error {}
@@ -469,6 +470,29 @@ export function parseBudget(raw, label) {
 }
 export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: '25' }), 'the per-worker budget');
 export const batchBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' }), 'the batch budget');
+
+// Config §3b "Worker models": `default` (no --model, the session default) or
+// `standard=<model> high=<model>`, each a `claude --model` alias or full name. Anything else is
+// refused rather than read as default, so a typo never silently runs every worker on one model.
+//   -> { off: true } | { standard, high }, or throws DeskConfigError
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]*$/;
+export function parseWorkerModels(raw) {
+  const v = String(raw ?? '').trim();
+  if (/^default$/i.test(v)) return { off: true };
+  const pairs = Object.fromEntries(v.split(/\s+/).map((p) => p.split('=')).filter((p) => p.length === 2));
+  const ok = v.split(/\s+/).length === 2 && Object.keys(pairs).sort().join() === 'high,standard'
+    && MODEL_NAME.test(pairs.standard) && MODEL_NAME.test(pairs.high);
+  if (!ok) throw new DeskConfigError(`desk: config §3b "Worker models" is "${raw}" — want \`default\`, or \`standard=<model> high=<model>\`. Refusing to guess.`);
+  return { standard: pairs.standard, high: pairs.high };
+}
+export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
+
+// Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
+// `standard`; lane B, size M and an unsized ticket are `high`.
+export function modelTier({ lane, size } = {}) {
+  return ['A', 'E'].includes(String(lane ?? '').toUpperCase()) && ['XS', 'S'].includes(String(size ?? '').toUpperCase())
+    ? 'standard' : 'high';
+}
 
 // ---- identity and paths --------------------------------------------------------------------
 export const githubHandle = () => resolve({ env: 'DESK_GITHUB_HANDLE', id: 'github-handle', identity: true });

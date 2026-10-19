@@ -230,6 +230,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Test worker cap under the test lock | `4`, `2` while the spawn gate says hold | `TODO` |
 | Autopilot per-worker budget (USD) | `25` (a runaway guard) | `TODO` (`none` turns it off) |
 | Autopilot batch budget (USD) | `none` | `TODO` |
+| Worker models | `default` | `TODO` (`default`, or `standard=<model> high=<model>`: lane A or E sized XS or S runs on standard, the rest on high) |
 | Park an unanswered question after (minutes) | `15` | `TODO` |
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |

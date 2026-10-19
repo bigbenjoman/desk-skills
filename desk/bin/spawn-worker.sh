@@ -66,6 +66,14 @@ BUDGET_ARGS=()
 [ "$BUDGET" != "none" ] && BUDGET_ARGS=(--max-budget-usd "$BUDGET")
 CODEX_PERM="$(desk_perm codex-review)"
 
+# The ticket's model (config §3b Worker models, chosen per ticket by pass.mjs). Empty means no
+# --model: the worker runs on the session default. The preflight takes it too, so a model the CLI
+# rejects fails the preflight, naming the value, before a worker is committed to it. pass.mjs passes
+# only names parseWorkerModels (desk-env.mjs) accepted.
+MODEL="${AUTOPILOT_MODEL:-}"
+MODEL_ARGS=()
+[ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
+
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
   DRY_NOTE=" This is a DRY RUN: pushing, opening a PR, posting a review and every Jira write are blocked on purpose. Commit locally, do everything else in full, then print AUTOPILOT_DONE saying what you would have pushed. Do not treat those blocks as errors to work around."
@@ -126,6 +134,7 @@ $CHECKS" \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
     "${ADD_DIRS[@]}" \
+    ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
     --max-budget-usd 2 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
 
   fail=0
@@ -135,6 +144,11 @@ $CHECKS" \
     else printf '  %-6s %-8s FAIL (wanted %s)\n' "$1" "${got:-?}" "$2"; fail=1; fi
   }
   echo "[preflight] $TICKET"
+  # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
+  if [ -n "$MODEL" ]; then
+    if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then printf '  %-6s %-8s ok\n' MODEL "$MODEL"
+    else echo "  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
+  fi
   check W_IN  OK        # must be able to edit its own worktree
   check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
   i=0
@@ -226,6 +240,7 @@ desk_detach claude -p "$PROMPT" \
   "${ADD_DIRS[@]}" \
   --append-system-prompt "$SYSTEM" \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"} \
+  ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   >> "$LOG" 2>&1 < /dev/null &
 disown $! 2>/dev/null || true
 
@@ -239,8 +254,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 2
 done
 
-printf '[spawn] ticket=%s pid=%s port=%s session=%s%s\n' \
-  "$TICKET" "$PID" "$PORT" "$SID" "${AUTOPILOT_DRY_RUN:+ (dry run)}"
+printf '[spawn] ticket=%s pid=%s port=%s model=%s session=%s%s\n' \
+  "$TICKET" "$PID" "$PORT" "${MODEL:-default}" "$SID" "${AUTOPILOT_DRY_RUN:+ (dry run)}"
 printf '[spawn] log=%s\n' "$LOG"
 [ -n "$DENIED" ] && printf '[spawn] %s\n' "$DENIED"
 printf '[spawn] wait: until ! claude agents --json | grep -q %s; do sleep 20; done\n' "$SID"

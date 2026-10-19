@@ -270,11 +270,22 @@ switch (cmd) {
     if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
     if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
     if (!['A', 'B', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+    // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
+    // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
+    // worker never ran (a failed preflight or spawn): that was not the model falling short.
+    const wedged = t.state === 'parked' && /^wedged\b/.test(String(t.park?.question ?? ''));
+    const workerFailed = t.state === 'failed' && !t.spawn_failed;
+    let bumped = '';
+    if (t.model_tier === 'standard' && (wedged || workerFailed)) {
+      t.model_tier = 'high';
+      t.model_note = `standard → high after a ${wedged ? 'stalled' : 'failed'} worker`;
+      bumped = `; its next worker runs on the high model (${t.model_note})`;
+    }
     const moved = rotateRound(key, { answers: true });
     Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, updated_at: new Date().toISOString() });
     q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
     save(q);
-    console.log(`${key} requeued at the front of the spawn order${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}`);
+    console.log(`${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}`);
     break;
   }
 
@@ -331,10 +342,12 @@ switch (cmd) {
       const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (failed or parked): decide what happens to it`
         : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
         : t.state === 'parked' ? t.park?.question ?? ''
-        : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}`
+        : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}`
         : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}` : '')
         : '';
-      console.log(`  ${label.padEnd(8)} ${t.key.padEnd(9)} ${tail}`);
+      // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
+      const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
+      console.log(`  ${label.padEnd(8)} ${t.key.padEnd(9)} ${tail}${modelNote}`);
     }
     const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && waitingOnMerge(q, t))).length;
     if (parked) console.log(`\n${parked} ticket(s) waiting on you.`);

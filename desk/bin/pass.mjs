@@ -266,6 +266,21 @@ if (budgetBad) report.stalled.push(`${budgetBad} — not spawning until it is fi
 const overBudget = !!budgetBad || (cap > 0 && spent >= cap);
 if (cap > 0 && spent >= cap) report.stalled.push(`batch budget reached: $${spent.toFixed(2)} of $${cap} — not spawning anything further`);
 
+// Config §3b "Worker models": each worker runs on its ticket's tier, or on the session default
+// when the row is `default`. A malformed row holds every spawn, the way a malformed budget does.
+let models = { off: true };
+let modelsBad = null;
+try { models = E.workerModels(); } catch (e) { modelsBad = e.message; }
+if (modelsBad) report.stalled.push(`${modelsBad} — not spawning until it is fixed`);
+// A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
+// raises it after a failure), and otherwise takes one from its triage record's lane and size.
+const tierFor = (t) => {
+  if (t.model_tier === 'standard' || t.model_tier === 'high') return t.model_tier;
+  let size = null;
+  try { size = JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8')).size ?? null; } catch { /* unsized: high */ }
+  return E.modelTier({ lane: t.lane, size });
+};
+
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision), never above the
 // cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`, default 2 / 3).
 const { def: concDefault, cap: concCap } = E.concurrencyLimits();
@@ -298,7 +313,7 @@ if (lowMemory) {
     : `memory: ${gateGB.toFixed(1)}G available${reserved}, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
       `(${running.length} running; a worker mid-suite will drain)`);
 }
-const slots = (overBudget || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
+const slots = (overBudget || modelsBad || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
 const runningKeys = new Set(running.map((r) => r.key));
 const collidesWithRunning = (r) => (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k));
 
@@ -362,7 +377,10 @@ for (const t of eligible) {
   // setup-worktree.sh names the per-ticket database it created, or says `none` (every database
   // variable blanked). One source, never re-derived here.
   const database = [...setup.matchAll(/\[setup-worktree\] database=(\S+)/g)].pop()?.[1] ?? 'none';
-  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database };
+  // The preflight runs on the worker's own model, so a model the CLI rejects fails it here.
+  const tier = tierFor(t);
+  const model = models.off ? '' : models[tier];
+  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
 
   // The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling
   // tickets have learnt, and — critically — the answers the user has already given.
@@ -405,7 +423,8 @@ for (const t of eligible) {
     cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
   }).out;
   if (!/\[preflight\] pass/.test(pre)) {
-    q('set', t.key, 'state=failed');
+    // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
+    q('set', t.key, 'state=failed', 'spawn_failed=true');
     report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}`);
     continue;
   }
@@ -430,17 +449,19 @@ for (const t of eligible) {
   E.rotateRound(t.key);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
-    'result=null', 'images_uploaded=null', 'images_reported=null');
+    'result=null', 'images_uploaded=null', 'images_reported=null',
+    // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   if (!/\[spawn\] ticket=/.test(spawned.out)) {
-    q('set', t.key, 'state=failed', 'session_id=null', 'port=null');
+    q('set', t.key, 'state=failed', 'session_id=null', 'port=null', 'spawn_failed=true');
     report.failed.push(`${t.key}: spawn refused — ${spawned.out.split('\n').slice(-3).join(' ')}`);
     continue;
   }
-  report.spawned.push(`${t.key} port=${port} db=${database}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}`);
   runningKeys.add(t.key);
 }
 
