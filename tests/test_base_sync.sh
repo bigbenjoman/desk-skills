@@ -150,6 +150,15 @@ check "unset reads as ask, and asks for the approval" '[ "$(origin_tip)" = "$tip
 check "not feature mode: the row refusing still spawns" '[[ "$out" == *"spawned: T-1"* ]]'
 fresh approved ask; out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" 2>&1)
 check "ask with the approval syncs"                  'origin_has_main && [[ "$out" == *"merged 2 commit(s)"* ]]'
+fresh typo nope; tip=$(origin_tip); out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" 2>&1)
+check "a value the row cannot read is no, not ask"   '[ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"batch-base-push is \"no\""* ]]'
+
+# A production base written into the queue by hand is refused on read, before anything is pushed.
+fresh prod; git -C "$C/repo" push -q origin origin/feat/x:refs/heads/production
+tip=$(git -C "$C/origin.git" rev-parse production)
+node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileSync(f, "utf8")); q.base = "production"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+pass
+check "a production base in the queue is refused"    '[ $rc -eq 11 ] && [[ "$out" == *"is a production branch"* ]] && [ "$(git -C "$C/origin.git" rev-parse production)" = "$tip" ] && [ ! -e "$C/wt/base-production" ]'
 
 # AC5: a push refused as non-fast-forward is fetched, merged again and retried once.
 fresh race; git clone -q "$C/origin.git" "$C/other"; git -C "$C/other" switch -q feat/x; echo "$C/other" > "$T/race.arm"; pass

@@ -181,7 +181,7 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `autopilot-workers` | Run detached headless workers (`claude -p`) that work tickets while nobody watches | `yes` | `TODO` |
 | `autopilot-worker-mode` | Worker permission mode | `dontAsk` + generated allow-list | `TODO` |
 | `autopilot-merge` | Merge a worker's PR on green, serially, without you looking first | `no` | `TODO` |
-| `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns, or the empty commit a promotion PR needs | `ask` | `TODO` |
+| `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
 | `autopilot-judgement` | Make and record an engineering or scope call instead of parking (product and other people's rulings still stop) | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 
