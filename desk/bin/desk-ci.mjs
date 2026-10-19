@@ -14,6 +14,9 @@
 // batch-red measures an autopilot batch's PRs (default: the queue's finished tickets) the way measure
 // does and compares their CI red rate per PR with the newest measure baseline; exit 1 on a rise of
 // more than 5 percentage points.
+//   node desk-ci.mjs profile [<workflow file or directory>...] [--required <check>]... [--measure <measure json>] [--batch-prs <n>]
+// profile places each job light (no database, preview or browser) or full, prints the change that runs
+// only light jobs on PRs into a batch base, and estimates the saving from a measure report.
 //   node desk-ci.mjs protection snapshot|restore <file>|pin|token [--repo owner/name] [--apply <plan id>]
 // protection saves and restores branch protection and rulesets, pins required checks to the GitHub
 // Actions app and makes the default workflow token read-only. Every write is gated on config §3
@@ -23,7 +26,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { permissionOrUnset, queueFile } from './desk-env.mjs';
+import { permissionOrUnset, queueFile, configValue, configValues, isNone } from './desk-env.mjs';
 
 // ---- a line scanner for workflow YAML ---------------------------------------------------------
 // Workflows are block YAML, and every rule here needs the line it fired on, which a YAML parser
@@ -106,7 +109,7 @@ export function parseWorkflow(text) {
   const jobs = Object.entries(top.jobs ? mapping(top.jobs.block) : {}).map(([id, j]) => ({
     id, line: j.line, lines: [j.line, ...j.block], keys: mapping(j.block),
   }));
-  return { lines, env: top.env, permissions: top.permissions, jobs };
+  return { lines, name: top.name, on: top.on, env: top.env, permissions: top.permissions, jobs };
 }
 
 // ---- the rules --------------------------------------------------------------------------------
@@ -179,14 +182,15 @@ function serviceHits(job) {
 
 // Images published for amd64 only, which the arm64 runner VM cannot run natively.
 const AMD64_ONLY = [/^(docker\.io\/)?postgis\/postgis(:|$)/i, /^mcr\.microsoft\.com\/mssql\/server(:|$)/i];
+// Every line of a job's `container:` and `services:` blocks, with the image it names, if any.
+function imageLines(job) {
+  return [job.keys.container, job.keys.services].filter(Boolean).flatMap(all)
+    .map((l) => ({ line: l, image: /^(?:-\s+)?(?:image|container)\s*:\s*['"]?([^'"\s]+)/.exec(l.text)?.[1] ?? null }));
+}
 function imageHits(job) {
-  const where = [job.keys.container, job.keys.services].filter(Boolean);
-  for (const k of where) {
-    for (const l of all(k)) {
-      const img = /^(?:-\s+)?(?:image|container)\s*:\s*['"]?([^'"\s]+)/.exec(l.text);
-      if (img && AMD64_ONLY.some((re) => re.test(img[1]))) return [{ line: l, kind: 'image', why: `image ${img[1]} has no arm64 build` }];
-      if (/--platform[=\s]+linux\/amd64\b/.test(l.text)) return [{ line: l, kind: 'image', why: 'container pinned to linux/amd64' }];
-    }
+  for (const { line: l, image } of imageLines(job)) {
+    if (image && AMD64_ONLY.some((re) => re.test(image))) return [{ line: l, kind: 'image', why: `image ${image} has no arm64 build` }];
+    if (/--platform[=\s]+linux\/amd64\b/.test(l.text)) return [{ line: l, kind: 'image', why: 'container pinned to linux/amd64' }];
   }
   return [];
 }
@@ -224,16 +228,24 @@ export function hostedReasons(job, wf) {
   ];
 }
 
+// A job that calls a reusable workflow, in this repo (`./…`, read in its own file) or outside it.
+function reusableCall(job) {
+  const uses = job.keys.uses;
+  if (!uses || job.keys['runs-on']) return null;
+  const local = uses.value.startsWith('./');
+  return { line: uses.line.n, uses: uses.value, local, why: local ? null : `calls ${uses.value}, a workflow outside this repo that cannot be read here` };
+}
+
 export function classify(text) {
   const wf = parseWorkflow(text);
   return wf.jobs.map((job) => {
     const reasons = hostedReasons(job, wf);
     if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: reasons[0].why, also: reasons.slice(1) };
-    const uses = job.keys.uses;
-    if (uses && !job.keys['runs-on']) {
-      return uses.value.startsWith('./')
-        ? { job: job.id, placement: 'self-hosted', line: uses.line.n, why: `calls ${uses.value}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
-        : { job: job.id, placement: 'hosted', line: uses.line.n, why: `calls ${uses.value}, a workflow outside this repo that cannot be read here`, also: [] };
+    const call = reusableCall(job);
+    if (call) {
+      return call.local
+        ? { job: job.id, placement: 'self-hosted', line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
+        : { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
     }
     const ro = job.keys['runs-on'];
     return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : ''}`, also: [] };
@@ -983,6 +995,240 @@ function runBatchRed(args) {
   return cmp.flag === 'rise' ? 1 : 0;
 }
 
+// ---- profile: light CI on PRs into a batch base --------------------------------------------------
+// A batch's children merge into a batch base, and the promotion PR into the default branch runs every
+// job again, so a child PR needs only the light jobs: those that need no database, preview or
+// browser. `profile` sorts each job light or full, citing the line that decided it, and prints the
+// workflow change that skips full jobs on PRs into any other branch than the default. Writes nothing.
+
+const DB_IMAGE = /(^|\/)(postgres(ql)?|postgis|mysql|mariadb|mongo(db)?|redis|valkey|mssql|cockroach(db)?|clickhouse)([:@/-]|$)/i;
+const DB_ACTION = /\b(setup-postgres|postgresql-action|setup-mysql|mysql-action|setup-mongodb|mongodb-github-action|redis-github-action)\b/i;
+const DB_CMD = /\b(psql|pg_isready|mysqladmin|mongosh|redis-cli)\b|\bprisma\s+(migrate|db\s+push)\b|\bsupabase\s+(start|db)\b|\bmanage\.py\s+migrate\b|\brails\s+db:/;
+const DB_URL = /\b[A-Z0-9_]*DATABASE_URL\b|\bPG(HOST|DATABASE|URL)\b/;
+const PREVIEW_DEPLOY = /(^|[\s/'"])(vercel|netlify)\b/i;
+const BROWSER = /\b(playwright|cypress|puppeteer|selenium|webdriverio|wdio|testcafe|chromedriver|geckodriver|setup-chrome|setup-firefox)\b/i;
+
+function lineHit(lines, re, kind, why) {
+  const l = lines.find((x) => !x.blank && re.test(x.text));
+  return l ? [{ line: l, kind, why: why(re.exec(l.text)) }] : [];
+}
+
+// Everything in a job that needs a database, a preview or a browser, in line order.
+export function fullReasons(job, wf) {
+  const img = imageLines(job).find((x) => x.image && DB_IMAGE.test(x.image));
+  return [
+    ...(img ? [{ line: img.line, kind: 'database', why: `database service ${img.image}` }] : []),
+    ...lineHit(job.lines, DB_ACTION, 'database', (m) => `database action ${m[1]}`),
+    ...lineHit(job.lines, DB_CMD, 'database', (m) => `database command ${m[0]}`),
+    ...lineHit(job.lines, DB_URL, 'database', (m) => `database URL ${m[0]}`),
+    ...stagingHits([...job.lines, ...all(wf.env)]).map((h) => ({ ...h, kind: 'preview' })),
+    ...lineHit(job.lines, PREVIEW_DEPLOY, 'preview', (m) => `preview deploy ${m[2]}`),
+    ...lineHit(job.lines, BROWSER, 'browser', (m) => `browser ${m[1]}`),
+  ].sort((a, b) => a.line.n - b.line.n);
+}
+
+const unquote = (s) => s.replace(/^(["'])([\s\S]*)\1$/, '$2');
+// The check name a job reports under: its `name:`, else its id.
+const checkNameOf = (job) => (job.keys.name?.value ? unquote(job.keys.name.value) : job.id);
+
+// Whether a check (or a job in measure's report) is this job's: the exact name, a matrix leg
+// `name (a, b)`, a job of the workflow it calls `name / job`, or, for a job in a called workflow,
+// `caller / name`. A name with an expression in it matches on the text before the expression.
+export function checkIsJob(check, name) {
+  const expr = name.indexOf('${{');
+  return [check, check.replace(/^.+? \/ /, '')].some((c) => (expr > 0
+    ? c.startsWith(name.slice(0, expr))
+    : c === name || c.startsWith(`${name} (`) || c.startsWith(`${name} / `)));
+}
+
+// The PR trigger: whether the workflow runs on pull requests, and the base branches it is limited to.
+// A reusable workflow (`workflow_call`) runs on whatever its caller runs on, PRs included, and sees
+// the caller's `github` context, so it counts as running on them with no branch filter of its own.
+function prTrigger(on) {
+  if (!on) return { runs: true, called: false, branches: null, line: null };
+  if (on.value) {
+    const called = /\bworkflow_call\b/.test(on.value);
+    return { runs: called || /\bpull_request(_target)?\b/.test(on.value), called, branches: null, line: on.line.n };
+  }
+  const m = mapping(on.block);
+  const called = 'workflow_call' in m;
+  const k = m.pull_request ?? m.pull_request_target;
+  if (!k) return { runs: called, called, branches: null, line: on.line.n };
+  const flow = /\bbranches\s*:\s*\[([^\]]*)\]/.exec(k.value);
+  if (flow) return { runs: true, called, branches: tokens(flow[1]), line: k.line.n };
+  const b = mapping(k.block).branches;
+  return { runs: true, called, branches: b ? tokens(textOf(b)) : null, line: (b ?? k).line.n };
+}
+
+export function profileJobs(text) {
+  const wf = parseWorkflow(text);
+  const rows = new Map(wf.jobs.map((job) => {
+    const hits = fullReasons(job, wf);
+    const call = reusableCall(job);
+    let r;
+    if (hits.length) r = { profile: 'full', line: hits[0].line.n, why: hits[0].why, also: hits.slice(1) };
+    else if (call && !call.local) r = { profile: 'full', line: call.line, why: call.why, also: [] };
+    else if (call) r = { profile: 'light', line: call.line, why: `calls ${call.uses}: its own jobs are profiled in that file`, also: [] };
+    else r = { profile: 'light', line: job.line.n, why: 'no database, preview or browser', also: [] };
+    const needs = job.keys.needs;
+    return [job.id, { job: job.id, name: checkNameOf(job), jobLine: job.line.n, cond: job.keys.if, calls: call?.local ? call.uses : null, needs: needs ? tokens(textOf(needs)) : [], needsLine: needs?.line.n, ...r }];
+  }));
+  // A job that needs a full one is skipped with it, or runs and finds it skipped.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const r of rows.values()) {
+      const dep = r.profile === 'light' && r.needs.find((id) => rows.get(id)?.profile === 'full');
+      if (!dep) continue;
+      Object.assign(r, { profile: 'full', line: r.needsLine, why: `needs ${dep}, which is full`, also: [] });
+      changed = true;
+    }
+  }
+  return { name: wf.name?.value ? unquote(wf.name.value) : null, trigger: prTrigger(wf.on), jobs: [...rows.values()] };
+}
+
+// The `if:` that runs a job on every event but a PR into another branch than the default.
+export function fullIf(cond, def) {
+  const gate = `!github.base_ref || github.base_ref == '${def}'`;
+  if (!cond) return { action: 'add', line: null, text: `if: \${{ ${gate} }}` };
+  const body = /^[|>]/.test(cond.value) ? cond.block.filter((l) => !l.blank) : [];
+  const raw = body.length ? body.map((l) => l.text).join(' ') : cond.value;
+  const cur = unquote(raw.trim()).replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, '$1');
+  return { action: 'replace', line: cond.line.n, end: body.length ? body.at(-1).n : cond.line.n, was: `if: ${cond.value}`, text: `if: \${{ (${cur}) && (${gate}) }}` };
+}
+
+// files: [{ file, text }]. measure: a saved measure report's JSON, or null.
+export function profile(files, { defaultBranch, required = [], measure: m = null, batchPrs = null }) {
+  const wfs = files.map(({ file, text }) => ({ file, ...profileJobs(text) }));
+  const changes = [];
+  const notes = [];
+  for (const w of wfs) {
+    const b = w.trigger.branches;
+    if (w.trigger.runs && b && !b.some((x) => x.includes('*'))) {
+      notes.push(`${w.file}:${w.trigger.line}  pull_request runs only on PRs into ${b.join(', ')}: add the batch base branches (for example 'feat/**') so the light jobs run on PRs into them`);
+    }
+    const full = w.jobs.filter((j) => j.profile === 'full');
+    if (!full.length) continue;
+    if (!w.trigger.runs) { notes.push(`${w.file}  does not run on pull requests: no change`); continue; }
+    for (const j of full) changes.push({ file: w.file, job: j.job, at: j.jobLine, ...fullIf(j.cond, defaultBranch) });
+  }
+  const skipped = wfs.filter((w) => w.trigger.runs).flatMap((w) => w.jobs.filter((j) => j.profile === 'full').map((j) => ({ ...j, file: w.file })));
+  const requiredFull = required.flatMap((check) => {
+    const j = skipped.find((x) => checkIsJob(check, x.name));
+    return j ? [{ check, job: j.job, file: j.file, line: j.jobLine }] : [];
+  });
+  // A name that is all expression reports checks no name can be matched to: any required check no
+  // job claims may be one of them.
+  const opaque = skipped.filter((j) => j.name.startsWith('${{'));
+  const everyJob = wfs.flatMap((w) => w.jobs);
+  for (const check of required) {
+    if (!opaque.length || everyJob.some((j) => checkIsJob(check, j.name))) continue;
+    for (const j of opaque) requiredFull.push({ check, job: j.job, file: j.file, line: j.jobLine, maybe: true });
+  }
+  let saving = null;
+  if (m) {
+    let billed = 0;
+    let self = 0;
+    const unmatched = [];
+    const used = new Set();
+    const ofWorkflow = (r, w) => r.workflow === w.name || r.workflow === w.file || r.workflow.endsWith(`/${basename(w.file)}`);
+    for (const j of skipped) {
+      const w = wfs.find((x) => x.file === j.file);
+      // A called workflow's jobs are reported under each caller's workflow, as `<caller job> / job`.
+      const callers = wfs.flatMap((c) => c.jobs.filter((x) => x.calls && basename(x.calls) === basename(w.file)).map((x) => ({ wf: c, name: x.name })));
+      const rows = (m.jobs ?? []).filter((r) => !used.has(r) && checkIsJob(r.job, j.name)
+        && (ofWorkflow(r, w) || callers.some((c) => ofWorkflow(r, c.wf) && r.job.startsWith(`${c.name} / `))));
+      if (!rows.length) unmatched.push(`${j.file} ${j.job}`);
+      for (const r of rows) { used.add(r); billed += r.billed; self += r.self; }
+    }
+    const withCi = m.prs?.withCi ?? 0;
+    const perPr = withCi ? (billed + self) / withCi : null;
+    saving = { billed, self, withCi, perPr, batchPrs, perBatch: perPr !== null && batchPrs ? perPr * batchPrs : null,
+      since: m.coveredSince ?? m.since, until: m.until, sampled: (m.runs?.read ?? 0) < (m.runs?.completed ?? 0), unmatched };
+  }
+  return { defaultBranch, workflows: wfs, changes, notes, requiredFull, saving };
+}
+
+export function profileReport(p, { measureFile = null, measureHint = '', checksRead = true, batchFrom = '' } = {}) {
+  const jobs = p.workflows.flatMap((w) => w.jobs.map((j) => ({ ...j, file: w.file })));
+  const n = (k) => jobs.filter((j) => j.profile === k).length;
+  const out = jobs.map((j) => `${j.file}:${j.line}  ${j.job}  ${j.profile}  ${j.why}${j.also.length ? `  (also ${j.also.map((a) => `${a.kind} :${a.line.n}`).join(', ')})` : ''}`);
+  out.push('');
+  out.push(`plan (writes nothing): PRs into ${p.defaultBranch}, and every push, schedule or manual run, run every job; PRs into any other branch, a batch base, run the light jobs only`);
+  if (!p.changes.length && !p.notes.length) out.push('  no change: no full job runs on pull requests');
+  for (const c of p.changes) {
+    out.push(c.action === 'add'
+      ? `  ${c.file}:${c.at}  ${c.job}  add under the job:  ${c.text}`
+      : c.end > c.line
+        ? `  ${c.file}:${c.line}-${c.end}  ${c.job}  replace \`${c.was}\` and the ${c.end - c.line} lines under it with:  ${c.text}`
+        : `  ${c.file}:${c.line}  ${c.job}  replace \`${c.was}\` with:  ${c.text}`);
+  }
+  for (const x of p.notes) out.push(`  ${x}`);
+  for (const r of p.requiredFull) {
+    if (r.maybe) {
+      out.push(`REQUIRED CHECK MAY BE ONLY IN FULL: "${r.check}" matches no job by name, and ${r.job} (${r.file}:${r.line}) is full with a name that is an expression, so the check may be its. If it is, the plan skips it on PRs into a batch base and green blocks their merge.`);
+      continue;
+    }
+    out.push(`REQUIRED CHECK ONLY IN FULL: "${r.check}" comes from ${r.job} (${r.file}:${r.line}), which the plan skips on PRs into a batch base, so the check never passes on them and green blocks their merge. Keep ${r.job} light, or leave its workflow unchanged.`);
+  }
+  if (!checksRead) out.push('note: no required checks read (config §4 Required checks unset or none); pass --required <check> for each to check them');
+  out.push('');
+  const s = p.saving;
+  if (!s) {
+    out.push(`saving: not estimated: no measure report${measureHint}. Run \`node ~/.claude/desk/bin/desk-ci.mjs measure\` to record one, then run profile again.`);
+  } else if (s.perPr === null) {
+    out.push(`saving: not estimated: the measure report ${measureFile ?? ''} has no PRs with CI`.replace(/ {2,}/g, ' '));
+  } else {
+    const est = s.sampled ? ', itself sampled' : '';
+    out.push(`saving (estimate): the full jobs cost ~${int(s.perPr)} CI min per PR (${int(s.billed)} billed and ${int(s.self)} self-hosted min over ${s.withCi} PRs with CI, ${s.since} to ${s.until}${est}), so ${s.batchPrs
+      ? `~${int(s.perBatch)} min per batch of ${s.batchPrs} child PRs${batchFrom}`
+      : 'per batch ~that times its child PRs (pass --batch-prs <n> for a total)'}.`);
+    out.push(`  An estimate, not a measurement: it divides every run of those jobs in the window by its PRs, so pushes and schedules that run them too make it high.${measureFile ? ` From ${measureFile}.` : ''}`);
+    if (s.unmatched.length) out.push(`  no minutes in the report for: ${s.unmatched.join(', ')}`);
+  }
+  out.push(`summary: jobs=${jobs.length} light=${n('light')} full=${n('full')} changes=${p.changes.length} required_full=${p.requiredFull.length} saving_per_pr=${s?.perPr == null ? 'none' : Math.round(s.perPr)}`);
+  return out.join('\n');
+}
+
+const PROFILE_FLAGS = new Set(['default', 'required', 'measure', 'repo', 'batch-prs']);
+
+function runProfile(args) {
+  // --required repeats, one check per flag, since a check name can hold a comma.
+  const f = { required: [] };
+  const paths = [];
+  for (let i = 0; i < args.length; i++) {
+    const m = /^--([a-z-]+)(?:=(.*))?$/.exec(args[i]);
+    if (!m) { paths.push(args[i]); continue; }
+    if (!PROFILE_FLAGS.has(m[1])) throw new Error(`unexpected argument: ${args[i]}`);
+    const v = m[2] ?? args[++i];
+    if (v === undefined) throw new Error(`--${m[1]} takes a value`);
+    if (m[1] === 'required') f.required.push(v); else f[m[1]] = v;
+  }
+  const cfg = (fn) => { try { return fn(); } catch { return null; } };
+  const def = f.default ?? cfg(() => configValue('default-branch'));
+  if (!def) throw new Error('profile: no default branch in this repo\'s config (§0 Default branch); pass --default <branch>');
+  const checks = f.required.length ? f.required : (cfg(() => configValues('required-checks')) ?? []).filter((c) => !isNone(c));
+  let batchPrs = f['batch-prs'];
+  let batchFrom = '';
+  if (batchPrs !== undefined) {
+    batchPrs = Number(batchPrs);
+    if (!(Number.isInteger(batchPrs) && batchPrs > 0)) throw new Error('--batch-prs takes a positive whole number');
+  } else {
+    batchPrs = cfg(() => Object.keys(JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}).length) || null;
+    batchFrom = batchPrs ? ` (the autopilot queue's ${batchPrs} tickets)` : '';
+  }
+  let file = f.measure ?? null;
+  let hint = '';
+  if (!file) {
+    const repo = f.repo ?? cfg(originRepo);
+    const dir = join(cfg(mainCheckout) ?? '.', '.handoffs');
+    file = repo ? newestBaseline(dir, repo) : null;
+    hint = repo ? ` for ${repo} in ${dir}` : ' (origin is not a GitHub remote; pass --repo or --measure)';
+  }
+  const m = file ? JSON.parse(readFileSync(file, 'utf8')) : null;
+  const files = workflowFiles(paths).map((x) => ({ file: x, text: readFileSync(x, 'utf8') }));
+  console.log(profileReport(profile(files, { defaultBranch: def, required: checks, measure: m, batchPrs }), { measureFile: file, measureHint: hint, checksRead: checks.length > 0, batchFrom }));
+}
+
 // ---- protection: snapshot, restore, pin, token --------------------------------------------------
 // Every write is computed as a plan first and printed in full; it runs only when `--apply <id>`
 // names that exact plan, re-computed from live state, so what runs is what was shown. Each command
@@ -1542,12 +1788,14 @@ if (isMain) {
       process.exit(n ? 1 : 0);
     } else if (cmd === 'measure') {
       runMeasure(rest);
+    } else if (cmd === 'profile') {
+      runProfile(rest);
     } else if (cmd === 'batch-red') {
       process.exit(runBatchRed(rest));
     } else if (cmd === 'protection') {
       process.exit(runProtection(rest));
     } else {
-      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | protection snapshot|restore <file>|pin|token');
+      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token');
     }
   } catch (e) {
     console.error(e.message);
