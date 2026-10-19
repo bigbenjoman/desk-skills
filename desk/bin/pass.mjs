@@ -294,6 +294,7 @@ if (lowMemory) {
 }
 const slots = (overBudget || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
 const runningKeys = new Set(running.map((r) => r.key));
+const collidesWithRunning = (r) => (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k));
 
 // A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
@@ -315,7 +316,7 @@ const alreadyFinished = (r) => {
 const eligibleBase = all.filter((r) =>
   r.state === 'triaged' &&
   (r.open_questions ?? 0) === 0 &&
-  !(r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k)));
+  !collidesWithRunning(r));
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 const eligible = eligibleBase.filter((r) => !alreadyFinished(r));
 if (!maySpawn && eligible.length) {
@@ -328,7 +329,14 @@ if (blockedByDone.length) {
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
-for (const t of eligible.slice(0, Math.max(0, slots))) {
+// Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
+// tickets a pass; a slots that is not a number spawns nothing.
+let attempts = 0;
+for (const t of eligible) {
+  if (!(attempts < slots)) break;
+  // A ticket spawned earlier in this pass is running too: two that collide never start together.
+  if (collidesWithRunning(t)) continue;
+  attempts += 1;
   const wt = join(WORKTREES, t.key);
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
@@ -427,6 +435,7 @@ for (const t of eligible.slice(0, Math.max(0, slots))) {
     continue;
   }
   report.spawned.push(`${t.key} port=${port} db=${database}`);
+  runningKeys.add(t.key);
 }
 
 // ---- base drift ----------------------------------------------------------
@@ -479,7 +488,7 @@ if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\
 // really means "nobody answered yet".
 const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) > 0);
 if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(BIN, 'answer.mjs')} <TICKET> "<answer>"`);
-const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k)));
+const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
