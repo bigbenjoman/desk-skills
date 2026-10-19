@@ -3,22 +3,25 @@
 // one batch of questions to put to the user before any code is written. Offline: it reads only the
 // triage records (with the facts ticket-facts.mjs merged into them) and, for an epic batch,
 // $DESK_STATE/expansion.json from expand-parent.mjs.
+// Exits 0 with the plan printed, or 11 (show the person) on any refusal or error: EXIT in
+// batch-state.mjs.
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark } from './batch-state.mjs';
+import { laneUnchecked, lanePark, EXIT, crashShowsPerson } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, permission, ticketKind, SAFE_ID } from './desk-env.mjs';
 
+crashShowsPerson();
 const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
 const tickets = process.argv.slice(2);
-if (!tickets.length) { console.error('usage: plan-batch.mjs <TICKET> [<TICKET> ...]'); process.exit(1); }
+if (!tickets.length) { console.error('usage: plan-batch.mjs <TICKET> [<TICKET> ...]'); process.exit(EXIT.SHOW_PERSON); }
 
 const records = [];
 for (const t of tickets) {
-  if (!SAFE_ID.test(t) || t.includes('..')) { console.error(`'${t}' is not usable as a ticket id`); process.exit(2); }
+  if (!SAFE_ID.test(t) || t.includes('..')) { console.error(`'${t}' is not usable as a ticket id`); process.exit(EXIT.SHOW_PERSON); }
   const p = join(STATE, 'triage', `${t}.json`);
-  if (!existsSync(p)) { console.error(`missing triage record for ${t} — run triage.sh ${t}`); process.exit(1); }
+  if (!existsSync(p)) { console.error(`missing triage record for ${t} — run triage.sh ${t}`); process.exit(EXIT.SHOW_PERSON); }
   records.push(JSON.parse(readFileSync(p, 'utf8')));
 }
 
@@ -31,7 +34,7 @@ for (const t of tickets) {
 // GitHub handle (logins are case-insensitive), or a plain description, which has no assignee.
 const noTracker = /^none\b/i.test(configValue('tracker') ?? '');
 let OWNER;
-try { OWNER = noTracker ? githubHandle() : jiraName(); } catch (e) { console.error(e.message); process.exit(4); }
+try { OWNER = noTracker ? githubHandle() : jiraName(); } catch (e) { console.error(e.message); process.exit(EXIT.SHOW_PERSON); }
 const isOwner = (a) => (noTracker ? String(a).toLowerCase() === OWNER.toLowerCase() : a === OWNER);
 const notOurs = records.filter((r) => r.assignee && !isOwner(r.assignee));
 const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));

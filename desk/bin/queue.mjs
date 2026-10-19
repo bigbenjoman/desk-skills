@@ -4,11 +4,14 @@
 // Lives outside any repo so worktree churn cannot take it. Single writer (the
 // orchestrator); workers never touch it — their state is derived from their own
 // logs plus `claude agents --json`. Created on first use; never shipped.
+// Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, waitingOnMerge, lanePark } from './batch-state.mjs';
+import { isHeld, waitingOnMerge, lanePark, EXIT, crashShowsPerson } from './batch-state.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING } from './desk-env.mjs';
+
+crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
 // The batch's base branch (see batchBase() in desk-env.mjs). Empty or `none` clears it. It must be a
 // real branch on origin, never the config's default (that is no override) and never a production
@@ -355,10 +358,9 @@ switch (cmd) {
   }
 
   default:
-    console.log('usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|front|drop|get|list|render');
-    process.exit(cmd ? 1 : 0);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|front|drop|get|list|render`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
-  process.exit(1);
+  process.exit(EXIT.SHOW_PERSON);
 }

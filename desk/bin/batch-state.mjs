@@ -1,5 +1,17 @@
 // What a batch's queue says about itself, shared by pass.mjs and queue.mjs. Pure: takes the parsed
-// queue, reads nothing.
+// queue, reads nothing. Also the exit-code contract every orchestration script shares.
+
+// pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
+// on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
+// error, a refusal, a ticket that needs them, or a finished batch).
+export const EXIT = Object.freeze({ GO_ON: 0, NOTHING_YET: 10, SHOW_PERSON: 11 });
+
+// A crash is a refusal like any other: it exits SHOW_PERSON, never node's own 1. `report` prints it.
+export function crashShowsPerson(report = (e) => console.error(e?.stack ?? String(e))) {
+  const die = (e) => { try { report(e); } finally { process.exit(EXIT.SHOW_PERSON); } };
+  process.on('uncaughtException', die);
+  process.on('unhandledRejection', die);
+}
 
 export const HELD_PREFIX = 'held by orchestrator';
 

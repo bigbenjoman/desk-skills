@@ -205,19 +205,49 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs`: ownership, admission, collisions, and the question batch. It also shows each ticket's blocking `desk-jira lint` findings (recorded at triage) and lists those tickets under `LINT`: each is a park waiting to happen, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge). Wait. This is the whole promise. See *Asking*. |
-| 4 | Run | `pass.mjs`, self-paced via `/loop`. It preflights, spawns, harvests, reports. **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
+| 4 | Run | `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
-| 6b | Notify | When a pass reports `WAITING ON YOU` or `PARKED`, send **one** `PushNotification` covering everything that pass surfaced (where §3b "Push notification when a batch needs you" is `yes`). Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
+| 6b | Notify | When a pass exits 11, send **one** `PushNotification` covering the `waiting` and `parked` entries the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`), or saying the batch is finished when `status` is `idle`. Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
 | 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
 
-Idle = every ticket merged, parked or failed, and none held waiting on a merge (`pass.mjs` prints
-IDLE only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
+Idle = every ticket merged, parked or failed, and none held waiting on a merge (`pass.mjs` exits 11
+with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
 transition a ticket to §4 Done state** (and with no tracker, never close an issue), and never treat
 a triage "already fixed" as grounds to close one: a per-criterion check once overturned four of six
 such verdicts.
+
+### What a script's exit tells you
+
+`pass.mjs`, `plan-batch.mjs`, `queue.mjs` and `answer.mjs` share one exit-code contract. **Decide
+what to do next from the code and the fields below, never from the wording of the report**: the
+report is for the person, and its wording changes.
+
+| Exit | Means | Do |
+|---|---|---|
+| 0 | go on: it worked, and work is under way (a pass spawned something) | carry on with the stage; keep the loop going |
+| 10 | nothing to do yet: every remaining ticket is running or held waiting on a merge, and nothing needs the person (`pass.mjs` only) | keep the loop going, nothing else |
+| 11 | show the person: an error or refusal (the message says what they must do), a ticket that needs them, or a finished batch | show them, then follow `status` below |
+
+Run every pass as `pass.mjs --json`. Its stdout is one object:
+
+| Field | Holds |
+|---|---|
+| `status` | `go_on` (0), `nothing_yet` (10), `show_person` (11: the batch still has work under way), `idle` (11: the batch is finished, nothing left to run; stop the loop), `error` (11: the pass itself refused or failed) |
+| `message` | the full report, for the person and the status table |
+| `waiting` | one line per thing waiting on the person: everything under `WAITING ON YOU`, a stall only they can clear (a budget, a config row, a grant, a deliberate re-run), unanswered triage questions, and every failed ticket |
+| `parked` | `{key, question}` for every ticket parked for its own reason (a hold is not one) |
+| `notify` | true exactly when the exit is 11 |
+| `release_due` | held tickets whose every blocker's PR has merged (under `waiting` too when no merge driver is running) |
+| `stuck` | held tickets whose blocker can no longer merge on its own (under `waiting` too) |
+
+On 11 from `pass.mjs`, put `waiting` and `parked` in front of the person, then keep the loop going
+unless `status` is `idle` or `error`. The person stays needed on every pass until each entry is dealt
+with, so notify only for the entries the last notification did not already carry (Stage 6b).
+`plan-batch`, `queue.mjs` and `answer.mjs` exit 0 or 11 only. `expand-parent.mjs` and `desk-env`
+keep their own codes.
 
 ## Order the batch by blast radius
 
@@ -320,8 +350,9 @@ blockers first. Join its `--deps` with your collision chains (one entry per succ
 predecessors unioned) for the merge driver.
 
 **A held ticket is in flight, not idle.** While every blocker is still on its way (running, waiting
-to spawn, or done with an open PR), `pass.mjs` reports it under `WAITING ON MERGE` and does not print
-IDLE: keep the loop going. Two states come to you under `WAITING ON YOU`, with a notification:
+to spawn, or done with an open PR), `pass.mjs` reports it under `WAITING ON MERGE` and never exits
+with `status` `idle`: keep the loop going. Two states come to you as an exit 11, in `release_due` or
+`stuck` and under `waiting`:
 
 - **RELEASE DUE**: every blocker's PR has merged. The merge driver releases it on its next loop (it
   reads both `--deps` and the queue's `held_by`, so a blocker added mid-batch counts). **Where the
@@ -809,7 +840,7 @@ node ~/.claude/desk/bin/expand-parent.mjs ABC-900                     # an epic 
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
 AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
-node ~/.claude/desk/bin/pass.mjs                                      # one pass; drive with /loop
+node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
@@ -872,7 +903,8 @@ that one field between passes: never by hand-spawning, and never by holding tick
 - About to transition, close or edit the epic itself
 - About to release a held ticket before GitHub shows every blocker's PR merged
 - About to re-run `plan-batch` with `AUTOPILOT_WRITE_QUEUE` mid-batch
-- About to stop the loop while `pass.mjs` reports `WAITING ON MERGE`
+- About to stop the loop while `pass.mjs` exits 10, or exits 11 with a `status` other than `idle` or `error`
+- About to decide what to do next from a script's wording rather than its exit code and `--json` fields
 - About to hold a ticket by hand-writing a park reason instead of `queue.mjs hold` (no `held_by`, so nothing keeps the batch alive or releases it)
 
 ## Rationalizations
