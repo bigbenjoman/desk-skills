@@ -107,29 +107,23 @@ API, and reports:
 Every figure counts **completed** runs created in the window; a run still in progress is left out.
 Each one rests on two definitions:
 
-- **Red is what GitHub shows.** An attempt of a run is red only when GitHub shows it failed, and
-  only for a check that blocks the merge. The latest attempt takes the run's own conclusion
-  (`failure`, `timed_out` or `startup_failure`). A `continue-on-error` job that fails leaves that
-  conclusion `success`, so it never makes a run red. Where the default branch requires checks (its
-  rulesets, plus its branch protection where that is readable), a failed run **that tests a PR**
-  (as *PRs with CI* below assigns runs) is red only if a failed job is one of those required
-  checks, since required checks gate only a PR's merge. A run that tests no PR (a push to the
-  default branch, a schedule) is red by its conclusion alone. A required check that no Actions job
-  carries (another app's status) is ignored, and with no such checks the conclusion alone decides.
-  GitHub keeps no conclusion for an earlier attempt of a re-run, so that attempt is red when a job
-  failed that is a required check (any job, where none apply). A job does not count if it has
-  failed in an attempt GitHub concluded `success` in the same workflow: that is the mark of
-  `continue-on-error`.
+- **Red is what GitHub shows.** An attempt of a run is red only when GitHub shows it failed. The
+  latest attempt takes the run's own conclusion (`failure`, `timed_out` or `startup_failure`),
+  whichever job failed and whether or not the run tests a PR. A `continue-on-error` job that fails
+  leaves that conclusion `success`, so it never makes a run red. The default branch's required
+  checks are not read: today's ruleset is never applied to older runs, so a run that failed on a job
+  no ruleset requires now is still red. GitHub keeps no conclusion for an earlier attempt of a
+  re-run, so that attempt is red when any job in it failed, except a job that has failed in an
+  attempt GitHub concluded `success` in the same workflow: that is the mark of `continue-on-error`.
 - **An attempt passes** when it is not red and GitHub shows it succeeded: a conclusion of `success`,
-  `skipped` or `neutral`, or a failure in no required check. A cancelled or approval-waiting attempt
-  neither passes nor is red. A PR's **head** (one commit) turns green at the first moment every run
+  `skipped` or `neutral`. A cancelled or approval-waiting attempt neither passes nor is red. A PR's **head** (one commit) turns green at the first moment every run
   on it has an attempt that passed and at least one of them actually ran.
 
 | Figure | Exact definition |
 |---|---|
-| billed minutes, per workflow and per job | each job's `completed_at − started_at`, rounded up to the whole minute as GitHub bills (a job that never started bills 0), times the runner OS multiplier (macOS ×10, Windows ×2, Linux ×1), summed over every attempt. Runs whose jobs were not read are scaled in per stratum (below) and marked `(est.)` |
-| self-hosted minutes | the same rounding with no multiplier, for jobs on a `self-hosted` label or a runner group other than GitHub Actions; not billed |
-| failure rate | per workflow: red attempts ÷ decided attempts. A latest attempt is decided when its run concluded `success` or a failure (red or not, by the rule above); an earlier attempt when it is red or a job in it succeeded. Re-runs count each attempt; a cancelled or approval-waiting attempt is in neither count |
+| billed minutes, per workflow and per job | each job's `completed_at − started_at`, rounded up to the whole minute as GitHub bills (a job that never started bills 0), at most 360 (a GitHub-hosted job stops at 6 h, so a longer span is a stuck job's record; each one capped is listed under *Capped jobs*), times the runner OS multiplier (macOS ×10, Windows ×2, Linux ×1), summed over every attempt. Runs whose jobs were not read are scaled in per stratum (below) and marked `(est.)` |
+| self-hosted minutes | the same rounding with no multiplier and no cap, for jobs on a `self-hosted` label or a runner group other than GitHub Actions; not billed |
+| failure rate | per workflow: red attempts ÷ decided attempts. A latest attempt is decided when its run concluded `success` or a failure; an earlier attempt when it is red or a job in it succeeded. Re-runs count each attempt; a cancelled or approval-waiting attempt is in neither count |
 | first failing job | per workflow, over red attempts whose jobs were read: of the failed jobs that count (above), the one that finished first. A job marked `continue-on-error` that way is named only when the run's conclusion is red and no other failed job counts; `(no job ran)` for a red attempt with no failed job, such as a `startup_failure` |
 | PRs with CI | PRs with at least one completed run in the window. A run belongs to the PR GitHub names on it, or else to the PR whose head branch (and fork) it ran on while that PR was open |
 | CI red rate per PR | PRs with at least one red attempt ÷ PRs with CI |
@@ -149,11 +143,13 @@ node ~/.claude/desk/bin/desk-ci.mjs measure [--repo owner/name] [--days 90] [--b
 smaller of `--budget` and what the rate limit has left above a reserve (a tenth of the limit, at
 least 100), re-reads the limit every 100 calls because other sessions spend it too, and refuses to
 start when the limit is already under the reserve. The run and PR lists take at most half and a
-further 15% of the calls, after up to three that read the default branch's required checks; what
-remains reads jobs. When that cannot cover every run, it reads every red or re-run run's jobs first
-and an even spread of the rest. It then scales minutes back up per stratum (a workflow's red or
-re-run runs, and its others), each read run standing for the stratum's unread ones, and marks those
-figures `(est.)`. An unread run is red or green by its own conclusion alone. The report's header states the calls made, the allowance, whether
+further 15% of the calls; what remains reads jobs. When that cannot cover every run, it reads at
+least one run of every stratum (a workflow's red or re-run runs, and its others, in one calendar
+month by run creation date), then every red or re-run run, then shares the rest out in proportion to
+each stratum's unread runs, spread evenly within it. It scales minutes back up per stratum, each read
+run standing for its stratum's unread ones, so each month's minutes, and its minutes per merged PR,
+come from that month's own runs; it marks those figures `(est.)`. A stratum with no run read carries
+no minutes and the header counts its runs. An unread run is red or green by its own conclusion alone. The report's header states the calls made, the allowance, whether
 it sampled, and any narrowing of the window. Repeat with a larger `--budget` (or after the limit
 resets) rather than trusting a sampled figure close to a decision.
 
