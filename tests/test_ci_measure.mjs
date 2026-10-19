@@ -117,8 +117,8 @@ t('an earlier attempt failing only a continue-on-error job is green', `${quiet.t
 const loud = rerun([job(T4, { name: 'test', conclusion: 'failure', start: 0, end: 60 }), job(T4, { name: 'e2e', conclusion: 'failure', start: 0, end: 100 })]);
 t('an earlier attempt failing a blocking job is red', `${loud.totals.failed} ${loud.prs.red} ${loud.prs.roundTrips.n}`, '1 1 1');
 t('and its first failing job is the blocking one', JSON.stringify(loud.workflows[0].firstFailing), '{"test":1}');
-// Red follows what GitHub shows: a run on a PR that failed in a job today's ruleset does not require
-// (desk-skills run 38913682072, before the tests aggregate existed) is red, and so is a failed push.
+// Red follows what GitHub shows: a run on a PR that failed in a job the ruleset does not require is
+// red (a `required` list passed in changes nothing), and so is a failed push.
 const lintFails = measure({ runs: [coe({ id: 32, conclusion: 'failure' })], prs: pr5, required: ['test'], since: '2026-07-20', until: '2026-10-17',
   jobs: new Map([[32, ['test', 'lint'].map((n) => job(T4, { name: n, conclusion: n === 'lint' ? 'failure' : 'success', start: 0, end: 60 }))]]) });
 t('a failed job that is not a required check today still makes a PR run red', `${lintFails.totals.failed} ${lintFails.prs.red} ${JSON.stringify(lintFails.workflows[0].firstFailing)}`, '1 1 {"lint":1}');
