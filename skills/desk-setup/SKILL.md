@@ -547,7 +547,7 @@ dangerous spelling.
 
 **Then §3b** (three rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
-budget, stage reports, push notification.
+budget, worker models, stage reports, push notification.
 
 **The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
 autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block

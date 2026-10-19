@@ -81,6 +81,10 @@ instead), one never triaged, one with triage questions still open (answer them i
 parked at triage for its size or a dependency cycle, and any lane but A, B or E, because `pass.mjs`
 spawns whatever is triaged without reading the lane.
 
+Where config §3b "Worker models" names two models, a ticket whose `standard` worker failed or was
+stopped as stalled is raised to `model_tier=high`, and the requeue line and the status table say so.
+A requeue after a park with a question, or after a failed preflight or spawn, keeps the model.
+
 `pass.mjs` resets `log_bytes`/`idle_passes` at spawn, because a rotated log makes the byte count go
 backwards and the stall killer then shoots each fresh worker. A climbing `idle_passes` across
 respawns is the tell. It also clears `result`, `images_uploaded` and `images_reported`, and moves

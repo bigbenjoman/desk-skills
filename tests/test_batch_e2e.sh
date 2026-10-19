@@ -30,6 +30,8 @@ trap cleanup EXIT
 git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
 git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
+# config [<Worker models row value>]: no value leaves the row out, which reads as `default`.
+config(){ local models=""; [ -n "${1:-}" ] && models="| Worker models | \`default\` | \`$1\` |"
 cat > "$T/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -62,7 +64,8 @@ cat > "$T/config.md" <<EOF
 |---|---|---|
 | Autopilot worker concurrency | \`2 / 3\` | \`3 / 3\` |
 | Autopilot per-worker budget (USD) | \`25\` | \`none\` |
-| Preferred dev-server port | \`3000\` | \`$((20000 + RANDOM % 20000))\` |
+| Preferred dev-server port | \`3000\` | \`$DEV_PORT\` |
+$models
 
 ## 4. Tracker, tools and team
 | Field | Value |
@@ -78,6 +81,9 @@ cat > "$T/config.md" <<EOF
 | Local database | \`none\` |
 | Database URL variable | \`none\` |
 EOF
+}
+DEV_PORT=$((20000 + RANDOM % 20000))
+config
 
 # The fake claude. `agents --json` lists the fake workers whose process is alive. `-p` with the
 # preflight prompt answers each check the way an isolated worker does. Any other `-p` is a worker:
@@ -101,8 +107,14 @@ if (a[0] === 'agents') {
   process.exit(0);
 }
 const prompt = at('-p') ?? '';
+// --model, as the real CLI takes it: a model it does not know fails the call before any turn.
+const model = a.includes('--model') ? at('--model') : 'none';
+if (model === 'no-such-model') {
+  console.error("There's an issue with the selected model (" + model + "). It may not exist or you may not have access to it.");
+  process.exit(1);
+}
 if (prompt.startsWith('Perform these')) {
-  fs.appendFileSync(T + '/calls.log', 'claude preflight\n');
+  fs.appendFileSync(T + '/calls.log', 'claude preflight model=' + model + '\n');
   for (const m of prompt.matchAll(/^(\w+)=OK or \1=BLOCKED/gm)) console.log(m[1] + '=' + (/^(W_IN|TOOL\d+|JIRA)\$/.test(m[1]) ? 'OK' : 'BLOCKED'));
   process.exit(0);
 }
@@ -110,7 +122,7 @@ const ticket = /Your ticket is (\S+?)\./.exec(prompt)?.[1];
 const sid = at('--session-id');
 fs.appendFileSync(T + '/calls.log', 'claude worker ' + ticket + '\n');
 const round = fs.readdirSync(T + '/runs').filter((f) => f.startsWith(ticket + '.')).length + 1;
-fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid }));
+fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model }));
 const reg = T + '/live/' + sid + '.json';
 fs.writeFileSync(reg, JSON.stringify({ sessionId: sid, pid: process.pid }));
 const script = fs.readFileSync(T + '/scripts/' + ticket + '.' + round, 'utf8').split('\n').filter(Boolean);
@@ -143,8 +155,12 @@ q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 pass(){ out=$(node "$B/pass.mjs" 2>&1); }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
 state(){ field "$1" state | tr -d '"'; }
-# A triage record as triage.sh writes one: the fields queue.mjs admit reads.
-record(){ printf '{"ticket": "%s", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/%s", "files_in_scope": ["%s"], "unknowns": []}\n' "$1" "$1" "$2" > "$T/state/triage/$1.json"; }
+# A triage record as triage.sh writes one: the fields queue.mjs admit reads, and pass.mjs's size.
+# record <TICKET> <file> [lane, default A] [size, default S; - for none]
+record(){ local size="\"${4:-S}\""; [ "${4:-}" = - ] && size=null
+  printf '{"ticket": "%s", "type": "Bug", "lane": "%s", "size": %s, "branch": "fix/%s", "files_in_scope": ["%s"], "unknowns": []}\n' "$1" "${3:-A}" "$size" "$1" "$2" > "$T/state/triage/$1.json"; }
+# The model a ticket's worker was started with, by round.
+ran_on(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).model)' "$T/runs/$1.$2"; }
 # Let a scripted worker past its WAIT, then wait for its process to end.
 finish(){ local sid; sid=$(field "$1" session_id | tr -d '"'); touch "$T/go/$1"
   for _ in $(seq 1 100); do [ -e "$T/live/$sid.json" ] || return 0; sleep 0.1; done; echo "worker $1 did not exit"; }
@@ -167,6 +183,7 @@ check "the first pass spawns both independent tickets"       '[ "$(state T-1)" =
 check "the colliding ticket does not spawn beside its blocker" '[ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ] && echo "$out" | grep -q "held back by a collision: T-3"'
 check "each worker runs in its own worktree on its own branch"  'grep -q "\"cwd\":\"$T/wt/T-1\"" "$T/runs/T-1.1" && [ "$(git -C "$T/wt/T-1" branch --show-current)" = fix/T-1 ]'
 check "each worker passed a real preflight first"               '[ "$(grep -c "^claude preflight" "$T/calls.log")" = 2 ]'
+check "with no Worker models row, no worker or preflight is passed a model" '[ "$(ran_on T-1 1)" = none ] && [ "$(ran_on T-2 1)" = none ] && [ "$(grep -c "^claude preflight model=none$" "$T/calls.log")" = 2 ] && [ "$(field T-1 model)" = "\"default\"" ]'
 
 pass
 check "a pass while both run spawns nothing more"               '[ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ]'
@@ -218,5 +235,74 @@ q admit T-7
 pass; finish T-7
 pass
 check "a worker with no done marker and no PR is reported failed" '[ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
+
+# ---- worker models: a standard and a high model, picked per ticket from its triage ----------------
+config "standard=sonnet high=opus"
+record T-8 src/g.txt A S; record T-9 src/h.txt B S; record T-10 src/i.txt A M
+printf 'WAIT\nAUTOPILOT_STAGE: 3/9 implement\n' > "$T/scripts/T-8.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=108 jira=none\n' > "$T/scripts/T-8.2"
+printf 'WAIT\nAUTOPILOT_DONE: pr=109 jira=none\n' > "$T/scripts/T-9.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=110 jira=none\n' > "$T/scripts/T-10.1"
+q admit T-8; q admit T-9; q admit T-10
+pass
+check "a lane A ticket sized S runs on the standard model, and so does its preflight" '[ "$(ran_on T-8 1)" = sonnet ] && [ "$(field T-8 model_tier)" = "\"standard\"" ] && grep -q "^claude preflight model=sonnet$" "$T/calls.log"'
+check "a lane B ticket runs on the high model"                  '[ "$(ran_on T-9 1)" = opus ] && [ "$(field T-9 model_tier)" = "\"high\"" ]'
+check "a ticket sized M runs on the high model"                 '[ "$(ran_on T-10 1)" = opus ]'
+check "the status table shows each running worker's model"      'echo "$out" | grep -qE "RUNNING +T-8 +stage .*model sonnet" && echo "$out" | grep -qE "RUNNING +T-9 +stage .*model opus"'
+finish T-8; finish T-9; finish T-10
+pass
+check "the standard-model worker with no marker is failed"      '[ "$(state T-8)" = failed ]'
+out=$(node "$B/queue.mjs" requeue T-8 2>&1)
+check "requeueing a failed standard-model ticket raises it to high" '[ "$(field T-8 model_tier)" = "\"high\"" ] && echo "$out" | grep -q "runs on the high model"'
+out=$(node "$B/queue.mjs" render 2>&1)
+check "the status table shows the change"                       'echo "$out" | grep -qE "TRIAGED +T-8 .*standard → high after a failed worker"'
+pass
+check "its next worker runs on the high model"                  '[ "$(ran_on T-8 2)" = opus ] && echo "$out" | grep -qE "RUNNING +T-8 .*model opus .*standard → high"'
+finish T-8
+pass
+check "the raised ticket finishes"                              '[ "$(state T-8)" = done ] && [ "$(field T-8 result.pr)" = 108 ]'
+
+# An unsized ticket runs on high; a standard ticket that parks with a question keeps its model.
+record T-11 src/j.txt A -; record T-12 src/k.txt A XS
+printf 'WAIT\nAUTOPILOT_DONE: pr=111 jira=none\n' > "$T/scripts/T-11.1"
+printf 'WAIT\nAUTOPILOT_PARK: which helper should the spec use?\n' > "$T/scripts/T-12.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=112 jira=none\n' > "$T/scripts/T-12.2"
+q admit T-11; q admit T-12
+pass
+check "a ticket with no size runs on the high model"            '[ "$(ran_on T-11 1)" = opus ]'
+check "a lane A ticket sized XS runs on the standard model"     '[ "$(ran_on T-12 1)" = sonnet ]'
+finish T-11; finish T-12
+pass
+out=$(node "$B/answer.mjs" T-12 "use makeFixture" 2>&1)
+out=$(node "$B/queue.mjs" requeue T-12 2>&1)
+check "a requeue after a park with a question keeps the model"  '[ "$(field T-12 model_tier)" = "\"standard\"" ] && [ "$(field T-12 model_note)" = null ] && ! echo "$out" | grep -q "high model"'
+pass
+check "its next worker runs on the same model"                  '[ "$(ran_on T-12 2)" = sonnet ]'
+finish T-12
+pass
+
+# A worker stopped as stalled is raised too (the park pass.mjs writes when it stops one).
+record T-13 src/l.txt A S; q admit T-13; q set T-13 model_tier=standard
+q park T-13 "wedged — no output for 6 passes, worker stopped (session x). Requeue it with queue.mjs requeue T-13"
+out=$(node "$B/queue.mjs" requeue T-13 2>&1)
+check "requeueing a stalled standard-model ticket raises it to high" '[ "$(field T-13 model_tier)" = "\"high\"" ] && [ "$(field T-13 model_note)" = "\"standard → high after a stalled worker\"" ]'
+q drop T-13
+
+# A model the CLI rejects fails that ticket's preflight, naming the value; no worker ran, so a
+# requeue keeps the tier.
+config "standard=no-such-model high=opus"
+record T-14 src/m.txt A S; q admit T-14; q set T-14 model_tier=standard
+pass
+check "a rejected model fails the preflight with a message naming the value" '[ "$(state T-14)" = failed ] && [ ! -e "$T/runs/T-14.1" ] && echo "$out" | grep -q "T-14: preflight failed" && echo "$out" | grep -q "MODEL .*no-such-model"'
+out=$(node "$B/queue.mjs" requeue T-14 2>&1)
+check "a requeue after a failed preflight keeps the model"      '[ "$(field T-14 model_tier)" = "\"standard\"" ] && [ "$(field T-14 model_note)" = null ]'
+q drop T-14
+
+# A malformed row holds every spawn rather than reading as default.
+config "standard=sonnet"
+record T-15 src/n.txt A S; q admit T-15
+pass
+check "a malformed Worker models row holds spawns, naming the row" '[ "$(state T-15)" = triaged ] && [ ! -e "$T/runs/T-15.1" ] && echo "$out" | grep -q "Worker models"'
+q drop T-15
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
