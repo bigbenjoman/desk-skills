@@ -145,7 +145,7 @@ least 100), re-reads the limit every 100 calls because other sessions spend it t
 start when the limit is already under the reserve. The run and PR lists take at most half and a
 further 15% of the calls; what remains reads jobs. When that cannot cover every run, it samples per
 stratum: a workflow's red or re-run runs, and its others, in one calendar month by run creation
-date. A workflow is its file (the run's `path`), so Dependabot's runs, each named after its update,
+date. A workflow is its file (the run's `workflow_id`, else its `path` less any `@ref`), so Dependabot's runs, each named after its update,
 are one workflow; the report names a workflow by its runs' name when they share one, else by its
 file. It reads first every run that did not pass and lasted (run start to last update) past the 6 h
 hosted cap, since only such a run can hold a stuck job; then at least one run of every stratum; then

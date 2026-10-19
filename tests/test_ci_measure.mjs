@@ -171,11 +171,12 @@ t('a month with no run read is unmeasured, not borrowed', `${JSON.stringify(one.
 
 // ---- sampling: a workflow is its file, not its run name
 // Dependabot names every run after its update. Grouped by name, each would be a stratum of one taking
-// a read of its own; grouped by file they are one stratum, and one row of the report.
+// a read of its own; grouped by file (its workflow id, else its path less any `@ref`) they are one
+// stratum, and one row of the report.
 const T6 = '2026-09-05T00:00:00Z';
-const depRuns = Array.from({ length: 12 }, (_, i) => run({ id: 300 + i, name: `npm_and_yarn in /. - Update #${i}`, path: 'dynamic/dependabot/dependabot-updates',
+const depRuns = Array.from({ length: 12 }, (_, i) => run({ id: 300 + i, name: `npm_and_yarn in /. - Update #${i}`, workflow_id: 9, path: 'dynamic/dependabot/dependabot-updates',
   event: 'dynamic', head_sha: `d${i}`, head_branch: 'main', conclusion: 'success', created_at: iso(T6, i * 3600), updated_at: iso(T6, i * 3600 + 120) }));
-const ciRuns = Array.from({ length: 30 }, (_, i) => run({ id: 320 + i, path: '.github/workflows/ci.yml', event: 'push', head_sha: `c${i}`, head_branch: 'main',
+const ciRuns = Array.from({ length: 30 }, (_, i) => run({ id: 320 + i, path: `.github/workflows/ci.yml@refs/heads/b${i % 3}`, event: 'push', head_sha: `c${i}`, head_branch: 'main',
   conclusion: 'success', created_at: iso(T6, i * 3600), updated_at: iso(T6, i * 3600 + 60 * (2 + (i % 5) * 4)) }));
 const byFile = pickSample([...depRuns, ...ciRuns], 10);
 t('runs of one workflow file share a stratum whatever their names', byFile.filter((r) => r.id < 320).length, 3);

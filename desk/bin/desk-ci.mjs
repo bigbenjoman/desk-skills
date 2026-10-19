@@ -356,10 +356,12 @@ const osMultiplier = (job) => { const l = (job.labels ?? []).join(' '); return /
 
 // Red and re-run runs are what the PR figures turn on, so their jobs are read first; the rest are
 // sampled per workflow, red-or-green and month (by run creation date), and scaled back up within it,
-// so each month's minutes come from that month's own runs. A workflow is its file: Dependabot names
-// every run after its update, so grouping by name would make each run a workflow of its own.
+// so each month's minutes come from that month's own runs. A workflow is its file (its id, else its
+// path without the `@ref` a run may carry): Dependabot names every run after its update, so grouping
+// by name would make each run a workflow of its own.
 const mustRead = (run) => RED.has(run.conclusion) || (run.run_attempt ?? 1) > 1;
-const workflowOf = (run) => run.path || run.name || '?';
+const pathOf = (run) => (run.path ?? '').replace(/@.*$/, '');
+const workflowOf = (run) => (run.workflow_id != null ? `id:${run.workflow_id}` : pathOf(run) || run.name || '?');
 const spanMinutes = (run) => { const d = ms(run.updated_at) - ms(run.run_started_at ?? run.created_at); return Number.isFinite(d) && d > 0 ? d / 60000 : 0; };
 // A run that did not pass and lasted past the hosted cap may hold a stuck job (a job GitHub stops at
 // 6 h fails or is cancelled). It is read before anything else and stands for itself alone, as does
@@ -369,7 +371,7 @@ const isLong = (run) => !PASSING.has(run.conclusion) && spanMinutes(run) > HOSTE
 const stratum = (run, solo = new Set()) => `${workflowOf(run)}\u0000${isLong(run) || solo.has(run.id) ? `solo:${run.id}` : mustRead(run) ? 'red' : 'rest'}\u0000${(run.created_at ?? '').slice(0, 7)}`;
 
 // The fewest runs of a stratum read when the budget allows, so no month rests on one or two runs.
-export const MIN_READS = 3;
+const MIN_READS = 3;
 
 export function pickSample(runs, n) {
   if (n >= runs.length) return runs.slice();
@@ -544,8 +546,14 @@ export function measure({ runs: listed, jobs = new Map(), prs = [], since, until
   const weight = sampleWeights(runs, readIds, solo);
   // A workflow is shown by its runs' name when they share one, else by its file.
   const names = new Map();
-  for (const r of runs) { const k = workflowOf(r); if (!names.has(k)) names.set(k, new Set()); names.get(k).add(r.name ?? k); }
-  const label = (k) => (names.get(k).size === 1 ? [...names.get(k)][0] : k);
+  const paths = new Map();
+  for (const r of runs) {
+    const k = workflowOf(r);
+    if (!names.has(k)) names.set(k, new Set());
+    names.get(k).add(r.name ?? pathOf(r) ?? k);
+    if (pathOf(r)) paths.set(k, pathOf(r));
+  }
+  const label = (k) => (names.get(k).size === 1 ? [...names.get(k)][0] : paths.get(k) ?? k);
 
   const runMin = new Map();
   for (const r of runs) {
