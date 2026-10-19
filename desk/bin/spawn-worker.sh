@@ -68,15 +68,11 @@ CODEX_PERM="$(desk_perm codex-review)"
 
 # The ticket's model (config §3b Worker models, chosen per ticket by pass.mjs). Empty means no
 # --model: the worker runs on the session default. The preflight takes it too, so a model the CLI
-# rejects fails the preflight, naming the value, before a worker is committed to it.
+# rejects fails the preflight, naming the value, before a worker is committed to it. pass.mjs passes
+# only names parseWorkerModels (desk-env.mjs) accepted.
 MODEL="${AUTOPILOT_MODEL:-}"
 MODEL_ARGS=()
-if [ -n "$MODEL" ]; then
-  case "$MODEL" in
-    -*|*[!]A-Za-z0-9._:[-]*) echo "FAIL: model \"$MODEL\" is not a model name — check config §3b Worker models" >&2; exit 1 ;;
-  esac
-  MODEL_ARGS=(--model "$MODEL")
-fi
+[ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
 
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then

@@ -235,6 +235,9 @@ q admit T-7
 pass; finish T-7
 pass
 check "a worker with no done marker and no PR is reported failed" '[ "$(state T-7)" = failed ] && [ "$(field T-7 result)" = null ] && echo "$out" | grep -q "T-7: exited with no marker and no open PR"'
+out=$(node "$B/queue.mjs" requeue T-7 2>&1)
+check "with no Worker models row, a requeue after a failure claims no model change" '[ "$(field T-7 model_tier)" = null ] && [ "$(field T-7 model_note)" = null ] && ! echo "$out" | grep -q "high model"'
+q drop T-7
 
 # ---- worker models: a standard and a high model, picked per ticket from its triage ----------------
 config "standard=sonnet high=opus"
@@ -281,9 +284,15 @@ check "its next worker runs on the same model"                  '[ "$(ran_on T-1
 finish T-12
 pass
 
-# A worker stopped as stalled is raised too (the park pass.mjs writes when it stops one).
-record T-13 src/l.txt A S; q admit T-13; q set T-13 model_tier=standard
-q park T-13 "wedged — no output for 6 passes, worker stopped (session x). Requeue it with queue.mjs requeue T-13"
+# A standard-model worker that pass.mjs stops as stalled (six passes with no log growth) is raised
+# too, through the park the stall killer itself writes.
+record T-13 src/l.txt A S
+printf 'WAIT\n' > "$T/scripts/T-13.1"
+q admit T-13
+pass
+check "the silent worker spawns on the standard model"          '[ "$(ran_on T-13 1)" = sonnet ] && live T-13'
+for _ in 1 2 3 4 5 6; do pass; done
+check "pass.mjs stops the silent worker and parks it as stalled" '[ "$(state T-13)" = parked ] && echo "$out" | grep -q "T-13: no output for 6 passes"'
 out=$(node "$B/queue.mjs" requeue T-13 2>&1)
 check "requeueing a stalled standard-model ticket raises it to high" '[ "$(field T-13 model_tier)" = "\"high\"" ] && [ "$(field T-13 model_note)" = "\"standard → high after a stalled worker\"" ]'
 q drop T-13

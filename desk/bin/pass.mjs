@@ -450,7 +450,8 @@ for (const t of eligible) {
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
-    `model_tier=${tier}`, `model=${model || 'default'}`, 'spawn_failed=null');
+    // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
