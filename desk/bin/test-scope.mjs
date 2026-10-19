@@ -119,10 +119,11 @@ export function decide(changes, { shared = [], related = true } = {}) {
 export const takesFiles = (cmd) => /(^|[\s/])(vitest|jest)(\s|$)/.test(cmd);
 
 // What to run. `relatedItems` and `fullItems` are { dir, cmd } from §4 Related tests and §4 Unit
-// tests. With scope related, each changed file goes to the item whose directory holds it most
-// closely, a Related tests item winning a tie with a Unit tests item in the same directory. A file
-// that lands on a Unit tests item has no related form for its suite, so that suite runs in full:
-// a suite left out of §4 Related tests is never skipped.
+// tests. With scope related, each changed file goes to the directory, among every item's, that
+// holds it most closely, and to every item there: each Related tests item runs with the file, and
+// the Unit tests items there run in full when the directory has fewer Related tests items than
+// Unit tests items, since which suite lacks a related form cannot be told. A suite left out of
+// §4 Related tests is never skipped.
 // -> [{ dir, cmd, files: [paths relative to dir] }]
 const depth = (dir) => (dir === '.' ? 0 : dir.split('/').length);
 export function runs(decision, { relatedItems = [], fullItems = [] } = {}) {
@@ -131,14 +132,16 @@ export function runs(decision, { relatedItems = [], fullItems = [] } = {}) {
   const related = new Map();
   const full = new Set();
   for (const f of decision.files) {
-    let best = null;
-    for (const [kind, list] of [['related', relatedItems], ['full', fullItems]]) {
-      for (const i of list) if (under(f, i.dir) && (!best || depth(i.dir) > depth(best.i.dir))) best = { kind, i };
+    const holders = [...relatedItems, ...fullItems].filter((i) => under(f, i.dir));
+    if (!holders.length) continue;
+    const dir = holders.reduce((a, i) => (depth(i.dir) > depth(a) ? i.dir : a), holders[0].dir);
+    const rel = relatedItems.filter((i) => i.dir === dir);
+    const unit = fullItems.filter((i) => i.dir === dir);
+    for (const i of rel) {
+      if (!related.has(i)) related.set(i, []);
+      related.get(i).push(dir === '.' ? f : f.slice(dir.length + 1));
     }
-    if (!best) continue;
-    if (best.kind === 'full') { full.add(best.i); continue; }
-    if (!related.has(best.i)) related.set(best.i, []);
-    related.get(best.i).push(best.i.dir === '.' ? f : f.slice(best.i.dir.length + 1));
+    if (unit.length > rel.length) for (const i of unit) full.add(i);
   }
   return [
     ...relatedItems.filter((i) => related.has(i)).map((i) => ({ dir: i.dir, cmd: i.cmd, files: takesFiles(i.cmd) ? related.get(i) : [] })),

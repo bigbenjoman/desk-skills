@@ -61,6 +61,12 @@ t('related: a file whose suite has no related item runs that suite in full', sho
   'apps/web|pnpm vitest related --run|src/a.ts ; apps/api|uv run pytest|');
 t('related: a root related item does not swallow a deeper suite', show(runs(decide(ch('src/a.ts', 'apps/api/app/m.py'), { shared }), { relatedItems: [{ dir: '.', cmd: 'pnpm vitest related --run' }], fullItems: [{ dir: '.', cmd: 'pnpm vitest run' }, { dir: 'apps/api', cmd: 'uv run pytest' }] })),
   '.|pnpm vitest related --run|src/a.ts ; apps/api|uv run pytest|');
+t('related: two suites in one directory with no related item both run in full', show(runs(decide(ch('apps/api/app/s.py'), { shared }), { relatedItems: related.slice(0, 1), fullItems: [{ dir: 'apps/api', cmd: 'uv run pytest' }, { dir: 'apps/api', cmd: 'uv run pytest tests/contract' }] })),
+  'apps/api|uv run pytest| ; apps/api|uv run pytest tests/contract|');
+t('related: fewer related items than suites in a directory runs its suites in full too', show(runs(decide(ch('lib/m.py'), { shared }), { relatedItems: [{ dir: '.', cmd: 'pnpm vitest related --run' }], fullItems: [{ dir: '.', cmd: 'pnpm vitest run' }, { dir: '.', cmd: 'uv run pytest' }] })),
+  '.|pnpm vitest related --run|lib/m.py ; .|pnpm vitest run| ; .|uv run pytest|');
+t('related: every related item in the directory gets the file', show(runs(decide(ch('src/a.ts'), { shared }), { relatedItems: [{ dir: '.', cmd: 'pnpm vitest related --run' }, { dir: '.', cmd: 'pnpm jest --findRelatedTests' }], fullItems: [{ dir: '.', cmd: 'pnpm vitest run' }, { dir: '.', cmd: 'pnpm jest' }] })),
+  '.|pnpm vitest related --run|src/a.ts ; .|pnpm jest --findRelatedTests|src/a.ts');
 t('related: a file under no suite runs nothing', show(runs(decide(ch('docs/x.txt'), { shared }), { relatedItems: related.slice(0, 1), fullItems: full.slice(1) })), '');
 t('full: every Unit tests item, no files', show(runs(decide(ch('pnpm-lock.yaml'), { shared }), { relatedItems: related, fullItems: full })),
   '.|pnpm turbo run test| ; apps/api|uv run pytest|');
