@@ -57,6 +57,7 @@ cat > "$T/config.md" <<EOF
 | \`git-commit\` | Commit | \`yes\` | \`yes\` |
 | \`git-push\` | Push | \`yes\` | \`yes\` |
 | \`pr-open\` | Open a draft PR | \`yes\` | \`yes\` |
+| \`pr-edit\` | Edit a PR | \`yes\` | \`yes\` |
 | \`codex-review\` | Codex | \`yes\` | \`no\` |
 | \`pr-ready\` | Undraft | \`yes\` | \`yes\` |
 | \`batch-base-push\` | Push to a batch base | \`ask\` | \`yes\` |
@@ -144,13 +145,20 @@ for (const line of script) {
 fs.unlinkSync(reg);
 EOF
 # The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, `pr list` finds no PR, and
-# `pr create` opens PR #200. Every call is logged to gh.log.
+# `pr create` opens PR #200. A PR's body is pr/<n>.body, written by `pr edit`, and unreadable while
+# pr/<n>.unreadable exists. Every call is logged to gh.log.
 mkdir -p "$T/pr"
 cat > "$T/stub/gh" <<EOF
 #!$NODE
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view' && a.includes('body')) {
+  if (fs.existsSync('$T/pr/' + a[2] + '.unreadable')) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
+  let b = ''; try { b = fs.readFileSync('$T/pr/' + a[2] + '.body', 'utf8'); } catch {}
+  console.log(JSON.stringify({ body: b })); process.exit(0);
+}
+if (a[0] === 'pr' && a[1] === 'edit') fs.writeFileSync('$T/pr/' + a[2] + '.body', fs.readFileSync(0, 'utf8'));
 if (a[0] === 'pr' && a[1] === 'view') { let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {} console.log(s); }
 if (a[0] === 'pr' && a[1] === 'create') console.log('https://github.com/acme/widgets/pull/200');
 EOF
@@ -524,6 +532,10 @@ check "AC1: a draft promotion PR from the base to main is open, titled with the 
 check "AC1: the children spawn"                                  '[ "$(state T-51)" = running ] && [ "$(state T-52)" = running ]'
 pass
 check "AC1: it is opened once"                                   '[ "$(grep -c "^pr create" "$T/gh.log")" = 1 ]'
+check "ledger: the promotion PR body has one row per child, with its state and model" 'grep -qE "^\| T-51 \| running \| — \| default \|$" "$T/pr/200.body" && grep -qE "^\| T-52 \| running \| — \| default \|$" "$T/pr/200.body" && [ "$(grep -c "^| T-" "$T/pr/200.body")" = 2 ]'
+check "ledger: an unchanged ledger is not written again"         '[ "$(grep -c "^pr edit 200" "$T/gh.log")" = 1 ]'
+# The person writes above and below the ledger on GitHub.
+{ printf 'Notes from the person: check the summary screen.\n\n'; cat "$T/pr/200.body"; printf '\n## After merge\n- tell support\n'; } > "$T/pr/200.tmp" && mv "$T/pr/200.tmp" "$T/pr/200.body"
 
 # AC6: a parked child: the gate does not run, and the report lists it.
 echo MERGED > "$T/pr/152"
@@ -533,6 +545,8 @@ check "AC6: with a child parked the gate does not run, and the report names it" 
 node "$B/answer.mjs" T-51 "use makeFixture" >/dev/null 2>&1; q requeue T-51
 pass; finish T-51
 pass
+check "ledger: a child merging into the base rewrites its row, with its PR" 'grep -qE "^\| T-52 \| merged \| #152 \| default \|$" "$T/pr/200.body" && grep -qE "^\| T-51 \| in review \| #151 \| default \|$" "$T/pr/200.body"'
+check "ledger: the text the person wrote outside it is unchanged" '[ "$(head -n 2 "$T/pr/200.body")" = "$(printf "Notes from the person: check the summary screen.\n\n")" ] && [ "$(tail -n 3 "$T/pr/200.body")" = "$(printf "\n## After merge\n- tell support")" ] && [ "$(grep -c "desk-autopilot:ledger -->" "$T/pr/200.body")" = 1 ]'
 
 # AC3 + AC5: every child merged into the base, with a spec still expected-fail, one failing when run,
 # and a failing typecheck. main moved on meanwhile.
@@ -546,10 +560,14 @@ git -C "$T/basework" add -A && git -C "$T/basework" commit -q -m "the children, 
 git -C "$T/repo" commit -q --allow-empty -m "main moved" && git -C "$T/repo" push -q origin main
 echo MERGED > "$T/pr/151"
 : > "$T/checks.log"; : > "$T/specs-run.log"
+touch "$T/pr/200.unreadable"
 pass
 check "AC3: once every child has merged, the gate starts in the background" '[ $rc -eq 10 ] && echo "$out" | grep -q "BASE GATE: started on feat/E" && ! echo "$out" | grep -q "^IDLE"'
+check "ledger: a body that cannot be read is reported, and the batch carries on" 'echo "$out" | grep -q "promotion PR #200: ledger not updated, since its body could not be read (HTTP 502: Bad Gateway). The batch carries on" && grep -qE "^\| T-51 \| in review " "$T/pr/200.body"'
+rm "$T/pr/200.unreadable"
 wait_gate
 pass
+check "ledger: the next pass writes it"                          'grep -qE "^\| T-51 \| merged \| #151 \| default \|$" "$T/pr/200.body"'
 BWT="$T/wt/base-feat-E"
 check "AC3: the gate merged main into the base first"            'git -C "$T/origin.git" merge-base --is-ancestor main feat/E'
 check "AC3: it ran every acceptance spec in the base worktree, an earlier epic's included" 'grep -qx AC1 "$T/specs-run.log" && grep -qx AC2 "$T/specs-run.log" && grep -qx DoD4 "$T/specs-run.log" && grep -qx DoD5 "$T/specs-run.log"'

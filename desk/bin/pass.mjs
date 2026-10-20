@@ -15,6 +15,7 @@ import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
+import { renderLedger, replaceLedger, ledgerHash } from './ledger.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -878,6 +879,36 @@ function baseGate(qx) {
 }
 const featureBase = qNow.feature === true && BASE && SOURCE && BASE !== SOURCE && Object.keys(qNow.tickets).length > 0;
 const gatePending = featureBase && batchIdle(qNow, prState) ? baseGate(qNow) : false;
+
+// ---- promotion ledger ------------------------------------------------------
+// The promotion PR's body carries one row per child (ledger.mjs), rewritten whenever a row changes, a
+// child merging into the base included. A body that cannot be read or written is reported and the
+// batch carries on; nothing is recorded until a write succeeds, so the next pass tries again.
+function updateLedger(qx) {
+  const n = qx.promotion?.pr;
+  if (n == null) return;
+  for (const t of Object.values(qx.tickets)) if (t.state === 'done' && t.result?.pr != null) readPr(t.result.pr);
+  const ledger = renderLedger(qx, prState);
+  const hash = ledgerHash(ledger);
+  if (qx.promotion.ledger === hash) return;
+  const notUpdated = (why) => out.push(`promotion PR #${n}: ledger not updated, ${why}. The batch carries on; the next pass tries again`);
+  const lastLine = (s) => s.split('\n').filter(Boolean).pop() ?? 'no output';
+  if (DRY) { out.push(`promotion PR #${n} (dry run): would rewrite its ledger`); return; }
+  const editPerm = E.permission('pr-edit');
+  if (editPerm !== 'yes') { notUpdated(`since config §3 ${E.permissionKey('pr-edit')} is "${editPerm}"`); return; }
+  const read = shOut('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'body']);
+  let body = null;
+  try { body = read.ok ? JSON.parse(read.out).body : null; } catch { /* reported below */ }
+  if (typeof body !== 'string') { notUpdated(`since its body could not be read (${lastLine(read.out)})`); return; }
+  const next = replaceLedger(body, ledger);
+  if (next !== body) {
+    const wrote = shOut('gh', ['pr', 'edit', String(n), '--repo', GH_REPO, '--body-file', '-'], { input: next, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (!wrote.ok) { notUpdated(`since its body could not be written (${lastLine(wrote.out)})`); return; }
+    out.push(`promotion PR #${n}: ledger rewritten`);
+  }
+  q('set-batch', `promotion.ledger=${hash}`);
+}
+updateLedger(queue());
 
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 
