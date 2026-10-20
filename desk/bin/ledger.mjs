@@ -1,6 +1,7 @@
-// The promotion PR's ledger: one row per child of a feature-mode batch, kept in the PR body between two
-// HTML comment markers so the feature can be followed from GitHub. pass.mjs rewrites the region when
-// it changes; everything the person wrote outside the markers is left exactly as it was.
+// The promotion PR's ledger: one row per child of a feature-mode batch, kept in ONE comment on the
+// promotion PR that only the autopilot writes, between two HTML comment markers, so the feature can be
+// followed from GitHub. The PR body is never read or written for it: a body rewrite could overwrite an
+// edit the person saved at the same moment, and GitHub has no conditional write.
 import { createHash } from 'node:crypto';
 import { isHeld } from './batch-state.mjs';
 
@@ -18,8 +19,8 @@ export function ledgerState(t, prState = () => null) {
   return s === 'MERGED' ? 'merged' : s === 'CLOSED' ? 'closed without merging' : s === 'OPEN' ? 'in review' : 'done';
 }
 
-// The region, markers included: the queue's children in queue order, each with its key, state, PR
-// link (`#n`, which GitHub links within the repo) and the model its worker ran on.
+// The ledger comment's whole body, markers included: the queue's children in queue order, each with
+// its key, state, PR link (`#n`, which GitHub links within the repo) and the model its worker ran on.
 export function renderLedger(q, prState = () => null) {
   const rows = Object.values(q?.tickets ?? {}).map((t) =>
     `| ${cell(t.key)} | ${cell(ledgerState(t, prState))} | ${t.result?.pr != null ? `#${t.result.pr}` : '—'} | ${cell(t.model ?? '—')} |`);
@@ -31,20 +32,40 @@ export function renderLedger(q, prState = () => null) {
     '|---|---|---|---|',
     ...rows,
     '',
-    '_Rewritten by the autopilot as children merge; text outside this block is left alone._',
+    '_Kept by the autopilot as children merge; edits to this comment are overwritten._',
     LEDGER_END,
   ].join('\n');
 }
 
-// The body with its ledger region replaced by `ledger`, or the ledger appended after a blank line when
-// the body has no complete region. The last begin marker is the one used, so a stray marker the person
-// left above an appended region never swallows the text between them.
-export function replaceLedger(body, ledger) {
-  const text = body ?? '';
-  const start = text.lastIndexOf(LEDGER_BEGIN);
-  const end = start < 0 ? -1 : text.indexOf(LEDGER_END, start);
-  if (end < 0) return text.trim() ? `${text.replace(/\s+$/, '')}\n\n${ledger}\n` : `${ledger}\n`;
-  return `${text.slice(0, start)}${ledger}${text.slice(end + LEDGER_END.length)}`;
+// The ledger comment among a PR's comments (`gh pr view --json comments`), or null. Only one the
+// viewer wrote that opens with the begin marker counts, so a person quoting the ledger in a reply
+// (`> <!-- …`), or anyone else's comment, is never taken for it. The oldest wins.
+export function findLedgerComment(comments) {
+  for (const c of comments ?? []) {
+    if (!c?.viewerDidAuthor || typeof c.body !== 'string' || !c.body.trimStart().startsWith(LEDGER_BEGIN)) continue;
+    const id = /#issuecomment-(\d+)$/.exec(c.url ?? '')?.[1];
+    if (id) return { id, body: c.body };
+  }
+  return null;
+}
+
+// Brings PR n's ledger comment up to `ledger`: edited in place when it exists, created once when it
+// does not, left alone when it already reads the same. `gh(args, input)` runs gh and returns
+// {ok, out}. Returns {ok: true, action: 'created' | 'edited' | 'unchanged'} or {ok: false, why}.
+export function syncLedger({ n, repo, ledger, gh }) {
+  const lastLine = (s) => String(s ?? '').split('\n').filter(Boolean).pop() ?? 'no output';
+  const read = gh(['pr', 'view', String(n), '--repo', repo, '--json', 'comments']);
+  let comments = null;
+  try { comments = read.ok ? JSON.parse(read.out).comments : null; } catch { /* reported below */ }
+  if (!Array.isArray(comments)) return { ok: false, why: `its comments could not be read (${lastLine(read.out)})` };
+  const found = findLedgerComment(comments);
+  if (found && found.body.trim() === ledger.trim()) return { ok: true, action: 'unchanged' };
+  if (found) {
+    const wrote = gh(['api', '-X', 'PATCH', `repos/${repo}/issues/comments/${found.id}`, '--input', '-'], JSON.stringify({ body: ledger }));
+    return wrote.ok ? { ok: true, action: 'edited' } : { ok: false, why: `its ledger comment could not be edited (${lastLine(wrote.out)})` };
+  }
+  const made = gh(['pr', 'comment', String(n), '--repo', repo, '--body-file', '-'], ledger);
+  return made.ok ? { ok: true, action: 'created' } : { ok: false, why: `its ledger comment could not be created (${lastLine(made.out)})` };
 }
 
 // What the queue records of the last ledger written, so an unchanged one is not written again. The
