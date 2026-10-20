@@ -422,8 +422,7 @@ spine is never left done: it parks, and its PR stays draft.
   2. Run Mira (`mira-playwright-expert`) with your own Agent call, read-only, on that prompt. It
      reports, per spec, a criterion clause the spec does not assert, two specs that contradict, a spec
      coupled to an internal module path, and an expected failure that would come from something other
-     than the assertion (an import error, a typo). It changes no spec. Where the agent is not
-     installed, run `general-purpose` on the same prompt and say so. Save its final text to
+     than the assertion (an import error, a typo). It changes no spec. Save its final text to
      `<state>/spine-review-<SPINE>.txt` and check `git -C <its worktree> status --porcelain` is clean.
   3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt`
      prints one question per spec, each with its criterion, its file and the findings for it. A

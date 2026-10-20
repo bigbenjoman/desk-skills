@@ -13,7 +13,7 @@ import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { EXIT, Refusal, crashShowsPerson, describeCrash, readQueue } from './batch-state.mjs';
+import { EXIT, Refusal, crashShowsPerson, describeCrash, readQueue, readJsonOrRefuse } from './batch-state.mjs';
 import { ownedSpecs, spineSpecFiles, specsCommand } from './spine-check.mjs';
 
 // What the reviewer looks for, by the `kind` it reports.
@@ -49,7 +49,9 @@ export function reviewBrief(specs, { worktree, command } = {}) {
     '',
     `The specs are on the spine's branch${worktree ? ` in ${worktree}` : ''}. Each is meant to be a strict expected-fail test that`,
     'passes once a child ticket builds its criterion. Read each spec in full, and every file it imports.',
-    command ? `You may run one criterion's specs, under the test lock, to see why it fails: ~/.claude/desk/bin/with-lock.sh test sh -c '${specsCommand(command, '<ID>')}'` : null,
+    'A run reports an expected failure as expected and usually hides its error, so judge wrong_failure by reading: find the first',
+    'statement that would throw before the assertion (an import that does not resolve, a misspelt name, a fixture nobody defines).',
+    command && worktree ? `To see the error, run one criterion's specs under the test lock with the runner's option that shows expected-failure errors: ~/.claude/desk/bin/with-lock.sh test sh -c 'cd ${worktree} && ${specsCommand(command, '<ID>')}'` : null,
     '',
     'Report, per spec, each of these you find:',
     ...Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`),
@@ -119,7 +121,9 @@ function spineSpecs(key) {
   const { files, problem } = spineSpecFiles({ worktree: t?.worktree, base: E.defaultBranch(), specDir });
   if (problem) throw new Refusal(`${key}: ${problem}`);
   const exp = join(E.stateDir(), 'expansion.json');
-  const criteria = existsSync(exp) ? (JSON.parse(readFileSync(exp, 'utf8')).criteria ?? []) : [];
+  // Only this batch's own epic's criteria: a file left by another epic would put its wording on these specs.
+  const expansion = existsSync(exp) ? readJsonOrRefuse(exp, `re-run expand-parent.mjs ${q.epic ?? '<epic>'}`) : null;
+  const criteria = q.epic && expansion?.parent === q.epic ? (expansion.criteria ?? []) : [];
   const specs = specsForReview(files, q.spine_ids ?? [], criteria);
   if (!specs.length) throw new Refusal(`${key}: none of its specs is titled with a criterion id (${(q.spine_ids ?? []).join(', ')})`);
   return { specs, worktree: t.worktree, command };
