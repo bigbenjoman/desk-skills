@@ -175,7 +175,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | §3 key | `yes` | anything else |
 |---|---|---|
 | `autopilot-workers` | `pass.mjs` spawns workers; `triage.sh` runs | `ask`: `triage.sh` still runs (read-only, foreground); confirm the batch at Stage 3, then run passes with `AUTOPILOT_USER_APPROVED=1`. `no`: neither runs; say so |
-| `batch-base-push` | `pass.mjs` merges §0 Default branch into a batch base and pushes it before a pass that spawns | unset or `ask`: ask once at Stage 3, then run passes with `AUTOPILOT_BASE_PUSH_APPROVED=1`. `no`: the base is not synced; the report says so, and a feature-mode batch spawns nothing |
+| `batch-base-push` | `pass.mjs` merges §0 Default branch into a batch base and pushes it before a pass that spawns; in feature mode it also pushes the empty commit a promotion PR needs, and the base gate syncs the base once more | unset or `ask`: ask once at Stage 3, then run passes with `AUTOPILOT_BASE_PUSH_APPROVED=1`. `no`: the base is not synced; the report says so, and a feature-mode batch spawns nothing |
 | `git-push`, `pr-open`, `pr-edit` | worker pushes / opens the draft / edits the body | worker parks at that step with the branch or PR body; you ask, then do it |
 | `pr-self-review-comment` | worker posts the §4 Local review command's report (`gh pr review`, `gh pr comment`) | worker parks with the report; you ask, then post it |
 | `pr-reply` | a worker may reply with `gh pr comment`; resolving threads (GraphQL, `gh api`) is yours, since workers never get `gh api` whatever this row says | the worker parks with its replies; you post them or report the threads to the user |
@@ -217,8 +217,8 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
 
-Idle = every ticket merged, parked or failed, and none held waiting on a merge (`pass.mjs` exits 11
-with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
+Idle = every ticket merged, parked or failed, none held waiting on a merge, and in feature mode no
+base gate waiting on a merge or running (`pass.mjs` exits 11 with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
 transition a ticket to §4 Done state** (and with no tracker, never close an issue), and never treat
 a triage "already fixed" as grounds to close one: a per-criterion check once overturned four of six
 such verdicts.
@@ -467,21 +467,54 @@ that owns nothing runs as before.
 `answer.mjs` still never un-parks: approving is the orchestrator's decision, made on the person's
 word.
 
+**The promotion PR opens as the batch starts.** On its first pass, a feature-mode batch opens a
+draft PR from the base to §0 Default branch, titled with the epic key, and records it on the queue as
+`promotion`. GitHub opens no PR between branches with nothing between them, so a base with no
+commits beyond the default branch first gets one empty commit, pushed under §3 `batch-base-push`;
+opening the PR is §3 `pr-open`. It is tried once: a refused push, the rows, or a failed
+`gh pr create` opens nothing, the report names why under `WAITING ON YOU`, and the batch carries on.
+Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n>` so the gate can mark
+it ready.
+
+**The base gate checks the feature as a whole before the promotion PR leaves draft.** When the
+batch would go idle, `pass.mjs` decides:
+
+- A child parked or failed: the gate does not run. `WAITING ON YOU` carries `BASE GATE: not run`
+  with each such child, and the promotion PR stays draft.
+- A child's PR still open: the gate waits for it (under `WAITING ON YOU` when no merge driver is
+  running), and the batch is not idle.
+- Every child merged into the base: the pass starts `base-gate.mjs` in the background (it can
+  outlast one pass) and reports `BASE GATE: started`. The batch is not idle while it runs. In the
+  base worktree the gate merges §0 Default branch in, runs §4 Install, the §4 Acceptance specs
+  command once for each criterion id with a spec, and §4 Typecheck, Lint and Unit tests (Jest and
+  Vitest capped at §3b's test cap), each under its lock. Its result is the queue's `gate`, and its
+  output is `<state>/logs/base-gate.log`.
+- **Passed** (every spec and check passed, and no spec under the acceptance directory is still
+  marked expected-fail or skipped): the promotion PR is marked ready (§3 `pr-ready`; otherwise
+  `WAITING ON YOU` says to undraft it) and the report gives its link. Merging it is the person's.
+- **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft. The fix goes onto the
+  base; the gate runs again on the first idle pass after the base moves (or at once after
+  `queue.mjs set-batch gate=null`).
+
 ### Epic close-out
 
 When the batch is idle with no held ticket left:
 
 1. If any child is parked or failed, list them and stop: the epic is not complete, and nothing is
-   verified.
+   verified. In feature mode, also stop while the base gate has not passed: its failures come first.
 2. Otherwise, if the epic has acceptance criteria or a definition of done (and likewise for each
    story that was expanded into its subtasks, whose own criteria no worker checked), check each one against
    `origin/<base>` with desk-jira's *"Already fixed"* method (one read-only verifier per criterion,
    file:line or NOT MET, defaulting to NOT MET) and report MET / NOT MET. Each NOT MET is proposed
    as a new child under the epic through `desk-jira`'s gate, in the ticket template's layout (the
    unmet criterion becomes its AC1), never appended to the epic. With no
-   criteria, say "epic has no criteria — not verified".
-3. With a batch base, the promotion PR (base → default) is the user's. Title it with the epic key
-   so `/desk-review` checks the epic's criteria against the whole feature, and say so.
+   criteria, say "epic has no criteria — not verified". **In feature mode, a passed base gate has
+   already checked every criterion with a spec**: verify only the ones its `close-out:` line names
+   (the criteria no spec covers, such as those left to the close-out at Stage 2), or every one when
+   it says the criteria could not be read.
+3. With a batch base, the promotion PR (base → default) is the user's to merge. Title it with the epic
+   key so `/desk-review` checks the epic's criteria against the whole feature, and say so. In feature
+   mode it is already open, titled that way, and the gate marked it ready.
 4. **Never transition the epic**, whatever the result.
 
 ### A design in Claude Design

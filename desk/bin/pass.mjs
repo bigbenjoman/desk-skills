@@ -4,8 +4,8 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
@@ -13,7 +13,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
-import { ensureBaseWorktree, syncBase } from './base-sync.mjs';
+import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -504,6 +504,51 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     } else blocked(s.why);
   }
   if (wt.ok && willSpawn && !baseHold && baselineOn) recordBaseline(wt.path);
+  if (wt.ok && featureMode && fresh.promotion == null) openPromotion(wt.path);
+}
+
+// ---- promotion PR ----------------------------------------------------------
+// A feature-mode batch opens its promotion PR (base → default branch) as a draft on its first pass, so
+// the feature has one PR to be reviewed by as it is built. It is tried once and recorded on the queue
+// as `promotion` ({pr, url} or {pr: null, why}): a refusal is reported and the batch carries on
+// without it. The base gate marks it ready; merging it is the person's.
+function openPromotion(path) {
+  const epic = fresh.epic ?? null;
+  const title = `${epic ?? 'Feature'}: promote ${BASE} to ${SOURCE}`;
+  if (DRY) { baseLines.push(`promotion PR (dry run): would open ${BASE} → ${SOURCE} as a draft, titled "${title}"`); return; }
+  const record = (p) => q('set-batch', `promotion=${JSON.stringify({ ...p, at: new Date().toISOString() })}`);
+  const notOpened = (why) => {
+    record({ pr: null, why });
+    report.waiting.push(`promotion PR: not opened — ${why}. The batch carries on without it: open it by hand ` +
+      `(gh pr create --repo ${GH_REPO} --draft --base ${SOURCE} --head ${BASE} --title "${title}"), then record it: queue.mjs set-batch promotion.pr=<number>`);
+  };
+  const prUrl = (n) => `https://github.com/${GH_REPO}/pull/${n}`;
+  const existing = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', BASE, '--base', SOURCE, '--state', 'open', '--json', 'number', '--jq', '.[0].number'], { tolerant: true });
+  if (/^\d+$/.test(existing)) {
+    record({ pr: Number(existing), url: prUrl(existing) });
+    baseLines.push(`promotion PR #${existing} (${BASE} → ${SOURCE}) was already open: recorded`);
+    return;
+  }
+  const openPerm = E.permission('pr-open');
+  if (openPerm !== 'yes') { notOpened(`config §3 ${E.permissionKey('pr-open')} is "${openPerm}"`); return; }
+  const c = openingCommit({ path, base: BASE, branch: SOURCE, push: mayPushBase, message: `${epic ?? 'feature'}: open the promotion PR for ${BASE}` });
+  if (!c.ok) {
+    notOpened(c.reason === 'permission'
+      ? `${BASE} has no commits beyond ${SOURCE}, and the empty commit a PR needs is a push config §3 ${BASE_PUSH_KEY} ("${basePushPerm}") does not grant${basePushPerm === 'ask' ? ' without AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
+      : c.why);
+    return;
+  }
+  const body = [
+    `Promotion PR for ${epic ?? 'this feature'}: everything the batch merges into \`${BASE}\`, landing on \`${SOURCE}\` as one feature.`,
+    '',
+    `It stays draft while the batch runs. Once every child has merged into \`${BASE}\`, the base gate merges \`${SOURCE}\` in and runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there, and marks it ready only when they pass. Merging it is a person's call.`,
+  ].join('\n');
+  const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', SOURCE, '--head', BASE, '--title', title, '--body', body]);
+  const url = /https?:\/\/\S+\/pull\/\d+/.exec(made.out)?.[0];
+  if (!made.ok || !url) { notOpened(`gh pr create failed: ${made.out.split('\n').filter(Boolean).pop() ?? 'no output'}`); return; }
+  const n = Number(/\/pull\/(\d+)/.exec(url)[1]);
+  record({ pr: n, url });
+  baseLines.push(`promotion PR #${n} opened as a draft, ${BASE} → ${SOURCE}${c.pushed ? ` (after an empty commit pushed to ${BASE}, which had none beyond ${SOURCE})` : ''}: ${url}`);
 }
 
 // ---- baseline checks -------------------------------------------------------
@@ -754,6 +799,83 @@ for (const t of Object.values(qNow.tickets).filter((r) => r.state === 'failed' &
   report.waiting.push(`${t.key}: FAILED — requeue it (queue.mjs requeue ${t.key}), finish it by hand, or drop it`);
 }
 
+// ---- base gate -------------------------------------------------------------
+// A feature-mode batch whose children have all merged into the base is checked as a whole before its
+// promotion PR leaves draft: base-gate.mjs, started here in the background because the base's suites
+// can outlast one pass, and read back from the queue's `gate` on later passes. It runs again whenever
+// the base moves after a run. A parked or failed child means the feature is not complete: the gate
+// does not run and the report names each one. While the gate waits on merges or runs, the batch is
+// not idle.
+const GATE_LOG = join(STATE, 'logs', 'base-gate.log');
+const readPr = (n) => {
+  if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
+  return prStates[n];
+};
+function baseGate(qx) {
+  const tickets = Object.values(qx.tickets);
+  const stopped = tickets.filter((t) => ['parked', 'failed'].includes(t.state));
+  if (stopped.length) {
+    report.waiting.push(`BASE GATE: not run, since ${stopped.length} child(ren) did not finish: ${stopped.map((t) => `${t.key} (${t.state === 'failed' ? 'failed' : `parked: ${String(t.park?.question ?? '').slice(0, 80)}`})`).join(', ')}. ` +
+      `The base is checked once every child has merged into ${BASE}${qx.promotion?.pr ? `; promotion PR #${qx.promotion.pr} stays draft` : ''}`);
+    return false;
+  }
+  const noPr = tickets.filter((t) => t.result?.pr == null);
+  const open = tickets.filter((t) => t.result?.pr != null && readPr(t.result.pr) !== 'MERGED');
+  if (noPr.length || open.length) {
+    if (noPr.length) report.waiting.push(`BASE GATE: not run, since ${noPr.map((t) => t.key).join(', ')} finished with no PR, so ${noPr.length > 1 ? 'they' : 'it'} cannot merge into ${BASE}`);
+    if (open.length) {
+      const list = open.map((t) => `${t.key} (PR #${t.result.pr})`).join(', ');
+      if (driverLive) out.push(`BASE GATE: waits on ${list} merging into ${BASE}`);
+      else report.waiting.push(`BASE GATE: waits on ${list} merging into ${BASE}, and no merge driver is running: merge them`);
+    }
+    return open.length > 0 && !noPr.length;
+  }
+
+  sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`], { tolerant: true });
+  const head = sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
+  let g = qx.gate ?? null;
+  if (g?.state === 'running') {
+    const alive = (() => { try { return g.pid ? (process.kill(g.pid, 0), true) : false; } catch { return false; } })();
+    if (alive) { out.push(`BASE GATE: running on ${BASE} since ${g.started} (pid ${g.pid}); log ${GATE_LOG}`); return true; }
+    g = { ...g, state: 'failed', finished: new Date().toISOString(), failures: [`the gate stopped without a result (pid ${g.pid ?? '?'}): see ${GATE_LOG}`] };
+    q('set-batch', `gate=${JSON.stringify(g)}`);
+  }
+  if (!g || (g.sha && head && g.sha !== head)) {
+    if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
+    q('set-batch', `gate=${JSON.stringify({ state: 'running', pid: null, started: new Date().toISOString(), sha: head })}`);
+    mkdirSync(join(STATE, 'logs'), { recursive: true });
+    const fd = openSync(GATE_LOG, 'a');
+    const child = spawn(process.execPath, [join(BIN, 'base-gate.mjs')], { cwd: MAIN, detached: true, stdio: ['ignore', fd, fd], env: process.env });
+    child.unref();
+    closeSync(fd);
+    q('set-batch', `gate.pid=${child.pid}`);
+    out.push(`BASE GATE: started on ${BASE}${g ? ` again (it moved since the last run, at ${String(g.sha).slice(0, 12)})` : ''} (pid ${child.pid}): merges ${SOURCE} in, then runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there; log ${GATE_LOG}`);
+    return true;
+  }
+
+  const at = `${BASE} at ${String(g.sha ?? '?').slice(0, 12)}`;
+  if (g.state === 'passed') {
+    const link = qx.promotion?.url ?? (g.pr != null ? `https://github.com/${GH_REPO}/pull/${g.pr}` : null);
+    if (g.pr == null) {
+      report.waiting.push(`BASE GATE: passed on ${at}, but the batch has no promotion PR to mark ready (${qx.promotion?.why ?? 'none was recorded'}): open one from ${BASE} to ${SOURCE}`);
+    } else if (g.ready) {
+      out.push(`BASE GATE: passed on ${at}: every acceptance spec, Typecheck, Lint and Unit tests. Promotion PR #${g.pr} is ready for review: ${link} (merging it is yours)`);
+    } else {
+      report.waiting.push(`BASE GATE: passed on ${at}, but promotion PR #${g.pr} is still draft: ${g.note ?? 'it was not marked ready'}. ${link}`);
+    }
+    const co = g.close_out;
+    out.push(co == null ? `close-out: the epic's criteria could not be read, so check every one per criterion`
+      : co.length ? `close-out: check only ${co.join(', ')} per criterion, which no spec covers; every other criterion's spec passed on ${BASE}`
+        : `close-out: every criterion has a spec that passed on ${BASE}, so no per-criterion check is needed`);
+  } else {
+    for (const f of g.failures ?? []) report.waiting.push(`BASE GATE: ${f}`);
+    report.waiting.push(`BASE GATE: failed on ${at}${g.pr != null ? `, so promotion PR #${g.pr} stays draft` : ''}. Fix it on ${BASE}: the gate runs again once ${BASE} moves, or now with queue.mjs set-batch gate=null`);
+  }
+  return false;
+}
+const featureBase = qNow.feature === true && BASE && SOURCE && BASE !== SOURCE && Object.keys(qNow.tickets).length > 0;
+const gatePending = featureBase && batchIdle(qNow, prState) ? baseGate(qNow) : false;
+
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 
 // Blocked-on-questions must be visible, or "no change this pass" reads as "idle" when it
@@ -777,7 +899,7 @@ const waiting = [
   ...blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
 ];
 const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
-const idle = batchIdle(qEnd, prState);
+const idle = batchIdle(qEnd, prState) && !gatePending;
 const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : report.spawned.length ? 'go_on' : 'nothing_yet';
 const lines = [];
 const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];

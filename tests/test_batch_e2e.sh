@@ -59,6 +59,7 @@ cat > "$T/config.md" <<EOF
 | \`pr-open\` | Open a draft PR | \`yes\` | \`yes\` |
 | \`codex-review\` | Codex | \`yes\` | \`no\` |
 | \`pr-ready\` | Undraft | \`yes\` | \`yes\` |
+| \`batch-base-push\` | Push to a batch base | \`ask\` | \`yes\` |
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -77,6 +78,8 @@ $models
 | Package manager | \`none\` |
 | Command prefix | \`none\` |
 | Install | \`none\` |
+| Typecheck | \`sh tc.sh\` |
+| Lint | \`sh lint.sh\` |
 | Unit tests | \`bash tests/run.sh\` |
 | Acceptance specs | \`tests/acceptance/\` \`bash tests/acceptance/run.sh {ids}\` |
 | Env files | \`none\` |
@@ -140,8 +143,8 @@ for (const line of script) {
 }
 fs.unlinkSync(reg);
 EOF
-# The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, and `pr list` finds no PR.
-# Every call is logged to gh.log.
+# The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, `pr list` finds no PR, and
+# `pr create` opens PR #200. Every call is logged to gh.log.
 mkdir -p "$T/pr"
 cat > "$T/stub/gh" <<EOF
 #!$NODE
@@ -149,6 +152,7 @@ const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
 if (a[0] === 'pr' && a[1] === 'view') { let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {} console.log(s); }
+if (a[0] === 'pr' && a[1] === 'create') console.log('https://github.com/acme/widgets/pull/200');
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
 ln -s "$NODE" "$T/stub/node"
@@ -163,6 +167,8 @@ q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
 state(){ field "$1" state | tr -d '"'; }
+# A batch-level field of the queue, as JSON.
+bfield(){ node -e 'const q = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], q) ?? null))' "$DESK_QUEUE" "$1"; }
 # A triage record as triage.sh writes one: the fields queue.mjs admit reads, and pass.mjs's size.
 # record <TICKET> <file> [lane, default A] [size, default S; - for none]
 record(){ local size="\"${4:-S}\""; [ "${4:-}" = - ] && size=null
@@ -470,5 +476,96 @@ commit_in T-32 tests/acceptance/failing -
 finish T-32
 pass
 check "AC3: once it passes the child is done"                   '[ "$(state T-32)" = done ] && [ "$(field T-32 spec_check.ok)" = true ] && [ "$(field T-32 park)" = null ]'
+
+# ---- feature mode on a batch base: a draft promotion PR at the start, the base gate at the end ------
+# tc.sh, lint.sh and tests/run.sh stand in for §4 Typecheck, Lint and Unit tests: each logs where it
+# ran to checks.log, and fails while a broken-<name> file is on the branch.
+check_script(){ mkdir -p "$(dirname "$T/repo/$2")"
+  printf 'echo "%s $(pwd)" >> "%s/checks.log"\n[ ! -e broken-%s ] || { echo "%s failed: broken-%s is here"; exit 1; }\n' "$1" "$T" "$1" "$1" "$1" > "$T/repo/$2"; }
+check_script tc tc.sh; check_script lint lint.sh; check_script tests tests/run.sh
+git -C "$T/repo" add -A && git -C "$T/repo" commit -q -m "base checks" && git -C "$T/repo" push -q origin main
+# Wait for the background gate to write its result.
+wait_gate(){ for _ in $(seq 1 300); do [ "$(bfield gate.state)" = '"running"' ] || return 0; sleep 0.1; done; echo "the base gate did not finish"; }
+
+# AC2: a base protected against the empty commit: no promotion PR, the refusal reported, the batch carries on.
+git -C "$T/repo" push -q origin main:feat/R
+printf '#!/bin/sh\nwhile read -r old new ref; do [ "$ref" = refs/heads/feat/R ] && { echo "error: GH006: Protected branch update failed for $ref." >&2; exit 1; }; done\nexit 0\n' > "$T/origin.git/hooks/pre-receive"
+chmod +x "$T/origin.git/hooks/pre-receive"
+q init refused; q set-batch base=feat/R epic=E-1 feature=true
+record T-50 src/r.txt; printf 'WAIT\nAUTOPILOT_DONE: pr=150 jira=none\n' > "$T/scripts/T-50.1"; q admit T-50
+: > "$T/gh.log"
+pass
+check "AC2: a refused empty-commit push opens no promotion PR" '! grep -q "^pr create" "$T/gh.log" && [ "$(git -C "$T/origin.git" rev-parse feat/R)" = "$(git -C "$T/origin.git" rev-parse main)" ] && [ "$(bfield promotion.pr)" = null ]'
+check "AC2: the report names the refusal under WAITING ON YOU" 'echo "${out#*WAITING ON YOU}" | grep -q "promotion PR: not opened — the push of an empty commit to feat/R was refused: .*GH006"'
+check "AC2: the batch carries on: the child spawns"              '[ "$(state T-50)" = running ]'
+pass
+check "AC2: it is tried once, not on every pass"                '! grep -q "^pr create" "$T/gh.log" && ! echo "$out" | grep -q "promotion PR: not opened"'
+rm "$T/origin.git/hooks/pre-receive"
+finish T-50
+pass
+check "a child whose PR is still open keeps the gate waiting, and the batch not idle" 'echo "$out" | grep -q "BASE GATE: waits on T-50 (PR #150) merging into feat/R, and no merge driver is running" && ! echo "$out" | grep -q "^IDLE" && [ "$(bfield gate)" = null ]'
+
+# AC1: a base with nothing beyond main gets one empty commit and a draft promotion PR titled with the epic key.
+git -C "$T/repo" push -q origin main:feat/E
+q init feature; q set-batch base=feat/E epic=E-1 feature=true 'spine_ids=["AC1","AC2"]'
+printf '{"parent": "E-1", "containers": {}, "criteria": [{"id": "AC1", "text": "one"}, {"id": "AC2", "text": "two"}, {"id": "AC3", "text": "three"}]}\n' > "$T/state/expansion.json"
+record T-51 src/p.txt; record T-52 src/q.txt
+printf 'WAIT\nAUTOPILOT_PARK: which helper should the spec use?\n' > "$T/scripts/T-51.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=151 jira=none\n' > "$T/scripts/T-51.2"
+printf 'WAIT\nAUTOPILOT_DONE: pr=152 jira=none\n' > "$T/scripts/T-52.1"
+q admit T-51; q admit T-52
+: > "$T/gh.log"
+pass
+check "AC1: one empty commit is pushed to the base"              '[ "$(git -C "$T/origin.git" rev-list --count main..feat/E)" = 1 ] && [ -z "$(git -C "$T/origin.git" diff main feat/E)" ]'
+check "AC1: a draft promotion PR from the base to main is open, titled with the epic key" 'grep -q "^pr create --repo acme/widgets --draft --base main --head feat/E --title E-1: " "$T/gh.log" && [ "$(bfield promotion.pr)" = 200 ] && echo "$out" | grep -q "promotion PR #200 opened as a draft, feat/E → main"'
+check "AC1: the children spawn"                                  '[ "$(state T-51)" = running ] && [ "$(state T-52)" = running ]'
+pass
+check "AC1: it is opened once"                                   '[ "$(grep -c "^pr create" "$T/gh.log")" = 1 ]'
+
+# AC6: a parked child: the gate does not run, and the report lists it.
+echo MERGED > "$T/pr/152"
+finish T-51; finish T-52
+pass
+check "AC6: with a child parked the gate does not run, and the report names it" '[ $rc -eq 11 ] && [ "$(bfield gate)" = null ] && echo "${out#*WAITING ON YOU}" | grep -q "BASE GATE: not run, since 1 child(ren) did not finish: T-51 (parked: which helper"'
+node "$B/answer.mjs" T-51 "use makeFixture" >/dev/null 2>&1; q requeue T-51
+pass; finish T-51
+pass
+
+# AC3 + AC5: every child merged into the base, with a spec still expected-fail, one failing when run,
+# and a failing typecheck. main moved on meanwhile.
+git clone -q "$T/origin.git" "$T/basework"; git -C "$T/basework" switch -q feat/E
+mkdir -p "$T/basework/tests/acceptance"
+printf "import { test } from 'vitest';\ntest('AC1: one', () => {});\ntest.fails('AC2: two', () => {});\n" > "$T/basework/tests/acceptance/feature.spec.ts"
+echo AC1 > "$T/basework/tests/acceptance/failing"; touch "$T/basework/broken-tc"
+git -C "$T/basework" add -A && git -C "$T/basework" commit -q -m "the children, merged" && git -C "$T/basework" push -q origin feat/E
+git -C "$T/repo" commit -q --allow-empty -m "main moved" && git -C "$T/repo" push -q origin main
+echo MERGED > "$T/pr/151"
+: > "$T/checks.log"; : > "$T/specs-run.log"
+pass
+check "AC3: once every child has merged, the gate starts in the background" '[ $rc -eq 10 ] && echo "$out" | grep -q "BASE GATE: started on feat/E" && ! echo "$out" | grep -q "^IDLE"'
+wait_gate
+pass
+BWT="$T/wt/base-feat-E"
+check "AC3: the gate merged main into the base first"            'git -C "$T/origin.git" merge-base --is-ancestor main feat/E'
+check "AC3: it ran every acceptance spec in the base worktree"   'grep -qx AC1 "$T/specs-run.log" && grep -qx AC2 "$T/specs-run.log"'
+check "AC3: and the typecheck, lint and unit tests there"        'grep -qx "tc $BWT" "$T/checks.log" && grep -qx "lint $BWT" "$T/checks.log" && grep -qx "tests $BWT" "$T/checks.log"'
+check "AC5: a failed gate leaves the promotion PR draft"         '[ "$(bfield gate.state)" = "\"failed\"" ] && ! grep -q "^pr ready 200" "$T/gh.log"'
+check "AC5: each failure is named under WAITING ON YOU, exit 11" '[ $rc -eq 11 ] && w="${out#*WAITING ON YOU}" && echo "$w" | grep -q "BASE GATE: \"AC2: two\" in tests/acceptance/feature.spec.ts is still marked expected-fail" && echo "$w" | grep -q "BASE GATE: AC1: \"AC1: one\" in tests/acceptance/feature.spec.ts fails when run (bash tests/acceptance/run.sh AC1)" && echo "$w" | grep -q "BASE GATE: §4 Typecheck (sh tc.sh) failed with exit 1: tc failed" && echo "$w" | grep -q "promotion PR #200 stays draft"'
+check "AC5: the batch is idle, and the close-out is not offered" 'echo "$out" | grep -q "^IDLE" && ! echo "$out" | grep -q "close-out:"'
+pass
+check "a failed gate does not run again while the base stands still" '! echo "$out" | grep -q "BASE GATE: started"'
+
+# AC4 + AC7: fixed on the base, the gate runs again, passes, and marks the promotion PR ready.
+git -C "$T/basework" pull -q --no-rebase origin feat/E
+printf "import { test } from 'vitest';\ntest('AC1: one', () => {});\ntest('AC2: two', () => {});\n" > "$T/basework/tests/acceptance/feature.spec.ts"
+git -C "$T/basework" rm -q tests/acceptance/failing broken-tc
+git -C "$T/basework" add -A && git -C "$T/basework" commit -q -m "fixed on the base" && git -C "$T/basework" push -q origin feat/E
+pass
+check "the gate runs again once the base moves"                 'echo "$out" | grep -q "BASE GATE: started on feat/E again"'
+wait_gate
+pass
+check "AC4: a passing gate marks the promotion PR ready"         '[ "$(bfield gate.state)" = "\"passed\"" ] && grep -q "^pr ready 200 --repo acme/widgets" "$T/gh.log"'
+check "AC4: and the report gives its link"                       '[ $rc -eq 11 ] && echo "$out" | grep -q "Promotion PR #200 is ready for review: https://github.com/acme/widgets/pull/200" && echo "$out" | grep -q "^IDLE"'
+check "AC7: the close-out checks only the criterion with no spec" 'echo "$out" | grep -q "close-out: check only AC3 per criterion"'
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
