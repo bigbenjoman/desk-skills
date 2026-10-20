@@ -540,6 +540,7 @@ git clone -q "$T/origin.git" "$T/basework"; git -C "$T/basework" switch -q feat/
 mkdir -p "$T/basework/tests/acceptance"
 printf "import { test } from 'vitest';\ntest('AC1: one', () => {});\ntest.fails('AC2: two', () => {});\n" > "$T/basework/tests/acceptance/feature.spec.ts"
 printf "import { test } from 'vitest';\ntest('DoD4: an earlier epic', () => {});\n" > "$T/basework/tests/acceptance/older.spec.ts"
+printf 'def test_dod5_an_earlier_python_spec():\n    assert True\n' > "$T/basework/tests/acceptance/test_older.py"
 echo AC1 >"$T/basework/tests/acceptance/failing"; touch "$T/basework/broken-tc"
 git -C "$T/basework" add -A && git -C "$T/basework" commit -q -m "the children, merged" && git -C "$T/basework" push -q origin feat/E
 git -C "$T/repo" commit -q --allow-empty -m "main moved" && git -C "$T/repo" push -q origin main
@@ -551,7 +552,7 @@ wait_gate
 pass
 BWT="$T/wt/base-feat-E"
 check "AC3: the gate merged main into the base first"            'git -C "$T/origin.git" merge-base --is-ancestor main feat/E'
-check "AC3: it ran every acceptance spec in the base worktree, an earlier epic's included" 'grep -qx AC1 "$T/specs-run.log" && grep -qx AC2 "$T/specs-run.log" && grep -qx DoD4 "$T/specs-run.log"'
+check "AC3: it ran every acceptance spec in the base worktree, an earlier epic's included" 'grep -qx AC1 "$T/specs-run.log" && grep -qx AC2 "$T/specs-run.log" && grep -qx DoD4 "$T/specs-run.log" && grep -qx DoD5 "$T/specs-run.log"'
 check "AC3: and the typecheck, lint and unit tests there"        'grep -qx "tc $BWT" "$T/checks.log" && grep -qx "lint $BWT" "$T/checks.log" && grep -qx "tests $BWT" "$T/checks.log"'
 check "AC5: a failed gate leaves the promotion PR draft"         '[ "$(bfield gate.state)" = "\"failed\"" ] && ! grep -q "^pr ready 200" "$T/gh.log"'
 check "AC5: each failure is named under WAITING ON YOU, exit 11" '[ $rc -eq 11 ] && w="${out#*WAITING ON YOU}" && echo "$w" | grep -q "BASE GATE: \"AC2: two\" in tests/acceptance/feature.spec.ts is still marked expected-fail" && echo "$w" | grep -q "BASE GATE: AC1: \"AC1: one\" in tests/acceptance/feature.spec.ts fails when run (bash tests/acceptance/run.sh AC1)" && echo "$w" | grep -q "BASE GATE: §4 Typecheck (sh tc.sh) failed with exit 1: tc failed" && echo "$w" | grep -q "promotion PR #200 stays draft"'

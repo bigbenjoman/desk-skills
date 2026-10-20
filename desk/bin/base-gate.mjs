@@ -131,7 +131,9 @@ function gate() {
     for (const f of files) {
       for (const d of declarations(f.path, f.text).filter((x) => x.held)) failures.push(`"${d.title}" in ${f.path} is still ${d.held}`);
     }
-    const titled = files.flatMap((f) => declarations(f.path, f.text)).flatMap((d) => d.title.match(/\b(?:AC|DoD)\d+\b/g) ?? []);
+    // Bounded the way ownedSpecs matches a title, so a Python name (`test_dod4_…`) yields its id too.
+    const titled = files.flatMap((f) => declarations(f.path, f.text))
+      .flatMap((d) => [...d.title.matchAll(/(?:^|[^A-Za-z0-9])(AC|DoD)(\d+)(?![A-Za-z0-9])/gi)].map((m) => `${/^ac$/i.test(m[1]) ? 'AC' : 'DoD'}${m[2]}`));
     const ids = [...new Set([...(Q.spine_ids ?? []), ...titled])];
     for (const { id, specs } of ownedSpecs(files, ids)) {
       if (!specs.length) { failures.push(`${id}: no spec titled with it on ${BASE}`); continue; }
