@@ -8,7 +8,8 @@
 //
 // The sync is a merge commit, never a rebase: running workers branched from the base, and a rewritten
 // base would strand them. It is all or nothing: a conflict is aborted and a refused push is rolled
-// back, so the worktree is never left holding a merge origin does not have.
+// back, so the worktree is never left holding a merge origin does not have. A feature-mode batch's
+// promotion PR needs the base to hold a commit the default branch lacks, which openingCommit pushes.
 import { execFileSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -58,23 +59,24 @@ const nonFastForward = (out) => /non-fast-forward|fetch first|\[rejected\]/i.tes
 //   -> { ok: true, merged: <commits that came in>, pushed, retried }
 //    | { ok: false, reason: 'conflict', files, merged } | { ok: false, reason: 'push', why }
 //    | { ok: false, reason: 'permission', merged } | { ok: false, reason: 'error', why }
+// Bring the base worktree to origin's base, with origin's <branch> fetched beside it: a reason it could
+// not, or null. Anything of its own the worktree holds is not this script's to push.
+function catchUp(path, base, branch) {
+  const f = git(path, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  if (!f.ok) return `could not fetch ${base} and ${branch} from origin: ${firstLine(f.out)}`;
+  const dirty = git(path, ['status', '--porcelain']);
+  if (!dirty.ok || dirty.out) return `the base worktree ${path} has uncommitted changes: commit or discard them there`;
+  const ahead = git(path, ['rev-list', '--count', `origin/${base}..HEAD`]);
+  if (ahead.out !== '0') return `the base worktree ${path} holds ${ahead.out} commit(s) origin's ${base} does not: push or drop them there`;
+  const ff = git(path, ['merge', '-q', '--ff-only', `origin/${base}`]);
+  return ff.ok ? null : `could not fast-forward ${path} to origin/${base}: ${firstLine(ff.out)}`;
+}
+
 export function syncBase({ path, base, branch, push = true, dry = false }) {
   const fail = (why) => ({ ok: false, reason: 'error', why });
-  const fetch = () => git(path, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
-  // Bring the worktree to origin's base. Anything of its own it holds is not this script's to push.
-  const catchUp = () => {
-    const f = fetch();
-    if (!f.ok) return `could not fetch ${base} and ${branch} from origin: ${firstLine(f.out)}`;
-    const dirty = git(path, ['status', '--porcelain']);
-    if (!dirty.ok || dirty.out) return `the base worktree ${path} has uncommitted changes: commit or discard them there`;
-    const ahead = git(path, ['rev-list', '--count', `origin/${base}..HEAD`]);
-    if (ahead.out !== '0') return `the base worktree ${path} holds ${ahead.out} commit(s) origin's ${base} does not: push or drop them there`;
-    const ff = git(path, ['merge', '-q', '--ff-only', `origin/${base}`]);
-    return ff.ok ? null : `could not fast-forward ${path} to origin/${base}: ${firstLine(ff.out)}`;
-  };
   const behind = () => Number(git(path, ['rev-list', '--count', `HEAD..origin/${branch}`]).out) || 0;
 
-  const stuck = catchUp();
+  const stuck = catchUp(path, base, branch);
   if (stuck) return fail(stuck);
   let merged = behind();
   if (!merged) return { ok: true, merged: 0, pushed: false, retried: false };
@@ -105,7 +107,7 @@ export function syncBase({ path, base, branch, push = true, dry = false }) {
     git(path, ['reset', '-q', '--hard', before]);
     // The merge driver can merge a PR into the base between our fetch and our push. Once only.
     if (attempt === 0 && nonFastForward(p.out)) {
-      const again = catchUp();
+      const again = catchUp(path, base, branch);
       if (again) return fail(again);
       merged = behind();
       if (!merged) return { ok: true, merged: 0, pushed: false, retried: true };
@@ -113,4 +115,24 @@ export function syncBase({ path, base, branch, push = true, dry = false }) {
     }
     return { ok: false, reason: 'push', why: `the push to ${base} was refused${attempt ? ' (after one fetch and retry)' : ''}: ${firstLine(p.out.replace(/^To .*$/m, ''))}` };
   }
+}
+
+// GitHub opens no PR between two branches with nothing between them, so a promotion PR from a base
+// with no commits beyond <branch> needs one: an empty commit, pushed to the base. Refused, it is rolled
+// back like a refused sync.
+//   -> { ok: true, ahead: <commits the base has beyond branch>, pushed }
+//    | { ok: false, reason: 'permission' | 'push' | 'error', why }
+export function openingCommit({ path, base, branch, push = true, message }) {
+  const stuck = catchUp(path, base, branch);
+  if (stuck) return { ok: false, reason: 'error', why: stuck };
+  const ahead = Number(git(path, ['rev-list', '--count', `origin/${branch}..HEAD`]).out) || 0;
+  if (ahead) return { ok: true, ahead, pushed: false };
+  if (!push) return { ok: false, reason: 'permission', why: `${base} has no commits beyond ${branch}, and pushing the empty commit a PR needs is not granted` };
+  const before = git(path, ['rev-parse', 'HEAD']).out;
+  const c = git(path, ['commit', '-q', '--allow-empty', '-m', message]);
+  if (!c.ok) return { ok: false, reason: 'error', why: `could not make the empty commit in ${path}: ${firstLine(c.out)}` };
+  const p = git(path, ['push', '-q', 'origin', `HEAD:refs/heads/${base}`]);
+  if (p.ok) return { ok: true, ahead: 1, pushed: true };
+  git(path, ['reset', '-q', '--hard', before]);
+  return { ok: false, reason: 'push', why: `the push of an empty commit to ${base} was refused: ${firstLine(p.out.replace(/^To .*$/m, ''))}` };
 }
