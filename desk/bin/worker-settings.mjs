@@ -153,8 +153,7 @@ const DATABASE = (opt.database ?? 'none').trim();
 const HAS_TICKET_DB = /^[a-z0-9_]{1,63}$/.test(DATABASE) && !['none', 'shared', 'unknown'].includes(DATABASE);
 const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? '').trim())?.[1] ?? null;
 
-// The §4 command rows a worker may run, and the lock each takes when wrapped by with-lock.sh.
-const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
+// The §4 command rows a worker may run; the lock each takes when wrapped by with-lock.sh is E.lockFor.
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 // §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
 const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
@@ -326,7 +325,7 @@ if (mode === 'triage') {
       if (it.dir === '.') allow.push(...withPrefix(cmd).map((c) => rule(c, '')));
       // A directory item has no bare form (the worker cannot `cd`), so it runs through with-lock.sh:
       // under its lock where it has one, else `nolock`, which only changes directory.
-      const lock = LOCK_OF[it.id] ?? 'nolock';
+      const lock = E.lockFor(it.id);
       if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map((c) => rule(c, '')));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);

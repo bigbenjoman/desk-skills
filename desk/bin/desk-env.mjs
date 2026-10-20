@@ -32,6 +32,8 @@
 //                                             runs with a reservation in the machine profile
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
 //                                             reason=, changed=, then DIR<TAB>CMD<TAB>FILES per suite to run
+//   node desk-env.mjs baseline typecheck|lint  run §4 Typecheck or Lint here; with §4 Baseline checks on and a
+//                                             recorded batch base, fail only on errors the base does not have
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running
@@ -234,6 +236,7 @@ export const CONFIG_ROWS = Object.freeze({
   'dev-cmd': { section: '4', row: 'Dev server' },
   'typecheck-cmd': { section: '4', row: 'Typecheck' },
   'lint-cmd': { section: '4', row: 'Lint' },
+  'baseline-checks': { section: '4', row: 'Baseline checks' },
   'test-cmd': { section: '4', row: 'Unit tests' },
   'related-test-cmd': { section: '4', row: 'Related tests' },
   'e2e-cmd': { section: '4', row: 'E2E tests' },
@@ -416,6 +419,10 @@ export function configValues(id) {
   return items;
 }
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
+
+// The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
+export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
+export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
 // -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
@@ -997,6 +1004,44 @@ if (isMain) {
         console.log(`reason=${d.reason}`);
         console.log(`changed=${d.files.length}`);
         for (const r of TS.runs(d, { relatedItems, fullItems: items('test-cmd') })) console.log(`${r.dir}\t${r.cmd}\t${r.files.join(' ')}`);
+        break;
+      }
+      case 'baseline': {
+        // A worker's §4 Typecheck or Lint, compared with the batch base's recorded errors where config
+        // §4 Baseline checks is on (baseline.mjs); otherwise the full check, saying why.
+        const B = await import('./baseline.mjs');
+        const name = args[0];
+        if (!B.CHECKS[name]) { console.error('usage: desk-env.mjs baseline typecheck|lint'); process.exit(2); }
+        const top = git(process.cwd(), 'rev-parse', '--show-toplevel');
+        if (!top) throw new Error('desk-env baseline: not inside a git work tree');
+        const row = B.CHECKS[name];
+        const v = configValues(row);
+        const list = v && !isNone(v) ? v.map(parseCommandItem) : [];
+        if (!list.length) { console.log(`config §4 ${CONFIG_ROWS[row].row} is ${v ? 'none' : 'unset'}: nothing to run`); break; }
+        const branch = defaultBranch();
+        const a = B.activeBaseline({ setting: configValue('baseline-checks'), base: branch !== configValue('default-branch') ? branch : null, stateDir: stateDir() });
+        if (a.on) {
+          console.log(`baseline: ${a.b.base} at ${a.b.sha.slice(0, 12)}, recorded ${a.b.at}`);
+          const at = git(top, 'merge-base', 'HEAD', `origin/${a.b.base}`);
+          if (at && at !== a.b.sha) console.log(`note: this branch is on ${at.slice(0, 12)}, not the recorded ${a.b.sha.slice(0, 12)}: an error the base fixed or added since reads differently until you rebase`);
+        } else console.log(`baseline: off (${a.why}): the full check`);
+        const pre = configValue('command-prefix');
+        const prefix = pre && !isNone(pre) ? pre.trim() : '';
+        let pass = true;
+        for (const { dir, cmd } of list) {
+          const run = B.runItem({ bin: binDir(), root: top, dir, cmd, lock: lockFor(row), prefix });
+          if (!a.on) {
+            if (run.out.trim()) console.log(run.out.trimEnd());
+            console.log(`${run.code === 0 ? 'PASS' : 'FAIL'} ${dir === '.' ? '' : `${dir}: `}${cmd} (exit ${run.code})`);
+            pass &&= run.code === 0;
+            continue;
+          }
+          const entry = a.b.checks?.[name]?.find((e) => e.dir === dir && e.cmd === cmd);
+          const r = B.compareRun({ entry, run, root: top, dir, cmd });
+          for (const l of r.lines) console.log(l);
+          pass &&= r.pass;
+        }
+        process.exitCode = pass ? 0 : 1;
         break;
       }
       case 'uuid':
