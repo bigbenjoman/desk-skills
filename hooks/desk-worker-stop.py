@@ -186,9 +186,9 @@ def main():
     save_blocked(session, blocked | {t[0] for t in fresh})
     print(json.dumps({"decision": "block", "reason": (
         f"desk autopilot: a background task you started is still running: {named(fresh)}. "
-        "claude -p kills it the moment your turn ends, so its work would never finish. Wait for it "
-        "to complete (TaskOutput waits on it), or stop it with TaskStop and run it in the "
-        "foreground under the lock, then end your turn.")}))
+        "claude -p kills it the moment your turn ends, so its work would never finish. Stop it "
+        "with TaskStop and run it again in the foreground under the lock, which waits for it, "
+        "then end your turn.")}))
 
 
 if __name__ == "__main__":

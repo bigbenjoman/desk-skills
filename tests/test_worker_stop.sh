@@ -10,7 +10,9 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; T="$(mktemp -d)"
 PIDS=""
-trap 'for p in $PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$T"' EXIT
+# shellcheck disable=SC2086  # PIDS is split into one argument per pid on purpose
+reap(){ [ -n "$PIDS" ] && { kill $PIDS 2>/dev/null; wait $PIDS 2>/dev/null; }; PIDS=""; }
+trap 'reap; rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME" "$T/tasks"
 export DESK_HOME="$T/desk" DESK_WORKER_LOG="$T/worker.log"
 unset DESK_AUTOPILOT_WORKER
@@ -19,7 +21,7 @@ PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
 # task <id> -> starts a fake background task: a sleep with its stdout on $T/tasks/<id>.output
-task(){ sleep 60 > "$T/tasks/$1.output" & PIDS="$PIDS $!"; eval "PID_$1=$!"; }
+task(){ sleep 60 > "$T/tasks/$1.output" & PIDS="$PIDS $!"; }
 # transcript <file> <id>... -> a Bash run_in_background call and its result for each id
 transcript(){
   local f="$1" id; shift; : > "$f"
@@ -53,7 +55,7 @@ stop s2 "$T/t1.jsonl"
 check "AC3: not a worker, task running: nothing blocked"   '[ $rc -eq 0 ] && [ -z "$out" ]'
 check "AC3: not a worker: no state written"                '[ ! -e "$DESK_HOME/worker-stop/s2.json" ]'
 
-kill "$PID_b1" "$PID_b2" 2>/dev/null; wait "$PID_b1" "$PID_b2" 2>/dev/null
+reap
 stop s3 "$T/t2.jsonl" worker
 check "AC2: tasks finished (file no longer held): turn ends" '[ $rc -eq 0 ] && [ -z "$out" ]'
 : > "$T/t0.jsonl"
