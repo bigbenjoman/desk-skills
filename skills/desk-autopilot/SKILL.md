@@ -57,6 +57,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
 | §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |
+| §4 "Baseline checks" | `on`: a batch with a base records the base's Typecheck and Lint errors before it spawns, and its workers fail only on errors they add (*A batch that targets a feature branch*); unset or `off`: workers check as before |
 | §4 "Local database", "Database URL variable", "Local services", "Vercel" | per-ticket databases (or blanked database variables); what workers must not rebuild; preview-build logs |
 | §5 "Branch names" | the branch each worker's worktree is created on |
 | §4 People | whose call a parked question is |
@@ -544,6 +545,16 @@ refused push, the row, or the primary checkout having the base checked out (swit
 branch; no base worktree is made until then). In feature mode that pass spawns nothing; otherwise
 spawning carries on from the base as it stands. Feature mode here is the decision `plan-batch`
 recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
+
+**Baseline checks (config §4 "Baseline checks" `on`).** Once the sync is done, and only when the
+base has moved since the last record, the pass runs §4 Install, Typecheck and Lint in the base
+worktree and records their errors in `<state>/baseline.json`. The report says
+`baseline: recorded <base> at <sha>: typecheck <n> error(s) · lint <n> error(s)`, or names a check
+whose output it could not read (workers run that one in full). Each worker's briefing then carries a
+`Baseline checks` section telling it to check with `desk-env baseline typecheck|lint`, which fails
+only on errors its branch adds. A base that cannot be recorded (a dirty base worktree, a failed
+install) goes under `WAITING ON YOU` and leaves no baseline, so workers run the full checks. CI and
+the pre-push hook are unchanged.
 
 ## Merge each PR the moment it goes green
 

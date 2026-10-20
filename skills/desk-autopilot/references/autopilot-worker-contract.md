@@ -233,6 +233,15 @@ tests items; `scope=full` runs
 package, or deletes or renames a file (the `reason=` line says which), or §4 Related tests is `none`.
 Never narrow a `full` to the files you think matter, and say the scope and reason in the PR's Testing.
 
+**Where your briefing has a `Baseline checks` section**, the batch base already has typecheck or
+lint errors, recorded by the orchestrator. Run `desk-env baseline typecheck` and `desk-env baseline
+lint` from your worktree in place of §4 Typecheck and Lint: each runs the same items under the same
+locks and fails only on errors your branch adds, in any file, naming each (`FAIL`, then
+`file:line  rule  message`). Errors are counted per file, rule and message, so a second copy of a
+recorded error is new. A `FULL` line means the output could not be read and that check ran in full:
+say so in the PR's Testing. Never fix a recorded error your ticket does not need, and never edit a
+file outside your ticket to clear one. With no such section, check as above.
+
 `desk-ticket` Stage 4's typecheck + lint + unit tests is **not necessarily** the whole gate. Read
 §4 Required checks (and Advisory checks) for what CI runs; where it runs suites that the local
 commands do not (an integration suite, a separate test project, structural or registry tests), those

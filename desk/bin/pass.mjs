@@ -14,6 +14,7 @@ import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { ensureBaseWorktree, syncBase } from './base-sync.mjs';
+import * as BL from './baseline.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -475,6 +476,8 @@ const BASE = E.batchBase();
 const SOURCE = E.configValue('default-branch');
 const baseLines = [];
 let baseHold = false;
+const baselineSetting = E.configValue('baseline-checks');
+const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 if (BASE && SOURCE && BASE !== SOURCE) {
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
@@ -500,7 +503,59 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         (basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''));
     } else blocked(s.why);
   }
+  if (wt.ok && willSpawn && !baseHold && baselineOn) recordBaseline(wt.path);
 }
+
+// ---- baseline checks -------------------------------------------------------
+// With config §4 Baseline checks on, the base's Typecheck and Lint errors are recorded in the base
+// worktree before a pass spawns, whenever the base has moved since the last record, so workers fail
+// only on errors they add (baseline.mjs). A base that cannot be recorded leaves no baseline at all:
+// workers then run the full checks rather than compare against an older base.
+function recordBaseline(path) {
+  const head = sh('git', ['-C', path, 'rev-parse', 'HEAD'], { tolerant: true });
+  const prior = BL.readBaseline(STATE);
+  if (prior && prior.base === BASE && prior.sha === head) return;
+  if (DRY) { baseLines.push(`baseline (dry run): would record ${BASE} at ${head.slice(0, 12)}`); return; }
+  const drop = (why) => {
+    try { unlinkSync(BL.baselineFile(STATE)); } catch { /* none recorded */ }
+    report.waiting.push(`baseline: not recorded for ${BASE} at ${head.slice(0, 12) || '?'}: ${why} — workers run the full Typecheck and Lint`);
+  };
+  if (!head) return drop(`could not read the base worktree's HEAD in ${path}`);
+  if (sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true })) return drop(`the base worktree ${path} has uncommitted changes`);
+  const items = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v.map(E.parseCommandItem) : []; };
+  const pre = E.configValue('command-prefix');
+  const prefix = pre && !E.isNone(pre) ? pre.trim() : '';
+  const run = (lock, { dir, cmd }) => BL.runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
+  let list;
+  try { list = { typecheck: items('typecheck-cmd'), lint: items('lint-cmd') }; } catch (e) { return drop(e.message); }
+  // The base worktree is a plain checkout, so it gets the dependencies the checks need.
+  for (const it of (() => { try { return items('install-cmd'); } catch { return []; } })()) {
+    const r = run('nolock', it);
+    if (r.code !== 0) { restore(path); return drop(`config §4 Install (${it.cmd}) failed there with exit ${r.code}`); }
+  }
+  const b = BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: head, items: list, run: ({ name, ...it }) => run(BL.CHECKS[name].lock, it) });
+  const changed = restore(path);
+  baseLines.push(`baseline: recorded ${BASE} at ${head.slice(0, 12)}: ${BL.summary(b)}${changed ? ' (the checks changed files in the base worktree; put back)' : ''}`);
+}
+// An install or a lint fixer can write to the base worktree, and the next sync refuses a dirty one.
+function restore(path) {
+  if (!sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true })) return false;
+  sh('git', ['-C', path, 'checkout', '-q', '--', '.'], { tolerant: true });
+  sh('git', ['-C', path, 'clean', '-fdq'], { tolerant: true });
+  return true;
+}
+const baselineBrief = () => {
+  const a = BL.activeBaseline({ setting: baselineSetting, base: BASE && BASE !== SOURCE ? BASE : null, stateDir: STATE });
+  if (!a.on) return '';
+  return [
+    '## Baseline checks',
+    '',
+    `This batch's base, ${a.b.base}, has errors recorded at ${a.b.sha.slice(0, 12)}: ${BL.summary(a.b)}.`,
+    'Run `desk-env baseline typecheck` and `desk-env baseline lint` in place of §4 Typecheck and Lint, from your worktree. Each runs the same commands under the same locks and fails only on errors your branch adds, in any file, naming each one. A `FULL` line means the comparison could not read that output, and that check ran in full.',
+    'Do not fix a recorded error your ticket does not need. CI and the pre-push hook still run the full checks, so a base with existing errors stays red there.',
+    '',
+  ].join('\n');
+};
 
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing.
@@ -561,6 +616,7 @@ for (const t of eligible) {
     '',
     // Before the answers: collectAnswers keeps everything from an answer heading to the sibling notes.
     ownedBrief(t, wt),
+    baselineBrief(),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
   ].filter(Boolean).join('\n');

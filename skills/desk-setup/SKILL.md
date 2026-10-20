@@ -285,6 +285,10 @@ How to turn what you find into rows:
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
   wider, with no lock. `none` is a fine answer, and changes nothing.
+- **Baseline checks.** Propose `off`. `on` is for a repo whose batch bases carry typecheck or lint
+  errors workers should not have to clear: an autopilot batch with a base records them before it
+  spawns and workers fail only on errors they add. It reads tsc, ESLint's default format and mypy;
+  say that any other Typecheck or Lint output runs in full, and that CI still runs the full checks.
 - **Acceptance specs.** Always ask. Two spans: the directory an epic's acceptance specs go in, then
   the command that runs some of them, with `{ids}` where the criterion ids go, in the Unit tests
   form, e.g. `` `tests/acceptance/` `pnpm vitest run tests/acceptance -t "{ids}"` `` or

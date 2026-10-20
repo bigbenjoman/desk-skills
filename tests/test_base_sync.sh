@@ -184,6 +184,67 @@ check "and the report says to switch it off"         '[[ "$out" == *"switch the 
 node "$B/queue.mjs" set T-1 state=done >/dev/null; pass
 check "it is reported even on a pass that spawns nothing" '[[ "$out" == *"switch the primary checkout off feat/x"* ]]'
 
+# Baseline checks: tc.sh stands in for §4 Typecheck, printing errors.txt as tsc would and failing when it
+# holds any error. baseline <case> [on|off] [base]: fresh, with that row and the toolchain rows set.
+baseline(){
+  fresh "$1" yes "${3:-feat/x}"
+  printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Install | `none` |\n| Typecheck | `sh tc.sh` |\n| Lint | `none` |\n| Baseline checks | `%s` |\n' "${2:-on}" >> "$C/config.md"
+  git clone -q "$C/origin.git" "$C/seed"; git -C "$C/seed" switch -q feat/x
+  printf 'cat errors.txt\n! grep -q error errors.txt\n' > "$C/seed/tc.sh"
+  printf "src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.\n" > "$C/seed/errors.txt"
+  git -C "$C/seed" add tc.sh errors.txt; git -C "$C/seed" commit -q -m "a base with an error"; git -C "$C/seed" push -q origin feat/x
+}
+mkdir -p "$T/lock"; export DESK_LOCK_DIR="$T/lock"; ln -s "$B/with-lock.sh" "$T/desk/bin/with-lock.sh"
+DESK_ENV="node $B/desk-env.mjs"
+
+# AC1: the first pass that spawns records the base's errors, gives the count, and briefs the worker.
+baseline record; pass
+check "AC1 the base's errors are recorded"            '[ "$(jq -r ".checks.typecheck[0].count" "$C/state/baseline.json")" = 1 ] && [ "$(jq -r .base "$C/state/baseline.json")" = feat/x ]'
+check "AC1 at the synced base's head"                 "[ \"\$(jq -r .sha \"\$C/state/baseline.json\")\" = \"\$(git -C $BWT rev-parse HEAD)\" ]"
+check "AC1 the report gives the counts"               '[[ "$out" == *"baseline: recorded feat/x at "*": typecheck 1 error(s)"* ]]'
+check "the worker is told to check against it"        'grep -q "## Baseline checks" "$C/state/briefings/T-1.md" && grep -q "desk-env baseline typecheck" "$C/state/briefings/T-1.md"'
+check "the base worktree is left clean"               "[ -z \"\$(git -C $BWT status --porcelain)\" ]"
+node "$B/queue.mjs" add T-2 >/dev/null; node "$B/queue.mjs" set T-2 state=triaged >/dev/null; pass
+check "a base that has not moved is not recorded again" '[[ "$out" == *"spawned: T-2"* ]] && [[ "$out" != *"baseline: recorded"* ]]'
+
+# AC2, AC3, AC4: a worker's check, in its own clone of the base.
+git clone -q "$C/origin.git" "$C/w1"; git -C "$C/w1" switch -q feat/x; cd "$C/w1" || exit 1
+wcheck(){ out=$(DESK_DEFAULT_BRANCH=feat/x $DESK_ENV baseline typecheck 2>&1); rc=$?; }
+printf "src/a.ts(9,1): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.\n" > errors.txt; wcheck
+check "AC2 only the recorded error, moved: the check passes" '[ $rc -eq 0 ] && [[ "$out" == *"PASS sh tc.sh: only the 1 error(s) the base already has"* ]]'
+printf "src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.\nlib/other.ts(1,1): error TS2304: Cannot find name 'x'.\nFound 2 errors.\n" > errors.txt; wcheck
+check "AC3 a new error in another file fails and is named" '[ $rc -eq 1 ] && [[ "$out" == *"FAIL sh tc.sh: 1 new error(s)"* ]] && [[ "$out" == *"lib/other.ts:1  TS2304  Cannot find name '"'x'"'."* ]]'
+printf "src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.\nsrc/a.ts(4,5): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 2 errors.\n" > errors.txt; wcheck
+check "AC4 a second identical error fails on the extra one" '[ $rc -eq 1 ] && [[ "$out" == *"src/a.ts:4  TS2322"* ]] && [[ "$out" != *"src/a.ts:3"* ]]'
+printf 'tsc: out of memory\n' > errors.txt; printf 'cat errors.txt\nexit 134\n' > tc.sh; wcheck
+check "AC6 unreadable output runs the full check and says so" '[ $rc -eq 1 ] && [[ "$out" == *"FULL sh tc.sh: this run'"'"'s output could not be read"* ]] && [[ "$out" == *"tsc: out of memory"* ]]'
+git checkout -q -- .; cd "$C/repo" || exit 1
+
+# AC5: a sync that brings commits into the base takes the baseline again before the next spawn.
+git -C "$C/repo" fetch -q origin; git -C "$C/repo" switch -q main; git -C "$C/repo" merge -q --no-edit origin/feat/x
+printf "src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.\nsrc/b.ts(1,1): error TS2304: Cannot find name 'y'.\nFound 2 errors.\n" > "$C/repo/errors.txt"
+git -C "$C/repo" commit -q -am "main adds an error"; git -C "$C/repo" push -q origin main
+node "$B/queue.mjs" set T-1 state=done >/dev/null; node "$B/queue.mjs" set T-2 state=done >/dev/null
+node "$B/queue.mjs" add T-3 >/dev/null; node "$B/queue.mjs" set T-3 state=triaged >/dev/null; pass
+check "AC5 the sync merged"                           '[[ "$out" == *"base sync: merged"* ]]'
+check "AC5 and the baseline is taken again first"     '[[ "$out" == *"baseline: recorded feat/x at "*": typecheck 2 error(s)"* ]] && [ "$(jq -r ".checks.typecheck[0].count" "$C/state/baseline.json")" = 2 ]'
+check "AC5 the worker is briefed on the new baseline" 'grep -q "typecheck 2 error(s)" "$C/state/briefings/T-3.md"'
+
+# A dirty base worktree is not recorded, and leaves no baseline to compare against.
+echo stray > "$C/wt/base-feat-x/stray.txt"; git -C "$C/repo" commit -q --allow-empty -m more; git -C "$C/repo" push -q origin main
+node "$B/queue.mjs" set T-3 state=done >/dev/null
+node "$B/queue.mjs" add T-4 >/dev/null; node "$B/queue.mjs" set T-4 state=triaged >/dev/null; pass
+check "a dirty base worktree drops the baseline"      '[ ! -e "$C/state/baseline.json" ] && [[ "${out#*WAITING ON YOU}" == *"baseline: not recorded"* ]] && ! grep -q "## Baseline checks" "$C/state/briefings/T-4.md"'
+
+# AC7: off, or no base, checks as today.
+baseline off off; pass
+check "AC7 off: nothing is recorded"                  '[ ! -e "$C/state/baseline.json" ] && [[ "$out" != *"baseline"* ]] && [[ "$out" == *"spawned: T-1"* ]]'
+check "AC7 off: no baseline section in the briefing"  '! grep -q "## Baseline checks" "$C/state/briefings/T-1.md"'
+cd "$C/seed" || exit 1; out=$(DESK_DEFAULT_BRANCH=feat/x $DESK_ENV baseline typecheck 2>&1); rc=$?; cd "$C/repo" || exit 1
+check "AC7 off: the worker's check is the full check" '[ $rc -eq 1 ] && [[ "$out" == *"baseline: off (config §4 Baseline checks is \"off\", not on): the full check"* ]] && [[ "$out" == *"FAIL sh tc.sh (exit 1)"* ]]'
+fresh nobase-on yes -; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Typecheck | `sh tc.sh` |\n| Baseline checks | `on` |\n' >> "$C/config.md"; pass
+check "AC7 no base: nothing is recorded"              '[ ! -e "$C/state/baseline.json" ] && [[ "$out" == *"spawned: T-1"* ]] && ! grep -q "## Baseline checks" "$C/state/briefings/T-1.md"'
+
 # A dry run probes and pushes nothing.
 fresh dry; tip=$(origin_tip); out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
 check "a dry run pushes nothing and says what it would merge" '[ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"would merge 2 commit(s)"* ]]'
