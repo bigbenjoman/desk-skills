@@ -324,18 +324,18 @@ const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t
 // Rereads the queues every REFRESH_MS, keeping the selection on the same repo or ticket.
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
-  load = () => loadOrRefuse(Date.now()), opener = systemOpener, exit = (c) => process.exit(c),
-  refreshMs = REFRESH_MS, clock = () => Date.now(),
+  opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS,
 } = {}) {
-  let repos = load();
-  let view = start, sel = 0, selId = null, msg = '', cmd = null, screen = null, done = false, timer = null;
+  let repos = loadOrRefuse(Date.now());
+  // `scroll` is the first line shown on a screen with no rows to select, once it is too tall to fit.
+  let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
   const repoOf = (slug) => repos.find((r) => r.slug === slug);
 
   function build() {
-    const now = clock();
+    const now = Date.now();
     const w = width();
     if (view.kind === 'overview') {
       return { crumbs: 'desk-q', ...overviewParts(repos, { all: view.all, now, interactive: true }),
@@ -352,7 +352,7 @@ export function interactive({
       const lines = readFileSync(p, 'utf8').split('\n');
       if (lines.at(-1) === '') lines.pop();
       const last = lines.slice(-LOG_LINES).map(printable);
-      return { crumbs: `${crumbs} › log`, head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: 'esc back · q quit', bottom: true };
+      return { crumbs: `${crumbs} › log`, head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
     }
     const jira = jiraUrlFor(r.slug, view.key);
     const s = ticketParts(r, view.key, { width: w, jiraUrl: jira });
@@ -375,16 +375,17 @@ export function interactive({
     const room = h - status.length;
     let top = 0;
     if (body.length > room) {
-      const at = rows.length ? 2 + screen.head.length + sel : screen.bottom ? body.length - 1 : 0;
-      top = Math.max(0, Math.min(body.length - room, at - Math.floor(room / 2)));
+      const max = body.length - room;
+      if (rows.length) top = Math.max(0, Math.min(max, 2 + screen.head.length + sel - Math.floor(room / 2)));
+      else top = scroll = Math.max(0, Math.min(max, scroll ?? (screen.bottom ? max : 0)));
     }
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
     output.write(`${ESC}H${[...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
   }
 
-  function go(v) { stack.push({ view, sel, selId }); view = v; sel = 0; selId = null; msg = ''; }
-  function back() { const p = stack.pop(); if (p) ({ view, sel, selId } = p); msg = ''; }
+  function go(v) { stack.push({ view, sel, selId }); view = v; sel = 0; selId = null; scroll = null; msg = ''; }
+  function back() { const p = stack.pop(); if (p) ({ view, sel, selId } = p); scroll = null; msg = ''; }
 
   function finish(code) {
     if (done) return;
@@ -400,7 +401,6 @@ export function interactive({
 
   function runCommand(line) {
     const words = line.trim().split(/\s+/).filter(Boolean);
-    if (words[0] === 'desk-q') words.shift();
     try {
       checkFlags(words);
       const v = target(repos, words);
@@ -419,10 +419,11 @@ export function interactive({
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
       return draw();
     }
-    if (key.name === 'up') { sel = Math.max(0, sel - 1); selId = rows[sel]?.id ?? null; }
+    if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
+    else if (key.name === 'up') { sel = Math.max(0, sel - 1); selId = rows[sel]?.id ?? null; }
     else if (key.name === 'down') { sel = Math.min(rows.length - 1, sel + 1); selId = rows[sel]?.id ?? null; }
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
-    else if (key.name === 'escape' || key.name === 'backspace') back();
+    else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; }
     else if (str === 'a' && view.kind === 'overview') view = { ...view, all: !view.all };
@@ -445,7 +446,7 @@ export function interactive({
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
   timer = setInterval(() => {
-    try { repos = load(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = loadOrRefuse(Date.now()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
   draw();
