@@ -420,6 +420,10 @@ export function configValues(id) {
 }
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 
+// The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
+export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
+export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
+
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
 // -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
 export function parseCommandItem(item) {
@@ -1010,9 +1014,10 @@ if (isMain) {
         if (!B.CHECKS[name]) { console.error('usage: desk-env.mjs baseline typecheck|lint'); process.exit(2); }
         const top = git(process.cwd(), 'rev-parse', '--show-toplevel');
         if (!top) throw new Error('desk-env baseline: not inside a git work tree');
-        const v = configValues(B.CHECKS[name].id);
+        const row = B.CHECKS[name];
+        const v = configValues(row);
         const list = v && !isNone(v) ? v.map(parseCommandItem) : [];
-        if (!list.length) { console.log(`config §4 ${CONFIG_ROWS[B.CHECKS[name].id].row} is ${v ? 'none' : 'unset'}: nothing to run`); break; }
+        if (!list.length) { console.log(`config §4 ${CONFIG_ROWS[row].row} is ${v ? 'none' : 'unset'}: nothing to run`); break; }
         const branch = defaultBranch();
         const a = B.activeBaseline({ setting: configValue('baseline-checks'), base: branch !== configValue('default-branch') ? branch : null, stateDir: stateDir() });
         if (a.on) {
@@ -1024,7 +1029,7 @@ if (isMain) {
         const prefix = pre && !isNone(pre) ? pre.trim() : '';
         let pass = true;
         for (const { dir, cmd } of list) {
-          const run = B.runItem({ bin: binDir(), root: top, dir, cmd, lock: B.CHECKS[name].lock, prefix });
+          const run = B.runItem({ bin: binDir(), root: top, dir, cmd, lock: lockFor(row), prefix });
           if (!a.on) {
             if (run.out.trim()) console.log(run.out.trimEnd());
             console.log(`${run.code === 0 ? 'PASS' : 'FAIL'} ${dir === '.' ? '' : `${dir}: `}${cmd} (exit ${run.code})`);

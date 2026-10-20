@@ -288,7 +288,8 @@ How to turn what you find into rows:
 - **Baseline checks.** Propose `off`. `on` is for a repo whose batch bases carry typecheck or lint
   errors workers should not have to clear: an autopilot batch with a base records them before it
   spawns and workers fail only on errors they add. It reads tsc, ESLint's default format and mypy;
-  say that any other Typecheck or Lint output runs in full, and that CI still runs the full checks.
+  say that any other Typecheck or Lint output runs in full, as does output a task runner prefixes
+  (turbo, `pnpm -r`), so propose one item per package there, and that CI still runs the full checks.
 - **Acceptance specs.** Always ask. Two spans: the directory an epic's acceptance specs go in, then
   the command that runs some of them, with `{ids}` where the criterion ids go, in the Unit tests
   form, e.g. `` `tests/acceptance/` `pnpm vitest run tests/acceptance -t "{ids}"` `` or

@@ -230,11 +230,13 @@ check "AC5 the sync merged"                           '[[ "$out" == *"base sync:
 check "AC5 and the baseline is taken again first"     '[[ "$out" == *"baseline: recorded feat/x at "*": typecheck 2 error(s)"* ]] && [ "$(jq -r ".checks.typecheck[0].count" "$C/state/baseline.json")" = 2 ]'
 check "AC5 the worker is briefed on the new baseline" 'grep -q "typecheck 2 error(s)" "$C/state/briefings/T-3.md"'
 
-# A dirty base worktree is not recorded, and leaves no baseline to compare against.
-echo stray > "$C/wt/base-feat-x/stray.txt"; git -C "$C/repo" commit -q --allow-empty -m more; git -C "$C/repo" push -q origin main
+# The base moved on origin (the merge driver merged a PR into it) while a stray file kept the base
+# worktree from catching up: it is not recorded, and leaves no baseline to compare against.
+echo stray > "$C/wt/base-feat-x/stray.txt"
+git -C "$C/seed" pull -q --no-rebase origin feat/x; git -C "$C/seed" commit -q --allow-empty -m "merged by the driver"; git -C "$C/seed" push -q origin feat/x
 node "$B/queue.mjs" set T-3 state=done >/dev/null
 node "$B/queue.mjs" add T-4 >/dev/null; node "$B/queue.mjs" set T-4 state=triaged >/dev/null; pass
-check "a dirty base worktree drops the baseline"      '[ ! -e "$C/state/baseline.json" ] && [[ "${out#*WAITING ON YOU}" == *"baseline: not recorded"* ]] && ! grep -q "## Baseline checks" "$C/state/briefings/T-4.md"'
+check "a base worktree behind origin drops the baseline" '[ ! -e "$C/state/baseline.json" ] && [[ "${out#*WAITING ON YOU}" == *"baseline: not recorded"*"is not at origin'"'"'s feat/x"* ]] && ! grep -q "## Baseline checks" "$C/state/briefings/T-4.md"'
 
 # AC7: off, or no base, checks as today.
 baseline off off; pass

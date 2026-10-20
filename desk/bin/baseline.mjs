@@ -12,7 +12,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
-export const CHECKS = { typecheck: { id: 'typecheck-cmd', lock: 'tsc' }, lint: { id: 'lint-cmd', lock: 'nolock' } };
+// Each check and the §4 row it runs; the lock each takes is desk-env's lockFor(row).
+export const CHECKS = { typecheck: 'typecheck-cmd', lint: 'lint-cmd' };
 
 // ---- parsers -------------------------------------------------------------------------------------
 // Each takes a run's combined output and returns { problems: [{ file, line, rule, message }], total }
@@ -20,19 +21,23 @@ export const CHECKS = { typecheck: { id: 'typecheck-cmd', lock: 'tsc' }, lint: {
 // tool's.
 
 // tsc, plain (`src/a.ts(3,5): error TS2322: …`) and --pretty (`src/a.ts:3:5 - error TS2322: …`). An
-// error with no file (`error TS5058: …`) is a config error, kept with an empty file.
+// error with no file (`error TS5058: …`) is a config error, kept with an empty file. The indented
+// lines straight after an error elaborate it, and are part of its message.
 export function parseTsc(out) {
   const problems = [];
   let total = null;
+  let last = null;
   const plain = /^(.+?)\((\d+),\d+\): error (TS\d+): (.*)$/;
   const pretty = /^(.+?):(\d+):\d+ - error (TS\d+): (.*)$/;
   const bare = /^error (TS\d+): (.*)$/;
   for (const raw of String(out).split('\n')) {
     const l = raw.replace(/\x1b\[[0-9;]*m/g, '').trimEnd();
     const m = plain.exec(l) ?? pretty.exec(l);
-    if (m) { problems.push({ file: m[1], line: Number(m[2]), rule: m[3], message: m[4].trim() }); continue; }
+    if (m) { last = { file: m[1], line: Number(m[2]), rule: m[3], message: m[4].trim() }; problems.push(last); continue; }
     const b = bare.exec(l);
-    if (b) { problems.push({ file: '', line: 0, rule: b[1], message: b[2].trim() }); continue; }
+    if (b) { last = { file: '', line: 0, rule: b[1], message: b[2].trim() }; problems.push(last); continue; }
+    if (last && /^ {2,}\S/.test(l)) { last.message += ` ${l.trim()}`; continue; }
+    last = null;
     const f = /^Found (\d+) errors?\b/.exec(l);
     if (f) total = Number(f[1]);
   }
@@ -76,29 +81,37 @@ export function parseMypy(out) {
 const PARSERS = { tsc: parseTsc, eslint: parseEslint, mypy: parseMypy };
 
 // A run's problems, or why they cannot be read. A clean exit is read as no problems when nothing
-// parses. A failing run must parse, and where the tool states a count, the parse must match it:
-// anything else is output this file does not understand, and the caller runs the full check.
+// parses. A failing run must exit as a check does when it finds errors (1 or 2), must parse, and where
+// the tool states a count, the parse must match it. Lines carrying a task runner's prefix
+// (`web:typecheck: src/a.ts(3,5): …`) are refused: a runner that stops at its first failing package
+// never prints the rest, so a new error there would read as nothing new. Anything else is output this
+// file does not understand, and the caller runs the full check.
 //   -> { ok: true, tool, problems } | { ok: false, why }
 export function readRun({ out, code }) {
+  if (code !== 0 && code !== 1 && code !== 2) return { ok: false, why: `it exited ${code}, which is not how a check reports the errors it found` };
   const found = Object.entries(PARSERS).map(([tool, p]) => ({ tool, r: p(out) })).filter((x) => x.r);
   const best = found.sort((a, b) => b.r.problems.length - a.r.problems.length)[0];
   if (!best) return code === 0 ? { ok: true, tool: null, problems: [] } : { ok: false, why: `it exited ${code} and printed nothing read as tsc, ESLint or mypy output` };
   const { problems, total } = best.r;
   if (total != null && total !== problems.length) return { ok: false, why: `${best.tool} reported ${total} problem(s) but ${problems.length} could be read` };
   if (code !== 0 && !problems.length) return { ok: false, why: `it exited ${code} with no problem listed` };
+  if (problems.some((p) => /:\s/.test(p.file))) return { ok: false, why: 'its lines carry a task runner\'s prefix, and a runner that stops at its first failing package hides the rest' };
   return { ok: true, tool: best.tool, problems };
 }
 
 // ---- record and compare --------------------------------------------------------------------------
-// Paths are made relative to the worktree root, so the base worktree and a worker's compare equal.
+// Paths are made relative to the worktree root, and the root inside a message becomes `<root>`, so
+// the base worktree and a worker's compare equal.
 export function normalise(problems, { root, dir }) {
   const roots = [root];
   try { roots.push(realpathSync(root)); } catch { /* the root as given */ }
+  const longest = [...new Set(roots)].sort((a, b) => b.length - a.length);
   return problems.map((p) => {
-    if (!p.file) return p;
+    const message = longest.reduce((m, r) => m.split(r).join('<root>'), p.message);
+    if (!p.file) return { ...p, message };
     const abs = isAbsolute(p.file) ? p.file : resolve(root, dir, p.file);
     const under = roots.map((r) => relative(r, abs)).find((x) => !x.startsWith('..') && !isAbsolute(x));
-    return { ...p, file: under ?? abs };
+    return { ...p, file: under ?? abs, message };
   });
 }
 
@@ -135,7 +148,7 @@ export function readBaseline(stateDir) {
 }
 
 // Runs every Typecheck and Lint item in the base worktree and writes the baseline. `items` is
-// { typecheck: [{dir, cmd}], lint: [...] }. `run` is injectable for tests; it defaults to runItem.
+// { typecheck: [{dir, cmd}], lint: [...] }; `run({ name, dir, cmd })` runs one and returns { out, code }.
 //   -> the baseline written: { base, sha, at, checks: { typecheck: [entry], lint: [entry] } }, where an
 //      entry is { dir, cmd, ok, tool, count, errors } or { dir, cmd, ok: false, why }
 export function recordBaseline({ stateDir, root, base, sha, items, run }) {

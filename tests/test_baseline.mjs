@@ -102,6 +102,24 @@ t('a command the baseline never ran runs in full', r.full, true);
 const bad = recordBaseline({ stateDir: dir, root: '/base', base: 'feat/x', sha: 'b'.repeat(40), items: { typecheck: [{ dir: '.', cmd: 'x' }] }, run: () => ({ out: 'boom', code: 1 }) });
 t('AC6 the report names a check it could not read', /^typecheck unreadable \(x: .*\), so workers run it in full$/.test(summary(bad)), true);
 
+r = cmp('typecheck', TSC.replace('Found 2 errors in 2 files.', 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory'), 134);
+t('AC6 a crash after recorded errors runs in full, not a pass', `${r.pass}|${r.full}|${/exited 134/.test(r.lines[0])}`, 'false|true|true');
+r = cmp('typecheck', 'web:typecheck: src/a.ts(3,5): error TS2322: Type \'string\' is not assignable to type \'number\'.', 2);
+t('AC6 a task runner\'s prefixed lines run in full', `${r.pass}|${r.full}|${/task runner/.test(r.lines[0])}`, 'false|true|true');
+
+// The elaboration is part of the error: replacing a recorded error with another that opens the same way is new.
+const elab = (why) => `src/c.ts(1,1): error TS2769: No overload matches this call.\n  ${why}\nFound 1 error.`;
+const eb = recordBaseline({ stateDir: dir, root: '/base', base: 'feat/x', sha: 'd'.repeat(40), items: { typecheck: [{ dir: '.', cmd: 'tsc' }] }, run: () => ({ out: elab('Overload 1 of 2 failed.'), code: 2 }) });
+const ecmp = (out) => compareRun({ entry: eb.checks.typecheck[0], run: { out, code: 2 }, root: '/w', dir: '.', cmd: 'tsc' });
+t('the same error and elaboration passes', ecmp(elab('Overload 1 of 2 failed.')).pass, true);
+t('a different elaboration under the same first line fails', ecmp(elab('Overload 2 of 2 failed.')).pass, false);
+
+// A message naming the worktree's own path compares equal across worktrees.
+const abs = (root) => `${root}/src/x.ts(1,1): error TS6059: File '${root}/src/x.ts' is not under 'rootDir' '${root}/lib'.\nFound 1 error.`;
+const ab = recordBaseline({ stateDir: dir, root: '/base', base: 'feat/x', sha: 'e'.repeat(40), items: { typecheck: [{ dir: '.', cmd: 'tsc' }] }, run: () => ({ out: abs('/base'), code: 2 }) });
+r = compareRun({ entry: ab.checks.typecheck[0], run: { out: abs('/w'), code: 2 }, root: '/w', dir: '.', cmd: 'tsc' });
+t('a path inside a message is read relative to the worktree', r.pass, true);
+
 const mb = recordBaseline({ stateDir: dir, root: '/base', base: 'feat/x', sha: 'c'.repeat(40), items: { typecheck: [{ dir: 'apps/api', cmd: 'uv run mypy .' }] }, run: () => ({ out: MYPY, code: 1 }) });
 r = compareRun({ entry: mb.checks.typecheck[0], run: { out: `${MYPY.replace('Found 2', 'app/b.py:1: error: Missing return statement  [return]\nFound 3')}`, code: 1 }, root: '/w', dir: 'apps/api', cmd: 'uv run mypy .' });
 t('mypy in a directory: the new error is named, relative to the root', r.lines[1], '  apps/api/app/b.py:1  return  Missing return statement');

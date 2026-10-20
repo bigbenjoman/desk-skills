@@ -511,16 +511,20 @@ if (BASE && SOURCE && BASE !== SOURCE) {
 // worktree before a pass spawns, whenever the base has moved since the last record, so workers fail
 // only on errors they add (baseline.mjs). A base that cannot be recorded leaves no baseline at all:
 // workers then run the full checks rather than compare against an older base.
+// Workers branch from origin's base, so a base worktree that a failed sync left behind it is not
+// recorded either.
 function recordBaseline(path) {
   const head = sh('git', ['-C', path, 'rev-parse', 'HEAD'], { tolerant: true });
+  const origin = sh('git', ['-C', path, 'rev-parse', `origin/${BASE}`], { tolerant: true });
   const prior = BL.readBaseline(STATE);
-  if (prior && prior.base === BASE && prior.sha === head) return;
+  if (head && head === origin && prior && prior.base === BASE && prior.sha === head) return;
   if (DRY) { baseLines.push(`baseline (dry run): would record ${BASE} at ${head.slice(0, 12)}`); return; }
   const drop = (why) => {
     try { unlinkSync(BL.baselineFile(STATE)); } catch { /* none recorded */ }
     report.waiting.push(`baseline: not recorded for ${BASE} at ${head.slice(0, 12) || '?'}: ${why} — workers run the full Typecheck and Lint`);
   };
   if (!head) return drop(`could not read the base worktree's HEAD in ${path}`);
+  if (head !== origin) return drop(`the base worktree ${path} is not at origin's ${BASE} (${origin.slice(0, 12) || 'unreadable'}), which workers start from`);
   if (sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true })) return drop(`the base worktree ${path} has uncommitted changes`);
   const items = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v.map(E.parseCommandItem) : []; };
   const pre = E.configValue('command-prefix');
@@ -533,7 +537,7 @@ function recordBaseline(path) {
     const r = run('nolock', it);
     if (r.code !== 0) { restore(path); return drop(`config §4 Install (${it.cmd}) failed there with exit ${r.code}`); }
   }
-  const b = BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: head, items: list, run: ({ name, ...it }) => run(BL.CHECKS[name].lock, it) });
+  const b = BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: head, items: list, run: ({ name, ...it }) => run(E.lockFor(BL.CHECKS[name]), it) });
   const changed = restore(path);
   baseLines.push(`baseline: recorded ${BASE} at ${head.slice(0, 12)}: ${BL.summary(b)}${changed ? ' (the checks changed files in the base worktree; put back)' : ''}`);
 }
