@@ -7,9 +7,12 @@
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
 //
-// A repo is named by its short name or any unique prefix of it.
+// A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
+// the same views open full-screen, with arrow keys, Enter and Esc; piped output gets the plain text.
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { emitKeypressEvents } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { HOME, deskHome, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineValue, availableGiB } from './desk-env.mjs';
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash } from './batch-state.mjs';
@@ -113,29 +116,35 @@ function machineCap() {
   return v ? concurrencyLimits(v).cap : null;
 }
 
-export function overview(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap() } = {}) {
+// Each screen is built as head lines, selectable rows and foot lines. The plain output joins them;
+// the interactive screen draws the rows with a selection and opens a row's `open` view on Enter.
+const joined = (s) => [...s.head, ...s.rows.map((x) => x.line), ...s.foot].join('\n');
+
+export function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), interactive = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   const allowed = repos.filter((r) => r.live && r.q).reduce((a, r) => a + Math.min(r.workers, r.cap), 0);
   const at = new Date(now).toTimeString().slice(0, 5);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
-  const out = [
+  const head = [
     `desk-q · ${at} · ${avail.toFixed(1)} GiB free · workers ${running} running · ${allowed} allowed by live batches, of ${cap ?? '?'} for this machine${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
     '',
     `  ${pad('REPO', w)}${pad('LAST PASS', 15)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('STUCK', 7)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  WORKERS`,
   ];
+  const rows = [], foot = [];
+  const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
   let you = 0, stuck = 0;
   for (const r of list) {
-    if (r.error) { out.push(`  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
+    if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     you += count(r, 'needs'); stuck += count(r, 'stuck');
     const last = r.live ? `live ${ago(now - r.last).replace(' ago', '')}` : ago(r.last == null ? null : now - r.last);
-    out.push(`  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${r.workers} (cap ${r.cap})`);
+    row(r, `  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${r.workers} (cap ${r.cap})`);
   }
   const none = repos.filter((r) => !hasBatch(r));
-  if (all) for (const r of none) out.push(`  ${pad(r.name, w)}${pad('no batch', 64)}  cap ${r.cap}`);
-  if (!list.length && !(all && none.length)) out.push('  No batch is live, and no quiet batch needs you.');
-  out.push('', `${you} need you, ${stuck} stuck.`);
-  if (!all && none.length) out.push(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. desk-q --all lists them.`);
+  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', 64)}  cap ${r.cap}`);
+  if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
+  foot.push('', `${you} need you, ${stuck} stuck.`);
+  if (!all && none.length) foot.push(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`);
   const seen = new Set();
   for (const r of repos) {
     for (const c of portClashes(r.claim, repos.map((x) => x.claim))) {
@@ -143,11 +152,13 @@ export function overview(repos, { all = false, now = Date.now(), avail = availab
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
-      out.push(`ports overlap: ${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`);
+      foot.push(`ports overlap: ${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`);
     }
   }
-  return out.join('\n');
+  return { head, rows, foot };
 }
+
+export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
 function detail(r, x) {
   const { t, k } = x;
@@ -159,44 +170,58 @@ function detail(r, x) {
   return '';
 }
 
-export function repoScreen(r, { now = Date.now() } = {}) {
-  if (r.error) return `${r.name} · queue unreadable: ${r.error}`;
-  if (!r.q) return `${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}\n\nNothing to show until a batch starts. Run /desk-autopilot in that repo to start one.`;
+// The columns before TITLE on a ticket row.
+const ROW_LEAD = 63;
+
+// `width` is the terminal's: titles take what the row has left, rather than a fixed 60.
+export function repoParts(r, { now = Date.now(), width = null } = {}) {
+  const none = { rows: [], foot: [] };
+  if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
+  if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
   const pass = r.live ? `orchestrator live, last pass ${ago(now - r.last)}` : r.last == null ? 'no pass yet' : `no pass for ${ago(now - r.last).replace(' ago', '')}`;
-  const out = [
+  const head = [
     `${r.name} · batch ${r.q.batch ?? '-'} · ${pass}`,
     `workers ${count(r, 'running')} running of ${r.workers} (cap ${r.cap}) · ${r.done} done, not shown`,
     '',
     `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', 34)}TITLE`,
   ];
-  r.rows.forEach((x, i) => {
+  const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
+  const rows = r.rows.map((x, i) => {
     const title = triageOf(r.stateDir, x.t.key)?.summary ?? '';
-    out.push(`  ${rpad(i + 1, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, 60)}`.trimEnd());
+    const line = `  ${rpad(i + 1, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, tw)}`.trimEnd();
+    return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key } };
   });
-  if (!r.rows.length) out.push('  No unfinished tickets.');
-  return out.join('\n');
+  return { head, rows, foot: r.rows.length ? [] : ['  No unfinished tickets.'] };
 }
 
-export function ticketScreen(r, key) {
+export const repoScreen = (r, opts) => joined(repoParts(r, opts));
+
+export const logPath = (r, key) => join(r.stateDir, 'logs', `${key}.log`);
+
+// `jiraUrl` adds the Jira line the interactive screen opens with o.
+export function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
   const t = r.q.tickets[key];
   const k = shownState(r.q, t);
   const tr = triageOf(r.stateDir, key) ?? {};
   const i = r.rows.findIndex((x) => x.t.key === key);
   const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
-  const out = [
+  const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
+  const head = [
     `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, i >= 0 ? `position ${i + 1} of ${r.rows.length}` : null].filter(Boolean).join(' · ')}`,
     '',
-    ...(tr.summary ? wrap(tr.summary, 96) : ['(no triage record: title unknown)']),
+    ...(tr.summary ? wrap(tr.summary, ww) : ['(no triage record: title unknown)']),
     '',
   ];
-  if (k === 'running') out.push(`A worker is on it, at stage ${t.stage ?? '?'}.`, '');
+  const rows = [], out = [];
+  if (k === 'running') head.push(`A worker is on it, at stage ${t.stage ?? '?'}.`, '');
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
-    out.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
+    head.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
       : k === 'waiting' ? 'Starts when the last of these merges:' : 'Stuck. At least one of these will never merge by itself:');
     for (const b of open) {
       const bt = r.q.tickets[b];
-      out.push(`  ${pad(b, 10)}${bt ? `${pad(LABEL[shownState(r.q, bt)], 11)}${cut(triageOf(r.stateDir, b)?.summary ?? '', 70)}` : 'not in this queue'}`.trimEnd());
+      const line = `  ${pad(b, 10)}${bt ? `${pad(LABEL[shownState(r.q, bt)], 11)}${cut(triageOf(r.stateDir, b)?.summary ?? '', 70)}` : 'not in this queue'}`.trimEnd();
+      rows.push({ id: b, line, open: bt ? { kind: 'ticket', slug: r.slug, key: b } : null });
     }
     out.push('');
   }
@@ -207,15 +232,18 @@ export function ticketScreen(r, key) {
   }
   if (k === 'stuck') out.push('Unblock the blocker first, or have the orchestrator drop this hold (orchestrator-recovery.md).');
   if (t.park?.question || ['needs', 'stuck'].includes(k)) out.push('');
-  if (tr.lane_reason) { out.push(`Why lane ${lane}:`); for (const l of wrap(tr.lane_reason, 96)) out.push(`  ${l}`); out.push(''); }
+  if (tr.lane_reason) { out.push(`Why lane ${lane}:`); for (const l of wrap(tr.lane_reason, ww)) out.push(`  ${l}`); out.push(''); }
   const files = tr.files_in_scope ?? [];
   if (files.length) { out.push(`Files in scope (${files.length}):`); for (const f of files) out.push(`  ${f}`); out.push(''); }
   if (t.collides_with) out.push(`Never runs at the same time as: ${String(t.collides_with).split('|').join(', ')}`);
   const branch = t.branch ?? tr.branch;
   if (branch) out.push(`Branch: ${branch}`);
-  out.push(`Log: ${join(r.stateDir, 'logs', `${key}.log`)}`);
-  return out.join('\n');
+  out.push(`Log: ${logPath(r, key)}${width == null ? '' : '  (l shows the last 40 lines)'}`);
+  if (jiraUrl) out.push(`Jira: ${jiraUrl}  (o opens it)`);
+  return { head, rows, foot: out };
 }
+
+export const ticketScreen = (r, key, opts) => joined(ticketParts(r, key, opts));
 
 // ---- the command -------------------------------------------------------------------------------
 
@@ -232,24 +260,196 @@ export function resolveRepo(repos, word) {
   throw new Usage(`No repo "${word}". Set up here: ${repos.map((r) => r.name).join(', ')}.`);
 }
 
-export function run(argv, { now = Date.now() } = {}) {
-  const flags = new Set(argv.filter((a) => a.startsWith('--')));
-  const [repoWord, verb, keyWord, ...extra] = argv.filter((a) => !a.startsWith('--'));
-  if (flags.has('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>]';
-  const unknown = [...flags].filter((f) => !['--plain', '--all'].includes(f));
-  if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all.`);
-  const repos = loadRepos(now);
-  if (!repos.length) throw new Usage('No repo is set up for desk on this machine. Run /desk-setup in a repo first.');
-  if (!repoWord) return overview(repos, { all: flags.has('--all'), now });
+// The view the words name: the one-shot command line and the screen's ":" prompt read the same words.
+export function target(repos, words) {
+  const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
+  if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
   const r = resolveRepo(repos, repoWord);
-  if (!verb) return repoScreen(r, { now });
+  if (!verb) return { kind: 'repo', slug: r.slug };
   if (verb !== 'show' || extra.length) throw new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". This version reads only: desk-q ${r.name} show <KEY>.`);
   if (!keyWord) throw new Usage(`Which ticket? desk-q ${r.name} show <KEY>.`);
   if (r.error) throw new Usage(`${r.name}: queue unreadable: ${r.error}`);
   if (!r.q) throw new Usage(`${r.name} has no batch yet.`);
   const key = [keyWord, keyWord.toUpperCase()].find((k) => r.q.tickets?.[k]);
   if (!key) throw new Usage(`${keyWord} isn't in ${r.name}'s queue.`);
-  return ticketScreen(r, key);
+  return { kind: 'ticket', slug: r.slug, key };
+}
+
+function checkFlags(argv) {
+  const unknown = argv.filter((a) => a.startsWith('--') && !['--plain', '--all', '--help'].includes(a));
+  if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all.`);
+}
+
+function loadOrRefuse(now) {
+  const repos = loadRepos(now);
+  if (!repos.length) throw new Usage('No repo is set up for desk on this machine. Run /desk-setup in a repo first.');
+  return repos;
+}
+
+export function run(argv, { now = Date.now() } = {}) {
+  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>]';
+  checkFlags(argv);
+  const repos = loadOrRefuse(now);
+  const v = target(repos, argv);
+  if (v.kind === 'overview') return overview(repos, { all: v.all, now });
+  const r = repos.find((x) => x.slug === v.slug);
+  return v.kind === 'repo' ? repoScreen(r, { now }) : ticketScreen(r, v.key);
+}
+
+// ---- the interactive screen --------------------------------------------------------------------
+
+export const REFRESH_MS = 2000;
+export const LOG_LINES = 40;
+const ESC = '\x1b[';
+export const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l`;
+export const LEAVE_SCREEN = `${ESC}?25h${ESC}?1049l`;
+
+export function jiraUrlFor(slug, key) {
+  const site = repoConfigValue(slug, 'jira-site');
+  if (!site || /^none$/i.test(site)) return null;
+  return `https://${site.replace(/^https?:\/\//, '').replace(/\/+$/, '')}/browse/${key}`;
+}
+
+function systemOpener(url) {
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+  const p = spawn(cmd, [url], { detached: true, stdio: 'ignore' });
+  p.on('error', () => {});
+  p.unref();
+}
+
+// Log text can carry a worker's own escape codes; only printable text reaches the screen.
+const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
+
+// The full-screen view: ↑↓ select, Enter opens, Esc goes back, : takes a command, q quits.
+// Rereads the queues every REFRESH_MS, keeping the selection on the same repo or ticket.
+export function interactive({
+  input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
+  load = () => loadOrRefuse(Date.now()), opener = systemOpener, exit = (c) => process.exit(c),
+  refreshMs = REFRESH_MS, clock = () => Date.now(),
+} = {}) {
+  let repos = load();
+  let view = start, sel = 0, selId = null, msg = '', cmd = null, screen = null, done = false, timer = null;
+  const stack = [];
+  const width = () => Math.max(20, output.columns || 80);
+  const height = () => Math.max(5, output.rows || 24);
+  const repoOf = (slug) => repos.find((r) => r.slug === slug);
+
+  function build() {
+    const now = clock();
+    const w = width();
+    if (view.kind === 'overview') {
+      return { crumbs: 'desk-q', ...overviewParts(repos, { all: view.all, now, interactive: true }),
+        keys: `↑↓ select · enter open · a ${view.all ? 'hide repos with no batch' : 'all repos'} · : command · q quit` };
+    }
+    const r = repoOf(view.slug);
+    const back = ': command · esc back · q quit';
+    if (!r) return { crumbs: 'desk-q', head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: back };
+    const crumbs = ['desk-q', r.name, view.key].filter(Boolean).join(' › ');
+    if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w }), keys: `↑↓ select · enter open · ${back}` };
+    if (!r.q?.tickets?.[view.key]) return { crumbs, head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: back };
+    if (view.kind === 'log') {
+      const p = logPath(r, view.key);
+      const lines = readFileSync(p, 'utf8').split('\n');
+      if (lines.at(-1) === '') lines.pop();
+      const last = lines.slice(-LOG_LINES).map(printable);
+      return { crumbs: `${crumbs} › log`, head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: 'esc back · q quit', bottom: true };
+    }
+    const jira = jiraUrlFor(r.slug, view.key);
+    const s = ticketParts(r, view.key, { width: w, jiraUrl: jira });
+    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}l log · ${jira ? 'o Jira · ' : ''}${back}`;
+    return { crumbs, ...s, keys };
+  }
+
+  function draw() {
+    if (done) return;
+    try { screen = build(); } catch (e) { screen = { crumbs: 'desk-q', head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
+    const { rows } = screen;
+    if (selId != null) { const i = rows.findIndex((x) => x.id === selId); if (i >= 0) sel = i; }
+    sel = Math.max(0, Math.min(sel, rows.length - 1));
+    selId = rows[sel]?.id ?? null;
+    const w = width(), h = height();
+    const fit = (l) => cut(l, w);
+    const body = [screen.crumbs, '', ...screen.head.map(fit),
+      ...rows.map((x, i) => (i === sel ? `${ESC}7m${fit(`›${x.line.slice(1)}`)}${ESC}27m` : fit(x.line))), ...screen.foot.map(fit)];
+    const status = [msg, cmd != null ? `:${cmd}` : screen.keys].filter(Boolean).map(fit);
+    const room = h - status.length;
+    let top = 0;
+    if (body.length > room) {
+      const at = rows.length ? 2 + screen.head.length + sel : screen.bottom ? body.length - 1 : 0;
+      top = Math.max(0, Math.min(body.length - room, at - Math.floor(room / 2)));
+    }
+    const shown = body.slice(top, top + room);
+    while (shown.length < room) shown.push('');
+    output.write(`${ESC}H${[...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
+  }
+
+  function go(v) { stack.push({ view, sel, selId }); view = v; sel = 0; selId = null; msg = ''; }
+  function back() { const p = stack.pop(); if (p) ({ view, sel, selId } = p); msg = ''; }
+
+  function finish(code) {
+    if (done) return;
+    done = true;
+    clearInterval(timer);
+    input.removeListener('keypress', onKey);
+    output.removeListener?.('resize', draw);
+    if (input.isTTY) input.setRawMode(false);
+    input.pause?.();
+    output.write(LEAVE_SCREEN);
+    exit(code);
+  }
+
+  function runCommand(line) {
+    const words = line.trim().split(/\s+/).filter(Boolean);
+    if (words[0] === 'desk-q') words.shift();
+    try {
+      checkFlags(words);
+      const v = target(repos, words);
+      if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else go(v);
+    } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
+  }
+
+  function onKey(str, key = {}) {
+    if (done) return;
+    if (key.ctrl && key.name === 'c') return finish(130);
+    const rows = screen?.rows ?? [];
+    if (cmd != null) {
+      if (key.name === 'return' || key.name === 'enter') { const line = cmd; cmd = null; runCommand(line); }
+      else if (key.name === 'escape') cmd = null;
+      else if (key.name === 'backspace') cmd = cmd.slice(0, -1);
+      else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
+      return draw();
+    }
+    if (key.name === 'up') { sel = Math.max(0, sel - 1); selId = rows[sel]?.id ?? null; }
+    else if (key.name === 'down') { sel = Math.min(rows.length - 1, sel + 1); selId = rows[sel]?.id ?? null; }
+    else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
+    else if (key.name === 'escape' || key.name === 'backspace') back();
+    else if (str === 'q') return finish(0);
+    else if (str === ':') { cmd = ''; msg = ''; }
+    else if (str === 'a' && view.kind === 'overview') view = { ...view, all: !view.all };
+    else if (str === 'l' && view.kind === 'ticket') {
+      const r = repoOf(view.slug);
+      if (r && existsSync(logPath(r, view.key))) go({ kind: 'log', slug: view.slug, key: view.key });
+      else msg = `${view.key} has no log yet.`;
+    } else if (str === 'o' && view.kind === 'ticket') {
+      const url = jiraUrlFor(view.slug, view.key);
+      if (!url) msg = `No Jira site in ${repoOf(view.slug)?.name ?? view.slug}'s config, so there is nothing to open.`;
+      else { try { opener(url); msg = `Opened ${url}`; } catch (e) { msg = `Could not open ${url}: ${describeCrash(e)}`; } }
+    } else return;
+    draw();
+  }
+
+  emitKeypressEvents(input);
+  if (input.isTTY) input.setRawMode(true);
+  input.on('keypress', onKey);
+  input.resume?.();
+  output.on?.('resize', draw);
+  output.write(ENTER_SCREEN);
+  timer = setInterval(() => {
+    try { repos = load(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+    draw();
+  }, refreshMs);
+  draw();
+  return { finish };
 }
 
 const isMain = (() => {
@@ -257,7 +457,15 @@ const isMain = (() => {
   catch { return false; }
 })();
 if (isMain) {
-  // The interactive screen is a later change; until then a terminal gets the plain output too.
-  try { console.log(run(process.argv.slice(2))); }
-  catch (e) { console.error(e instanceof Usage ? e.message : describeCrash(e)); process.exit(1); }
+  const argv = process.argv.slice(2);
+  try {
+    // A terminal on both ends gets the screen; anything piped, and --plain, gets the plain output.
+    if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
+      checkFlags(argv);
+      const start = target(loadOrRefuse(Date.now()), argv);
+      const ui = interactive({ start });
+      process.on('SIGTERM', () => ui.finish(143));
+      process.on('SIGHUP', () => ui.finish(129));
+    } else console.log(run(argv));
+  } catch (e) { console.error(e instanceof Usage ? e.message : describeCrash(e)); process.exit(1); }
 }
