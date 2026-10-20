@@ -226,6 +226,17 @@ node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 da
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
+**`desk-q`** shows every autopilot queue on this computer, from the queue, heartbeat and triage
+files alone. It finds set-up repos on its own and writes nothing. A batch is live when its last pass
+was under 15 minutes ago; a quiet batch is listed only when a ticket needs you, is stuck or failed.
+A repo is named by any unique prefix of its name.
+
+```
+desk-q [--plain] [--all]             live batches, then quiet ones that need you; --all lists every repo
+desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order, with state and title
+desk-q [--plain] <repo> show <KEY>   one ticket: blockers, park reason, lane and why, files, branch, log
+```
+
 **`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile
 says a runner is possible (`desk-env machine get runner-possible`). It needs Tart and Softnet
 (`brew install openai/tools/tart openai/tools/softnet`), with Softnet setuid root, which `up` tells
@@ -405,7 +416,7 @@ What it does:
   the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
   `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
   up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-runner`,
-  `desk-jira` and `skills-upstream` (`~/.local/bin`), and the three hook scripts.
+  `desk-q`, `desk-jira` and `skills-upstream` (`~/.local/bin`), and the three hook scripts.
 - **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
   always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
   didn't install, registering the Playwright MCP at user level, or disabling the `playwright` plugin.
