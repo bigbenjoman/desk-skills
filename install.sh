@@ -6,7 +6,7 @@
 #   ./install.sh --yes     accepts those prompts too, except large downloads (scripted re-install)
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #
-# Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env and desk-jira in
+# Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env, desk-q and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
 # is backed up first. Repo configs under ~/.config/desk/repos are never touched, apart from dropping
 # retired allow rules /desk-setup recorded (backed up first). settings.json is backed up before it
@@ -466,6 +466,11 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-runner"
   ok "desk-runner -> ~/.local/bin (desk-runner up: the isolated CI runner VM)"
   wrote "desk-runner ~/.local/bin/desk-runner"
+  # desk-q on PATH: every autopilot queue on this computer, read only.
+  install_file "$SRC/bin/desk-q" "$HOME/.local/bin/desk-q"
+  chmod +x "$HOME/.local/bin/desk-q"
+  ok "desk-q -> ~/.local/bin (desk-q: every repo's autopilot queue)"
+  wrote "desk-q   ~/.local/bin/desk-q"
   # skills-upstream runs from this checkout (vendor/ lives here), so the shim records where it is.
   UP_SHIM="$(mktemp)"
   printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: check and upgrade the pinned third-party skills.\nexec python3 "%s" "$@"\n' \

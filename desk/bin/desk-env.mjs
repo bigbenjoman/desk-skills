@@ -629,6 +629,10 @@ export function repoPortClaims(root = deskConfigRoot()) {
   });
 }
 
+// A row from another repo's config, by slug: desk-q reads every repo's cap. Unset is null.
+export const repoConfigValue = (slug, id, root = deskConfigRoot()) =>
+  configValueIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+
 const blocksMeet = (a, b) => a.port <= b.last && b.port <= a.last;
 export const portClashes = (self, claims) => claims.filter((c) => c.slug !== self.slug && blocksMeet(self, c));
 
