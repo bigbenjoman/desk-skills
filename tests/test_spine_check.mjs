@@ -55,8 +55,8 @@ const nested = (assertion) => `def test_ac2_other():
         return 1
     ${assertion}
 `;
-t('a test defined inside another stays part of its body', S(child('K-1', 'test_f.py', nested('assert test_helper() == 1'), nested('assert test_helper() == 2'))),
-  S(['"test_ac2_other" in test_f.py is AC2\'s spec, owned by K-2: K-1 changed it']));
+t('a test defined inside another stays part of its body', S(child('K-3', 'test_f.py', nested('assert test_helper() == 1'), nested('assert test_helper() == 2'))),
+  S(['"test_ac2_other" in test_f.py is AC2\'s spec, owned by K-2: K-3 changed it']));
 
 // One id per run: runners join several differently.
 t('the command takes one id', specsCommand('pnpm vitest run tests/acceptance -t "{ids}"', 'AC1'), 'pnpm vitest run tests/acceptance -t "AC1"');
