@@ -63,7 +63,7 @@ a row changes, say which of these applies.
 | `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
-| `pass.mjs` | `autopilot-workers`, `pr-images` |
+| `pass.mjs` | `autopilot-workers`, `pr-images`, `batch-base-push` (unset is `ask`) |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
 | `upload-images.mjs` | `pr-images` |
@@ -158,6 +158,7 @@ rows).
 | `autopilot-workers` | yes | a named batch worked in parallel while you are away | headless agents acting as you with nobody watching, within your grants | no | `Bash(node ~/.claude/desk/bin/pass.mjs *)` `Bash(node ~/.claude/desk/bin/plan-batch.mjs *)` `Bash(node ~/.claude/desk/bin/expand-parent.mjs *)` `Bash(node ~/.claude/desk/bin/queue.mjs *)` `Bash(node ~/.claude/desk/bin/answer.mjs *)` `Bash(node ~/.claude/desk/bin/harvest.mjs *)` `Bash(node ~/.claude/desk/bin/desk-env.mjs *)` `Bash(desk-env *)` `Bash(~/.claude/desk/bin/triage.sh *)`. The skills invoke the scripts in exactly these forms (never through a `$B/` variable, which no rule matches). Never `with-lock.sh` (it runs whatever command it is given) and never the scripts `pass.mjs` runs itself |
 | `autopilot-worker-mode` | dontAsk + generated allow-list | writes scoped to the worker's own worktree, every other worktree denied, a preflight proves it | anything on the allow-list runs without a prompt | none | — (workers get their own settings file) |
 | `autopilot-merge` | no (PRs wait for you) | serial merge driver: each PR merges when green, then the next colliding ticket starts | PRs merge while you are away | yes (only with `pr-merge-green` yes) | owners `autopilot-workers` + `autopilot-merge`: `Bash(~/.claude/desk/bin/merge-driver.sh *)` |
+| `batch-base-push` | ask | a batch on a base branch starts each worker on a current tree: before a pass spawns, the default branch is merged into the base and pushed | pushes to a shared branch while you are away; a merge commit only, never a rebase or a force | yes · no (the base is not synced; a feature-mode batch then spawns nothing) | — (the script reads the row; `ask` is one approval per batch, passed as `AUTOPILOT_BASE_PUSH_APPROVED=1`) |
 | `autopilot-judgement` | yes | engineering and scope calls made and recorded instead of parking the batch | a call you might have made differently; you can overrule | no (park and ask) | — |
 
 ## Round 10 — shared state

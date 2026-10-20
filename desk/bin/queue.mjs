@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFil
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING } from './desk-env.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING } from './desk-env.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -19,7 +19,7 @@ crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 function setBase(q, v) {
   if (!v || /^none$/i.test(v)) { delete q.base; return; }
   if (!BRANCH_NAME.test(v) || v.includes('..') || v.endsWith('.lock')) throw new Error(`base: "${v}" is not a valid branch name`);
-  if (/^(production|prod|release)$/i.test(v)) throw new Error(`base: refusing "${v}" — a batch never merges into a production branch`);
+  if (PRODUCTION_BRANCH.test(v)) throw new Error(`base: refusing "${v}" — a batch never merges into a production branch`);
   const def = configValue('default-branch');
   if (def && v === def) { delete q.base; return; }
   let found = '';

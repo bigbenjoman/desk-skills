@@ -12,6 +12,7 @@ import { batchIdle, waitingOnMerge, isHeld, EXIT, crashShowsPerson, describeCras
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
+import { ensureBaseWorktree, syncBase } from './base-sync.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -51,6 +52,11 @@ try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
 const headlessPerm = E.permission('autopilot-workers');
 const HEADLESS_KEY = E.permissionKey('autopilot-workers');
 const maySpawn = headlessPerm === 'yes' || (headlessPerm === 'ask' && !!process.env.AUTOPILOT_USER_APPROVED);
+// Pushing a sync merge to the batch base is its own grant, unset meaning `ask`: one approval per
+// batch, asked at Stage 3 and passed to every pass as AUTOPILOT_BASE_PUSH_APPROVED=1.
+const basePushPerm = E.permissionOrUnset('batch-base-push') ?? 'ask';
+const BASE_PUSH_KEY = E.permissionKey('batch-base-push');
+const mayPushBase = basePushPerm === 'yes' || (basePushPerm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED);
 
 // The orchestrator's own name, for the worker's briefing. Resolve it from this process's own
 // session id, which Claude Code exports, and fall back to the env var. Nothing set the env var
@@ -384,11 +390,47 @@ if (blockedByDone.length) {
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
+// ---- batch base ------------------------------------------------------------
+// A batch with a base keeps its own worktree for it (every pass makes sure it exists), and the default
+// branch is merged into the base only before a pass that will spawn, so new workers start on a current
+// tree. A sync that cannot run is reported; in feature mode it also holds this pass's spawns, since
+// the feature's children are built and tested against the base as one.
+const BASE = E.batchBase();
+const SOURCE = E.configValue('default-branch');
+const baseLines = [];
+let baseHold = false;
+if (BASE && SOURCE && BASE !== SOURCE) {
+  // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
+  // for a batch that runs as an ordinary one.
+  const featureMode = fresh.feature === true;
+  const willSpawn = slots > 0 && eligible.length > 0;
+  const blocked = (why) => {
+    report.waiting.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands'}`);
+    if (featureMode) baseHold = true;
+  };
+  const wt = ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE });
+  if (wt.ok && wt.made) baseLines.push(`base worktree for ${BASE} made at ${wt.path}`);
+  if (!wt.ok) {
+    if (willSpawn) blocked(wt.why);
+    else report.waiting.push(`base worktree: ${wt.why}`);
+  } else if (willSpawn) {
+    const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY });
+    if (s.ok && s.dry) baseLines.push(`base sync (dry run): would merge ${s.merged} commit(s) from ${SOURCE} into ${BASE}; nothing pushed`);
+    else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}`);
+    else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
+    else if (s.reason === 'conflict') blocked(`merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${s.files.join(', ')}. Resolve it by hand in ${wt.path} and push`);
+    else if (s.reason === 'permission') {
+      blocked(`${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced` +
+        (basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''));
+    } else blocked(s.why);
+  }
+}
+
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing.
 let attempts = 0;
 for (const t of eligible) {
-  if (!(attempts < slots)) break;
+  if (baseHold || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
   attempts += 1;
@@ -510,6 +552,7 @@ for (const t of Object.values(queue().tickets)) {
 // ---- report --------------------------------------------------------------
 const out = [];
 if (!registryOk) out.push('! could not read the session registry — no ticket was advanced this pass');
+out.push(...baseLines);
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {
   if (items.length) out.push(`${label}: ${items.join(' | ')}`);
 }

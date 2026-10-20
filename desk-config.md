@@ -181,6 +181,7 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `autopilot-workers` | Run detached headless workers (`claude -p`) that work tickets while nobody watches | `yes` | `TODO` |
 | `autopilot-worker-mode` | Worker permission mode | `dontAsk` + generated allow-list | `TODO` |
 | `autopilot-merge` | Merge a worker's PR on green, serially, without you looking first | `no` | `TODO` |
+| `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
 | `autopilot-judgement` | Make and record an engineering or scope call instead of parking (product and other people's rulings still stop) | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 
@@ -189,6 +190,8 @@ approvals, the agent's own review verdict is otherwise the last check before the
 reach them; file access is Edit rules scoped to the
 worker's own worktree, every other worktree denied, toolchain allow-listed) or `none` (no workers).
 `autopilot-merge` can be `yes` only if `pr-merge-green` is.
+`batch-base-push` unset reads as `ask`: one approval per batch, asked at Stage 3 and passed to
+`pass.mjs` as `AUTOPILOT_BASE_PUSH_APPROVED=1`.
 
 ### Local and shared state
 

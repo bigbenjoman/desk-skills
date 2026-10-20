@@ -166,6 +166,7 @@ export const PERMISSION_KEYS = Object.freeze({
   'autopilot-workers': 'autopilot-workers',
   'autopilot-worker-mode': 'autopilot-worker-mode',
   'autopilot-merge': 'autopilot-merge',
+  'batch-base-push': 'batch-base-push',
   'autopilot-judgement': 'autopilot-judgement',
   'autopilot-reclaim': 'autopilot-reclaim',
   'db-per-ticket': 'db-per-ticket',
@@ -451,13 +452,14 @@ export function permission(id) {
   return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
 }
 // Tri-state for guard rows, where "unset" must mean the strict default rather than `no`:
-// returns yes|ask|no|never|stop, or null when the row is missing, blank or TODO.
+// returns yes|ask|no|never|stop, or null when the row is missing, blank or TODO. A value it cannot
+// read is a `no`, as in permission(): a typo must never borrow the unset default.
 export function permissionOrUnset(id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
   const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return null;
-  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? null;
+  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
@@ -551,6 +553,9 @@ export function rotateRound(key, { answers = false } = {}) {
 // (setup-worktree, spawn-worker, worker-settings, the worker itself) inherits the variable. An
 // interactive session never reads the queue, so a batch's base can never redirect its PRs.
 export const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+// A batch merges into its base, and pass.mjs pushes to it, so a production branch is refused on every
+// read, not only when set-batch writes it: production only ever takes promotion PRs.
+export const PRODUCTION_BRANCH = /^(production|prod|release)$/i;
 export function batchBase() {
   let q;
   try { q = JSON.parse(readFileSync(queueFile(), 'utf8')); } catch { return null; }
@@ -558,6 +563,9 @@ export function batchBase() {
   if (!b) return null;
   if (!BRANCH_NAME.test(b) || b.includes('..') || b.endsWith('.lock')) {
     throw new DeskConfigError(`desk: queue base "${b}" is not a valid branch name. Fix it with queue.mjs set-batch base=<branch> (or base= to clear).`);
+  }
+  if (PRODUCTION_BRANCH.test(b)) {
+    throw new DeskConfigError(`desk: queue base "${b}" is a production branch, and a batch never merges into one. Fix it with queue.mjs set-batch base=<branch> (or base= to clear).`);
   }
   return b;
 }
