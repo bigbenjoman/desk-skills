@@ -340,7 +340,8 @@ check "the spine spawns first and the children it holds do not" '[ "$(state T-20
 spec tests/acceptance/feature.spec.ts "import { test } from 'vitest';
 test.fails('AC1: a finished spine parks for approval', () => {});
 test('AC2: incomplete specs park', () => {});
-test.describe('AC3 group', () => {});"
+test.describe('AC3 group', () => {});
+// test.fails('AC3: commented out, so not a spec', () => {});"
 finish T-20
 pass
 check "AC2: incomplete specs park the spine naming each problem, exit 11" '[ $rc -eq 11 ] && [ "$(state T-20)" = parked ] && field T-20 park | grep -q "spine specs incomplete" && field T-20 park | grep -q "AC2: .*not marked strict expected-fail" && field T-20 park | grep -q "AC3: no spec titled with it"'
@@ -372,9 +373,12 @@ check "AC3: the batch is not reported idle"                      '! echo "$out" 
 
 # AC7: rejected with a note from the approval park: a new worker gets it, and nothing is released.
 out=$(node "$B/queue.mjs" reject T-20 "AC1's spec checks the wrong state" 2>&1); rc=$?
+# Even with its PR merged by hand, a rejected spine releases nothing.
+echo MERGED > "$T/pr/120"
 pass
-check "AC7: a new spine worker gets the note"                    '[ $rc -eq 0 ] && [ "$(state T-20)" = running ] && grep -q "checks the wrong state" "$T/runs/T-20.3"'
-check "AC7: nothing is released"                                 '[ "$(state T-21)" = parked ] && [ "$(state T-22)" = parked ] && [ ! -e "$T/runs/T-21.1" ]'
+check "AC7: a new spine worker gets the note"                    '[ $rc -eq 0 ] && [ "$(state T-20)" = running ] && [ "$(field T-20 approved)" = null ] && grep -q "checks the wrong state" "$T/runs/T-20.3"'
+check "AC7: nothing is released"                                 '[ "$(state T-21)" = parked ] && [ "$(state T-22)" = parked ] && [ ! -e "$T/runs/T-21.1" ] && ! echo "$out" | grep -q "RELEASE DUE"'
+rm "$T/pr/120"
 finish T-20
 pass
 check "the reworked spine parks for approval again"             '[ "$(state T-20)" = parked ] && field T-20 park | grep -q "spine awaiting approval"'
@@ -395,5 +399,9 @@ pass
 check "AC6: the released children spawn"                         '[ "$(state T-21)" = running ] && [ "$(state T-22)" = running ]'
 finish T-21; finish T-22
 pass
+
+# An approved spine sent back again needs a fresh approval, and its PR back in draft.
+out=$(node "$B/queue.mjs" requeue T-20 2>&1)
+check "requeueing an approved spine clears its approval and says its PR left draft" '[ "$(field T-20 approved)" = null ] && echo "$out" | grep -q "gh pr ready 120 --repo acme/widgets --undo"'
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

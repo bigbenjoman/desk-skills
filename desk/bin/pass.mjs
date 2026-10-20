@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
-import { checkSpine, spineIds } from './spine-check.mjs';
+import { checkSpine, spineMerger } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
@@ -155,8 +155,8 @@ function parkSpine(t, pr) {
   try { const s = E.configValues('acceptance-specs'); specDir = s && !E.isNone(s) ? s[0] : null; } catch { /* named below */ }
   const c = pr == null
     ? { ok: false, problems: ['it finished with no PR'] }
-    : checkSpine({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, ids: spineIds(Q, STATE) });
-  q('set', t.key, `spine_check=${JSON.stringify({ ok: c.ok, problems: c.problems, at: new Date().toISOString() })}`);
+    : checkSpine({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, ids: Q.spine_ids });
+  q('set', t.key, `spine_check=${JSON.stringify({ ok: c.ok, problems: c.problems, at: new Date().toISOString() })}`, 'approved=null', 'approved_at=null');
   const why = c.ok
     ? `${SPINE_APPROVAL_PREFIX}: PR #${pr} has one strict expected-fail spec per criterion and stays draft. Check each spec means what its criterion says, then approve it (queue.mjs approve ${t.key}) or send it back with a note (queue.mjs reject ${t.key} "<note>")`
     : `${SPINE_SPECS_PREFIX}: ${c.problems.join('; ')}. No approval until they are fixed: send it back with a note (queue.mjs reject ${t.key} "<what to fix>")`;
@@ -611,13 +611,13 @@ for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'spec
 }
 // An approved spine merges under the batch's merge rules: the merge driver where §3 grants it, else
 // the person.
-const driverMerges = E.permission('autopilot-merge') === 'yes' && E.permission('pr-merge-green') === 'yes';
+const merger = spineMerger();
 for (const t of Object.values(qNow.tickets).filter((r) => r.approved === true && r.state === 'done' && r.result?.pr != null)) {
   const n = t.result.pr;
+  if (merger.driver) continue;
   if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
-  if (prState(n) === 'MERGED' || driverMerges) continue;
-  report.waiting.push(`${t.key}: SPINE APPROVED — merge PR #${n} once it is green (config §3 ${E.permissionKey('autopilot-merge')} is "${E.permission('autopilot-merge')}" ` +
-    `and ${E.permissionKey('pr-merge-green')} is "${E.permission('pr-merge-green')}", so no merge driver merges it); what is held behind it is released once it merges`);
+  if (prState(n) === 'MERGED') continue;
+  report.waiting.push(`${t.key}: SPINE APPROVED — merge PR #${n} once it is green (${merger.rows}, so no merge driver merges it); what is held behind it is released once it merges`);
 }
 // The merge driver releases these on its next loop. Where it is not running, the release is yours:
 // queue.mjs set <TICKET> state=triaged park=null held_by=null, then queue.mjs front <TICKET>.

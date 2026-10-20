@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
+import { spineMerger } from './spine-check.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey } from './desk-env.mjs';
 
@@ -123,12 +124,17 @@ function requeue(q, key) {
     t.model_note = `standard → high after a ${wedged ? 'stalled' : 'failed'} worker`;
     bumped = `; its next worker runs on the high model (${t.model_note})`;
   }
+  // A spine's approval is for the specs it was given on: a requeued spine needs a fresh one, and its
+  // PR, out of draft since, would otherwise be merged by the driver before anyone approved the rework.
+  const undrafted = t.approved === true && t.result?.pr != null
+    ? `; PR #${t.result.pr} left draft when it was approved: put it back (gh pr ready ${t.result.pr} --repo ${ghRepo()} --undo) before the merge driver merges it`
+    : '';
   const moved = rotateRound(key, { answers: true });
   Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0,
-    spine_check: null, updated_at: new Date().toISOString() });
+    spine_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
   save(q);
-  return `${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}`;
+  return `${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 const [, , cmd, ...args] = process.argv;
@@ -326,12 +332,12 @@ switch (cmd) {
       needsPerson = true;
       lines.push(`config §3 ${permissionKey('pr-ready')} is "${permission('pr-ready')}": undraft PR #${pr} yourself (gh pr ready ${pr} --repo ${repo})`);
     }
-    if (permission('autopilot-merge') === 'yes' && permission('pr-merge-green') === 'yes') {
+    const merger = spineMerger();
+    if (merger.driver) {
       lines.push(`the merge driver merges PR #${pr} once it is green; ${after}`);
     } else {
       needsPerson = true;
-      lines.push(`config §3 ${permissionKey('autopilot-merge')} is "${permission('autopilot-merge')}" and ${permissionKey('pr-merge-green')} is "${permission('pr-merge-green')}": ` +
-        `merge PR #${pr} yourself once it is green, pinned to its head (gh pr merge ${pr} --repo ${repo} --match-head-commit <sha>); ${after}`);
+      lines.push(`${merger.rows}: merge PR #${pr} yourself once it is green, pinned to its head (gh pr merge ${pr} --repo ${repo} --match-head-commit <sha>); ${after}`);
     }
     console.log(lines.join('\n'));
     if (needsPerson) process.exitCode = EXIT.SHOW_PERSON;
