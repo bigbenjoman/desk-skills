@@ -436,6 +436,32 @@ so nothing else spawns until its PR merges. Pass the printed `--deps` to the mer
   the plan says so, and the children are planned as an ordinary epic batch. Report it; the person
   decides whether to work the spine interactively first.
 
+**When the spine finishes: the person approves its specs.** Seeding records the spine and the
+criterion ids it owes a spec for on the queue (`spine`, `spine_ids`: every criterion not left to the
+close-out check). When the spine's worker is done, `pass.mjs` reads the specs its branch changed
+under the §4 Acceptance specs directory and checks one spec per id, titled with the id, each strict
+expected-fail (`test.fail`, `it.fails`, `test.failing`, `@pytest.mark.xfail(strict=True)`). The
+spine is never left done: it parks, and its PR stays draft.
+
+- **`spine awaiting approval`**: the check passed. `WAITING ON YOU` carries `SPINE APPROVAL`, the
+  children held behind it show as `WAITING ON APPROVAL` (never `STUCK`), the batch is not idle, and
+  the pass exits 11. Put the specs to the person: do they mean what the criteria say?
+  - Approved: `queue.mjs approve <SPINE>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
+    otherwise it tells you to undraft it), and it merges under the batch's merge rules: the merge
+    driver where §3 `autopilot-merge` and `pr-merge-green` are `yes`, else each pass says
+    `SPINE APPROVED — merge PR #<n>` until the person merges it. Once it merges, the children are
+    released as any hold is, and spawn on a later pass. The driver releases nothing behind a spine
+    that was never approved, even if its PR merged.
+  - Rejected: `queue.mjs reject <SPINE> "<their note>"`. The note goes into the spine's briefing as
+    a binding answer, and the spine is requeued for a new worker on the same branch and PR. Nothing
+    is released.
+- **`spine specs incomplete: <problems>`**: an id with no spec, or a spec not marked strict
+  expected-fail, each named. `approve` refuses it; send it back with what to fix,
+  `queue.mjs reject <SPINE> "<note>"`. Its children wait on it, as above.
+
+`answer.mjs` still never un-parks: approving is the orchestrator's decision, made on the person's
+word.
+
 ### Epic close-out
 
 When the batch is idle with no held ticket left:
@@ -917,6 +943,8 @@ node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
+node ~/.claude/desk/bin/queue.mjs approve ABC-126                     # the person approved a feature spine's specs: done, undrafted, merges
+node ~/.claude/desk/bin/queue.mjs reject ABC-126 "<note>"             # the person sent the spine's specs back: requeued with the note
 node ~/.claude/desk/bin/harvest.mjs <state>/logs/ABC-123.log
 AUTOPILOT_DRY_RUN=1 …                                                 # no push, no PR, no review post, no Jira writes
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch

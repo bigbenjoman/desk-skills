@@ -39,6 +39,18 @@ export const HELD_PREFIX = 'held by orchestrator';
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
 
+// A feature spine pass.mjs parked once its worker finished: 'approval' when its specs passed the check
+// (the person approves or rejects them), 'specs' when they did not (the person sends it back with a
+// note). Either way the person is deciding about the spine, so what is held behind it is waiting on
+// that, not stuck.
+export const SPINE_APPROVAL_PREFIX = 'spine awaiting approval';
+export const SPINE_SPECS_PREFIX = 'spine specs incomplete';
+export function spinePark(t) {
+  if (t?.state !== 'parked') return null;
+  const s = String(t.park?.question ?? '');
+  return s.startsWith(SPINE_APPROVAL_PREFIX) ? 'approval' : s.startsWith(SPINE_SPECS_PREFIX) ? 'specs' : null;
+}
+
 // A lane C or D triage record whose lane challenge could not read the code (triage.sh's INCONCLUSIVE):
 // one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
 export const laneUnchecked = (r) => ['C', 'D'].includes(r?.lane) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
@@ -69,7 +81,7 @@ export function waitingOnMerge(q, t, prState = () => null, seen = new Set()) {
   const ok = preds.length > 0 && preds.every((p) => {
     const pt = q.tickets?.[p];
     if (!pt) return false;
-    if (['running', 'triaged'].includes(pt.state)) return true;
+    if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) return true;
     if (pt.state === 'done') return pt.result?.pr != null && prState(pt.result.pr) !== 'CLOSED';
     return waitingOnMerge(q, pt, prState, seen);
   });
@@ -77,7 +89,8 @@ export function waitingOnMerge(q, t, prState = () => null, seen = new Set()) {
   return ok;
 }
 
-// Idle: nothing running, nothing left to spawn, nothing waiting on a merge to be released.
+// Idle: nothing running, nothing left to spawn, nothing waiting on a merge to be released, and no
+// spine waiting on the person's approval.
 export function batchIdle(q, prState) {
-  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState));
+  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState) && !spinePark(t));
 }

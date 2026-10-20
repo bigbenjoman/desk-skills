@@ -58,6 +58,7 @@ cat > "$T/config.md" <<EOF
 | \`git-push\` | Push | \`yes\` | \`yes\` |
 | \`pr-open\` | Open a draft PR | \`yes\` | \`yes\` |
 | \`codex-review\` | Codex | \`yes\` | \`no\` |
+| \`pr-ready\` | Undraft | \`yes\` | \`yes\` |
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -77,6 +78,7 @@ $models
 | Command prefix | \`none\` |
 | Install | \`none\` |
 | Unit tests | \`bash tests/run.sh\` |
+| Acceptance specs | \`tests/acceptance/\` \`bash tests/acceptance/run.sh {ids}\` |
 | Env files | \`none\` |
 | Local database | \`none\` |
 | Database URL variable | \`none\` |
@@ -138,11 +140,15 @@ for (const line of script) {
 }
 fs.unlinkSync(reg);
 EOF
-# The fake gh: `pr view <n>` says the PR is open, and `pr list` finds no PR.
+# The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, and `pr list` finds no PR.
+# Every call is logged to gh.log.
+mkdir -p "$T/pr"
 cat > "$T/stub/gh" <<EOF
 #!$NODE
+const fs = require('fs');
 const a = process.argv.slice(2);
-if (a[0] === 'pr' && a[1] === 'view') console.log('OPEN');
+fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {} console.log(s); }
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
 ln -s "$NODE" "$T/stub/node"
@@ -313,5 +319,81 @@ record T-15 src/n.txt A S; q admit T-15
 pass
 check "a malformed Worker models row holds spawns, naming the row" '[ "$(state T-15)" = triaged ] && [ ! -e "$T/runs/T-15.1" ] && echo "$out" | grep -q "Worker models"'
 q drop T-15
+
+# ---- feature spine: checked, parked draft for approval, approved, merged, children released --------
+config
+q set-batch feature=true spine=T-20 'spine_ids=["AC1","AC2","AC3"]'
+record T-20 tests/acceptance/feature.spec.ts; record T-21 src/s.txt; record T-22 src/t.txt
+printf 'WAIT\nAUTOPILOT_DONE: pr=120 jira=none\n' > "$T/scripts/T-20.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=120 jira=none\n' > "$T/scripts/T-20.2"
+printf 'WAIT\nAUTOPILOT_DONE: pr=120 jira=none\n' > "$T/scripts/T-20.3"
+printf 'WAIT\nAUTOPILOT_DONE: pr=121 jira=none\n' > "$T/scripts/T-21.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=122 jira=none\n' > "$T/scripts/T-22.1"
+q admit T-20; q admit T-21; q admit T-22; q hold T-21 T-20; q hold T-22 T-20
+# spec <path> <content>: the spine worker's commit on its branch.
+spec(){ mkdir -p "$(dirname "$T/wt/T-20/$1")"; printf '%s\n' "$2" > "$T/wt/T-20/$1"
+  git -C "$T/wt/T-20" add -A && git -C "$T/wt/T-20" commit -q -m "spec $1"; }
+pass
+check "the spine spawns first and the children it holds do not" '[ "$(state T-20)" = running ] && [ "$(state T-21)" = parked ] && [ ! -e "$T/runs/T-21.1" ]'
+
+# AC2: a spec that is not expected-fail, and an id with no spec.
+spec tests/acceptance/feature.spec.ts "import { test } from 'vitest';
+test.fails('AC1: a finished spine parks for approval', () => {});
+test('AC2: incomplete specs park', () => {});
+test.describe('AC3 group', () => {});"
+finish T-20
+pass
+check "AC2: incomplete specs park the spine naming each problem, exit 11" '[ $rc -eq 11 ] && [ "$(state T-20)" = parked ] && field T-20 park | grep -q "spine specs incomplete" && field T-20 park | grep -q "AC2: .*not marked strict expected-fail" && field T-20 park | grep -q "AC3: no spec titled with it"'
+check "AC2: no approval is offered"                             '! field T-20 park | grep -q "approve" && ! echo "$out" | grep -q "queue.mjs approve"'
+out=$(node "$B/queue.mjs" approve T-20 2>&1); rc=$?
+check "AC2: approve refuses a spine whose specs failed the check" '[ $rc -eq 11 ] && echo "$out" | grep -q "failed the check" && [ "$(state T-20)" = parked ]'
+check "AC2: the children wait on the spine, not STUCK"          '! echo "$(node "$B/queue.mjs" render)" | grep -q STUCK && [ "$(state T-21)" = parked ]'
+out=$(node "$B/queue.mjs" reject T-20 "AC2 must be marked expected-fail and AC3 needs a spec" 2>&1); rc=$?
+check "the spine is sent back with a note"                      '[ $rc -eq 0 ] && [ "$(state T-20)" = triaged ] && [ "$(state T-21)" = parked ]'
+pass
+check "a new spine worker gets the note"                        '[ "$(state T-20)" = running ] && grep -q "AC3 needs a spec" "$T/runs/T-20.2"'
+
+# AC1 + AC3: one strict expected-fail spec per id, in TypeScript and in Python.
+spec tests/acceptance/feature.spec.ts "import { test, it } from 'vitest';
+test.fails('AC1: a finished spine parks for approval', () => {});
+it.fails('AC2: incomplete specs park', () => {});"
+spec tests/acceptance/test_feature.py "import pytest
+
+@pytest.mark.xfail(
+    strict=True, reason='not built yet')
+def test_ac3_children_wait():
+    assert False"
+finish T-20
+pass
+check "AC1: complete specs park the spine for approval"          '[ "$(state T-20)" = parked ] && field T-20 park | grep -q "spine awaiting approval" && [ "$(field T-20 result.pr)" = 120 ]'
+check "AC1: its PR stays draft"                                  '! grep -q "pr ready" "$T/gh.log"'
+check "AC3: the children show as waiting on approval, not STUCK, and the pass exits 11" '[ $rc -eq 11 ] && echo "$out" | grep -q "WAITING ON APPROVAL: T-21 (spine T-20), T-22 (spine T-20)" && ! echo "$out" | grep -q STUCK && echo "$out" | grep -q "T-20: SPINE APPROVAL"'
+check "AC3: the batch is not reported idle"                      '! echo "$out" | grep -q "^IDLE" && ! echo "$out" | grep -q "batch is finished"'
+
+# AC7: rejected with a note from the approval park: a new worker gets it, and nothing is released.
+out=$(node "$B/queue.mjs" reject T-20 "AC1's spec checks the wrong state" 2>&1); rc=$?
+pass
+check "AC7: a new spine worker gets the note"                    '[ $rc -eq 0 ] && [ "$(state T-20)" = running ] && grep -q "checks the wrong state" "$T/runs/T-20.3"'
+check "AC7: nothing is released"                                 '[ "$(state T-21)" = parked ] && [ "$(state T-22)" = parked ] && [ ! -e "$T/runs/T-21.1" ]'
+finish T-20
+pass
+check "the reworked spine parks for approval again"             '[ "$(state T-20)" = parked ] && field T-20 park | grep -q "spine awaiting approval"'
+
+# AC4 + AC5: approved, the spine is done and its PR leaves draft; with no merge grant the person merges.
+out=$(node "$B/queue.mjs" approve T-20 2>&1); rc=$?
+check "AC4: approve marks the spine done and undrafts its PR"    '[ "$(state T-20)" = done ] && [ "$(field T-20 approved)" = true ] && grep -q "^pr ready 120 --repo acme/widgets" "$T/gh.log"'
+check "AC5: with no merge grant, approve asks the person to merge the spine PR" '[ $rc -eq 11 ] && echo "$out" | grep -q "merge PR #120 yourself" && echo "$out" | grep -q "T-21, T-22 are released once it merges"'
+pass
+check "AC5: the pass report asks for the merge too, and the children are not released" '[ $rc -eq 11 ] && echo "$out" | grep -q "T-20: SPINE APPROVED — merge PR #120" && [ "$(state T-21)" = parked ] && echo "$out" | grep -q "WAITING ON MERGE: T-21 (T-20)"'
+
+# AC6: once the spine PR merges, the children are released and spawn on a later pass.
+echo MERGED > "$T/pr/120"
+pass
+check "AC6: a merged spine makes the children due for release" 'echo "$out" | grep -q "T-21: RELEASE DUE" && echo "$out" | grep -q "T-22: RELEASE DUE" && ! echo "$out" | grep -q "SPINE APPROVED"'
+for k in T-21 T-22; do q set "$k" state=triaged park=null held_by=null; q front "$k"; done
+pass
+check "AC6: the released children spawn"                         '[ "$(state T-21)" = running ] && [ "$(state T-22)" = running ]'
+finish T-21; finish T-22
+pass
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

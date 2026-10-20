@@ -223,14 +223,16 @@ release_chain(){
   plan=$(node - "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
 const fs = require('fs');
 const [qf, ...pairs] = process.argv.slice(2);
-let q = {};
-try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: nothing is held */ }
+let q = {}; let spine = null;
+try { const all = JSON.parse(fs.readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
 const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
 for (const pair of pairs) { const i = pair.indexOf(':'); add(pair.slice(0, i), pair.slice(i + 1).split(',')); }
 for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && ps.size) console.log(`${s} ${[...ps].join(',')}`);
+// Only the person's approval releases what a feature spine holds: a spine PR merged without it does not.
+const unapproved = (p) => p === spine && q[p]?.approved !== true;
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0
