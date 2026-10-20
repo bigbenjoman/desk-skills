@@ -429,6 +429,24 @@ spine is never left done: it parks, and its PR stays draft.
   expected-fail, each named. `approve` refuses it; send it back with what to fix,
   `queue.mjs reject <SPINE> "<note>"`. Its children wait on it, as above.
 
+**Each child makes the specs it owns pass, and leaves the others alone.** Seeding records the owner
+table on the queue too (`owners`, `{<id>: <KEY>}`). A child that owns criteria gets a section in its
+briefing, `Acceptance specs you own`, naming each owned spec (its title and file on the base) and
+telling it to remove its expected-fail marker and make it pass, changing no other. When its worker
+is done, `pass.mjs` checks the branch and, only once the markers are clean, runs the §4 Acceptance
+specs command once for each id the child owns, and for no other, in its worktree under the test lock
+(the base gate runs them all). A clean check is done as today. Otherwise it parks
+`acceptance specs not done: <problems>`, its PR stays draft, and the check is on the ticket as
+`spec_check`. The problems it names:
+
+- an owned id with no spec titled with it, or an owned spec still marked expected-fail (strict or
+  not) or skipped;
+- an owned spec failing when run (the spec, the command and the tail of its output);
+- a spec another child owns that the branch added, removed or changed, with that spec's owner.
+
+Send it back with what to fix: `answer.mjs <KEY> "<note>"`, then `queue.mjs requeue <KEY>`. A child
+that owns nothing runs as before.
+
 `answer.mjs` still never un-parks: approving is the orchestrator's decision, made on the person's
 word.
 

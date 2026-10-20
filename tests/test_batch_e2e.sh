@@ -155,7 +155,9 @@ ln -s "$NODE" "$T/stub/node"
 
 export PATH="$T/stub:/usr/bin:/bin:/usr/sbin:/sbin" DESK_CONFIG="$T/config.md" DESK_HOME="$SRC/desk" \
   DESK_SKILLS_DIR="$SRC/skills" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" \
-  AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test-orchestrator
+  AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test-orchestrator \
+  DESK_LOCK_DIR="$T/locks"   # pass.mjs runs a child's specs under the test lock: never the box's, which this suite may be under
+mkdir -p "$T/locks"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
@@ -403,5 +405,70 @@ pass
 # An approved spine sent back again needs a fresh approval, and its PR back in draft.
 out=$(node "$B/queue.mjs" requeue T-20 2>&1)
 check "requeueing an approved spine clears its approval and says its PR left draft" '[ "$(field T-20 approved)" = null ] && echo "$out" | grep -q "gh pr ready 120 --repo acme/widgets --undo"'
+q drop T-20
+
+# ---- feature children: each makes the specs it owns pass and leaves the others alone ----------------
+# The merged spine's specs on main, and an acceptance runner that logs the ids it was given and fails
+# any id listed in tests/acceptance/failing on the branch.
+mkdir -p "$T/repo/tests/acceptance"
+SPECS="import { test } from 'vitest';
+test.fails('AC1: an owner makes its spec pass', () => {});
+test.fails('AC2: a failing spec parks', () => {});
+test.fails('AC3: other specs are left alone', () => {});"
+printf '%s\n' "$SPECS" > "$T/repo/tests/acceptance/feature.spec.ts"
+cat > "$T/repo/tests/acceptance/run.sh" <<EOF
+echo "\$1" >> "$T/specs-run.log"
+grep -qx "\$1" tests/acceptance/failing 2>/dev/null && { echo "\$1 failed: expected true, got false"; exit 1; }
+exit 0
+EOF
+git -C "$T/repo" add -A && git -C "$T/repo" commit -q -m "spine specs" && git -C "$T/repo" push -q origin main
+q set-batch 'owners={"AC1":"T-31","AC2":"T-32","AC3":"T-33"}'
+record T-31 src/u.txt; record T-32 src/v.txt; record T-33 src/w.txt; record T-34 src/x.txt
+for k in T-31 T-32 T-33 T-34; do printf 'WAIT\nAUTOPILOT_DONE: pr=1%s jira=none\n' "${k#T-}" > "$T/scripts/$k.1"; q admit "$k"; done
+printf 'WAIT\nAUTOPILOT_DONE: pr=132 jira=none\n' > "$T/scripts/T-32.2"
+printf 'WAIT\nAUTOPILOT_DONE: pr=132 jira=none\n' > "$T/scripts/T-32.3"
+# commit_in <TICKET> <path> <content>: the child worker's commit on its branch; content - deletes it.
+commit_in(){ if [ "$3" = - ]; then git -C "$T/wt/$1" rm -q "$2"; else mkdir -p "$(dirname "$T/wt/$1/$2")"; printf '%s\n' "$3" > "$T/wt/$1/$2"; fi
+  git -C "$T/wt/$1" add -A && git -C "$T/wt/$1" commit -q -m "$1 $2"; }
+# unmark <id> [<spec text>]: the spec text with that id's expected-fail marker removed.
+unmark(){ printf '%s\n' "${2:-$SPECS}" | sed "s/test.fails('$1:/test('$1:/"; }
+pass
+brief31="$T/state/briefings/T-31.md"
+check "AC1: a child that owns a criterion is told which spec it owns and to make it pass" 'grep -q "^## Acceptance specs you own" "$brief31" && grep -qF -- "- AC1: \"AC1: an owner makes its spec pass\" in tests/acceptance/feature.spec.ts" "$brief31" && grep -q "remove the marker that makes it strict expected-fail" "$brief31" && grep -q "make it pass" "$brief31"'
+check "AC1: it is told only its own spec, and the run that checks it" '! grep -q "AC2: a failing spec parks" "$brief31" && grep -qF "bash tests/acceptance/run.sh AC1" "$brief31"'
+check "AC1: the worker gets that section in its instructions" 'grep -q "Acceptance specs you own" "$T/runs/T-31.1"'
+
+# AC2: T-31 unmarks its spec, and it passes.
+commit_in T-31 tests/acceptance/feature.spec.ts "$(unmark AC1)"
+# AC3: T-32 leaves its spec marked expected-fail.
+commit_in T-32 src/v.txt "built"
+# AC4: T-33 makes its own spec pass but also changes AC1's, which T-31 owns.
+commit_in T-33 tests/acceptance/feature.spec.ts "$(unmark AC3 | sed "s/'AC1: an owner makes its spec pass', () => {}/'AC1: an owner makes its spec pass', () => { expect(1).toBe(1); }/")"
+finish T-31; finish T-32; finish T-33
+pass
+check "AC2: an owner whose spec is unmarked and passes is done, as today" '[ "$(state T-31)" = done ] && [ "$(field T-31 result.pr)" = 131 ] && [ "$(field T-31 spec_check.ok)" = true ]'
+check "the pass runs only the child's own specs" 'grep -qx "AC1" "$T/specs-run.log" && ! grep -q "AC2\|AC3" "$T/specs-run.log"'
+check "AC3: an owned spec still marked expected-fail parks naming it" '[ "$(state T-32)" = parked ] && field T-32 park | grep -q "acceptance specs not done: AC2: .*AC2: a failing spec parks.* in tests/acceptance/feature.spec.ts is still marked expected-fail" && echo "$out" | grep -q "^PARKED:"'
+check "AC4: a child that changed a spec another child owns parks naming the spec and its owner" '[ "$(state T-33)" = parked ] && field T-33 park | grep -q "AC1: an owner makes its spec pass.* in tests/acceptance/feature.spec.ts is AC1'\''s spec, owned by T-31: T-33 changed it"'
+check "AC4: its own spec passing is not what parked it" '! field T-33 park | grep -q "AC3:"'
+check "a child that owns nothing has no section, and runs as today" 'live T-34 && ! grep -q "Acceptance specs you own" "$T/state/briefings/T-34.md"'
+finish T-34
+pass
+check "a child that owns nothing is done without a spec check"  '[ "$(state T-34)" = done ] && [ "$(field T-34 spec_check)" = null ]'
+
+# AC3: unmarked but failing when run parks too, naming the spec; fixed, it is done.
+node "$B/answer.mjs" T-32 "remove the marker on AC2's spec and make it pass" >/dev/null 2>&1; q requeue T-32
+pass
+commit_in T-32 tests/acceptance/feature.spec.ts "$(unmark AC2)"
+commit_in T-32 tests/acceptance/failing "AC2"
+finish T-32
+pass
+check "AC3: an owned spec that fails when run parks naming it"  '[ "$(state T-32)" = parked ] && field T-32 park | grep -q "acceptance specs not done: AC2: .*AC2: a failing spec parks.* in tests/acceptance/feature.spec.ts fails when run (bash tests/acceptance/run.sh AC2): AC2 failed"'
+node "$B/answer.mjs" T-32 "AC2 still fails" >/dev/null 2>&1; q requeue T-32
+pass
+commit_in T-32 tests/acceptance/failing -
+finish T-32
+pass
+check "AC3: once it passes the child is done"                   '[ "$(state T-32)" = done ] && [ "$(field T-32 spec_check.ok)" = true ] && [ "$(field T-32 park)" = null ]'
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

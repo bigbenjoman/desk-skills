@@ -443,6 +443,7 @@ out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1001 KAN-1002 KAN-100
 check "AC2: once approved and filed, the spine is seeded first and runnable" \
   '[ $rc -eq 0 ] && [ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = KAN-1050 ] && [ "$(qg KAN-1050 .state)" = triaged ] && [ "$(qg KAN-1050 .held_by)" = null ]'
 check "a batch seeded in feature mode records it on the queue" '[ "$(jq -r .feature "$DESK_QUEUE")" = true ]'
+check "it records the owner table too, for the children's spec check" '[ "$(jq -c .owners "$DESK_QUEUE")" = "{\"DoD1\":\"KAN-1001\",\"DoD2\":\"KAN-1003\"}" ]'
 check "AC2: every other child is held behind the spine" \
   '[ "$(qg KAN-1001 .held_by)" = KAN-1050 ] && [ "$(qg KAN-1002 .held_by)" = KAN-1050 ] && [ "$(qg KAN-1003 .held_by)" = "KAN-1002|KAN-1050" ] && [[ "$(qg KAN-1001 .park.question)" == "held by orchestrator: blocked by KAN-1050 (feature spine)"* ]]'
 check "a criterion agreed for the close-out is not asked again" '! printf "%s" "$out" | grep -q "close-out check?" && printf "%s\n" "$out" | grep -q "^  DoD3 .*close-out "'

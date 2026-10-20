@@ -131,7 +131,7 @@ function requeue(q, key) {
     : '';
   const moved = rotateRound(key, { answers: true });
   Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0,
-    spine_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
+    spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
   save(q);
   return `${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
