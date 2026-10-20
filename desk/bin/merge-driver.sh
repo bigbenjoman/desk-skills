@@ -230,7 +230,8 @@ const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
 for (const pair of pairs) { const i = pair.indexOf(':'); add(pair.slice(0, i), pair.slice(i + 1).split(',')); }
 for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
-// Only the person's approval releases what a feature spine holds: a spine PR merged without it does not.
+// Only an approval from the person releases what a feature spine holds: a spine PR merged without it does not.
+// No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
 const unapproved = (p) => p === spine && q[p]?.approved !== true;
 for (const [s, ps] of Object.entries(m)) if (held(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
