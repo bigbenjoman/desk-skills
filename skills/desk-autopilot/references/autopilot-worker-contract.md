@@ -198,7 +198,8 @@ ran unlocked**.
 The typecheck takes the same lock, so typecheck and tests never overlap. Screenshot capture uses
 `with-lock.sh browser`: a dev server plus Chromium is hundreds of MB, not ten GB, and should not
 queue behind a suite. **Never end your turn with a suite running in the background**: `claude -p`
-kills it when the turn ends.
+kills it when the turn ends. A Stop hook blocks your first attempt to, naming the task; a second
+attempt ends the turn and your log records the rule as broken.
 
 **Before any heavy stage, read the right number:**
 

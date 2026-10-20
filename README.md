@@ -405,17 +405,20 @@ What it does:
   the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
   `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
   up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-runner`,
-  `desk-q`, `desk-jira` and `skills-upstream` (`~/.local/bin`), and the three hook scripts.
+  `desk-q`, `desk-jira` and `skills-upstream` (`~/.local/bin`), and the four hook scripts.
 - **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
   always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
   didn't install, registering the Playwright MCP at user level, or disabling the `playwright` plugin.
 
-The three hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
+The four hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
 repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at session start, at
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
 **`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
 context % (default 45), and points the session after `/clear` or a compaction at it.
+**`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
+settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
+task it started is still running, which `claude -p` would kill, and logs a second attempt.
 - **Never** writes a repo config. That is `/desk-setup`'s job, per repo.
 
 Requirements (`./install.sh --check` names anything missing):
