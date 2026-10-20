@@ -81,8 +81,8 @@ EOF
   [ "${3:-feat/x}" = - ] || node "$B/queue.mjs" set-batch "base=${3:-feat/x}" >/dev/null
   node "$B/queue.mjs" add T-1 >/dev/null; node "$B/queue.mjs" set T-1 state=triaged branch=feat/T-1 >/dev/null
 }
-# feature: the queue's epic has a filed spine in feature.json, so the batch is in feature mode.
-feature(){ node "$B/queue.mjs" set-batch epic=E-1 >/dev/null; echo '{"epic":"E-1","spine":"T-0"}' > "$C/state/feature.json"; }
+# feature: plan-batch seeded the batch in feature mode (the queue's epic has a filed spine).
+feature(){ node "$B/queue.mjs" set-batch epic=E-1 feature=true >/dev/null; echo '{"epic":"E-1","spine":"T-0"}' > "$C/state/feature.json"; }
 # conflict: main and feat/x both change a.txt.
 conflict(){
   git -C "$C/repo" fetch -q origin; git -C "$C/repo" switch -q -c side origin/feat/x
@@ -130,6 +130,17 @@ check "a conflict needs the person"                  '[ $rc -eq 11 ]'
 # AC6: in feature mode a conflict spawns nothing.
 fresh fconflict; feature; conflict; pass
 check "feature mode: a conflict spawns nothing"      '[[ "$out" != *"spawned:"* ]] && [[ "$out" == *"feature mode, so nothing spawns this pass"* ]]'
+
+# An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4
+# Acceptance specs is unset, so feature mode is off): a failed sync holds no spawns.
+fresh planned; conflict; node "$B/queue.mjs" set-batch epic=E-1 >/dev/null; node "$B/queue.mjs" drop T-1 >/dev/null
+echo '{"epic":"E-1","spine":"T-1"}' > "$C/state/feature.json"; mkdir -p "$C/state/triage"
+echo '{"ticket":"T-1","type":"Task","lane":"A","branch":"feat/T-1","files_in_scope":["b.txt"],"unknowns":[],"links":"n/a"}' > "$C/state/triage/T-1.json"
+printf '\n## 1. Identity\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n| Jira display name | `Me` |\n' >> "$C/config.md"
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" T-1 2>&1)
+check "plan-batch records an ordinary batch on the queue" '[ "$(jq -r .feature "$DESK_QUEUE")" = false ] && [ "$(jq -r ".tickets[\"T-1\"].state" "$DESK_QUEUE")" = triaged ]'
+pass
+check "feature.json naming a spine does not hold its spawns" '[[ "$out" == *"spawned: T-1"* ]] && [[ "$out" == *"spawning carries on"* ]]'
 
 # AC6, AC7: a push refused by branch protection rolls back, and holds spawns only in feature mode.
 fresh refused; printf '#!/bin/sh\necho "error: GH006: Protected branch update failed for refs/heads/feat/x." >&2\nexit 1\n' > "$C/origin.git/hooks/pre-receive"

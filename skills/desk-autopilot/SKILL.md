@@ -512,7 +512,8 @@ driver just merged into the base) is fetched, merged again and retried once. Pus
 YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push), a
 refused push, the row, or the primary checkout having the base checked out (switch it off that
 branch; no base worktree is made until then). In feature mode that pass spawns nothing; otherwise
-spawning carries on from the base as it stands.
+spawning carries on from the base as it stands. Feature mode here is the decision `plan-batch`
+recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
 
 ## Merge each PR the moment it goes green
 

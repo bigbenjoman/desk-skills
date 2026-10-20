@@ -400,12 +400,9 @@ const SOURCE = E.configValue('default-branch');
 const baseLines = [];
 let baseHold = false;
 if (BASE && SOURCE && BASE !== SOURCE) {
-  const featureMode = (() => {
-    try {
-      const f = JSON.parse(readFileSync(join(STATE, 'feature.json'), 'utf8'));
-      return !!fresh.epic && f?.epic === fresh.epic && !!f.spine;
-    } catch { return false; }
-  })();
+  // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
+  // for a batch that runs as an ordinary one.
+  const featureMode = fresh.feature === true;
   const willSpawn = slots > 0 && eligible.length > 0;
   const blocked = (why) => {
     report.waiting.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands'}`);

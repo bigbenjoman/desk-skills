@@ -388,6 +388,9 @@ const featureUnsettled = feature?.on && (!feature.filed || featureQs.length)
   : null;
 if (process.env.AUTOPILOT_WRITE_QUEUE && featureUnsettled) refuse(`feature mode is on for ${batchEpic}, so the queue is not seeded: ${featureUnsettled}, then re-run plan-batch`);
 if (process.env.AUTOPILOT_WRITE_QUEUE) {
+  // pass.mjs reads this decision rather than re-deriving it from feature.json, which can name the
+  // epic and a spine in a batch that runs as an ordinary one (a spine parked at triage, say).
+  execFileSync('node', [QUEUE, 'set-batch', `feature=${feature?.on === true}`], { stdio: 'ignore' });
   for (const r of order) {
     const t = r.ticket;
     execFileSync('node', [QUEUE, 'add', t, r.type ?? 'Bug', r.lane], { stdio: 'ignore' });
