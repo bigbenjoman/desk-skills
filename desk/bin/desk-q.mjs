@@ -385,7 +385,6 @@ export function interactive({
         scroll = top - base;
       } else top = scroll = clamp(scroll ?? (screen.bottom ? max : 0));
     } else if (rows.length) scroll = 0;
-    }
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
     output.write(`${ESC}H${[...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
