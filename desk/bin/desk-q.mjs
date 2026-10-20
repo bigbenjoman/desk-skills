@@ -120,7 +120,7 @@ function machineCap() {
 // the interactive screen draws the rows with a selection and opens a row's `open` view on Enter.
 const joined = (s) => [...s.head, ...s.rows.map((x) => x.line), ...s.foot].join('\n');
 
-export function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), interactive = false } = {}) {
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), interactive = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   const allowed = repos.filter((r) => r.live && r.q).reduce((a, r) => a + Math.min(r.workers, r.cap), 0);
@@ -174,7 +174,7 @@ function detail(r, x) {
 const ROW_LEAD = 63;
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60.
-export function repoParts(r, { now = Date.now(), width = null } = {}) {
+function repoParts(r, { now = Date.now(), width = null } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
@@ -196,10 +196,10 @@ export function repoParts(r, { now = Date.now(), width = null } = {}) {
 
 export const repoScreen = (r, opts) => joined(repoParts(r, opts));
 
-export const logPath = (r, key) => join(r.stateDir, 'logs', `${key}.log`);
+const logPath =(r, key) => join(r.stateDir, 'logs', `${key}.log`);
 
 // `jiraUrl` adds the Jira line the interactive screen opens with o.
-export function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
+function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
   const t = r.q.tickets[key];
   const k = shownState(r.q, t);
   const tr = triageOf(r.stateDir, key) ?? {};
@@ -261,7 +261,7 @@ export function resolveRepo(repos, word) {
 }
 
 // The view the words name: the one-shot command line and the screen's ":" prompt read the same words.
-export function target(repos, words) {
+function target(repos, words) {
   const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
   if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
   const r = resolveRepo(repos, repoWord);
@@ -299,12 +299,12 @@ export function run(argv, { now = Date.now() } = {}) {
 // ---- the interactive screen --------------------------------------------------------------------
 
 export const REFRESH_MS = 2000;
-export const LOG_LINES = 40;
+const LOG_LINES = 40;
 const ESC = '\x1b[';
-export const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l`;
+const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l`;
 export const LEAVE_SCREEN = `${ESC}?25h${ESC}?1049l`;
 
-export function jiraUrlFor(slug, key) {
+function jiraUrlFor(slug, key) {
   const site = repoConfigValue(slug, 'jira-site');
   if (!site || /^none$/i.test(site)) return null;
   return `https://${site.replace(/^https?:\/\//, '').replace(/\/+$/, '')}/browse/${key}`;
