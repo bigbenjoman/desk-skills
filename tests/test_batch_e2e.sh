@@ -147,7 +147,8 @@ EOF
 # The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, `pr list` finds no PR, and
 # `pr create` opens PR #200. A PR's comments are pr/<n>.comments (JSON), added by `pr comment` and
 # edited by `api -X PATCH .../issues/comments/<id>`, and unreadable while pr/<n>.unreadable exists.
-# `pr edit` (the body) is only logged. Every call is logged to gh.log.
+# A PR's body is pr/<n>.body, written by `pr edit --body-file -` or `api -X PATCH .../pulls/<n>`, so a
+# body write shows up in the ledger checks. Every call is logged to gh.log.
 mkdir -p "$T/pr"
 cat > "$T/stub/gh" <<EOF
 #!$NODE
@@ -166,7 +167,11 @@ if (a[0] === 'pr' && a[1] === 'comment') {
   c.push({ viewerDidAuthor: true, body: fs.readFileSync(0, 'utf8'), url: url(id) });
   fs.writeFileSync(cf(a[2]), JSON.stringify(c)); console.log(url(id)); process.exit(0);
 }
-if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH') {
+if (a[0] === 'pr' && a[1] === 'edit' && a.includes('--body-file')) { fs.writeFileSync('$T/pr/' + a[2] + '.body', fs.readFileSync(0, 'utf8')); process.exit(0); }
+if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && /\/pulls\/\d+$/.test(a[3])) {
+  fs.writeFileSync('$T/pr/' + a[3].split('/').pop() + '.body', JSON.parse(fs.readFileSync(0, 'utf8')).body ?? ''); console.log('{}'); process.exit(0);
+}
+if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && a[3].includes('/issues/comments/')) {
   const id = a[3].split('/').pop(); const c = cs(200); const hit = c.find((x) => x.url === url(id));
   if (!hit) { console.error('HTTP 404: Not Found'); process.exit(1); }
   hit.body = JSON.parse(fs.readFileSync(0, 'utf8')).body; fs.writeFileSync(cf(200), JSON.stringify(c)); console.log('{}'); process.exit(0);
@@ -562,7 +567,7 @@ node "$B/answer.mjs" T-51 "use makeFixture" >/dev/null 2>&1; q requeue T-51
 pass; finish T-51
 pass
 check "ledger: a child merging into the base rewrites its row in the same comment, with its PR" '[ "$(ledgers)" = 1 ] && ledger | grep -qE "^\| T-52 \| merged \| #152 \| default \|$" && ledger | grep -qE "^\| T-51 \| in review \| #151 \| default \|$" && grep -q "^api -X PATCH repos/acme/widgets/issues/comments/901 --input -" "$T/gh.log" && [ "$(grep -c "^pr comment 200" "$T/gh.log")" = 1 ]'
-check "ledger: the PR body is never read or written, so the person's text is unchanged" 'cmp -s "$T/pr/200.body" "$T/pr/200.body.orig" && ! grep -q "^pr edit 200" "$T/gh.log" && ! grep -qE "^pr view 200 .*--json [^ ]*body" "$T/gh.log"'
+check "ledger: the PR body is never read or written, so the person's text is unchanged" 'cmp -s "$T/pr/200.body" "$T/pr/200.body.orig" && ! grep -q "^pr edit 200" "$T/gh.log" && ! grep -q "^api .*/pulls/200" "$T/gh.log" && ! grep -qE "^pr view 200 .*--json [^ ]*body" "$T/gh.log"'
 check "ledger: the reviewer's comment is left alone"            'grep -q "A reviewer: <!-- desk-autopilot:ledger --> looks odd" "$T/pr/200.comments"'
 
 # AC3 + AC5: every child merged into the base, with a spec still expected-fail, one failing when run,

@@ -45,7 +45,8 @@ t('AC1 a reply quoting the ledger is not it', findLedgerComment([{ viewerDidAuth
 t('AC1 the oldest of two is the one used', findLedgerComment([mine, { ...mine, url: url(9) }])?.id, '7');
 t('AC1 no comments, no ledger comment', findLedgerComment([]), null);
 
-// A fake gh: the PR's body and comments, with every call recorded.
+// A fake gh: the PR's body and comments, with every call recorded. It writes the body as real gh
+// would (`pr edit --body*`, or a PATCH on pulls/<n>), so a body write fails the AC2 checks below.
 function fakeGh({ comments = [], body = 'Promotion PR for E-1.\n\nNotes from Ben.\n', fail = {} } = {}) {
   const pr = { body, comments: comments.map((c) => ({ ...c })) };
   const calls = [];
@@ -54,12 +55,22 @@ function fakeGh({ comments = [], body = 'Promotion PR for E-1.\n\nNotes from Ben
     const op = args[0] === 'api' ? 'patch' : `${args[0]} ${args[1]}`;
     if (fail[op]) return { ok: false, out: fail[op] };
     if (op === 'pr view') return { ok: true, out: JSON.stringify({ comments: pr.comments }) };
+    if (op === 'pr edit') { const i = args.findIndex((a) => a.startsWith('--body')); if (i >= 0) pr.body = args[i + 1] === '-' ? input : args[i + 1]; return { ok: true, out: '' }; }
     if (op === 'pr comment') { const id = 100 + pr.comments.length; pr.comments.push({ viewerDidAuthor: true, body: input, url: url(id) }); return { ok: true, out: url(id) }; }
-    if (op === 'patch') { const id = /comments\/(\d+)$/.exec(args[3])[1]; pr.comments.find((c) => c.url === url(id)).body = JSON.parse(input).body; return { ok: true, out: '{}' }; }
+    if (op === 'patch' && /\/pulls\/\d+$/.test(args[3])) { pr.body = JSON.parse(input).body ?? pr.body; return { ok: true, out: '{}' }; }
+    const hit = op === 'patch' && pr.comments.find((c) => c.url === url(/\/issues\/comments\/(\d+)$/.exec(args[3])?.[1]));
+    if (hit) { hit.body = JSON.parse(input).body; return { ok: true, out: '{}' }; }
     return { ok: false, out: `unexpected gh ${args.join(' ')}` };
   };
   return { pr, calls, gh };
 }
+
+// The fake can fail an AC2 check: a body write through either route changes pr.body.
+const probe = fakeGh();
+probe.gh(['pr', 'edit', '200', '--body-file', '-'], 'overwritten');
+const probe2 = fakeGh();
+probe2.gh(['api', '-X', 'PATCH', 'repos/acme/widgets/pulls/200', '--input', '-'], JSON.stringify({ body: 'overwritten' }));
+t('AC2 the fake records a body write, so the checks below can fail', `${probe.pr.body} ${probe2.pr.body}`, 'overwritten overwritten');
 
 // AC1: created once when missing, then edited in place; an unchanged one is left alone.
 const f = fakeGh({ comments: [{ viewerDidAuthor: false, body: 'A reviewer note', url: url(1) }] });
@@ -74,7 +85,7 @@ t('AC1 the other comment is untouched', f.pr.comments[0].body, 'A reviewer note'
 
 // AC2: the PR body is never read or written for the ledger.
 t('AC2 the PR body is untouched', f.pr.body, body0);
-t('AC2 no call edits the PR', f.calls.some((c) => c.startsWith('pr edit')), false);
+t('AC2 no call edits the PR', f.calls.some((c) => c.startsWith('pr edit') || /\/pulls\//.test(c)), false);
 t('AC2 no call reads the PR body', f.calls.some((c) => /--json\s+\S*body/.test(c)), false);
 
 // AC3: a comment that cannot be read or written is a reason, not a throw.
