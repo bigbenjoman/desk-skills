@@ -463,7 +463,7 @@ commit_in T-32 tests/acceptance/feature.spec.ts "$(unmark AC2)"
 commit_in T-32 tests/acceptance/failing "AC2"
 finish T-32
 pass
-check "AC3: an owned spec that fails when run parks naming it"  '[ "$(state T-32)" = parked ] && field T-32 park | grep -q "acceptance specs not done: AC2: the owned specs fail when run (bash tests/acceptance/run.sh AC2): AC2 failed"'
+check "AC3: an owned spec that fails when run parks naming it"  '[ "$(state T-32)" = parked ] && field T-32 park | grep -q "acceptance specs not done: AC2: .*AC2: a failing spec parks.* in tests/acceptance/feature.spec.ts fails when run (bash tests/acceptance/run.sh AC2): AC2 failed"'
 node "$B/answer.mjs" T-32 "AC2 still fails" >/dev/null 2>&1; q requeue T-32
 pass
 commit_in T-32 tests/acceptance/failing -

@@ -150,9 +150,17 @@ const uploadPerm = E.permission('pr-images');
 // A feature spine that finishes is checked, then parked for the person rather than left done: its PR
 // stays draft, and nothing held behind it is released until they approve it (queue.mjs approve).
 const isSpine = (t) => Q.feature === true && Q.spine === t.key;
+// §4 Acceptance specs: the spec directory and the command taking {ids}. Unset or unreadable, both are
+// null, and each check names what is missing.
+const acceptanceSpecs = () => {
+  try {
+    const s = E.configValues('acceptance-specs');
+    if (s && !E.isNone(s)) return { specDir: s[0], cmd: s.find((x) => x.includes('{ids}')) ?? null };
+  } catch { /* named where it is used */ }
+  return { specDir: null, cmd: null };
+};
 function parkSpine(t, pr) {
-  let specDir = null;
-  try { const s = E.configValues('acceptance-specs'); specDir = s && !E.isNone(s) ? s[0] : null; } catch { /* named below */ }
+  const { specDir } = acceptanceSpecs();
   const c = pr == null
     ? { ok: false, problems: ['it finished with no PR'] }
     : checkSpine({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, ids: Q.spine_ids });
@@ -168,22 +176,15 @@ function parkSpine(t, pr) {
 // with every spec it owns unmarked and passing, and no other child's spec changed; otherwise it parks
 // naming the spec, and its PR stays draft. Only its own ids run here; the base gate runs them all.
 // Children that own nothing run as before.
-const acceptanceSpecs = () => {
-  try {
-    const s = E.configValues('acceptance-specs');
-    if (s && !E.isNone(s)) return { specDir: s[0], cmd: s.find((x) => x.includes('{ids}')) ?? null };
-  } catch { /* named where it is used */ }
-  return { specDir: null, cmd: null };
-};
 const ownsSpecs = (t) => Q.feature === true && !isSpine(t) && ownedIds(Q.owners, t.key).length > 0;
 const SPEC_RUN_MS = 30 * 60 * 1000;
 function checkOwned(t, pr) {
   if (pr == null) return;
   const { specDir, cmd } = acceptanceSpecs();
   // Under the test lock like any suite, in the child's worktree at the head it pushed.
-  const run = (ids) => {
+  const run = (id) => {
     if (!cmd) return { ok: false, out: 'config §4 Acceptance specs has no command taking {ids}' };
-    const command = specsCommand(cmd, ids);
+    const command = specsCommand(cmd, id);
     return { ...shOut(join(BIN, 'with-lock.sh'), ['test', 'sh', '-c', command], { cwd: t.worktree, timeout: SPEC_RUN_MS }), command };
   };
   const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, owners: Q.owners, key: t.key, run });
@@ -212,7 +213,7 @@ function ownedBrief(t, wt) {
     '',
     `For each one: remove the marker that makes it ${EXPECTED_FAIL}, and make it pass. Run these spec files with §4 Unit tests, capped and locked as for any suite, rather than the whole acceptance directory: another child owns every other spec there, and each of those is still expected to fail.`,
     'Change no acceptance spec you do not own. If yours cannot pass without changing one, park naming it and its criterion.',
-    `When you finish, the pass runs only your specs${cmd ? ` (\`${specsCommand(cmd, ids)}\`)` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or fails, or if your branch changed a spec another child owns.`,
+    `When you finish, the pass runs only your specs${cmd ? ` (${ids.map((id) => `\`${specsCommand(cmd, id)}\``).join(', ')})` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or skipped, or fails, or if your branch changed a spec another child owns.`,
     '',
   ].join('\n');
 }
