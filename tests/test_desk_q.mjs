@@ -47,7 +47,8 @@ function world(overrides = {}) {
     const slug = `acme__${name}`;
     mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
     writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
-      `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n`);
+      `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n` +
+      (r.jira ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${r.jira}\` |\n` : ''));
     const state = join(env.HOME, '.desk-autopilot', slug);
     if (r.queue) {
       const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
@@ -147,6 +148,116 @@ const snap = (dir) => {
 const before = snap(W.T);
 for (const args of [[], ['--plain'], ['--plain', '--all'], ['--plain', 'voicepa'], ['--plain', 'voicepa', 'show', 'VPL-3'], ['--plain', 'pr'], ['--plain', 'zz']]) W.run(...args);
 t('AC14 nothing changed on disk', snap(W.T) === before, true);
+
+// ---- the interactive screen, driven in-process through an injected key stream and an 80-column
+// output. desk-env reads HOME when it is first imported, so the module loads after the env is set.
+const LONG = 'Rebook the client automatically when the gap between two bookings is longer than the salon allows';
+const vpQueue = (first = {}) => ({ batch: 'vp', concurrency: 3, tickets: {
+  ...first,
+  'VPL-1': { state: 'running', stage: '4/9' },
+  'VPL-2': { state: 'running', stage: '2/9' },
+  'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' } },
+  'VPL-4': { state: 'triaged', open_questions: 0 },
+  'VPL-0': { state: 'done', result: { pr: 10 } },
+} });
+const I = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, jira: 'acme.atlassian.net', queue: vpQueue(), triage: {
+  'VPL-1': { summary: 'Running-late sheet' }, 'VPL-4': { summary: LONG },
+  'VPL-3': { summary: 'Long gaps', files_in_scope: Array.from({ length: 30 }, (_, i) => `src/gap-${i}.ts`) },
+} } });
+Object.assign(process.env, I.env);
+const Q = await import(BIN);
+const { PassThrough } = await import('node:stream');
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+function screen(start) {
+  const input = new PassThrough();
+  const modes = [];
+  Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
+  const output = { buf: '', columns: 80, rows: 24, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  const codes = [], opened = [];
+  const ui = Q.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000 });
+  const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
+  return {
+    input, output, modes, codes, opened, ui, frame,
+    // A lone Esc is only told apart from an escape sequence after readline's 500ms wait.
+    press: async (s) => { input.write(s); await sleep(s === '\x1b' ? 600 : 20); },
+    crumbs: () => frame()[0],
+    selected: () => frame().find((l) => l.startsWith('›')) ?? '',
+  };
+}
+const DOWN = '\x1b[B';
+
+const A = screen();
+await sleep(20);
+t('AC1 no arguments: the all-repos screen, first row selected', A.crumbs() === 'desk-q' && /^› desk-skills\s/.test(A.selected()), true);
+await A.press(DOWN);
+await A.press('\r');
+t('AC2 Enter on voicepa opens its queue', A.crumbs(), 'desk-q › voicepa');
+t('AC12 no row on an 80-column repo screen is wider than 80', A.frame().filter((l) => l.length > 80).length, 0);
+t('AC13 a title that does not fit ends in an ellipsis', /VPL-4 .*…$/.test(A.frame().find((l) => /VPL-4/.test(l)) ?? ''), true);
+await A.press(DOWN); await A.press(DOWN); await A.press('\r');
+t('AC3 down twice and Enter opens the third ticket', A.crumbs(), 'desk-q › voicepa › VPL-3');
+t('AC4 the blocker is a selectable row', /^›\s+VPL-1\s+running/.test(A.selected()), true);
+await A.press('\r');
+t('AC4 Enter on the blocker opens its ticket screen', A.crumbs(), 'desk-q › voicepa › VPL-1');
+await A.press('\x1b'); await A.press('\x1b');
+await A.press(DOWN); await A.press('\r');
+t('the fourth ticket opens', A.crumbs(), 'desk-q › voicepa › VPL-4');
+await A.press('l');
+t('AC14 l with no log says so', A.frame().some((l) => l === 'VPL-4 has no log yet.'), true);
+await A.press('\x1b');
+t('AC5 Esc returns to the repo screen with the fourth row still selected', A.crumbs() === 'desk-q › voicepa' && /^›\s+4\s+VPL-4\s/.test(A.selected()), true);
+mkdirSync(join(I.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs'), { recursive: true });
+writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log'), Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join('\n') + '\n');
+for (const c of ':voicepa show vpl-3') await A.press(c);
+t('the : prompt echoes what is typed', A.frame().at(-1), ':voicepa show vpl-3');
+await A.press('\r');
+t('AC9 :voicepa show <KEY> opens that ticket', A.crumbs(), 'desk-q › voicepa › VPL-3');
+const logLine = () => A.frame().some((l) => l.startsWith('Log: '));
+t('a ticket taller than the terminal hides its last lines at first', logLine(), false);
+for (let i = 0; i < 40; i++) await A.press(DOWN);
+t('↓ on the last blocker reads on to the bottom of the ticket', logLine(), true);
+for (let i = 0; i < 40; i++) await A.press('\x1b[A');
+t('↑ scrolls back to the blocker, still selected', /^›\s+VPL-1\s/.test(A.selected()), true);
+await A.press('l');
+const logLines = () => A.frame().filter((l) => /^line \d+$/.test(l));
+const seen = new Set(logLines());
+t('AC14 a log taller than the terminal opens at its last line', logLines().at(-1), 'line 50');
+for (let i = 0; i < 30; i++) await A.press('\x1b[A');
+for (const l of logLines()) seen.add(l);
+const nums = [...seen].map((l) => Number(l.slice(5))).sort((a, b) => a - b);
+t('AC14 l shows the last 40 lines of the log, ↑ scrolling to the first', `${nums.length} ${nums[0]} ${nums.at(-1)}`, '40 11 50');
+await A.press('\x1b');
+await A.press('o');
+t('AC15 o passes the Jira browse URL to the opener', A.opened.join(), 'https://acme.atlassian.net/browse/VPL-3');
+await A.press('q');
+t('AC10 q exits 0', A.codes.join(), '0');
+t('AC10 q shows the cursor and leaves the alternate screen', A.output.buf.endsWith(Q.LEAVE_SCREEN) && Q.LEAVE_SCREEN.includes('\x1b[?25h') && Q.LEAVE_SCREEN.includes('\x1b[?1049l'), true);
+t('AC10 q restores normal input mode', A.modes.join(), 'true,false');
+
+const B = screen();
+await sleep(20);
+const hasRow = (s, n) => s.frame().some((l) => l.replace(/^›/, ' ').startsWith(`  ${n} `));
+t('AC7 repos with no batch start hidden', hasRow(B, 'forewatt'), false);
+await B.press('a');
+t('AC7 a lists them', hasRow(B, 'forewatt') && /no batch/.test(B.frame().find((l) => /forewatt/.test(l)) ?? ''), true);
+await B.press('a');
+t('AC8 a again hides them', hasRow(B, 'forewatt'), false);
+await B.press('\x03');
+t('AC11 Ctrl-C exits 130', B.codes.join(), '130');
+t('AC11 Ctrl-C restores the terminal as q does', B.output.buf.endsWith(Q.LEAVE_SCREEN) && B.modes.join() === 'true,false', true);
+
+t('AC6 the screen rereads every 2 seconds', Q.REFRESH_MS, 2000);
+const C = screen({ kind: 'repo', slug: 'acme__voicepa', refreshMs: Q.REFRESH_MS });
+await sleep(20);
+await C.press(DOWN); await C.press(DOWN);
+const qfile = join(I.env.DESK_HOME, 'repos', 'acme__voicepa', 'queue.json');
+const rewritten = vpQueue({ 'VPL-7': { state: 'triaged', open_questions: 0 } });
+writeFileSync(qfile, JSON.stringify({ version: 1, ...rewritten, tickets: Object.fromEntries(Object.entries(rewritten.tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
+await sleep(Q.REFRESH_MS);
+t('AC6 within 2 seconds the change shows, selection still on the same key', C.frame().some((l) => /^\s+1\s+VPL-7\s/.test(l)) && /^›\s+4\s+VPL-3\s/.test(C.selected()), true);
+C.ui.finish(0);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
