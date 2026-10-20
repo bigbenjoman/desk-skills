@@ -105,9 +105,10 @@ export function declarations(path, text) {
       const strict = /pytest\.mark\.xfail\s*\([^)]*\bstrict\s*=\s*True\b/.test(block);
       const skip = /pytest\.mark\.skip(if)?\b/.test(block);
       // The function runs on from its signature until the next non-blank line indented no deeper than
-      // its def, and never into the next test's def.
+      // its def, and never into the next test's def at its own depth or shallower (one nested inside
+      // it is part of its body).
       let to = sigEnd(i) + 1;
-      const next = defs[n + 1]?.i ?? lines.length;
+      const next = defs.slice(n + 1).find((d) => indent(lines[d.i]) <= indent(line))?.i ?? lines.length;
       while (to < next && (!lines[to].trim() || indent(lines[to]) > indent(line))) to += 1;
       const body = lines.slice(from, to).join('\n').trimEnd();
       out.push({
