@@ -748,10 +748,14 @@ if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 const qNow = queue();
 const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
+const readPr = (n) => {
+  if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
+  return prStates[n];
+};
 for (const t of heldNow) {
   for (const p of String(t.held_by ?? '').split('|').filter(Boolean)) {
     const n = qNow.tickets[p]?.state === 'done' ? qNow.tickets[p]?.result?.pr : null;
-    if (n != null && !(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
+    if (n != null) readPr(n);
   }
 }
 const prState = (n) => prStates[n] ?? null;
@@ -778,8 +782,7 @@ const merger = spineMerger();
 for (const t of Object.values(qNow.tickets).filter((r) => r.approved === true && r.state === 'done' && r.result?.pr != null)) {
   const n = t.result.pr;
   if (merger.driver) continue;
-  if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
-  if (prState(n) === 'MERGED') continue;
+  if (readPr(n) === 'MERGED') continue;
   report.waiting.push(`${t.key}: SPINE APPROVED — merge PR #${n} once it is green (${merger.rows}, so no merge driver merges it); what is held behind it is released once it merges`);
 }
 // The merge driver releases these on its next loop. Where it is not running, the release is yours:
@@ -807,10 +810,6 @@ for (const t of Object.values(qNow.tickets).filter((r) => r.state === 'failed' &
 // does not run and the report names each one. While the gate waits on merges or runs, the batch is
 // not idle.
 const GATE_LOG = join(STATE, 'logs', 'base-gate.log');
-const readPr = (n) => {
-  if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
-  return prStates[n];
-};
 function baseGate(qx) {
   const tickets = Object.values(qx.tickets);
   const stopped = tickets.filter((t) => ['parked', 'failed'].includes(t.state));
@@ -819,16 +818,20 @@ function baseGate(qx) {
       `The base is checked once every child has merged into ${BASE}${qx.promotion?.pr ? `; promotion PR #${qx.promotion.pr} stays draft` : ''}`);
     return false;
   }
+  // A child that finished with no PR, or whose PR was closed unmerged, can never merge: the person
+  // decides, and nothing waits on it. One whose PR is still open is waited for.
   const noPr = tickets.filter((t) => t.result?.pr == null);
-  const open = tickets.filter((t) => t.result?.pr != null && readPr(t.result.pr) !== 'MERGED');
-  if (noPr.length || open.length) {
-    if (noPr.length) report.waiting.push(`BASE GATE: not run, since ${noPr.map((t) => t.key).join(', ')} finished with no PR, so ${noPr.length > 1 ? 'they' : 'it'} cannot merge into ${BASE}`);
+  const closed = tickets.filter((t) => t.result?.pr != null && readPr(t.result.pr) === 'CLOSED');
+  const open = tickets.filter((t) => t.result?.pr != null && !['MERGED', 'CLOSED'].includes(readPr(t.result.pr)));
+  if (noPr.length || closed.length || open.length) {
+    const never = [...noPr.map((t) => `${t.key} (finished with no PR)`), ...closed.map((t) => `${t.key} (PR #${t.result.pr} closed without merging)`)];
+    if (never.length) report.waiting.push(`BASE GATE: not run, since ${never.join(', ')} cannot merge into ${BASE}: requeue or drop ${never.length > 1 ? 'them' : 'it'}`);
     if (open.length) {
       const list = open.map((t) => `${t.key} (PR #${t.result.pr})`).join(', ');
       if (driverLive) out.push(`BASE GATE: waits on ${list} merging into ${BASE}`);
       else report.waiting.push(`BASE GATE: waits on ${list} merging into ${BASE}, and no merge driver is running: merge them`);
     }
-    return open.length > 0 && !noPr.length;
+    return open.length > 0 && !never.length;
   }
 
   sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`], { tolerant: true });

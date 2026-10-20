@@ -481,12 +481,15 @@ batch would go idle, `pass.mjs` decides:
 
 - A child parked or failed: the gate does not run. `WAITING ON YOU` carries `BASE GATE: not run`
   with each such child, and the promotion PR stays draft.
+- A child that finished with no PR, or whose PR was closed without merging: the gate does not run,
+  and `WAITING ON YOU` names it to requeue or drop.
 - A child's PR still open: the gate waits for it (under `WAITING ON YOU` when no merge driver is
   running), and the batch is not idle.
 - Every child merged into the base: the pass starts `base-gate.mjs` in the background (it can
   outlast one pass) and reports `BASE GATE: started`. The batch is not idle while it runs. In the
   base worktree the gate merges §0 Default branch in, runs §4 Install, the §4 Acceptance specs
-  command once for each criterion id with a spec, and §4 Typecheck, Lint and Unit tests (Jest and
+  command once for each criterion id (the spine's, and any other a spec there is titled with), and
+  §4 Typecheck, Lint and Unit tests (Jest and
   Vitest capped at §3b's test cap), each under its lock. Its result is the queue's `gate`, and its
   output is `<state>/logs/base-gate.log`.
 - **Passed** (every spec and check passed, and no spec under the acceptance directory is still

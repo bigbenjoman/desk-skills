@@ -24,10 +24,23 @@ import { takesFiles } from './test-scope.mjs';
 const BIN = E.binDir();
 const started = new Date().toISOString();
 const failures = [];
+// The base's head as pass.mjs read it when it started this run, until a sync succeeds here. pass.mjs
+// runs the gate again only once origin's base differs from the recorded sha, so a run that could not
+// sync must record that head, never a stale local one, or every pass would start it again.
 let sha = null;
+try { sha = readQueue(E.queueFile()).gate?.sha ?? null; } catch { /* read again below */ }
+// The base worktree, once this run has synced it clean: whatever the checks then write there is put
+// back, however the run ends. Before that, anything in it is the person's.
+let ours = null;
+const git = (cwd, args) => { try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
 // Whatever happens, the queue gets a result: a gate that dies silently would hold the batch for ever.
 function finish(extra = {}) {
+  // An install or a lint fixer can write to the base worktree, and the next sync refuses a dirty one.
+  if (ours && git(ours, ['status', '--porcelain'])) {
+    git(ours, ['checkout', '-q', '--', '.']);
+    git(ours, ['clean', '-fdq']);
+  }
   const Q = readQueue(E.queueFile());
   const pr = Q.promotion?.pr ?? null;
   let ready = false;
@@ -63,8 +76,7 @@ const SOURCE = E.configValue('default-branch');
 const STATE = E.stateDir();
 const Q = readQueue(E.queueFile());
 
-const git = (cwd, args) => { try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
-const tail = (out) => String(out ?? '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
+const tail =(out) => String(out ?? '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
 const items = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v.map(E.parseCommandItem) : []; };
 
 // The epic's criteria no spec covers: every criterion the spine was not asked to write a spec for.
@@ -91,10 +103,10 @@ function gate() {
     failures.push(s.reason === 'conflict' ? `merging ${SOURCE} into ${BASE} conflicts (${s.files.join(', ')}): resolve it in ${path} and push`
       : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${E.permissionKey('batch-base-push')} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
         : `syncing ${BASE}: ${s.why}`);
-    sha = git(path, ['rev-parse', 'HEAD']) || null;
     return;
   }
   sha = git(path, ['rev-parse', 'HEAD']);
+  ours = path;
   const pre = E.configValue('command-prefix');
   const prefix = pre && !E.isNone(pre) ? pre.trim() : '';
   const run = (lock, { dir, cmd }) => runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
@@ -104,7 +116,9 @@ function gate() {
     if (r.code !== 0) { failures.push(`§4 Install (${it.cmd}) failed with exit ${r.code}: ${tail(r.out)}`); return; }
   }
 
-  // Every acceptance spec: none still held, and each criterion's specs passing when run.
+  // Every acceptance spec: none still held, and the specs of every criterion id passing when run: the
+  // ids this epic's spine was asked for, and any other id a spec there is titled with (an earlier
+  // epic's), since the command runs specs by id.
   let specDir = null;
   let cmd = null;
   try {
@@ -117,7 +131,9 @@ function gate() {
     for (const f of files) {
       for (const d of declarations(f.path, f.text).filter((x) => x.held)) failures.push(`"${d.title}" in ${f.path} is still ${d.held}`);
     }
-    for (const { id, specs } of ownedSpecs(files, Q.spine_ids ?? [])) {
+    const titled = files.flatMap((f) => declarations(f.path, f.text)).flatMap((d) => d.title.match(/\b(?:AC|DoD)\d+\b/g) ?? []);
+    const ids = [...new Set([...(Q.spine_ids ?? []), ...titled])];
+    for (const { id, specs } of ownedSpecs(files, ids)) {
       if (!specs.length) { failures.push(`${id}: no spec titled with it on ${BASE}`); continue; }
       const command = specsCommand(cmd, id);
       const r = runItem({ bin: BIN, root: path, dir: '.', cmd: command, lock: 'test', prefix: '' });
@@ -134,12 +150,6 @@ function gate() {
       const r = run(E.lockFor(id), { dir: it.dir, cmd: c });
       if (r.code !== 0) failures.push(`§4 ${label} (${it.dir === '.' ? '' : `${it.dir}: `}${c}) failed with exit ${r.code}: ${tail(r.out)}`);
     }
-  }
-
-  // An install or a lint fixer can write to the base worktree, and the next sync refuses a dirty one.
-  if (git(path, ['status', '--porcelain'])) {
-    git(path, ['checkout', '-q', '--', '.']);
-    git(path, ['clean', '-fdq']);
   }
 }
 
