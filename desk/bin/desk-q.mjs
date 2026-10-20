@@ -327,7 +327,8 @@ export function interactive({
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS,
 } = {}) {
   let repos = loadOrRefuse(Date.now());
-  // `scroll` is the first line shown on a screen with no rows to select, once it is too tall to fit.
+  // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
+  // and how far past the selection it shows when it has.
   let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
@@ -376,8 +377,14 @@ export function interactive({
     let top = 0;
     if (body.length > room) {
       const max = body.length - room;
-      if (rows.length) top = Math.max(0, Math.min(max, 2 + screen.head.length + sel - Math.floor(room / 2)));
-      else top = scroll = Math.max(0, Math.min(max, scroll ?? (screen.bottom ? max : 0)));
+      const clamp = (n) => Math.max(0, Math.min(max, n));
+      if (rows.length) {
+        // Centred on the selection; `scroll` is how far ↓ on the last row has read on past it.
+        const base = clamp(2 + screen.head.length + sel - Math.floor(room / 2));
+        top = clamp(base + (scroll ?? 0));
+        scroll = top - base;
+      } else top = scroll = clamp(scroll ?? (screen.bottom ? max : 0));
+    } else if (rows.length) scroll = 0;
     }
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
@@ -420,6 +427,8 @@ export function interactive({
       return draw();
     }
     if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
+    else if (key.name === 'up' && scroll > 0) scroll -= 1;
+    else if (key.name === 'down' && sel === rows.length - 1) scroll = (scroll ?? 0) + 1;
     else if (key.name === 'up') { sel = Math.max(0, sel - 1); selId = rows[sel]?.id ?? null; }
     else if (key.name === 'down') { sel = Math.min(rows.length - 1, sel + 1); selId = rows[sel]?.id ?? null; }
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }

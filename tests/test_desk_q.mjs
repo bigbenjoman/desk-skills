@@ -161,7 +161,8 @@ const vpQueue = (first = {}) => ({ batch: 'vp', concurrency: 3, tickets: {
   'VPL-0': { state: 'done', result: { pr: 10 } },
 } });
 const I = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, jira: 'acme.atlassian.net', queue: vpQueue(), triage: {
-  'VPL-1': { summary: 'Running-late sheet' }, 'VPL-3': { summary: 'Long gaps' }, 'VPL-4': { summary: LONG },
+  'VPL-1': { summary: 'Running-late sheet' }, 'VPL-4': { summary: LONG },
+  'VPL-3': { summary: 'Long gaps', files_in_scope: Array.from({ length: 30 }, (_, i) => `src/gap-${i}.ts`) },
 } } });
 Object.assign(process.env, I.env);
 const Q = await import(BIN);
@@ -213,6 +214,12 @@ for (const c of ':voicepa show vpl-3') await A.press(c);
 t('the : prompt echoes what is typed', A.frame().at(-1), ':voicepa show vpl-3');
 await A.press('\r');
 t('AC9 :voicepa show <KEY> opens that ticket', A.crumbs(), 'desk-q › voicepa › VPL-3');
+const logLine = () => A.frame().some((l) => l.startsWith('Log: '));
+t('a ticket taller than the terminal hides its last lines at first', logLine(), false);
+for (let i = 0; i < 40; i++) await A.press(DOWN);
+t('↓ on the last blocker reads on to the bottom of the ticket', logLine(), true);
+for (let i = 0; i < 40; i++) await A.press('\x1b[A');
+t('↑ scrolls back to the blocker, still selected', /^›\s+VPL-1\s/.test(A.selected()), true);
 await A.press('l');
 const logLines = () => A.frame().filter((l) => /^line \d+$/.test(l));
 const seen = new Set(logLines());
