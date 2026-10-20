@@ -405,7 +405,7 @@ What it does:
   the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
   `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
   up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-runner`,
-  `desk-jira` and `skills-upstream` (`~/.local/bin`), and the three hook scripts.
+  `desk-q`, `desk-jira` and `skills-upstream` (`~/.local/bin`), and the three hook scripts.
 - **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
   always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
   didn't install, registering the Playwright MCP at user level, or disabling the `playwright` plugin.

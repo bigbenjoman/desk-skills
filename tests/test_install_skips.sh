@@ -92,5 +92,10 @@ check "the repo's settings are backed up before the retire" 'grep -q -- "--squas
 check "an unpinned merge allow the user added is reported and kept" \
   '[[ "$out" == *"retired  allow Bash(gh pr merge * --rebase)  (yours"* ]] && grep -q -- "--rebase)" "$R/.claude/settings.local.json"'
 check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.json" ] || ! grep -q desk-update-check "$HOME/.claude/settings.json"'
+# A new shell runs desk-q from any directory, and it finds the repo set up above.
+# shellcheck disable=SC2034  # q_out is read inside check's eval string
+q_out="$(cd / && unset DESK_HOME DESK_MACHINE && PATH="$HOME/.local/bin:$PATH" desk-q --plain --all 2>&1)"
+check "desk-q is on PATH and runs from any directory" \
+  '[ -x "$HOME/.local/bin/desk-q" ] && [[ "$q_out" == "desk-q · "* ]] && [[ "$q_out" == *"  r  "*"no batch"* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
