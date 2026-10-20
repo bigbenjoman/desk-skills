@@ -431,6 +431,11 @@ check "AC3: an untestable criterion is named and asked about the close-out check
   'printf "%s\n" "$out" | grep -q "\[KAN-1000\] DoD3 cannot be written as a test (it is about Jira state): leave it to the epic close-out check?"'
 check "AC6: a criterion's owner is held behind every other contributor" \
   'printf "%s\n" "$out" | grep -q "^KAN-1003 .*HELD (blocked by KAN-1002" && ! printf "%s\n" "$out" | grep -q "^KAN-1002 .*HELD"'
+r KAN-1002 A '[]' '"change_kind":"surface"'; r KAN-1003 A '[]' '"change_kind":"relocate"'
+P KAN-1001 KAN-1002 KAN-1003
+check "an owner-table hold that puts the larger blast radius second is named a contradiction" \
+  'printf "%s\n" "$out" | grep -q "^  KAN-1003 (relocate) merges after KAN-1002 (surface): the feature plan holds KAN-1003 behind KAN-1002"'
+r KAN-1002 A '[]'; r KAN-1003 A '[]'
 
 fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD2":"KAN-1003"},"contributors":{"DoD2":["KAN-1002"]},"untestable":{"DoD3":{"why":"Jira state","close_out":true}}}'
 fbatch feat/epic

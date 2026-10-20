@@ -261,7 +261,8 @@ admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 // The merge chain. Two tickets that share files merge one after the other, the larger blast radius
 // first; two of a kind, the smaller ticket first so only one of them pays, then the order they were
 // named in. Tickets that share no files are never chained, whatever their kinds. A Jira link (or the
-// feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds.
+// feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds,
+// except the spine hold, which every child has by design.
 // Holds are only added between two tickets neither of which already waits on the other, so the chain
 // cannot close a cycle.
 const waitsOn = (t, p) => {
@@ -280,7 +281,10 @@ const contradicts = (first, then, how) => {
 };
 for (const r of admitted) {
   for (const p of preds[r.ticket] ?? []) {
-    if (/Jira link/.test(holdWhy[r.ticket][p])) contradicts(byKey[p], r, `${r.ticket} is blocked by ${p} through a Jira link, and the link wins`);
+    const why = holdWhy[r.ticket][p];
+    if (why === 'feature spine') continue;  // every child waits on the spine by design
+    contradicts(byKey[p], r, /Jira link/.test(why) ? `${r.ticket} is blocked by ${p} through a Jira link, and the link wins`
+      : `the feature plan holds ${r.ticket} behind ${p} (${why}), and the plan wins`);
   }
 }
 const liveKeys = new Set(admitted.map((r) => r.ticket));
@@ -303,17 +307,20 @@ const held = (t) => !!preds[t]?.length;
 const heldBy = (t) => preds[t].map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
 const depsArg = Object.entries(preds).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
 
-// Spawn and merge order: blockers before what they block; otherwise the larger blast radius first,
-// then the order the tickets were named in.
-const order = [];
-{
-  const done = new Set(); const pending = [...ours].sort((a, b) => radius(a) - radius(b) || named(a) - named(b));
+// Blockers before what they block; otherwise the order given.
+const topo = (list) => {
+  const out = []; const done = new Set(); const pending = [...list];
   while (pending.length) {
     const i = pending.findIndex((r) => (preds[r.ticket] ?? []).every((p) => done.has(p)));
     const [r] = pending.splice(i < 0 ? 0 : i, 1);
-    order.push(r); done.add(r.ticket);
+    out.push(r); done.add(r.ticket);
   }
-}
+  return out;
+};
+// Spawn order keeps the order the tickets were named in, so a gate the user names first starts first;
+// the merge order puts the larger blast radius first. The holds keep the two consistent where it matters.
+const order = topo(ours);
+const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
 // What a ticket that needs a database will actually get, from the same rules setup-worktree.sh applies.
 const localDb = (configValue('local-db') ?? '').trim();
@@ -428,7 +435,6 @@ if (collisions.length) {
   for (const c of collisions) say(`  ${c.a} ~ ${c.b}: ${c.shared.join(', ')}`);
 }
 
-const merging = order.filter((r) => admitted.includes(r));
 if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
   merging.forEach((r, i) => {

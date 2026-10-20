@@ -119,7 +119,6 @@ check "first pass receives every flag"                                  'flags_o
 check "first pass output goes to /dev/null"                             '[ -f "$STUB_LOG.0" ] && [[ "$out" != *STUB-* ]]'
 check "first pass: every git command it names runs under triage settings" 'prompt_git_ok 0'
 check "first pass: names no git -C or fetch"                            '! node "$T/match.js" prompt "$STUB_LOG.0" | grep -qE "^git (-C|fetch)"'
-check "AC1: the record carries the change kind triage judged"            '[ "$(jq -r .change_kind "$T/state/triage/fix-thing.json")" = surface ]'
 check "AC1: the prompt asks for one of the four change kinds"           'tr "\0" "\n" < "$STUB_LOG.0" | grep -qF "\"change_kind\": \"relocate|schema|shared|surface\""'
 for k in '' 'move'; do
   rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"

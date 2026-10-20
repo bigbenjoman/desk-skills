@@ -61,7 +61,7 @@ merge_order(){ printf '%s\n' "$out" | sed -n '/^MERGE ORDER/,/^$/p' | grep -oE '
 rec KAN-1 surface src/a; rec KAN-2 shared src/b; rec KAN-3 schema src/c; rec KAN-4 relocate src/d
 plan KAN-1 KAN-2 KAN-3 KAN-4
 check "AC2: the plan orders relocate, schema, shared, surface" '[ $rc -eq 0 ] && [ "$(merge_order)" = "KAN-4 KAN-3 KAN-2 KAN-1" ]'
-check "AC2: the queue is seeded in that order" '[ "$(seeded)" = "KAN-4 KAN-3 KAN-2 KAN-1" ]'
+check "the queue keeps the order named: spawn priority is the user's, a gate named first starts first" '[ "$(seeded)" = "KAN-1 KAN-2 KAN-3 KAN-4" ]'
 check "AC2: each position says why: its kind, what that means, and triage's reason" \
   'printf "%s\n" "$out" | grep -q "^  1\. KAN-4  relocate: moves, renames or deletes files.* (why KAN-4)$" \
    && printf "%s\n" "$out" | grep -q "^  2\. KAN-3  schema: changes a schema" \

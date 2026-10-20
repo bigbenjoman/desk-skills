@@ -274,8 +274,10 @@ never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names 
 disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
 
-**The user's named order is spawn priority, not a merge chain**: if they ask for a literal chain
-that would idle a gate, say what that costs and ask. A released ticket's `collides_with` still
+**The user's named order is spawn priority, not a merge chain**: `plan-batch` seeds the queue
+blockers first and otherwise in the order named, and `pass.mjs` spawns in queue order, so pass the
+tickets that gate the most others first. If the user asks for a literal chain that would idle a gate,
+say what that costs and ask. A released ticket's `collides_with` still
 blocks it while that worker runs, so clear the entry too if you release it early. A ticket added
 mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs hold <SUCCESSOR>
 <TICKET>` behind any ticket it shares files with.
