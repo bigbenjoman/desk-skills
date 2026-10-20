@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchIdle, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
-import { checkSpine, spineMerger } from './spine-check.mjs';
+import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
@@ -164,6 +164,59 @@ function parkSpine(t, pr) {
   report.parked.push(`${t.key}: ${why}`);
 }
 
+// A feature child that owns criteria (the queue's `owners`, recorded when plan-batch seeds) finishes
+// with every spec it owns unmarked and passing, and no other child's spec changed; otherwise it parks
+// naming the spec, and its PR stays draft. Only its own ids run here; the base gate runs them all.
+// Children that own nothing run as before.
+const acceptanceSpecs = () => {
+  try {
+    const s = E.configValues('acceptance-specs');
+    if (s && !E.isNone(s)) return { specDir: s[0], cmd: s.find((x) => x.includes('{ids}')) ?? null };
+  } catch { /* named where it is used */ }
+  return { specDir: null, cmd: null };
+};
+const ownsSpecs = (t) => Q.feature === true && !isSpine(t) && ownedIds(Q.owners, t.key).length > 0;
+const SPEC_RUN_MS = 30 * 60 * 1000;
+function checkOwned(t, pr) {
+  if (pr == null) return;
+  const { specDir, cmd } = acceptanceSpecs();
+  // Under the test lock like any suite, in the child's worktree at the head it pushed.
+  const run = (ids) => {
+    if (!cmd) return { ok: false, out: 'config §4 Acceptance specs has no command taking {ids}' };
+    const command = specsCommand(cmd, ids);
+    return { ...shOut(join(BIN, 'with-lock.sh'), ['test', 'sh', '-c', command], { cwd: t.worktree, timeout: SPEC_RUN_MS }), command };
+  };
+  const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, owners: Q.owners, key: t.key, run });
+  q('set', t.key, `spec_check=${JSON.stringify({ ok: c.ok, problems: c.problems, at: new Date().toISOString() })}`);
+  if (c.ok) return;
+  const why = `${CHILD_SPECS_PREFIX}: ${c.problems.join('; ')}. PR #${pr} stays draft: send it back with what to fix (answer.mjs ${t.key} "<note>", then queue.mjs requeue ${t.key})`;
+  q('park', t.key, why);
+  report.parked.push(`${t.key}: ${why}`);
+}
+
+// The briefing section that tells a child which specs it owns, or '' for a child that owns none.
+function ownedBrief(t, wt) {
+  if (!ownsSpecs(t)) return '';
+  const { specDir, cmd } = acceptanceSpecs();
+  const ids = ownedIds(Q.owners, t.key);
+  const owned = specDir ? ownedSpecs(specFilesAt(wt, 'HEAD', specDir), ids) : ids.map((id) => ({ id, specs: [] }));
+  const lines = owned.flatMap(({ id, specs }) => (specs.length
+    ? specs.map((s) => `- ${id}: "${s.title}" in ${s.path}`)
+    : [`- ${id}: no spec titled with it on ${DEFAULT_BRANCH}. Park naming it rather than writing one`]));
+  return [
+    '## Acceptance specs you own',
+    '',
+    `This batch builds an epic as one feature, and each of its acceptance specs has one owning child. You own ${ids.length}:`,
+    '',
+    ...lines,
+    '',
+    `For each one: remove the marker that makes it ${EXPECTED_FAIL}, and make it pass. Run these spec files with §4 Unit tests, capped and locked as for any suite, rather than the whole acceptance directory: another child owns every other spec there, and each of those is still expected to fail.`,
+    'Change no acceptance spec you do not own. If yours cannot pass without changing one, park naming it and its criterion.',
+    `When you finish, the pass runs only your specs${cmd ? ` (\`${specsCommand(cmd, ids)}\`)` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or fails, or if your branch changed a spec another child owns.`,
+    '',
+  ].join('\n');
+}
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
   const log = join(STATE, 'logs', `${t.key}.log`);
@@ -276,6 +329,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     report.done.push(`${t.key}: ${done.trim()}${stopped}`);
     recordScope(t);
     if (isSpine(t)) parkSpine(t, pr);
+    else if (ownsSpecs(t)) checkOwned(t, pr);
   } else {
     // No marker is not evidence of failure. A worker can do everything and exit without
     // announcing it. Ask GitHub what actually exists before believing the silence. An open PR
@@ -287,6 +341,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       report.done.push(`${t.key}: PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`);
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
+      else if (ownsSpecs(t)) checkOwned(t, Number(pr));
     } else {
       q('set', t.key, 'state=failed');
       report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch} — check ${log}`);
@@ -503,6 +558,8 @@ for (const t of eligible) {
     `Answer file to wait on: ${answerFile}`,
     `Screenshot directory (print it as AUTOPILOT_IMAGES): ${join(STATE, 'images', t.key)}/`,
     '',
+    // Before the answers: collectAnswers keeps everything from an answer heading to the sibling notes.
+    ownedBrief(t, wt),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
   ].filter(Boolean).join('\n');

@@ -474,10 +474,11 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
   // pass.mjs reads this decision rather than re-deriving it from feature.json, which can name the
   // epic and a spine in a batch that runs as an ordinary one (a spine parked at triage, say).
   // The spine and the criterion ids it owes a spec for go with it: pass.mjs checks the finished spine
-  // against them before it parks for the person's approval.
+  // against them before it parks for the person's approval. So does the owner table: pass.mjs tells
+  // each child the specs it owns, and checks them when it finishes.
   const spineIds = feature?.on ? feature.criteria.map((c) => c.id).filter((id) => feature.plan.owners?.[id] || !feature.plan.untestable?.[id]) : null;
   execFileSync('node', [QUEUE, 'set-batch', `feature=${feature?.on === true}`, `spine=${feature?.on ? feature.spine : 'null'}`,
-    `spine_ids=${spineIds ? JSON.stringify(spineIds) : 'null'}`], { stdio: 'ignore' });
+    `spine_ids=${spineIds ? JSON.stringify(spineIds) : 'null'}`, `owners=${feature?.on ? JSON.stringify(feature.plan.owners ?? {}) : 'null'}`], { stdio: 'ignore' });
   for (const r of order) {
     const t = r.ticket;
     execFileSync('node', [QUEUE, 'add', t, r.type ?? 'Bug', r.lane], { stdio: 'ignore' });
