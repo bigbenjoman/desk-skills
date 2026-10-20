@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Turn a set of triage records into a batch plan: admission, collisions, Jira dependencies, and the
-// one batch of questions to put to the user before any code is written. Offline: it reads only the
+// Turn a set of triage records into a batch plan: admission, collisions, Jira dependencies, the merge
+// order by blast radius, and the one batch of questions to put to the user before any code is written. Offline: it reads only the
 // triage records (with the facts ticket-facts.mjs merged into them) and, for an epic batch,
 // $DESK_STATE/expansion.json from expand-parent.mjs and the feature plan the orchestrator drafts into
 // $DESK_STATE/feature.json.
@@ -76,6 +76,25 @@ for (let i = 0; i < admitted.length; i++) {
     if (shared.length) collisions.push({ a: admitted[i].ticket, b: admitted[j].ticket, shared });
   }
 }
+
+// Blast radius: the change kind triage judged (change_kind), largest first. A move merged after an
+// edit to what it moves conflicts badly, and git will not follow an added file across it, so the
+// edit's new files strand at the old path; the same two the other way round usually merge cleanly.
+const KINDS = {
+  relocate: 'moves, renames or deletes files: lands before anything that edits what it moves',
+  schema: 'changes a schema: lands before the shared code and surfaces that read it',
+  shared: 'changes shared code: lands before the single-surface work that uses it',
+  surface: 'touches one surface: lands after anything wider',
+};
+const KIND_ORDER = Object.keys(KINDS);
+const kindOf = (r) => (KIND_ORDER.includes(r.change_kind) ? r.change_kind : null);
+// A record with no kind (triage before it was asked for) is ordered as surface work, and said to be.
+const radius = (r) => (kindOf(r) ? KIND_ORDER.indexOf(kindOf(r)) : KIND_ORDER.length - 1);
+const kindLabel = (r) => kindOf(r) ?? 'surface (no kind recorded)';
+const named = (r) => records.indexOf(r);
+const SIZES = ['XS', 'S', 'M', 'L', 'XL'];
+const sizeRank = (r) => { const i = SIZES.indexOf(String(r.size ?? '').toUpperCase()); return i < 0 ? SIZES.length : i; };
+const mergesFirst = (a, b) => radius(a) - radius(b) || sizeRank(a) - sizeRank(b) || named(a) - named(b);
 
 // Dependencies from Jira "is blocked by" links (ticket-facts.mjs). A blocker in the batch holds its
 // successor until the blocker's PR merges (merge-driver.sh release_chain releases anything parked
@@ -238,14 +257,57 @@ for (const [t, ps] of Object.entries(preds)) {
   if (!preds[t].length) delete preds[t];
 }
 admitted = admitted.filter((r) => !onCycle.has(r.ticket));
+
+// The merge chain. Two tickets that share files merge one after the other, the larger blast radius
+// first; two of a kind, the smaller ticket first so only one of them pays, then the order they were
+// named in. Tickets that share no files are never chained, whatever their kinds. A Jira link (or the
+// feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds.
+// Holds are only added between two tickets neither of which already waits on the other, so the chain
+// cannot close a cycle.
+const waitsOn = (t, p) => {
+  const seen = new Set(); const stack = [t];
+  while (stack.length) {
+    for (const x of preds[stack.pop()] ?? []) {
+      if (x === p) return true;
+      if (!seen.has(x)) { seen.add(x); stack.push(x); }
+    }
+  }
+  return false;
+};
+const contradictions = [];
+const contradicts = (first, then, how) => {
+  if (radius(then) < radius(first)) contradictions.push(`${then.ticket} (${kindLabel(then)}) merges after ${first.ticket} (${kindLabel(first)}): ${how}`);
+};
+for (const r of admitted) {
+  for (const p of preds[r.ticket] ?? []) {
+    if (/Jira link/.test(holdWhy[r.ticket][p])) contradicts(byKey[p], r, `${r.ticket} is blocked by ${p} through a Jira link, and the link wins`);
+  }
+}
+const liveKeys = new Set(admitted.map((r) => r.ticket));
+for (const c of collisions) {
+  if (!liveKeys.has(c.a) || !liveKeys.has(c.b)) continue;
+  const [a, b] = [byKey[c.a], byKey[c.b]];
+  const files = `shares ${c.shared.join(', ')}`;
+  if (waitsOn(c.a, c.b) || waitsOn(c.b, c.a)) {
+    const [first, then] = waitsOn(c.a, c.b) ? [b, a] : [a, b];
+    if (!preds[then.ticket]?.includes(first.ticket)) contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+    continue;
+  }
+  const [first, then] = mergesFirst(a, b) < 0 ? [a, b] : [b, a];
+  const why = radius(first) !== radius(then) ? `${kindOf(first)} before ${kindLabel(then)}`
+    : sizeRank(first) !== sizeRank(then) ? `both ${kindLabel(first)}, ${first.ticket} is smaller`
+      : `both ${kindLabel(first)}, ${first.ticket} named first`;
+  holdBehind(then.ticket, first.ticket, `${files}; ${why}`);
+}
 const held = (t) => !!preds[t]?.length;
 const heldBy = (t) => preds[t].map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
 const depsArg = Object.entries(preds).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
 
-// Spawn order: blockers before what they block; otherwise the order the tickets were named in.
+// Spawn and merge order: blockers before what they block; otherwise the larger blast radius first,
+// then the order the tickets were named in.
 const order = [];
 {
-  const done = new Set(); const pending = [...ours];
+  const done = new Set(); const pending = [...ours].sort((a, b) => radius(a) - radius(b) || named(a) - named(b));
   while (pending.length) {
     const i = pending.findIndex((r) => (preds[r.ticket] ?? []).every((p) => done.has(p)));
     const [r] = pending.splice(i < 0 ? 0 : i, 1);
@@ -366,12 +428,27 @@ if (collisions.length) {
   for (const c of collisions) say(`  ${c.a} ~ ${c.b}: ${c.shared.join(', ')}`);
 }
 
+const merging = order.filter((r) => admitted.includes(r));
+if (merging.length) {
+  say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
+  merging.forEach((r, i) => {
+    say(`  ${i + 1}. ${r.ticket}  ${kindLabel(r)}: ${KINDS[kindOf(r) ?? 'surface']}${r.change_kind_reason ? ` (${r.change_kind_reason})` : ''}`);
+    if (held(r.ticket)) say(`       after ${heldBy(r.ticket)}`);
+  });
+}
+if (contradictions.length) {
+  say(`\nCONTRADICTIONS — ${contradictions.length}, where the dependencies override the blast-radius order:`);
+  for (const c of contradictions) say(`  ${c}`);
+}
+
 if (depsArg) {
-  say(`\nDEPENDENCIES — from Jira links${feature?.on ? ' and the feature plan' : ''} (held tickets start once every blocker's PR merges):`);
+  say(`\nDEPENDENCIES — from Jira links, the merge chain${feature?.on ? ' and the feature plan' : ''} (held tickets start once every blocker's PR merges):`);
   for (const [t, ps] of Object.entries(preds)) say(`  ${t} held: blocked by ${heldBy(t)}`);
   say(`--deps "${depsArg}"`);
-  say('Pass it to merge-driver.sh, joined with any collision chain (one entry per successor, predecessors unioned).');
+  say('Pass it to merge-driver.sh as it stands: it already carries the merge chain (one entry per successor, predecessors unioned).');
 }
+const unkinded = ours.filter((r) => laneOk(r) && !kindOf(r)).map((r) => r.ticket);
+if (unkinded.length) say(`\n! no change kind on ${unkinded.length} ticket(s): ${unkinded.join(', ')} — ordered as surface work; re-run triage.sh to record one`);
 const unsized = ours.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
 if (unsized.length) say(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
 if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);

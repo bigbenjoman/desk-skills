@@ -206,7 +206,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
-| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Then **set the merge order yourself**: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
+| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base), and in feature mode the drafted spine and owner table for approval. Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
@@ -265,52 +265,20 @@ Run `plan-batch.mjs --json` too. It exits 0 when every ticket can start with not
 
 ## Order the batch by blast radius
 
-`plan-batch` finds collisions and orders by Jira Blocks links (*Dependencies from Jira links*); the
-rest of the sequence is yours. **Set it at Stage 2, from the `files_in_scope` triage already gave
-you**, and the order is a merge order, not just a spawn order.
+`plan-batch` sets the merge order: triage records each ticket's `change_kind` (`relocate`, `schema`,
+`shared` or `surface`), and the plan's `MERGE ORDER` section lists the admitted tickets largest blast
+radius first, each with its kind and why. Two tickets that share files are chained, the larger blast
+radius first (two of a kind: the smaller first, then the order named), as holds in the queue and
+entries in the `--deps` it prints, which already carries the chain; tickets that share no files are
+never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
+disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
+contradiction is worth one line to the user, since the link may be stale.
 
-**Largest blast radius first.** A ticket that *moves, renames or deletes* files must land before any
-ticket that *edits* them. Rank by how much of the tree a ticket disturbs:
-
-1. moves, renames, deletions of whole directories, and new shared packages
-2. schema and migration changes
-3. shared components, design-system primitives and translation files
-4. ordinary single-surface work
-
-The reason is asymmetric: a rename landing after an edit conflicts badly and git will not follow an
-*added* file across it, so the edit's new files strand at the old path. The same two tickets in the
-other order usually merge cleanly.
-
-A relocation merged mid-batch re-breaks every remaining ticket that touches what it moved: a
-conflict resolution and a re-review each, severed migrations, deleted files silently resurrected.
-Merged first, it costs none of that.
-
-**Say the order and why in the Stage 2 report**, and put it in the status table's Notes so a reader
-can see a queue position was chosen rather than arbitrary. Where two tickets genuinely cannot be
-ordered (each edits what the other moves) say so and merge the smaller one first, so only one of
-them pays.
-
-**Start the gates first, and hold a ticket back only for a real collision.** Count how many tickets
-each one gates, directly and through other tickets. The biggest gate spawns in the first pass
-alongside every independent ticket. Hold a ticket back only behind the predecessor it actually
-shares files with; if it collides with two, hold it until the later of the two merges. A ticket with
-no shared files is never held back, whatever order it was named in. **The user's named order is
-spawn priority, not a merge chain**: if following it literally would idle a gate, say what that
-costs and ask, because a named order built as a literal chain starts a gate late and idles every
-ticket waiting on it.
-
-`pass.mjs` spawns in `queue.json` key order, so pass gates to `plan-batch` first, and when a held
-ticket is released move it to the front with `queue.mjs front <TICKET>`, or it waits behind every
-independent ticket. A released ticket's `collides_with` still blocks it while that worker runs, so
-clear the entry too if you release it early.
-
-**Colliding tickets are serial to the merge, not to the worker** (§5 Batches): as soon as a PR is
-done it gets merged, and then work starts on the next ticket. `pass.mjs` only holds a
-collider back while the other one's *worker* is running. So chain them yourself: hold each successor with
-`queue.mjs hold <SUCCESSOR> <TICKET>` (it records the blocker, so the batch stays alive while it
-waits), and pass the chain to the merge driver as `--deps`, which releases it (`state=triaged`, moved to the front) once that PR has
-merged. Tickets that share no files run in parallel lanes up to the concurrency cap, and each lane
-stays serial.
+**The user's named order is spawn priority, not a merge chain**: if they ask for a literal chain
+that would idle a gate, say what that costs and ask. A released ticket's `collides_with` still
+blocks it while that worker runs, so clear the entry too if you release it early. A ticket added
+mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs hold <SUCCESSOR>
+<TICKET>` behind any ticket it shares files with.
 
 ## An epic as a batch
 
@@ -360,8 +328,8 @@ node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
 
 A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
 those parks win, so a release can never send one to a headless worker. `plan-batch` seeds the queue
-blockers first. Join its `--deps` with your collision chains (one entry per successor,
-predecessors unioned) for the merge driver.
+blockers first, and its `--deps` already carries the merge chain for tickets that share files (*Order
+the batch by blast radius*): pass it to the merge driver as it stands.
 
 **A held ticket is in flight, not idle.** While every blocker is still on its way (running, waiting
 to spawn, or done with an open PR), `pass.mjs` reports it under `WAITING ON MERGE` and never exits
