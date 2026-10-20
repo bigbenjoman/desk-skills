@@ -5,11 +5,14 @@
 // orchestrator); workers never touch it — their state is derived from their own
 // logs plus `claude agents --json`. Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING } from './desk-env.mjs';
+import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
+import { ANSWER_HEAD } from './briefing.mjs';
+import { spineMerger } from './spine-check.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
+  ghRepo, permission, permissionKey } from './desk-env.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -92,6 +95,46 @@ function liveOrchestrator() {
     }
   } catch { /* advisory */ }
   return null;
+}
+
+// Send a ticket back for another worker: every field a requeue needs, not one of them left to a hand
+// edit that fails silently. The last round's log, park record and mailbox move aside to one
+// `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
+// worker's. The branch is kept: the merge driver finds the ticket's PR by it.
+function requeue(q, key) {
+  const t = ticket(q, key);
+  if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+  if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
+  // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
+  // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
+  // dependency cycle) or a lane C or D would slip by. A worker's own park never has open questions:
+  // it spawned only once they reached 0.
+  if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
+  if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
+  if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
+  if (!['A', 'B', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+  // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
+  // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
+  // worker never ran (a failed preflight or spawn): that was not the model falling short.
+  const wedged = t.state === 'parked' && /^wedged\b/.test(String(t.park?.question ?? ''));
+  const workerFailed = t.state === 'failed' && !t.spawn_failed;
+  let bumped = '';
+  if (t.model_tier === 'standard' && (wedged || workerFailed)) {
+    t.model_tier = 'high';
+    t.model_note = `standard → high after a ${wedged ? 'stalled' : 'failed'} worker`;
+    bumped = `; its next worker runs on the high model (${t.model_note})`;
+  }
+  // A spine's approval is for the specs it was given on: a requeued spine needs a fresh one, and its
+  // PR, out of draft since, would otherwise be merged by the driver before anyone approved the rework.
+  const undrafted = t.approved === true && t.result?.pr != null
+    ? `; PR #${t.result.pr} left draft when it was approved: put it back (gh pr ready ${t.result.pr} --repo ${ghRepo()} --undo) before the merge driver merges it`
+    : '';
+  const moved = rotateRound(key, { answers: true });
+  Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0,
+    spine_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
+  q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
+  save(q);
+  return `${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 const [, , cmd, ...args] = process.argv;
@@ -251,40 +294,75 @@ switch (cmd) {
     break;
   }
 
-  // Send a ticket back for another worker: every field a requeue needs, not one of them left to a hand
-  // edit that fails silently. The last round's log, park record and mailbox move aside to one
-  // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
-  // worker's. The branch is kept: the merge driver finds the ticket's PR by it.
   case 'requeue': {
     const [key] = args;
     if (!key) throw new Error('usage: queue.mjs requeue <TICKET>');
+    console.log(requeue(q, key));
+    break;
+  }
+
+  // A finished feature spine whose specs passed pass.mjs's check, approved by the person: the spine is
+  // done, its PR leaves draft (§3 pr-ready), and it merges under the batch's merge rules, after which
+  // what is held behind it is released. answer.mjs never un-parks; this is the orchestrator's decision.
+  case 'approve': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs approve <SPINE>');
     const t = ticket(q, key);
-    if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
-    if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
-    // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
-    // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
-    // dependency cycle) or a lane C or D would slip by. A worker's own park never has open questions:
-    // it spawned only once they reached 0.
-    if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
-    if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
-    if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
-    if (!['A', 'B', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
-    // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
-    // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
-    // worker never ran (a failed preflight or spawn): that was not the model falling short.
-    const wedged = t.state === 'parked' && /^wedged\b/.test(String(t.park?.question ?? ''));
-    const workerFailed = t.state === 'failed' && !t.spawn_failed;
-    let bumped = '';
-    if (t.model_tier === 'standard' && (wedged || workerFailed)) {
-      t.model_tier = 'high';
-      t.model_note = `standard → high after a ${wedged ? 'stalled' : 'failed'} worker`;
-      bumped = `; its next worker runs on the high model (${t.model_note})`;
-    }
-    const moved = rotateRound(key, { answers: true });
-    Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, updated_at: new Date().toISOString() });
-    q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
+    const sp = spinePark(t);
+    if (sp === 'specs') throw new Error(`${key}'s specs failed the check (${(t.spine_check?.problems ?? []).join('; ')}): no approval. Send it back: queue.mjs reject ${key} "<what to fix>"`);
+    if (sp !== 'approval' || t.spine_check?.ok !== true) throw new Error(`${key} is not a feature spine waiting for approval (state ${t.state}${t.park?.question ? `: ${t.park.question}` : ''})`);
+    const pr = t.result?.pr;
+    if (pr == null) throw new Error(`${key} records no PR to approve`);
+    Object.assign(t, { state: 'done', park: null, approved: true, approved_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     save(q);
-    console.log(`${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}`);
+    const held = Object.values(q.tickets).filter((x) => isHeld(x) && String(x.held_by ?? '').split('|').includes(key)).map((x) => x.key);
+    const after = held.length ? `${held.join(', ')} ${held.length > 1 ? 'are' : 'is'} released once it merges` : 'nothing is held behind it';
+    const repo = ghRepo();
+    const lines = [`${key} approved: the spine is done`];
+    let needsPerson = false;
+    if (permission('pr-ready') === 'yes') {
+      try {
+        execFileSync('gh', ['pr', 'ready', String(pr), '--repo', repo], { stdio: ['ignore', 'pipe', 'pipe'] });
+        lines.push(`PR #${pr} is ready for review`);
+      } catch (e) {
+        needsPerson = true;
+        lines.push(`PR #${pr} could not leave draft (${String(e.stderr ?? e.message).trim().split('\n').pop()}): gh pr ready ${pr} --repo ${repo}`);
+      }
+    } else {
+      needsPerson = true;
+      lines.push(`config §3 ${permissionKey('pr-ready')} is "${permission('pr-ready')}": undraft PR #${pr} yourself (gh pr ready ${pr} --repo ${repo})`);
+    }
+    const merger = spineMerger();
+    if (merger.driver) {
+      lines.push(`the merge driver merges PR #${pr} once it is green; ${after}`);
+    } else {
+      needsPerson = true;
+      lines.push(`${merger.rows}: merge PR #${pr} yourself once it is green, pinned to its head (gh pr merge ${pr} --repo ${repo} --match-head-commit <sha>); ${after}`);
+    }
+    console.log(lines.join('\n'));
+    if (needsPerson) process.exitCode = EXIT.SHOW_PERSON;
+    break;
+  }
+
+  // The person rejects the spine's specs, or a spine whose specs failed the check is sent back: the note
+  // goes into its briefing as a binding answer and the spine is requeued for a new worker. Nothing held
+  // behind it is released.
+  case 'reject': {
+    const [key, ...rest] = args;
+    const note = rest.join(' ').trim();
+    if (!key || !note) throw new Error('usage: queue.mjs reject <SPINE> "<the note>"');
+    const t = ticket(q, key);
+    if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
+    const pr = t.result?.pr;
+    const dir = join(stateDir(), 'briefings');
+    mkdirSync(dir, { recursive: true });
+    const brief = join(dir, `${key}.md`);
+    const entry = `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person sent this spine's acceptance specs back: ${note}\n` +
+      (pr != null ? `Your PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.\n` : '');
+    const msg = requeue(q, key);
+    if (existsSync(brief)) appendFileSync(brief, entry);
+    else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
+    console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
   }
 
@@ -338,7 +416,9 @@ switch (cmd) {
     for (const t of rows) {
       const stuck = isHeld(t) && !waitingOnMerge(q, t);
       const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();
+      const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
       const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (failed or parked): decide what happens to it`
+        : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
         : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
         : t.state === 'parked' ? t.park?.question ?? ''
         : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}`
@@ -354,7 +434,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|front|drop|get|list|render`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|drop|get|list|render`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

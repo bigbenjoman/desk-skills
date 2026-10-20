@@ -43,6 +43,7 @@ cat > "$T/config.md" <<EOF
 | \`autopilot-merge\` | Merge batch PRs | \`no\` | \`yes\` |
 | \`pr-merge-green\` | Merge on green | \`no\` | \`yes\` |
 | \`ci-rerun\` | Rerun CI | \`yes\` | \`no\` |
+| \`pr-ready\` | Undraft | \`yes\` | \`yes\` |
 
 ## 4. Tracker, tools and team
 | Field | Value |
@@ -80,6 +81,9 @@ if (a[0] === 'pr' && a[1] === 'list') {
   out('NONE 0');
 } else if (a[0] === 'api') {
   out('src/a.txt');
+} else if (a[0] === 'pr' && a[1] === 'ready') {
+  prs[a[2]].draft = false;
+  fs.writeFileSync(F, JSON.stringify(prs));
 } else if (a[0] === 'pr' && a[1] === 'merge') {
   const p = prs[a[2]];
   if (!p || p.state !== 'open' || at('--match-head-commit') !== p.sha) { console.error('merge refused'); process.exit(1); }
@@ -156,6 +160,23 @@ check "the driver releases the ticket pass.mjs reported due"         '[ "$(qf T-
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'
+
+# ---- a feature spine: only an approved spine releases, and approved it merges like any other ------
+SHA7=7777777777777777777777777777777777777777
+jq --arg s "$SHA7" '. + { "107": { head: "fix/T-7", base: "main", sha: $s, state: "merged", draft: true, checks: [["test", "SUCCESS"]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-7 Task A; q set T-7 branch=fix/T-7 state=done result.pr=107 'spine_check={"ok":true,"problems":[]}'
+q park T-7 "spine awaiting approval: PR #107"
+q add T-8 Task A; q set T-8 state=triaged branch=fix/T-8; q hold T-8 T-7
+q set-batch feature=true spine=T-7
+loop
+check "a spine PR merged without approval releases nothing"          '[ "$(qf T-8 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-8"'
+jq '."107".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+loop
+check "the spine's draft PR is not merged before approval"           '! grep -q "^107 " "$T/merges.log" && echo "$out" | grep -q "draft (still reviewing): #107"'
+out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
+check "approve undrafts the spine PR and hands it to the merge driver, exit 0" '[ $rc -eq 0 ] && [ "$(qf T-7 .state)" = done ] && [ "$(jq -r ".\"107\".draft" "$T/prs.json")" = false ] && echo "$out" | grep -q "the merge driver merges PR #107 once it is green; T-8 is released once it merges"'
+loop; loop
+check "the approved spine merges, pinned, and its child is released" 'grep -qx "107 main $SHA7" "$T/merges.log" && [ "$(qf T-8 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-8"'
 
 # ---- one loop with nothing ready, and one whose PR list fails -----------------------------------
 echo '{}' > "$T/prs.json"
