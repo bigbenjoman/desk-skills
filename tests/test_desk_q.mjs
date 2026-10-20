@@ -33,7 +33,7 @@ function world(overrides = {}) {
       'VPL-3': { summary: 'Long gaps between bookings', lane: 'A', size: 'M', lane_reason: 'mechanical once the gap rule is read', files_in_scope: ['src/gaps.ts', 'src/gaps.test.ts'] },
     } },
     'desk-skills': { port: 3500, conc: '2 / 3', beat: 1, queue: { batch: 'ds', concurrency: 2, tickets: { 'DS-1': { state: 'triaged', open_questions: 0 } } } },
-    'pr-ninja': { port: 3200, conc: '2 / 3', beat: 120, queue: { batch: 'pn', concurrency: 2, tickets: { 'PN-1': { state: 'parked', park: { question: 'which copy?' } } } } },
+    'pr-ninja': { port: 3200, conc: '2 / 3', beat: 120, otherQueueBeat: 1, queue: { batch: 'pn', concurrency: 2, tickets: { 'PN-1': { state: 'parked', park: { question: 'which copy?' } } } } },
     pranicuk: { port: 3502, conc: '1 / 2', beat: 60, queue: { batch: 'pk', concurrency: 2, tickets: {
       'KAN-1': { state: 'done', result: { pr: 5 } }, 'KAN-2': held('KAN-1'),
     } } },
@@ -58,6 +58,10 @@ function world(overrides = {}) {
         mkdirSync(join(state, 'orchestrators'), { recursive: true });
         writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: q, batch: r.queue.batch, pid: 1, at: minsAgo(r.beat) }));
       }
+      if (r.otherQueueBeat != null) {
+        mkdirSync(join(state, 'orchestrators'), { recursive: true });
+        writeFileSync(join(state, 'orchestrators', 'other.json'), JSON.stringify({ queue: join(T, 'other-queue.json'), batch: 'other', pid: 2, at: minsAgo(r.otherQueueBeat) }));
+      }
     }
     for (const [k, v] of Object.entries(r.triage ?? {})) {
       mkdirSync(join(state, 'triage'), { recursive: true });
@@ -77,6 +81,7 @@ const ov = W.run('--plain');
 const order = lines(ov.out).filter((l) => /^ {2}[a-z]/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
 t('AC1 live batches, then the quiet batch that needs you', order.join(), 'desk-skills,voicepa,pr-ninja');
 t('AC1 one line names the three repos with no batch', lines(ov.out).some((l) => l.startsWith('3 more set up with no batch: forewatt, gygg-platform, yield-index')), true);
+t('a fresh heartbeat for another queue file leaves a quiet batch quiet', /^\s+pr-ninja\s+2h 0m ago/.test(rowOf(ov.out, 'pr-ninja') ?? ''), true);
 // ---- AC2: a quiet batch whose unfinished tickets all wait is not listed
 t('AC2 quiet batch with only waiting tickets is hidden', rowOf(ov.out, 'pranicuk'), undefined);
 // ---- AC3: --all lists every set-up repo, no-batch ones marked
@@ -112,7 +117,7 @@ const zz = W.run('--plain', 'zz');
 t('AC10 no match exits non-zero listing the repos', zz.code !== 0 && /forewatt/.test(zz.err) && /voicepa/.test(zz.err), true);
 // ---- AC11: show on a held ticket
 const show = W.run('--plain', 'voicepa', 'show', 'VPL-3');
-const want = ['Long gaps between bookings', 'waiting', 'VPL-1', 'Parked: held by orchestrator', 'lane A', 'Why lane A:', 'mechanical once the gap rule is read', 'Files in scope (2):', 'src/gaps.ts', 'Branch: feat/VPL-3-gaps', `Log: ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
+const want = ['Long gaps between bookings', 'waiting', 'Starts when the last of these merges:\n  VPL-1     running', 'Parked: held by orchestrator', 'lane A', 'Why lane A:', 'mechanical once the gap rule is read', 'Files in scope (2):', 'src/gaps.ts', 'Branch: feat/VPL-3-gaps', `Log: ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
 t('AC11 show prints every field', want.filter((w) => !show.out.includes(w)).join(' | '), '');
 t('AC11 show leaves out the merged blocker', lines(show.out).some((l) => /^\s+VPL-0\b/.test(l)), false);
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);

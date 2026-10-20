@@ -46,18 +46,20 @@ export function shownState(q, t) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-// A hold's blockers less those done with a PR: a merged blocker is done, and nothing here calls
-// GitHub, so a done one with a PR counts as merged or on its way.
+// A hold's blockers less those done with a PR. The queue does not record merges and nothing here
+// calls GitHub, so a done one with a PR is merged or about to be, and is left out.
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null); });
 
-function lastPass(stateDir) {
+// pass.mjs writes one heartbeat per queue file into the state directory, so only this queue's counts.
+function lastPass(stateDir, queuePath) {
   const dir = join(stateDir, 'orchestrators');
   let last = null;
   for (const f of existsSync(dir) ? readdirSync(dir) : []) {
     try {
-      const at = Date.parse(JSON.parse(readFileSync(join(dir, f), 'utf8')).at);
-      if (Number.isFinite(at) && (last == null || at > last)) last = at;
+      const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+      const at = Date.parse(hb.at);
+      if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last)) last = at;
     } catch { /* a torn heartbeat is no heartbeat */ }
   }
   return last;
@@ -82,7 +84,7 @@ export function loadRepos(now = Date.now()) {
     if (existsSync(queuePath)) {
       try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
     }
-    r.last = lastPass(stateDir);
+    r.last = lastPass(stateDir, queuePath);
     r.live = r.last != null && now - r.last < LIVE_MS;
     const rows = Object.values(r.q?.tickets ?? {});
     r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t) }));
@@ -150,7 +152,7 @@ export function overview(repos, { all = false, now = Date.now(), avail = availab
 function detail(r, x) {
   const { t, k } = x;
   if (k === 'running') return `stage ${t.stage ?? '?'}`;
-  if (k === 'waiting' || k === 'stuck') return `behind ${unmergedBlockers(r.q, t).join(', ') || 'merged tickets'}`;
+  if (k === 'waiting' || k === 'stuck') return `behind ${unmergedBlockers(r.q, t).join(', ') || 'PRs of done tickets'}`;
   if (k === 'needs') return t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`;
   if (k === 'failed') return t.park?.question ?? '';
   if (k === 'queued') return 'waiting for triage';
@@ -169,10 +171,9 @@ export function repoScreen(r, { now = Date.now() } = {}) {
   ];
   r.rows.forEach((x, i) => {
     const title = triageOf(r.stateDir, x.t.key)?.summary ?? '';
-    out.push(`  ${rpad(`${x.t.placed ? '*' : ''}${i + 1}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, 60)}`.trimEnd());
+    out.push(`  ${rpad(i + 1, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, 60)}`.trimEnd());
   });
   if (!r.rows.length) out.push('  No unfinished tickets.');
-  if (r.rows.some((x) => x.t.placed)) out.push('', '* placed by you: a release or requeue leaves it where it is');
   return out.join('\n');
 }
 
@@ -183,15 +184,17 @@ export function ticketScreen(r, key) {
   const i = r.rows.findIndex((x) => x.t.key === key);
   const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
   const out = [
-    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, i >= 0 ? `position ${i + 1} of ${r.rows.length}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · ')}`,
+    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, i >= 0 ? `position ${i + 1} of ${r.rows.length}` : null].filter(Boolean).join(' · ')}`,
     '',
     ...(tr.summary ? wrap(tr.summary, 96) : ['(no triage record: title unknown)']),
     '',
   ];
   if (k === 'running') out.push(`A worker is on it, at stage ${t.stage ?? '?'}.`, '');
   if (k === 'waiting' || k === 'stuck') {
-    out.push(k === 'waiting' ? 'Starts when the last of these merges:' : 'Stuck. At least one of these will never merge by itself:');
-    for (const b of unmergedBlockers(r.q, t)) {
+    const open = unmergedBlockers(r.q, t);
+    out.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
+      : k === 'waiting' ? 'Starts when the last of these merges:' : 'Stuck. At least one of these will never merge by itself:');
+    for (const b of open) {
       const bt = r.q.tickets[b];
       out.push(`  ${pad(b, 10)}${bt ? `${pad(LABEL[shownState(r.q, bt)], 11)}${cut(triageOf(r.stateDir, b)?.summary ?? '', 70)}` : 'not in this queue'}`.trimEnd());
     }
