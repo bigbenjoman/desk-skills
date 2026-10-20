@@ -418,7 +418,7 @@ test.fails('AC3: other specs are left alone', () => {});"
 printf '%s\n' "$SPECS" > "$T/repo/tests/acceptance/feature.spec.ts"
 cat > "$T/repo/tests/acceptance/run.sh" <<EOF
 echo "\$1" >> "$T/specs-run.log"
-for id in \$(echo "\$1" | tr '|' ' '); do grep -qx "\$id" tests/acceptance/failing 2>/dev/null && { echo "\$id failed: expected true, got false"; exit 1; }; done
+grep -qx "\$1" tests/acceptance/failing 2>/dev/null && { echo "\$1 failed: expected true, got false"; exit 1; }
 exit 0
 EOF
 git -C "$T/repo" add -A && git -C "$T/repo" commit -q -m "spine specs" && git -C "$T/repo" push -q origin main

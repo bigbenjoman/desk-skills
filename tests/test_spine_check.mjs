@@ -41,6 +41,15 @@ t('an owned spec left pytest skip is named', S(child('K-1', 'test_f.py', py('@py
 t('an owned python spec unmarked is clean', S(child('K-1', 'test_f.py', py('@pytest.mark.xfail(strict=True)'), py('@pytest.mark.parametrize("x", [1])'))), '[]');
 t('a wrapped signature keeps the function body in the spec', S(child('K-1', 'test_f.py', py('#'), py('#').replace('assert other()', 'assert other() is None'))),
   S(['"test_ac2_other" in test_f.py is AC2\'s spec, owned by K-2: K-1 changed it']));
+const oneLine = (deco) => `import pytest
+
+@pytest.mark.xfail(strict=True)
+def test_ac2_other(): assert other()
+
+${deco}
+def test_ac1_mine(): assert done()
+`;
+t('a one-line test does not take the next test into its body', S(child('K-1', 'test_f.py', oneLine('@pytest.mark.xfail(strict=True)'), oneLine('#'))), '[]');
 
 // One id per run: runners join several differently.
 t('the command takes one id', specsCommand('pnpm vitest run tests/acceptance -t "{ids}"', 'AC1'), 'pnpm vitest run tests/acceptance -t "AC1"');

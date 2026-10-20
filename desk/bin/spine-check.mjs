@@ -69,9 +69,27 @@ export function declarations(path, text) {
   if (/\.py$/.test(path)) {
     const lines = text.split('\n');
     const indent = (s) => /^\s*/.exec(s)[0].length;
+    // The line a def's signature closes on: where its parentheses balance again, strings and comments
+    // skipped. A formatter wraps a long one, with `):` back at the def's indent.
+    const sigEnd = (i) => {
+      let depth = 0;
+      for (let k = i; k < lines.length; k += 1) {
+        const l = lines[k];
+        for (let c = 0; c < l.length && l[c] !== '#'; c += 1) {
+          if (l[c] === '\'' || l[c] === '"') { const q = l[c]; for (c += 1; c < l.length && l[c] !== q; c += 1) if (l[c] === '\\') c += 1; }
+          else if (l[c] === '(') depth += 1;
+          else if (l[c] === ')' && --depth === 0) return k;
+        }
+      }
+      return i;
+    };
+    const defs = [];
     lines.forEach((line, i) => {
       const m = /^\s*(?:async\s+)?def\s+(test_\w+)\s*\(/.exec(line);
-      if (!m) return;
+      if (m) defs.push({ i, m });
+    });
+    defs.forEach(({ i, m }, n) => {
+      const line = lines[i];
       // The decorators straight above the def, continuation lines included.
       // A commented-out decorator is not one.
       const deco = [];
@@ -86,12 +104,11 @@ export function declarations(path, text) {
       const xfail = /pytest\.mark\.xfail\b/.test(block);
       const strict = /pytest\.mark\.xfail\s*\([^)]*\bstrict\s*=\s*True\b/.test(block);
       const skip = /pytest\.mark\.skip(if)?\b/.test(block);
-      // The function runs from the line that closes its signature (a formatter wraps a long one, with
-      // `):` back at the def's indent) until the next non-blank line indented no deeper than its def.
-      let sig = i;
-      while (sig < lines.length - 1 && !/:\s*(#.*)?$/.test(lines[sig])) sig += 1;
-      let to = sig + 1;
-      while (to < lines.length && (!lines[to].trim() || indent(lines[to]) > indent(line))) to += 1;
+      // The function runs on from its signature until the next non-blank line indented no deeper than
+      // its def, and never into the next test's def.
+      let to = sigEnd(i) + 1;
+      const next = defs[n + 1]?.i ?? lines.length;
+      while (to < next && (!lines[to].trim() || indent(lines[to]) > indent(line))) to += 1;
       const body = lines.slice(from, to).join('\n').trimEnd();
       out.push({
         title: m[1], expectedFail: strict, why: xfail && !strict ? 'xfail without strict=True' : null,
