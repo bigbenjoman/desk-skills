@@ -161,17 +161,22 @@ export function scanSpecs(files, ids) {
 // The spine's branch in its worktree, against origin/<base>: the specs it changed under specDir. The
 // ids are the queue's `spine_ids`, which plan-batch records with the spine when it seeds.
 export function checkSpine({ worktree, base, specDir, ids }) {
-  const fail = (why) => ({ ok: false, problems: [why] });
-  if (!Array.isArray(ids) || !ids.length) return fail('the queue records no criterion ids for the spine (spine_ids, set when plan-batch seeds)');
-  if (!specDir) return fail('config §4 Acceptance specs names no spec directory');
-  if (!worktree || !existsSync(worktree)) return fail(`its worktree ${worktree ?? '(none recorded)'} is gone, so its specs could not be read`);
+  if (!Array.isArray(ids) || !ids.length) return { ok: false, problems: ['the queue records no criterion ids for the spine (spine_ids, set when plan-batch seeds)'] };
+  const { files, problem } = spineSpecFiles({ worktree, base, specDir });
+  return problem ? { ok: false, problems: [problem] } : scanSpecs(files, ids);
+}
+
+// The spec files the spine's branch lands under specDir, at its HEAD: { files: [{path, text}] }, or
+// { problem } naming why they could not be read.
+export function spineSpecFiles({ worktree, base, specDir }) {
+  if (!specDir) return { problem: 'config §4 Acceptance specs names no spec directory' };
+  if (!worktree || !existsSync(worktree)) return { problem: `its worktree ${worktree ?? '(none recorded)'} is gone, so its specs could not be read` };
   const changed = changedFiles(worktree, `origin/${base}`);
-  if (!changed) return fail(`could not diff ${worktree} against origin/${base}`);
+  if (!changed) return { problem: `could not diff ${worktree} against origin/${base}` };
   const dir = specRoot(specDir);
   // A file deleted on the branch reads as null: not a spec it lands.
   const files = changed.filter((p) => p.startsWith(dir)).map((path) => ({ path, text: gitShow(worktree, 'HEAD', path) })).filter((f) => f.text != null);
-  if (!files.length) return fail(`its branch changes no spec under ${dir}`);
-  return scanSpecs(files, ids);
+  return files.length ? { files } : { problem: `its branch changes no spec under ${dir}` };
 }
 
 // ---- children: each makes the specs it owns pass and leaves the others alone ----------------------

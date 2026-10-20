@@ -415,7 +415,24 @@ spine is never left done: it parks, and its PR stays draft.
 
 - **`spine awaiting approval`**: the check passed. `WAITING ON YOU` carries `SPINE APPROVAL`, the
   children held behind it show as `WAITING ON APPROVAL` (never `STUCK`), the batch is not idle, and
-  the pass exits 11. Put the specs to the person: do they mean what the criteria say?
+  the pass exits 11. Put the specs to the person: do they mean what the criteria say? **Review them
+  first**, because a page of specs hides the one that tests the wrong thing:
+  1. `node ~/.claude/desk/bin/spine-review.mjs brief <SPINE>` prints the reviewer's prompt: every
+     spec titled with a criterion id, its criterion and its file.
+  2. Run Mira (`mira-playwright-expert`) with your own Agent call, read-only, on that prompt. It
+     reports, per spec, a criterion clause the spec does not assert, two specs that contradict, a spec
+     coupled to an internal module path, and an expected failure that would come from something other
+     than the assertion (an import error, a typo). It changes no spec. Where the agent is not
+     installed, run `general-purpose` on the same prompt and say so. Save its final text to
+     `<state>/spine-review-<SPINE>.txt` and check `git -C <its worktree> status --porcelain` is clean.
+  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt`
+     prints one question per spec, each with its criterion, its file and the findings for it. A
+     reviewer that failed or returned nothing (leave the file off) makes every question say its spec
+     was not reviewed; never present those as clean. Findings naming no reviewed spec come back as
+     `unmatched`: show them too.
+  4. Ask them as `AskUserQuestion` carousels (*Asking*), one question per spec, its `question`
+     text verbatim, options approve or send back. Every spec approved: approve the spine. Any sent
+     back: reject it with every spec's note in one.
   - Approved: `queue.mjs approve <SPINE>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
     otherwise it tells you to undraft it), and it merges under the batch's merge rules: the merge
     driver where §3 `autopilot-merge` and `pr-merge-green` are `yes`, else each pass says
@@ -931,6 +948,8 @@ node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
+node ~/.claude/desk/bin/spine-review.mjs brief ABC-126                # the read-only reviewer's prompt for a spine awaiting approval
+node ~/.claude/desk/bin/spine-review.mjs questions ABC-126 <reply>    # one approval question per spec, with the review's findings
 node ~/.claude/desk/bin/queue.mjs approve ABC-126                     # the person approved a feature spine's specs: done, undrafted, merges
 node ~/.claude/desk/bin/queue.mjs reject ABC-126 "<note>"             # the person sent the spine's specs back: requeued with the note
 node ~/.claude/desk/bin/harvest.mjs <state>/logs/ABC-123.log
