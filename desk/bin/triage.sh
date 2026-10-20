@@ -121,6 +121,12 @@ Things that are not in that file and matter here:
 - **"Already fixed" is not a lane.** If the code seems to satisfy the ticket, say so in
   \`lane_reason\` with file:line per acceptance criterion, keep the lane you would otherwise pick,
   and add an \`unknowns\` entry. Nothing in a batch closes a ticket on a triage opinion.
+- **Name the change's blast radius in \`change_kind\`**: the largest of these the change makes, from
+  the code you read, not the ticket's wording. plan-batch merges the batch in this order.
+  \`relocate\`: moves, renames or deletes files or whole directories, or adds a new shared package.
+  \`schema\`: changes a schema, a migration, or a persisted or wire format others read.
+  \`shared\`: changes code, components, primitives or translation files more than one surface uses.
+  \`surface\`: ordinary work on one surface.
 
 Write ONLY this JSON to $OUT — no prose, no code fence:
 
@@ -134,6 +140,8 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "lane_reason": "<the specific signal that chose it, in the routing file's terms>",
   "branch": "<this repo's branch convention, $BRANCH_CONV, with <TICKET> = $TICKET>",
   "files_in_scope": ["repo-relative paths you expect to change"],
+  "change_kind": "relocate|schema|shared|surface",
+  "change_kind_reason": "<one clause: what it moves, the schema or shared code it changes, or the surface it touches>",
   "unknowns": ["questions only the user can answer. Empty if none."],
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
@@ -158,7 +166,7 @@ if [ ! -f "$OUT" ]; then
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
-node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch");' "$OUT" \
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------

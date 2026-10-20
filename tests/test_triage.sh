@@ -51,7 +51,7 @@ cat > "$T/stub/claude" <<'EOF'
 n=$(ls "$STUB_LOG".* 2>/dev/null | wc -l | tr -d ' ')
 printf '%s\0' "$@" > "$STUB_LOG.$n"
 if [ "$n" = 0 ]; then
-  printf '{"ticket":"fix-thing","lane":"%s","branch":"fix/fix-thing"}' "$STUB_LANE" > "$DESK_STATE/triage/fix-thing.json"
+  printf '{"ticket":"fix-thing","lane":"%s","branch":"fix/fix-thing","change_kind":"%s"}' "$STUB_LANE" "${STUB_KIND-surface}" > "$DESK_STATE/triage/fix-thing.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
   printf '%s' "$STUB_CHAL" > "$DESK_STATE/triage/fix-thing.challenge.json"
@@ -119,7 +119,15 @@ check "first pass receives every flag"                                  'flags_o
 check "first pass output goes to /dev/null"                             '[ -f "$STUB_LOG.0" ] && [[ "$out" != *STUB-* ]]'
 check "first pass: every git command it names runs under triage settings" 'prompt_git_ok 0'
 check "first pass: names no git -C or fetch"                            '! node "$T/match.js" prompt "$STUB_LOG.0" | grep -qE "^git (-C|fetch)"'
-check "triage settings: git ls-tree on any ref"                         'permits "git ls-tree -r --name-only origin/main -- desk" && permits "git ls-tree HEAD"'
+check "AC1: the prompt asks for one of the four change kinds"           'tr "\0" "\n" < "$STUB_LOG.0" | grep -qF "\"change_kind\": \"relocate|schema|shared|surface\""'
+for k in '' 'move'; do
+  rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+  out=$(STUB_KIND="$k" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+  check "AC1: a record whose change kind is '$k' is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
+done
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "triage settings: git ls-tree on any ref"                        'permits "git ls-tree -r --name-only origin/main -- desk" && permits "git ls-tree HEAD"'
 check "triage settings: branch listing allowed"                         'permits "git branch -a" && permits "git branch -r" && permits "git branch --list -r"'
 check "triage settings: branch -r/-a cannot delete"                     '! permits "git branch -r -d origin/x" && ! permits "git branch -a -D x" && ! permits "git branch -rd origin/x"'
 check "triage settings: fetch and -C refused"                           '! permits "git fetch" && ! permits "git fetch origin" && ! permits "git -C /x log"'
