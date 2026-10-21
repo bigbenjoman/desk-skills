@@ -171,10 +171,12 @@ function etaLines(r, F, x, now) {
   const start = e.start <= now + SOON ? (x.k === 'running' ? 'running now' : 'now') : when(e.start, now);
   const size = F.sizes[key];
   const { v, own } = durationsFor(F.d, size);
-  const few = !own && F.d.bySize[size]?.length ? ` Size ${size} has ${F.d.bySize[size].length} of them, too few to use alone.` : '';
+  // Drawn from the whole history, the line still says how many of this size it holds, or that triage gave none.
+  const n = F.d.bySize[size]?.length ?? 0;
+  const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
   return [
     `Starts: ${start}   Ships: ${when(e.likely, now)}   Could run to ${when(e.late, now)} (1 run in 5 is later)`,
-    `From ${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}: typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h.${few}`,
+    `From ${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of}: typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h.`,
     '',
   ];
 }

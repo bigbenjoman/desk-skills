@@ -174,6 +174,13 @@ repo('alpha', 3100, {
   sizes: { 'A-1': 'M', 'A-2': 'S', 'A-3': 'M', 'A-4': 'M', 'A-5': 'S', 'A-6': 'M', 'A-7': 'S' },
   history: [...range(6, (i) => ['S', 1 + i]), ...range(6, (i) => ['M', 2 + i])],
 });
+// beta has no size L history, only 3 of size M, and B-2 has no triage record at all.
+repo('beta', 3300, {
+  workers: 3,
+  tickets: { 'B-1': { state: 'triaged' }, 'B-2': { state: 'triaged' }, 'B-3': { state: 'triaged' } },
+  sizes: { 'B-1': 'L', 'B-3': 'M' },
+  history: [...range(10, (i) => ['S', 1 + i]), ...range(3, (i) => ['M', 2 + i])],
+});
 repo('nine', 3200, { tickets: { 'N-1': { state: 'triaged' } }, sizes: { 'N-1': 'S' }, history: range(9, () => ['S', 2]) });
 
 // ---- forecast AC1: `desk-q ships <repo> --plain` from the shell
@@ -231,6 +238,11 @@ const i3 = a3.findIndex((l) => l.startsWith('Starts: '));
 t('DS-161 AC10: starts, ships and could run to', /^Starts: \S.*? {3}Ships: \S.*? {3}Could run to \S.*? \(1 run in 5 is later\)$/.test(a3[i3] ?? ''), true);
 t('DS-161 AC10: could run to is no earlier than ships', F.T['A-3'].late >= F.T['A-3'].likely, true);
 t('DS-161 AC10: then how many merged tickets of its size the history holds', (a3[i3 + 1] ?? '').startsWith('From 6 merged size M tickets in alpha: typical '), true);
+const beta = Q.loadRepos(FIXED).find((r) => r.name === 'beta');
+const histLine = (key) => { const l = Q.ticketScreen(beta, key, { now: FIXED }).split('\n'); return l[l.findIndex((x) => x.startsWith('Starts: ')) + 1] ?? ''; };
+t('DS-161 AC10: a size the history has none of still names its count, 0', histLine('B-1').startsWith('From 13 merged tickets in beta (0 of size L): typical '), true);
+t('DS-161 AC10: a ticket triage gave no size says so', histLine('B-2').startsWith('From 13 merged tickets in beta (triage recorded no size): typical '), true);
+t('DS-161 AC10: a size with too few to use alone names its count', histLine('B-3').startsWith('From 13 merged tickets in beta (3 of size M, too few to use alone): typical '), true);
 
 // ---- forecast AC11: the same files and clock give the same dates
 const rows = alpha.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: String(tk.collides_with ?? '').split('|').filter(Boolean) }));
