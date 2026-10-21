@@ -131,7 +131,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])));
   const rows = r.rows.map(({ t, k }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
-  const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing !== 0).map((e) => [e.key, { missing: e.missing }]));
+  const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, history.map((l) => [l.key, l.size, l.hours])]);
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
@@ -249,7 +249,7 @@ function epicWhy(r, F, e, checkin) {
 // One epic's line: key, title, children done of total, then STARTS and SHIPS, shipped, or why it has no date.
 function epicLine(r, F, e, now, checkin) {
   const lead = `  ${pad(e.key, 10)}${pad(cut(e.summary, 30), 32)}${pad(`${e.done}/${e.total}`, 7)}`;
-  if (!e.queued && e.missing === 0) return `${lead}${pad('—', 13)}shipped${e.shipped != null ? ` ${when(e.shipped, now)}` : ''}`;
+  if (!e.queued && !e.missing) return `${lead}${pad('—', 13)}shipped${e.shipped != null ? ` ${when(e.shipped, now)}` : ''}${e.missing == null ? ' · children not read' : ''}`;
   const d = F.E[e.key];
   if (!d) return `${lead}${pad('—', 13)}${epicWhy(r, F, e, checkin)}`;
   const running = r.rows.some((x) => F.of[x.t.key] === e.key && x.k === 'running');

@@ -306,8 +306,8 @@ check "facts: size from the body's first line" '[ "$(jq -r .size "$T/state/triag
 check "facts: a ticket with no parent records no epic" '[ "$(jq -c .epic "$T/state/triage/KAN-53.json")" = null ]'
 rec KAN-56 '{"ticket":"KAN-56","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-56 >/dev/null 2>&1
-check "facts: a parent epic is recorded with its key, summary and children" \
-  '[ "$(jq -c "[.epic.key, .epic.summary, (.epic.children | length), ([.epic.children[] | select(.done) | .key])]" "$T/state/triage/KAN-56.json")" = "[\"KAN-10\",\"Epic\",7,[\"KAN-12\"]]" ]'
+check "facts: a parent epic is recorded with its key, summary and this repo's children (not OTH-1)" \
+  '[ "$(jq -c "[.epic.key, .epic.summary, (.epic.children | length), ([.epic.children[] | select(.done) | .key]), ([.epic.children[].key] | index(\"OTH-1\"))]" "$T/state/triage/KAN-56.json")" = "[\"KAN-10\",\"Epic\",6,[\"KAN-12\"],null]" ]'
 rec KAN-57 '{"ticket":"KAN-57","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-57 >/dev/null 2>&1
 check "facts: a parent that is not an epic records none" '[ "$(jq -c .epic "$T/state/triage/KAN-57.json")" = null ]'

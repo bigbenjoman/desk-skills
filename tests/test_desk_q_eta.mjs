@@ -406,6 +406,19 @@ t('DS-165 AC7: the tickets are dated exactly as with no epics at all', forecast(
 t('DS-165 AC7: a ticket with no epic has a date', VF.T['V-12'] != null, true);
 t('DS-165 AC7: and is counted as having no epic', [VF.noEpic, vShips.includes('Other work: 1 ticket with no epic.')], [1, true]);
 
+// ---- review round 1: an epic with nothing queued and an unread children list has shipped; no workers, no date
+const { epicsOf } = await import('../desk/bin/desk-q-eta.mjs');
+const unread = epicsOf({ 'U-1': { state: 'done', merged_at: iso(FIXED - HOUR) } }, { 'U-1': { epic: { key: 'EP-9', summary: 'Unread' } } }).epics['EP-9'];
+t('DS-165 fix: an epic whose children were not read reads as unknown, not as none missing', [unread.queued, unread.missing], [0, null]);
+repo('unread', 4100, {
+  tickets: { 'U-1': { state: 'done', merged_at: iso(FIXED - HOUR) }, 'U-2': { state: 'triaged' } },
+  sizes: { 'U-1': 'M', 'U-2': 'M' }, epics: { 'U-1': { key: 'EP-9', summary: 'Unread' } }, history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+t('DS-165 fix: and with nothing queued it shows as shipped, not run forward',
+  [Q.forecastOf(repoAt('unread'), { now: FIXED }).E['EP-9'], Q.run(['ships', 'unread', '--plain'], { now: FIXED }).split('\n').find((l) => l.startsWith('  EP-9 '))?.endsWith('shipped today 17:51 · children not read')], [undefined, true]);
+t('DS-165 fix: with workers set to 0, children not queued leave the epic undated',
+  forecast({ rows: [], workers: 0, history: vHist, now: FIXED, epics: { 'EP-9': { missing: 2 } } }).E['EP-9'], null);
+
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');

@@ -109,7 +109,8 @@ Run by `triage.sh` after the model writes the record, for tracker keys only (non
 - `size`: the value of the field whose display name (from `names`) is `Size`, else a first
   description line `Size: XS|S|M|L|XL`, else null;
 - `epic`: `{key, summary, children: [{key, done}]}` when `fields.parent` is an epic (hierarchy
-  level 1), the children from `desk-jira children <EPIC> --json`, else null. A children read that
+  level 1, or a type named for an epic), the children from `desk-jira children <EPIC> --json` that
+  match this repo's ticket key pattern, else null. A children read that
   fails leaves `children` out and sets `epic_error`. desk-q's forecast reads it to date each epic;
 - `facts_error`: set instead when the read fails or does not parse.
 

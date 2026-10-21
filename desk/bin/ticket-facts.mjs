@@ -65,11 +65,14 @@ if (kind.kind !== 'tracker') {
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
       ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
-    // The epic's children, so the forecast can count the ones not queued yet.
+    // The epic's children in this repo, so the forecast can count the ones not queued yet; a child
+    // under another key pattern never runs in this queue (expand-parent.mjs drops it the same way).
     let children = null;
     if (epicFact(issue, null)) {
-      try { children = JSON.parse(execFileSync('desk-jira', ['children', issue.fields.parent.key, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 })); }
-      catch (e) { rec.epic_error = lastLine(e) || 'desk-jira children failed'; }
+      try {
+        children = JSON.parse(execFileSync('desk-jira', ['children', issue.fields.parent.key, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }))
+          .filter((c) => { const k = ticketKind(c?.key); return k.ok && k.kind === 'tracker'; });
+      } catch (e) { rec.epic_error = lastLine(e) || 'desk-jira children failed'; }
     }
     rec.epic = epicFact(issue, children);
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint

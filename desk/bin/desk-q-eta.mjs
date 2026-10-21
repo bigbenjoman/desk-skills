@@ -284,12 +284,16 @@ const stageDone = (st) => { const m = /^(\d+)(b?)\/9\b/.exec(String(st ?? '')); 
 // Triage records each ticket's parent epic (ticket-facts.mjs, from Jira's parent field), and the
 // forecast dates an epic as the moment its last child merges, inside each run.
 
+// Whether a Jira issue type is an epic: the epic level of the hierarchy, or a type named for one.
+export const isEpic = (type) => type?.hierarchyLevel === 1 || /epic/i.test(String(type?.name ?? ''));
+
 // The triage record's `epic`, from a `desk-jira get --json` issue and its parent's
-// `desk-jira children --json`: {key, summary, children: [{key, done}]}, or null when the parent is
-// not an epic. `children` null (the read failed) leaves the list out, so the count reads as unknown.
+// `desk-jira children --json` (this repo's children only): {key, summary, children: [{key, done}]}, or
+// null when the parent is not an epic. `children` null (the read failed) leaves the list out, so the
+// count reads as unknown.
 export function epicFact(issue, children) {
-  const p = issue?.fields?.parent, type = p?.fields?.issuetype;
-  if (!p?.key || !(type?.hierarchyLevel === 1 || /^epic$/i.test(String(type?.name ?? '')))) return null;
+  const p = issue?.fields?.parent;
+  if (!p?.key || !isEpic(p.fields?.issuetype)) return null;
   const e = { key: p.key, summary: String(p.fields?.summary ?? '') };
   if (Array.isArray(children)) e.children = children.filter((c) => c?.key).map((c) => ({ key: c.key, done: c.fields?.status?.statusCategory?.key === 'done' }));
   return e;
@@ -404,6 +408,8 @@ export function forecast({ rows, workers, history, now, checkin = false, epics =
       if (ks.some((k) => f[k] == null)) continue;
       let m = ks.length ? Math.max(...ks.map((k) => f[k])) : end;
       const missing = epics[ep].missing ?? 0;
+      // With no workers, a child not queued yet never starts.
+      if (missing && workers <= 0) continue;
       if (missing) {
         let extra = 0;
         for (let j = 0; j < missing; j++) extra += d.all[Math.floor(erand() * d.all.length)] * HOUR;
