@@ -447,6 +447,10 @@ t('DS-163 AC5 one that ends inside does not', tidyTl.filter((l) => /^ {2}T-\d .*
 const everyTl = lines(Q.timelineScreen(Q.loadRepos(FIXED), null, { now: FIXED }));
 t('DS-163 AC6 every repo groups tickets under a row per repo', everyTl.includes('  tidy · 7 tickets') && everyTl.includes('  slow · 4 tickets'), true);
 t('DS-163 AC6 a repo with too little history says so under the rows', everyTl.some((l) => l.startsWith('voicepa · No ship estimate')), true);
+const undatable = Q.loadRepos(FIXED).filter((r) => ['voicepa', 'pr-ninja'].includes(r.name));
+t('every repo with too little history: each says so, and none claims to have nothing unfinished',
+  [Q.timelineScreen(undatable, null, { now: FIXED }), Q.daysScreen(undatable, null, { now: FIXED })].map((s) => `${s.includes('voicepa · No ship estimate')} ${s.includes('pr-ninja · No ship estimate')} ${s.includes('Nothing unfinished')}`).join(', '),
+  'true true false, true true false');
 const Hc = screen({ kind: 'timeline', slug: null }, 120, () => FIXED);
 await sleep(20);
 await Hc.press('z');

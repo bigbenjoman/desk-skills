@@ -191,17 +191,13 @@ function queueDone(r, now, checkin) {
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
 export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } = {}) {
-  const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
-  if (!list.length) return 'No repo here has an autopilot batch, so there is nothing to date.';
+  const s = etaScope(repos, slug, { now, checkin });
+  if (!s.list.length) return nothingToDate;
   const out = [];
-  for (const r of list) {
+  for (const { r, F, note } of s.per) {
     if (out.length) out.push('');
-    if (r.error) { out.push(`${r.name} · queue unreadable: ${r.error}`); continue; }
-    if (!r.q) { out.push(`${r.name} · no autopilot batch yet, so nothing to date.`); continue; }
-    const F = forecastOf(r, { now, checkin });
-    if (F.none) { out.push(`${r.name} · ${noHistory(r, F)}`); continue; }
-    out.push(`${r.name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${F.count} merged tickets · ${r.workers} workers${checkin ? ' · parked dated at the next check-in' : ''}`,
-      `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
+    if (note) { out.push(note); continue; }
+    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
       out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
     }
@@ -256,23 +252,26 @@ const segRow = (id, segs, open) => {
   return { id, segs, line: segs.map((s) => s[0]).join(''), open };
 };
 
-// The tickets a Timeline or By day view dates: one repo's, or every repo's with a batch. A repo with
-// nothing to date gives a line saying why instead.
+// The repos a ships view dates: one repo, or every repo with a batch. `per` holds each in order with
+// its forecast, or a note saying why it has none; `items` is every unfinished ticket of the dated ones.
 function etaScope(repos, slug, { now, checkin }) {
   const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
-  const notes = [], items = [], dated = [];
-  for (const r of list) {
-    if (r.error) { notes.push(`${r.name} · queue unreadable: ${r.error}`); continue; }
-    if (!r.q) { notes.push(`${r.name} · no autopilot batch yet, so nothing to date.`); continue; }
+  const per = list.map((r) => {
+    if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
+    if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
     const F = forecastOf(r, { now, checkin });
-    if (F.none) { notes.push(`${r.name} · ${noHistory(r, F)}`); continue; }
-    dated.push({ r, F });
-    for (const x of r.rows) items.push({ r, F, x, e: etaOf(F, x.t.key) });
-  }
-  const head = !dated.length ? [] : [`${slug ? list[0].name : 'Every repo'} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${dated.reduce((a, d) => a + d.F.count, 0)} merged tickets`
-    + `${slug ? ` · ${list[0].workers} workers` : ''}${checkin ? ' · parked dated at the next check-in' : ''}`];
-  return { list, notes, items, head };
+    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : { r, F };
+  });
+  const dated = per.filter((p) => p.F);
+  const notes = per.filter((p) => p.note).map((p) => p.note);
+  const items = dated.flatMap(({ r, F }) => r.rows.map((x) => ({ r, F, x, e: etaOf(F, x.t.key) })));
+  const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin)];
+  return { list, per, notes, items, head };
 }
+
+// A ships view's first line; `workers` null leaves the count out, as every repo's view does.
+const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count} merged tickets`
+  + `${workers == null ? '' : ` · ${workers} workers`}${checkin ? ' · parked dated at the next check-in' : ''}`;
 
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]];
@@ -288,7 +287,7 @@ const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_BAR = 64;
 function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto' } = {}) {
   const s = etaScope(repos, slug, { now, checkin });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
-  if (slug && !s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
+  if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
   const cw = width == null ? TL_BAR : Math.max(12, width - TL_LEAD - TL_TAIL);
   const dated = s.items.filter((i) => i.e).sort((a, b) => a.e.likely - b.e.likely);
   const undated = s.items.filter((i) => !i.e);
@@ -358,7 +357,7 @@ export function shipDay(t, now) {
 function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false } = {}) {
   const s = etaScope(repos, slug, { now, checkin });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
-  if (slug && !s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
+  if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
   const all = !slug;
   const groups = new Map();
   const add = (g, i) => { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); };
