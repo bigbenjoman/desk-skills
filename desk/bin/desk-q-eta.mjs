@@ -279,10 +279,72 @@ function rng(seed) {
 // The share of a running ticket's work done, from its stage ("6/9", "4b/9").
 const stageDone = (st) => { const m = /^(\d+)(b?)\/9\b/.exec(String(st ?? '')); return m ? Math.min(1, (Number(m[1]) + (m[2] ? 0.5 : 0)) / 9) : 0; };
 
-// `rows` are the queue's unfinished tickets in spawn order, each {key, k, size, stage, held, collides}
-// with `k` desk-q's shown state. Returns {none, count} with too little history; otherwise
-// {T: {key: {start, likely, late} | null}, clears, undated, count}.
-export function forecast({ rows, workers, history, now, checkin = false }) {
+// ---- epics -------------------------------------------------------------------------------------
+//
+// Triage records each ticket's parent epic (ticket-facts.mjs, from Jira's parent field), and the
+// forecast dates an epic as the moment its last child merges, inside each run.
+
+// Whether a Jira issue type is an epic: the epic level of the hierarchy, or a type named for one.
+export const isEpic = (type) => type?.hierarchyLevel === 1 || /epic/i.test(String(type?.name ?? ''));
+
+// The triage record's `epic`, from a `desk-jira get --json` issue and its parent's
+// `desk-jira children --json` (this repo's children only): {key, summary, children: [{key, done}]}, or
+// null when the parent is not an epic. `children` null (the read failed) leaves the list out, so the
+// count reads as unknown.
+export function epicFact(issue, children) {
+  const p = issue?.fields?.parent;
+  if (!p?.key || !isEpic(p.fields?.issuetype)) return null;
+  const e = { key: p.key, summary: String(p.fields?.summary ?? '') };
+  if (Array.isArray(children)) e.children = children.filter((c) => c?.key).map((c) => ({ key: c.key, done: c.fields?.status?.statusCategory?.key === 'done' }));
+  return e;
+}
+
+// Each epic with a child in the queue, from the queue's tickets and their triage records (`triage`,
+// key -> record or null). A child is a ticket whose record names the epic, or one an epic's recorded
+// children list names. -> {epics: {KEY: {key, summary, total, done, queued, missing, shipped}}, of: {key:
+// epic} for the unfinished tickets, noEpic: how many unfinished tickets have none}. `missing` is how
+// many children are not in the queue and not done, null when no record holds the epic's children;
+// `shipped` is the last merge among its done children in the queue.
+export function epicsOf(tickets, triage) {
+  const epics = {}, kidsOf = {}, listed = {};
+  const epicOf = (k) => triage[k]?.epic?.key ?? null;
+  for (const k of Object.keys(tickets)) {
+    const e = triage[k]?.epic;
+    if (!e?.key) continue;
+    epics[e.key] ??= { key: e.key, summary: e.summary ?? '' };
+    if (!epics[e.key].summary && e.summary) epics[e.key].summary = e.summary;
+    (kidsOf[e.key] ??= new Set()).add(k);
+    if (Array.isArray(e.children)) for (const c of e.children) (listed[e.key] ??= new Map()).set(c.key, (listed[e.key].get(c.key) ?? false) || c.done);
+  }
+  const of = {};
+  for (const [k, t] of Object.entries(tickets)) {
+    if (t.state === 'done') continue;
+    const ep = epicOf(k) ?? Object.keys(listed).find((e) => listed[e].has(k)) ?? null;
+    if (ep) { of[k] = ep; kidsOf[ep].add(k); }
+  }
+  for (const [ep, e] of Object.entries(epics)) {
+    const keys = new Set([...kidsOf[ep], ...(listed[ep]?.keys() ?? [])]);
+    let done = 0, queued = 0, missing = 0, shipped = null;
+    for (const k of keys) {
+      const t = tickets[k];
+      if (t && t.state !== 'done') queued++;
+      else if (t?.state === 'done' || listed[ep]?.get(k)) {
+        done++;
+        if (Number.isFinite(Date.parse(t?.merged_at))) shipped = Math.max(shipped ?? -Infinity, Date.parse(t.merged_at));
+      } else missing++;
+    }
+    Object.assign(e, { total: keys.size, done, queued, missing: listed[ep] ? missing : null, shipped });
+  }
+  const unfinished = Object.entries(tickets).filter(([, t]) => t.state !== 'done').map(([k]) => k);
+  return { epics, of, noEpic: unfinished.filter((k) => !of[k]).length };
+}
+
+// `rows` are the queue's unfinished tickets in spawn order, each {key, k, size, stage, held, collides,
+// epic} with `k` desk-q's shown state. `epics` is {KEY: {missing}}: children not queued yet join the end
+// of the queue, each with a duration drawn from the whole history, shared across the workers. Returns
+// {none, count} with too little history; otherwise {T: {key: {start, likely, late} | null}, E: {epic:
+// {start, likely, late, setBy} | null}, clears, undated, count}.
+export function forecast({ rows, workers, history, now, checkin = false, epics = {} }) {
   const count = history.length;
   if (count < MIN_HISTORY) return { none: true, count };
   const d = durations(history);
@@ -296,6 +358,10 @@ export function forecast({ rows, workers, history, now, checkin = false }) {
   const draw = (x) => pool[x.key][Math.floor(rand() * pool[x.key].length)] * HOUR;
   const starts = Object.fromEntries(rows.map((x) => [x.key, []]));
   const ends = Object.fromEntries(rows.map((x) => [x.key, []]));
+  // The epics' own draws come from their own generator, so a ticket's dates are the same with or without them.
+  const erand = rng(7);
+  const kids = Object.fromEntries(Object.keys(epics).map((ep) => [ep, rows.filter((x) => x.epic === ep).map((x) => x.key)]));
+  const epicEnds = Object.fromEntries(Object.keys(epics).map((ep) => [ep, []]));
   for (let run = 0; run < RUNS; run++) {
     const f = {}, s = {}, slots = Array(Math.max(1, workers)).fill(now);
     const least = () => slots.indexOf(Math.min(...slots));
@@ -335,15 +401,40 @@ export function forecast({ rows, workers, history, now, checkin = false }) {
       f[best.key] = slots[i] = bestT + dur;
       pending = pending.filter((x) => x !== best);
     }
-    for (const k of Object.keys(f)) { starts[k].push(s[k]); ends[k].push(f[k]); }
+    let end = now;
+    for (const k of Object.keys(f)) { starts[k].push(s[k]); ends[k].push(f[k]); end = Math.max(end, f[k]); }
+    // In each run the epic ships when its last child merges; one child left undated leaves the run out.
+    for (const [ep, ks] of Object.entries(kids)) {
+      if (ks.some((k) => f[k] == null)) continue;
+      let m = ks.length ? Math.max(...ks.map((k) => f[k])) : end;
+      const missing = epics[ep].missing ?? 0;
+      // With no workers, a child not queued yet never starts.
+      if (missing && workers <= 0) continue;
+      if (missing) {
+        let extra = 0;
+        for (let j = 0; j < missing; j++) extra += d.all[Math.floor(erand() * d.all.length)] * HOUR;
+        m = Math.max(m, end + extra / Math.max(1, workers));
+      }
+      epicEnds[ep].push(m);
+    }
   }
   const T = {};
   for (const x of rows) {
     const v = ends[x.key].sort((a, b) => a - b), st = starts[x.key].sort((a, b) => a - b);
     T[x.key] = v.length >= RUNS * 0.9 ? { start: quantile(st, 0.5), likely: quantile(v, 0.5), late: quantile(v, 0.8) } : null;
   }
+  // An epic starts when its first child starts, and is set by the child that ships last.
+  const E = {};
+  for (const [ep, ks] of Object.entries(kids)) {
+    const v = epicEnds[ep].sort((a, b) => a - b);
+    E[ep] = v.length >= RUNS * 0.9 && ks.every((k) => T[k]) ? {
+      start: ks.length ? Math.min(...ks.map((k) => T[k].start)) : null,
+      likely: quantile(v, 0.5), late: quantile(v, 0.8),
+      setBy: ks.length ? ks.reduce((a, k) => (T[k].likely > T[a].likely ? k : a)) : null,
+    } : null;
+  }
   const dated = rows.filter((x) => T[x.key]);
-  return { T, count, clears: dated.length ? Math.max(...dated.map((x) => T[x.key].likely)) : null, undated: rows.length - dated.length };
+  return { T, E, count, clears: dated.length ? Math.max(...dated.map((x) => T[x.key].likely)) : null, undated: rows.length - dated.length };
 }
 
 export function describe(r) {

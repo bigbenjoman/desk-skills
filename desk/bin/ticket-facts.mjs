@@ -9,6 +9,8 @@
 //   blockers     [{key, category}] — "is blocked by" (Blocks) links, with the blocker's status category
 //   other_links  how many links of another type (not Blocks, not Relates) were ignored
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
+//   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
+//                children list is left out, with epic_error, when it could not be read
 // or, when the read fails, facts_error instead (and no blockers), which plan-batch turns into a
 // question: an unread link list must never read as "no blockers".
 // A key that is not a tracker key gets links: "n/a".
@@ -19,7 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
-import { SIZES } from './desk-q-eta.mjs';
+import { SIZES, epicFact } from './desk-q-eta.mjs';
 
 const key = process.argv[2];
 const kind = ticketKind(key);
@@ -27,7 +29,7 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'other_links', 'size', 'facts_error', 'links', 'lint', 'lint_error']) delete rec[f];
+for (const f of ['blockers', 'other_links', 'size', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error']) delete rec[f];
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
 
 const asSize = (v) => {
@@ -63,6 +65,16 @@ if (kind.kind !== 'tracker') {
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
       ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
+    // The epic's children in this repo, so the forecast can count the ones not queued yet; a child
+    // under another key pattern never runs in this queue (expand-parent.mjs drops it the same way).
+    let children = null;
+    if (epicFact(issue, null)) {
+      try {
+        children = JSON.parse(execFileSync('desk-jira', ['children', issue.fields.parent.key, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }))
+          .filter((c) => { const k = ticketKind(c?.key); return k.ok && k.kind === 'tracker'; });
+      } catch (e) { rec.epic_error = lastLine(e) || 'desk-jira children failed'; }
+    }
+    rec.epic = epicFact(issue, children);
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint
     // that did not run.
     try { rec.lint = JSON.parse(execFileSync('desk-jira', ['lint', key, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 })); }

@@ -25,6 +25,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpat
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { isEpic } from './desk-q-eta.mjs';
 
 const safeId = (s) => E.SAFE_ID.test(String(s ?? '')) && !String(s).includes('..');
 const fail = (msg, code = 2) => { const e = new Error(msg); e.code = code; throw e; };
@@ -470,7 +471,7 @@ export function checkTicket(issue, { root, dir }) {
   // a code span ({{…/p/1a2b\-3c4d}}); unescaped, the link and the repo path read as written.
   const text = String(issue.text ?? issue.fields?.description ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
   const parent = issue.fields?.parent;
-  const epic = parent && (parent.fields?.issuetype?.hierarchyLevel === 1 || /epic/i.test(parent.fields?.issuetype?.name ?? '')) ? parent.key : null;
+  const epic = parent && isEpic(parent.fields?.issuetype) ? parent.key : null;
   const section = designSection(text);
   const findings = [];
   for (const url of claudeDesignLinks(section)) {
