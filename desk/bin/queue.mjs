@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
+import { recordMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
 
@@ -228,7 +229,7 @@ function requeue(q, key) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'requeue', 'approve', 'reject', 'front', 'move', 'drop'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged'];
 
 try {
 if (WRITES.includes(cmd)) lock();
@@ -507,6 +508,22 @@ switch (cmd) {
     break;
   }
 
+  // The merge driver, once a ticket's PR has merged: the first merge time is kept on the ticket, and
+  // the repo's eta history gains its line (desk-q-eta.mjs), after the queue lock is released.
+  case 'merged': {
+    const [key, at] = args;
+    if (!key) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>]');
+    const t = ticket(q, key);
+    const when = at ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
+    t.merged_at ??= new Date(when).toISOString();
+    t.updated_at = new Date().toISOString();
+    save(q);
+    console.log(`${key} merged at ${t.merged_at}`);
+    console.log(describeHistory(recordMerge({ state: stateDir(), queue: q, key, mergedPrs: () => ghMergedPrs(ghRepo()) })));
+    break;
+  }
+
   case 'drop': {
     const key = args[0];
     ticket(q, key);
@@ -548,7 +565,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|get|list|render|watch [--interval s]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|get|list|render|watch [--interval s]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

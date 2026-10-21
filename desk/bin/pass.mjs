@@ -788,6 +788,7 @@ for (const t of eligible) {
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null');
+  const spawnedAt = new Date().toISOString();
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -797,6 +798,8 @@ for (const t of eligible) {
     report.failed.push(`${t.key}: spawn refused — ${spawned.out.split('\n').slice(-3).join(' ')}`);
     continue;
   }
+  // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
+  if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}`);
   runningKeys.add(t.key);
 }

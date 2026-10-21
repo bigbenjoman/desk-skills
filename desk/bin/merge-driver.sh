@@ -34,7 +34,8 @@
 #                                            green across two loops before it merges, so a check that
 #                                            passes before the rest of CI has even queued cannot land it
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
-# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`.
+# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
+# `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
@@ -355,7 +356,11 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
 
   log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
-    log "#$n MERGED ($key)"; rm -f "$SD/green-$n"; return 0
+    log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
+    # The merge time on the ticket, and its line in the eta history. A failure here never undoes the merge.
+    if rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
+    else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    return 0
   fi
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
   else log "#$n merge refused: $(printf '%s' "$out" | tail -1) — backing off 10m, the rest carry on"; back_off "$n"; fi
