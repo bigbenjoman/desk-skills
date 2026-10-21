@@ -1002,7 +1002,8 @@ AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE A
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
 node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs render                              # status
-node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order
+node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
+node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
 node ~/.claude/desk/bin/spine-review.mjs brief ABC-126                # the read-only reviewer's prompt for a spine awaiting approval

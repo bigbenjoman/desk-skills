@@ -205,4 +205,14 @@ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f,
 out=$(node "$B/pass.mjs" 2>&1)
 check "AC3 an idle batch gives the scope total"         'echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "scope: 1 of 2 checked ticket(s) changed files outside their triaged scope, 2 file(s) in all"'
 
+# T-17 advances a stage while a live process holds the queue lock past its wait: the refused write is
+# in the report, naming the ticket and the change, not dropped.
+q add T-17; q set T-17 state=running branch=fix/T-17 session_id=live-1 stage=2/9
+say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state/logs/T-17.log"
+sleep 30 & holder=$!
+mkdir "$T/queue.json.lock"; echo "$holder" > "$T/queue.json.lock/pid"
+out=$(DESK_QUEUE_LOCK_WAIT_MS=200 node "$B/pass.mjs" 2>&1)
+check "AC12 a refused queue write names the ticket and the change" 'echo "$out" | grep -q "T-17: queue write refused, not recorded — set stage=3/9 — .*pid $holder" && [ "$(field T-17 stage)" = "\"2/9\"" ]'
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

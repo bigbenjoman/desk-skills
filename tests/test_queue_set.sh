@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# suite: queue set (JSON objects and arrays)
+# suite: queue set (JSON objects and arrays; move and placed)
 # queue.mjs set must store a value opening with { or [ as JSON, refuse an invalid one, and keep an
-# object's other keys when one nested key is set.
+# object's other keys when one nested key is set. move puts an unfinished ticket at a position and
+# marks it placed, and front and requeue then leave it there.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -65,6 +66,41 @@ check "user-level dontAsk is caught too"                                  '[ $rc
 rm -f "$HOME/.claude/settings.json"
 out=$(node "$B/desk-env.mjs" default-mode 2>&1); rc=$?
 check "no defaultMode anywhere: unset, exit 0"                            '[ $rc -eq 0 ] && [[ "$out" == *"DEFAULT_MODE=unset"* ]]'
+
+# move, placed, front and requeue. D-1 is done: it keeps its slot and is never counted.
+q init moves
+for k in A-1 D-1 A-2 A-3 A-4 A-5; do q add "$k"; q set "$k" state=triaged lane=A; done
+q set D-1 state=done
+# order: every ticket key, in spawn order. pos <KEY>: its position among the unfinished tickets.
+order(){ out=$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets).join(" "))' "$DESK_QUEUE"); }
+pos(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets; console.log(Object.keys(t).filter((k) => !["done", "failed"].includes(t[k].state)).indexOf(process.argv[2]) + 1)' "$DESK_QUEUE" "$1"; }
+placed(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]].placed === true)' "$DESK_QUEUE" "$1"; }
+st(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]].state)' "$DESK_QUEUE" "$1"; }
+sum(){ cksum < "$DESK_QUEUE"; }
+
+q move A-4 2; o=$out; order
+check "AC5 the fourth unfinished ticket moves to second, the rest keep order" '[ $rc -eq 0 ] && [ "$out" = "A-1 D-1 A-4 A-2 A-3 A-5" ] && [ "$(placed A-4)" = true ] && [[ "$o" == *"position 2 of 5"* ]]'
+q move A-1 last; order
+check "AC6 last moves the first ticket to fifth"                          '[ $rc -eq 0 ] && [ "$out" = "A-4 D-1 A-2 A-3 A-5 A-1" ] && [ "$(pos A-1)" = 5 ] && [ "$(placed A-1)" = true ]'
+before=$(sum); q move A-2 9
+check "AC7 a position past the end names the range and changes nothing"   '[ $rc -ne 0 ] && [[ "$out" == *"1 to 5"* ]] && [ "$(sum)" = "$before" ]'
+q move A-2 0
+check "position 0 is out of range too"                                    '[ $rc -ne 0 ] && [[ "$out" == *"1 to 5"* ]] && [ "$(sum)" = "$before" ]'
+q set A-3 state=running; before=$(sum); q move A-3 1
+check "AC8 a running ticket is refused and nothing changes"               '[ $rc -ne 0 ] && [[ "$out" == *"A-3 is running"* ]] && [ "$(sum)" = "$before" ]'
+q move D-1 1
+check "a done ticket has no place to move to"                             '[ $rc -ne 0 ] && [[ "$out" == *"D-1 is done"* ]]'
+q set A-3 state=triaged
+
+q move A-2 3; q hold A-2 A-5
+q set A-2 state=triaged park=null held_by=null; q front A-2
+check "AC9 a placed ticket released by front stays put, and says why"     '[ $rc -eq 0 ] && [ "$(pos A-2)" = 3 ] && [[ "$out" == *"stays at position 3"*"the user placed it"* ]]'
+q park A-2 "a question"; q requeue A-2
+check "AC10 a placed parked ticket requeues as triaged where it was"      '[ $rc -eq 0 ] && [ "$(st A-2)" = triaged ] && [ "$(pos A-2)" = 3 ] && [[ "$out" == *"the user placed it"* ]]'
+q front A-5; order
+check "AC11 a ticket not placed still moves to the front"                 '[ $rc -eq 0 ] && [ "${out%% *}" = A-5 ]'
+q requeue A-3; order
+check "a requeue of a ticket not placed still fronts it"                  '[ "${out%% *}" = A-3 ]'
 
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"

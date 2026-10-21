@@ -251,7 +251,7 @@ NODE
     done
     if [ "$all" = 1 ]; then
       node "$Q" set "$succ" state=triaged park=null held_by=null >/dev/null </dev/null \
-        && node "$Q" front "$succ" >/dev/null </dev/null && log "merged:$got -> RELEASED $succ (moved to front)"
+        && placed=$(node "$Q" front "$succ" </dev/null) && log "merged:$got -> RELEASED $placed"
     fi
   done <<EOF_PLAN
 $plan

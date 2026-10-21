@@ -113,7 +113,16 @@ const shOut = (cmd, args, opts = {}) => {
   try { return { ok: true, out: execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
   catch (e) { return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
-const q = (...args) => sh('node', [join(BIN, 'queue.mjs'), ...args], { tolerant: true });
+// A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
+// a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
+// would hide a ticket whose recorded state is now wrong.
+const q = (...args) => {
+  const r = shOut('node', [join(BIN, 'queue.mjs'), ...args]);
+  if (r.ok) return r.out;
+  const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
+  report.failed.push(`${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, not recorded — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${r.out.split('\n').pop()}`);
+  return '';
+};
 const queue = () => readQueue(QUEUE_FILE);
 
 // ---- liveness ------------------------------------------------------------
