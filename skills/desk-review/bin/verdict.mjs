@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url'
 
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
-export const FIX_RANGE_ROUND = 3
+const FIX_RANGE_ROUND = 3
 const TOP = ['sha', 'round', 'since', 'gaps', 'skipped_files', 'seats', 'findings']
 const SEAT = ['role', 'agent', 'vendor', 'status', 'note']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
