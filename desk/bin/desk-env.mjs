@@ -787,6 +787,11 @@ export function ladderMemory(avail = availableGiB(), state = runnerState()) {
 export const runnerSegment = ({ reservation: r, gate }) => (r
   ? ` runner=${r.reservedGiB.toFixed(1)}G reserved (${r.residentGiB.toFixed(1)}G resident, ${r.heldGiB.toFixed(1)}G held back) ladder=${gate.toFixed(1)}G`
   : '');
+// The `mem status` line, which `queue.mjs watch` prints under its table too.
+export function memStatusLine() {
+  const l = ladderMemory();
+  return `vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`;
+}
 
 export const memCeilingGiB = () => Number(/\d+(\.\d+)?/.exec(resolve({ env: 'DESK_MEM_CEILING_GB', id: 'memory-ceiling', fallback: '16' }))?.[0]) || 16;
 
@@ -978,10 +983,7 @@ if (isMain) {
             await new Promise((res) => setTimeout(res, intervalMs));
           }
         }
-        else {
-          const l = ladderMemory();
-          console.log(`vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`);
-        }
+        else console.log(memStatusLine());
         break;
       }
       case 'heavy':

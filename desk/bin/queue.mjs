@@ -13,7 +13,7 @@ import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, re
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, usedGiB, rssGiB, ladderMemory, runnerSegment } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -541,7 +541,7 @@ switch (cmd) {
     let last = null;
     for (;;) {
       const table = snapshot();
-      if (table !== last) console.log(`${table}\n${memLine()}\n`);
+      if (table !== last) console.log(`${table}\n${memStatusLine()}\n`);
       last = table;
       await new Promise((res) => setTimeout(res, intervalMs));
     }
@@ -581,10 +581,4 @@ function render(q) {
   const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && waitingOnMerge(q, t))).length;
   if (parked) out.push(`\n${parked} ticket(s) waiting on you.`);
   return out.join('\n');
-}
-
-// The same line as `desk-env mem status`.
-function memLine() {
-  const l = ladderMemory();
-  return `vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`;
 }
