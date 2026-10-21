@@ -13,6 +13,7 @@ import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, re
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { recordMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { LIVE_MS } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
 
@@ -149,8 +150,7 @@ function coerce(v) {
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
 // The pass lock only covers the seconds a pass runs, so also read the heartbeats pass.mjs writes per
-// queue file: one for a different queue, fresher than 15 minutes, is a live batch between passes.
-const HEARTBEAT_FRESH_MS = 15 * 60 * 1000;
+// queue file: one for a different queue, fresher than 15 minutes (LIVE_MS), is a live batch between passes.
 function liveOrchestrator() {
   try {
     const { pid } = JSON.parse(readFileSync(join(stateDir(), 'orchestrator.lock'), 'utf8'));
@@ -160,7 +160,7 @@ function liveOrchestrator() {
     const dir = join(stateDir(), 'orchestrators');
     for (const f of existsSync(dir) ? readdirSync(dir) : []) {
       const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      if (hb.queue !== QUEUE && Date.now() - Date.parse(hb.at) < HEARTBEAT_FRESH_MS) return `batch ${hb.batch ?? '?'} on ${hb.queue}, last pass ${hb.at}`;
+      if (hb.queue !== QUEUE && Date.now() - Date.parse(hb.at) < LIVE_MS) return `batch ${hb.batch ?? '?'} on ${hb.queue}, last pass ${hb.at}`;
     }
   } catch { /* advisory */ }
   return null;

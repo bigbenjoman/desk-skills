@@ -14,17 +14,17 @@
 // the same views open full-screen, with arrow keys, Enter and Esc; piped output gets the plain text.
 // The only writes are the move and workers commands, each a queue.mjs command against the queue of
 // the repo named.
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineValue, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
+import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
 
-// The same test queue.mjs init uses: a heartbeat fresher than this is a live batch.
-export const LIVE_MS = 15 * 60 * 1000;
+export { LIVE_MS };
 const LABEL = { running: 'running', ready: 'ready', queued: 'queued', waiting: 'waiting', stuck: 'stuck', needs: 'needs you', failed: 'failed', done: 'done' };
 
 const pad = (s, n) => { s = String(s ?? ''); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
@@ -59,20 +59,6 @@ export function shownState(q, t) {
 // calls GitHub, so a done one with a PR is merged or about to be, and is left out.
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null); });
-
-// pass.mjs writes one heartbeat per queue file into the state directory, so only this queue's counts.
-function lastPass(stateDir, queuePath) {
-  const dir = join(stateDir, 'orchestrators');
-  let last = null;
-  for (const f of existsSync(dir) ? readdirSync(dir) : []) {
-    try {
-      const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      const at = Date.parse(hb.at);
-      if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last)) last = at;
-    } catch { /* a torn heartbeat is no heartbeat */ }
-  }
-  return last;
-}
 
 function triageOf(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
@@ -121,11 +107,6 @@ export function shownRepos(repos, all) {
 }
 
 // ---- screens ---------------------------------------------------------------------------------
-
-function machineCap() {
-  const v = machineValue('autopilot-concurrency');
-  return v ? concurrencyLimits(v).cap : null;
-}
 
 // The memory one worker takes at its heaviest: the profile writes it into the cap's reason
 // (machine.mjs propose), else the rule the profile is sized by.
