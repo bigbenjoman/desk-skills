@@ -189,21 +189,23 @@ config yes yes; queue true '{}' "$RUNNING"
 DONE='{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"failed"}}'
 queue true '{}' "$DONE"; : > "$T/pass.calls"; n=$(started)
 verdict '{"status":"idle","code":11,"message":"IDLE","waiting":["B: FAILED — requeue it"],"parked":[],"notify":true}'
+touch "$T/notify.fails"; out=$(tick); rm -f "$T/notify.fails"
+check "an idle batch whose notification failed is not recorded idle" '! grep -q "batch b1 is idle" "$LOG"'
 out=$(tick)
-check "the idle pass is logged and the batch recorded idle" '[ "$(count "$T/pass.calls")" = 1 ] && grep -q "batch b1 is idle" "$LOG"'
+check "the idle pass is logged and the batch recorded idle" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "batch b1 is idle" "$LOG"'
 check "the finished batch notifies, naming what still needs the person" 'tail -1 "$T/notify.calls" | grep -q "need you: B, the batch is finished|$"'
 out=$(tick); out=$(tick)
-check "AC9: no pass once the batch is idle" '[ "$(count "$T/pass.calls")" = 1 ]'
+check "AC9: no pass once the batch is idle" '[ "$(count "$T/pass.calls")" = 2 ]'
 check "AC9: no merge driver once the batch is idle" '[ "$(started)" = "$n" ]'
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"triaged"}}'
 verdict "$NOTHING"
 out=$(tick)
-check "a ticket requeued into the batch runs passes again" '[ "$(count "$T/pass.calls")" = 2 ]'
+check "a ticket requeued into the batch runs passes again" '[ "$(count "$T/pass.calls")" = 3 ]'
 queue true '{}' "$DONE" b2
 out=$(tick)
-check "a new batch runs passes again" '[ "$(count "$T/pass.calls")" = 3 ]'
+check "a new batch runs passes again" '[ "$(count "$T/pass.calls")" = 4 ]'
 
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"

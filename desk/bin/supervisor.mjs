@@ -245,11 +245,8 @@ function runPass(state, q, s, log, stamp) {
 
   let qAfter = q;
   try { qAfter = readQueue(qf); } catch { /* the pass reported it */ }
-  if (v.status === 'idle') {
-    s.idle = fingerprint(qAfter);
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no pass and no merge driver until a new batch starts or a ticket is added to this one`);
-  } else {
-    s.idle = null;
+  s.idle = null;
+  if (v.status !== 'idle') {
     const keys = toMerge(qAfter);
     const driver = driverHolder(state);
     const ungranted = ['autopilot-merge', 'pr-merge-green'].filter((id) => E.permission(id) !== 'yes');
@@ -279,6 +276,11 @@ function runPass(state, q, s, log, stamp) {
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
   // A failed notification records nothing new, so the next pass sends it again.
   s.notified = sent ? items : s.notified.filter((i) => items.includes(i));
+  // Idle is recorded only once its notification is out: until then the next interval passes again.
+  if (v.status === 'idle' && sent) {
+    s.idle = fingerprint(qAfter);
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no pass and no merge driver until a new batch starts or a ticket is added to this one`);
+  }
   writeState(state, s);
   log(out);
 }
