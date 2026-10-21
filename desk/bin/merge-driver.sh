@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Serial merge driver for an autopilot batch. Start it at Stage 4, before the first worker finishes:
 #   nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "ABC-3:ABC-1,ABC-2" \
-#     >> ~/.desk-autopilot/<slug>/merge-driver.log 2>&1 &
+#     --log &          # appends to ~/.desk-autopilot/<slug>/merge-driver.log
 # Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
 #
 # --tickets  the batch's ids (whitespace- or comma-separated), each one `desk-env ticket-kind` accepts:
@@ -11,6 +11,7 @@
 #            ticket that joins the batch mid-run is merged with no restart.
 # --deps     space-separated succ:pred[,pred] — succ is released (state=triaged, moved to the front of
 #            the spawn order) once EVERY pred's PR has merged. Chain only real file collisions.
+# --log      append stdout and stderr to <state>/merge-driver.log (no value: the file is fixed).
 #
 # Which PRs are the batch's: open, authored by config §1's GitHub handle, based on §0 Default branch
 # (never a promotion PR such as main -> production), and whose head branch is the branch recorded in
@@ -52,14 +53,15 @@
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, or another driver running.
 set -uo pipefail
 
-usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"]" >&2; exit 2; }
+usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"] [--log]" >&2; exit 2; }
 
 # ---- arguments: validated before anything else runs ---------------------------------------------
-TICKETS=""; DEPS=""
+TICKETS=""; DEPS=""; LOG=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tickets) [ "$#" -ge 2 ] || usage; TICKETS="$2"; shift 2 ;;
     --deps)    [ "$#" -ge 2 ] || usage; DEPS="$2"; shift 2 ;;
+    --log)     LOG=1; shift ;;
     *) usage ;;
   esac
 done
@@ -91,6 +93,17 @@ for pair in $(printf '%s' "$DEPS" | tr '\n\t' '  '); do
   DEP_LIST+=("$pair")
 done
 set +f
+
+# --log appends everything from here on to <state>/merge-driver.log, so the driver is started without
+# a shell redirect (one outside the working directory prompts every time, whatever the allow rules
+# say). The file is fixed, never an argument: the allow rule that starts the driver must not also let
+# it append to any path. The paths are read in a subshell, because the batch base is applied first below.
+if [ -n "$LOG" ]; then
+  if ! LOG_STATE="$(desk_load_paths && printf '%s' "$DESK_STATE")" || [ -z "$LOG_STATE" ] || ! mkdir -p "$LOG_STATE"; then
+    echo "FAIL: --log: could not resolve the batch state directory" >&2; exit 1
+  fi
+  exec >>"$LOG_STATE/merge-driver.log" 2>&1
+fi
 
 for id in autopilot-merge pr-merge-green; do
   p="$(desk_perm "$id")"

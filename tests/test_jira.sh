@@ -186,6 +186,21 @@ check "create desc-file outside roots refused" '[ $rc -ne 0 ] && printf "%s" "$e
 err=$(cd "$A" && "$J" attach KAN-1 /etc/hosts 2>&1); rc=$?
 check "attach outside roots refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing to send"'
 check "nothing refused reached the stub" '[ "$(wc -l < "$LOG")" -eq "$n_before" ]'
+
+# rest: the REST recipes' writes, with desk-jira's own credentials and the same body-file rule.
+printf '{"fields":{"summary":"from rest"}}' > "$A/put.json"
+out=$(cd "$A" && "$J" rest put api/3/issue/KAN-1 put.json 2>&1); rc=$?
+check "rest PUT sends the body file as JSON, authenticated" '[ $rc -eq 0 ] && tail -n1 "$LOG" | jq -e ".method == \"PUT\" and .path == \"/rest/api/3/issue/KAN-1\" and .authed and (.body | fromjson | .fields.summary) == \"from rest\"" >/dev/null'
+out=$(cd "$A" && "$J" rest DELETE api/2/issueLink/999 2>&1); rc=$?
+check "rest DELETE with no body; a 404 is an error naming the call" '[ $rc -ne 0 ] && tail -n1 "$LOG" | jq -e ".method == \"DELETE\" and .body == \"\"" >/dev/null && printf "%s" "$out" | grep -q "HTTP 404 from DELETE api/2/issueLink/999"'
+n_before=$(wc -l < "$LOG")
+err=$(cd "$A" && "$J" rest PUT api/3/issue/KAN-1 /etc/hosts 2>&1); rc=$?
+check "rest refuses a body file outside the roots" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "refusing to send"'
+err=$(cd "$A" && "$J" rest GET api/3/myself 2>&1); rc=$?
+check "rest refuses GET and points at api" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a read is desk-jira api"'
+err=$(cd "$A" && "$J" rest PATCH api/3/issue/KAN-1 2>&1); rc=$?
+check "rest refuses any other method" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "PUT, POST or DELETE"'
+check "nothing rest refused reached the stub" '[ "$(wc -l < "$LOG")" -eq "$n_before" ]'
 check "no request anywhere carried a token in its body" '! grep -q "good-token" "$LOG"'
 
 # create assigns the user under §3 jira-assign-self yes, reads the assignee back, and needs

@@ -290,7 +290,7 @@ A large feature runs as an epic: one key whose children are the tickets. **Expan
 before triage**, and never triage, build, transition or edit the epic itself:
 
 ```bash
-node ~/.claude/desk/bin/expand-parent.mjs ABC-900 > <state>/epic-keys.txt   # report on stderr
+node ~/.claude/desk/bin/expand-parent.mjs ABC-900   # the batch keys on stdout, the report on stderr
 node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
 ```
 
@@ -642,8 +642,12 @@ as it does for §4 Required checks and Merge method.
 
 ```bash
 nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "ABC-3:ABC-1" \
-  >> <state>/merge-driver.log 2>&1 &
+  --log &
 ```
+
+`--log` has the driver append its own output to `<state>/merge-driver.log`, so the command carries
+no `>>` redirect: a redirect outside the working directory prompts every time, whatever the allow
+rules say.
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes`, skips
@@ -997,7 +1001,9 @@ yourself (one worker in a suite at a time) and say in the report that the lock i
 `<state>/batch-notes.md`, resets it, and re-seeds `references/batch-notes-header.md`, so the test
 cap and the lock survive an init. If another orchestrator is live, `init` keeps the file instead of
 resetting it, because that batch's workers still read it. Check the `## MEMORY` heading is there
-after `init`. The rules also live in the worker contract, which is never truncated.
+after `init`; if it is not, add `references/batch-notes-header.md` to the end of the file with the
+Edit tool (Write if the file is missing), not a shell redirect. The rules also live in the worker
+contract, which is never truncated.
 
 ## Commands
 
@@ -1025,7 +1031,7 @@ AUTOPILOT_DRY_RUN=1 …                                                 # no pus
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
 AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only when §3 batch-base-push is `ask`/unset and the user approved syncing this batch's base
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
-nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" >> <state>/merge-driver.log 2>&1 &
+nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log
 
 # config
 desk-env where                   # which repo, which config, does it exist
@@ -1037,7 +1043,9 @@ desk-env budget worker           # 25 | none; exit 4 if malformed
 desk-env mem status              # vmmem= avail= rss=
 desk-env heavy                   # suites, typechecks, dev servers actually running (never pgrep -f)
 ~/.claude/desk/bin/with-lock.sh test true   # probe the lock once
-cat ~/.claude/skills/desk-autopilot/references/batch-notes-header.md >> <state>/batch-notes.md
+# no `## MEMORY` heading in <state>/batch-notes.md: Read references/batch-notes-header.md and add it
+# to the end of batch-notes.md with the Edit tool (the Write tool if the file is missing), never a
+# shell redirect, which writes outside the working directory and prompts every time
 
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs render | tail -n +2; desk-env mem status

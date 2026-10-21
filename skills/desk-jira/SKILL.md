@@ -79,8 +79,10 @@ What the CLI does for you, and the traps it still has:
   querying and exit non-zero on a bad or expired token, because Jira answers an anonymous search
   with 200 and no issues. An empty `search` with exit 0 is a real "no matches"; a non-zero exit is
   a search that did not run, never "nothing found".
-- **Credentials never reach an argv.** The CLI hands them to curl on stdin (`curl -K -`); a recipe
-  you run by hand does the same (`references/jira-rest-recipes.md`).
+- **Credentials never reach an argv.** The CLI hands them to curl on stdin (`curl -K -`). A call
+  no subcommand covers still goes through it: `desk-jira api <path>` reads and `desk-jira rest
+  <PUT|POST|DELETE> <path> [<body file>]` writes (`references/jira-rest-recipes.md`), never a shell
+  function or `curl` of your own.
 - **`search` shows the §4 Priority custom field** in its third column when §4 Priority names one
   (`desk-jira where` prints which), otherwise the built-in priority. For anything you will act on,
   confirm with `desk-jira get <KEY>`, which prints every set custom field by name (`--json` for raw).
@@ -97,9 +99,9 @@ What the CLI does for you, and the traps it still has:
     `*bold*`, a run of `#` list lines).
   - **Once converting, a line starting `#` and a space is a heading**, never a wiki list item. So
     text copied from `get` or `comments`, which print wiki markup, goes back as a `.wiki` file.
-  - Raw `curl` recipes send the file as it is: run `desk-jira md2wiki body.md > body.wiki` first.
+  - `desk-jira rest` sends the file as it is: run `desk-jira md2wiki body.md > body.wiki` first.
 
-  When you write wiki markup yourself (a `.wiki` file, or a raw recipe), the forms are, wiki first:
+  When you write wiki markup yourself (a `.wiki` file, or a `desk-jira rest` recipe), the forms are, wiki first:
   - lists `* item` and `# item` (nest with `**`, `##`), not `- item` / `1. item`;
   - bold `*bold*`, not `**bold**`;
   - inline code, flags and paths `{{\-\-add\-dir}}`, not backticks, **with every hyphen inside the
