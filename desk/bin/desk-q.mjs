@@ -6,7 +6,9 @@
 //   desk-q [--plain] [--all]             one line per batch: live first, then quiet ones that need you
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
-//   desk-q ships [<repo>]                when each unfinished ticket starts and ships (`when` too)
+//   desk-q ships [<repo>]                the Timeline: a bar per unfinished ticket from when it starts
+//                                        to when it ships (`when` too); with --plain, one line per ticket
+//   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
@@ -24,7 +26,7 @@ import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfig
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
-import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, RUNS, MIN_HISTORY, WINDOW_DAYS } from './desk-q-eta.mjs';
+import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS } from './desk-q-eta.mjs';
 
 export { LIVE_MS };
 const LABEL = { running: 'running', ready: 'ready', queued: 'queued', waiting: 'waiting', stuck: 'stuck', needs: 'needs you', failed: 'failed', done: 'done' };
@@ -189,17 +191,13 @@ function queueDone(r, now, checkin) {
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
 export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } = {}) {
-  const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
-  if (!list.length) return 'No repo here has an autopilot batch, so there is nothing to date.';
+  const s = etaScope(repos, slug, { now, checkin });
+  if (!s.list.length) return nothingToDate;
   const out = [];
-  for (const r of list) {
+  for (const { r, F, note } of s.per) {
     if (out.length) out.push('');
-    if (r.error) { out.push(`${r.name} · queue unreadable: ${r.error}`); continue; }
-    if (!r.q) { out.push(`${r.name} · no autopilot batch yet, so nothing to date.`); continue; }
-    const F = forecastOf(r, { now, checkin });
-    if (F.none) { out.push(`${r.name} · ${noHistory(r, F)}`); continue; }
-    out.push(`${r.name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${F.count} merged tickets · ${r.workers} workers${checkin ? ' · parked dated at the next check-in' : ''}`,
-      `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
+    if (note) { out.push(note); continue; }
+    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
       out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
     }
@@ -208,6 +206,180 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
   }
   return out.join('\n');
 }
+
+// ---- Timeline and By day -----------------------------------------------------------------------
+
+// What z cycles through on the Timeline, auto first.
+export const ZOOMS = ['auto', 'hours', 'days', 'weeks'];
+// A row's colour, as an SGR code, by its shown state; DIM and BOLD for the rails and group rows.
+const STATE_SGR = { running: '32', ready: '34', queued: null, waiting: '33', stuck: '31', needs: '35', failed: '31' };
+const DIM = '2', BOLD = '1';
+const dmy = (t) => dayAndTime(t).slice(0, -6);
+const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// The Timeline's scale, from how far away the last could-run-to time is: hours up to 2 days, days
+// up to 21, weeks beyond; `zoom` other than auto overrides it. Ticks are labelled local times.
+export function scaleFor(dur, now, zoom = 'auto') {
+  const id = zoom !== 'auto' ? zoom : dur <= 2 * DAY ? 'hours' : dur <= 21 * DAY ? 'days' : 'weeks';
+  const ticks = [];
+  let span;
+  if (id === 'hours') {
+    span = Math.min(48, Math.max(12, Math.ceil(dur / HOUR / 6) * 6)) * HOUR;
+    const h0 = Math.ceil((now - dayAt(now, 0)) / (6 * HOUR)) * 6;
+    for (let h = h0, t; (t = dayAt(now, 0, h)) < now + span; h += 6) {
+      ticks.push({ t, label: new Date(t).getHours() === 0 ? dmy(t).slice(0, 3) : dayAndTime(t).slice(-5) });
+    }
+  } else if (id === 'days') {
+    const days = Math.min(28, Math.max(3, Math.ceil(dur / DAY) + 1));
+    span = days * DAY;
+    for (let i = 1, t; (t = dayAt(now, i)) < now + span; i++) ticks.push({ t, label: dmy(t).split(' ').slice(0, 2).join(' ') });
+  } else {
+    const weeks = Math.min(16, Math.max(3, Math.ceil(dur / 7 / DAY) + 1));
+    span = weeks * 7 * DAY;
+    const monday = (8 - new Date(now).getDay()) % 7 || 7;
+    for (let i = monday, t; (t = dayAt(now, i)) < now + span; i += 7) ticks.push({ t, label: dmy(t).split(' ').slice(1).join(' ') });
+  }
+  return { id, span, ticks };
+}
+
+// One row drawn in coloured runs: `segs` is [text, SGR code or null] pairs, `line` their plain text.
+const segRow = (id, segs, open) => {
+  const last = segs.at(-1);
+  if (last) last[0] = last[0].trimEnd();
+  return { id, segs, line: segs.map((s) => s[0]).join(''), open };
+};
+
+// The repos a ships view dates: one repo, or every repo with a batch. `per` holds each in order with
+// its forecast, or a note saying why it has none; `items` is every unfinished ticket of the dated ones.
+function etaScope(repos, slug, { now, checkin }) {
+  const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
+  const per = list.map((r) => {
+    if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
+    if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
+    const F = forecastOf(r, { now, checkin });
+    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : { r, F };
+  });
+  const dated = per.filter((p) => p.F);
+  const notes = per.filter((p) => p.note).map((p) => p.note);
+  const items = dated.flatMap(({ r, F }) => r.rows.map((x) => ({ r, F, x, e: etaOf(F, x.t.key) })));
+  const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin)];
+  return { list, per, notes, items, head };
+}
+
+// A ships view's first line; `workers` null leaves the count out, as every repo's view does.
+const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count} merged tickets`
+  + `${workers == null ? '' : ` · ${workers} workers`}${checkin ? ' · parked dated at the next check-in' : ''}`;
+
+// A ticket row's key and state, the state in its colour.
+const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]];
+const why = (i) => capital(undatedWhy(i.r, i.F, i.x)) || 'No date yet';
+const openTicket = (i) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key });
+const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
+
+// The label columns before a Timeline bar, and the STARTS and SHIPS after it (behind its end mark).
+const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_BAR = 64;
+
+// One bar per ticket from STARTS to SHIPS, shaded on to its could-run-to time, sorted by ship time;
+// every repo's view groups them under a row per repo. `width` null is the plain output.
+function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto' } = {}) {
+  const s = etaScope(repos, slug, { now, checkin });
+  if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
+  if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
+  const cw = width == null ? TL_BAR : Math.max(12, width - TL_LEAD - TL_TAIL);
+  const dated = s.items.filter((i) => i.e).sort((a, b) => a.e.likely - b.e.likely);
+  const undated = s.items.filter((i) => !i.e);
+  const sc = scaleFor((dated.length ? Math.max(...dated.map((i) => i.e.late)) : now + DAY) - now, now, zoom);
+  const col = (t) => Math.floor(((t - now) / sc.span) * cw);
+  const rails = new Set();
+  if (sc.id === 'hours' || (sc.id === 'days' && sc.span <= 8 * DAY)) for (let c = nextCheckin(now); c != null && c < now + sc.span; c = nextCheckin(c)) rails.add(col(c));
+  const lab = Array(cw).fill(' '), tick = Array(cw).fill('─');
+  for (const { t, label } of sc.ticks) {
+    const c = col(t);
+    if (c < 5 || c >= cw) continue;
+    tick[c] = '┬';
+    if (c + label.length <= cw && lab.slice(Math.max(0, c - 1), c + label.length + 1).every((ch) => ch === ' ')) [...label].forEach((ch, j) => { lab[c + j] = ch; });
+  }
+  for (const c of rails) if (c >= 0 && c < cw) tick[c] = '▾';
+  tick[0] = '├';
+  [...'now'].forEach((ch, j) => { lab[j] = ch; });
+  const ind = ' '.repeat(TL_LEAD);
+  const head = [...s.head, `Scale: ${sc.id}${zoom === 'auto' ? ' (auto)' : ''}${width == null ? '' : ' · z to change'}`, ''];
+  if (s.items.length) head.push(`${ind}${lab.join('')}  STARTS       SHIPS`, `${ind}${tick.join('')}`);
+  // Each run of bar glyphs is one segment, so it is coloured once and cut as a whole.
+  const bar = (e, sgr) => {
+    const a = Math.max(0, col(e.start)), b = Math.max(a, col(e.likely)), c = Math.max(b, col(e.late));
+    const out = [];
+    for (let j = 0; j < cw; j++) {
+      const [ch, k] = j >= a && j <= b ? ['█', sgr] : j > b && j <= c ? ['░', sgr] : [rails.has(j) ? '┆' : ' ', DIM];
+      if (out.length && out.at(-1)[1] === k) out.at(-1)[0] += ch; else out.push([ch, k]);
+    }
+    out.push(c >= cw ? ['▸', sgr] : [' ', null]);
+    return out;
+  };
+  const rows = [];
+  for (const r of slug ? s.list : [...new Set(s.items.map((i) => i.r))]) {
+    const mine = (list) => list.filter((i) => i.r === r);
+    if (!slug) {
+      const n = mine(s.items).length;
+      rows.push(segRow(`repo ${r.slug}`, [[`  ${r.name}`, BOLD], [` · ${n} ticket${n === 1 ? '' : 's'}`, DIM]], { kind: 'timeline', slug: r.slug }));
+    }
+    for (const i of mine(dated)) {
+      const sgr = STATE_SGR[i.x.k];
+      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null]], openTicket(i)));
+    }
+    for (const i of mine(undated)) rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], [why(i), STATE_SGR[i.x.k]]], openTicket(i)));
+  }
+  const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
+  if (!s.items.length) foot.push('', 'Nothing unfinished here.');
+  else {
+    foot.push('', `█ starts to ships   ░ could run to (1 run in 5 is later)   ┆ check-ins at 08:00 and 17:00${width == null ? '' : '   colour shows state'}`,
+      'Within a week: day and time. Beyond a week: the date.');
+  }
+  return { head, rows, foot };
+}
+
+export const timelineScreen = (repos, slug, opts) => joined(timelineParts(repos, slug, opts));
+
+// The day a ship time falls in: today, tomorrow, each day to 6 days out, then the week by its Monday.
+export function shipDay(t, now) {
+  const d = calendarDays(t, now);
+  if (d <= 0) return `Today · ${dmy(t)}`;
+  if (d === 1) return `Tomorrow · ${dmy(t)}`;
+  if (d < 7) return dmy(t);
+  return `Week of ${dmy(dayAt(t, -((new Date(t).getDay() + 6) % 7)))}`;
+}
+
+// Tickets grouped by the day they ship, undated ones last under "No date yet", each with its STARTS,
+// SHIPS and title; an undated one says why in place of its dates.
+function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false } = {}) {
+  const s = etaScope(repos, slug, { now, checkin });
+  if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
+  if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
+  const all = !slug;
+  const groups = new Map();
+  const add = (g, i) => { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); };
+  for (const i of s.items.filter((y) => y.e).sort((a, b) => a.e.likely - b.e.likely)) add(shipDay(i.e.likely, now), i);
+  for (const i of s.items.filter((y) => !y.e)) add('No date yet', i);
+  const lead = 4 + (all ? 12 : 0) + 20 + 27;
+  const tw = width == null ? 60 : Math.max(1, width - lead);
+  const head = [...s.head, ''];
+  if (s.items.length) head.push(`    ${all ? pad('', 12) : ''}${pad('TICKET', 10)}${pad('STATE', 10)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`);
+  const rows = [];
+  for (const [g, list] of groups) {
+    rows.push(segRow(`day ${g}`, [[`  ${g}`, BOLD], [` · ${list.length} ticket${list.length === 1 ? '' : 's'}`, DIM]], null));
+    for (const i of list) {
+      const title = cut(triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '', tw);
+      const dates = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, null]
+        : [why(i).length <= 25 ? pad(why(i), 27) : `${why(i)}  `, STATE_SGR[i.x.k]];
+      rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), dates, [title, null]], openTicket(i)));
+    }
+  }
+  const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
+  foot.push('', s.items.length ? 'Grouped by ship date: day by day for a week, then week by week.' : 'Nothing unfinished here.');
+  return { head, rows, foot };
+}
+
+export const daysScreen = (repos, slug, opts) => joined(daysParts(repos, slug, opts));
 
 // The screens' header note on tickets waiting on the user.
 const parkedBadge = (checkin) => (checkin ? 'Parked: dated at the next check-in · c to undo' : 'Parked: no date · c to date them at check-ins');
@@ -389,23 +561,25 @@ export function resolveRepo(repos, word) {
 
 const MOVES = ['up', 'down', 'top', 'bottom', 'move'];
 const SHIPS = ['ships', 'when'];
-const VERBS = ['show', ...MOVES, 'workers', 'ships'];
+const VERBS = ['show', ...MOVES, 'workers', 'ships', 'days'];
 const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
+// The view a ships or days word names.
+const etaView = (word, slug) => ({ kind: word.toLowerCase() === 'days' ? 'days' : 'timeline', slug });
 
 // What the words name: a view, or a move or workers change. The one-shot command line and the
 // screen's ":" prompt read the same words.
 function target(repos, words) {
   const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
   if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
-  // `ships [<repo>]` reads before a repo name, and `<repo> ships` after one.
-  if (SHIPS.includes(repoWord.toLowerCase())) {
-    if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q ships [<repo>].`);
-    return { kind: 'ships', slug: verb ? resolveRepo(repos, verb).slug : null };
+  // `ships [<repo>]` and `days [<repo>]` read before a repo name, and `<repo> ships` after one.
+  if ([...SHIPS, 'days'].includes(repoWord.toLowerCase())) {
+    if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q ${repoWord.toLowerCase()} [<repo>].`);
+    return etaView(repoWord, verb ? resolveRepo(repos, verb).slug : null);
   }
   const r = resolveRepo(repos, repoWord);
   if (!verb) return { kind: 'repo', slug: r.slug };
   const unknown = () => new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". Verbs: ${VERBS.join(', ')}.`);
-  if (SHIPS.includes(verb)) { if (keyWord) throw unknown(); return { kind: 'ships', slug: r.slug }; }
+  if ([...SHIPS, 'days'].includes(verb)) { if (keyWord) throw unknown(); return etaView(verb, r.slug); }
   if (!VERBS.includes(verb)) throw unknown();
   if (r.error) throw new Usage(`${r.name}: queue unreadable: ${r.error}`);
   if (!r.q) throw new Usage(`${r.name} has no batch yet.`);
@@ -500,13 +674,15 @@ function loadOrRefuse(now) {
 }
 
 export function run(argv, { now = Date.now() } = {}) {
-  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships [<repo>]\n'
+  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>';
   checkFlags(argv);
   const repos = loadOrRefuse(now);
   const v = target(repos, argv);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
-  if (v.kind === 'ships') return shipsScreen(repos, v.slug, { now });
+  // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
+  if (v.kind === 'timeline') return argv.includes('--plain') ? shipsScreen(repos, v.slug, { now }) : timelineScreen(repos, v.slug, { now });
+  if (v.kind === 'days') return daysScreen(repos, v.slug, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
     return `${said}\n\n${repoScreen(loadOrRefuse(now).find((x) => x.slug === v.slug), { now })}`;
@@ -540,6 +716,21 @@ function systemOpener(url) {
 // Log text can carry a worker's own escape codes; only printable text reaches the screen.
 const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
 
+// A row cut to `w` columns as `cut` would, `›` in its first column when selected, then each coloured
+// run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
+// reverse video holds across the runs.
+function paint(x, w, selected) {
+  let segs = (x.segs ?? [[x.line, null]]).map(([s, k]) => [s, k]);
+  if (selected) segs[0][0] = `›${segs[0][0].slice(1)}`;
+  if (x.line.length > w) {
+    const kept = [];
+    let room = w - 1;
+    for (const [s, k] of segs) { if (room <= 0) break; kept.push([s.slice(0, room), k]); room -= s.length; }
+    segs = [...kept, ['…', null]];
+  }
+  return segs.map(([s, k]) => (k && s ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : '39'}m` : s)).join('');
+}
+
 // The full-screen view: ↑↓ select, Enter opens, Esc goes back, : takes a command, q quits.
 // Rereads the queues every REFRESH_MS, keeping the selection on the same repo or ticket.
 export function interactive({
@@ -550,7 +741,8 @@ export function interactive({
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
   // and how far past the selection it shows when it has.
   // `checkin`: tickets waiting on the user are dated as if answered at the next check-in (c).
-  let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null, checkin = false;
+  // `zoom`: the Timeline's scale, z cycling it; back to auto whenever the place changes.
+  let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null, checkin = false, zoom = 'auto';
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -567,7 +759,14 @@ export function interactive({
     }
     const r = repoOf(view.slug);
     const back = ': command · esc back · q quit';
-    if (!r) return { crumbs: 'desk-q', head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: back };
+    if (view.slug && !r) return { crumbs: 'desk-q', head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: back };
+    if (view.kind === 'timeline' || view.kind === 'days') {
+      const tl = view.kind === 'timeline';
+      const crumbs = noted(['desk-q', r?.name, tl ? 'Timeline' : 'By day'].filter(Boolean).join(' › '), r ? [r] : repos);
+      const opts = { now, width: w, checkin, zoom };
+      return { crumbs, ...(tl ? timelineParts(repos, view.slug, opts) : daysParts(repos, view.slug, opts)),
+        keys: `↑↓ select · enter open · ${tl ? 'z scale · ' : ''}c parked dates · ${back}` };
+    }
     const crumbs = noted(['desk-q', r.name, view.key].filter(Boolean).join(' › '), [r]);
     if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${back}` };
     if (!r.q?.tickets?.[view.key]) return { crumbs, head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: back };
@@ -594,7 +793,7 @@ export function interactive({
     const w = width(), h = height();
     const fit = (l) => cut(l, w);
     const body = [fit(screen.crumbs), '', ...screen.head.map(fit),
-      ...rows.map((x, i) => (i === sel ? `${ESC}7m${fit(`›${x.line.slice(1)}`)}${ESC}27m` : fit(x.line))), ...screen.foot.map(fit)];
+      ...rows.map((x, i) => (i === sel ? `${ESC}7m${paint(x, w, true)}${ESC}27m` : paint(x, w, false))), ...screen.foot.map(fit)];
     // A message can be longer than the line (a refused raise says what raising the cap takes).
     const status = [...wrap(msg, w), cmd != null ? `:${cmd}` : screen.keys].filter(Boolean).map(fit);
     const room = h - status.length;
@@ -614,8 +813,8 @@ export function interactive({
     output.write(`${ESC}H${[...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
   }
 
-  function go(v) { stack.push({ view, sel, selId }); view = v; sel = 0; selId = null; scroll = null; msg = ''; }
-  function back() { const p = stack.pop(); if (p) ({ view, sel, selId } = p); scroll = null; msg = ''; }
+  function go(v) { stack.push({ view, sel, selId }); view = v; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; }
+  function back() { const p = stack.pop(); if (p) ({ view, sel, selId } = p); scroll = null; msg = ''; zoom = 'auto'; }
 
   function finish(code) {
     if (done) return;
@@ -645,9 +844,6 @@ export function interactive({
         if (!(view.kind === 'repo' && view.slug === v.slug)) go({ kind: 'repo', slug: v.slug });
         if (v.key) selId = v.key;
         act(v);
-      } else if (v.kind === 'ships') {
-        // The dates are on the queue screens already: ships opens the repo's, or every repo's.
-        go(v.slug ? { kind: 'repo', slug: v.slug } : { kind: 'overview', all: false });
       } else if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else go(v);
     } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
   }
@@ -683,6 +879,7 @@ export function interactive({
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; }
     else if (str === 'a' && view.kind === 'overview') view = { ...view, all: !view.all };
+    else if (str === 'z' && view.kind === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;
       msg = checkin ? 'Parked tickets are now dated as if you answer at the next check-in (08:00 or 17:00).' : 'Parked tickets have no date until you answer them.';
@@ -720,14 +917,14 @@ const isMain = (() => {
 if (isMain) {
   const argv = process.argv.slice(2);
   try {
-    // A terminal on both ends gets the screen; anything piped, --plain, a change typed in the shell
-    // and ships (until it has a screen of its own) get the plain output.
+    // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
+    // shell get the plain output.
     let start = null;
     if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
       checkFlags(argv);
       start = target(loadOrRefuse(Date.now()), argv);
     }
-    if (start && !isWrite(start) && start.kind !== 'ships') {
+    if (start && !isWrite(start)) {
       const ui = interactive({ start });
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
