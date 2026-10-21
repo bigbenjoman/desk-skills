@@ -13,7 +13,7 @@ import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, re
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, usedGiB, rssGiB, ladderMemory, runnerSegment } from './desk-env.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -524,36 +524,67 @@ switch (cmd) {
     console.log(JSON.stringify(q, null, 2));
     break;
 
-  case 'render': {
-    const rows = Object.values(q.tickets);
-    if (!rows.length) { console.log('queue is empty'); break; }
-    const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
-    rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
-    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
-    for (const t of rows) {
-      const stuck = isHeld(t) && !waitingOnMerge(q, t);
-      const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();
-      const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
-      const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (failed or parked): decide what happens to it`
-        : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
-        : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
-        : t.state === 'parked' ? t.park?.question ?? ''
-        : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}`
-        : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}` : '')
-        : '';
-      // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
-      const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
-      console.log(`  ${label.padEnd(8)} ${t.key.padEnd(9)} ${tail}${modelNote}`);
-    }
-    const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && waitingOnMerge(q, t))).length;
-    if (parked) console.log(`\n${parked} ticket(s) waiting on you.`);
+  case 'render':
+    console.log(render(q));
     break;
+
+  // The orchestrator's status monitor, run under Monitor: one plain command, so starting it never
+  // prompts. Prints the table and the memory line once, then again only when the table changes;
+  // memory figures moving on their own print nothing. Runs until killed, like `desk-env mem watch`.
+  case 'watch': {
+    if (!existsSync(QUEUE)) throw new Error(`no queue at ${QUEUE}: start a batch (queue.mjs init) before watching it`);
+    const i = args.indexOf('--interval');
+    const intervalMs = (i >= 0 && Number(args[i + 1]) > 0 ? Number(args[i + 1]) : 90) * 1000;
+    // A queue that cannot be read (gone, or hand-mangled) is shown once as its error, rather than
+    // ending the monitor: the next good read prints the table again.
+    const snapshot = () => { try { return render(existsSync(QUEUE) ? readQueue(QUEUE) : empty()); } catch (e) { return `queue: ${e.message}`; } };
+    let last = null;
+    for (;;) {
+      const table = snapshot();
+      if (table !== last) console.log(`${table}\n${memLine()}\n`);
+      last = table;
+      await new Promise((res) => setTimeout(res, intervalMs));
+    }
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|get|list|render`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|get|list|render|watch [--interval s]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
   process.exit(EXIT.SHOW_PERSON);
+}
+
+// The status table, as one string.
+function render(q) {
+  const rows = Object.values(q.tickets);
+  if (!rows.length) return 'queue is empty';
+  const out = [];
+  const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
+  rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
+  out.push(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
+  for (const t of rows) {
+    const stuck = isHeld(t) && !waitingOnMerge(q, t);
+    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();
+    const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
+    const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (failed or parked): decide what happens to it`
+      : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
+      : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
+      : t.state === 'parked' ? t.park?.question ?? ''
+      : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}`
+      : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}` : '')
+      : '';
+    // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
+    const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
+    out.push(`  ${label.padEnd(8)} ${t.key.padEnd(9)} ${tail}${modelNote}`);
+  }
+  const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && waitingOnMerge(q, t))).length;
+  if (parked) out.push(`\n${parked} ticket(s) waiting on you.`);
+  return out.join('\n');
+}
+
+// The same line as `desk-env mem status`.
+function memLine() {
+  const l = ladderMemory();
+  return `vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`;
 }

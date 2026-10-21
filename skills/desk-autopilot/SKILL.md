@@ -945,11 +945,14 @@ When raising back, return to the user's number (`concurrency_user`, which the `w
 names), not to the §3b default. `set-batch concurrency_by=null` hands the count back to the ladder.
 
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
-batch: the pass report (90s, change-only, carrying `vmmem=` and `avail=`), and a sustained-high watch
-(`desk-env mem watch`) that fires only on `avail` below the ladder's lowest band (2 GiB, or a lower
-band the §3b row names) held 5 minutes with nothing heavy running to explain it. It keeps its timer
-in the process, so re-arm it when the `Monitor` expires. Killing a runaway process is a call to make
-from the monitor, not a park.
+batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
+memory line (`vmmem=`, `avail=`) at start, then again only when the table changes, checking every
+90 seconds (`--interval <s>` to change it); and a sustained-high watch (`desk-env mem watch`) that
+fires only on `avail` below the ladder's lowest band (2 GiB, or a lower band the §3b row names) held
+5 minutes with nothing heavy running to explain it. Run each under `Monitor` exactly as written:
+never write a shell loop around `render` and `mem status` instead, which Claude Code prompts on every
+time. Both keep their state in the process, so re-arm one when its `Monitor` expires. Killing a
+runaway process is a call to make from the monitor, not a park.
 
 **Test runners ignore the cap unless it is on the command line**, so seed the worker-count flag
 (`--maxWorkers=<cap>`, appended **only** to a Jest or Vitest command; never to pytest or another
@@ -1048,7 +1051,7 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # shell redirect, which writes outside the working directory and prompts every time
 
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
-node ~/.claude/desk/bin/queue.mjs render | tail -n +2; desk-env mem status
+node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a table change; every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
 
 # apply the ladder — top-level field (a lowering leaves concurrency_by as it is)
