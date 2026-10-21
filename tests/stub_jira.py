@@ -4,7 +4,8 @@ DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
 # "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
 # "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field], "fields": [field list GET /field
-# answers], "unlink_readback": "normal"|"keep", "projects": {KEY: id}}. Issue links posted are kept in memory, on both
+# answers], "unlink_readback": "normal"|"keep", "projects": {KEY: id}, "create_seq": n,
+# "create_fail": [summary]}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view. A DELETE of a
 # link id removes it from both.
 FIX = {"issues": {}, "children": {}}
@@ -127,11 +128,19 @@ class H(BaseHTTPRequestHandler):
             return self._send(204, {}) if hit else self._send(404, {"errorMessages": ["No issue link with id '%s' exists." % m.group(1)]})
         if path == "/rest/api/2/issue" and self.command == "POST":
             # Kept so a read-back sees it; only the stub's own account resolves to a display name.
+            # Every create is KAN-99, unless "create_seq" numbers them from that value up; a summary
+            # in "create_fail" gets a 400.
             f = dict(json.loads(data or "{}").get("fields", {}))
+            if f.get("summary") in FIX.get("create_fail", []):
+                return self._send(400, {"errorMessages": [], "errors": {"summary": "rejected by the stub"}})
             a = f.get("assignee")
             f["assignee"] = dict(a, displayName="Me") if isinstance(a, dict) and a.get("accountId") == "abc" else a
-            FIX["issues"]["KAN-99"] = f
-            return self._send(201, {"id": "1", "key": "KAN-99"})
+            key = "KAN-99"
+            if "create_seq" in FIX:
+                key = "KAN-%d" % FIX["create_seq"]
+                FIX["create_seq"] += 1
+            FIX.setdefault("issues", {})[key] = f
+            return self._send(201, {"id": "1", "key": key})
         if "/comment" in self.path and self.command == "POST":
             return self._send(201, {"id": "10"})
         self._send(404, {"errorMessages": ["nope"]})

@@ -81,7 +81,7 @@ a row changes, say which of these applies.
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
 | `upload-images.mjs` | `pr-images` |
 | `desk-ci.mjs protection` | `ci-protection` (unset is `ask`; `no` refuses every `--apply`) |
-| `desk-jira create` | `jira-assign-self` (a new ticket with no assignee given is assigned to you) |
+| `desk-jira create`, `create-batch` | `jira-assign-self` (a new ticket with no assignee given is assigned to you) |
 | `clearance-state.mjs` | `pr-merge-green`, `merge-feedback-first` |
 | `/desk-checkout`'s collectors (`github_activity.py`, `jira_activity.py`, `claude_activity.py`) | `read-own-work`, `read-transcripts`, per repo |
 
@@ -114,7 +114,7 @@ rows).
 |---|---|---|---|---|---|
 | `jira-assign-self` | yes | starting a ticket without a round-trip; `desk-jira create` assigns a new ticket to you | board shows you on it | ask | — (`desk-jira create` assigns only you, and refuses another assignee without `--route`, which `jira-create`'s rule keeps prompting. No `edit` rule: `desk-jira edit` can set any assignee) |
 | `jira-comment` | yes | the root-cause + PR-link comment posts as it happens; exact text printed `posted` | text is public to the team under your name; editable. _Reach_: the rule posts on **any** ticket on the Jira site, other people's included; only the skill's `jira-others` check keeps it to yours | ask (every comment prompts) | `Bash(desk-jira comment *)` |
-| `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *--route*)` `ask: Bash(desk-jira create *reporter*)` (routing a ticket to someone else is `jira-route`, and prompts). No `assignee` ask: `desk-jira create` assigns only you without `--route`, and `harness-rules.py` drops the one an earlier setup recorded. No `attach` rule: it reaches any ticket |
+| `jira-create` | yes | follow-ups a review finds get filed immediately; an epic's children filed in one command | a new ticket under your name | ask | `Bash(desk-jira create *)` `Bash(desk-jira create-batch *)` · `ask: Bash(desk-jira create *--route*)` `ask: Bash(desk-jira create *reporter*)` `ask: Bash(desk-jira create-batch *--route*)` (routing a ticket to someone else is `jira-route`, and prompts. `create *` does not match `create-batch`, which takes its own rules; its routing and reporter rows sit in the file, so `create-batch` refuses them without `--route` on the command). No `assignee` ask: `desk-jira create` assigns only you without `--route`, and `harness-rules.py` drops the one an earlier setup recorded. No `attach` rule: it reaches any ticket |
 | `jira-edit` | yes | narrowing a description to what shipped, the §4 Priority field, labels, an epic's Blocks links | overwrites fields others read | ask | — (`desk-jira edit`, `labels` and `link` reach any ticket and any field, assignee included; `link` is never a worker's) |
 
 ## Round 4 — Jira, board state

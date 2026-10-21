@@ -434,7 +434,7 @@ if (mode === 'triage') {
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
-  grant('jira-create', bash('desk-jira', ' create'));
+  grant('jira-create', bash('desk-jira', ' create', ' create-batch'));
   grant('jira-edit', bash('desk-jira', ' edit', ' labels'));
   deny.push(...bash('desk-jira', ...JIRA_NEVER));
   if (!(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));
@@ -464,7 +464,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun'),
-      ...bash('desk-jira', ' edit', ' comment', ' create', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
+      ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }
 
