@@ -54,7 +54,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, platform, totalmem, freemem, release } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve as absPath } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
@@ -649,6 +649,30 @@ export function proposePort(cap, claims, { from = 3000, step = 100 } = {}) {
     if (!claims.some((c) => blocksMeet({ port, last: port + cap }, c))) return port;
   }
   return null;
+}
+
+// Ports held by running workers in every other repo's queue. Two repos' worker blocks can meet, and
+// a worker's port is unbound until it starts a server, so a pass in one repo cannot see the port a
+// pass in the other has just handed out by probing it. Only running tickets hold one: a done or
+// parked worker has no server. A queue that will not parse is named in `unreadable` and skipped, so
+// it never stops a spawn.
+export function otherQueuePorts(own = queueFile(), home = deskHome()) {
+  const dir = join(home, 'repos');
+  const ports = new Set();
+  const unreadable = [];
+  let slugs = [];
+  try { slugs = readdirSync(dir).sort(); } catch { return { ports, unreadable }; }
+  for (const slug of slugs) {
+    const path = join(dir, slug, 'queue.json');
+    if (absPath(path) === absPath(own) || !existsSync(path)) continue;
+    try {
+      const q = JSON.parse(readFileSync(path, 'utf8'));
+      for (const t of Object.values(q?.tickets ?? {})) {
+        if (t?.state === 'running' && positiveInt(t.port)) ports.add(Number(t.port));
+      }
+    } catch (e) { unreadable.push(`${path} (${String(e.message).split('\n')[0]})`); }
+  }
+  return { ports, unreadable };
 }
 
 // §3b "Spawn gate (available memory)", e.g. `start work > 8 GiB · hold 4–8 · drop to 1 below 4`:

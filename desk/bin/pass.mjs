@@ -620,6 +620,8 @@ const baselineBrief = () => {
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing.
 let attempts = 0;
+// Another repo's queue that would not parse while choosing a port: named in the report, never a hold.
+const unreadableQueues = new Set();
 for (const t of eligible) {
   if (baseHold || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
@@ -701,11 +703,14 @@ for (const t of eligible) {
 
   const sid = E.uuid();
 
-  // Assign a port nothing else holds. Two things make one unavailable: another ticket in this
+  // Assign a port nothing else holds. Three things make one unavailable: another ticket in this
   // batch already holds it (a worker's port is unbound until it starts a server, so a bind check
-  // alone races), or something is listening on it. The floor is one above the user's own dev port
+  // alone races), a running worker in another repo's queue holds it (two repos' worker blocks can
+  // meet), or something is listening on it. The floor is one above the user's own dev port
   // (E.workerPortFloor, shared with spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides).
-  const taken = new Set(Object.values(queue().tickets).map((r) => Number(r.port)).filter(Boolean));
+  const others = E.otherQueuePorts(QUEUE_FILE);
+  for (const u of others.unreadable) unreadableQueues.add(u);
+  const taken = new Set([...Object.values(queue().tickets).map((r) => Number(r.port)).filter(Boolean), ...others.ports]);
   let port = E.workerPortFloor();
   // eslint-disable-next-line no-await-in-loop
   while (taken.has(port) || await E.portInUse(port)) port += 1;
@@ -752,6 +757,7 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 }
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
+if (unreadableQueues.size) out.push(`ports: could not read ${[...unreadableQueues].join('; ')}, so its running workers' ports were not skipped`);
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);
 if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 // A worker count of 0 is a pause, not a finished batch: say what is waiting behind it.

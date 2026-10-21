@@ -243,4 +243,20 @@ check "DS-115 AC4 otherwise the §3b default, one higher only after an idle pass
 check "DS-115 AC5 lowering on memory leaves concurrency_by" 'grep -E "^\| < 4 GiB \|" "$SK" | grep -q "leave \`concurrency_by\` as it is" && grep -q "lower with \`set-batch concurrency=<n>\` alone and leave \`concurrency_by\` as it is" "$SK"'
 check "DS-115 AC6 raising back returns to the user's number" 'grep -q "When raising back, return to the user.s number" "$SK"'
 
+# DS-117: a pass skips the ports running workers hold in another repo's queue under DESK_HOME. Each
+# case is a fresh queue with one triaged ticket, spawning from a floor nothing here listens on.
+export DESK_CONFIG="$T/config.md" AUTOPILOT_PORT_FLOOR=47501; mkdir -p "$T/desk/repos/acme__other"
+other(){ printf '%s\n' "$1" > "$T/desk/repos/acme__other/queue.json"; }
+spawn_one(){ export DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1"; mkdir -p "$T/state-$1/logs"
+  q init "$1"; q add "$1"; q set "$1" state=triaged lane=A "branch=fix/$1"; out=$(node "$B/pass.mjs" 2>&1); }
+other '{"tickets":{"O-1":{"key":"O-1","state":"running","port":47501}}}'
+spawn_one P-171
+check "DS-117 AC1 a port another repo's running worker holds is skipped" '[ "$(field P-171 state)" = "\"running\"" ] && [ "$(field P-171 port)" = 47502 ]'
+other '{"tickets":{"O-1":{"key":"O-1","state":"done","port":47501}}}'
+spawn_one P-172
+check "DS-117 AC2 a port only another repo's done ticket recorded is used" '[ "$(field P-172 state)" = "\"running\"" ] && [ "$(field P-172 port)" = 47501 ]'
+other '{"tickets": not json'
+spawn_one P-173
+check "DS-117 AC3 an unreadable queue does not stop the spawn, and the report names it" '[ "$(field P-173 state)" = "\"running\"" ] && [ "$(field P-173 port)" = 47501 ] && echo "$out" | grep -qF "ports: could not read $T/desk/repos/acme__other/queue.json ("'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
