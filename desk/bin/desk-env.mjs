@@ -46,7 +46,7 @@
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose [--runner]  print the sizes the rules propose, with the arithmetic;
-//                                             --runner sizes a runner on a computer with a battery
+//                                             the runner is off by default; --runner sizes it on
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync } from 'node:fs';
@@ -1092,9 +1092,8 @@ if (isMain) {
         }
         const hw = M.gather();
         const profile = machineProfile();
-        // A runner the profile already has stays chosen, so a laptop that opted in is not a change.
-        const runnerOnBattery = rest.includes('--runner') || profile?.sizing['runner-possible']?.value === 'yes';
-        const proposal = M.propose(hw, { runnerOnBattery });
+        // The runner is off unless --runner asks for it or the profile already has one.
+        const proposal = M.propose(hw, { runner: M.runnerChosen(profile, rest.includes('--runner')) });
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }

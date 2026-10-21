@@ -175,10 +175,16 @@ export function gather(plat = osPlatform()) {
 }
 
 // ---- the proposal ----------------------------------------------------------------------------
+// Whether to size a runner: `--runner` asks for one, and a profile that already has one keeps it,
+// so a computer that opted in is not a change and one that is off stays off.
+export const runnerChosen = (profile, flag = false) => flag || profile?.sizing?.['runner-possible']?.value === 'yes';
+
+
 // -> [{ key, value, why }] in SIZING_KEYS order; `why` is the arithmetic, shown before anything is
-// written and kept in the profile's Why column. A computer on battery that meets the minimum gets
-// no runner unless runnerOnBattery is set (`--runner`), which sizes it as on mains.
-export function propose(hw, { runnerOnBattery = false } = {}, r = RULES) {
+// written and kept in the profile's Why column. The runner is off by default, battery or mains: a
+// computer that meets the minimum gets one only when `runner` is set (`--runner`, or a profile that
+// already has one), so its memory is not held back from autopilot until someone opts in.
+export function propose(hw, { runner: wantRunner = false } = {}, r = RULES) {
   const mem = num(hw['memory-gb']);
   const cores = num(hw['cpu-cores']);
   const disk = num(hw['disk-free-gb']);
@@ -198,8 +204,8 @@ export function propose(hw, { runnerOnBattery = false } = {}, r = RULES) {
   let runner = false;
   if (wsl) add('runner-possible', 'no', 'WSL is not a runner host');
   else if (short.length) add('runner-possible', 'no', `below the minimum: ${short.join(', ')}`);
-  else if (hw.battery === 'yes' && !runnerOnBattery) {
-    add('runner-possible', 'no', `meets the minimum (${mem} GB, ${cores} cores, ${disk} GB free) but runs on battery: proposed off, --runner sizes it on`);
+  else if (!wantRunner) {
+    add('runner-possible', 'no', `meets the minimum (${mem} GB, ${cores} cores, ${disk} GB free${hw.battery === 'yes' ? ', on battery' : ''}) but the runner is off by default: --runner sizes it on`);
   } else {
     runner = true;
     add('runner-possible', 'yes', `${mem} GB >= ${r.runnerMinMemoryGB}, ${cores} cores >= ${r.runnerMinCores}, ${disk} GB free >= ${r.runnerMinDiskGB}${hw.battery === 'yes' ? ', on battery by choice' : ''}`);
@@ -225,7 +231,8 @@ export function propose(hw, { runnerOnBattery = false } = {}, r = RULES) {
     ceilingWhy = `WSL: min(${r.wslCeilingGB}, ${mem} - ${r.osReserveGB} for the OS); the Windows host caps VmmemWSL below the guest's grant`;
   } else {
     ceiling = Math.max(2, mem - r.osReserveGB - vmMem);
-    ceilingWhy = `${mem} GB - ${r.osReserveGB} for the OS - ${vmMem} reserved for the runner`;
+    ceilingWhy = runner ? `${mem} GB - ${r.osReserveGB} for the OS - ${vmMem} reserved for the runner`
+      : `${mem} GB - ${r.osReserveGB} for the OS; nothing reserved for a runner`;
   }
   const cap = Math.max(1, Math.floor(ceiling / r.workerHeavyGB));
   const def = Math.max(1, Math.floor(cap / 2));

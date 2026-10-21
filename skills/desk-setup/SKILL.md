@@ -411,13 +411,15 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
 
 - **No profile yet**: show the `desk-env machine detect` table, then `desk-env machine propose`,
   whose third column is the arithmetic behind each size. Say in one line what the rules are (a local
-  CI runner needs at least 32 GB, 8 CPU cores and 100 GB free, and is proposed off on a computer with
-  a battery; the runner VM takes at most 3/8 of memory and 2/3 of the cores; a slot is 2 CPUs and
-  4 GB; autopilot workers at ~3 GB each from what the runner leaves; test workers capped at the
-  performance cores). **Write nothing until the user confirms**; then `desk-env machine write`. On a
-  computer with a battery that meets the minimum, ask whether to size a runner anyway; on a yes,
-  `propose --runner` shows those sizes and `write --runner` writes them. Any other size they want
-  different is a hand edit to that file afterwards, said as such.
+  CI runner needs at least 32 GB, 8 CPU cores and 100 GB free, and is off by default on every
+  computer, battery or mains, because its memory comes off what autopilot can use; the runner VM
+  takes at most 3/8 of memory and 2/3 of the cores; a slot is 2 CPUs and 4 GB; autopilot workers at
+  ~3 GB each from what the runner leaves; test workers capped at the performance cores). **Write
+  nothing until the user confirms**; then `desk-env machine write`. On a computer that meets the
+  minimum, say the runner is off and that opting in is `propose --runner` to see its sizes and
+  `write --runner` to write them; a profile written that way keeps the runner on through later
+  proposals. Any other size they want different is a hand edit to that file afterwards, said as
+  such.
 - **A profile exists**: `desk-env machine detect` says what changed since it was written. Nothing
   changed: say so and move on. Something changed (another computer, more memory, the disk filling
   up): show the changes and offer to re-propose; on a yes, the same propose, confirm, write.

@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, runnerChosen } from '../desk/bin/machine.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -52,8 +52,16 @@ t('mac os', macMini.os, 'macOS 15.1');
 t('mac arch', macMini.arch, 'arm64');
 t('mac on mains', macMini.battery, 'no');
 
-const mini = sized(macMini);
-t('desktop: runner possible', mini['runner-possible'].value, 'yes');
+// The runner is off by default on mains too: nothing sized, nothing held back from the ceiling.
+const miniOff = sized(macMini);
+t('desktop: runner off by default', miniOff['runner-possible'].value, 'no');
+t('desktop: reason says off by default and how to opt in', miniOff['runner-possible'].why, 'meets the minimum (64 GB, 12 cores, 410 GB free) but the runner is off by default: --runner sizes it on');
+t('desktop off: no VM', ['runner-vm-cpus', 'runner-vm-memory-gb', 'runner-vm-disk-gb', 'runner-slots-per-repo', 'runner-memory-reserved-gb'].map((k) => miniOff[k].value).join(' '), '0 0 0 0 0');
+t('desktop off: ceiling holds nothing back', `${miniOff['memory-ceiling-gb'].value} ${miniOff['memory-ceiling-gb'].why}`, '56 64 GB - 8 for the OS; nothing reserved for a runner');
+t('desktop off: workers from the whole ceiling', miniOff['autopilot-concurrency'].value, '9 / 18');
+
+const mini = Object.fromEntries(propose(macMini, { runner: true }).map((r) => [r.key, r]));
+t('desktop --runner: runner possible', mini['runner-possible'].value, 'yes');
 t('desktop: VM cpus 8 of 12', mini['runner-vm-cpus'].value, '8');
 t('desktop: VM memory 24 of 64', mini['runner-vm-memory-gb'].value, '24');
 t('desktop: VM disk at most 100', mini['runner-vm-disk-gb'].value, '100');
@@ -81,19 +89,21 @@ t('laptop gpu unknown without system_profiler', laptop['gpu-cores'], 'unknown');
 t('laptop has a battery', laptop.battery, 'yes');
 const lap = sized(laptop);
 t('laptop: meets the minimum but proposed off on battery', lap['runner-possible'].value, 'no');
-t('laptop: reason names the battery', /battery/.test(lap['runner-possible'].why), true);
+t('laptop: reason names the battery and the opt-in', lap['runner-possible'].why, 'meets the minimum (32 GB, 10 cores, 200 GB free, on battery) but the runner is off by default: --runner sizes it on');
 t('laptop: no VM', lap['runner-vm-memory-gb'].value, '0');
 t('laptop: nothing reserved', lap['runner-memory-reserved-gb'].value, '0');
 t('laptop: ceiling 32 - 8', lap['memory-ceiling-gb'].value, '24');
 t('laptop: workers', lap['autopilot-concurrency'].value, '4 / 8');
 t('laptop: test cap', lap['test-cap'].value, '8');
 const lapMains = sized({ ...laptop, battery: 'no' });
-t('same laptop on mains: runner possible', lapMains['runner-possible'].value, 'yes');
-t('same laptop on mains: slots', `${lapMains['runner-vm-cpus'].value} ${lapMains['runner-vm-memory-gb'].value} ${lapMains['runner-slots-per-repo'].value}`, '6 12 3');
-const lapOptIn = Object.fromEntries(propose(laptop, { runnerOnBattery: true }).map((r) => [r.key, r]));
+t('same laptop on mains: still off by default', `${lapMains['runner-possible'].value} ${lapMains['runner-memory-reserved-gb'].value} ${lapMains['memory-ceiling-gb'].value}`, 'no 0 24');
+const lapMainsOn = Object.fromEntries(propose({ ...laptop, battery: 'no' }, { runner: true }).map((r) => [r.key, r]));
+t('same laptop on mains --runner: slots', `${lapMainsOn['runner-possible'].value} ${lapMainsOn['runner-vm-cpus'].value} ${lapMainsOn['runner-vm-memory-gb'].value} ${lapMainsOn['runner-slots-per-repo'].value}`, 'yes 6 12 3');
+const lapOptIn = Object.fromEntries(propose(laptop, { runner: true }).map((r) => [r.key, r]));
 t('laptop opted in: runner sized', `${lapOptIn['runner-possible'].value} ${lapOptIn['runner-vm-memory-gb'].value} ${lapOptIn['runner-slots-per-repo'].value}`, 'yes 12 3');
+t('laptop opted in: reason says on battery by choice', /on battery by choice$/.test(lapOptIn['runner-possible'].why), true);
 t('laptop opted in: ceiling leaves room for it', `${lapOptIn['memory-ceiling-gb'].value} ${lapOptIn['autopilot-concurrency'].value}`, '12 2 / 4');
-t('opt-in cannot lift a machine below the minimum', propose({ ...laptop, 'memory-gb': 16 }, { runnerOnBattery: true })[0].value, 'no');
+t('opt-in cannot lift a machine below the minimum', propose({ ...laptop, 'memory-gb': 16 }, { runner: true })[0].value, 'no');
 
 // ---- an Intel Mac: one kind of core
 const intel = parseMac({ systemProfiler: '      Model Name: MacBook Pro\n      Model Identifier: MacBookPro16,1\n      Processor Name: 6-Core Intel Core i7\n      Total Number of Cores: 6\n      Memory: 16 GB\n', arch: 'x64' });
@@ -141,18 +151,26 @@ t('cpu list', countCpuList('0-7,16-23'), 16);
 t('unknown memory: no runner', sized({ ...macMini, 'memory-gb': 'unknown' })['runner-possible'].why, 'below the minimum: GB memory unknown');
 
 // ---- the file round-trips, and detect reports only real hardware changes
-const doc = renderProfile(macMini, propose(macMini), '2026-10-17');
+// A profile written with --runner; desk-env re-proposes with runnerChosen(profile, --runner given?).
+const doc = renderProfile(macMini, propose(macMini, { runner: true }), '2026-10-17');
 const back = parseProfile(doc);
+const again = (profile, hw = macMini, flag = false) => propose(hw, { runner: runnerChosen(profile, flag) });
 t('profile hardware value', back.hardware['memory-gb'].value, '64');
 t('profile hardware date', back.hardware.chip.detected, '2026-10-17');
 t('profile sizing value', back.sizing['autopilot-concurrency'].value, '5 / 10');
 t('profile sizing reason', back.sizing['runner-possible'].why, '64 GB >= 32, 12 cores >= 8, 410 GB free >= 100');
-t('no change against itself', hardwareChanges(back, macMini).length + sizingChanges(back, propose(macMini)).length, 0);
+t('runner on in the profile stays on', again(back)[0].value, 'yes');
+t('no change against itself', hardwareChanges(back, macMini).length + sizingChanges(back, again(back)).length, 0);
+const offBack = parseProfile(renderProfile(macMini, propose(macMini), '2026-10-17'));
+t('runner off in the profile stays off', again(offBack)[0].value, 'no');
+t('runner off: detect reports no change', hardwareChanges(offBack, macMini).length + sizingChanges(offBack, again(offBack)).length, 0);
+t('runner off: --runner turns it on', sizingChanges(offBack, again(offBack, macMini, true)).map((c) => c.key).join(), 'runner-possible,runner-vm-cpus,runner-vm-memory-gb,runner-vm-disk-gb,runner-slots-per-repo,runner-memory-reserved-gb,autopilot-concurrency,memory-ceiling-gb');
+t('no profile: runner off', runnerChosen(null), false);
 t('free disk drift is not a hardware change', hardwareChanges(back, { ...macMini, 'disk-free-gb': 300 }).length, 0);
 const more = { ...macMini, 'memory-gb': 128 };
 t('memory change reported', hardwareChanges(back, more).map((c) => `${c.key}:${c.was}->${c.now}`).join(), 'memory-gb:64->128');
-t('memory change re-proposes', sizingChanges(back, propose(more)).some((c) => c.key === 'runner-vm-memory-gb' && c.now === '48'), true);
-t('disk below the minimum re-proposes', sizingChanges(back, propose({ ...macMini, 'disk-free-gb': 50 }))[0].key, 'runner-possible');
+t('memory change re-proposes', sizingChanges(back, again(back, more)).some((c) => c.key === 'runner-vm-memory-gb' && c.now === '48'), true);
+t('disk below the minimum re-proposes', sizingChanges(back, again(back, { ...macMini, 'disk-free-gb': 50 }))[0].key, 'runner-possible');
 
 // ---- desk-env: get/why, and the §3b fallback (a set repo row wins; no profile behaves as before)
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
