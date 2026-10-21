@@ -226,6 +226,18 @@ node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 da
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
+**`supervisor.mjs`** runs autopilot passes from launchd, with no Claude session in the loop. Install
+it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a batch
+the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. It keeps
+the batch's merge driver running, sends one macOS notification for each new set of items that need
+you, and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
+
+```
+node ~/.claude/desk/bin/supervisor.mjs install [--interval <s>]   write and load the agent (default 180s)
+node ~/.claude/desk/bin/supervisor.mjs status                     the agent, the batch, the log's tail
+node ~/.claude/desk/bin/supervisor.mjs uninstall                  remove it; no further passes for the repo
+```
+
 **`skill-eval.mjs`** runs a task set once with a skill loaded and once without it, so prose that
 only restates what the model now does by default can be found. Each task is a prompt with pass/fail
 checks on the final reply (`contains`, `absent` or `matches` a regex). Both arms run `claude -p`
