@@ -239,6 +239,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Autopilot per-worker budget (USD) | `25` (a runaway guard) | `TODO` (`none` turns it off) |
 | Autopilot batch budget (USD) | `none` | `TODO` |
 | Worker models | `default` | `TODO` (`default`, or `standard=<model> high=<model>`: lane A or E sized XS or S runs on standard, the rest on high) |
+| Worker location | `local` | `TODO` (`local`, or `cloud`: cloud workers are not available yet, so `cloud` still runs every worker locally and the batch plan says so) |
 | Park an unanswered question after (minutes) | `15` | `TODO` |
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |

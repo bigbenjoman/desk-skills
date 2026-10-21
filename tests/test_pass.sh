@@ -204,6 +204,7 @@ check "AC1 scope, a test and a lockfile report nothing"  '[ "$(field T-16 out_of
 node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
 out=$(node "$B/pass.mjs" 2>&1)
 check "AC3 an idle batch gives the scope total"         'echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "scope: 1 of 2 checked ticket(s) changed files outside their triaged scope, 2 file(s) in all"'
+check "DS-122 an idle batch gives each worker's cost, unknown where its log has no result event" 'echo "$out" | grep -q "^WORKER COST" && echo "$out" | grep -qE "^  T-15 +1 +unknown +unknown +unknown +unknown" && echo "$out" | grep -qE "^  total .*not counted\)$"'
 
 # T-17 advances a stage while a live process holds the queue lock past its wait: the refused write is
 # in the report, naming the ticket and the change, not dropped.

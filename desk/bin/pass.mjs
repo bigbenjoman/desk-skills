@@ -13,6 +13,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
+import { batchCost, costTable } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -1026,6 +1027,8 @@ if (idle) {
   lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
   const sc = batchScopeTotals(Object.values(qEnd.tickets));
   lines.push(`scope: ${sc.tickets} of ${sc.checked} checked ticket(s) changed files outside their triaged scope, ${sc.files} file(s) in all (report only)`);
+  const cost = batchCost(STATE, Object.keys(qEnd.tickets));
+  if (cost.length) lines.push(costTable(cost));
 }
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {

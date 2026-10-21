@@ -13,7 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation } from './desk-env.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 const plan = [];
@@ -338,7 +338,15 @@ const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b =
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 
+// Config §3b "Worker location". Every worker runs locally until cloud workers exist; a repo that
+// asks for cloud is told so here rather than finding out from where its workers ran.
+let location;
+try { location = workerLocation(); } catch (e) { refuse(e.message); }
+
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
+say(location.asked === 'cloud'
+  ? 'workers: local — config §3b "Worker location" is cloud, but cloud workers are not available yet, so every worker runs locally'
+  : 'workers: local');
 if (notOurs.length) {
   say('\nNOT YOURS — excluded from the batch:');
   for (const r of notOurs) say(`  ${r.ticket}: assigned to ${r.assignee}`);

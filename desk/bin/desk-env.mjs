@@ -278,6 +278,7 @@ export const CONFIG_ROWS = Object.freeze({
   'worker-budget': { section: '3b', row: 'Autopilot per-worker budget (USD)' },
   'batch-budget': { section: '3b', row: 'Autopilot batch budget (USD)' },
   'worker-models': { section: '3b', row: 'Worker models' },
+  'worker-location': { section: '3b', row: 'Worker location' },
 });
 
 export class DeskConfigError extends Error {}
@@ -499,6 +500,17 @@ export function parseWorkerModels(raw) {
   return { standard: pairs.standard, high: pairs.high };
 }
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
+
+// Config §3b "Worker location": `local` (also when the row is unset) or `cloud`. Cloud workers do
+// not exist yet, so both run every worker locally; `cloud` is kept as asked so the batch plan can
+// say it is not available. Anything else is refused rather than read as local.
+//   -> { asked: 'local' | 'cloud', runs: 'local' }, or throws DeskConfigError
+export function parseWorkerLocation(raw) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'local' || v === 'cloud') return { asked: v, runs: 'local' };
+  throw new DeskConfigError(`desk: config §3b "Worker location" is "${raw}" — want \`local\` or \`cloud\`. Refusing to guess.`);
+}
+export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
