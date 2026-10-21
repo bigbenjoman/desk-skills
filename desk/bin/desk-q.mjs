@@ -97,7 +97,11 @@ export function loadRepos(now = Date.now()) {
     r.last = lastPass(stateDir, queuePath);
     r.live = r.last != null && now - r.last < LIVE_MS;
     const rows = Object.values(r.q?.tickets ?? {});
-    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t) }));
+    // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
+    // keeps its slot and has no place.
+    let place = 0;
+    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t), pos: t.state === 'failed' ? null : ++place }));
+    r.places = place;
     r.done = rows.length - r.rows.length;
     r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
     return r;
@@ -217,9 +221,9 @@ function repoParts(r, { now = Date.now(), width = null } = {}) {
     `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', 34)}TITLE`,
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
-  const rows = r.rows.map((x, i) => {
+  const rows = r.rows.map((x) => {
     const title = triageOf(r.stateDir, x.t.key)?.summary ?? '';
-    const line = `  ${rpad(`${x.t.placed ? '*' : ''}${i + 1}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, tw)}`.trimEnd();
+    const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, tw)}`.trimEnd();
     return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key } };
   });
   const foot = !r.rows.length ? ['  No unfinished tickets.']
@@ -236,11 +240,11 @@ function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
   const t = r.q.tickets[key];
   const k = shownState(r.q, t);
   const tr = triageOf(r.stateDir, key) ?? {};
-  const i = r.rows.findIndex((x) => x.t.key === key);
+  const pos = r.rows.find((x) => x.t.key === key)?.pos;
   const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
   const head = [
-    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, i >= 0 ? `position ${i + 1} of ${r.rows.length}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · ')}`,
+    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, pos != null ? `position ${pos} of ${r.places}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · ')}`,
     '',
     ...(tr.summary ? wrap(tr.summary, ww) : ['(no triage record: title unknown)']),
     '',
@@ -327,7 +331,6 @@ function target(repos, words) {
 // ---- changes -----------------------------------------------------------------------------------
 
 const QUEUE_MJS = join(dirname(fileURLToPath(import.meta.url)), 'queue.mjs');
-const tilde = (p) => (p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p);
 
 // Every change is a queue.mjs command, which takes the queue's lock. Its queue and state directory
 // are the named repo's, passed explicitly: left to itself, queue.mjs picks the repo it is run in.
@@ -340,28 +343,24 @@ function queueCmd(r, args) {
   }
 }
 
-// Positions count the tickets desk-q shows (every one not done). queue.mjs leaves failed ones out
-// of its count too, so the place is translated before it is passed on.
+// Positions are queue.mjs's (loadRepos), so a place here is the place passed on.
 function moveTicket(r, key, verb, to) {
-  const i = r.rows.findIndex((x) => x.t.key === key);
-  if (i < 0) throw new Usage(`${key} is done: only unfinished tickets have a place in the spawn order.`);
-  const x = r.rows[i], last = r.rows.length;
+  const x = r.rows.find((y) => y.t.key === key);
+  if (!x) throw new Usage(`${key} is done: only unfinished tickets have a place in the spawn order.`);
+  const i = x.pos, last = r.places;
   if (x.k === 'running') throw new Usage(`${key} is running, so its position no longer matters. Nothing moved.`);
   if (x.k === 'failed') throw new Usage(`${key} failed, so it has no place in the spawn order until it is requeued. Nothing moved.`);
-  let j;
+  let n;
   if (verb === 'move') {
     if (!/^\d+$/.test(to) || Number(to) < 1 || Number(to) > last) throw new Usage(`Position ${to} is out of range: give 1 to ${last}. Nothing moved.`);
-    j = Number(to) - 1;
-  } else j = { up: i - 1, down: i + 1, top: 0, bottom: last - 1 }[verb];
-  if (j < 0 || j >= last || j === i) throw new Usage(`${key} is already at position ${i + 1}. Nothing moved.`);
-  const order = r.rows.map((y) => y.t.key).filter((k) => k !== key);
-  order.splice(j, 0, key);
-  const n = order.filter((k) => r.q.tickets[k].state !== 'failed').indexOf(key) + 1;
+    n = Number(to);
+  } else n = { up: i - 1, down: i + 1, top: 1, bottom: last }[verb];
+  if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
   const why = x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
     : x.k === 'stuck' ? ` Still stuck behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
-  return `${key} → position ${j + 1} of ${last}, placed by you.${why}`;
+  return `${key} → position ${n} of ${last}, placed by you.${why}`;
 }
 
 // Above the repo's cap is refused, with what raising the cap would take; above the machine's total
@@ -375,7 +374,7 @@ function setWorkers(repos, r, word) {
     const block = { slug: r.slug, port: r.claim.port, last: r.claim.port + n };
     const clash = portClashes(block, repos.map((x) => x.claim)).map((c) => `${repos.find((x) => x.slug === c.slug).name} (${c.port}–${c.last})`);
     throw new Usage(`${r.name}'s cap is ${r.cap}, so ${n} workers is refused: nothing changed. `
-      + `A cap of ${n} is an edit to §3b "Autopilot worker concurrency" in ${tilde(join(deskConfigRoot(), 'repos', r.slug, 'config.md'))}. `
+      + `A cap of ${n} is an edit to §3b "Autopilot worker concurrency" in ${join(deskConfigRoot(), 'repos', r.slug, 'config.md')}. `
       + `It would hold ports ${block.port} to ${block.last}, ${clash.length ? `overlapping ${clash.join(' and ')}` : 'clear of every other repo'}, `
       + `and live batches would then allow ${total} against this machine's ${cap ?? '? (no machine profile)'}.`);
   }

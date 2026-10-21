@@ -168,6 +168,13 @@ const far = M.run('voicepa', 'move', 'VPL-6', '99');
 t('DS-116 AC9 move to position 99 exits non-zero naming 1 to 12', far.code !== 0 && /give 1 to 12/.test(far.err) && far.out === '', true);
 t('DS-116 AC9 the queue file is unchanged', readFileSync(mq, 'utf8') === mqBefore, true);
 
+// A failed ticket keeps its slot in queue.mjs and has no place, so a move steps past it.
+const F = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
+  'VPL-1': { state: 'triaged', open_questions: 0 }, 'VPL-2': { state: 'failed' }, 'VPL-3': { state: 'triaged', open_questions: 0 } } } } });
+const past = F.run('voicepa', 'up', 'VPL-3');
+t('up past a failed ticket reaches the place above it', `${lines(past.out)[0]} | ${unfinishedKeys(readQ(qPath(F, 'voicepa'))).join()}`, 'VPL-3 → position 1 of 2, placed by you. | VPL-3,VPL-1');
+t('a failed ticket shows no position', /^\s+-\s+VPL-2\s+failed/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
+
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
 const pq = qPath(W, 'pranicuk');
