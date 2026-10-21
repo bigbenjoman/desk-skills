@@ -53,7 +53,7 @@ function wrap(s, w) {
 
 // A title's leading tag ("autopilot: ", "Your day 7/14: "): its length with the space after it, and
 // an id that drops any "n/m" count, so "Your day 7/14" and "Your day 8/14" are one tag.
-export const tagOf = (s) => {
+const tagOf = (s) => {
   const m = /^([^:]{1,28}):\s+/.exec(s ?? '');
   return m ? { len: m[0].length, id: m[1].replace(/\s*\d+\s*\/\s*\d+\s*$/, '').trim().toLowerCase() } : null;
 };
@@ -350,7 +350,7 @@ const nothingToDate = 'No repo here has an autopilot batch, so there is nothing 
 const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_GAP = 2, TL_BAR = 64;
 
 // One bar per ticket from STARTS to SHIPS, shaded on to its could-run-to time, sorted by ship time,
-// then its title; every repo's view groups them under a row per repo. `width` null is the plain
+// each row ending in its title; every repo's view groups them under a row per repo. `width` null is the plain
 // output. The bar and the title share what the row has left, the bar taking at most TL_BAR.
 function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto' } = {}) {
   const s = etaScope(repos, slug, { now, checkin });
@@ -558,7 +558,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false } = {}) 
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
   const F = forecastOf(r, { now, checkin });
-  const summary = (x) => triageOf(r.stateDir, x.t.key)?.summary ?? '';
+  const summary = (x) => summaryOf({ r, x });
   const tt = titler(r.rows.map(summary));
   const rows = r.rows.map((x) => {
     const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`.trimEnd();
