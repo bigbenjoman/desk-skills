@@ -27,7 +27,7 @@ const PH = '@PH@';
 // Same length as the code, so an index into one is an index into both. `open` is true when the text
 // ends inside a quote or a substitution, so the command goes on to the next line.
 export function split(line) {
-  let code = '', mask = '', q = null, i = 0;
+  let code = '', mask = '', comment = '', q = null, i = 0;
   const subs = [];   // one entry per `$(` opened inside double quotes: its paren depth
   for (; i < line.length; i++) {
     const c = line[i];
@@ -45,10 +45,17 @@ export function split(line) {
       if (subs[subs.length - 1] === 0) { subs.pop(); q = '"'; code += c; mask += c; continue; }
       subs[subs.length - 1]--;
     }
-    if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) break;
+    // A comment runs to the end of its line, not of the command: a command joined over several
+    // lines (inside `"$( … )"`) goes on after it.
+    if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) {
+      const nl = line.indexOf('\n', i);
+      comment += line.slice(i, nl < 0 ? line.length : nl);
+      if (nl < 0) break;
+      i = nl - 1; continue;
+    }
     code += c; mask += c;
   }
-  return { code, mask, comment: line.slice(i), open: q !== null || subs.length > 0 };
+  return { code, mask, comment, open: q !== null || subs.length > 0 };
 }
 
 const FUNCTION = /(?:^\s*|[;&|(]\s*)(?:function\s+[\w.:-]+\s*(?:\(\s*\))?|[A-Za-z_][\w.:-]*\s*\(\s*\))\s*(?:\{|\(|$)/;
@@ -122,6 +129,8 @@ export function scan(text) {
       continue;
     }
     if (raw.trim().startsWith(fence[0].repeat(fence.length)) && raw.trim().replace(/[`~]/g, '') === '') {
+      // Still open at the fence: everything after the open quote went unchecked, so say so.
+      if (cmd?.quoted) { hits.push({ line: cmd.line, shape: 'unterminated quote or $( )', text: cmd.first }); cmd = null; }
       flush(); fence = null; continue;
     }
     if (!SHELL.has(lang) && lang !== 'console') continue;

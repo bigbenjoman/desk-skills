@@ -34,6 +34,8 @@ t('heredoc: the opening line only; its body is data', lines('heredoc.md'), '4 he
 t('cd: both forms, not the plain git line', lines('cd.md'), '4 cd into another directory, 6 cd into another directory');
 t('AC5 /tmp, ~, a <placeholder>/ dir, a $VAR, >| and a redirect after a multi-line quote are outside; a relative file, /dev/null, 2>&1 and quoted text are not',
   lines('write-outside.md'), '4 write outside cwd, 5 write outside cwd, 6 write outside cwd, 7 write outside cwd, 12 write outside cwd, 13 write outside cwd');
+t('a comment inside a multi-line "$( … )" ends at its line; a quote left open at the fence is a hit, never silence',
+  lines('open.md'), '7 write outside cwd, 8 unterminated quote or $( )');
 t('AC6 untagged, text, and console output lines are not commands', lines('output.md'), '');
 t('AC6 the CLI passes an output-only file', cli('output.md').status, 0);
 t('AC7 a marker with a reason passes; one without is itself a hit', lines('exempt.md'), '5 exemption with no reason');
