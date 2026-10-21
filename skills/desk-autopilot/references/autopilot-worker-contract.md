@@ -356,7 +356,9 @@ that actually refuted with codex, and never claim codex on a run that fell back.
   has reviewed everything. Keep going until a round comes back reading as §4 Clean review verdict
   (**no P0, no P1 and no P2**, where the review grades that way). Three rounds is the ceiling, and
   round 3 reads **only the fix range**, the commits since round 2's reviewed SHA (`since` in its
-  results; `desk-review`'s round-3 rules). Say in `AUTOPILOT_DONE` how many rounds ran.
+  results; `desk-review`'s round-3 rules). With no PR yet the review counts every run as round 1,
+  so give it the round of your loop and, from round 3, round 2's reviewed SHA. Say in
+  `AUTOPILOT_DONE` how many rounds ran.
 - **Round 3, a P0 or P1**: park, naming each finding and its `file:line`. No fourth round.
 - **Round 3, only P2s**: **carry them, do not park.** Mark each `"carried": true`, so the verdict
   reads clean on the blocking counts and records the number carried, and open the draft PR. Put the

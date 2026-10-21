@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkVerdict, parseVerdict, checkClaudeMd, checkApproval, titleType, exemptType, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
+import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
 import * as oldGate from './fixtures/review-gate-v1.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 
@@ -67,8 +67,8 @@ t('a header-line heading passes', heading('**desk-review** Â· branch `feat/x` â†
 t('"3 rounds" is not a round number', heading('**No P0, P1 or P2 findings at `aaaaaaa`.** reviewed over 3 rounds', { round: 3 }).ok, true);
 t('an open gap may be listed in a clean heading', heading('No P0, P1 or P2 findings; 1 requirement gap open').ok, true);
 
-// Round 3's carried P2 findings (DS-138), as verdict.mjs prints them, read by this gate and by a
-// repo's committed copy from before carrying existed: both give the result the blocking counts give.
+// Round 3's carried P2 findings, as verdict.mjs prints them, read by this gate and by a repo's
+// committed copy from before carrying existed: both give the result the blocking counts give.
 const SINCE = 'c'.repeat(40);
 const seats = [{ role: 'correctness', vendor: 'claude', status: 'ran' }, { role: 'codex', vendor: 'codex', status: 'ran' }];
 const fnd = (o = {}) => ({ id: 'F1', seat: 'correctness', severity: 'P2', where: 'src/a.ts:12', result: 'CONFIRMED', refuted_by: 'codex', carried: true, ...o });
@@ -86,11 +86,7 @@ for (const [name, findings, clean] of CASES) {
   t(`gate copy before carrying, ${name}: ${clean ? 'clean' : 'not clean'}`, oldGate.checkVerdict([review(b)], HEAD, WRITERS).ok, clean);
   t(`gate copy before carrying, ${name}: still parses the verdict`, oldGate.parseVerdict(b) !== null, true);
 }
-const carried = checkVerdict([review(printed([fnd(), fnd({ id: 'F2', where: 'src/b.ts:3' })]))], HEAD, WRITERS);
-has('the new gate says how many were carried', carried.message, '2 P2 carried to the PR body (fix range from ccccccccc)');
 t('the old copy reads the round-3 heading without a mismatch', oldGate.headingMismatch(oldGate.parseVerdict(printed([fnd()]))), null);
-t('a carried line before the heading is not read as carried', parseVerdict(['<!-- desk-review:local -->', body().split('\n')[1], `<!-- desk-review:carried v=1 p2=2 since=${SINCE} -->`, '**No P0 or P1**'].join('\n')).carried, 0);
-t('a round 1 verdict carries nothing', parseVerdict(body()).carried, 0);
 
 // CLAUDE.md size: characters, not bytes.
 t('20,000 characters passes', checkClaudeMd([{ path: 'CLAUDE.md', text: 'x'.repeat(20000) }]).ok, true);

@@ -1,5 +1,5 @@
 // FROZEN: desk/templates/scripts/desk/review-gate.mjs as of ccb8667, before verdicts carried P2
-// findings (DS-138). Repos commit their own copy of the gate and keep it until they re-run
+// findings. Repos commit their own copy of the gate and keep it until they re-run
 // /desk-setup, so tests/test_review_gate.mjs reads new verdicts through this one. Never edit it to
 // make a test pass: a change a frozen copy cannot read breaks every repo still running one.
 // Only the shebang line is dropped, so it can sit below this comment.

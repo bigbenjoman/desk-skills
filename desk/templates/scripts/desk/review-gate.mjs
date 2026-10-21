@@ -21,11 +21,6 @@ const VERDICT = new RegExp(
     '\\s+vendor=(?<vendor>[a-z-]+)\\s+round=(?<round>\\d+)\\s*-->$',
 );
 export const COUNTS = ['p0', 'p1', 'p2', 'deferred', 'gaps', 'unrefuted', 'partial'];
-// From round 3 desk-review reads only the fix range and may carry a P2 to the PR body instead of
-// blocking on it. Carried findings are already out of the counts above, so this line never decides
-// clean: it records what was carried and the range read. It sits after the heading, not in the
-// verdict line, so a gate copy that predates it still matches the verdict and reads the same result.
-const CARRIED = /^<!--\s*desk-review:carried\s+v=1\s+p2=(?<carried>\d+)\s+since=(?<since>[0-9a-f]{7,40})\s*-->$/;
 // Only someone who can push to the repo can attest a review or approve one: on a public repo anyone
 // can post a review. `writers` below is the set of logins main() confirmed have write access, read
 // from the permission endpoint; author_association cannot say it (MEMBER is any org member, read
@@ -40,11 +35,7 @@ export function parseVerdict(body) {
   if (!m) return null;
   const v = { ...m.groups };
   for (const k of [...COUNTS, 'round']) v[k] = Number(v[k]);
-  const at = lines.findIndex((l, i) => i > 1 && l.trim());
-  v.heading = at < 0 ? '' : lines[at].trim();
-  const c = at < 0 ? null : CARRIED.exec((lines[at + 1] || '').trim());
-  v.carried = c ? Number(c.groups.carried) : 0;
-  v.since = c ? c.groups.since : '';
+  v.heading = lines.slice(2).map((l) => l.trim()).find((l) => l) || '';
   return v;
 }
 
@@ -87,8 +78,7 @@ export function checkVerdict(reviews, head, writers, { vendor = '' } = {}) {
   }
   const bad = headingMismatch(v);
   if (bad) return { ok: false, message: `The desk-review review at ${at} disagrees with its own verdict: ${bad}.` };
-  const carried = v.carried ? `, ${v.carried} P2 carried to the PR body (fix range from ${v.since.slice(0, 9)})` : '';
-  return { ok: true, message: `desk-review clean at ${at}, round ${v.round}, ${v.vendor}${carried}.` };
+  return { ok: true, message: `desk-review clean at ${at}, round ${v.round}, ${v.vendor}.` };
 }
 
 export const CLAUDE_MD_LIMIT = 20000;

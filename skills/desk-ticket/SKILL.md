@@ -270,7 +270,9 @@ restore, re-run, and say in the review that a round was discarded.
 **Three rounds, then stop.** Review, fix, re-review has no natural end: every fix is new code a
 finder can find something in. The branch has been read whole twice by round 3, so round 3 reads only
 the fix range (the commits since round 2's reviewed SHA, which goes in its results as `since`), and
-from it only P0 and P1 block. After the third round there is no fourth without the user:
+from it only P0 and P1 block. Before the PR exists the review cannot count its own rounds, so tell
+it: run it with "round <n> of this loop" and, from round 3, "since <round 2's reviewed SHA>". After
+the third round there is no fourth without the user:
 
 - **A P0 or P1 still open**: stop, report each finding with its `file:line`, do not open the PR.
 - **Only P2s**: mark each `"carried": true` in the results, so the verdict reads clean on the

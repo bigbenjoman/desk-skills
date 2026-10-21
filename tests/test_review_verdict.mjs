@@ -114,7 +114,7 @@ for (const targetResult of ['CONFIRMED', 'REJECTED', 'UNREFUTED']) {
 }
 t(`every duplicate merge (${dupCombos}) keeps a finding that stands`, dupWrong, 0)
 
-// ---- round 3: the fix range, and P2 findings carried rather than blocking (DS-138)
+// ---- round 3: the fix range, and P2 findings carried rather than blocking
 const SINCE = 'fedcba9876543210fedcba9876543210fedcba98'
 const r3 = (findings = [], o = {}) => base({ round: 3, since: SINCE, findings, ...o })
 const p2 = (o = {}) => f({ severity: 'P2', carried: true, title: 'name reads as a count', ...o })
@@ -198,6 +198,12 @@ const SKILL = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf
 const template = marker(base()).replace(`sha=${SHA}`, 'sha=<full reviewed SHA>')
 t('SKILL.md shows the marker form verdict.mjs prints', SKILL.includes(template), true)
 t('SKILL.md states the clean verdict verdict.mjs tests', SKILL.some((l) => l.includes(`\`${CLEAN}\``)), true)
+// Round 3's finders read only the fix range: the dispatch template's diff command must say so, for
+// a branch and a PR, or round 3 rereads the whole branch whatever verdict.mjs records as `since`.
+const dispatch = SKILL.join('\n').match(/^3\. The diff command[\s\S]*?(?=^4\. )/m)?.[0] ?? ''
+t('the finder diff command has a round-3 fix-range form for a branch', dispatch.includes('git diff "<since>..HEAD"'), true)
+t('the finder diff command has a round-3 fix-range form for a PR', dispatch.includes('git diff "<since>..refs/desk-review/pr-<n>"'), true)
+t('the fix-range rule names since as the previous round\'s SHA', SKILL.some((l) => l.includes("git diff <previous round's reviewed SHA>..HEAD")), true)
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')
 process.exit(fails ? 1 : 0)
