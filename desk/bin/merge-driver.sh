@@ -35,7 +35,8 @@
 #                                            passes before the rest of CI has even queued cannot land it
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
-# `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl.
+# `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
+# and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an

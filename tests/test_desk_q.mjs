@@ -389,9 +389,10 @@ t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 
 const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
 const HOUR = 3_600_000, DAY = 24 * HOUR;
 // A repo with a ship history: `hours` per merged size M ticket, each merged an hour before the last.
+// Its pass was a minute before the real clock, so it is live at FIXED too: a quiet batch is paused.
 function dated(name, port, { workers = 2, tickets, hours, at = FIXED }) {
   const triage = Object.fromEntries(Object.keys(tickets).map((k) => [k, { summary: `${k} title`, size: 'M' }]));
-  put(I.T, I.env, name, { port, conc: '2 / 3', queue: { batch: name, concurrency: workers, tickets }, triage });
+  put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: workers, tickets }, triage });
   writeFileSync(join(I.env.HOME, '.desk-autopilot', `acme__${name}`, 'eta-history.jsonl'), hours.map((h, i) => {
     const merged = at - (i + 1) * HOUR;
     return `${JSON.stringify({ key: `H-${i}`, size: 'M', spawned_at: new Date(merged - h * HOUR).toISOString(), merged_at: new Date(merged).toISOString(), hours: h })}\n`;
