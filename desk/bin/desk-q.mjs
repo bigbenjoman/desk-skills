@@ -26,7 +26,7 @@ import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfig
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
-import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, RUNS, MIN_HISTORY, WINDOW_DAYS } from './desk-q-eta.mjs';
+import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS } from './desk-q-eta.mjs';
 
 export { LIVE_MS };
 const LABEL = { running: 'running', ready: 'ready', queued: 'queued', waiting: 'waiting', stuck: 'stuck', needs: 'needs you', failed: 'failed', done: 'done' };
@@ -209,7 +209,6 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 
 // ---- Timeline and By day -----------------------------------------------------------------------
 
-const HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 // What z cycles through on the Timeline, auto first.
 export const ZOOMS = ['auto', 'hours', 'days', 'weeks'];
 // A row's colour, as an SGR code, by its shown state; DIM and BOLD for the rails and group rows.
@@ -217,8 +216,6 @@ const STATE_SGR = { running: '32', ready: '34', queued: null, waiting: '33', stu
 const DIM = '2', BOLD = '1';
 const dmy = (t) => dayAndTime(t).slice(0, -6);
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-// Local calendar arithmetic: `days` after the day `t` falls on, at `hours` past its midnight.
-const dayAt = (t, days, hours = 0) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, hours).getTime(); };
 
 // The Timeline's scale, from how far away the last could-run-to time is: hours up to 2 days, days
 // up to 21, weeks beyond; `zoom` other than auto overrides it. Ticks are labelled local times.
@@ -345,7 +342,7 @@ export const timelineScreen = (repos, slug, opts) => joined(timelineParts(repos,
 
 // The day a ship time falls in: today, tomorrow, each day to 6 days out, then the week by its Monday.
 export function shipDay(t, now) {
-  const d = Math.round((dayAt(t, 0) - dayAt(now, 0)) / DAY);
+  const d = calendarDays(t, now);
   if (d <= 0) return `Today · ${dmy(t)}`;
   if (d === 1) return `Tomorrow · ${dmy(t)}`;
   if (d < 7) return dmy(t);

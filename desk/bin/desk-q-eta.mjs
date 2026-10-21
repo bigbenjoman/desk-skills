@@ -150,7 +150,7 @@ export const MIN_HISTORY = 10;
 export const MIN_OF_SIZE = 5;
 // The user's check-ins: a ticket waiting on them is dated at the next one when they press c.
 export const CHECKIN_HOURS = [8, 17];
-const HOUR = 3_600_000, DAY = 86_400_000;
+export const HOUR = 3_600_000, DAY = 86_400_000;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -177,8 +177,10 @@ export function durationsFor(d, size) {
 
 export const quantile = (v, p) => v[Math.min(v.length - 1, Math.floor(p * v.length))];
 
-// Local midnight, so "today" and a weekday are the user's own.
-const dayOf = (t) => new Date(t).setHours(0, 0, 0, 0);
+// Local calendar arithmetic, so "today" and a weekday are the user's own: `days` after the day `t`
+// falls on, at `hours` past its midnight; and how many calendar days `t` is after `now`.
+export const dayAt = (t, days = 0, hours = 0) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, hours).getTime(); };
+export const calendarDays = (t, now) => Math.round((dayAt(t) - dayAt(now)) / DAY);
 const hm = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 export const dayAndTime = (t) => { const d = new Date(t); return `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]} ${hm(t)}`; };
 
@@ -186,7 +188,7 @@ export const dayAndTime = (t) => { const d = new Date(t); return `${DOW[d.getDay
 // with the year only when it is not this year's ("4 Jan 2027").
 export function when(t, now) {
   if (t == null) return '—';
-  const days = Math.round((dayOf(t) - dayOf(now)) / DAY);
+  const days = calendarDays(t, now);
   const d = new Date(t);
   if (days === 0) return `today ${hm(t)}`;
   if (days > 0 && days < 7) return `${DOW[d.getDay()]} ${hm(t)}`;
@@ -195,10 +197,9 @@ export function when(t, now) {
 
 // The first check-in after `t`.
 export function nextCheckin(t) {
-  const d = new Date(t);
   for (let i = 0; i < 2; i++) {
     for (const h of CHECKIN_HOURS) {
-      const c = new Date(d.getFullYear(), d.getMonth(), d.getDate() + i, h).getTime();
+      const c = dayAt(t, i, h);
       if (c > t) return c;
     }
   }
