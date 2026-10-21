@@ -133,6 +133,9 @@ parentheses at the end when it reads naturally (<TICKET>).>
 ### Not migrated     <- optional: only when equivalent sites were left on the old pattern
 - `<path>#<symbol>` — <one line on why it was left>
 
+### Carried review findings     <- optional: only when round 3 of the self-review carried P2s
+<verdict.mjs --carried output, verbatim: the fix range, then `file:line` and title for each>
+
 ### Before / after — <optional context>     <- omit this whole section unless it earns its place
 | Before | After |
 | --- | --- |
@@ -148,8 +151,16 @@ them written exactly so, never as a `<!-- name -->` … `<!-- /name -->` pair: `
 that shape as a generated block when it looks for author-written intent, and would read desk's own
 body as none.
 
-Only the sections §5 PR body names (plus `Not migrated` when it applies). No title in the body, and
-no headings §5 does not list. If §5 names different sections, the rules below still apply to
+Only the sections §5 PR body names (plus `Not migrated` and `Carried review findings` when they
+apply). No title in the body, and no headings §5 does not list.
+
+**Carried review findings** are the P2s a third self-review round carried rather than fixed
+(`desk-ticket` "Three rounds, then stop"). Print the section with `node <desk-review>/bin/verdict.mjs
+--carried <results>` and paste it as printed, so every finding keeps its `file:line`. **More than
+five**, with §3 `jira-create` `yes` and §4 Tracker `jira`: create **one** follow-up ticket via
+`desk-jira create` whose body is that list, and in place of the list the section holds one line,
+`<N> P2 findings from round 3 are in <KEY>.`, linking the ticket. With five or fewer, or
+`jira-create` not `yes`, or no tracker, the list stays in the body, and nothing stops for it. If §5 names different sections, the rules below still apply to
 whichever section holds the change list, the evidence and the pictures.
 
 **AI attribution follows §5 AI attribution.**

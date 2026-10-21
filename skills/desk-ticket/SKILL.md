@@ -107,7 +107,7 @@ silently skipped:
 | 2 | Understand | Read the code paths, and **what the repo's own documentation says about them** before writing any code (below). Reproduce the bug. **Commit the lane now**: this is the first point it is knowable. Transition to §4 In-progress state (Jira only). Flag anything wrong in the ticket. |
 | 3 | Implement | Per lane. A ticket that renders UI loads the design skills before any UI code (below). A change that is not mechanical gets its design from the area's expert first, and you write the code (below). Lane C stops for agreement before this stage; lane D hands the build to the project's design-build agent where it has one (routing reference). |
 | 4 | Verify | `desk-dev` for the environment. §4 Typecheck, §4 Lint (its fixing form if the row gives one), §4 Unit tests and the knowledge check where the repo has one; a §4 Build only when the change needs one (below). Add a spec that guards the fix. A claim the knowledge check reports as changed gets written back in this branch (below). Then run the docs check from `desk-pr` §1 and **report** what it finds: a hit is sometimes a stale comment in the source rather than a page edit, and that is far cheaper to learn here than at Stage 7. Report only; rewriting a page is the user's call. |
-| 4b | Self-review | Run §4 Local review command on the branch, **before** Stage 5, so a finding cannot invalidate screenshots already taken. With `none`, the stage is a stated skip (below). Two preconditions, each a silent false clean otherwise: where the command is a repo-local skill, the tree must contain it (rebase onto `<default>` rather than skipping), and an empty diff is a stated skip, never a clean run. **Fix what the review confirms, then report**; do not stop and ask first. Apply every confirmed P0 and P1, and any P2 whose fix is mechanical, as their own commit. Produce the `SELF-REVIEW` block as a record of what was done, with an outcome against every finding. Re-run after fixes, **at most three rounds**: each fix is itself unreviewed code, so only a round that finds nothing has reviewed everything. If the third round still finds something, stop: report what is left, do not open the PR, and let the user decide. **Three things also stop and wait**, because no refutation settles them: a finding whose fix changes product, design or catalog behaviour; **a fix that grows**: it needs a new file other than its own spec, or a file the ticket's diff does not already touch (Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites.); and any finding you could not confirm because the refutation pass did not run. |
+| 4b | Self-review | Run §4 Local review command on the branch, **before** Stage 5, so a finding cannot invalidate screenshots already taken. With `none`, the stage is a stated skip (below). Two preconditions, each a silent false clean otherwise: where the command is a repo-local skill, the tree must contain it (rebase onto `<default>` rather than skipping), and an empty diff is a stated skip, never a clean run. **Fix what the review confirms, then report**; do not stop and ask first. Apply every confirmed P0 and P1, and any P2 whose fix is mechanical, as their own commit. Produce the `SELF-REVIEW` block as a record of what was done, with an outcome against every finding. Re-run after fixes, **at most three rounds**: each fix is itself unreviewed code, so only a round that finds nothing has reviewed everything. The third round reads only the fix range, the commits since round 2 (`desk-review`'s round-3 rules). If it finds a P0 or P1, stop: report each, do not open the PR, and let the user decide. If it finds only P2s, they are **carried**, not a stop: open the PR with them under *Carried review findings* (`desk-pr`; more than five go to one follow-up ticket where §3 `jira-create` is `yes`). **Three things also stop and wait**, because no refutation settles them: a finding whose fix changes product, design or catalog behaviour; **a fix that grows**: it needs a new file other than its own spec, or a file the ticket's diff does not already touch (Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites.); and any finding you could not confirm because the refutation pass did not run. |
 | 5 | Evidence | **Only if the change alters what renders, or what a server route, webhook or job does at runtime.** For a rendered change, confirm the running server's HEAD matches your branch, capture before/after to `<handoff dir>/<TICKET>/` (config §2), and delete the Playwright artefacts. For a server or webhook fix, the evidence is the request or log that shows the fix running, not only a screenshot. If neither applies, skip the stage and say so in one line. |
 | 6 | Hygiene | Diff review against the checklist in the working-style reference. |
 | 7 | PR | **Invoke the `desk-pr` skill and follow it. Do not write the body from memory.** It owns the hygiene block, the permitted sections, the Testing-bullet standard and the before/after image table. Ends with `gh pr create --repo <repo> --draft --base <default> --body-file` (that flag order; see `desk-pr`), then the image upload. **Then post the Stage 4b report to the new PR**, then, where config §3 permits, **undraft it, arm auto-merge and shepherd it until it merges**. See "Merging" below. |
@@ -268,9 +268,22 @@ mid-round, even in a file the PR did not touch, so the review attests a tree nob
 restore, re-run, and say in the review that a round was discarded.
 
 **Three rounds, then stop.** Review, fix, re-review has no natural end: every fix is new code a
-finder can find something in. After the third round, stop whatever it found, report what is left,
-and let the user decide whether a fourth runs. The count belongs to one loop; a later loop, for
-reviewer feedback or after merging `<default>`, starts again at one.
+finder can find something in. The branch has been read whole twice by round 3, so round 3 reads only
+the fix range (the commits since round 2's reviewed SHA, which goes in its results as `since`), and
+from it only P0 and P1 block. Before the PR exists the review cannot count its own rounds, so tell
+it: run it with "round <n> of this loop" and, from round 3, "since <round 2's reviewed SHA>". After
+the third round there is no fourth without the user:
+
+- **A P0 or P1 still open**: stop, report each finding with its `file:line`, do not open the PR.
+- **Only P2s**: mark each `"carried": true` in the results, so the verdict reads clean on the
+  blocking counts and records the number carried, and open the PR. The P2s go in its body under
+  *Carried review findings* (`node <desk-review>/bin/verdict.mjs --carried <results>` prints the
+  section), or, when there are more than five and §3 `jira-create` is `yes`, into one follow-up
+  ticket the body links instead (`desk-pr` §2). Nothing stops for them, whatever §3 `jira-create`
+  says: without it they stay in the body.
+
+The count belongs to one loop; a later loop, for reviewer feedback or after merging `<default>`,
+starts again at one.
 
 **Posting the self-review (Stage 7).** Local reviews are posted to the PR so the code reviewer
 (config §4 People) can merge faster. So, where config §3 `pr-self-review-comment` allows, the Stage 4b
@@ -525,11 +538,12 @@ domains   : <what the knowledge check or the repo's instructions named, or "none
 P0 (n)      <file:line — one line each>
 P1 (n)
 P2 (n)
+CARRIED (n)   <file:line — the P2s round 3 carried to the PR body or follow-up ticket>
 REQ GAPS (n)  <TICKET — the criterion>
 caveats   : <any check the run could not perform, or "none">
 outcome   : <per finding: fixed in <sha> · declined, and why · escalated, and which
              stop condition it hit>
-rounds    : <n> of 3 in this loop
+rounds    : <n> of 3 in this loop (round 3: fix range <since>..<sha>)
 re-review : <result at the new head, or "not needed — nothing was changed">
 ```
 
@@ -579,6 +593,8 @@ work went up attached to an unrelated ticket.
 - Handing an expert subagent the implementation rather than asking it for the design
 - About to open a PR without having run Stage 4b (or stated its skip, where the command is `none`)
 - Starting a fourth review round without the user
+- A round 3 that reads `origin/<default>...HEAD` rather than the fix range since round 2
+- Carrying a P0 or P1, or a P2 before round 3
 - About to post a verdict at a commit that already has one, with different counts
 - Treating the local review command not resolving in this tree as a reason to skip it rather than to rebase
 - Dispatching finders in a worktree without having run §4 Project subagents sync: they are all
@@ -605,11 +621,12 @@ work went up attached to an unrelated ticket.
 | "I'll tell them once it's all done" | They want to test it themselves before the PR exists. |
 | "The design has placeholder copy, so the ticket is blocked" | Build with the placeholders in as real copy keys and raise **one** spin-off ticket for all of them, in desk-jira's ticket template. |
 | "Self-review found nothing, so there is no block to show" | The empty result is the finding. Show it. |
-| "I should ask before fixing this finding" | Stage 4b fixes what it confirms. Only the stop conditions wait: product/design/catalog behaviour, a fix that grows, a finding the refutation pass never confirmed, or a third round still finding things. |
+| "I should ask before fixing this finding" | Stage 4b fixes what it confirms. Only the stop conditions wait: product/design/catalog behaviour, a fix that grows, a finding the refutation pass never confirmed, or a third round still finding a P0 or P1. |
 | "The P0 is fixed, so the block can just report clean" | Then nobody ever learns a P0 existed. Fixed findings still get an outcome line naming the commit. |
 | "One-line change, self-review is overkill" | A one-line diff gets the cheapest tier of review. Cheapness is why it is a gate and not a ceremony. |
 | "I'll defer this P2, it's out of scope" | A deferral keeps the verdict off clean, and a review gate blocks on it. Cost the fix first. Inside the ticket's files, fix it; needing a new file or one outside the diff, stop and ask. Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites. |
-| "One more round will get it clean" | Three is the cap. Stop and report what is left. |
+| "One more round will get it clean" | Three is the cap. A P0 or P1 left after round 3 stops and is reported; P2s left are carried into the PR body, not a fourth round. |
+| "Round 3 found only P2s, so I'll ask whether to fix them" | They are carried: the PR opens with them under *Carried review findings*. That question cost 255 asks and 78 parks in one month, and a P2 blocks nothing a reviewer cannot see in the body. |
 | "The deferred count was wrong, I'll re-post it corrected" | Changed counts need a new run. A re-post can clear a known P0 with no code change. |
 | "No branch protection here, so a red check doesn't matter" | Protection `none` moves the rule from GitHub to you. Never merge red. |
 | "It's green, the hold is just a formality" | A §4 Merge holds entry is a manual step the repo needs before merging. Report it; the user merges. |

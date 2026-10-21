@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
+import * as oldGate from './fixtures/review-gate-v1.mjs';
+import { render } from '../skills/desk-review/bin/verdict.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -64,6 +66,27 @@ t('a full-sha heading passes', heading(`**No P0, P1 or P2 findings** at \`${HEAD
 t('a header-line heading passes', heading('**desk-review** · branch `feat/x` → `main` at `aaaaaaa` · round 1 · 4 files').ok, true);
 t('"3 rounds" is not a round number', heading('**No P0, P1 or P2 findings at `aaaaaaa`.** reviewed over 3 rounds', { round: 3 }).ok, true);
 t('an open gap may be listed in a clean heading', heading('No P0, P1 or P2 findings; 1 requirement gap open').ok, true);
+
+// Round 3's carried P2 findings, as verdict.mjs prints them, read by this gate and by a repo's
+// committed copy from before carrying existed: both give the result the blocking counts give.
+const SINCE = 'c'.repeat(40);
+const seats = [{ role: 'correctness', vendor: 'claude', status: 'ran' }, { role: 'codex', vendor: 'codex', status: 'ran' }];
+const fnd = (o = {}) => ({ id: 'F1', seat: 'correctness', severity: 'P2', where: 'src/a.ts:12', result: 'CONFIRMED', refuted_by: 'codex', carried: true, ...o });
+const printed = (findings, o = {}) => render({ sha: HEAD, round: 3, since: SINCE, gaps: 0, skipped_files: 0, seats, findings, ...o }) + '\n\nreview prose';
+const CASES = [
+  ['only carried P2s', [fnd(), fnd({ id: 'F2', where: 'src/b.ts:3' })], true],
+  ['nothing found on round 3', [], true],
+  ['a carried P2 beside an open P1', [fnd(), fnd({ id: 'F2', severity: 'P1', carried: false })], false],
+  ['an uncarried P2 on round 3', [fnd({ carried: false })], false],
+  ['a carried P2 left unrefuted', [fnd({ result: 'UNREFUTED', refuted_by: undefined })], false],
+];
+for (const [name, findings, clean] of CASES) {
+  const b = printed(findings);
+  t(`new gate, ${name}: ${clean ? 'clean' : 'not clean'}`, checkVerdict([review(b)], HEAD, WRITERS).ok, clean);
+  t(`gate copy before carrying, ${name}: ${clean ? 'clean' : 'not clean'}`, oldGate.checkVerdict([review(b)], HEAD, WRITERS).ok, clean);
+  t(`gate copy before carrying, ${name}: still parses the verdict`, oldGate.parseVerdict(b) !== null, true);
+}
+t('the old copy reads the round-3 heading without a mismatch', oldGate.headingMismatch(oldGate.parseVerdict(printed([fnd()]))), null);
 
 // CLAUDE.md size: characters, not bytes.
 t('20,000 characters passes', checkClaudeMd([{ path: 'CLAUDE.md', text: 'x'.repeat(20000) }]).ok, true);

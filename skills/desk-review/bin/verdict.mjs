@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // The first three lines of every posted desk-review: the review marker, the verdict marker and the
-// heading. They are computed from the run's finder and refuter results, never written by hand,
-// because a required check reads the verdict marker and a hand count is how a review reads clean
-// when it is not. The marker is a contract with every gate that reads it: it changes only with a
-// version bump.
+// heading, and from round 3 a fourth: the carried marker. They are computed from the run's finder
+// and refuter results, never written by hand, because a required check reads the verdict marker and
+// a hand count is how a review reads clean when it is not. The marker is a contract with every gate
+// that reads it: it changes only with a version bump. The carried count is a line of its own, after
+// the heading, because a gate copy committed before it existed matches the verdict line exactly and
+// would read any extra field there as no verdict at all.
 //
-//   node verdict.mjs <results.json>        prints the three lines; exit 2 refuses the results
+//   node verdict.mjs <results.json>            prints the lines; exit 2 refuses the results
+//   node verdict.mjs --carried <results.json>  prints the PR body's carried-findings section, if any
 //
 // results.json, written by the reviewer once every finder and refuter has answered:
 //
@@ -15,6 +18,10 @@
 //     "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
 //                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
 //
+// From round 3 the finders read only the fix range, the commits since the previous round, so the
+// results carry "since": the full SHA that round reviewed. Only then may a P2 be "carried": true,
+// left for the PR body or a follow-up ticket instead of blocking. P0 and P1 always block.
+//
 // The rules, each a false clean otherwise:
 //   - every count is computed here; a count the caller leaves out is refused, never read as zero;
 //   - a CONFIRMED or UNREFUTED finding is outstanding, and counts in its p field;
@@ -23,14 +30,18 @@
 //   - a seat that was dispatched and died (no usable answer after a retry) is partial coverage, so
 //     it counts in `partial` beside the files the oversized cap skipped;
 //   - vendor=codex-cross only when codex read the diff cold on this run and every finding was
-//     refuted by the other vendor: codex's by Claude, Claude's by codex.
+//     refuted by the other vendor: codex's by Claude, Claude's by codex;
+//   - a carried finding is an outstanding P2 on round 3 or later, never deferred, with a file:line;
+//     it counts in `carried`, not in p2, and an unrefuted one still counts in unrefuted.
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
-const TOP = ['sha', 'round', 'gaps', 'skipped_files', 'seats', 'findings']
+// The round from which the finders read only the fix range and a P2 may be carried.
+const FIX_RANGE_ROUND = 3
+const TOP = ['sha', 'round', 'since', 'gaps', 'skipped_files', 'seats', 'findings']
 const SEAT = ['role', 'agent', 'vendor', 'status', 'note']
-const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred']
+const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
 const VENDORS = ['claude', 'codex']
@@ -54,6 +65,11 @@ export function tally(r) {
   const sha = String(r.sha ?? '')
   if (!/^[0-9a-f]{40}$/.test(sha)) no('sha must be the full 40-character reviewed SHA')
   if (!Number.isInteger(r.round) || r.round < 1) no('round must be a whole number from 1')
+  const fixRange = r.round >= FIX_RANGE_ROUND
+  if (fixRange) {
+    if (!/^[0-9a-f]{40}$/.test(String(r.since ?? ''))) no(`round ${r.round} reads only the fix range: since must be the full SHA the previous round reviewed`)
+    if (r.since === sha) no('since is the reviewed SHA itself, so the fix range is empty')
+  } else if (r.since != null) no(`since is for round ${FIX_RANGE_ROUND} on; round ${r.round} reads the whole branch`)
   const gaps = count(r.gaps, 'gaps')
   const skipped = count(r.skipped_files, 'skipped_files')
 
@@ -84,6 +100,15 @@ export function tally(r) {
     if (seat.status === 'died') no(`${name}: seat ${f.seat} died, so it raised nothing`)
     if (!SEVERITIES.includes(f.severity)) no(`${name}: severity must be one of ${SEVERITIES.join(', ')}`)
     if (f.deferred != null && typeof f.deferred !== 'boolean') no(`${name}: deferred must be true or false`)
+    if (f.carried != null && typeof f.carried !== 'boolean') no(`${name}: carried must be true or false`)
+    if (f.carried) {
+      const at = f.where ? ` at ${f.where}` : ''
+      if (f.severity !== 'P2') no(`${name}${at} is ${f.severity}: only a P2 can be carried, and a P0 or P1 blocks`)
+      if (!fixRange) no(`${name}${at}: a P2 is carried only from round ${FIX_RANGE_ROUND}; on round ${r.round} it is fixed`)
+      if (f.deferred) no(`${name}${at}: a finding is carried or deferred, not both`)
+      if (!/^[^\s:]+:\d+/.test(String(f.where ?? ''))) no(`${name}: a carried finding needs where as file:line, for the PR body`)
+      if (f.result === 'REJECTED') no(`${name}${at}: a REJECTED finding is not outstanding, so there is nothing to carry`)
+    }
     // An unproven premise is reported, never refuted and never counted.
     if (f.severity === 'PREMISE') return
     if (!RESULTS.includes(f.result)) no(`${name}: result must be one of ${RESULTS.join(', ')}`)
@@ -100,6 +125,7 @@ export function tally(r) {
   const byId = new Map(r.findings.map((f) => [f.id, f]))
   const RANK = { P0: 0, P1: 1, P2: 2 }
   const counted = (f) => f.result === 'CONFIRMED' || f.result === 'UNREFUTED'
+  const carried = []
   for (const f of r.findings) {
     if (f.severity === 'PREMISE' || f.result === 'REJECTED') continue
     if (f.result === 'DUPLICATE') {
@@ -110,13 +136,17 @@ export function tally(r) {
       // duplicate of a rejected finding, or of a milder one, still stands.
       if (counted(target) && RANK[target.severity] <= RANK[f.severity]) continue
     }
-    n[f.severity.toLowerCase()]++
+    // A carried P2 leaves the blocking counts, so a verdict whose only outstanding findings are
+    // carried reads clean to every gate, including one committed before carrying existed.
+    if (f.carried) carried.push(f)
+    else n[f.severity.toLowerCase()]++
     if (f.result === 'UNREFUTED') n.unrefuted++
     if (f.deferred) n.deferred++
   }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
   n.partial += died.length
-  return { sha, round: r.round, n, vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped,
+  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried,
+    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
 
@@ -137,12 +167,32 @@ export function render(r) {
   if (t.skipped) parts.push(`${plural(t.skipped, 'file')} not reviewed`)
   if (t.died.length) parts.push(`${t.died.join(', ')} ${t.died.length === 1 ? 'seat' : 'seats'} died`)
   if (n.gaps) parts.push(`${plural(n.gaps, 'requirement gap')} open`)
-  const verdict = isClean(n) ? 'No P0, P1 or P2 findings' : `not clean: ${parts.join(', ')}`
+  // Worded so no count sits before "P2": a gate reads "<n> P2" in a heading as an open finding.
+  const carried = t.carried.length ? `P2 findings carried: ${t.carried.length}` : ''
+  const verdict = isClean(n)
+    ? (carried ? `No P0 or P1 findings; ${carried}` : 'No P0, P1 or P2 findings')
+    : `not clean: ${[...parts, ...(carried ? [carried] : [])].join(', ')}`
   const how = t.vendor === 'codex-cross'
     ? 'codex read the diff cold · refuted cross-vendor'
     : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`
-  const heading = `**desk-review, round ${t.round}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how}`
-  return ['<!-- desk-review:local -->', marker, heading].join('\n')
+  const range = t.since ? `, fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}` : ''
+  const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how}`
+  const lines = ['<!-- desk-review:local -->', marker, heading]
+  if (t.since) lines.push(`<!-- desk-review:carried v=1 p2=${t.carried.length} since=${t.since} -->`)
+  return lines.join('\n')
+}
+
+// The PR body's section for the carried findings, file:line each, or '' when none are carried.
+export function carriedSection(r) {
+  const t = tally(r)
+  if (!t.carried.length) return ''
+  const rows = t.carried.map((f) => `- \`${f.where}\`${f.title ? ` ${f.title}` : ''}${f.id ? ` (${f.id})` : ''}`)
+  return [
+    '### Carried review findings',
+    `desk-review round ${t.round} read the fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}. ` +
+      'These P2 findings are left for later: from round 3 only P0 and P1 block.',
+    ...rows,
+  ].join('\n')
 }
 
 const isMain = (() => {
@@ -150,11 +200,14 @@ const isMain = (() => {
 })()
 if (isMain) {
   try {
-    const [file, ...rest] = process.argv.slice(2)
-    if (!file || rest.length) no('usage: verdict.mjs <results.json>')
+    const args = process.argv.slice(2)
+    const section = args[0] === '--carried'
+    const [file, ...rest] = section ? args.slice(1) : args
+    if (!file || rest.length) no('usage: verdict.mjs [--carried] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
-    process.stdout.write(`${render(r)}\n`)
+    const out = section ? carriedSection(r) : render(r)
+    if (out) process.stdout.write(`${out}\n`)
   } catch (e) {
     process.stderr.write(`verdict.mjs: ${e.message}\n`)
     process.exit(2)

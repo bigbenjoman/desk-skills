@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -114,8 +114,44 @@ for (const targetResult of ['CONFIRMED', 'REJECTED', 'UNREFUTED']) {
 }
 t(`every duplicate merge (${dupCombos}) keeps a finding that stands`, dupWrong, 0)
 
+// ---- round 3: the fix range, and P2 findings carried rather than blocking
+const SINCE = 'fedcba9876543210fedcba9876543210fedcba98'
+const r3 = (findings = [], o = {}) => base({ round: 3, since: SINCE, findings, ...o })
+const p2 = (o = {}) => f({ severity: 'P2', carried: true, title: 'name reads as a count', ...o })
+t('round 3: heading names the fix range it read', heading(r3()).startsWith('**desk-review, round 3, fix range fedcba9..0123456: No P0, P1 or P2 findings at `0123456`**'), true)
+t('round 3: the carried line records the range', render(r3()).split('\n')[3], `<!-- desk-review:carried v=1 p2=0 since=${SINCE} -->`)
+t('round 1: no carried line', render(base()).split('\n').length, 3)
+const onlyCarried = r3([p2(), p2({ id: 'F2', where: 'src/b.ts:4' })])
+t('only carried P2s: the marker reads clean', reads(onlyCarried), true)
+t('only carried P2s: p2 is 0 in the marker', marker(onlyCarried).includes(' p1=0 p2=0 deferred=0 '), true)
+t('only carried P2s: the carried line counts them', render(onlyCarried).split('\n')[3].includes(' p2=2 '), true)
+t('only carried P2s: heading says none block and how many carried', heading(onlyCarried).includes(': No P0 or P1 findings; P2 findings carried: 2 at `0123456`**'), true)
+t('only carried P2s: tally counts them apart from n', `${tally(onlyCarried).carried.length} ${isClean(tally(onlyCarried).n)}`, '2 true')
+const carriedAndP1 = r3([p2(), f({ id: 'F2' })])
+t('a carried P2 beside an open P1: not clean', reads(carriedAndP1), false)
+t('a carried P2 beside an open P1: heading names both', heading(carriedAndP1).includes('not clean: 1 P1 outstanding, P2 findings carried: 1'), true)
+t('an uncarried P2 on round 3 still blocks', reads(r3([f({ severity: 'P2' })])), false)
+t('a carried P2 whose refutation did not run still blocks', reads(r3([p2({ result: 'UNREFUTED', refuted_by: undefined })])), false)
+t('a carried duplicate of a carried P2 counts once', render(r3([p2(), p2({ id: 'F2', result: 'DUPLICATE', duplicate_of: 'F1' })])).split('\n')[3].includes(' p2=1 '), true)
+const section = carriedSection(onlyCarried).split('\n')
+t('carried section: its heading', section[0], '### Carried review findings')
+t('carried section: names the fix range', section[1].includes('fix range fedcba9..0123456'), true)
+t('carried section: file:line each', section.slice(2).join('|'), '- `src/a.ts:12` name reads as a count (F1)|- `src/b.ts:4` name reads as a count (F2)')
+t('carried section: empty when nothing is carried', carriedSection(r3()), '')
+
 // ---- results it refuses, each on the guard it names
 const want = (name, r, msg) => { const got = refused(r); t(name, got.includes(msg) ? msg : got, msg) }
+want('refuses a carried P1, naming it', r3([p2({ severity: 'P1' })]), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
+want('refuses a carried P0, naming it', r3([p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9' })]), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
+want('refuses a carried P2 before round 3', base({ round: 2, findings: [p2()] }), 'carried only from round 3')
+want('refuses a finding carried and deferred', r3([p2({ deferred: true })]), 'carried or deferred, not both')
+want('refuses a carried finding with no file:line', r3([p2({ where: 'src/a.ts' })]), 'where as file:line')
+want('refuses a carried REJECTED finding', r3([p2({ result: 'REJECTED' })]), 'not outstanding')
+want('refuses carried that is not a boolean', r3([p2({ carried: 'yes' })]), 'carried must be true or false')
+want('refuses round 3 with no fix range', base({ round: 3 }), 'reads only the fix range')
+want('refuses a fix range that is not a full SHA', r3([], { since: 'fedcba9' }), 'reads only the fix range')
+want('refuses an empty fix range', r3([], { since: SHA }), 'fix range is empty')
+want('refuses a fix range before round 3', base({ round: 2, since: SINCE }), 'round 2 reads the whole branch')
 want('refuses a short SHA', base({ sha: '0123456' }), 'full 40-character')
 want('refuses round 0', base({ round: 0 }), 'round must be')
 want('refuses gaps left out', base({ gaps: undefined }), 'gaps is required')
@@ -150,11 +186,24 @@ const bad = spawnSync('node', [SCRIPT, join(T, 'bad.json')], { encoding: 'utf8' 
 t('CLI refuses with exit 2 and prints nothing', `${bad.status} ${bad.stdout === ''} ${bad.stderr.includes('gaps is required')}`, '2 true true')
 const none = spawnSync('node', [SCRIPT], { encoding: 'utf8' })
 t('CLI with no file refuses', none.status, 2)
+writeFileSync(join(T, 'r3.json'), JSON.stringify(onlyCarried))
+const r3cli = spawnSync('node', [SCRIPT, join(T, 'r3.json')], { encoding: 'utf8' })
+t('CLI on round 3 prints four lines', `${r3cli.status} ${r3cli.stdout.trim().split('\n').length}`, '0 4')
+const sec = spawnSync('node', [SCRIPT, '--carried', join(T, 'r3.json')], { encoding: 'utf8' })
+t('CLI --carried prints the section', `${sec.status} ${sec.stdout.startsWith('### Carried review findings\n')}`, '0 true')
+const noSec = spawnSync('node', [SCRIPT, '--carried', join(T, 'ok.json')], { encoding: 'utf8' })
+t('CLI --carried with nothing carried prints nothing', `${noSec.status} ${JSON.stringify(noSec.stdout)}`, '0 ""')
 
 const SKILL = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf8').split('\n')
 const template = marker(base()).replace(`sha=${SHA}`, 'sha=<full reviewed SHA>')
 t('SKILL.md shows the marker form verdict.mjs prints', SKILL.includes(template), true)
 t('SKILL.md states the clean verdict verdict.mjs tests', SKILL.some((l) => l.includes(`\`${CLEAN}\``)), true)
+// Round 3's finders read only the fix range: the dispatch template's diff command must say so, for
+// a branch and a PR, or round 3 rereads the whole branch whatever verdict.mjs records as `since`.
+const dispatch = SKILL.join('\n').match(/^3\. The diff command[\s\S]*?(?=^4\. )/m)?.[0] ?? ''
+t('the finder diff command has a round-3 fix-range form for a branch', dispatch.includes('git diff "<since>..HEAD"'), true)
+t('the finder diff command has a round-3 fix-range form for a PR', dispatch.includes('git diff "<since>..refs/desk-review/pr-<n>"'), true)
+t('the fix-range rule names since as the previous round\'s SHA', SKILL.some((l) => l.includes("git diff <previous round's reviewed SHA>..HEAD")), true)
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')
 process.exit(fails ? 1 : 0)

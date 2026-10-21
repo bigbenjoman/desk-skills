@@ -481,7 +481,7 @@ jobs, and say what each one fails on:
 
 | Job (check name) | Fails when |
 |---|---|
-| `desk-review verdict` | the PR's latest `desk-review:verdict` marker (from someone with write access, read from the repo's permission endpoint) is missing, attests a SHA other than the head, has any of `p0` `p1` `p2` `deferred` `gaps` `unrefuted` `partial` non-zero, or sits under a heading that lists findings, or names another SHA or round. `REQUIRE_VENDOR: 'codex-cross'` also refuses a same-vendor refutation |
+| `desk-review verdict` | the PR's latest `desk-review:verdict` marker (from someone with write access, read from the repo's permission endpoint) is missing, attests a SHA other than the head, has any of `p0` `p1` `p2` `deferred` `gaps` `unrefuted` `partial` non-zero, or sits under a heading that lists findings, or names another SHA or round. `REQUIRE_VENDOR: 'codex-cross'` also refuses a same-vendor refutation. P2s a third round carried are out of `p2` and never fail it; the gate does not read the carried line, so any copy gives the same result |
 | `CLAUDE.md size` | a tracked `CLAUDE.md` is over 20,000 characters, the most the reviewer loads |
 | `protected-path approval` | the PR touches a path the `PROTECTED` regex matches (a rename's old path included) and has no approval at its head from someone with write access other than its author, unless it is a small `fix`, `docs` or `chore` change: that type in the title, no breaking `!`, and at most 30 changed files, not counting lockfiles and build output |
 
