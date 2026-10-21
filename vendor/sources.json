@@ -870,7 +870,7 @@
         "installer": "install-statusline.sh"
       },
       "pin": {
-        "commit": "8eeb63190",
+        "commit": "5031c5778",
         "date": "2026-08-15"
       },
       "license": "MIT",
