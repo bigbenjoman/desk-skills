@@ -233,7 +233,8 @@ function screen(start, columns = 80, clock = Date.now) {
   const input = new PassThrough();
   const modes = [];
   Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
-  const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  // `resize` holds the screen's resize listener, so a test can change `columns` and call it.
+  const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
   const ui = Q.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
@@ -415,9 +416,9 @@ const shownDated = tidyTl.filter((l) => /^ {2}T-\d+ .*█/.test(l)).map((l) => l
 t('DS-163 AC1 one bar row per dated ticket, sorted by ship time', shownDated.join(), datedKeys.join());
 const { when: whenAt } = await import('../desk/bin/desk-q-eta.mjs');
 const t3 = barRow(tidyTl, 'T-3');
-t('DS-163 AC1 a row is its key, its state, a solid bar shaded on, then STARTS and SHIPS at the right',
-  /^ {2}T-3 {7}ready {5} [ ┆]*█+░*[ ┆]*[ ▸] \S/.test(t3) && t3.endsWith(whenAt(tidyF.T['T-3'].likely, FIXED)), true);
-t('DS-163 AC1 the header ends in STARTS and SHIPS', tidyTl.some((l) => /^ +now .*  STARTS {7}SHIPS$/.test(l)), true);
+t('DS-163 AC1 a row is its key, its state, a solid bar shaded on, then STARTS, SHIPS and its title (DS-167)',
+  /^ {2}T-3 {7}ready {5} [ ┆]*█+░*[ ┆]*[ ▸] \S/.test(t3) && t3.endsWith(`${whenAt(tidyF.T['T-3'].likely, FIXED)}`.padEnd(12) + '  T-3 title'), true);
+t('DS-163 AC1 the header ends in STARTS and SHIPS, then TITLE (DS-167)', tidyTl.some((l) => /^ +now .*  STARTS {7}SHIPS {9}TITLE$/.test(l)), true);
 
 t('DS-163 AC2 under 2 days the scale is hours', Q.scaleFor(1.9 * DAY, FIXED).id, 'hours');
 t('DS-163 AC2 under 21 days it is days, and beyond that weeks', `${Q.scaleFor(20 * DAY, FIXED).id} ${Q.scaleFor(22 * DAY, FIXED).id}`, 'days weeks');
@@ -475,7 +476,7 @@ t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { 
 const typicalM = '7.0';
 t('DS-163 AC8 a ticket waiting on you says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Waiting on you · ~${typicalM} h once answered`)), true);
 t('DS-163 AC8 a stuck ticket names what it is stuck behind', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Stuck behind T-4')), true);
-t('DS-163 AC8 workers set to 0 says nothing starts', barRow(tl('acme__zero'), 'Z-1').endsWith('Workers set to 0: nothing starts'), true);
+t('DS-163 AC8 workers set to 0 says nothing starts', /Workers set to 0: nothing starts +Z-1 title$/.test(barRow(tl('acme__zero'), 'Z-1')), true);
 
 const Ks = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
 await sleep(20);
@@ -494,6 +495,53 @@ const pipedTl = I.run('ships', 'piped'), pipedDays = I.run('piped', 'days');
 t('DS-163 AC10 the Timeline piped is plain text, and exits 0', pipedTl.code === 0 && !pipedTl.out.includes('\x1b') && /^ {2}P-1 .*█/m.test(pipedTl.out), true);
 t('DS-163 AC10 By day piped is plain text, and exits 0', pipedDays.code === 0 && !pipedDays.out.includes('\x1b') && /^ {4}P-1 /m.test(pipedDays.out), true);
 t('DS-163 ships --plain keeps the one-line-per-ticket list', /^ {2}TICKET\s+STATE\s+STARTS\s+SHIPS$/m.test(I.run('ships', 'piped', '--plain').out), true);
+
+// ---- DS-167: titles drop a tag most of the list shares, and run to the right edge.
+const readyAll = (keys) => Object.fromEntries(keys.map((k) => [k, ready]));
+const titled = (prefix, titles) => Object.fromEntries(titles.map((s, i) => [`${prefix}-${i + 1}`, { summary: s }]));
+const LONG_Q = 'which of the two onboarding emails goes out first, and from which address?';
+const skills8 = ['autopilot: one', 'autopilot: two', 'autopilot: three', 'autopilot: four', 'autopilot: five', 'autopilot: six', 'autopilot: seven', 'desk-q: other'];
+put(I.T, I.env, 'skills8', { port: 4200, conc: '2 / 3', beat: 1, queue: { batch: 's8', concurrency: 2, tickets: {
+  ...readyAll(['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7']), 'A-8': { state: 'parked', park: { question: LONG_Q } } } }, triage: titled('A', skills8) });
+const voice12 = [1, 2, 3, 4, 5, 6, 7].map((d) => `Your day ${d}/14: step ${d}`).concat(['Gaps between bookings', 'Running-late sheet', 'Check-in text', 'Reminders', 'Calendar sync']);
+put(I.T, I.env, 'voice12', { port: 4300, conc: '2 / 3', beat: 1, queue: { batch: 'v12', concurrency: 2, tickets: readyAll(voice12.map((_, i) => `V-${i + 1}`)) }, triage: titled('V', voice12) });
+const ninja6 = ['Beats: list', 'Beats: detail', 'Outlets: list', 'Outlets: detail', 'Onboarding copy', 'Settings page'];
+put(I.T, I.env, 'ninja6', { port: 4400, conc: '2 / 3', beat: 1, queue: { batch: 'n6', concurrency: 2, tickets: readyAll(ninja6.map((_, i) => `N-${i + 1}`)) }, triage: titled('N', ninja6) });
+const repoOf = (name) => Q.loadRepos().find((r) => r.name === name);
+const titleCol = (out) => lines(out).find((l) => /^ +# /.test(l)).indexOf('TITLE');
+const titlesOf = (name) => { const out = Q.repoScreen(repoOf(name), { width: 160 }), c = titleCol(out); return lines(out).filter((l) => /^ {2} *\*?\d+ {2}/.test(l)).map((l) => l.slice(c)); };
+t('DS-167 AC1 7 of 8 titles start "autopilot:": those rows start at the words after it', titlesOf('skills8').join(), 'one,two,three,four,five,six,seven,desk-q: other');
+t('DS-167 AC2 7 of 12 titles start "Your day <n>/14:": the tag is dropped from those rows', titlesOf('voice12').slice(0, 7).join(), 'step 1,step 2,step 3,step 4,step 5,step 6,step 7');
+t('DS-167 AC3 no tag starts half the titles: every tag stays', titlesOf('ninja6').join(), ninja6.join());
+t('DS-167 AC3 a tag on one title alone stays', Q.titler(['desk-q: a'])('desk-q: a'), 'desk-q: a');
+t('DS-167 AC4 the ticket screen shows the full title with its tag', lines(Q.ticketScreen(repoOf('skills8'), 'A-1', { width: 160 }))[2], 'autopilot: one');
+
+const head8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /^ +# /.test(l));
+t('DS-167 AC7 the DETAIL column is 26 columns wide', head8.indexOf('STARTS') - head8.indexOf('DETAIL'), 26);
+const a8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /A-8 /.test(l));
+t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('DETAIL'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 23)}…  `);
+t('DS-167 AC7 the ticket screen still shows the detail in full', lines(Q.ticketScreen(repoOf('skills8'), 'A-8', { width: 160 })).includes(`Parked: ${LONG_Q}`), true);
+
+// A dated repo whose W-1 title is longer than any row has room for, and W-2's is short.
+dated('wide', 4500, { hours: [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8], tickets: { 'W-1': ready, 'W-2': ready, 'W-3': { state: 'parked', park: { question: 'which copy?' } } } });
+const LONG_T = `the title that goes on ${'and on '.repeat(30)}to the end`;
+for (const [k, summary] of [['W-1', LONG_T], ['W-2', 'short title'], ['W-3', 'parked title']]) writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__wide', 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary, size: 'M' }));
+const wide = Q.loadRepos(FIXED);
+const at160 = { queue: Q.repoScreen(wide.find((r) => r.name === 'wide'), { width: 160, now: FIXED }), 'By day': Q.daysScreen(wide, 'acme__wide', { now: FIXED, width: 160 }), Timeline: Q.timelineScreen(wide, 'acme__wide', { now: FIXED, width: 160 }) };
+const rowFor = (out, key) => lines(out).find((l) => new RegExp(`^ +(\\d+ {2})?${key} `).test(l)) ?? '';
+t('DS-167 AC5 at 160 columns a longer title runs to the right edge and ends in …', Object.entries(at160).filter(([, out]) => !(rowFor(out, 'W-1').length === 160 && rowFor(out, 'W-1').endsWith('…'))).map(([v]) => v).join(), '');
+t('DS-167 AC5 and a title that fits shows whole, with no …', Object.entries(at160).filter(([, out]) => !rowFor(out, 'W-2').endsWith('  short title')).map(([v]) => v).join(), '');
+t('DS-167 AC5 an undated Timeline row puts its title in the same column', rowFor(at160.Timeline, 'W-3').indexOf('parked title'), rowFor(at160.Timeline, 'W-2').indexOf('short title'));
+t('DS-167 AC5 the Timeline header names TITLE over the titles', lines(at160.Timeline).find((l) => / {2}STARTS +SHIPS +TITLE$/.test(l))?.indexOf('TITLE'), rowFor(at160.Timeline, 'W-2').indexOf('short title'));
+
+const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 100, () => FIXED);
+await sleep(20);
+const w1 = () => Rz.frame().find((l) => /^[ ›] +\d+ {2}W-1 /.test(l)) ?? '';
+const w1Before = w1().length;
+Rz.output.columns = 160;
+Rz.output.resize();
+t('DS-167 AC6 resized from 100 to 160 columns, the redraw fits titles to the new width', `${w1Before} ${w1().length} ${w1().endsWith('…')}`, '100 160 true');
+Rz.ui.finish(0);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
