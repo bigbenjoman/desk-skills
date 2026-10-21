@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// desk-q: every autopilot queue on this computer, from the files alone. Reads only: the repo
-// configs, each repo's queue.json, its orchestrator heartbeats and its triage records. Repos are
-// found on disk every run, so a newly set-up repo appears with no change here.
+// desk-q: every autopilot queue on this computer, from the files alone. It reads the repo configs,
+// each repo's queue.json, its orchestrator heartbeats and its triage records. Repos are found on
+// disk every run, so a newly set-up repo appears with no change here.
 //
 //   desk-q [--plain] [--all]             one line per batch: live first, then quiet ones that need you
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
