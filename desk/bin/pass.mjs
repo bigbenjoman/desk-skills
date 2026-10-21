@@ -4,11 +4,11 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, readdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
+import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, readJsonOrRefuse, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
@@ -620,6 +620,24 @@ const baselineBrief = () => {
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing.
 let attempts = 0;
+// Ports held by running workers in every other repo's queue. Two repos' worker blocks can meet, and a
+// worker's port is unbound until it starts a server, so probing cannot see one another repo's pass has
+// just handed out. Only running tickets hold one. A queue that will not parse is named in the report
+// and skipped, never a hold.
+const unreadableQueues = new Set();
+function otherQueuePorts() {
+  const dir = join(E.deskHome(), 'repos');
+  const ports = new Set();
+  for (const slug of existsSync(dir) ? readdirSync(dir).sort() : []) {
+    const path = join(dir, slug, 'queue.json');
+    if (resolve(path) === resolve(QUEUE_FILE) || !existsSync(path)) continue;
+    try {
+      const other = readJsonOrRefuse(path, 'restore it, or start a new batch there');
+      for (const r of Object.values(other?.tickets ?? {})) if (r?.state === 'running' && Number(r.port) > 0) ports.add(Number(r.port));
+    } catch (e) { unreadableQueues.add(describeCrash(e)); }
+  }
+  return ports;
+}
 for (const t of eligible) {
   if (baseHold || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
@@ -701,11 +719,12 @@ for (const t of eligible) {
 
   const sid = E.uuid();
 
-  // Assign a port nothing else holds. Two things make one unavailable: another ticket in this
+  // Assign a port nothing else holds. Three things make one unavailable: another ticket in this
   // batch already holds it (a worker's port is unbound until it starts a server, so a bind check
-  // alone races), or something is listening on it. The floor is one above the user's own dev port
+  // alone races), a running worker in another repo's queue holds it (two repos' worker blocks can
+  // meet), or something is listening on it. The floor is one above the user's own dev port
   // (E.workerPortFloor, shared with spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides).
-  const taken = new Set(Object.values(queue().tickets).map((r) => Number(r.port)).filter(Boolean));
+  const taken = new Set([...Object.values(queue().tickets).map((r) => Number(r.port)).filter(Boolean), ...otherQueuePorts()]);
   let port = E.workerPortFloor();
   // eslint-disable-next-line no-await-in-loop
   while (taken.has(port) || await E.portInUse(port)) port += 1;
@@ -752,6 +771,7 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 }
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
+for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);
 if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 // A worker count of 0 is a pause, not a finished batch: say what is waiting behind it.
