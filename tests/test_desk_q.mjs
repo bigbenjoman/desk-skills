@@ -96,7 +96,7 @@ const head = lines(ov.out)[0];
 t('AC4 header', /workers 2 running · 5 allowed by live batches · machine 10 · \d+\.\d GiB free · room for \d+$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('ports overlap: desk-skills + pranicuk share 3502–3503')), true);
-// ---- AC15: voicepa's counts, last pass and workers (and DS-161's QUEUE DONE, with no history)
+// ---- AC15: voicepa's counts, last pass and workers (and QUEUE DONE, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
 t('AC15 voicepa row: live 4m, run 2, ready 0, wait 1, stuck 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 13).join(' '), 'live 4m 2 0 1 0 0 0 3 no history 3');
 

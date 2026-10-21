@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsS
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildHistory, recordMerge, readHistory, firstSpawnFromLogs } from '../desk/bin/desk-q-eta.mjs';
 
 let fails = 0;
@@ -126,7 +126,7 @@ function world({ tickets, logs = {}, sizes = {}, merged = {} }) {
   t('AC5: a torn triage record is unknown too, never guessed', recordMerge({ state: w.state, queue: w.queue, key: 'DS-42', now: NOW }).added.map((l) => l.size), ['unknown']);
 }
 
-// ==== DS-161: the forecast, against fixture repos under a throwaway HOME, DESK_HOME and config root.
+// ==== The forecast, against fixture repos under a throwaway HOME, DESK_HOME and config root.
 // Every check but the CLI's runs on a fixed clock: Mon 19 Oct 2026 18:51, local time.
 const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
 const HOUR = 3_600_000;
@@ -176,7 +176,7 @@ repo('alpha', 3100, {
 });
 repo('nine', 3200, { tickets: { 'N-1': { state: 'triaged' } }, sizes: { 'N-1': 'S' }, history: range(9, () => ['S', 2]) });
 
-// ---- DS-161 AC1: `desk-q ships <repo> --plain` from the shell
+// ---- forecast AC1: `desk-q ships <repo> --plain` from the shell
 const DESK_Q = join(BIN, 'desk-q.mjs');
 const cli = (...args) => spawnSync(process.execPath, [DESK_Q, ...args], { encoding: 'utf8', env: { ...zenv, PATH: process.env.PATH } });
 const shipped = cli('ships', 'desk-skills', '--plain');
@@ -194,51 +194,53 @@ const alpha = Q.loadRepos(FIXED).find((r) => r.name === 'alpha');
 const F = Q.forecastOf(alpha, { now: FIXED });
 const show = (key, opts = {}) => Q.ticketScreen(alpha, key, { now: FIXED, ...opts }).split('\n');
 
-// ---- DS-161 AC2 and AC3: a hold and a collision each wait for the other ticket's ship time
+// ---- forecast AC2 and AC3: a hold and a collision each wait for the other ticket's ship time
 t('DS-161 AC2: a waiting ticket starts no earlier than its blocker ships', F.T['A-5'].start >= F.T['A-3'].likely, true);
 t('DS-161 AC3: of two colliding tickets, the later starts no earlier than the earlier ships', F.T['A-4'].start >= F.T['A-3'].likely, true);
 
-// ---- DS-161 AC4: running and ready-now on the repo screen
+// ---- forecast AC4: running and ready-now on the repo screen
 const alphaRows = Q.repoScreen(alpha, { now: FIXED }).split('\n');
 const rowFor = (rows, key) => rows.find((l) => new RegExp(`^\\s+\\*?\\d+\\s+${key}\\s`).test(l)) ?? '';
 t('DS-161 AC4: a running ticket starts "running"', /A-1\s+running\s+stage 6\/9\s+running\s+\S/.test(rowFor(alphaRows, 'A-1')), true);
 t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+ready\s+now\s+\S/.test(rowFor(alphaRows, 'A-2')), true);
 
-// ---- DS-161 AC5 and AC6: no date while it waits on the user, or is stuck
+// ---- forecast AC5 and AC6: no date while it waits on the user, or is stuck
 t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
 t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships: No date until you answer it. Press c to date it at the next check-in.'), true);
 t('DS-161 AC6: a stuck ticket has no date', F.T['A-7'], null);
 t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships: No date while it is stuck behind A-6. Unblock it to date it.'), true);
 
-// ---- DS-161 AC7: too little history gives no dates
+// ---- forecast AC7: too little history gives no dates
 const nine = Q.run(['ships', 'nine', '--plain'], { now: FIXED });
 t('DS-161 AC7: 9 merged tickets: says so, and that estimates need 10', nine, 'nine · No ship estimate: nine has 9 merged autopilot tickets in its history (the last 30 days), and estimates need 10.');
 
-// ---- DS-161 AC8: dates counted in calendar days
+// ---- forecast AC8: dates counted in calendar days
 const at = (...a) => new Date(...a).getTime();
 t('DS-161 AC8: today, the next 6 days, a week out, and another year', [at(2026, 9, 19, 21, 30), at(2026, 9, 22, 14, 30), at(2026, 9, 26, 10, 0), at(2027, 0, 4, 9, 0)].map((x) => when(x, FIXED)),
   ['today 21:30', 'Thu 14:30', '26 Oct', '4 Jan 2027']);
 
-// ---- DS-161 AC9: STARTS and SHIPS on the queue, QUEUE DONE on the overview
+// ---- forecast AC9: STARTS and SHIPS on the queue, QUEUE DONE on the overview
 t('DS-161 AC9: the queue screen has STARTS and SHIPS columns', alphaRows.some((l) => /^\s+#\s+TICKET\s+STATE\s+DETAIL\s+STARTS\s+SHIPS\s+TITLE$/.test(l)), true);
 const ov = Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n');
 t('DS-161 AC9: the overview has a QUEUE DONE column', ov.some((l) => /DONE\s+QUEUE DONE\s+WORKERS$/.test(l)), true);
 t('DS-161 AC9: giving when the repo\'s last dated ticket ships', (ov.find((l) => /^ {2}alpha /.test(l)) ?? '').includes(`  ${when(F.clears, FIXED)}`), true);
 
-// ---- DS-161 AC10: the ticket screen's dates and the history behind them
+// ---- forecast AC10: the ticket screen's dates and the history behind them
 const a3 = show('A-3');
 const i3 = a3.findIndex((l) => l.startsWith('Starts: '));
 t('DS-161 AC10: starts, ships and could run to', /^Starts: \S.*? {3}Ships: \S.*? {3}Could run to \S.*? \(1 run in 5 is later\)$/.test(a3[i3] ?? ''), true);
 t('DS-161 AC10: could run to is no earlier than ships', F.T['A-3'].late >= F.T['A-3'].likely, true);
 t('DS-161 AC10: then how many merged tickets of its size the history holds', (a3[i3 + 1] ?? '').startsWith('From 6 merged size M tickets in alpha: typical '), true);
 
-// ---- DS-161 AC11: the same files and clock give the same dates
+// ---- forecast AC11: the same files and clock give the same dates
 const rows = alpha.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: String(tk.collides_with ?? '').split('|').filter(Boolean) }));
 const hist = range(12, (i) => ({ size: 'M', hours: 1 + i }));
 t('DS-161 AC11: two forecasts over the same input are identical', JSON.stringify(forecast({ rows, workers: 2, history: hist, now: FIXED })) === JSON.stringify(forecast({ rows, workers: 2, history: hist, now: FIXED })), true);
-t('DS-161 AC11: and ships prints the same dates twice', Q.run(['ships', 'alpha', '--plain'], { now: FIXED }) === Q.shipsScreen(Q.loadRepos(FIXED), 'acme__alpha', { now: FIXED }), true);
+// A second copy of the module has its own empty cache, so its ships runs the simulation afresh.
+const Q2 = await import(`${pathToFileURL(DESK_Q).href}?again`);
+t('DS-161 AC11: and ships prints the same dates twice', Q2.run(['ships', 'alpha', '--plain'], { now: FIXED }), Q.run(['ships', 'alpha', '--plain'], { now: FIXED }));
 
-// ---- DS-161 AC12: c dates tickets waiting on the user at the next check-in, and c again undoes it
+// ---- forecast AC12: c dates tickets waiting on the user at the next check-in, and c again undoes it
 const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const input = new PassThrough();
@@ -251,7 +253,7 @@ await sleep(20);
 t('DS-161 AC12: before c, the header says parked tickets have no date', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
 input.write('c'); await sleep(20);
 t('DS-161 AC12: after c, the header says they are dated at the next check-in', frame()[0].endsWith('Parked: dated at the next check-in · c to undo'), true);
-t('DS-161 AC12: and the ticket waiting on the user has a date', /no date/.test(a6()), false);
+t('DS-161 AC12: and the ticket waiting on the user has a date', a6().includes(`  ${when(Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].likely, FIXED)}  `) && !/no date/.test(a6()), true);
 t('DS-161 AC12: from no earlier than the next check-in, Tue 08:00', Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].start >= at(2026, 9, 20, 8, 0), true);
 input.write('c'); await sleep(20);
 t('DS-161 AC12: c again takes the dates away', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
