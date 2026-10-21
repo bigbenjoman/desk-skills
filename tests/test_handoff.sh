@@ -2,7 +2,8 @@
 # suite: context handoff hook (threshold, Stop block, clear/compact resume)
 # The context handoff hook (hooks/desk-handoff.py), fed hook inputs and fixture transcripts in a
 # throwaway repo: one injection past the §2 threshold and none under it, the main chain only, the
-# window (200k, [1m], past 200k, DESK_CONTEXT_WINDOW), a single Stop block, the .handoffs/ exclude
+# window (200k, [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (default 25), a
+# single Stop block, the .handoffs/ exclude
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only).
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -21,7 +22,9 @@ check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+
 R="$T/repo"; git init -q -b main "$R"; git -C "$R" remote add origin https://github.com/acme/demo.git
 mkdir -p "$R/sub"
 DAY="$(date +%Y-%m-%d)"
-config(){ printf '## 2. Paths\n| Field | Value | Notes |\n|---|---|---|\n| Handoff at context %% | %s | |\n' "$1" > "$DESK_CONFIG"; }
+# config <Handoff at context %> [<Handoff at context % on a 1M window>]
+config(){ { printf '## 2. Paths\n| Field | Value | Notes |\n|---|---|---|\n| Handoff at context %% | %s | |\n' "$1"
+  if [ -n "${2:-}" ]; then printf '| Handoff at context %% on a 1M window | %s | |\n' "$2"; fi; } > "$DESK_CONFIG"; }
 
 # transcript <file> <main-chain tokens> [<later sidechain tokens>]
 transcript(){
@@ -65,7 +68,8 @@ transcript "$T/side.jsonl" 50000 190000
 hook PostToolUse s3 "$T/side.jsonl"
 check "a later sidechain's usage is ignored"              '[ -z "$out" ]'
 
-# ---- the window ----
+# ---- the window (the 1M row pinned to 45, so only the window changes) ----
+config '`45`' '`45`'
 transcript "$T/300k.jsonl" 300000
 hook PostToolUse s4 "$T/300k.jsonl"
 check "300k is past 200k, so the window is 1M (30%)"      '[ -z "$out" ]'
@@ -78,6 +82,47 @@ hook PostToolUse s5 "$T/high.jsonl"
 check "a [1m] model: 100k is 10%, nothing"                '[ -z "$out" ]'
 out=$(printf '{"hook_event_name":"PostToolUse","session_id":"s6","transcript_path":"%s","cwd":"%s"}' "$T/low.jsonl" "$R" | DESK_CONTEXT_WINDOW=100000 python3 "$HOOK")
 check "DESK_CONTEXT_WINDOW overrides the window"          '[[ "$(ctx)" == *"context is at 50% of a 100,000-token window"* ]]'
+
+# ---- the 1M row: Handoff at context % on a 1M window ----
+config '`45`' '`35`'
+hook PostToolUse s20 "$T/300k.jsonl"
+check "1M AC1: a 1M row at 35, 30% of 1M: nothing"        '[ -z "$out" ]'
+transcript "$T/400k.jsonl" 400000
+hook PostToolUse s20 "$T/400k.jsonl"
+check "1M AC1: 40% of 1M passes 35 and fires"             '[[ "$(ctx)" == *"context is at 40% of a 1,000,000-token window (threshold 35%)"* ]]'
+config '`45`' '`10`'
+hook SessionStart s21 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5[1m]"'
+hook PostToolUse s21 "$T/high.jsonl"
+check "1M AC1: a [1m] model at 10% of 1M passes 10"       '[[ "$(ctx)" == *"(threshold 10%)"* ]]'
+config '`45`'
+transcript "$T/240k.jsonl" 240000
+hook PostToolUse s22 "$T/240k.jsonl"
+check "1M AC2: no 1M row, 24% of 1M: nothing"             '[ -z "$out" ]'
+hook PostToolUse s22 "$T/300k.jsonl"
+check "1M AC2: no 1M row, 30% of 1M passes 25"            '[[ "$(ctx)" == *"context is at 30% of a 1,000,000-token window (threshold 25%)"* ]]'
+config '`45`' '`TODO`'
+hook PostToolUse s23 "$T/300k.jsonl"
+check "1M AC2: a TODO 1M row is 25 too"                   '[[ "$(ctx)" == *"(threshold 25%)"* ]]'
+config '`45`' '`10`'
+transcript "$T/80k.jsonl" 80000
+hook PostToolUse s24 "$T/80k.jsonl"
+check "1M AC3: 200k window, 40% with a 1M row at 10: nothing" '[ -z "$out" ]'
+hook PostToolUse s24 "$T/high.jsonl"
+check "1M AC3: 200k window, 50% fires at the 45 row"      '[[ "$(ctx)" == *"context is at 50% of a 200,000-token window (threshold 45%)"* ]]'
+config '`45`' '`0`'
+hook PostToolUse s25 "$T/500k.jsonl"
+check "1M AC4: a 1M row at 0, 50% of 1M: nothing"         '[ -z "$out" ]'
+hook PostToolUse s26 "$T/high.jsonl"
+check "1M AC4: a 200k window still fires at 45"           '[[ "$(ctx)" == *"(threshold 45%)"* ]]'
+config '`0`'
+hook PostToolUse s27 "$T/500k.jsonl"
+check "the 45 row at 0 and no 1M row: off on 1M as well"  '[ -z "$out" ]'
+config '`0`' '`25`'
+hook PostToolUse s28 "$T/300k.jsonl"
+check "the 45 row at 0, a 1M row at 25: fires on 1M"      '[[ "$(ctx)" == *"(threshold 25%)"* ]]'
+hook PostToolUse s29 "$T/high.jsonl"
+check "and stays off on a 200k window"                    '[ -z "$out" ]'
+config '`45`'
 
 # ---- AC5: the row ----
 config '`10`'
