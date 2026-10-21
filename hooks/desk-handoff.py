@@ -4,8 +4,10 @@
 One script, registered by install.sh on four events; it reads `hook_event_name` from its input.
 
   UserPromptSubmit, PostToolUse  Once the session's input-side context passes config §2 "Handoff at
-                                 context %" (default 45, `0` disables), inject once: finish the
-                                 current step, write the handoff, start no new work.
+                                 context %" (default 45, `0` disables), or on a 1M window §2
+                                 "Handoff at context % on a 1M window" (default 25, or off when the
+                                 first row is `0`; `0` disables), inject once: finish the current
+                                 step, write the handoff, start no new work.
   Stop                           After that has fired, and while no handoff newer than the firing
                                  exists, block the end of the turn once ("write the handoff first").
   SessionStart                   source `clear` or `compact`: inject "read .handoffs/<latest>.md and
@@ -31,6 +33,7 @@ import sys
 import time
 
 DEFAULT_PCT = 45
+DEFAULT_PCT_1M = 25  # recall on a 1M window falls off well before 45% of it
 SMALL_WINDOW = 200_000
 LARGE_WINDOW = 1_000_000
 FRESH_SECONDS = 24 * 3600
@@ -60,19 +63,25 @@ def desk_env(root, *args):
         return 1, ""
 
 
-def threshold(root):
-    """The §2 percentage for this repo; 0 when it is not a desk repo or the row disables it."""
-    rc, out = desk_env(root, "where")
-    if rc != 0 or "EXISTS=yes" not in out:
-        return 0
-    rc, out = desk_env(root, "get", "handoff-pct")
+def row_pct(root, row, default):
+    rc, out = desk_env(root, "get", row)
     if rc != 0:
-        return DEFAULT_PCT
+        return default
     try:
         pct = float(out.strip().rstrip("%"))
     except ValueError:
-        return DEFAULT_PCT
-    return pct if 0 <= pct < 100 else DEFAULT_PCT
+        return default
+    return pct if 0 <= pct < 100 else default
+
+
+def threshold(root):
+    """The §2 percentages for this repo, (200k window, 1M window); 0 for one the rows disable, and
+    (0, 0) when it is not a desk repo. An unset 1M row is 25, or 0 when the 200k row is 0."""
+    rc, out = desk_env(root, "where")
+    if rc != 0 or "EXISTS=yes" not in out:
+        return 0, 0
+    pct = row_pct(root, "handoff-pct", DEFAULT_PCT)
+    return pct, row_pct(root, "handoff-pct-1m", DEFAULT_PCT_1M if pct else 0)
 
 
 def state_path(session):
@@ -199,18 +208,19 @@ def inject(event, text):
 
 
 def session_threshold(state, root):
-    """The threshold, looked up once per session and repo (two node calls), then cached."""
-    if state.get("root") != root or "pct" not in state:
-        state["root"], state["pct"] = root, threshold(root)
-    return state["pct"]
+    """The thresholds, looked up once per session and repo (three node calls), then cached."""
+    if state.get("root") != root or "pct" not in state or "pct_1m" not in state:
+        state["root"] = root
+        state["pct"], state["pct_1m"] = threshold(root)
+    return state["pct"], state["pct_1m"]
 
 
 def on_context(event, data, session, root):
     state = load_state(session)
     if state.get("fired_at"):
         return
-    pct = session_threshold(state, root)
-    if not pct:
+    pct, pct_1m = session_threshold(state, root)
+    if not pct and not pct_1m:
         save_state(session, state)
         return
     used = context_used(data.get("transcript_path") or "")
@@ -218,6 +228,11 @@ def on_context(event, data, session, root):
         save_state(session, state)
         return
     w = window(state, used)
+    if w >= LARGE_WINDOW:
+        pct = pct_1m
+    if not pct:
+        save_state(session, state)
+        return
     now = used * 100.0 / w
     if now < pct:
         save_state(session, state)
@@ -265,9 +280,9 @@ def on_session_start(data, session, root):
         # The context just emptied, so the next threshold crossing is a new one.
         for k in ("fired_at", "blocked", "handoff"):
             state.pop(k, None)
-    pct = session_threshold(state, root)
+    pct, pct_1m = session_threshold(state, root)
     save_state(session, state)
-    if source not in ("clear", "compact") or not pct:
+    if source not in ("clear", "compact") or not (pct or pct_1m):
         return
     files = handoffs(root)
     if not files or time.time() - os.path.getmtime(files[0]) > FRESH_SECONDS:
