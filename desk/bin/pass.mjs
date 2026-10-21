@@ -4,11 +4,11 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, readJsonOrRefuse, Refusal } from './batch-state.mjs';
+import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
@@ -18,6 +18,7 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineCap, takeBorrowLock } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -489,7 +490,6 @@ if (lowMemory) {
     : `memory: ${gateGB.toFixed(1)}G available${reserved}, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
       `(${running.length} running; a worker mid-suite will drain)`);
 }
-const slots = (overBudget || modelsBad || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
 const runningKeys = new Set(running.map((r) => r.key));
 const collidesWithRunning = (r) => (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k));
 
@@ -525,6 +525,32 @@ if (blockedByDone.length) {
   personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
+
+// ---- slots, and borrowing ----------------------------------------------------
+// Up to the batch's own number, as always. With config §3b "Borrow idle workers" on, the machine's
+// free slots are counted, from every repo's queue, and the workers started under one lock every
+// repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
+// machine has room, then above it up to the §3b cap into slots no other live batch has first claim
+// on (borrow.mjs).
+const BORROW = borrowSetting();
+const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
+  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
+let borrowLock = null;
+let others = [];
+let lockWhy = null;
+if (BORROW.on && concurrency > 0 && eligible.length && !held && !lowMemory) {
+  const l = await takeBorrowLock();
+  if (l.ok) {
+    borrowLock = l;
+    process.on('exit', l.release);
+    others = otherBatches({ self: QUEUE_FILE });
+  } else lockWhy = l.why;
+}
+const plan = borrowPlan({
+  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: eligible.length,
+  others, machine: machineCap(), memory: { avail: gateGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
+});
+const slots = plan.slots;
 
 // ---- batch base ------------------------------------------------------------
 // A batch with a base keeps its own worktree for it (every pass makes sure it exists), and the default
@@ -674,15 +700,10 @@ let attempts = 0;
 // and skipped, never a hold.
 const unreadableQueues = new Set();
 function otherQueuePorts() {
-  const dir = join(E.deskHome(), 'repos');
   const ports = new Set();
-  for (const slug of existsSync(dir) ? readdirSync(dir).sort() : []) {
-    const path = join(dir, slug, 'queue.json');
-    if (resolve(path) === resolve(QUEUE_FILE) || !existsSync(path)) continue;
-    try {
-      const other = readJsonOrRefuse(path, 'restore it, or start a new batch there');
-      for (const r of Object.values(other?.tickets ?? {})) if (r?.state === 'running' && Number(r.port) > 0) ports.add(Number(r.port));
-    } catch (e) { unreadableQueues.add(describeCrash(e)); }
+  for (const { q: other, error } of otherQueues({ self: QUEUE_FILE })) {
+    if (error) { unreadableQueues.add(error); continue; }
+    for (const r of Object.values(other.tickets ?? {})) if (r?.state === 'running' && Number(r.port) > 0) ports.add(Number(r.port));
   }
   return ports;
 }
@@ -801,6 +822,9 @@ for (const t of eligible) {
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}`);
   runningKeys.add(t.key);
 }
+// Every worker started under the lock is recorded running in this queue, so other passes count it.
+borrowLock?.release();
+const borrowLine = borrowedLine(plan, { share: concurrency, running: running.length, spawned: report.spawned.length });
 
 // ---- base drift ----------------------------------------------------------
 const drift = [];
@@ -1021,6 +1045,8 @@ else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 lines.push(CONC.line);
+if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);
+if (borrowLine) lines.push(borrowLine);
 lines.push('');
 lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 if (idle) {
