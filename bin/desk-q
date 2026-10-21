@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# desk-q: every autopilot queue on this computer, from one terminal. Reads only.
-# The logic is desk-q.mjs among the desk scripts install.sh puts in ~/.claude/desk/bin.
+# desk-q: every autopilot queue on this computer, from one terminal: see them, move tickets, set
+# workers. The logic is desk-q.mjs among the desk scripts install.sh puts in ~/.claude/desk/bin.
 #   desk-q [--plain] [--all]  ·  desk-q [--plain] <repo>  ·  desk-q [--plain] <repo> show <KEY>
+#   desk-q <repo> up|down|top|bottom <KEY>  ·  desk-q <repo> move <KEY> <n>  ·  desk-q <repo> workers <n>
 exec node "$HOME/.claude/desk/bin/desk-q.mjs" "$@"

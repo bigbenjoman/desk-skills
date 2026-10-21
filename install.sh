@@ -466,7 +466,7 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-runner"
   ok "desk-runner -> ~/.local/bin (desk-runner up: the isolated CI runner VM)"
   wrote "desk-runner ~/.local/bin/desk-runner"
-  # desk-q on PATH: every autopilot queue on this computer, read only.
+  # desk-q on PATH: every autopilot queue on this computer, to see, reorder and set workers.
   install_file "$SRC/bin/desk-q" "$HOME/.local/bin/desk-q"
   chmod +x "$HOME/.local/bin/desk-q"
   ok "desk-q -> ~/.local/bin (desk-q: every repo's autopilot queue)"
