@@ -777,14 +777,8 @@ say it first, with the PRs that went red, and do not lower it to a note. With no
 offer `desk-ci measure` rather than reporting the rate as normal.
 
 **The batch report also carries what each worker cost.** The idle pass prints a `WORKER COST` table:
-each worker's input and output tokens, cost in USD and wall time, summed over every round of it,
-and a total row. Print it again any time with
-
-```bash
-node ~/.claude/desk/bin/worker-cost.mjs      # --json for the rows
-```
-
-Put the table in the report as printed. A worker whose log has no result event reads `unknown`, and
+each worker's input and output tokens, cost in USD and wall time, summed over every round of it in
+this batch, and a total row. Put the table in the report as printed. A worker whose log has no result event reads `unknown`, and
 the total says how many it left out: report those as unknown, never as zero.
 
 ## Why C and D get a second look

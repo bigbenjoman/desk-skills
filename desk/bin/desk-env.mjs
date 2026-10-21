@@ -502,12 +502,12 @@ export function parseWorkerModels(raw) {
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
 
 // Config §3b "Worker location": `local` (also when the row is unset) or `cloud`. Cloud workers do
-// not exist yet, so both run every worker locally; `cloud` is kept as asked so the batch plan can
-// say it is not available. Anything else is refused rather than read as local.
-//   -> { asked: 'local' | 'cloud', runs: 'local' }, or throws DeskConfigError
+// not exist yet, so both run every worker locally, and the batch plan says so at `cloud`. Anything
+// else is refused rather than read as local.
+//   -> 'local' | 'cloud', or throws DeskConfigError
 export function parseWorkerLocation(raw) {
   const v = String(raw ?? '').trim().toLowerCase();
-  if (v === 'local' || v === 'cloud') return { asked: v, runs: 'local' };
+  if (v === 'local' || v === 'cloud') return v;
   throw new DeskConfigError(`desk: config §3b "Worker location" is "${raw}" — want \`local\` or \`cloud\`. Refusing to guess.`);
 }
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));

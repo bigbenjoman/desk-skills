@@ -1,45 +1,54 @@
-#!/usr/bin/env node
 // Each worker's tokens, cost and wall time, from the result events in its stream-json logs: every
-// round's, since a requeued ticket ran more than once. A worker with a run whose log has no result
-// event is unknown, never zero: a killed or still-running worker spent something nobody recorded.
-// The figures are what `claude -p` reports (total_cost_usd is notional on a subscription), and input
-// counts cache reads and writes as well as fresh input.
-//   node worker-cost.mjs [--json]    the queue's workers, as the batch report prints them
-import { readFileSync, readdirSync, realpathSync } from 'node:fs';
+// round's in this batch, since a requeued ticket ran more than once. A worker with a run whose log
+// has no result event is unknown, never zero: a killed or still-running worker spent something
+// nobody recorded. The figures are what `claude -p` reports (total_cost_usd is notional on a
+// subscription), and input counts cache reads and writes as well as fresh input.
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-// One log's result events, summed, or null when it has none.
+// One log (one worker process), or null when it has no result event. A process that is woken again
+// after its turn ends writes a result event per turn: cost and modelUsage in each are running totals
+// for the session, so they come from the last one, and only duration_ms, which is per turn, is
+// summed. Tokens come from modelUsage, which counts subagents' calls as the cost does; `usage` is
+// the fallback for a result event without it.
 export function logUsage(logText) {
-  let found = false;
-  const u = { input: 0, output: 0, cost: 0, ms: 0 };
+  let last = null;
+  let ms = 0;
   for (const line of logText.split('\n')) {
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     if (d?.type !== 'result') continue;
-    found = true;
-    const t = d.usage ?? {};
-    u.input += (Number(t.input_tokens) || 0) + (Number(t.cache_creation_input_tokens) || 0) + (Number(t.cache_read_input_tokens) || 0);
-    u.output += Number(t.output_tokens) || 0;
-    u.cost += Number(d.total_cost_usd) || 0;
-    u.ms += Number(d.duration_ms) || 0;
+    last = d;
+    ms += Number(d.duration_ms) || 0;
   }
-  return found ? u : null;
+  if (!last) return null;
+  const n = (v) => Number(v) || 0;
+  const models = Object.values(last.modelUsage ?? {});
+  const [input, output] = models.length
+    ? [models.reduce((s, m) => s + n(m.inputTokens) + n(m.cacheCreationInputTokens) + n(m.cacheReadInputTokens), 0),
+      models.reduce((s, m) => s + n(m.outputTokens), 0)]
+    : [n(last.usage?.input_tokens) + n(last.usage?.cache_creation_input_tokens) + n(last.usage?.cache_read_input_tokens),
+      n(last.usage?.output_tokens)];
+  return { input, output, cost: n(last.total_cost_usd), ms };
 }
 
-// A ticket's logs: the current `<KEY>.log` and every `<KEY>.log.round<n>` requeue moved aside.
-export function workerLogs(stateDir, key) {
+// A ticket's logs in this batch: the current `<KEY>.log` and every `<KEY>.log.round<n>` requeue moved
+// aside, less any last written before the ticket joined this queue (`added_at`): the logs directory
+// outlives a batch, so an earlier batch's rounds of the same ticket are still there.
+export function workerLogs(stateDir, key, since = null) {
   const dir = join(stateDir, 'logs');
   let names = [];
   try { names = readdirSync(dir); } catch { return []; }
+  const from = since ? Date.parse(since) : NaN;
   return names.filter((n) => n === `${key}.log` || (n.startsWith(`${key}.log.round`) && /^\d+$/.test(n.slice(`${key}.log.round`.length))))
-    .map((n) => join(dir, n));
+    .map((n) => join(dir, n))
+    .filter((f) => { try { return Number.isNaN(from) || statSync(f).mtimeMs >= from; } catch { return false; } });
 }
 
-// -> { key, runs, unknown, usage } for a ticket with a log, or null for one no worker ever ran.
+// -> { key, runs, unknown, usage } for a queue ticket with a log, or null for one no worker ran.
 // `unknown` counts the runs with no result event; any at all leaves `usage` null.
-export function ticketCost(stateDir, key) {
-  const logs = workerLogs(stateDir, key);
+export function ticketCost(stateDir, ticket) {
+  const logs = workerLogs(stateDir, ticket.key, ticket.added_at);
   if (!logs.length) return null;
   const total = { input: 0, output: 0, cost: 0, ms: 0 };
   let unknown = 0;
@@ -49,7 +58,7 @@ export function ticketCost(stateDir, key) {
     if (!u) { unknown += 1; continue; }
     for (const k of Object.keys(total)) total[k] += u[k];
   }
-  return { key, runs: logs.length, unknown, usage: unknown ? null : total };
+  return { key: ticket.key, runs: logs.length, unknown, usage: unknown ? null : total };
 }
 
 const tokens = (n) => n.toLocaleString('en-US');
@@ -74,7 +83,7 @@ export function costTable(rows) {
   const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'wall time'];
   const width = head.map((h, i) => Math.max(h.length, ...table.map((row) => row[i].length)));
   const line = (row) => `  ${row.map((c, i) => (i < 2 ? c.padEnd(width[i]) : c.padStart(width[i]))).join('  ')}`.trimEnd();
-  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it`, line(head)];
+  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it, wall time is the time inside the worker's turns`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
     out.push(`${line(row)}${r && !r.usage ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
@@ -84,18 +93,5 @@ export function costTable(rows) {
   return out.join('\n');
 }
 
-// Every ticket in the queue that a worker ran, in queue order.
-export const batchCost = (stateDir, keys) => keys.map((k) => ticketCost(stateDir, k)).filter(Boolean);
-
-const isMain = (() => {
-  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
-  catch { return false; }
-})();
-
-if (isMain) {
-  const { stateDir, queueFile } = await import('./desk-env.mjs');
-  const q = JSON.parse(readFileSync(queueFile(), 'utf8'));
-  const rows = batchCost(stateDir(), Object.keys(q.tickets ?? {}));
-  if (process.argv.includes('--json')) console.log(JSON.stringify(rows));
-  else console.log(rows.length ? costTable(rows) : 'WORKER COST — no worker has run in this batch');
-}
+// Every queue ticket a worker ran in this batch, in queue order.
+export const batchCost = (stateDir, tickets) => tickets.map((t) => ticketCost(stateDir, t)).filter(Boolean);

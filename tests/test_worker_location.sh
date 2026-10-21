@@ -58,7 +58,7 @@ plan(){ node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(node "$B/plan-batc
 config; plan
 check "AC1 with no Worker location row, the plan says workers run locally"  '[ "$rc" = 0 ] && echo "$out" | grep -qx "workers: local"'
 check "AC1 and does not mention cloud"                                       '! echo "$out" | grep -qi cloud'
-check "AC1 desk-env reads the unset row as local"                           '[ "$(node --input-type=module -e "import { workerLocation } from \"$B/desk-env.mjs\"; const l = workerLocation(); console.log(l.asked, l.runs)")" = "local local" ]'
+check "AC1 desk-env reads the unset row as local"                           '[ "$(node --input-type=module -e "import { workerLocation } from \"$B/desk-env.mjs\"; console.log(workerLocation())")" = local ]'
 
 config cloud; plan
 check "AC2 at cloud, the plan says cloud is not available yet"              '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: local — config §3b \"Worker location\" is cloud, but cloud workers are not available yet, so every worker runs locally$"'

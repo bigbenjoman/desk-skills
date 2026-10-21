@@ -1027,7 +1027,7 @@ if (idle) {
   lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
   const sc = batchScopeTotals(Object.values(qEnd.tickets));
   lines.push(`scope: ${sc.tickets} of ${sc.checked} checked ticket(s) changed files outside their triaged scope, ${sc.files} file(s) in all (report only)`);
-  const cost = batchCost(STATE, Object.keys(qEnd.tickets));
+  const cost = batchCost(STATE, Object.values(qEnd.tickets));
   if (cost.length) lines.push(costTable(cost));
 }
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.

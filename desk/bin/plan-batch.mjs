@@ -344,7 +344,7 @@ let location;
 try { location = workerLocation(); } catch (e) { refuse(e.message); }
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
-say(location.asked === 'cloud'
+say(location === 'cloud'
   ? 'workers: local — config §3b "Worker location" is cloud, but cloud workers are not available yet, so every worker runs locally'
   : 'workers: local');
 if (notOurs.length) {
