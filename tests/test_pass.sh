@@ -215,7 +215,7 @@ out=$(DESK_QUEUE_LOCK_WAIT_MS=200 node "$B/pass.mjs" 2>&1)
 check "AC12 a refused queue write names the ticket and the change" 'echo "$out" | grep -q "T-17: queue write refused, not recorded — set stage=3/9 — .*pid $holder" && [ "$(field T-17 stage)" = "\"2/9\"" ]'
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 
-# DS-115: a worker count the user set is theirs. A fresh queue and state under a §3b default of 3, cap 6.
+# A worker count the user set is theirs. A fresh queue and state under a §3b default of 3, cap 6.
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `3 / 6` |\n'; } > "$T/config2.md"
 export DESK_CONFIG="$T/config2.md" DESK_QUEUE="$T/queue2.json" DESK_AUTOPILOT_STATE="$T/state2"; mkdir -p "$T/state2/logs"
 bfield(){ node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]] ?? null))' "$DESK_QUEUE" "$1"; }
@@ -235,7 +235,7 @@ q add P-1; q set P-1 state=triaged lane=A branch=fix/P-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-115 AC7 concurrency 0 pauses spawns and says so, not IDLE" '[ "$(field P-1 state)" = "\"triaged\"" ] && ! echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "paused: new spawns are paused by the batch.s worker count (concurrency 0); 1 triaged ticket(s) wait"'
 
-# DS-115 AC3–AC6: the ladder rows in desk-autopilot keep a count the user set.
+# AC3–AC6: the ladder rows in desk-autopilot keep a count the user set.
 SK="$SRC/skills/desk-autopilot/SKILL.md"
 row=$(grep -E '^\| > 8 GiB \|' "$SK")
 check "DS-115 AC3 the > 8 GiB row keeps a count the user set" 'echo "$row" | grep -q "a count the user set (\`concurrency_by\` is \`user\`): keep that number"'

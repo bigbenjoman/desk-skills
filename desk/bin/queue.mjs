@@ -529,7 +529,7 @@ switch (cmd) {
     if (!rows.length) { console.log('queue is empty'); break; }
     const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
     rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
-    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.concurrency_by === 'user' ? ` (user's ${q.concurrency_user ?? q.concurrency})` : ''}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
+    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
     for (const t of rows) {
       const stuck = isHeld(t) && !waitingOnMerge(q, t);
       const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();

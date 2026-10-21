@@ -927,7 +927,9 @@ shows `runner=<n>G reserved (<r>G resident, <h>G held back) ladder=<x>G`; read t
 line carries neither.
 
 Lowering is silent but **reported**: say which number caused it. Raising back needs the same
-evidence.
+evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the
+guest figure can take the whole VM down and kill every agent mid-flight.
+An OOM leaves a worker's worktree, database and port behind.
 
 **A worker count the user set is theirs.** When the user names a count (or 0 to pause new spawns),
 record it as theirs with `set-batch concurrency=<n> concurrency_by=user`; the queue keeps their
@@ -935,9 +937,7 @@ number as `concurrency_user`, and the pass report's `workers:` line says whose t
 memory is above the gate it wins over the §3b default: never pull it back to the default. Memory
 still lowers it: lower with `set-batch concurrency=<n>` alone and leave `concurrency_by` as it is.
 When raising back, return to the user's number (`concurrency_user`, which the `workers:` line
-names), not to the §3b default. `set-batch concurrency_by=null` hands the count back to the ladder. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the
-guest figure can take the whole VM down and kill every agent mid-flight.
-An OOM leaves a worker's worktree, database and port behind.
+names), not to the §3b default. `set-batch concurrency_by=null` hands the count back to the ladder.
 
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the pass report (90s, change-only, carrying `vmmem=` and `avail=`), and a sustained-high watch
