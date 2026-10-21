@@ -18,6 +18,7 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, machineCap, takeBorrowLock } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -489,7 +490,6 @@ if (lowMemory) {
     : `memory: ${gateGB.toFixed(1)}G available${reserved}, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
       `(${running.length} running; a worker mid-suite will drain)`);
 }
-const slots = (overBudget || modelsBad || lowMemory || !maySpawn) ? 0 : concurrency - running.length;
 const runningKeys = new Set(running.map((r) => r.key));
 const collidesWithRunning = (r) => (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k));
 
@@ -525,6 +525,31 @@ if (blockedByDone.length) {
   personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
     `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
 }
+
+// ---- slots, and borrowing ----------------------------------------------------
+// Up to the batch's own number, as always. With config §3b "Borrow idle workers" on, also into machine
+// slots other live batches are not using, up to the §3b cap (borrow.mjs). The free slots are counted
+// again, and the workers started, under one lock every repo's pass shares, so two passes cannot both
+// take the last slot; the lock is taken only when there is something to borrow.
+const BORROW = borrowSetting();
+const borrowArgs = () => ({
+  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: eligible.length,
+  machine: machineCap(), memory: { avail: gateGB, start: MIN_AVAIL_GB },
+  held: overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
+    : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null,
+});
+let plan = borrowPlan({ ...borrowArgs(), others: BORROW.on ? otherBatches({ self: QUEUE_FILE }) : [] });
+let borrowLock = null;
+if (plan.borrow > 0) {
+  const waitS = Number(process.env.AUTOPILOT_BORROW_LOCK_WAIT_S);
+  const l = await takeBorrowLock(Number.isFinite(waitS) && waitS >= 0 ? { waitMs: waitS * 1000 } : {});
+  if (l.ok) {
+    borrowLock = l;
+    process.on('exit', l.release);
+    plan = borrowPlan({ ...borrowArgs(), others: otherBatches({ self: QUEUE_FILE }) });
+  } else plan = borrowPlan({ ...borrowArgs(), others: [], lock: l.why });
+}
+const slots = plan.slots;
 
 // ---- batch base ------------------------------------------------------------
 // A batch with a base keeps its own worktree for it (every pass makes sure it exists), and the default
@@ -801,6 +826,9 @@ for (const t of eligible) {
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}`);
   runningKeys.add(t.key);
 }
+// Every worker started under the lock is recorded running in this queue, so other passes count it.
+borrowLock?.release();
+const borrowLine = borrowedLine(plan, { share: concurrency, running: running.length, spawned: report.spawned.length });
 
 // ---- base drift ----------------------------------------------------------
 const drift = [];
@@ -1021,6 +1049,8 @@ else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 lines.push(CONC.line);
+if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);
+if (borrowLine) lines.push(borrowLine);
 lines.push('');
 lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 if (idle) {

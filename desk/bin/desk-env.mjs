@@ -279,6 +279,7 @@ export const CONFIG_ROWS = Object.freeze({
   'batch-budget': { section: '3b', row: 'Autopilot batch budget (USD)' },
   'worker-models': { section: '3b', row: 'Worker models' },
   'worker-location': { section: '3b', row: 'Worker location' },
+  'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
 });
 
 export class DeskConfigError extends Error {}

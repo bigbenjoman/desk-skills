@@ -50,7 +50,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, and where workers run (always locally for now) |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), and whether a batch may borrow idle machine slots |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -984,6 +984,20 @@ memory is above the gate it wins over the §3b default: never pull it back to th
 still lowers it: lower with `set-batch concurrency=<n>` alone and leave `concurrency_by` as it is.
 When raising back, return to the user's number (`concurrency_user`, which the `workers:` line
 names), not to the §3b default. `set-batch concurrency_by=null` hands the count back to the ladder.
+
+**Borrowing idle workers is config §3b "Borrow idle workers"**, `off` unless it is `on`. At `on`,
+a pass may start workers above the batch's own number, up to the §3b cap, into machine slots that
+other live batches are not using. The machine total comes from the machine profile's
+`autopilot-concurrency` cap. The pass takes the running workers in every queue from it, then
+whatever each other live batch below its own number has ready tickets for (that batch has first
+claim on the slots). It reads every queue and writes only its own. Counting and starting happen
+under one lock shared by every repo, so two passes cannot take the same slot. Running work is never
+stopped: when the lender has ready tickets again, the borrower starts nothing new and its extra
+workers finish. The memory gate still stops everything. A `borrowing:` line under `workers:` says
+how many were borrowed, or why none were: a first claim, a full machine, the cap, the gate, or
+another repo's queue that cannot be read (that last one still lets the batch start up to its own
+number). Borrowed workers are not a reason to lower the count: the ladder leaves the batch's own
+number as it is.
 
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
