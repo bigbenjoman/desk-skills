@@ -189,11 +189,16 @@ check "AC9 the repo desk config.md is readable"            '[ "$(readable "$CFG"
 check "AC10 the Jira token beside it is not"               '[ "$(readable "$CREDS/atlassian-token")" = refused ] && no "cat $CREDS/atlassian-token" "cat $CREDS/*" "rg . $CREDS" "head ~/.config/desk/repos/acme__widgets/atlassian-t*" "cat \$HOME/.config/desk/repos/acme__widgets/x"'
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
 check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
-check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test"'
-check "AC12 no migrate or seed without a ticket database"  'no "./node_modules/.bin/prisma migrate reset --force" "./node_modules/.bin/prisma db push" "node_modules/.bin/drizzle-kit push" "./node_modules/.bin/knex seed:run"'
+check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test" \
+      "./node_modules/.bin/./vitest run" "node_modules/.bin//tsc" "node $W/node_modules/vitest/vitest.mjs run" "node $W/node_modules/.bin/vitest"'
+check "AC12 no migrate or seed through node_modules"       'no "./node_modules/.bin/prisma migrate reset --force" "./node_modules/.bin/prisma db push" "node_modules/.bin/drizzle-kit push" \
+      "./node_modules/.bin/./prisma migrate reset" "node $W/node_modules/prisma/build/index.js migrate reset --force"'
+check "tsx scripts still run from the worktree"            'ok "node $W/node_modules/tsx/dist/cli.mjs scratch.ts" && no "node $W/node_modules/tsx/../vitest/vitest.mjs"'
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
+triage
+check "AC10 triage: the token is not readable either"      '[ $rc -eq 0 ] && no "cat $CREDS/atlassian-token" "cat \${HOME}/.config/desk/repos/acme__widgets/x" && [ "$(readable "$CREDS/atlassian-token")" = refused ]'
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
-check "AC6 jira-transition yes: both allowed"              'ok "desk-jira transitions DS-1" "desk-jira transition DS-1 Done"'
+check "AC6 jira-transition yes: both allowed"             'ok "desk-jira transitions DS-1" "desk-jira transition DS-1 Done"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

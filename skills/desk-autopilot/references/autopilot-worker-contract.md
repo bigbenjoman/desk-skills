@@ -485,7 +485,9 @@ Your settings are an **allow-list**: anything not named here is refused.
   `git push origin HEAD` and any other ref are refused. `git config`, `git -c …`, `git -C` with
   any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
   takes the read subcommands only. `git rm` and `git mv` are allowed for tracked files in your
-  worktree. An installed package binary runs as `./node_modules/.bin/<tool>`, never with `..`.
+  worktree. A lint or format tool (eslint, prettier, biome, oxlint, stylelint, tsx, `prisma generate`)
+  runs as `./node_modules/.bin/<tool>`, never with `..`; suites, typechecks and migrations run only
+  as their §4 rows.
 - **`gh`**: reads (`pr view`, `pr list`, `pr checks`, `pr diff`, `run view`, `run list`,
   `issue view`, `repo view`), and only where §3 grants them `gh pr create --draft …` (it must begin
   exactly `gh pr create --draft` or `gh pr create --repo <§0 GitHub repo> --draft`), `pr edit`,

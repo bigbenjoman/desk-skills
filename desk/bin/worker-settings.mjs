@@ -207,6 +207,11 @@ const READ_DENY = [
   ...bash('rg', ' *--pre*'),
   ...bash('find', ' *-exec*', ' *-execdir*', ' *-ok *', ' *-okdir*', ' *-delete*', ' *-fprint*', ' *-fls*'),
 ];
+// This repo's credentials directory (the Jira token): the token is denied to the Read tool by name,
+// and every read command is denied an argument naming the directory, absolute or from $HOME.
+const CREDS = E.credsDir();
+const credForms = !CREDS ? [] : [CREDS, ...(tilde(CREDS) ? [tilde(CREDS), ...['$HOME', '${HOME}', '"$HOME"'].map((h) => `${h}${CREDS.slice(E.HOME.length)}`)] : [])];
+const CREDS_DENY = !CREDS ? [] : [`Read(${abs(CREDS)}/*token*)`, ...READS.flatMap((b) => bash(b, ...credForms.map((c) => ` *${c}*`)))];
 
 // git subcommands that read, or write only inside this worktree. Anything else, including an alias,
 // matches no allow rule and is refused. `branch` is a writer with listing modes: `--show-current` and
@@ -258,7 +263,7 @@ if (mode === 'triage') {
     `Edit(${abs(STATE)}/triage/${T}.json)`, `Edit(${abs(STATE)}/triage/${T}.challenge.json)`,
   );
   deny.push(
-    ...READ_DENY,
+    ...READ_DENY, ...CREDS_DENY,
     ...bash('git', ...GIT_DENY, ...GIT_LOCAL, ' rebase', ' push', ' worktree'),
     ...bash('gh', ...GH_DENY, ' pr create', ' pr edit', ' pr comment', ' pr review', ' issue comment', ' run rerun'),
     ...bash('desk-jira', ' edit', ' comment', ' create', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
@@ -273,15 +278,11 @@ if (mode === 'triage') {
   // `..` path) matches no allow rule, since each needs this worktree's path then a space; other
   // worktrees are denied by name below as well.
   const GIT_DENY_WT = [...GIT_DENY.filter((s) => s !== ' -C*').flatMap((s) => [s, `${OWN_C}${s}`]), `${OWN_C} push`];
-  // An installed package binary, run from the worktree by relative or absolute path. Like the test
-  // command, this runs the worktree's own code; a `..` anywhere is denied so it cannot leave it.
+  // An installed package binary, run from the worktree by relative or absolute path: named tools that
+  // take no lock and write no database, never a wildcard, which would let a suite, a typecheck or a
+  // migration skip with-lock.sh or the per-ticket database by any spelling of its path. A `..` is denied.
   const NODE_BIN = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`].flatMap(withPrefix);
-  // Except what would dodge a gate that way: a suite or typecheck runs only through with-lock.sh,
-  // and without a per-ticket database nothing migrates or seeds.
-  const NODE_BIN_LOCKED = ['vitest', 'jest', 'tsc', 'vue-tsc', 'playwright', 'cypress', 'mocha'];
-  const NODE_BIN_DB = HAS_TICKET_DB ? [] : ['prisma migrate', 'prisma db', 'drizzle-kit push', 'drizzle-kit migrate', 'knex', 'sequelize',
-    'typeorm', 'node-pg-migrate', 'db-migrate'];
-  const NODE_BIN_DENY = NODE_BIN.flatMap((c) => [...NODE_BIN_LOCKED, ...NODE_BIN_DB].flatMap((t) => [`Bash(${c}${t})`, `Bash(${c}${t} *)`]));
+  const NODE_BIN_TOOLS = ['eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
 
   // ---- files ---------------------------------------------------------------------------------
   // The worktree, and in the state dir only this ticket's park file and screenshots. Not answers/
@@ -316,10 +317,10 @@ if (mode === 'triage') {
     ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
     // `render` opens Chromium on the saved boards, so only under the browser lock.
     ...BIN_FORMS.flatMap((b) => BIN_FORMS.map((d) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs render:*)`)),
-    // A script from the worktree's installed packages (the contract's `node <wt>/node_modules/tsx/…`).
-    // This runs code, like the test command does; `..` is denied so it cannot leave node_modules.
-    ...withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${c}:*)`),
-    ...NODE_BIN.map((c) => `Bash(${c}*)`),
+    // A script run by the worktree's installed tsx (the contract's `node <wt>/node_modules/tsx/…`).
+    // This runs code, like the test command does; `..` is denied so it cannot leave tsx's directory.
+    ...withPrefix(`node ${WT}/node_modules/tsx/`).map((c) => `Bash(${c}*)`),
+    ...NODE_BIN.flatMap((c) => NODE_BIN_TOOLS.map((t) => rule(`${c}${t}`, ''))),
     // desk-review's verdict lines, computed from the run's results file rather than written by hand.
     ...[VERDICT, ...(tilde(VERDICT) ? [tilde(VERDICT)] : [])].map((p) => `Bash(node ${p}:*)`),
   );
@@ -327,7 +328,7 @@ if (mode === 'triage') {
     ...READ_DENY,
     ...bash('git', ...GIT_DENY_WT),
     ...bash('gh', ...GH_DENY),
-    'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), ...NODE_BIN_DENY, 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
+    'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The one desk-env subcommand that writes: the machine profile is the user's to confirm.
     'Bash(desk-env machine write:*)', `Bash(${E.HOME}/.local/bin/desk-env machine write:*)`, 'Bash(~/.local/bin/desk-env machine write:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs machine write:*)`, `Bash(node ${b}/desk-env.mjs machine write:*)`]),
@@ -475,16 +476,11 @@ if (mode === 'triage') {
     if (other && other !== WT) deny.push(`Edit(${abs(other)}/**)`, `Edit(${abs(other)}/**)`, ...bash('git', ` -C ${other} *`, ` -C ${other}/*`));
   }
 
-  // This repo's desk config.md, by itself and only through the Read tool: the credentials beside it
-  // (the Jira token) stay unreadable, because the directory is never granted, the token is denied by
-  // name to Read, and every read command naming the directory in any spelling is denied.
+  // This repo's desk config.md, by itself and only through the Read tool. The credentials beside it
+  // stay unreadable: the directory is never granted, and CREDS_DENY covers the spellings it lists.
   const configPath = E.configPathOrNull();
   if (configPath && existsSync(configPath)) allow.push(`Read(${abs(configPath)})`);
-  const creds = E.credsDir();
-  if (creds) {
-    const credForms = [creds, ...(tilde(creds) ? [tilde(creds), `$HOME${creds.slice(E.HOME.length)}`] : [])];
-    deny.push(`Read(${abs(creds)}/*token*)`, ...READS.flatMap((b) => bash(b, ...credForms.map((c) => ` *${c}*`))));
-  }
+  deny.push(...CREDS_DENY);
   // The user's subagent definitions, which workers list and read when a skill names an agent.
   const agents = join(E.HOME, '.claude', 'agents');
   if (existsSync(agents)) dirs.add(agents);
