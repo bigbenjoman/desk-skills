@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
+import { SIZES } from './desk-q-eta.mjs';
 
 const key = process.argv[2];
 const kind = ticketKind(key);
@@ -29,7 +30,6 @@ const rec = JSON.parse(readFileSync(path, 'utf8'));
 for (const f of ['blockers', 'other_links', 'size', 'facts_error', 'links', 'lint', 'lint_error']) delete rec[f];
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
 
-const SIZES = ['XS', 'S', 'M', 'L', 'XL'];
 const asSize = (v) => {
   const s = String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim().toUpperCase();
   return SIZES.includes(s) ? s : null;

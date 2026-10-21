@@ -115,13 +115,17 @@ check "requeue resets the ticket"                       '[ "$(field T-4 state)" 
 check "requeue fronts the ticket"                       '[ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets)[0])" "$DESK_QUEUE")" = T-4 ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "the requeued ticket spawns without AUTOPILOT_RERUN" '[ "$(field T-4 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning"'
+check "a spawn with no stamped earlier round records spawned_at as now" '[ "$(field T-4 spawned_at | cut -c2-5)" = "$(date -u +%Y)" ]'
 
 # T-5: a stale park record from an earlier round, on a ticket set back to triaged by hand.
 q set T-4 state=done
 q add T-5; q set T-5 state=triaged branch=fix/T-5
 echo '{"question": "stale"}' > "$T/state/parks/T-5.json"
+# A round from before spawned_at was recorded: its log's first stamp is the ticket's first spawn.
+echo '{"type":"user","timestamp":"2026-01-02T03:04:05.000Z"}' > "$T/state/logs/T-5.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "a spawn clears the park record first"            '[ "$(field T-5 state)" = "\"running\"" ] && [ ! -e "$T/state/parks/T-5.json" ] && [ -e "$T/state/parks/T-5.json.round1" ]'
+check "spawned_at keeps the earliest round'\''s start, not this spawn" '[ "$(field T-5 spawned_at)" = "\"2026-01-02T03:04:05.000Z\"" ]'
 
 # Requeue refuses what must not get another headless worker.
 out=$(node "$B/queue.mjs" requeue T-5 2>&1)

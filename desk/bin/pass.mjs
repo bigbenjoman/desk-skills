@@ -18,6 +18,7 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
+import { firstSpawnFromLogs } from './desk-q-eta.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineCap, takeBorrowLock } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -810,6 +811,11 @@ for (const t of eligible) {
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null');
+  // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
+  // round's log was moved aside above, and the history measures from it.
+  const now = new Date().toISOString();
+  const earlier = t.spawned_at ? null : firstSpawnFromLogs(STATE, t.key);
+  const spawnedAt = earlier && Date.parse(earlier) < Date.parse(now) ? earlier : now;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -819,6 +825,8 @@ for (const t of eligible) {
     report.failed.push(`${t.key}: spawn refused — ${spawned.out.split('\n').slice(-3).join(' ')}`);
     continue;
   }
+  // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
+  if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}`);
   runningKeys.add(t.key);
 }
