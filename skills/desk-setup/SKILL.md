@@ -613,8 +613,9 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
    recorded (printed `RETIRED`, backed up first; today the unpinned `gh pr merge` allows and the
    `desk-jira create *assignee*` ask), and `baseline --check` lists them as `retired`. A retired rule
    the user added themselves is printed `retired … yours` with what it still does, and left alone:
-   pass that on. A rule whose owner row changed is printed `REOWNED` (the `desk-jira create
-   *--route*` ask, from `jira-assign-self` to `jira-create`).
+   pass that on. Retiring the assignee ask writes the `desk-jira create *--route*` ask in its place
+   where it is missing (printed `REPLACED`), so routing keeps prompting; where it was there already,
+   its owner moves from `jira-assign-self` to `jira-create` (printed `REOWNED`).
 2. **Build the allow plan** (JSON; shape in the script's header), replacing `<merge>` with this
    repo's §4 Merge method flag:
    - an `add` entry for each rule whose **every** owner row is `yes`, `rows` = all its owners.

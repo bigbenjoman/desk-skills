@@ -213,6 +213,13 @@ check "AC3: retire drops the assignee ask setup recorded, from the file and the 
 check "retire moves the --route ask from jira-assign-self to jira-create" '[[ "$out" == *"REOWNED  ask   $RTE  (jira-assign-self -> jira-create)"* ]] && jq -e --arg r "$RTE" ".rules[] | select(.rule == \$r and .rows == [\"jira-create\"])" "$T/asg.json" >/dev/null'
 run --ledger "$T/asg.json" --settings "$T/asg/.claude/settings.local.json" remove jira-assign-self
 check "revoking jira-assign-self then leaves the --route ask in place" '[ $rc -eq 0 ] && grep -qF -- "*--route*" "$T/asg/.claude/settings.local.json"'
+mkrepo asc; printf '.claude/settings.local.json\n' > "$T/asc/.gitignore"
+jq -n --arg a "$ASG" '{permissions:{allow:["Bash(desk-jira create *)"],ask:[$a]}}' > "$T/asc/.claude/settings.local.json"
+jq -n --arg a "$ASG" '{rules:[{list:"allow",rule:"Bash(desk-jira create *)",rows:["jira-create"],added:"2026-01-01"},{list:"ask",rule:$a,rows:["jira-create"],added:"2026-01-01"}]}' > "$T/asc.json"
+run --ledger "$T/asc.json" --settings "$T/asc/.claude/settings.local.json" retire
+check "retiring the assignee ask where no --route ask was written puts one in its place" '[ $rc -eq 0 ] && [[ "$out" == *"REPLACED ask   $RTE  (in place of $ASG; jira-create)"* ]] && jq -e --arg r "$RTE" ".permissions.ask | index(\$r)" "$T/asc/.claude/settings.local.json" >/dev/null && jq -e --arg r "$RTE" ".rules[] | select(.rule == \$r and .rows == [\"jira-create\"])" "$T/asc.json" >/dev/null && ! grep -qF "*assignee*" "$T/asc/.claude/settings.local.json"'
+run --ledger "$T/asc.json" --settings "$T/asc/.claude/settings.local.json" retire
+check "  … and a second retire changes nothing" '[ $rc -eq 0 ] && [[ "$out" == "nothing to change" ]]'
 mkrepo asu; printf '.claude/settings.local.json\n' > "$T/asu/.gitignore"
 jq -n --arg a "$ASG" '{permissions:{ask:[$a]}}' > "$T/asu/.claude/settings.local.json"
 printf '{"rules":[]}\n' > "$T/asu.json"

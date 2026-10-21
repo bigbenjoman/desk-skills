@@ -714,7 +714,7 @@ for ledger in "$CONFIG_ROOT"/repos/*/harness-rules.json; do
     continue
   fi
   rc=0; out="$(python3 "$HARNESS" --settings "$root/.claude/settings.local.json" --ledger "$ledger" retire 2>&1)" || rc=$?
-  lines="$(printf '%s\n' "$out" | grep -E '^(RETIRED|retired|REOWNED|backup|synced|differs|FAILED) ' || true)"
+  lines="$(printf '%s\n' "$out" | grep -E '^(RETIRED|retired|REPLACED|REOWNED|backup|synced|differs|FAILED) ' || true)"
   if [ "$rc" -ne 0 ]; then
     warn "$slug: could not finish retiring its retired rules"; show_err "$out"
   elif [ -n "$lines" ]; then

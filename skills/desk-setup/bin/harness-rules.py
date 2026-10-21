@@ -376,27 +376,31 @@ def apply_plan(st, plan):
 
 
 # Rules an earlier version of setup wrote and no row writes any more: (list, rule, why it went,
-# what a copy the user added themselves still does). `add`, `baseline` and `retire` drop them when
-# setup recorded them (a copy the user added themselves is reported, never touched), so re-running
-# setup or install.sh migrates an existing install.
+# what a copy the user added themselves still does, the rule that replaces it or None). `add`,
+# `baseline` and `retire` drop them when setup recorded them (a copy the user added themselves is
+# reported, never touched), so re-running setup or install.sh migrates an existing install. A
+# replacement is written in the same list with the dropped record's owners, unless it is there.
 UNPINNED = ("no row grants it any more", "it still lets an unpinned merge run unprompted, so remove "
-            "it by hand to enforce the pin")
+            "it by hand to enforce the pin", None)
+ROUTE_ASK = "Bash(desk-jira create *--route*)"
 RETIRED = [
     # Merges are pinned with --match-head-commit; these let an unpinned merge run unprompted.
     ("allow", rule, *UNPINNED)
     for m in ("--squash", "--merge", "--rebase")
     for rule in (f"Bash(gh pr merge * {m})", f"Bash(gh pr merge * --auto {m})", f"Bash(gh pr merge * {m} --auto)")
 ] + [
-    # desk-jira create assigns only the user; another assignee needs --route, which still prompts.
+    # desk-jira create assigns only the user; another assignee needs --route, which keeps prompting.
+    # Where jira-assign-self was not granted, no --route ask was ever written, so it replaces this.
     ("ask", "Bash(desk-jira create *assignee*)",
      "desk-jira create assigns only you; routing to someone else needs --route, which still prompts",
-     "it still prompts on every desk-jira create that names an assignee; remove it by hand to stop that"),
+     "it still prompts on every desk-jira create that names an assignee; remove it by hand to stop that",
+     ROUTE_ASK),
 ]
 
 # Rules whose owner row changed: (list, rule, old owner, new owner). The --route ask belonged to
 # jira-assign-self, so revoking that row would have dropped it while jira-create still allows
 # `desk-jira create *`, letting routing run unprompted.
-REOWNED = [("ask", "Bash(desk-jira create *--route*)", "jira-assign-self", "jira-create")]
+REOWNED = [("ask", ROUTE_ASK, "jira-assign-self", "jira-create")]
 
 # Tools an orchestrator or interactive desk session relies on, written whenever `add` writes a plan
 # to a repo: Monitor (waiting on a batch), the Chrome extension's tools, the Artifact tools Claude
@@ -425,7 +429,7 @@ def orchestrator_entries(settings_path):
 
 def retire(st):
     """Drop retired rules setup recorded; report a copy the user added themselves."""
-    for lst, rule, why, yours in RETIRED:
+    for lst, rule, why, yours, repl in RETIRED:
         cur = st.perm_list(lst, create=False) or []
         rec, g = st.recorded(lst, rule), st.unguarded(lst, rule)
         if rec:
@@ -433,6 +437,11 @@ def retire(st):
                 cur.remove(rule)
             st.ledger["rules"].remove(rec)
             st.log.append(f"RETIRED  {lst:5} {rule}  ({why})")
+            if repl and repl not in cur and not st.recorded(lst, repl):
+                st.perm_list(lst, create=True).append(repl)
+                st.ledger["rules"].append({"list": lst, "rule": repl, "rows": rec["rows"],
+                                           "added": datetime.date.today().isoformat()})
+                st.log.append(f"REPLACED {lst:5} {repl}  (in place of {rule}; {', '.join(rec['rows'])})")
         elif rule in cur:
             st.log.append(f"retired  {lst:5} {rule}  (yours, left alone: {yours})")
         if g:  # a guard setup removed: forget it, so revoking its row never puts it back
