@@ -13,7 +13,8 @@
 # --cwd runs the command in that directory, relative to the root of the git worktree the caller is in:
 # the form a §4 command item with a directory (`apps/api: uv run pytest`) takes, because `cd dir && …`
 # is a compound command that neither the lock nor the worker allow-list can see into. The directory
-# must be a plain relative path inside the worktree (no leading /, no ..).
+# must be inside the worktree: a relative path, or an absolute one under the worktree root, never
+# with `..`. The `--` after it is optional.
 # The locks are box-wide on purpose, shared by every repo desk runs in: memory is per machine, not per repo.
 #
 # Uses flock(1) where it exists (Linux). Where it does not (stock macOS) it falls back to an atomic
@@ -29,14 +30,17 @@ if [ "${1:-}" = "--timeout" ]; then
   timeout="$2"; shift 2
 fi
 if [ "${1:-}" = "--cwd" ]; then
-  [ "$#" -ge 3 ] && [ "$3" = "--" ] || { echo "with-lock.sh: usage: with-lock.sh <lock> --cwd <dir> -- <command...>" >&2; exit 2; }
-  rel="$2"; shift 3
+  [ "$#" -ge 3 ] || { echo "with-lock.sh: usage: with-lock.sh <lock> --cwd <dir> [--] <command...>" >&2; exit 2; }
+  rel="$2"; shift 2
+  [ "$1" = "--" ] && shift   # the separator is optional here too
   case "/$rel/" in
-    //*|*/../*) echo "with-lock.sh: --cwd '$rel' must be a relative path inside the worktree, without .." >&2; exit 2 ;;
+    */../*) echo "with-lock.sh: --cwd '$rel' must be a path inside the worktree, without .." >&2; exit 2 ;;
   esac
-  case "$rel" in /*|'') echo "with-lock.sh: --cwd '$rel' must be a relative path inside the worktree" >&2; exit 2 ;; esac
+  [ -n "$rel" ] || { echo "with-lock.sh: --cwd needs a directory" >&2; exit 2; }
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "with-lock.sh: --cwd needs to run inside a git worktree" >&2; exit 2; }
-  target="$(cd "$top/$rel" 2>/dev/null && pwd -P)" || { echo "with-lock.sh: --cwd $rel does not exist under $top" >&2; exit 2; }
+  # An absolute --cwd is accepted only inside this worktree, which the check below enforces.
+  case "$rel" in /*) from="$rel" ;; *) from="$top/$rel" ;; esac
+  target="$(cd "$from" 2>/dev/null && pwd -P)" || { echo "with-lock.sh: --cwd $rel does not exist under $top" >&2; exit 2; }
   real_top="$(cd "$top" && pwd -P)"
   case "$target/" in "$real_top"/*) ;; *) echo "with-lock.sh: --cwd $rel resolves outside the worktree ($target)" >&2; exit 2 ;; esac
   cd "$target" || exit 2
