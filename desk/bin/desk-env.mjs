@@ -654,8 +654,9 @@ export function proposePort(cap, claims, { from = 3000, step = 100 } = {}) {
 // §3b "Spawn gate (available memory)", e.g. `start work > 8 GiB · hold 4–8 · drop to 1 below 4`:
 // start = spawn only above this, hold = below it run at most one worker, dropTo = that one.
 // Unset reads as the template's recommended values. AUTOPILOT_MIN_AVAIL_GB overrides start (0 = off).
-export function spawnGate() {
-  const v = configValue('spawn-gate') ?? '';
+// `row` is this repo's by default; desk-q passes another repo's (repoConfigValue).
+export function spawnGate(row = configValue('spawn-gate')) {
+  const v = row ?? '';
   const num = (re) => { const m = re.exec(v); return m ? Number(m[1]) : null; };
   const start = num(/start[^0-9]*(\d+(?:\.\d+)?)/i) ?? num(/(\d+(?:\.\d+)?)/) ?? 8;
   const hold = num(/below\s*(\d+(?:\.\d+)?)/i) ?? num(/hold\s*(\d+(?:\.\d+)?)/i) ?? Math.min(4, start);

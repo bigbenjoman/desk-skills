@@ -6,16 +6,22 @@
 //   desk-q [--plain] [--all]             one line per batch: live first, then quiet ones that need you
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
+//   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
+//   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
+//   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //
 // A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc; piped output gets the plain text.
+// The only writes are the move and workers commands, each a queue.mjs command against the queue of
+// the repo named.
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { HOME, deskHome, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineValue, availableGiB } from './desk-env.mjs';
-import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash } from './batch-state.mjs';
+import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineValue, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
+import { RULES } from './machine.mjs';
 
 // The same test queue.mjs init uses: a heartbeat fresher than this is a live batch.
 export const LIVE_MS = 15 * 60 * 1000;
@@ -83,7 +89,8 @@ export function loadRepos(now = Date.now()) {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
     const stateDir = join(HOME, '.desk-autopilot', c.slug);
     const queuePath = join(deskHome(), 'repos', c.slug, 'queue.json');
-    const r = { name, slug: c.slug, claim: c, stateDir, queuePath, cap: concurrencyLimits(repoConfigValue(c.slug, 'concurrency')).cap, q: null, error: null };
+    const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
+    const r = { name, slug: c.slug, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
     if (existsSync(queuePath)) {
       try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
     }
@@ -92,7 +99,7 @@ export function loadRepos(now = Date.now()) {
     const rows = Object.values(r.q?.tickets ?? {});
     r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t) }));
     r.done = rows.length - r.rows.length;
-    r.workers = r.q ? (Number.isInteger(r.q.concurrency) ? r.q.concurrency : concurrencyLimits(repoConfigValue(c.slug, 'concurrency')).def) : null;
+    r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
     return r;
   });
 }
@@ -116,18 +123,42 @@ function machineCap() {
   return v ? concurrencyLimits(v).cap : null;
 }
 
+// The memory one worker takes at its heaviest: the profile writes it into the cap's reason
+// (machine.mjs propose), else the rule the profile is sized by.
+function workerGB() {
+  const m = /(\d+(?:\.\d+)?) GB per worker/.exec(machineWhy('autopilot-concurrency') ?? '');
+  return m ? Number(m[1]) : RULES.workerHeavyGB;
+}
+
+// Each pass gates on its own repo's §3b "Spawn gate", so the machine's is the highest of them.
+const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValue(r.slug, 'spawn-gate')).start), spawnGate(null).start);
+
+const allowedBy = (r) => Math.min(r.workers, r.cap);
+const liveAllowed = (repos) => repos.filter((r) => r.live && r.q).reduce((a, r) => a + allowedBy(r), 0);
+
+// How many more workers this machine could start: the smaller of the machine cap less the running
+// workers, and the free memory above the spawn gate at `perWorker` GB each.
+export function headroom({ running, cap, avail, gate, perWorker }) {
+  const byMemory = Math.max(0, Math.floor((avail - gate) / perWorker));
+  return cap == null ? byMemory : Math.max(0, Math.min(cap - running, byMemory));
+}
+
+// Ready tickets beyond the batch's free slots: they start only as its running workers finish.
+const unslotted = (r) => count(r, 'ready') - Math.max(0, r.workers - count(r, 'running'));
+
 // Each screen is built as head lines, selectable rows and foot lines. The plain output joins them;
 // the interactive screen draws the rows with a selection and opens a row's `open` view on Enter.
 const joined = (s) => [...s.head, ...s.rows.map((x) => x.line), ...s.foot].join('\n');
 
-function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), interactive = false } = {}) {
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
-  const allowed = repos.filter((r) => r.live && r.q).reduce((a, r) => a + Math.min(r.workers, r.cap), 0);
+  const allowed = liveAllowed(repos);
+  const room = headroom({ running, cap, avail, gate, perWorker });
   const at = new Date(now).toTimeString().slice(0, 5);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
-    `desk-q · ${at} · ${avail.toFixed(1)} GiB free · workers ${running} running · ${allowed} allowed by live batches, of ${cap ?? '?'} for this machine${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
+    `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
     '',
     `  ${pad('REPO', w)}${pad('LAST PASS', 15)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('STUCK', 7)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  WORKERS`,
   ];
@@ -138,7 +169,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     you += count(r, 'needs'); stuck += count(r, 'stuck');
     const last = r.live ? `live ${ago(now - r.last).replace(' ago', '')}` : ago(r.last == null ? null : now - r.last);
-    row(r, `  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${r.workers} (cap ${r.cap})`);
+    row(r, `  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`);
   }
   const none = repos.filter((r) => !hasBatch(r));
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', 64)}  cap ${r.cap}`);
@@ -188,10 +219,12 @@ function repoParts(r, { now = Date.now(), width = null } = {}) {
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
   const rows = r.rows.map((x, i) => {
     const title = triageOf(r.stateDir, x.t.key)?.summary ?? '';
-    const line = `  ${rpad(i + 1, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, tw)}`.trimEnd();
+    const line = `  ${rpad(`${x.t.placed ? '*' : ''}${i + 1}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, tw)}`.trimEnd();
     return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key } };
   });
-  return { head, rows, foot: r.rows.length ? [] : ['  No unfinished tickets.'] };
+  const foot = !r.rows.length ? ['  No unfinished tickets.']
+    : r.rows.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];
+  return { head, rows, foot };
 }
 
 export const repoScreen = (r, opts) => joined(repoParts(r, opts));
@@ -207,7 +240,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
   const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
   const head = [
-    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, i >= 0 ? `position ${i + 1} of ${r.rows.length}` : null].filter(Boolean).join(' · ')}`,
+    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, i >= 0 ? `position ${i + 1} of ${r.rows.length}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · ')}`,
     '',
     ...(tr.summary ? wrap(tr.summary, ww) : ['(no triage record: title unknown)']),
     '',
@@ -260,19 +293,103 @@ export function resolveRepo(repos, word) {
   throw new Usage(`No repo "${word}". Set up here: ${repos.map((r) => r.name).join(', ')}.`);
 }
 
-// The view the words name: the one-shot command line and the screen's ":" prompt read the same words.
+const MOVES = ['up', 'down', 'top', 'bottom', 'move'];
+const VERBS = ['show', ...MOVES, 'workers'];
+const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
+
+// What the words name: a view, or a move or workers change. The one-shot command line and the
+// screen's ":" prompt read the same words.
 function target(repos, words) {
   const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
   if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
   const r = resolveRepo(repos, repoWord);
   if (!verb) return { kind: 'repo', slug: r.slug };
-  if (verb !== 'show' || extra.length) throw new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". This version reads only: desk-q ${r.name} show <KEY>.`);
-  if (!keyWord) throw new Usage(`Which ticket? desk-q ${r.name} show <KEY>.`);
+  const unknown = () => new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". Verbs: ${VERBS.join(', ')}.`);
+  if (!VERBS.includes(verb)) throw unknown();
   if (r.error) throw new Usage(`${r.name}: queue unreadable: ${r.error}`);
   if (!r.q) throw new Usage(`${r.name} has no batch yet.`);
+  if (verb === 'workers') {
+    if (keyWord == null) throw new Usage(`How many? desk-q ${r.name} workers <n>.`);
+    if (extra.length) throw unknown();
+    return { kind: 'workers', slug: r.slug, n: keyWord };
+  }
+  if (!keyWord) throw new Usage(`Which ticket? desk-q ${r.name} ${verb} <KEY>${verb === 'move' ? ' <n>' : ''}.`);
   const key = [keyWord, keyWord.toUpperCase()].find((k) => r.q.tickets?.[k]);
   if (!key) throw new Usage(`${keyWord} isn't in ${r.name}'s queue.`);
-  return { kind: 'ticket', slug: r.slug, key };
+  if (verb === 'move') {
+    if (extra.length !== 1) throw new Usage(`Which position? desk-q ${r.name} move ${key} <n>.`);
+    return { kind: 'move', slug: r.slug, key, verb, to: extra[0] };
+  }
+  if (extra.length) throw unknown();
+  return verb === 'show' ? { kind: 'ticket', slug: r.slug, key } : { kind: 'move', slug: r.slug, key, verb };
+}
+
+// ---- changes -----------------------------------------------------------------------------------
+
+const QUEUE_MJS = join(dirname(fileURLToPath(import.meta.url)), 'queue.mjs');
+const tilde = (p) => (p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p);
+
+// Every change is a queue.mjs command, which takes the queue's lock. Its queue and state directory
+// are the named repo's, passed explicitly: left to itself, queue.mjs picks the repo it is run in.
+function queueCmd(r, args) {
+  try {
+    execFileSync(process.execPath, [QUEUE_MJS, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, DESK_QUEUE: r.queuePath, DESK_AUTOPILOT_STATE: r.stateDir } });
+  } catch (e) {
+    throw new Usage(String(e.stderr ?? '').trim().replace(/^queue: /, '') || describeCrash(e));
+  }
+}
+
+// Positions count the tickets desk-q shows (every one not done). queue.mjs leaves failed ones out
+// of its count too, so the place is translated before it is passed on.
+function moveTicket(r, key, verb, to) {
+  const i = r.rows.findIndex((x) => x.t.key === key);
+  if (i < 0) throw new Usage(`${key} is done: only unfinished tickets have a place in the spawn order.`);
+  const x = r.rows[i], last = r.rows.length;
+  if (x.k === 'running') throw new Usage(`${key} is running, so its position no longer matters. Nothing moved.`);
+  if (x.k === 'failed') throw new Usage(`${key} failed, so it has no place in the spawn order until it is requeued. Nothing moved.`);
+  let j;
+  if (verb === 'move') {
+    if (!/^\d+$/.test(to) || Number(to) < 1 || Number(to) > last) throw new Usage(`Position ${to} is out of range: give 1 to ${last}. Nothing moved.`);
+    j = Number(to) - 1;
+  } else j = { up: i - 1, down: i + 1, top: 0, bottom: last - 1 }[verb];
+  if (j < 0 || j >= last || j === i) throw new Usage(`${key} is already at position ${i + 1}. Nothing moved.`);
+  const order = r.rows.map((y) => y.t.key).filter((k) => k !== key);
+  order.splice(j, 0, key);
+  const n = order.filter((k) => r.q.tickets[k].state !== 'failed').indexOf(key) + 1;
+  queueCmd(r, ['move', key, String(n)]);
+  const why = x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
+    : x.k === 'stuck' ? ` Still stuck behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
+      : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
+  return `${key} → position ${j + 1} of ${last}, placed by you.${why}`;
+}
+
+// Above the repo's cap is refused, with what raising the cap would take; above the machine's total
+// goes ahead with a warning, since the memory gate still holds back spawns.
+function setWorkers(repos, r, word) {
+  const n = /^\d+$/.test(word) ? Number(word) : NaN;
+  if (!Number.isInteger(n)) throw new Usage(`Workers must be a whole number from 0 to ${r.cap}. Nothing changed.`);
+  const total = liveAllowed(repos.filter((x) => x.slug !== r.slug)) + n;
+  const cap = machineCap();
+  if (n > r.cap) {
+    const block = { slug: r.slug, port: r.claim.port, last: r.claim.port + n };
+    const clash = portClashes(block, repos.map((x) => x.claim)).map((c) => `${repos.find((x) => x.slug === c.slug).name} (${c.port}–${c.last})`);
+    throw new Usage(`${r.name}'s cap is ${r.cap}, so ${n} workers is refused: nothing changed. `
+      + `A cap of ${n} is an edit to §3b "Autopilot worker concurrency" in ${tilde(join(deskConfigRoot(), 'repos', r.slug, 'config.md'))}. `
+      + `It would hold ports ${block.port} to ${block.last}, ${clash.length ? `overlapping ${clash.join(' and ')}` : 'clear of every other repo'}, `
+      + `and live batches would then allow ${total} against this machine's ${cap ?? '? (no machine profile)'}.`);
+  }
+  const was = r.workers;
+  queueCmd(r, ['set-batch', `concurrency=${n}`, 'concurrency_by=user']);
+  return `${r.name}: workers ${was} → ${n} (cap ${r.cap}), set by you. The next pass uses it.`
+    + (n === 0 ? ' No new workers start, and running ones finish.' : '')
+    + (cap != null && total > cap ? ` Live batches now allow ${total}, over this machine's ${cap}: allowed, and the memory gate holds new workers below ${gateGiB(repos)} GiB free.` : '');
+}
+
+// One confirmation line, or a Usage refusal that says what to do instead.
+function apply(repos, v) {
+  const r = repos.find((x) => x.slug === v.slug);
+  return v.kind === 'workers' ? setWorkers(repos, r, v.n) : moveTicket(r, v.key, v.verb, v.to);
 }
 
 function checkFlags(argv) {
@@ -287,11 +404,16 @@ function loadOrRefuse(now) {
 }
 
 export function run(argv, { now = Date.now() } = {}) {
-  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>]';
+  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>]\n'
+    + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>';
   checkFlags(argv);
   const repos = loadOrRefuse(now);
   const v = target(repos, argv);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
+  if (isWrite(v)) {
+    const said = apply(repos, v);
+    return `${said}\n\n${repoScreen(loadOrRefuse(now).find((x) => x.slug === v.slug), { now })}`;
+  }
   const r = repos.find((x) => x.slug === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now }) : ticketScreen(r, v.key);
 }
@@ -300,6 +422,7 @@ export function run(argv, { now = Date.now() } = {}) {
 
 export const REFRESH_MS = 2000;
 const LOG_LINES = 40;
+const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 const ESC = '\x1b[';
 const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l`;
 export const LEAVE_SCREEN = `${ESC}?25h${ESC}?1049l`;
@@ -346,7 +469,7 @@ export function interactive({
     const back = ': command · esc back · q quit';
     if (!r) return { crumbs: 'desk-q', head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: back };
     const crumbs = ['desk-q', r.name, view.key].filter(Boolean).join(' › ');
-    if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w }), keys: `↑↓ select · enter open · ${back}` };
+    if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w }), keys: `↑↓ select · enter open · ${r.q ? `${MOVE_KEYS} · ` : ''}${back}` };
     if (!r.q?.tickets?.[view.key]) return { crumbs, head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: back };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
@@ -357,7 +480,7 @@ export function interactive({
     }
     const jira = jiraUrlFor(r.slug, view.key);
     const s = ticketParts(r, view.key, { width: w, jiraUrl: jira });
-    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}l log · ${jira ? 'o Jira · ' : ''}${back}`;
+    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}${MOVE_KEYS} · l log · ${jira ? 'o Jira · ' : ''}${back}`;
     return { crumbs, ...s, keys };
   }
 
@@ -372,7 +495,8 @@ export function interactive({
     const fit = (l) => cut(l, w);
     const body = [screen.crumbs, '', ...screen.head.map(fit),
       ...rows.map((x, i) => (i === sel ? `${ESC}7m${fit(`›${x.line.slice(1)}`)}${ESC}27m` : fit(x.line))), ...screen.foot.map(fit)];
-    const status = [msg, cmd != null ? `:${cmd}` : screen.keys].filter(Boolean).map(fit);
+    // A message can be longer than the line (a refused raise says what raising the cap takes).
+    const status = [...wrap(msg, w), cmd != null ? `:${cmd}` : screen.keys].filter(Boolean).map(fit);
     const room = h - status.length;
     let top = 0;
     if (body.length > room) {
@@ -405,12 +529,23 @@ export function interactive({
     exit(code);
   }
 
+  // A change, then the queues reread so the screen shows it; the message stays until the next view.
+  function act(v) {
+    try { msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
+    try { repos = loadOrRefuse(Date.now()); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+  }
+
   function runCommand(line) {
     const words = line.trim().split(/\s+/).filter(Boolean);
     try {
       checkFlags(words);
       const v = target(repos, words);
-      if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else go(v);
+      if (isWrite(v)) {
+        // A change typed anywhere lands on that repo's queue, with the moved ticket selected.
+        if (!(view.kind === 'repo' && view.slug === v.slug)) go({ kind: 'repo', slug: v.slug });
+        if (v.key) selId = v.key;
+        act(v);
+      } else if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else go(v);
     } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
   }
 
@@ -425,7 +560,17 @@ export function interactive({
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
       return draw();
     }
-    if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
+    // On a repo's queue the selected ticket moves; on a ticket's screen, that ticket.
+    const queueView = view.kind === 'repo' || view.kind === 'ticket';
+    const moveVerb = key.shift && key.name === 'up' ? 'up' : key.shift && key.name === 'down' ? 'down' : str === 't' ? 'top' : str === 'b' ? 'bottom' : null;
+    if (queueView && moveVerb) {
+      const k = view.kind === 'ticket' ? view.key : rows[sel]?.id;
+      if (k && repoOf(view.slug)?.q) act({ kind: 'move', slug: view.slug, key: k, verb: moveVerb });
+    } else if (queueView && (str === '+' || str === '-')) {
+      const r = repoOf(view.slug);
+      if (r?.q) act({ kind: 'workers', slug: r.slug, n: String(r.workers + (str === '+' ? 1 : -1)) });
+      else msg = `${r?.name ?? view.slug} has no batch yet.`;
+    } else if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
     else if (key.name === 'up' && scroll > 0) scroll -= 1;
     else if (key.name === 'down' && sel === rows.length - 1) scroll = (scroll ?? 0) + 1;
     else if (key.name === 'up') { sel = Math.max(0, sel - 1); selId = rows[sel]?.id ?? null; }
@@ -468,10 +613,14 @@ const isMain = (() => {
 if (isMain) {
   const argv = process.argv.slice(2);
   try {
-    // A terminal on both ends gets the screen; anything piped, and --plain, gets the plain output.
+    // A terminal on both ends gets the screen; anything piped, --plain, and a change typed in the
+    // shell get the plain output.
+    let start = null;
     if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
       checkFlags(argv);
-      const start = target(loadOrRefuse(Date.now()), argv);
+      start = target(loadOrRefuse(Date.now()), argv);
+    }
+    if (start && !isWrite(start)) {
       const ui = interactive({ start });
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
