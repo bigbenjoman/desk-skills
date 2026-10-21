@@ -257,6 +257,6 @@ spawn_one P-172
 check "DS-117 AC2 a port only another repo's done ticket recorded is used" '[ "$(field P-172 state)" = "\"running\"" ] && [ "$(field P-172 port)" = 47501 ]'
 other '{"tickets": not json'
 spawn_one P-173
-check "DS-117 AC3 an unreadable queue does not stop the spawn, and the report names it" '[ "$(field P-173 state)" = "\"running\"" ] && [ "$(field P-173 port)" = 47501 ] && echo "$out" | grep -qF "ports: could not read $T/desk/repos/acme__other/queue.json ("'
+check "DS-117 AC3 an unreadable queue does not stop the spawn, and the report names it" '[ "$(field P-173 state)" = "\"running\"" ] && [ "$(field P-173 port)" = 47501 ] && echo "$out" | grep -qF "ports: $T/desk/repos/acme__other/queue.json is not valid JSON ("'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
