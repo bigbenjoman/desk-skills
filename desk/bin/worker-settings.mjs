@@ -471,6 +471,12 @@ const HOOK = join(E.HOME, '.claude', 'hooks', 'deny-ai-attribution.py');
 if (existsSync(HOOK)) {
   settings.hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HOOK}"`, timeout: 10 }] }] };
 }
+// Blocks a worker's first attempt to end its turn with a background task running (claude -p kills
+// it). It acts only under DESK_AUTOPILOT_WORKER=1, so triage sessions are untouched.
+const STOP_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-worker-stop.py');
+if (existsSync(STOP_HOOK)) {
+  settings.hooks = { ...settings.hooks, Stop: [{ hooks: [{ type: 'command', command: `python3 "${STOP_HOOK}"`, timeout: 30 }] }] };
+}
 
 // Validate before writing: a silently-ignored settings file is full permissions.
 const p = JSON.parse(JSON.stringify(settings)).permissions;

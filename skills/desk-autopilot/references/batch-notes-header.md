@@ -90,6 +90,8 @@ workers hit Stage 4 together, and an OOM kills every worker, worktree and databa
 
 **Never end your turn with a background task running.** `claude -p` kills it when the turn ends,
 and the ticket goes FAILED with the work half committed. Run suites in the foreground behind the lock.
+A Stop hook blocks the first attempt to end a turn with one running; a second attempt ends the turn
+and is recorded in your log as a broken rule.
 
 ## PORTS AND THE BROWSER PROFILE
 

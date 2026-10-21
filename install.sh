@@ -668,6 +668,13 @@ case "$rc" in
     ;;
 esac
 
+# Autopilot worker Stop hook: blocks a worker ending its turn with a background task running. Never
+# registered in settings.json: worker-settings.mjs adds it to each worker's own settings.
+WORKER_STOP_HOOK="$CLAUDE_DIR/hooks/desk-worker-stop.py"
+install_file "$SRC/hooks/desk-worker-stop.py" "$WORKER_STOP_HOOK"
+chmod +x "$WORKER_STOP_HOOK"
+wrote "hook     ~/.claude/hooks/desk-worker-stop.py (autopilot workers only; nothing to register)"
+
 # The deny-only plan (skills/desk-setup/references/baseline-deny.json): Slack send and write
 # tools, gh pr merge --admin, and best-effort force, delete and mirror pushes. It only takes
 # capability away, whatever /desk-setup is later answered.
