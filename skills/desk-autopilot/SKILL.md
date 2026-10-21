@@ -988,16 +988,18 @@ names), not to the §3b default. `set-batch concurrency_by=null` hands the count
 **Borrowing idle workers is config §3b "Borrow idle workers"**, `off` unless it is `on`. At `on`,
 a pass may start workers above the batch's own number, up to the §3b cap, into machine slots that
 other live batches are not using. The machine total comes from the machine profile's
-`autopilot-concurrency` cap. The pass takes the running workers in every queue from it, then
-whatever each other live batch below its own number has ready tickets for (that batch has first
-claim on the slots). It reads every queue and writes only its own. Counting and starting happen
-under one lock shared by every repo, so two passes cannot take the same slot. Running work is never
-stopped: when the lender has ready tickets again, the borrower starts nothing new and its extra
-workers finish. The memory gate still stops everything. A `borrowing:` line under `workers:` says
-how many were borrowed, or why none were: a first claim, a full machine, the cap, the gate, or
-another repo's queue that cannot be read (that last one still lets the batch start up to its own
-number). Borrowed workers are not a reason to lower the count: the ladder leaves the batch's own
-number as it is.
+`autopilot-concurrency` cap, less the running workers in every queue. The batch takes those free
+slots for its own number first, then borrows what is left after each other live batch below its own
+number has its first claim (as many as it has ready tickets for). It reads every queue and writes
+only its own. Counting and starting happen under one lock shared by every repo, so two passes cannot
+take the same slot. Running work is never stopped: when the lender has ready tickets again, the
+borrower starts nothing new, and a lender with borrowing on that comes back to a full machine starts
+its own as the borrowed workers finish. The memory gate still stops everything. A `borrowing:` line
+under `workers:` says how many were borrowed, or why none were: a first claim, a full machine, the
+cap, the gate. Where the slots cannot be counted (another repo's queue unreadable, no machine
+profile, the lock held past two minutes), the batch starts up to its own number as with borrowing
+off, and the line says why. Borrowed workers are not a reason to lower the count: the ladder leaves
+the batch's own number as it is.
 
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
