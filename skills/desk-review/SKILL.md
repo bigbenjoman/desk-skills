@@ -401,6 +401,28 @@ adds:
 4. **`NO FINDINGS` is the expected ending.** If the history shows the same ground covered round after
    round, say so in the report: that needs a human, not another lap.
 
+### Round 3 and above: the fix range, and only P0 and P1 block
+
+By round 3 the branch has been read whole twice. What is left unreviewed is the fixes, so from round
+3 the finders, codex's cold read included, read **only the commits since the previous round**:
+
+```bash
+git diff <previous round's reviewed SHA>..HEAD     # never origin/<base>...HEAD from round 3
+```
+
+The previous round's SHA is the `sha=` of the last verdict on the PR, or, before a PR exists (desk-ticket
+Stage 4b), the SHA that round reviewed. It goes in the results file as `since`, the header names the
+range (`fix range <since short>..<head short>`), and verdict.mjs refuses a round-3 results file
+without it. An empty range is a stated stop, as an empty diff is. Earlier findings still carried
+forward (rule 3 above) stay in the counts whatever the range.
+
+**From round 3 a P2 can be carried** instead of blocking: `"carried": true` on its finding, which
+takes it out of `p2` and counts it on the carried line instead. Carry a P2 when fixing it would mean
+another round. A P0 or P1 is never carried; verdict.mjs refuses one, naming the finding, and a P2 on
+rounds 1 and 2 is fixed rather than carried. A carried finding needs `where` as `file:line`.
+`node verdict.mjs --carried <results>` prints the PR body's `### Carried review findings` section,
+one `file:line` per finding (desk-pr places it).
+
 ## Phase 4: refute
 
 **The refuter is always the other vendor.** Claude's findings go to codex; codex's go to Claude.
@@ -607,7 +629,7 @@ says: the row settles whether to post, this settles how many. **Never `--approve
 `--request-changes`, never an `APPROVE` or `REQUEST_CHANGES` event.**
 
 **The body's first three lines are computed, never written by hand**: the review marker, the
-verdict marker and the heading. A hand count is how a review reads clean when it is not. Once every
+verdict marker and the heading, and from round 3 a fourth, the carried line. A hand count is how a review reads clean when it is not. Once every
 finder and refuter has answered, write the run's results with the Write tool to
 `<scratchpad>/desk-review-results.json` (a worker: `desk-review-results.json` at its worktree root,
 removed at the end with `git clean -f`):
@@ -624,11 +646,12 @@ removed at the end with `git clean -f`):
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
-  finding deliberately left unfixed. A merged duplicate is `"result": "DUPLICATE"` with
-  `duplicate_of` naming the finding kept, and it still counts unless that one is counted at the
+  finding deliberately left unfixed; `carried: true` for a P2 carried from round 3 (above). A
+  merged duplicate is `"result": "DUPLICATE"` with `duplicate_of` naming the finding kept, and it still counts unless that one is counted at the
   same severity or higher: merging must never drop a confirmed finding behind a rejected one.
 - `gaps`, `skipped_files`: the open requirement gaps and the files the oversized cap skipped. Every
   count is required, `0` when there are none: one left out is refused, never read as zero.
+- `since`: from round 3 only, the full SHA the previous round reviewed (the fix range's start).
 
 Then:
 
@@ -639,7 +662,7 @@ node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 `<results>` is the file's full scratchpad path, or `desk-review-results.json` in a worker (run from
 its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
 elsewhere. It prints the three
-lines and refuses (exit 2) any results file that is incomplete or contradicts itself. Its tests,
+lines (four from round 3) and refuses (exit 2) any results file that is incomplete or contradicts itself. Its tests,
 `tests/test_review_verdict.mjs`, prove that no combination with an open finding, a skipped file, a
 dead seat or an open gap prints the clean verdict. Use its output verbatim, then the report below
 it. The clean form, which the tests hold this line to:
@@ -660,6 +683,13 @@ it. The clean form, which the tests hold this line to:
 | `partial` | Reviewable files skipped by the oversized cap, plus every seat that died; non-zero is never clean |
 | `vendor` | `codex-cross` only when codex read this head cold on this run **and** every finding was refuted by the other vendor; else `same-vendor` |
 | `round` | The round this review is |
+
+From round 3 a fourth line follows the heading, `<!-- desk-review:carried v=1 p2=<n> since=<full SHA> -->`:
+the P2 findings carried (counted there, **not** in `p2`) and the fix range's start. It never decides
+clean; the blocking counts above do. It sits after the heading rather than in the verdict line
+because repos commit their own copy of the gate, and a copy from before carrying matches the verdict
+line exactly: an extra field there would read as no verdict at all. That copy reads this verdict as
+the blocking counts say (`tests/test_review_gate.mjs` holds it to that).
 
 With these markers §4 Clean review verdict for this skill is
 `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
