@@ -610,13 +610,19 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
    the settings file is unreadable; stop §4 and say so.
    Then `python3 $H "${REPO_RULES[@]}" retire`, also not a question: it only takes capability away.
    `retire`, `add` and `baseline` all first drop any rule in the script's `RETIRED` list that setup
-   recorded (printed `RETIRED`, backed up first; today the unpinned `gh pr merge` allows), and
-   `baseline --check` lists them as `retired`. A retired rule the user added themselves is printed
-   `retired … yours` and left alone: tell the user it still lets an unpinned merge run unprompted.
+   recorded (printed `RETIRED`, backed up first; today the unpinned `gh pr merge` allows and the
+   `desk-jira create *assignee*` ask), and `baseline --check` lists them as `retired`. A retired rule
+   the user added themselves is printed `retired … yours` with what it still does, and left alone:
+   pass that on. Retiring the assignee ask writes the `desk-jira create *--route*` ask in its place
+   where it is missing (printed `REPLACED`), so routing keeps prompting; where it was there already,
+   its owner moves from `jira-assign-self` to `jira-create` (printed `REOWNED`).
 2. **Build the allow plan** (JSON; shape in the script's header), replacing `<merge>` with this
    repo's §4 Merge method flag:
    - an `add` entry for each rule whose **every** owner row is `yes`, `rows` = all its owners.
    - the row's `ask:` guards with the same owners; `unguard:` entries go in `remove_guards`.
+   - not the orchestrator tools (Monitor, `mcp__claude-in-chrome__*`, ArtifactComments,
+     ArtifactData, Edit on this repo's session memory directory): `add` writes them with every plan,
+     owner `orchestrator-tools` (permission-rows.md). Show them in step 3 all the same.
 3. **Show the plan** grouped by row, _Reach_ notes included, name the file it goes to
    (`<root>/.claude/settings.local.json`), and get a yes.
 4. Apply it **to this repo only**, then refresh §3c:

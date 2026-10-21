@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Add, remove and list the Claude Code permission rules /desk-setup writes.
 
-  harness-rules.py add <plan.json>          apply a plan; prints which rules were new
+  harness-rules.py add <plan.json>          apply a plan; prints which rules were new. A plan for a
+                                            repo's .claude/ also gets the orchestrator-tools allows
+                                            (Monitor, mcp__claude-in-chrome__*, ArtifactComments,
+                                            ArtifactData, Edit on the repo's session memory dir)
   harness-rules.py baseline [--check] [--slack-prefix P]... [<plan.json>]
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
                                             if every rule is already in settings.json, 1 if not
-  harness-rules.py retire                   drop the RETIRED rules setup recorded (add and
-                                            baseline do this first too; --check reports them)
+  harness-rules.py retire                   drop the RETIRED rules setup recorded and move REOWNED
+                                            rules to their new row (add and baseline do this first
+                                            too; --check reports them)
   harness-rules.py remove <row> [<row>...]  revoke rows: drop every rule any of them owns
   harness-rules.py remove --all             drop everything setup ever recorded
   harness-rules.py list [--markdown]        the ledger (--markdown: rows for config §3c)
@@ -335,12 +339,17 @@ def apply_plan(st, plan):
         cur = st.perm_list(lst, create=True)
         rec = st.recorded(lst, rule)
         if rec:
+            owners = sorted(set(rec["rows"]) | set(rows))
+            if rule in cur and owners == rec["rows"]:
+                st.log.append(f"present  {lst:5} {rule}  (recorded for {', '.join(owners)})")
+                continue
             if rule not in cur:
                 cur.append(rule)
-            rec["rows"] = sorted(set(rec["rows"]) | set(rows))
+            rec["rows"] = owners
             st.log.append(f"recorded {lst:5} {rule}  (owners now {', '.join(rec['rows'])})")
         elif rule in cur:
-            st.log.append(f"yours    {lst:5} {rule}  (already in settings.json; not recorded, never removed)")
+            st.log.append(f"present  {lst:5} {rule}  (yours: already in the settings file; not recorded, "
+                          "never removed)")
         else:
             cur.append(rule)
             st.ledger["rules"].append({"list": lst, "rule": rule, "rows": rows, "added": today})
@@ -366,34 +375,88 @@ def apply_plan(st, plan):
         st.log.append(f"UNGUARD  {lst:5} {rule}  (removed for {', '.join(rows)}; back on revoke)")
 
 
-# Rules an earlier version of setup granted and no row grants any more. `add`, `baseline` and
-# `retire` drop them when setup recorded them (a copy the user added themselves is reported, never
-# touched), so re-running setup or install.sh migrates an existing install.
+# Rules an earlier version of setup wrote and no row writes any more: (list, rule, why it went,
+# what a copy the user added themselves still does, the rule that replaces it or None). `add`,
+# `baseline` and `retire` drop them when setup recorded them (a copy the user added themselves is
+# reported, never touched), so re-running setup or install.sh migrates an existing install. A
+# replacement is written in the same list with the dropped record's owners, unless it is there.
+UNPINNED = ("no row grants it any more", "it still lets an unpinned merge run unprompted, so remove "
+            "it by hand to enforce the pin", None)
+ROUTE_ASK = "Bash(desk-jira create *--route*)"
 RETIRED = [
     # Merges are pinned with --match-head-commit; these let an unpinned merge run unprompted.
-    ("allow", rule)
+    ("allow", rule, *UNPINNED)
     for m in ("--squash", "--merge", "--rebase")
     for rule in (f"Bash(gh pr merge * {m})", f"Bash(gh pr merge * --auto {m})", f"Bash(gh pr merge * {m} --auto)")
+] + [
+    # desk-jira create assigns only the user; another assignee needs --route, which keeps prompting.
+    # Where jira-assign-self was not granted, no --route ask was ever written, so it replaces this.
+    ("ask", "Bash(desk-jira create *assignee*)",
+     "desk-jira create assigns only you; routing to someone else needs --route, which still prompts",
+     "it still prompts on every desk-jira create that names an assignee; remove it by hand to stop that",
+     ROUTE_ASK),
 ]
+
+# Rules whose owner row changed: (list, rule, old owner, new owner). The --route ask belonged to
+# jira-assign-self, so revoking that row would have dropped it while jira-create still allows
+# `desk-jira create *`, letting routing run unprompted.
+REOWNED = [("ask", ROUTE_ASK, "jira-assign-self", "jira-create")]
+
+# Tools an orchestrator or interactive desk session relies on, written whenever `add` writes a plan
+# to a repo: Monitor (waiting on a batch), the Chrome extension's tools, the Artifact tools Claude
+# Design canvases are read with, and Edit on this repo's session memory directory.
+ORCHESTRATOR = "orchestrator-tools"
+ORCHESTRATOR_TOOLS = ["Monitor", "mcp__claude-in-chrome__*", "ArtifactComments", "ArtifactData"]
+
+
+def memory_dir_rule(root):
+    """Edit on <root>'s session memory directory, named as Claude Code names a project
+    (desk-env.mjs memoryDir: every character outside [A-Za-z0-9] becomes '-')."""
+    slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in root)
+    return f"Edit(~/.claude/projects/{slug}/memory/**)"
+
+
+def orchestrator_entries(settings_path):
+    """The orchestrator-tools add entries for a repo-level settings file; none at user level."""
+    scope = repo_settings_scope(settings_path)
+    if scope is None:
+        return []
+    top = _git(scope[0], "rev-parse", "--show-toplevel")
+    root = top.stdout.strip() if top and top.returncode == 0 else scope[0]
+    return [{"list": "allow", "rule": r, "rows": [ORCHESTRATOR]}
+            for r in ORCHESTRATOR_TOOLS + [memory_dir_rule(root)]]
 
 
 def retire(st):
     """Drop retired rules setup recorded; report a copy the user added themselves."""
-    for lst, rule in RETIRED:
+    for lst, rule, why, yours, repl in RETIRED:
         cur = st.perm_list(lst, create=False) or []
-        rec = st.recorded(lst, rule)
+        rec, g = st.recorded(lst, rule), st.unguarded(lst, rule)
         if rec:
             if rule in cur:
                 cur.remove(rule)
             st.ledger["rules"].remove(rec)
-            st.log.append(f"RETIRED  {lst:5} {rule}  (no row grants it any more)")
+            st.log.append(f"RETIRED  {lst:5} {rule}  ({why})")
+            if repl and repl not in cur and not st.recorded(lst, repl):
+                st.perm_list(lst, create=True).append(repl)
+                st.ledger["rules"].append({"list": lst, "rule": repl, "rows": rec["rows"],
+                                           "added": datetime.date.today().isoformat()})
+                st.log.append(f"REPLACED {lst:5} {repl}  (in place of {rule}; {', '.join(rec['rows'])})")
         elif rule in cur:
-            st.log.append(f"retired  {lst:5} {rule}  (yours, left alone: it still lets an unpinned merge "
-                          "run unprompted, so remove it by hand to enforce the pin)")
+            st.log.append(f"retired  {lst:5} {rule}  (yours, left alone: {yours})")
+        if g:  # a guard setup removed: forget it, so revoking its row never puts it back
+            st.ledger["removed_guards"].remove(g)
+            st.log.append(f"RETIRED  {lst:5} {rule}  (guard record dropped: {why})")
+    for lst, rule, old, new in REOWNED:
+        rec = st.recorded(lst, rule)
+        if rec and old in rec["rows"]:
+            rec["rows"] = sorted((set(rec["rows"]) - {old}) | {new})
+            st.log.append(f"REOWNED  {lst:5} {rule}  ({old} -> {new})")
 
 
 def cmd_add(st, plan_path):
     plan = read_plan(plan_path)
+    plan["add"] = plan.get("add", []) + orchestrator_entries(st.settings_path)
     note = check_destination(st.settings_path, plan)
     if note:
         st.log.append(f"gitignore {st.settings_path}: {note}")
@@ -427,7 +490,7 @@ def cmd_baseline(st, plan_path, prefixes, check):
         missing = [e["rule"] for e in plan["add"] if e["rule"] not in deny]
         for rule in missing:
             print(f"missing  deny  {rule}")
-        stale = [(lst, r) for lst, r in RETIRED if st.recorded(lst, r)]
+        stale = [(lst, r) for lst, r, *_ in RETIRED if st.recorded(lst, r) or st.unguarded(lst, r)]
         for lst, rule in stale:
             print(f"retired  {lst:5} {rule}  (recorded by setup; baseline drops it)")
         return 1 if missing or stale else 0
