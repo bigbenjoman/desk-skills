@@ -286,6 +286,13 @@ quiet_running U-7 live-1; q set U-7 idle_passes=0
 out=$(DESK_CONFIG="$T/config.md" node "$B/pass.mjs" 2>&1)
 check "DS-121 AC2 a worker that resumed before a pass saw it is parked, and the reason says it resumed" '[ "$(field U-7 state)" = "\"parked\"" ] && field U-7 park.question | grep -q "reached the 5-hour usage limit, which reset .* UTC, and resumed into the next usage window before a pass saw it"'
 q set U-7 state=done
+# U-8: no grant, but the session registry cannot be read: nothing can be stopped, so nothing is parked.
+cp "$T/stub/claude" "$T/claude.ok"; printf '#!/bin/sh\nexit 1\n' > "$T/stub/claude"
+{ say "AUTOPILOT_STAGE: 3/9 implement"; limit_event $((now + 3600)); } > "$T/state-u/logs/U-8.log"
+quiet_running U-8 live-1; q set U-8 idle_passes=0
+out=$(DESK_CONFIG="$T/config.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 AC2 an unreadable registry leaves a worker at the limit running, and says so" '[ "$(field U-8 state)" = "\"running\"" ] && echo "$out" | grep -q "could not read the session registry"'
+cp "$T/claude.ok" "$T/stub/claude"; q set U-8 state=done
 
 # U-2: resume granted and the reset an hour away: paused, not wedged, and the quiet count cleared.
 { say "AUTOPILOT_STAGE: 4/9 verify"; limit_event $((now + 3600)); } > "$T/state-u/logs/U-2.log"

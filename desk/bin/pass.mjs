@@ -127,11 +127,11 @@ const q = (...args) => {
 const queue = () => readQueue(QUEUE_FILE);
 
 // ---- liveness ------------------------------------------------------------
-let live = [];
-try { live = JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]'); }
-catch { live = []; }
 // A failed registry read must never look like "everything finished" — that would
-// re-spawn work already in flight.
+// re-spawn work already in flight — so a command that fails reads as no registry, not an empty one.
+let live = null;
+const registry = shOut('claude', ['agents', '--json']);
+if (registry.ok) { try { live = JSON.parse(registry.out || '[]'); } catch { live = null; } }
 const registryOk = Array.isArray(live);
 const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 
