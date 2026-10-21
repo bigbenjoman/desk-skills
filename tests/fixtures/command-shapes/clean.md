@@ -13,4 +13,11 @@ P
 desk-jira md2wiki body.md \
   > body.wiki
 node ~/.claude/desk/bin/pass.mjs --json   # comment: cd /tmp && echo > /tmp/x
+jq -r '
+  .items[] | { name, "id": .id }
+' items.json
+git commit -q -m "$(cat <<'EOF'
+subject: don't { echo "x"; } > /tmp/y
+EOF
+)"
 ```

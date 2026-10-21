@@ -32,12 +32,12 @@ t('function: only the definition line', lines('function.md'), '5 function defini
 t('brace group: only the group', lines('brace-group.md'), '5 brace group');
 t('heredoc: the opening line only; its body is data', lines('heredoc.md'), '4 heredoc to file');
 t('cd: both forms, not the plain git line', lines('cd.md'), '4 cd into another directory, 6 cd into another directory');
-t('AC5 /tmp, ~, a <placeholder>/ dir and a $VAR are outside; a relative file, /dev/null, 2>&1 and quoted text are not',
-  lines('write-outside.md'), '4 write outside cwd, 5 write outside cwd, 6 write outside cwd, 7 write outside cwd');
+t('AC5 /tmp, ~, a <placeholder>/ dir, a $VAR, >| and a redirect after a multi-line quote are outside; a relative file, /dev/null, 2>&1 and quoted text are not',
+  lines('write-outside.md'), '4 write outside cwd, 5 write outside cwd, 6 write outside cwd, 7 write outside cwd, 12 write outside cwd, 13 write outside cwd');
 t('AC6 untagged, text, and console output lines are not commands', lines('output.md'), '');
 t('AC6 the CLI passes an output-only file', cli('output.md').status, 0);
 t('AC7 a marker with a reason passes; one without is itself a hit', lines('exempt.md'), '5 exemption with no reason');
-t('shapes that do not prompt: ${}, awk/jq braces in quotes, find {}, git -C, heredoc to stdin, a continued redirect',
+t('shapes that do not prompt: ${}, awk/jq braces in quotes (one line or several), find {}, git -C, heredoc to stdin or in "$(…)", a continued redirect',
   lines('clean.md'), '');
 
 // ---- AC8: the real skills tree ----------------------------------------------------------------
@@ -50,7 +50,8 @@ t('AC8 desk-autopilot carries no exemptions', autopilot.length, 0);
 
 // ---- AC9 and AC10: the two rewrites the shapes pointed at ---------------------------------------
 const auto = readFileSync(join(R, 'skills/desk-autopilot/SKILL.md'), 'utf8');
-const seed = auto.split('\n').filter((l) => l.includes('batch-notes-header.md'));
+// Each mention of the header with the line after it: the instruction wraps.
+const seed = auto.split('\n').map((l, i, all) => `${l} ${all[i + 1] ?? ''}`).filter((l) => l.includes('batch-notes-header.md'));
 t('AC9 seeding batch-notes.md names the Write or Edit tool or a desk/bin script',
   seed.length > 0 && seed.some((l) => /Write|Edit|desk\/bin|queue\.mjs/.test(l)) && !seed.some((l) => />>?\s*<state>/.test(l)), true);
 const rest = readFileSync(join(R, 'skills/desk-jira/references/jira-rest-recipes.md'), 'utf8');

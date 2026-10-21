@@ -127,7 +127,7 @@ ticket, and only a directory listing found it.
 
 ```bash
 comm -13 <(git -C <repo root> worktree list --porcelain | awk '/^worktree /{print substr($0,10)}' | sort) \
-  <(find <worktrees dir> <repo root>/.claude/worktrees -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)   # on disk, not registered = orphan
+  <(find <worktrees dir> <repo root>/.claude/worktrees -mindepth 1 -maxdepth 1 -type d -not -name '.*' 2>/dev/null | sort)   # on disk, not registered = orphan
 ```
 
 Both lists are absolute paths, so give `<worktrees dir>` and `<repo root>` in full. No scratch files:

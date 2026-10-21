@@ -21,25 +21,34 @@ const SHELL = new Set(['bash', 'sh', 'shell', 'zsh']);
 const PLACEHOLDER = /(?<!<)<[A-Za-z§.~][^<>\n]*?[^\s<>]>|(?<!<)<[A-Za-z]>/g;
 const PH = '@PH@';
 
-// Splits a command line into its code and its trailing comment, and returns the code masked: every
+// Splits a command into its code and its trailing comment, and returns the code masked: every
 // character inside quotes becomes `_` (the quotes themselves stay), so a brace, `>` or `#` in a string
-// is never read as shell syntax. Same length as the code, so an index into one is an index into both.
+// is never read as shell syntax. A `$( … )` inside double quotes is code again, as the shell reads it.
+// Same length as the code, so an index into one is an index into both. `open` is true when the text
+// ends inside a quote or a substitution, so the command goes on to the next line.
 export function split(line) {
   let code = '', mask = '', q = null, i = 0;
+  const subs = [];   // one entry per `$(` opened inside double quotes: its paren depth
   for (; i < line.length; i++) {
     const c = line[i];
     if (q === "'") { if (c === "'") { q = null; mask += c; } else mask += '_'; code += c; continue; }
     if (q === '"') {
       if (c === '\\' && i + 1 < line.length) { code += c + line[i + 1]; mask += '__'; i++; continue; }
+      if (c === '$' && line[i + 1] === '(') { subs.push(0); q = null; code += '$('; mask += '$('; i++; continue; }
       if (c === '"') { q = null; mask += c; } else mask += '_';
       code += c; continue;
     }
     if (c === '\\' && i + 1 < line.length) { code += c + line[i + 1]; mask += '__'; i++; continue; }
     if (c === "'" || c === '"') { q = c; code += c; mask += c; continue; }
+    if (subs.length && c === '(') subs[subs.length - 1]++;
+    if (subs.length && c === ')') {
+      if (subs[subs.length - 1] === 0) { subs.pop(); q = '"'; code += c; mask += c; continue; }
+      subs[subs.length - 1]--;
+    }
     if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) break;
     code += c; mask += c;
   }
-  return { code, mask, comment: line.slice(i) };
+  return { code, mask, comment: line.slice(i), open: q !== null || subs.length > 0 };
 }
 
 const FUNCTION = /(?:^\s*|[;&|(]\s*)(?:function\s+[\w.:-]+\s*(?:\(\s*\))?|[A-Za-z_][\w.:-]*\s*\(\s*\))\s*(?:\{|\(|$)/;
@@ -49,7 +58,7 @@ const BRACE_QUOTE = /\{[^}]*['"]/;
 const HEREDOC = /(?<!<)<<(?!<)(-?)/g;
 const CD = /^\s*\(?\s*cd\s+\S+\s*(?:&&|;)/;
 // A write: `>`, `>>`, `>|`, `&>`, `n>`; not `>&n` (a dup), `>(` (process substitution), `->` or `=>`.
-const REDIRECT = /(?<![<>=\-|])(?:&|\d)?(>>?|>\|)(?![&(>])\s*/g;
+const REDIRECT = /(?<![<>=\-|])(?:&|\d)?(>\||>>?)(?![&(>])\s*/g;
 
 // Is a redirect target outside the working directory? Absolute, home, a variable, `..`, or a
 // <placeholder> standing for a directory. /dev/null and the std streams are not writes to a file.
@@ -103,7 +112,6 @@ export function scan(text) {
     if (!cmd) return;
     for (const shape of shapes(cmd.text)) hits.push({ line: cmd.line, shape, text: cmd.first });
     if (/shape-ok:\s*\S/.test(split(cmd.text.replace(PLACEHOLDER, PH)).comment)) exempt.push({ line: cmd.line, text: cmd.first });
-    pending.push(...delimiters(cmd.text));
     cmd = null;
   };
   for (let n = 0; n < lines.length; n++) {
@@ -127,10 +135,19 @@ export function scan(text) {
       if (!/^\s*\$ /.test(raw)) continue;
       line = raw.replace(/^\s*\$ /, '');
     }
-    if (cmd) { cmd.text += ' ' + line.trim(); }
-    else cmd = { line: n + 1, text: line, first: raw.trim() };
-    // A trailing backslash continues the command on the next line.
-    if (/\\$/.test(split(line).code)) { cmd.text = cmd.text.replace(/\\$/, ''); continue; }
+    if (cmd) cmd.text += (cmd.quoted ? '\n' : ' ') + (cmd.quoted ? line : line.trim());
+    else cmd = { line: n + 1, text: line, first: raw.trim(), heredocs: 0 };
+    // A heredoc's body starts on the next line even when the command is still open around it, as in
+    // `git commit -m "$(cat <<'EOF'`: register each delimiter as the line that opens it arrives.
+    const ds = delimiters(cmd.text);
+    pending.push(...ds.slice(cmd.heredocs));
+    cmd.heredocs = ds.length;
+    // A trailing backslash outside quotes continues the command on the next line, and so does a
+    // quote or `$(` still open at the end of it (a jq or awk program written over several lines).
+    const s = split(cmd.text.replace(PLACEHOLDER, PH));
+    cmd.quoted = s.open;
+    if (s.open) continue;
+    if (/\\$/.test(s.mask)) { cmd.text = cmd.text.replace(/\\$/, ''); continue; }
     flush();
   }
   return { hits, exempt };

@@ -9,4 +9,8 @@ echo kept > out.txt
 gh pr view <n> --json reviews 2>/dev/null
 some-check 2>&1 | head -5
 echo "a > /tmp/b is only text"
+echo x >| /tmp/clobbered
+jq '
+  { a: "b" }
+' in.json > /tmp/out.json
 ```

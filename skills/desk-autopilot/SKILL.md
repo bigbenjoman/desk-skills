@@ -642,11 +642,12 @@ as it does for §4 Required checks and Merge method.
 
 ```bash
 nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "ABC-3:ABC-1" \
-  --log <state>/merge-driver.log &
+  --log &
 ```
 
-`--log` has the driver append its own output to the file, so the command carries no `>>` redirect:
-a redirect outside the working directory prompts every time, whatever the allow rules say.
+`--log` has the driver append its own output to `<state>/merge-driver.log`, so the command carries
+no `>>` redirect: a redirect outside the working directory prompts every time, whatever the allow
+rules say.
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes`, skips
@@ -1030,7 +1031,7 @@ AUTOPILOT_DRY_RUN=1 …                                                 # no pus
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
 AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only when §3 batch-base-push is `ask`/unset and the user approved syncing this batch's base
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
-nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log <state>/merge-driver.log &
+nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log
 
 # config
 desk-env where                   # which repo, which config, does it exist
