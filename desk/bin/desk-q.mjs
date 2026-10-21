@@ -6,6 +6,7 @@
 //   desk-q [--plain] [--all]             one line per batch: live first, then quiet ones that need you
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
+//   desk-q ships [<repo>]                when each unfinished ticket starts and ships (`when` too)
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
@@ -23,6 +24,7 @@ import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfig
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
+import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, RUNS, MIN_HISTORY, WINDOW_DAYS } from './desk-q-eta.mjs';
 
 export { LIVE_MS };
 const LABEL = { running: 'running', ready: 'ready', queued: 'queued', waiting: 'waiting', stuck: 'stuck', needs: 'needs you', failed: 'failed', done: 'done' };
@@ -106,6 +108,110 @@ export function shownRepos(repos, all) {
   return [...live, ...quiet];
 }
 
+// ---- ship dates --------------------------------------------------------------------------------
+
+const MINUTE = 60_000;
+const forecasts = new Map();
+
+// The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
+// 2-second reread runs the simulation again only when the queue, the history or the minute changes.
+export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
+  if (!r.q) return null;
+  const at = Math.floor(now / MINUTE) * MINUTE;
+  const history = recentHistory(readHistory(r.stateDir), at);
+  const list = (s) => String(s ?? '').split('|').filter(Boolean);
+  const rows = r.rows.map(({ t, k }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with) }));
+  const id = JSON.stringify([r.slug, at, checkin, r.workers, rows, history.map((l) => [l.key, l.size, l.hours])]);
+  if (!forecasts.has(id)) {
+    if (forecasts.size > 64) forecasts.clear();
+    const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
+    forecasts.set(id, { ...forecast({ rows, workers: r.workers, history, now: at, checkin }), d: durations(history), sizes });
+  }
+  return forecasts.get(id);
+}
+
+const SOON = MINUTE;
+const etaOf = (F, key) => (F && !F.none ? F.T[key] : null);
+const startsCell = (F, x, now) => {
+  const e = etaOf(F, x.t.key);
+  return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
+};
+const shipsCell = (F, x, now) => (!F || F.none ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
+const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
+const typical = (F, key) => quantile(durationsFor(F.d, F.sizes[key]).v, 0.5).toFixed(1);
+const listed = (keys) => keys.join(', ');
+
+// The blockers in this queue that the forecast could not date.
+const undatedBlockers = (r, F, t) => String(t.held_by ?? '').split('|').filter((b) => r.q.tickets[b] && r.rows.some((y) => y.t.key === b) && !etaOf(F, b));
+
+// Why a ticket has no date, short enough for a row.
+function undatedWhy(r, F, x) {
+  if (r.workers === 0) return 'workers set to 0: nothing starts';
+  if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
+  if (x.k === 'stuck') return `stuck behind ${listed(unmergedBlockers(r.q, x.t))}`;
+  if (x.k === 'failed') return 'failed: requeue it';
+  const b = undatedBlockers(r, F, x.t);
+  return b.length ? `after ${listed(b)}, which ${b.length > 1 ? 'have' : 'has'} no date` : '';
+}
+
+// The ticket screen's Starts and Ships lines.
+function etaLines(r, F, x, now) {
+  if (!F) return [];
+  if (F.none) return [noHistory(r, F), ''];
+  const key = x.t.key, e = F.T[key];
+  if (!e) {
+    const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
+    const why = r.workers === 0 ? 'No date: workers are set to 0, so nothing starts.'
+      : x.k === 'needs' ? 'No date until you answer it. Press c to date it at the next check-in.'
+        : x.k === 'stuck' ? `No date while it is stuck behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
+          : x.k === 'failed' ? 'No date: it failed. Requeue it to date it.'
+            : `No date until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.`;
+    return [`Ships: ${why}`, ''];
+  }
+  const start = e.start <= now + SOON ? (x.k === 'running' ? 'running now' : 'now') : when(e.start, now);
+  const size = F.sizes[key];
+  const { v, own } = durationsFor(F.d, size);
+  // Drawn from the whole history, the line still says how many of this size it holds, or that triage gave none.
+  const n = F.d.bySize[size]?.length ?? 0;
+  const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
+  return [
+    `Starts: ${start}   Ships: ${when(e.likely, now)}   Could run to ${when(e.late, now)} (1 run in 5 is later)`,
+    `From ${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of}: typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h.`,
+    '',
+  ];
+}
+
+// When the repo's last dated ticket ships.
+function queueDone(r, now, checkin) {
+  const F = forecastOf(r, { now, checkin });
+  return !F ? '' : F.none ? 'no history' : F.clears ? when(F.clears, now) : 'no date yet';
+}
+
+// `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
+export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } = {}) {
+  const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
+  if (!list.length) return 'No repo here has an autopilot batch, so there is nothing to date.';
+  const out = [];
+  for (const r of list) {
+    if (out.length) out.push('');
+    if (r.error) { out.push(`${r.name} · queue unreadable: ${r.error}`); continue; }
+    if (!r.q) { out.push(`${r.name} · no autopilot batch yet, so nothing to date.`); continue; }
+    const F = forecastOf(r, { now, checkin });
+    if (F.none) { out.push(`${r.name} · ${noHistory(r, F)}`); continue; }
+    out.push(`${r.name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${F.count} merged tickets · ${r.workers} workers${checkin ? ' · parked dated at the next check-in' : ''}`,
+      `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
+    for (const x of r.rows) {
+      out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
+    }
+    if (!r.rows.length) out.push('  No unfinished tickets.');
+    out.push(`Queue done: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
+  }
+  return out.join('\n');
+}
+
+// The screens' header note on tickets waiting on the user.
+const parkedBadge = (checkin) => (checkin ? 'Parked: dated at the next check-in · c to undo' : 'Parked: no date · c to date them at check-ins');
+
 // ---- screens ---------------------------------------------------------------------------------
 
 // The memory one worker takes at its heaviest: the profile writes it into the cap's reason
@@ -135,7 +241,7 @@ const unslotted = (r) => count(r, 'ready') - Math.max(0, r.workers - count(r, 'r
 // the interactive screen draws the rows with a selection and opens a row's `open` view on Enter.
 const joined = (s) => [...s.head, ...s.rows.map((x) => x.line), ...s.foot].join('\n');
 
-function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false } = {}) {
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   const allowed = liveAllowed(repos);
@@ -145,7 +251,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const head = [
     `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
     '',
-    `  ${pad('REPO', w)}${pad('LAST PASS', 15)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('STUCK', 7)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  WORKERS`,
+    `  ${pad('REPO', w)}${pad('LAST PASS', 15)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('STUCK', 7)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', 12)}  WORKERS`,
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
@@ -154,10 +260,10 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     you += count(r, 'needs'); stuck += count(r, 'stuck');
     const last = r.live ? `live ${ago(now - r.last).replace(' ago', '')}` : ago(r.last == null ? null : now - r.last);
-    row(r, `  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`);
+    row(r, `  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${pad(queueDone(r, now, checkin), 12)}  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`);
   }
   const none = repos.filter((r) => !hasBatch(r));
-  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', 64)}  cap ${r.cap}`);
+  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', 78)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
   foot.push('', `${you} need you, ${stuck} stuck.`);
   if (!all && none.length) foot.push(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`);
@@ -187,10 +293,10 @@ function detail(r, x) {
 }
 
 // The columns before TITLE on a ticket row.
-const ROW_LEAD = 63;
+const ROW_LEAD = 82;
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60.
-function repoParts(r, { now = Date.now(), width = null } = {}) {
+function repoParts(r, { now = Date.now(), width = null, checkin = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
@@ -199,12 +305,13 @@ function repoParts(r, { now = Date.now(), width = null } = {}) {
     `${r.name} · batch ${r.q.batch ?? '-'} · ${pass}`,
     `workers ${count(r, 'running')} running of ${r.workers} (cap ${r.cap}) · ${r.done} done, not shown`,
     '',
-    `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', 34)}TITLE`,
+    `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', 26)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`,
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
+  const F = forecastOf(r, { now, checkin });
   const rows = r.rows.map((x) => {
     const title = triageOf(r.stateDir, x.t.key)?.summary ?? '';
-    const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 32), 34)}${cut(title, tw)}`.trimEnd();
+    const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(title, tw)}`.trimEnd();
     return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key } };
   });
   const foot = !r.rows.length ? ['  No unfinished tickets.']
@@ -217,9 +324,10 @@ export const repoScreen = (r, opts) => joined(repoParts(r, opts));
 const logPath =(r, key) => join(r.stateDir, 'logs', `${key}.log`);
 
 // `jiraUrl` adds the Jira line the interactive screen opens with o.
-function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
+function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), checkin = false } = {}) {
   const t = r.q.tickets[key];
   const k = shownState(r.q, t);
+  const row = r.rows.find((x) => x.t.key === key);
   const tr = triageOf(r.stateDir, key) ?? {};
   const pos = r.rows.find((x) => x.t.key === key)?.pos;
   const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
@@ -232,6 +340,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null } = {}) {
   ];
   const rows = [], out = [];
   if (k === 'running') head.push(`A worker is on it, at stage ${t.stage ?? '?'}.`, '');
+  if (row) head.push(...etaLines(r, forecastOf(r, { now, checkin }), row, now));
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
     head.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
@@ -279,7 +388,8 @@ export function resolveRepo(repos, word) {
 }
 
 const MOVES = ['up', 'down', 'top', 'bottom', 'move'];
-const VERBS = ['show', ...MOVES, 'workers'];
+const SHIPS = ['ships', 'when'];
+const VERBS = ['show', ...MOVES, 'workers', 'ships'];
 const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
 
 // What the words name: a view, or a move or workers change. The one-shot command line and the
@@ -287,9 +397,15 @@ const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
 function target(repos, words) {
   const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
   if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
+  // `ships [<repo>]` reads before a repo name, and `<repo> ships` after one.
+  if (SHIPS.includes(repoWord.toLowerCase())) {
+    if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q ships [<repo>].`);
+    return { kind: 'ships', slug: verb ? resolveRepo(repos, verb).slug : null };
+  }
   const r = resolveRepo(repos, repoWord);
   if (!verb) return { kind: 'repo', slug: r.slug };
   const unknown = () => new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". Verbs: ${VERBS.join(', ')}.`);
+  if (SHIPS.includes(verb)) { if (keyWord) throw unknown(); return { kind: 'ships', slug: r.slug }; }
   if (!VERBS.includes(verb)) throw unknown();
   if (r.error) throw new Usage(`${r.name}: queue unreadable: ${r.error}`);
   if (!r.q) throw new Usage(`${r.name} has no batch yet.`);
@@ -384,18 +500,19 @@ function loadOrRefuse(now) {
 }
 
 export function run(argv, { now = Date.now() } = {}) {
-  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>]\n'
+  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>';
   checkFlags(argv);
   const repos = loadOrRefuse(now);
   const v = target(repos, argv);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
+  if (v.kind === 'ships') return shipsScreen(repos, v.slug, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
     return `${said}\n\n${repoScreen(loadOrRefuse(now).find((x) => x.slug === v.slug), { now })}`;
   }
   const r = repos.find((x) => x.slug === v.slug);
-  return v.kind === 'repo' ? repoScreen(r, { now }) : ticketScreen(r, v.key);
+  return v.kind === 'repo' ? repoScreen(r, { now }) : ticketScreen(r, v.key, { now });
 }
 
 // ---- the interactive screen --------------------------------------------------------------------
@@ -427,29 +544,32 @@ const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t
 // Rereads the queues every REFRESH_MS, keeping the selection on the same repo or ticket.
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
-  opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS,
+  opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
 } = {}) {
-  let repos = loadOrRefuse(Date.now());
+  let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
   // and how far past the selection it shows when it has.
-  let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null;
+  // `checkin`: tickets waiting on the user are dated as if answered at the next check-in (c).
+  let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null, checkin = false;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
   const repoOf = (slug) => repos.find((r) => r.slug === slug);
+  // The parked note joins the crumbs while any ticket in view waits on the user, or c is on.
+  const noted = (crumbs, rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? `${crumbs}    ${parkedBadge(checkin)}` : crumbs);
 
   function build() {
-    const now = Date.now();
+    const now = clock();
     const w = width();
     if (view.kind === 'overview') {
-      return { crumbs: 'desk-q', ...overviewParts(repos, { all: view.all, now, interactive: true }),
-        keys: `↑↓ select · enter open · a ${view.all ? 'hide repos with no batch' : 'all repos'} · : command · q quit` };
+      return { crumbs: noted('desk-q', repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
+        keys: `↑↓ select · enter open · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · : command · q quit` };
     }
     const r = repoOf(view.slug);
     const back = ': command · esc back · q quit';
     if (!r) return { crumbs: 'desk-q', head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: back };
-    const crumbs = ['desk-q', r.name, view.key].filter(Boolean).join(' › ');
-    if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w }), keys: `↑↓ select · enter open · ${r.q ? `${MOVE_KEYS} · ` : ''}${back}` };
+    const crumbs = noted(['desk-q', r.name, view.key].filter(Boolean).join(' › '), [r]);
+    if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${back}` };
     if (!r.q?.tickets?.[view.key]) return { crumbs, head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: back };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
@@ -459,8 +579,8 @@ export function interactive({
       return { crumbs: `${crumbs} › log`, head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
     }
     const jira = jiraUrlFor(r.slug, view.key);
-    const s = ticketParts(r, view.key, { width: w, jiraUrl: jira });
-    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}${MOVE_KEYS} · l log · ${jira ? 'o Jira · ' : ''}${back}`;
+    const s = ticketParts(r, view.key, { width: w, jiraUrl: jira, now, checkin });
+    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}${MOVE_KEYS} · l log · ${jira ? 'o Jira · ' : ''}c parked dates · ${back}`;
     return { crumbs, ...s, keys };
   }
 
@@ -473,7 +593,7 @@ export function interactive({
     selId = rows[sel]?.id ?? null;
     const w = width(), h = height();
     const fit = (l) => cut(l, w);
-    const body = [screen.crumbs, '', ...screen.head.map(fit),
+    const body = [fit(screen.crumbs), '', ...screen.head.map(fit),
       ...rows.map((x, i) => (i === sel ? `${ESC}7m${fit(`›${x.line.slice(1)}`)}${ESC}27m` : fit(x.line))), ...screen.foot.map(fit)];
     // A message can be longer than the line (a refused raise says what raising the cap takes).
     const status = [...wrap(msg, w), cmd != null ? `:${cmd}` : screen.keys].filter(Boolean).map(fit);
@@ -512,7 +632,7 @@ export function interactive({
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
     try { msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
-    try { repos = loadOrRefuse(Date.now()); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = loadOrRefuse(clock()); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
   }
 
   function runCommand(line) {
@@ -525,6 +645,9 @@ export function interactive({
         if (!(view.kind === 'repo' && view.slug === v.slug)) go({ kind: 'repo', slug: v.slug });
         if (v.key) selId = v.key;
         act(v);
+      } else if (v.kind === 'ships') {
+        // The dates are on the queue screens already: ships opens the repo's, or every repo's.
+        go(v.slug ? { kind: 'repo', slug: v.slug } : { kind: 'overview', all: false });
       } else if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else go(v);
     } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
   }
@@ -560,6 +683,10 @@ export function interactive({
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; }
     else if (str === 'a' && view.kind === 'overview') view = { ...view, all: !view.all };
+    else if (str === 'c' && view.kind !== 'log') {
+      checkin = !checkin;
+      msg = checkin ? 'Parked tickets are now dated as if you answer at the next check-in (08:00 or 17:00).' : 'Parked tickets have no date until you answer them.';
+    }
     else if (str === 'l' && view.kind === 'ticket') {
       const r = repoOf(view.slug);
       if (r && existsSync(logPath(r, view.key))) go({ kind: 'log', slug: view.slug, key: view.key });
@@ -579,7 +706,7 @@ export function interactive({
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
   timer = setInterval(() => {
-    try { repos = loadOrRefuse(Date.now()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = loadOrRefuse(clock()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
   draw();
@@ -593,14 +720,14 @@ const isMain = (() => {
 if (isMain) {
   const argv = process.argv.slice(2);
   try {
-    // A terminal on both ends gets the screen; anything piped, --plain, and a change typed in the
-    // shell get the plain output.
+    // A terminal on both ends gets the screen; anything piped, --plain, a change typed in the shell
+    // and ships (until it has a screen of its own) get the plain output.
     let start = null;
     if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
       checkFlags(argv);
       start = target(loadOrRefuse(Date.now()), argv);
     }
-    if (start && !isWrite(start)) {
+    if (start && !isWrite(start) && start.kind !== 'ships') {
       const ui = interactive({ start });
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));

@@ -8,7 +8,7 @@
 // a ticket first spawned before that field existed falls back to its logs.
 //
 // No model, no Jira: local files, plus one `gh pr list` in a build for tickets that merged before
-// the queue recorded `merged_at`.
+// the queue recorded `merged_at`. `forecast` turns the history and a queue into desk-q's dates.
 import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, openSync, readSync, closeSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -136,6 +136,153 @@ export function recordMerge({ state, queue, key, mergedPrs, now = Date.now() }) 
   const line = historyLine({ key, size: sizeOf(state, key), spawned_at: spawned, merged_at: t.merged_at });
   append(state, [line]);
   return { added: [line], already: 0, noSpawn: [] };
+}
+
+// ---- the forecast ------------------------------------------------------------------------------
+//
+// Each repo's queue run forward RUNS times, each ticket's duration drawn from the repo's own history
+// by size. Starts and ships are the 50th percentile of a ticket's start and finish across the runs,
+// "could run to" the 80th. Seeded, so the same queue, history and clock give the same dates.
+
+export const RUNS = 2000;
+export const MIN_HISTORY = 10;
+// A size with fewer merged tickets than this draws from the whole history instead.
+export const MIN_OF_SIZE = 5;
+// The user's check-ins: a ticket waiting on them is dated at the next one when they press c.
+export const CHECKIN_HOURS = [8, 17];
+const HOUR = 3_600_000, DAY = 86_400_000;
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// The history lines that merged in the last WINDOW_DAYS before `now`, each with a usable duration.
+export function recentHistory(lines, now) {
+  const since = now - WINDOW_DAYS * DAY;
+  return (lines ?? []).filter((l) => Number.isFinite(l.hours) && l.hours >= 0 && Date.parse(l.merged_at) >= since && Date.parse(l.merged_at) <= now);
+}
+
+// Durations in hours, ascending: every line under `all`, and each size's own.
+export function durations(lines) {
+  const all = lines.map((l) => l.hours).sort((a, b) => a - b);
+  const bySize = {};
+  for (const l of lines) (bySize[l.size] ??= []).push(l.hours);
+  for (const v of Object.values(bySize)) v.sort((a, b) => a - b);
+  return { all, bySize };
+}
+
+// The durations a ticket of `size` draws from, and whether they are its size's own.
+export function durationsFor(d, size) {
+  const own = d.bySize[size];
+  return own?.length >= MIN_OF_SIZE ? { v: own, own: true } : { v: d.all, own: false };
+}
+
+export const quantile = (v, p) => v[Math.min(v.length - 1, Math.floor(p * v.length))];
+
+// Local midnight, so "today" and a weekday are the user's own.
+const dayOf = (t) => new Date(t).setHours(0, 0, 0, 0);
+const hm = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+export const dayAndTime = (t) => { const d = new Date(t); return `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]} ${hm(t)}`; };
+
+// Counted in calendar days: today "today 21:30", the next 6 days "Thu 14:30", 7 days or more "26 Oct",
+// with the year only when it is not this year's ("4 Jan 2027").
+export function when(t, now) {
+  if (t == null) return '—';
+  const days = Math.round((dayOf(t) - dayOf(now)) / DAY);
+  const d = new Date(t);
+  if (days === 0) return `today ${hm(t)}`;
+  if (days > 0 && days < 7) return `${DOW[d.getDay()]} ${hm(t)}`;
+  return `${d.getDate()} ${MON[d.getMonth()]}${d.getFullYear() !== new Date(now).getFullYear() ? ` ${d.getFullYear()}` : ''}`;
+}
+
+// The first check-in after `t`.
+export function nextCheckin(t) {
+  const d = new Date(t);
+  for (let i = 0; i < 2; i++) {
+    for (const h of CHECKIN_HOURS) {
+      const c = new Date(d.getFullYear(), d.getMonth(), d.getDate() + i, h).getTime();
+      if (c > t) return c;
+    }
+  }
+  return null;
+}
+
+// mulberry32: a small seeded generator, so every run of the forecast draws the same numbers.
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// The share of a running ticket's work done, from its stage ("6/9", "4b/9").
+const stageDone = (st) => { const m = /^(\d+)(b?)\/9\b/.exec(String(st ?? '')); return m ? Math.min(1, (Number(m[1]) + (m[2] ? 0.5 : 0)) / 9) : 0; };
+
+// `rows` are the queue's unfinished tickets in spawn order, each {key, k, size, stage, held, collides}
+// with `k` desk-q's shown state. Returns {none, count} with too little history; otherwise
+// {T: {key: {start, likely, late} | null}, clears, undated, count}.
+export function forecast({ rows, workers, history, now, checkin = false }) {
+  const count = history.length;
+  if (count < MIN_HISTORY) return { none: true, count };
+  const d = durations(history);
+  const inQ = new Set(rows.map((x) => x.key));
+  // A collision recorded on either ticket keeps both apart.
+  const coll = Object.fromEntries(rows.map((x) => [x.key, new Set()]));
+  for (const x of rows) for (const c of x.collides ?? []) if (inQ.has(c) && c !== x.key) { coll[x.key].add(c); coll[c].add(x.key); }
+  const avail = (x) => (x.k === 'needs' ? (checkin ? nextCheckin(now) : null) : ['stuck', 'failed'].includes(x.k) ? null : now);
+  const pool = Object.fromEntries(rows.map((x) => [x.key, durationsFor(d, x.size).v]));
+  const rand = rng(42);
+  const draw = (x) => pool[x.key][Math.floor(rand() * pool[x.key].length)] * HOUR;
+  const starts = Object.fromEntries(rows.map((x) => [x.key, []]));
+  const ends = Object.fromEntries(rows.map((x) => [x.key, []]));
+  for (let run = 0; run < RUNS; run++) {
+    const f = {}, s = {}, slots = Array(Math.max(1, workers)).fill(now);
+    const least = () => slots.indexOf(Math.min(...slots));
+    for (const x of rows.filter((y) => y.k === 'running')) {
+      const i = least();
+      s[x.key] = now;
+      f[x.key] = now + draw(x) * (1 - stageDone(x.stage));
+      slots[i] = Math.max(slots[i], f[x.key]);
+    }
+    let pending = workers > 0 ? rows.filter((x) => x.k !== 'running') : [];
+    while (pending.length) {
+      const i = least(), free = slots[i];
+      let best = null, bestT = Infinity;
+      for (const x of pending) {
+        const a = avail(x);
+        if (a == null) continue;
+        let t = Math.max(a, free), ok = true;
+        for (const b of x.held ?? []) {
+          if (!inQ.has(b)) continue;
+          if (f[b] == null) { ok = false; break; }
+          t = Math.max(t, f[b]);
+        }
+        if (!ok) continue;
+        for (const c of coll[x.key]) if (f[c] != null && s[c] <= t && f[c] > t) t = f[c];
+        // Queue order wins among the tickets that can start as soon as the slot is free.
+        if (t <= free) { best = x; bestT = t; break; }
+        if (t < bestT) { best = x; bestT = t; }
+      }
+      if (!best) break;
+      const dur = draw(best);
+      // Never alongside a ticket it collides with, whichever of the two was placed first.
+      for (let moved = true; moved;) {
+        moved = false;
+        for (const c of coll[best.key]) if (f[c] != null && s[c] < bestT + dur && f[c] > bestT) { bestT = f[c]; moved = true; }
+      }
+      s[best.key] = bestT;
+      f[best.key] = slots[i] = bestT + dur;
+      pending = pending.filter((x) => x !== best);
+    }
+    for (const k of Object.keys(f)) { starts[k].push(s[k]); ends[k].push(f[k]); }
+  }
+  const T = {};
+  for (const x of rows) {
+    const v = ends[x.key].sort((a, b) => a - b), st = starts[x.key].sort((a, b) => a - b);
+    T[x.key] = v.length >= RUNS * 0.9 ? { start: quantile(st, 0.5), likely: quantile(v, 0.5), late: quantile(v, 0.8) } : null;
+  }
+  const dated = rows.filter((x) => T[x.key]);
+  return { T, count, clears: dated.length ? Math.max(...dated.map((x) => T[x.key].likely)) : null, undated: rows.length - dated.length };
 }
 
 export function describe(r) {
