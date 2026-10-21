@@ -476,6 +476,17 @@ opening the PR is §3 `pr-open`. It is tried once: a refused push, the rows, or 
 Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n>` so the gate can mark
 it ready.
 
+**The promotion PR carries the batch's ledger.** One comment on it, which only the autopilot writes,
+holds a table with one row per child (key, state, PR link, and the model its worker ran on) between
+`<!-- desk-autopilot:ledger -->` and `<!-- desk-autopilot:ledger-end -->`, so the feature can be
+followed from GitHub. `pass.mjs` finds that comment by its opening marker (one you wrote, not a
+reply quoting it), creates it once if it is missing and edits it in place whenever a row changes, a
+child merging into the base included, under §3 `pr-edit`. It records what it wrote as
+`promotion.ledger` so an unchanged ledger is not written again. The PR body is never read or
+written for the ledger, so nothing the person writes there is overwritten; edits to the ledger
+comment itself are. Comments that cannot be read or written (or the row not granted) are reported
+as `ledger not updated`, the batch carries on, and the next pass tries again.
+
 **The base gate checks the feature as a whole before the promotion PR leaves draft.** When the
 batch would go idle, `pass.mjs` decides:
 

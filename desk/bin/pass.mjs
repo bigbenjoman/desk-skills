@@ -15,6 +15,7 @@ import { workerMarkers } from './harvest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
+import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -878,6 +879,30 @@ function baseGate(qx) {
 }
 const featureBase = qNow.feature === true && BASE && SOURCE && BASE !== SOURCE && Object.keys(qNow.tickets).length > 0;
 const gatePending = featureBase && batchIdle(qNow, prState) ? baseGate(qNow) : false;
+
+// ---- promotion ledger ------------------------------------------------------
+// The promotion PR carries one comment with one row per child (ledger.mjs), rewritten whenever a row
+// changes, a child merging into the base included. The PR body is never touched. A comment that cannot
+// be read or written is reported and the batch carries on; nothing is recorded until a write
+// succeeds, so the next pass tries again.
+function updateLedger(qx) {
+  const n = qx.promotion?.pr;
+  if (n == null) return;
+  for (const t of Object.values(qx.tickets)) if (t.state === 'done' && t.result?.pr != null) readPr(t.result.pr);
+  const ledger = renderLedger(qx, prState);
+  const hash = ledgerHash(ledger);
+  if (qx.promotion.ledger === hash) return;
+  const notUpdated = (why) => out.push(`promotion PR #${n}: ledger not updated, ${why}. The batch carries on; the next pass tries again`);
+  if (DRY) { out.push(`promotion PR #${n} (dry run): would rewrite its ledger comment`); return; }
+  const editPerm = E.permission('pr-edit');
+  if (editPerm !== 'yes') { notUpdated(`since config §3 ${E.permissionKey('pr-edit')} is "${editPerm}"`); return; }
+  const gh = (args, input) => shOut('gh', args, input == null ? {} : { input, stdio: ['pipe', 'pipe', 'pipe'] });
+  const done = syncLedger({ n, repo: GH_REPO, ledger, gh });
+  if (!done.ok) { notUpdated(`since ${done.why}`); return; }
+  if (done.action !== 'unchanged') out.push(`promotion PR #${n}: ledger comment ${done.action}`);
+  q('set-batch', `promotion.ledger=${hash}`);
+}
+updateLedger(queue());
 
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 

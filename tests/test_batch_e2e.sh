@@ -57,6 +57,7 @@ cat > "$T/config.md" <<EOF
 | \`git-commit\` | Commit | \`yes\` | \`yes\` |
 | \`git-push\` | Push | \`yes\` | \`yes\` |
 | \`pr-open\` | Open a draft PR | \`yes\` | \`yes\` |
+| \`pr-edit\` | Edit a PR | \`yes\` | \`yes\` |
 | \`codex-review\` | Codex | \`yes\` | \`no\` |
 | \`pr-ready\` | Undraft | \`yes\` | \`yes\` |
 | \`batch-base-push\` | Push to a batch base | \`ask\` | \`yes\` |
@@ -144,17 +145,44 @@ for (const line of script) {
 fs.unlinkSync(reg);
 EOF
 # The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, `pr list` finds no PR, and
-# `pr create` opens PR #200. Every call is logged to gh.log.
+# `pr create` opens PR #200. A PR's comments are pr/<n>.comments (JSON), added by `pr comment` and
+# edited by `api -X PATCH .../issues/comments/<id>`, and unreadable while pr/<n>.unreadable exists.
+# A PR's body is pr/<n>.body, written by `pr edit --body-file -` or `api -X PATCH .../pulls/<n>`, so a
+# body write shows up in the ledger checks. Every call is logged to gh.log.
 mkdir -p "$T/pr"
 cat > "$T/stub/gh" <<EOF
 #!$NODE
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
+const cf = (n) => '$T/pr/' + n + '.comments';
+const cs = (n) => { try { return JSON.parse(fs.readFileSync(cf(n), 'utf8')); } catch { return []; } };
+const url = (id) => 'https://github.com/acme/widgets/pull/200#issuecomment-' + id;
+if (a[0] === 'pr' && a[1] === 'view' && a.includes('comments')) {
+  if (fs.existsSync('$T/pr/' + a[2] + '.unreadable')) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
+  console.log(JSON.stringify({ comments: cs(a[2]) })); process.exit(0);
+}
+if (a[0] === 'pr' && a[1] === 'comment') {
+  const c = cs(a[2]); const id = 900 + c.length;
+  c.push({ viewerDidAuthor: true, body: fs.readFileSync(0, 'utf8'), url: url(id) });
+  fs.writeFileSync(cf(a[2]), JSON.stringify(c)); console.log(url(id)); process.exit(0);
+}
+if (a[0] === 'pr' && a[1] === 'edit' && a.includes('--body-file')) { fs.writeFileSync('$T/pr/' + a[2] + '.body', fs.readFileSync(0, 'utf8')); process.exit(0); }
+if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && /\/pulls\/\d+$/.test(a[3])) {
+  fs.writeFileSync('$T/pr/' + a[3].split('/').pop() + '.body', JSON.parse(fs.readFileSync(0, 'utf8')).body ?? ''); console.log('{}'); process.exit(0);
+}
+if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && a[3].includes('/issues/comments/')) {
+  const id = a[3].split('/').pop(); const c = cs(200); const hit = c.find((x) => x.url === url(id));
+  if (!hit) { console.error('HTTP 404: Not Found'); process.exit(1); }
+  hit.body = JSON.parse(fs.readFileSync(0, 'utf8')).body; fs.writeFileSync(cf(200), JSON.stringify(c)); console.log('{}'); process.exit(0);
+}
 if (a[0] === 'pr' && a[1] === 'view') { let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {} console.log(s); }
 if (a[0] === 'pr' && a[1] === 'create') console.log('https://github.com/acme/widgets/pull/200');
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
+# The bodies of PR #200's ledger comments, and how many there are.
+ledger() { "$NODE" -e 'let c = []; try { c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch {} for (const x of c) if (x.body.startsWith("<!-- desk-autopilot:ledger -->")) console.log(x.body);' "$T/pr/200.comments"; }
+ledgers() { ledger | grep -c "^<!-- desk-autopilot:ledger -->"; }
 ln -s "$NODE" "$T/stub/node"
 
 export PATH="$T/stub:/usr/bin:/bin:/usr/sbin:/sbin" DESK_CONFIG="$T/config.md" DESK_HOME="$SRC/desk" \
@@ -518,12 +546,17 @@ printf 'WAIT\nAUTOPILOT_DONE: pr=151 jira=none\n' > "$T/scripts/T-51.2"
 printf 'WAIT\nAUTOPILOT_DONE: pr=152 jira=none\n' > "$T/scripts/T-52.1"
 q admit T-51; q admit T-52
 : > "$T/gh.log"
+# What the person and a reviewer will have written on PR #200: its body, and a comment.
+printf 'Notes from the person: check the summary screen.\n\n## After merge\n- tell support\n' > "$T/pr/200.body"; cp "$T/pr/200.body" "$T/pr/200.body.orig"
+printf '%s' '[{"viewerDidAuthor":false,"body":"A reviewer: <!-- desk-autopilot:ledger --> looks odd","url":"https://github.com/acme/widgets/pull/200#issuecomment-1"}]' > "$T/pr/200.comments"
 pass
 check "AC1: one empty commit is pushed to the base"              '[ "$(git -C "$T/origin.git" rev-list --count main..feat/E)" = 1 ] && [ -z "$(git -C "$T/origin.git" diff main feat/E)" ]'
 check "AC1: a draft promotion PR from the base to main is open, titled with the epic key" 'grep -q "^pr create --repo acme/widgets --draft --base main --head feat/E --title E-1: " "$T/gh.log" && [ "$(bfield promotion.pr)" = 200 ] && echo "$out" | grep -q "promotion PR #200 opened as a draft, feat/E → main"'
 check "AC1: the children spawn"                                  '[ "$(state T-51)" = running ] && [ "$(state T-52)" = running ]'
 pass
 check "AC1: it is opened once"                                   '[ "$(grep -c "^pr create" "$T/gh.log")" = 1 ]'
+check "ledger: one ledger comment on the promotion PR, one row per child, with its state and model" '[ "$(ledgers)" = 1 ] && ledger | grep -qE "^\| T-51 \| running \| — \| default \|$" && ledger | grep -qE "^\| T-52 \| running \| — \| default \|$" && [ "$(ledger | grep -c "^| T-")" = 2 ]'
+check "ledger: it is created once, and an unchanged one is not written again" '[ "$(grep -c "^pr comment 200" "$T/gh.log")" = 1 ] && ! grep -q "^api -X PATCH" "$T/gh.log"'
 
 # AC6: a parked child: the gate does not run, and the report lists it.
 echo MERGED > "$T/pr/152"
@@ -533,6 +566,9 @@ check "AC6: with a child parked the gate does not run, and the report names it" 
 node "$B/answer.mjs" T-51 "use makeFixture" >/dev/null 2>&1; q requeue T-51
 pass; finish T-51
 pass
+check "ledger: a child merging into the base rewrites its row in the same comment, with its PR" '[ "$(ledgers)" = 1 ] && ledger | grep -qE "^\| T-52 \| merged \| #152 \| default \|$" && ledger | grep -qE "^\| T-51 \| in review \| #151 \| default \|$" && grep -q "^api -X PATCH repos/acme/widgets/issues/comments/901 --input -" "$T/gh.log" && [ "$(grep -c "^pr comment 200" "$T/gh.log")" = 1 ]'
+check "ledger: the PR body is never read or written, so the person's text is unchanged" 'cmp -s "$T/pr/200.body" "$T/pr/200.body.orig" && ! grep -q "^pr edit 200" "$T/gh.log" && ! grep -q "^api .*/pulls/200" "$T/gh.log" && ! grep -qE "^pr view 200 .*--json [^ ]*body" "$T/gh.log"'
+check "ledger: the reviewer's comment is left alone"            'grep -q "A reviewer: <!-- desk-autopilot:ledger --> looks odd" "$T/pr/200.comments"'
 
 # AC3 + AC5: every child merged into the base, with a spec still expected-fail, one failing when run,
 # and a failing typecheck. main moved on meanwhile.
@@ -546,10 +582,14 @@ git -C "$T/basework" add -A && git -C "$T/basework" commit -q -m "the children, 
 git -C "$T/repo" commit -q --allow-empty -m "main moved" && git -C "$T/repo" push -q origin main
 echo MERGED > "$T/pr/151"
 : > "$T/checks.log"; : > "$T/specs-run.log"
+touch "$T/pr/200.unreadable"
 pass
 check "AC3: once every child has merged, the gate starts in the background" '[ $rc -eq 10 ] && echo "$out" | grep -q "BASE GATE: started on feat/E" && ! echo "$out" | grep -q "^IDLE"'
+check "ledger: comments that cannot be read are reported, and the batch carries on" 'echo "$out" | grep -q "promotion PR #200: ledger not updated, since its comments could not be read (HTTP 502: Bad Gateway). The batch carries on" && ledger | grep -qE "^\| T-51 \| in review "'
+rm "$T/pr/200.unreadable"
 wait_gate
 pass
+check "ledger: the next pass writes it, in the same comment"     '[ "$(ledgers)" = 1 ] && ledger | grep -qE "^\| T-51 \| merged \| #151 \| default \|$" && cmp -s "$T/pr/200.body" "$T/pr/200.body.orig"'
 BWT="$T/wt/base-feat-E"
 check "AC3: the gate merged main into the base first"            'git -C "$T/origin.git" merge-base --is-ancestor main feat/E'
 check "AC3: it ran every acceptance spec in the base worktree, an earlier epic's included" 'grep -qx AC1 "$T/specs-run.log" && grep -qx AC2 "$T/specs-run.log" && grep -qx DoD4 "$T/specs-run.log" && grep -qx DoD5 "$T/specs-run.log"'
