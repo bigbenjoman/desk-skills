@@ -37,7 +37,8 @@ const QUEUE = queueFile();
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
-// orchestrator's ladder changes it per pass with set-batch, and pass.mjs never exceeds the cap.
+// orchestrator's ladder changes it per pass with set-batch, and pass.mjs never exceeds the cap. A
+// count the user set carries `concurrency_by=user` (set-batch keeps their number as concurrency_user).
 const empty = () => ({ version: 1, batch: null, concurrency: concurrencyLimits().def, tickets: {} });
 
 function load() {
@@ -465,6 +466,11 @@ switch (cmd) {
       if (k === 'base') { setBase(q, v); continue; }
       setPath(q, k, coerce(v));
     }
+    // A count the user set is kept as theirs: the ladder may lower `concurrency` on memory and leaves
+    // `concurrency_by` alone, so `concurrency_user` is the number it raises back to.
+    if (q.concurrency_by === 'user') {
+      if (args.some((p) => p.startsWith('concurrency_by=')) || q.concurrency_user == null) q.concurrency_user = q.concurrency;
+    } else delete q.concurrency_user;
     save(q);
     console.log(`batch: ${args.join(' ')}`);
     break;
@@ -523,7 +529,7 @@ switch (cmd) {
     if (!rows.length) { console.log('queue is empty'); break; }
     const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
     rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
-    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
+    console.log(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.concurrency_by === 'user' ? ` (user's ${q.concurrency_user ?? q.concurrency})` : ''}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
     for (const t of rows) {
       const stuck = isHeld(t) && !waitingOnMerge(q, t);
       const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();

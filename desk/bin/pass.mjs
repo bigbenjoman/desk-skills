@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, st
 import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
-import { batchIdle, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
+import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
@@ -408,10 +408,11 @@ const tierFor = (t) => {
   return E.modelTier({ lane: t.lane, size });
 };
 
-// Concurrency: the queue's field (the orchestrator's per-pass ladder decision), never above the
-// cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`, default 2 / 3).
-const { def: concDefault, cap: concCap } = E.concurrencyLimits();
-const concurrency = Math.min(Number(fresh.concurrency ?? concDefault), concCap);
+// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
+// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
+// default 2 / 3). The report says whose number it is.
+const CONC = batchConcurrency(fresh, E.concurrencyLimits());
+const concurrency = CONC.n;
 
 // Memory gate. Weighing only budget and concurrency would leave the whole memory ladder resting on
 // the orchestrator remembering to apply it between passes — and its context is deliberately flat,
@@ -753,6 +754,11 @@ if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  $
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);
 if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
+// A worker count of 0 is a pause, not a finished batch: say what is waiting behind it.
+if (concurrency <= 0 && eligible.length) {
+  out.push(`paused: new spawns are paused by the batch's worker count (concurrency ${concurrency}); ${eligible.length} triaged ticket(s) wait. ` +
+    `Resume with node ${join(BIN, 'queue.mjs')} set-batch concurrency=<n> concurrency_by=user`);
+}
 // Held tickets. Each finished blocker's PR is looked up once per pass, so a hold behind a PR that was
 // closed unmerged, or a blocker that finished with no PR, surfaces instead of waiting for ever.
 const qNow = queue();
@@ -944,6 +950,7 @@ if (needsYou.length) lines.push(`NOTIFY: ${needsYou.length} item(s) need you —
 else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run');
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
+lines.push(CONC.line);
 lines.push('');
 lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 if (idle) {
