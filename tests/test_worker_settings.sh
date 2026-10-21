@@ -126,7 +126,7 @@ for item in 'bash -c tests/run.sh' 'bash' 'bash /abs/run.sh' 'bash ../run.sh' 'b
     '[ $rc -eq 0 ] && [[ "$out" == *"\"$item\" starts with ${item%% *}, which is never allow-listed"* ]] && ! allows "Bash($item:*)" && ! allows "Bash($item)"'
 done
 
-# ---- DS-134: the spellings workers actually run, matched against the generated rules ----------------
+# ---- the spellings workers actually run, matched against the generated rules ----------------------
 # verdict <command> -> allow | refused | mixed. A `prefix:*` rule is matched both as a bare string prefix
 # and as a word-bounded one, because which the harness applies has not been pinned down: a command
 # counts as allowed only if it is allowed either way, and as refused only if it is refused either way.
@@ -170,7 +170,7 @@ CREDS="$HOME/.config/desk/repos/acme__widgets"; CFG="$CREDS/config.md"
 mkdir -p "$HOME/.claude/agents" "$CREDS"; : > "$HOME/.claude/agents/pr-expert.md"; : > "$CREDS/atlassian-token"
 settings '`bash tests/run.sh` `sub: bash tests/sub.sh`' '| Typecheck | `bash tests/tc.sh` |' "$(perm3 ask)"
 L="$B/with-lock.sh"; W="$T/repo"
-check "DS-134 settings written"                            '[ $rc -eq 0 ] && [ -f "$T/ws.json" ]'
+check "spellings fixture: settings written"                           '[ $rc -eq 0 ] && [ -f "$T/ws.json" ]'
 check "AC1 root test command: every with-lock spelling allowed" \
   'ok "$L test bash tests/run.sh" "$L test -- bash tests/run.sh" "$L test --cwd . -- bash tests/run.sh" "$L test --cwd . bash tests/run.sh" \
       "$L test bash tests/run.sh tests/test_jira.sh" "$L test --cwd $W -- bash tests/run.sh"'
@@ -186,9 +186,11 @@ check "AC6 jira-transition ask: transition refused"        'no "desk-jira transi
 check "AC7 desk-jira view allowed"                         'ok "desk-jira view DS-1"'
 check "AC8 desk-jira --help and help allowed"              'ok "desk-jira --help" "desk-jira help"'
 check "AC9 the repo desk config.md is readable"            '[ "$(readable "$CFG")" = allow ]'
-check "AC10 the Jira token beside it is not"               '[ "$(readable "$CREDS/atlassian-token")" = refused ] && no "cat $CREDS/atlassian-token"'
+check "AC10 the Jira token beside it is not"               '[ "$(readable "$CREDS/atlassian-token")" = refused ] && no "cat $CREDS/atlassian-token" "cat $CREDS/*" "rg . $CREDS" "head ~/.config/desk/repos/acme__widgets/atlassian-t*" "cat \$HOME/.config/desk/repos/acme__widgets/x"'
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
-check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/vitest run"'
+check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test"'
+check "AC12 no migrate or seed without a ticket database"  'no "./node_modules/.bin/prisma migrate reset --force" "./node_modules/.bin/prisma db push" "node_modules/.bin/drizzle-kit push" "./node_modules/.bin/knex seed:run"'
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
