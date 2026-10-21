@@ -681,7 +681,7 @@ check "create --check refuses what create refuses" '[ $rc -ne 0 ] && printf "%s\
 err=$(cd "$A" && DESK_JIRA_PENDING_PARENT='{"key":"@1"}' "$J" create Story s lint/clean.md customfield_10208=M parent=@1 --no-lint 2>&1); rc=$?
 check "create refuses parent=@<row> outside a batch check" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "parent=@<row> is for create-batch" && [ "$(creates)" -eq "$n0" ]'
 
-# DS-133 create-batch: every row checked as create checks it, then each sent in order. Its own stub
+# create-batch: every row checked as create checks it, then each sent in order. Its own stub
 # numbers the tickets it creates (KAN-101 up) and rejects a summary of "third".
 printf '{"issues": {}, "children": {}, "create_seq": 101, "create_fail": ["third"], "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}\n' > "$T/batch.json"
 BTPORT=$((PORT + 7)); python3 "$S/stub_jira.py" "$BTPORT" "$T/batch.log" "" "$T/batch.json" & BTSTUB=$!
@@ -697,7 +697,7 @@ batch "$A" lint/ok.tsv
 check "create-batch AC1: each row is created in order, one created line per row" '[ $rc -eq 0 ] && [ "$(bcreates)" -eq 3 ] &&
   [ "$(printf "%s\n" "$out" | grep -c "^created KAN-")" -eq 3 ] && printf "%s\n" "$out" | grep "^created KAN-" | sed "s/ .*//" | tr "\n" " " | grep -qx "created created created " &&
   [ "$(bsent | jq -r "map(.summary) | join(\",\")")" = "the epic,first child,second child" ] && printf "%s\n" "$out" | grep -qx "filed 3 tickets: KAN-101 KAN-102 KAN-103"'
-check "create-batch AC2: parent=@1 is the key row 1 got" '[ "$(bsent | jq -r "map(.parent) | @csv")" = "null,\"KAN-101\",\"KAN-101\"" ]'
+check "create-batch AC2: parent=@1 is the key row 1 got" '[ "$(bsent | jq -r "map(.parent // \"-\") | join(\",\")")" = "-,KAN-101,KAN-101" ]'
 check "create-batch: each ticket is assigned to you, as create assigns it" '[ "$(jq -s "[.[] | select(.method == \"POST\" and .path == \"/rest/api/2/issue\") | .body | fromjson | .fields.assignee.accountId] | unique" "$BL" -c)" = "[\"abc\"]" ]'
 
 n0=$(bcreates)
@@ -736,6 +736,9 @@ check "create-batch --route with a routing row sends their accountId" '[ $rc -eq
   [ "$(jq -sc "[.[] | select(.method == \"POST\" and .path == \"/rest/api/2/issue\")] | last | .body | fromjson | .fields.assignee" "$BL")" = "{\"accountId\":\"xyz\"}" ]'
 
 n0=$(bcreates)
+printf 'Story\tdangling\t%s\tcustomfield_10208=S\t--approved\n' "$CB" > "$LD/appr.tsv"
+batch "$A" lint/appr.tsv
+check "create-batch: a row ending in a bare --approved is refused, and its check sends nothing" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "^  desk-jira: --approved needs the user.s decision"'
 printf 'Story\tchild\t%s\tcustomfield_10208=S\tparent=@2\nEpic\tthe epic\t%s\tcustomfield_10208=M\n' "$CB" "$CB" > "$LD/fwd.tsv"
 batch "$A" lint/fwd.tsv
 check "create-batch: parent=@<n> must name an earlier row" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "parent=@2 names no earlier row"'

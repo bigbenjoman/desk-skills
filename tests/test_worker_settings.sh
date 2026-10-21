@@ -204,5 +204,8 @@ check "jira-create unset: create and create-batch refused" 'no "desk-jira create
 settings '`bash tests/run.sh`' '' "$(perm3 yes)
 | \`jira-create\` | New tickets | \`yes\` | \`yes\` |"
 check "jira-create yes: create and create-batch allowed"  'ok "desk-jira create Story s b.md" "desk-jira create-batch t.tsv"'
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" \
+  --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "jira-create yes, dry run: create and create-batch refused" '[ $rc -eq 0 ] && no "desk-jira create Story s b.md" "desk-jira create-batch t.tsv"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

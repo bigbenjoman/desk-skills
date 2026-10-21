@@ -464,7 +464,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun'),
-      ...bash('desk-jira', ' edit', ' comment', ' create', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
+      ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }
 

@@ -1407,8 +1407,10 @@ case "$cmd" in
             *) rowerrs+=("desk-jira: not a field=value pair or a create flag (--route, --no-lint, --approved): $c") ;;
           esac
         done
+        (( ! after_approved )) || rowerrs+=("desk-jira: --approved needs the user's decision as its value")
+        # The batch's own flags go before the row's cells, so no cell can take one as its value.
         if [[ ${#rowerrs[@]} -eq 0 ]]; then
-          out=$(DESK_JIRA_PENDING_PARENT="$penv" "$self" create "${cols[@]}" --check 2>&1) && rc=0 || rc=$?
+          out=$(DESK_JIRA_PENDING_PARENT="$penv" "$self" create "${cols[0]}" "${cols[1]}" "${cols[2]}" --check "${cols[@]:3}" 2>&1) && rc=0 || rc=$?
           if (( rc )); then rowerrs+=("$out")
           else
             out=$(printf '%s\n' "$out" | grep -v '^ok: .* passes every check (nothing sent)$' || true)
@@ -1431,7 +1433,7 @@ case "$cmd" in
       for c in "${cols[@]:3}"; do
         case "$c" in parent=@[0-9]*) args+=("parent=${keys[$((10#${c#parent=@} - 1))]}") ;; *) args+=("$c") ;; esac
       done
-      out=$("$self" create "${cols[0]}" "${cols[1]}" "${cols[2]}" ${args[@]+"${args[@]}"} --no-lint 2>&1) && rc=0 || rc=$?
+      out=$("$self" create "${cols[0]}" "${cols[1]}" "${cols[2]}" --no-lint ${args[@]+"${args[@]}"} 2>&1) && rc=0 || rc=$?
       printf '%s\n' "$out"
       key=$(printf '%s\n' "$out" | sed -n 's/^created \([A-Z][A-Z0-9]*-[0-9][0-9]*\) .*/\1/p' | head -n1)
       [[ -z "$key" ]] || keys+=("$key")
