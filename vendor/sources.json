@@ -663,12 +663,12 @@
         "path": "plugins/developer-essentials/skills/e2e-testing-patterns/"
       },
       "pin": {
-        "commit": "be57c0b2e",
-        "date": "2026-05-22"
+        "commit": "8cc4f423e",
+        "date": "2026-10-15"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "3fd450781acafb4a62d45147c88b6f509f49cb77bed079e017ff2ac2fdcd7003"
+      "tree_sha256": "85f95d9d51a34848f76f17c811acf55dcfff88485fb696386138adbc2dcc0af2"
     },
     "fastapi-templates": {
       "source": {
