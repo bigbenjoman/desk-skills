@@ -138,7 +138,7 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
 // (default `at`, so it is live then); null means no pass yet.
-function repo(name, port, { workers = 2, tickets, sizes = {}, history, at = FIXED, pass = at }) {
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
@@ -148,7 +148,7 @@ function repo(name, port, { workers = 2, tickets, sizes = {}, history, at = FIXE
   writeFileSync(qp, JSON.stringify({ version: 1, batch: name, concurrency: workers, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
   const state = join(zenv.HOME, '.desk-autopilot', slug);
   mkdirSync(join(state, 'triage'), { recursive: true });
-  for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size }));
+  for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size, ...(epics[k] ? { epic: epics[k] } : {}) }));
   if (pass != null) {
     mkdirSync(join(state, 'orchestrators'), { recursive: true });
     writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: name, pid: 1, at: new Date(pass).toISOString() }));
@@ -339,6 +339,74 @@ saved('few', range(9, () => true));
 const fewHead = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__few', { now: FIXED }).split('\n').slice(0, 3);
 t('DS-162 AC5: 9 merged estimates give no percentage, and say a rate needs 10', [fewHead.some((l) => l.includes('%')), fewHead[1]],
   [false, 'No hit rate yet: 9 merged tickets have a saved first estimate, and a rate needs 10.']);
+
+// ==== DS-165: each epic dated as the moment its last child merges, inside the same runs.
+const { epicFact } = await import('../desk/bin/desk-q-eta.mjs');
+
+// ---- AC1: triage records the parent epic's key and summary, from Jira's parent field
+const epicType = { name: 'Epic', hierarchyLevel: 1 };
+const issueUnder = (type) => ({ key: 'V-1', fields: { parent: { key: 'EP-1', fields: { summary: 'Smart scheduling, your day', issuetype: type } } } });
+const kidsJson = [{ key: 'V-1', fields: { status: { statusCategory: { key: 'new' } } } }, { key: 'V-4', fields: { status: { statusCategory: { key: 'done' } } } }];
+t('DS-165 AC1: a ticket under an epic records its key, summary and children', epicFact(issueUnder(epicType), kidsJson),
+  { key: 'EP-1', summary: 'Smart scheduling, your day', children: [{ key: 'V-1', done: false }, { key: 'V-4', done: true }] });
+t('DS-165 AC1: a parent that is not an epic, or none, records no epic', [epicFact(issueUnder({ name: 'Story', hierarchyLevel: 0 }), kidsJson), epicFact({ fields: {} }, null)], [null, null]);
+t('DS-165 AC1: a children read that failed leaves the list out', epicFact(issueUnder(epicType), null), { key: 'EP-1', summary: 'Smart scheduling, your day' });
+
+// One repo with an epic of each kind, and one ticket with none.
+const ep = (key, summary, kids) => ({ key, summary, children: kids.map(([k, done = false]) => ({ key: k, done })) });
+const EP1 = ep('EP-1', 'Smart scheduling, your day', [['V-1'], ['V-2'], ['V-3'], ['V-4', true]]);
+const EP2 = ep('EP-2', 'Beats', [['V-5'], ['V-6'], ['V-7']]);
+const EP3 = ep('EP-3', 'Notes', [['V-8'], ['V-9']]);
+const EP4 = ep('EP-4', 'Sign-in', [['V-10', true], ['V-11', true]]);
+repo('voicepa', 4000, {
+  tickets: {
+    'V-1': { state: 'running', stage: '6/9' }, 'V-2': { state: 'triaged' }, 'V-3': heldBy('V-2'), 'V-4': { state: 'done', merged_at: iso(FIXED - 2 * HOUR) },
+    'V-5': { state: 'triaged' },
+    'V-8': { state: 'parked', park: { question: 'which copy?' } }, 'V-9': { state: 'triaged' },
+    'V-10': { state: 'done', merged_at: iso(FIXED - 5 * HOUR) },
+    'V-12': { state: 'triaged' },
+  },
+  sizes: Object.fromEntries(['V-1', 'V-2', 'V-3', 'V-4', 'V-5', 'V-8', 'V-9', 'V-10', 'V-12'].map((k) => [k, 'M'])),
+  epics: { 'V-1': EP1, 'V-2': EP1, 'V-3': EP1, 'V-4': EP1, 'V-5': EP2, 'V-8': EP3, 'V-9': EP3, 'V-10': EP4 },
+  history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+const vp = repoAt('voicepa');
+const VF = Q.forecastOf(vp, { now: FIXED });
+const vShips = Q.run(['ships', 'voicepa', '--plain'], { now: FIXED }).split('\n');
+const epicRow = (key) => vShips.find((l) => l.startsWith(`  ${key} `)) ?? '';
+
+// ---- AC2: an epic ships no earlier than its slowest child, and starts with its first
+const kids1 = ['V-1', 'V-2', 'V-3'];
+t('DS-165 AC2: the epic ships no earlier than its slowest child ships', VF.E['EP-1'].likely >= Math.max(...kids1.map((k) => VF.T[k].likely)), true);
+t('DS-165 AC2: its starts is its first child\'s starts', VF.E['EP-1'].start, Math.min(...kids1.map((k) => VF.T[k].start)));
+t('DS-165 AC2: and its could-run-to is no earlier than its ships', VF.E['EP-1'].late >= VF.E['EP-1'].likely, true);
+
+// ---- AC3: children not queued yet make the date provisional, with the count
+t('DS-165 AC3: an epic with children not queued still gets a date', VF.E['EP-2'] != null, true);
+t('DS-165 AC3: marked provisional, saying how many are not queued', epicRow('EP-2').endsWith(`${when(VF.E['EP-2'].likely, FIXED).padEnd(14)}provisional: 2 not queued`), true);
+t('DS-165 AC3: no earlier than its queued child ships', VF.E['EP-2'].likely >= VF.T['V-5'].likely, true);
+
+// ---- AC4: a child waiting on the user leaves the epic undated
+t('DS-165 AC4: an epic with a child waiting on the user has no date', VF.E['EP-3'], null);
+t('DS-165 AC4: and says so, with c', epicRow('EP-3').endsWith('No date: 1 waiting on you · c to date them at check-ins'), true);
+
+// ---- AC5: every child done shows when it shipped
+t('DS-165 AC5: an epic whose children are all done shows when it shipped', /\s2\/2\s+—\s+shipped today 13:51$/.test(epicRow('EP-4')), true);
+
+// ---- AC6: ships --plain prints one line per epic with children in the queue
+t('DS-165 AC6: an EPICS header after the tickets', vShips.some((l) => /^ {2}EPIC\s+TITLE\s+DONE\s+STARTS\s+SHIPS$/.test(l)), true);
+t('DS-165 AC6: one line per epic, with key, summary and children done of total', vShips.filter((l) => /^ {2}EP-\d+ /.test(l)).map((l) => l.slice(2, 51).replace(/\s+/g, ' ').trim()),
+  ['EP-1 Smart scheduling, your day 1/4', 'EP-2 Beats 0/3', 'EP-3 Notes 0/2', 'EP-4 Sign-in 2/2']);
+t('DS-165 AC6: a dated epic gives STARTS and SHIPS, and the child that sets it', epicRow('EP-1').endsWith(`running      ${when(VF.E['EP-1'].likely, FIXED).padEnd(14)}set by ${VF.E['EP-1'].setBy}`), true);
+
+// ---- AC7: a ticket with no epic is dated as before, and counted
+const vRows = vp.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage ?? null, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: [], epic: VF.of[tk.key] ?? null }));
+const vHist = recentHistoryOf('voicepa');
+t('DS-165 AC7: the tickets are dated exactly as with no epics at all', forecast({ rows: vRows, workers: 2, history: vHist, now: FIXED }).T, VF.T);
+t('DS-165 AC7: a ticket with no epic has a date', VF.T['V-12'] != null, true);
+t('DS-165 AC7: and is counted as having no epic', [VF.noEpic, vShips.includes('Other work: 1 ticket with no epic.')], [1, true]);
+
+function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');
 process.exit(fails ? 1 : 0);

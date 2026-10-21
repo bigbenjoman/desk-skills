@@ -108,6 +108,9 @@ Run by `triage.sh` after the model writes the record, for tracker keys only (non
 - `other_links`: the count of non-Blocks, non-Relates links (reported, never acted on);
 - `size`: the value of the field whose display name (from `names`) is `Size`, else a first
   description line `Size: XS|S|M|L|XL`, else null;
+- `epic`: `{key, summary, children: [{key, done}]}` when `fields.parent` is an epic (hierarchy
+  level 1), the children from `desk-jira children <EPIC> --json`, else null. A children read that
+  fails leaves `children` out and sets `epic_error`. desk-q's forecast reads it to date each epic;
 - `facts_error`: set instead when the read fails or does not parse.
 
 plan-batch stays offline and reads only triage records (and `expansion.json`).

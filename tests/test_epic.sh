@@ -86,6 +86,8 @@ cat > "$T/fixture.json" <<'EOF'
                  {"id": "24", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
                   "outwardIssue": {"key": "KAN-55"}}]},
     "KAN-53": {"description": "Size: M\nThe rest of the body."},
+    "KAN-56": {"parent": {"key": "KAN-10", "fields": {"summary": "Epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}}},
+    "KAN-57": {"parent": {"key": "KAN-14", "fields": {"summary": "container", "issuetype": {"name": "Story", "hierarchyLevel": 0}}}},
     "KAN-1100": {"summary": "epic with a definition of done", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
                  "description": "h2. Outcome\nA feature.\n\nh2. Definition of done\n# DoD1: Given a, then b.\n# DoD2: Given c, then d.\n# DoD1: named twice\n\nh2. Acceptance criteria\n# AC1: not read while a DoD exists"},
     "KAN-1110": {"summary": "epic with acceptance criteria only", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
@@ -301,6 +303,14 @@ check "facts: desk-jira lint's findings are recorded, blocking ones included" \
 rec KAN-53 '{"ticket":"KAN-53","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-53 >/dev/null 2>&1
 check "facts: size from the body's first line" '[ "$(jq -r .size "$T/state/triage/KAN-53.json")" = M ] && [ "$(jq -c .blockers "$T/state/triage/KAN-53.json")" = "[]" ]'
+check "facts: a ticket with no parent records no epic" '[ "$(jq -c .epic "$T/state/triage/KAN-53.json")" = null ]'
+rec KAN-56 '{"ticket":"KAN-56","lane":"A","branch":"b"}'
+node "$B/ticket-facts.mjs" KAN-56 >/dev/null 2>&1
+check "facts: a parent epic is recorded with its key, summary and children" \
+  '[ "$(jq -c "[.epic.key, .epic.summary, (.epic.children | length), ([.epic.children[] | select(.done) | .key])]" "$T/state/triage/KAN-56.json")" = "[\"KAN-10\",\"Epic\",7,[\"KAN-12\"]]" ]'
+rec KAN-57 '{"ticket":"KAN-57","lane":"A","branch":"b"}'
+node "$B/ticket-facts.mjs" KAN-57 >/dev/null 2>&1
+check "facts: a parent that is not an epic records none" '[ "$(jq -c .epic "$T/state/triage/KAN-57.json")" = null ]'
 rec KAN-404 '{"ticket":"KAN-404","lane":"A","branch":"b"}'
 out=$(node "$B/ticket-facts.mjs" KAN-404 2>&1); rc=$?
 check "facts: a failed read is recorded, not empty blockers" '[ "$(jq -r ".facts_error|type" "$T/state/triage/KAN-404.json")" = string ] && [ "$(jq -r ".blockers|type" "$T/state/triage/KAN-404.json")" = null ]'

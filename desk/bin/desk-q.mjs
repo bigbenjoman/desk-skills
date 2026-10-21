@@ -7,7 +7,8 @@
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
 //   desk-q ships [<repo>]                the Timeline: a bar per unfinished ticket from when it starts
-//                                        to when it ships (`when` too); with --plain, one line per ticket
+//                                        to when it ships (`when` too); with --plain, one line per ticket,
+//                                        then one per epic with children in the queue
 //   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
@@ -27,7 +28,7 @@ import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfig
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
-import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
+import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 
 export { LIVE_MS };
@@ -127,12 +128,15 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const at = Math.floor(now / MINUTE) * MINUTE;
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
-  const rows = r.rows.map(({ t, k }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with) }));
-  const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, history.map((l) => [l.key, l.size, l.hours])]);
+  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])));
+  const rows = r.rows.map(({ t, k }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  // An epic with nothing left to run has shipped, so it is not run forward.
+  const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing !== 0).map((e) => [e.key, { missing: e.missing }]));
+  const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, history.map((l) => [l.key, l.size, l.hours])]);
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin }), d: durations(history), sizes, paused: !r.live };
+    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes, paused: !r.live, epics: ep.epics, of: ep.of, noEpic: ep.noEpic };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && !F.paused && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
     forecasts.set(id, F);
@@ -222,8 +226,36 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     }
     if (!r.rows.length) out.push('  No unfinished tickets.');
     out.push(`Queue done: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
+    const epics = Object.values(F.epics);
+    if (!epics.length) continue;
+    out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
+    for (const e of epics) out.push(epicLine(r, F, e, now, checkin));
+    if (F.noEpic) out.push(`Other work: ${F.noEpic} ticket${F.noEpic === 1 ? '' : 's'} with no epic.`);
   }
   return out.join('\n');
+}
+
+// Why an epic has no date: its undated children, by what holds them.
+function epicWhy(r, F, e, checkin) {
+  if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
+  const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
+  const c = (k) => undated.filter((x) => x.k === k).length;
+  const why = [['needs', 'waiting on you'], ['stuck', 'stuck'], ['failed', 'failed']].filter(([k]) => c(k)).map(([k, w]) => `${c(k)} ${w}`);
+  const rest = undated.length - c('needs') - c('stuck') - c('failed');
+  if (rest) why.push(`${rest} behind those`);
+  return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c to date them at check-ins' : ''}`;
+}
+
+// One epic's line: key, title, children done of total, then STARTS and SHIPS, shipped, or why it has no date.
+function epicLine(r, F, e, now, checkin) {
+  const lead = `  ${pad(e.key, 10)}${pad(cut(e.summary, 30), 32)}${pad(`${e.done}/${e.total}`, 7)}`;
+  if (!e.queued && e.missing === 0) return `${lead}${pad('—', 13)}shipped${e.shipped != null ? ` ${when(e.shipped, now)}` : ''}`;
+  const d = F.E[e.key];
+  if (!d) return `${lead}${pad('—', 13)}${epicWhy(r, F, e, checkin)}`;
+  const running = r.rows.some((x) => F.of[x.t.key] === e.key && x.k === 'running');
+  const starts = d.start == null ? '—' : d.start <= now + SOON ? (running ? 'running' : 'now') : when(d.start, now);
+  const note = e.missing == null ? 'provisional: children not read' : e.missing ? `provisional: ${e.missing} not queued` : d.setBy ? `set by ${d.setBy}` : '';
+  return `${lead}${pad(starts, 13)}${pad(when(d.likely, now), 14)}${note}`.trimEnd();
 }
 
 // ---- Timeline and By day -----------------------------------------------------------------------
