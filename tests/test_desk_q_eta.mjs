@@ -1,6 +1,7 @@
-// suite: desk-q eta history (spawn to merge, per merged ticket)
+// suite: desk-q eta history (spawn to merge, per merged ticket) and ship forecast
 // The eta history against a fixture queue, fixture worker logs and a temporary state directory, with
-// a fake gh on PATH. Nothing touches your real queue, state or GitHub.
+// a fake gh on PATH; then the forecast against fixture repos under a temporary HOME and DESK_HOME.
+// Nothing touches your real queue, state or GitHub.
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -124,6 +125,137 @@ function world({ tickets, logs = {}, sizes = {}, merged = {} }) {
   w.queue.tickets['DS-42'] = { key: 'DS-42', state: 'done', merged_at: hoursAgo(0), spawned_at: hoursAgo(1) };
   t('AC5: a torn triage record is unknown too, never guessed', recordMerge({ state: w.state, queue: w.queue, key: 'DS-42', now: NOW }).added.map((l) => l.size), ['unknown']);
 }
+
+// ==== DS-161: the forecast, against fixture repos under a throwaway HOME, DESK_HOME and config root.
+// Every check but the CLI's runs on a fixed clock: Mon 19 Oct 2026 18:51, local time.
+const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
+const HOUR = 3_600_000;
+const Z = mkdtempSync(join(tmpdir(), 'desk-q-ships-'));
+const zenv = { HOME: join(Z, 'home'), DESK_HOME: join(Z, 'deskhome'), DESK_CONFIG_ROOT: join(Z, 'config'), DESK_MACHINE: join(Z, 'machine.md') };
+writeFileSync(zenv.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
+const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+
+// One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
+// ticket, each merged an hour before the last, counting back from `at`.
+function repo(name, port, { workers = 2, tickets, sizes = {}, history, at = FIXED }) {
+  const slug = `acme__${name}`;
+  mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
+  writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
+    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`);
+  const qp = join(zenv.DESK_HOME, 'repos', slug, 'queue.json');
+  mkdirSync(dirname(qp), { recursive: true });
+  writeFileSync(qp, JSON.stringify({ version: 1, batch: name, concurrency: workers, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
+  const state = join(zenv.HOME, '.desk-autopilot', slug);
+  mkdirSync(join(state, 'triage'), { recursive: true });
+  for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size }));
+  writeFileSync(join(state, 'eta-history.jsonl'), history.map(([size, hours], i) => {
+    const merged = at - (i + 1) * HOUR;
+    return `${JSON.stringify({ key: `H-${i}`, size, spawned_at: new Date(merged - hours * HOUR).toISOString(), merged_at: new Date(merged).toISOString(), hours })}\n`;
+  }).join(''));
+}
+
+const range = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+// desk-skills is read by the CLI on the real clock, so its history is dated from it.
+repo('desk-skills', 3500, {
+  tickets: { 'DS-1': { state: 'running', stage: '6/9' }, 'DS-2': { state: 'triaged' }, 'DS-3': { state: 'parked', park: { question: 'which copy?' } }, 'DS-4': heldBy('DS-2') },
+  sizes: { 'DS-1': 'M', 'DS-2': 'M', 'DS-3': 'S', 'DS-4': 'M' },
+  history: range(12, (i) => ['M', 2 + (i % 5)]), at: Date.now(),
+});
+repo('alpha', 3100, {
+  tickets: {
+    'A-1': { state: 'running', stage: '6/9' },
+    'A-2': { state: 'triaged' },
+    'A-3': { state: 'triaged', collides_with: 'A-4' },
+    'A-4': { state: 'triaged', collides_with: 'A-3' },
+    'A-5': heldBy('A-3'),
+    'A-6': { state: 'parked', park: { question: 'which copy?' } },
+    'A-7': heldBy('A-6'),
+  },
+  sizes: { 'A-1': 'M', 'A-2': 'S', 'A-3': 'M', 'A-4': 'M', 'A-5': 'S', 'A-6': 'M', 'A-7': 'S' },
+  history: [...range(6, (i) => ['S', 1 + i]), ...range(6, (i) => ['M', 2 + i])],
+});
+repo('nine', 3200, { tickets: { 'N-1': { state: 'triaged' } }, sizes: { 'N-1': 'S' }, history: range(9, () => ['S', 2]) });
+
+// ---- DS-161 AC1: `desk-q ships <repo> --plain` from the shell
+const DESK_Q = join(BIN, 'desk-q.mjs');
+const cli = (...args) => spawnSync(process.execPath, [DESK_Q, ...args], { encoding: 'utf8', env: { ...zenv, PATH: process.env.PATH } });
+const shipped = cli('ships', 'desk-skills', '--plain');
+const dsRows = shipped.stdout.split('\n').filter((l) => /^ {2}DS-\d+ /.test(l));
+t('DS-161 AC1: ships exits 0', shipped.status, 0);
+t('DS-161 AC1: a STARTS and SHIPS header', shipped.stdout.split('\n').some((l) => /^ {2}TICKET\s+STATE\s+STARTS\s+SHIPS$/.test(l)), true);
+t('DS-161 AC1: one line per unfinished ticket, with its key and state', dsRows.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')), ['DS-1 running', 'DS-2 ready', 'DS-3 needs', 'DS-4 waiting']);
+t('DS-161 AC1: the running and ready rows carry a start and a ship time', [/^ {2}DS-1\s+running\s+running\s+\S/.test(dsRows[0]), /^ {2}DS-2\s+ready\s+now\s+\S/.test(dsRows[1])], [true, true]);
+t('DS-161 AC1: when is an alias of ships', cli('when', 'desk-skills', '--plain').stdout.split('\n').filter((l) => /^ {2}DS-\d+ /.test(l)).length, 4);
+
+Object.assign(process.env, zenv);
+const Q = await import(DESK_Q);
+const { forecast, when } = await import('../desk/bin/desk-q-eta.mjs');
+const alpha = Q.loadRepos(FIXED).find((r) => r.name === 'alpha');
+const F = Q.forecastOf(alpha, { now: FIXED });
+const show = (key, opts = {}) => Q.ticketScreen(alpha, key, { now: FIXED, ...opts }).split('\n');
+
+// ---- DS-161 AC2 and AC3: a hold and a collision each wait for the other ticket's ship time
+t('DS-161 AC2: a waiting ticket starts no earlier than its blocker ships', F.T['A-5'].start >= F.T['A-3'].likely, true);
+t('DS-161 AC3: of two colliding tickets, the later starts no earlier than the earlier ships', F.T['A-4'].start >= F.T['A-3'].likely, true);
+
+// ---- DS-161 AC4: running and ready-now on the repo screen
+const alphaRows = Q.repoScreen(alpha, { now: FIXED }).split('\n');
+const rowFor = (rows, key) => rows.find((l) => new RegExp(`^\\s+\\*?\\d+\\s+${key}\\s`).test(l)) ?? '';
+t('DS-161 AC4: a running ticket starts "running"', /A-1\s+running\s+stage 6\/9\s+running\s+\S/.test(rowFor(alphaRows, 'A-1')), true);
+t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+ready\s+now\s+\S/.test(rowFor(alphaRows, 'A-2')), true);
+
+// ---- DS-161 AC5 and AC6: no date while it waits on the user, or is stuck
+t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
+t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships: No date until you answer it. Press c to date it at the next check-in.'), true);
+t('DS-161 AC6: a stuck ticket has no date', F.T['A-7'], null);
+t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships: No date while it is stuck behind A-6. Unblock it to date it.'), true);
+
+// ---- DS-161 AC7: too little history gives no dates
+const nine = Q.run(['ships', 'nine', '--plain'], { now: FIXED });
+t('DS-161 AC7: 9 merged tickets: says so, and that estimates need 10', nine, 'nine · No ship estimate: nine has 9 merged autopilot tickets in its history (the last 30 days), and estimates need 10.');
+
+// ---- DS-161 AC8: dates counted in calendar days
+const at = (...a) => new Date(...a).getTime();
+t('DS-161 AC8: today, the next 6 days, a week out, and another year', [at(2026, 9, 19, 21, 30), at(2026, 9, 22, 14, 30), at(2026, 9, 26, 10, 0), at(2027, 0, 4, 9, 0)].map((x) => when(x, FIXED)),
+  ['today 21:30', 'Thu 14:30', '26 Oct', '4 Jan 2027']);
+
+// ---- DS-161 AC9: STARTS and SHIPS on the queue, QUEUE DONE on the overview
+t('DS-161 AC9: the queue screen has STARTS and SHIPS columns', alphaRows.some((l) => /^\s+#\s+TICKET\s+STATE\s+DETAIL\s+STARTS\s+SHIPS\s+TITLE$/.test(l)), true);
+const ov = Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n');
+t('DS-161 AC9: the overview has a QUEUE DONE column', ov.some((l) => /DONE\s+QUEUE DONE\s+WORKERS$/.test(l)), true);
+t('DS-161 AC9: giving when the repo\'s last dated ticket ships', (ov.find((l) => /^ {2}alpha /.test(l)) ?? '').includes(`  ${when(F.clears, FIXED)}`), true);
+
+// ---- DS-161 AC10: the ticket screen's dates and the history behind them
+const a3 = show('A-3');
+const i3 = a3.findIndex((l) => l.startsWith('Starts: '));
+t('DS-161 AC10: starts, ships and could run to', /^Starts: \S.*? {3}Ships: \S.*? {3}Could run to \S.*? \(1 run in 5 is later\)$/.test(a3[i3] ?? ''), true);
+t('DS-161 AC10: could run to is no earlier than ships', F.T['A-3'].late >= F.T['A-3'].likely, true);
+t('DS-161 AC10: then how many merged tickets of its size the history holds', (a3[i3 + 1] ?? '').startsWith('From 6 merged size M tickets in alpha: typical '), true);
+
+// ---- DS-161 AC11: the same files and clock give the same dates
+const rows = alpha.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: String(tk.collides_with ?? '').split('|').filter(Boolean) }));
+const hist = range(12, (i) => ({ size: 'M', hours: 1 + i }));
+t('DS-161 AC11: two forecasts over the same input are identical', JSON.stringify(forecast({ rows, workers: 2, history: hist, now: FIXED })) === JSON.stringify(forecast({ rows, workers: 2, history: hist, now: FIXED })), true);
+t('DS-161 AC11: and ships prints the same dates twice', Q.run(['ships', 'alpha', '--plain'], { now: FIXED }) === Q.shipsScreen(Q.loadRepos(FIXED), 'acme__alpha', { now: FIXED }), true);
+
+// ---- DS-161 AC12: c dates tickets waiting on the user at the next check-in, and c again undoes it
+const { PassThrough } = await import('node:stream');
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const input = new PassThrough();
+Object.assign(input, { isTTY: true, setRawMode: () => {} });
+const output = { buf: '', columns: 160, rows: 40, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+const ui = Q.interactive({ input, output, start: { kind: 'repo', slug: 'acme__alpha' }, exit: () => {}, refreshMs: 600000, clock: () => FIXED });
+const frame = () => output.buf.split('\x1b[H').at(-1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\r\n');
+const a6 = () => frame().find((l) => /\sA-6\s/.test(l)) ?? '';
+await sleep(20);
+t('DS-161 AC12: before c, the header says parked tickets have no date', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
+input.write('c'); await sleep(20);
+t('DS-161 AC12: after c, the header says they are dated at the next check-in', frame()[0].endsWith('Parked: dated at the next check-in · c to undo'), true);
+t('DS-161 AC12: and the ticket waiting on the user has a date', /no date/.test(a6()), false);
+t('DS-161 AC12: from no earlier than the next check-in, Tue 08:00', Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].start >= at(2026, 9, 20, 8, 0), true);
+input.write('c'); await sleep(20);
+t('DS-161 AC12: c again takes the dates away', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
+ui.finish(0);
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');
 process.exit(fails ? 1 : 0);

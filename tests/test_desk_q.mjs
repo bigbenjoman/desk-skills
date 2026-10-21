@@ -96,9 +96,9 @@ const head = lines(ov.out)[0];
 t('AC4 header', /workers 2 running · 5 allowed by live batches · machine 10 · \d+\.\d GiB free · room for \d+$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('ports overlap: desk-skills + pranicuk share 3502–3503')), true);
-// ---- AC15: voicepa's counts, last pass and workers
+// ---- AC15: voicepa's counts, last pass and workers (and DS-161's QUEUE DONE, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
-t('AC15 voicepa row: live 4m, run 2, ready 0, wait 1, stuck 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 11).join(' '), 'live 4m 2 0 1 0 0 0 3 3');
+t('AC15 voicepa row: live 4m, run 2, ready 0, wait 1, stuck 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 13).join(' '), 'live 4m 2 0 1 0 0 0 3 no history 3');
 
 // ---- AC7: a held ticket whose only unmerged blocker runs is waiting, behind that blocker only
 const repo = W.run('--plain', 'voicepa');
@@ -109,7 +109,7 @@ const pre = W.run('--plain', 'vo');
 t('AC8 a prefix resolves', pre.code === 0 && pre.out === repo.out, true);
 const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
-t('AC8 state, detail and triage title', /running\s+stage 4\/9\s+Running-late sheet$/.test(tickets[0]), true);
+t('AC8 state, detail and triage title', /running\s+stage 4\/9\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
 t('AC8 done count', /3 done, not shown/.test(pre.out), true);
 // ---- AC9: an ambiguous prefix refuses, naming both, with no table
 const amb = W.run('--plain', 'pr');
@@ -241,7 +241,8 @@ function screen(start, columns = 80) {
     input, output, modes, codes, opened, ui, frame,
     // A lone Esc is only told apart from an escape sequence after readline's 500ms wait.
     press: async (s) => { input.write(s); await sleep(s === '\x1b' ? 600 : 20); },
-    crumbs: () => frame()[0],
+    // The crumbs, less the parked note that follows them.
+    crumbs: () => frame()[0].split('    ')[0],
     selected: () => frame().find((l) => l.startsWith('›')) ?? '',
   };
 }
