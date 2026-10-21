@@ -89,6 +89,21 @@ export function waitingOnMerge(q, t, prState = () => null, seen = new Set()) {
   return ok;
 }
 
+// The batch's worker count and whose it is. `concurrency_by: 'user'` marks a count the user set,
+// and `concurrency_user` keeps their number while the ladder lowers `concurrency` on memory, so the
+// orchestrator can return to it. Never above the §3b cap.
+export function batchConcurrency(q, { def, cap }) {
+  const raw = Number(q.concurrency ?? def);
+  const n = Math.min(raw, cap);
+  const user = q.concurrency_by === 'user' ? Number(q.concurrency_user ?? raw) : null;
+  const capped = raw > cap ? `, capped at the §3b cap of ${cap}` : '';
+  const why = user == null ? (raw === def ? `the §3b default${capped}` : `set by the ladder (§3b default ${def})${capped}`)
+    : raw === user ? `set by the user${capped}`
+      : raw < user ? `lowered on memory from the user's ${user}${capped}: raise back to ${user} once memory allows`
+        : `above the user's ${user}${capped}: the ladder keeps the user's number, so set it back to ${user}`;
+  return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
+}
+
 // Idle: nothing running, nothing left to spawn, nothing waiting on a merge to be released, and no
 // spine waiting on the person's approval.
 export function batchIdle(q, prState) {

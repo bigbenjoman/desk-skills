@@ -215,4 +215,32 @@ out=$(DESK_QUEUE_LOCK_WAIT_MS=200 node "$B/pass.mjs" 2>&1)
 check "AC12 a refused queue write names the ticket and the change" 'echo "$out" | grep -q "T-17: queue write refused, not recorded — set stage=3/9 — .*pid $holder" && [ "$(field T-17 stage)" = "\"2/9\"" ]'
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 
+# A worker count the user set is theirs. A fresh queue and state under a §3b default of 3, cap 6.
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `3 / 6` |\n'; } > "$T/config2.md"
+export DESK_CONFIG="$T/config2.md" DESK_QUEUE="$T/queue2.json" DESK_AUTOPILOT_STATE="$T/state2"; mkdir -p "$T/state2/logs"
+bfield(){ node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]] ?? null))' "$DESK_QUEUE" "$1"; }
+q init c
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-115 AC2 a count nobody set reports the §3b default" 'echo "$out" | grep -qx "workers: concurrency 3, the §3b default"'
+q set-batch concurrency=4 concurrency_by=user
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-115 AC1 a count the user set reports as theirs" 'echo "$out" | grep -qx "workers: concurrency 4, set by the user" && [ "$(bfield concurrency_user)" = 4 ]'
+q set-batch concurrency=1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-115 a lowering on memory keeps the user's number" '[ "$(bfield concurrency_by)" = "\"user\"" ] && [ "$(bfield concurrency_user)" = 4 ] && echo "$out" | grep -q "workers: concurrency 1, lowered on memory from the user.s 4: raise back to 4"'
+q set-batch concurrency_by=null
+check "DS-115 handing the count back to the ladder drops the user's number" '[ "$(bfield concurrency_user)" = null ]'
+q set-batch concurrency=0 concurrency_by=user
+q add P-1; q set P-1 state=triaged lane=A branch=fix/P-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-115 AC7 concurrency 0 pauses spawns and says so, not IDLE" '[ "$(field P-1 state)" = "\"triaged\"" ] && ! echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "paused: new spawns are paused by the batch.s worker count (concurrency 0); 1 triaged ticket(s) wait"'
+
+# AC3–AC6: the ladder rows in desk-autopilot keep a count the user set.
+SK="$SRC/skills/desk-autopilot/SKILL.md"
+row=$(grep -E '^\| > 8 GiB \|' "$SK")
+check "DS-115 AC3 the > 8 GiB row keeps a count the user set" 'echo "$row" | grep -q "a count the user set (\`concurrency_by\` is \`user\`): keep that number"'
+check "DS-115 AC4 otherwise the §3b default, one higher only after an idle pass" 'echo "$row" | grep -q "Otherwise use the §3b default, going one higher, up to the cap, only after a slot sat idle a whole pass" && ! grep -qE "concurrency 2[;,]" "$SK"'
+check "DS-115 AC5 lowering on memory leaves concurrency_by" 'grep -E "^\| < 4 GiB \|" "$SK" | grep -q "leave \`concurrency_by\` as it is" && grep -q "lower with \`set-batch concurrency=<n>\` alone and leave \`concurrency_by\` as it is" "$SK"'
+check "DS-115 AC6 raising back returns to the user's number" 'grep -q "When raising back, return to the user.s number" "$SK"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

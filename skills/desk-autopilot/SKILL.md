@@ -876,7 +876,8 @@ in `references/orchestrator-recovery.md`.
 ## Concurrency and memory
 
 Default **2**, cap **3** (config §3b "Autopilot worker concurrency" can change either), and it is
-**re-decided every pass, not set once**. RAM binds before CPU, and the 5-hour and 7-day usage limits
+**re-decided every pass, not set once** (a count the user set is kept while memory allows, below).
+RAM binds before CPU, and the 5-hour and 7-day usage limits
 are account-level, shared with the user's own sessions. Worker ports start **one above** config §3b
 "Preferred dev-server port" (`AUTOPILOT_PORT_FLOOR` overrides), skipping any port another ticket
 holds or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
@@ -912,9 +913,9 @@ the bands):
 
 | `avail` | Do |
 |---|---|
-| > 8 GiB | concurrency 2; go to 3 only if a slot sat idle a whole pass |
+| > 8 GiB | a count the user set (`concurrency_by` is `user`): keep that number. Otherwise use the §3b default, going one higher, up to the cap, only after a slot sat idle a whole pass |
 | 4–8 GiB | hold: finish what is running, spawn nothing new this pass |
-| < 4 GiB | drop to 1; a worker mid-suite will drain, so wait a pass before touching anything |
+| < 4 GiB | drop to 1 (`set-batch concurrency=1`, and leave `concurrency_by` as it is); a worker mid-suite will drain, so wait a pass before touching anything |
 | < 2 GiB **and** sustained | reclaim (where §3 `autopilot-reclaim` is `yes`): kill an orphaned dev server or a stale typecheck first, never a worker mid-commit, never a process another session owns |
 
 **On a computer running the runner VM, its memory is a fixed reservation.** While the desk-runner VM
@@ -929,6 +930,14 @@ Lowering is silent but **reported**: say which number caused it. Raising back ne
 evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the
 guest figure can take the whole VM down and kill every agent mid-flight.
 An OOM leaves a worker's worktree, database and port behind.
+
+**A worker count the user set is theirs.** When the user names a count (or 0 to pause new spawns),
+record it as theirs with `set-batch concurrency=<n> concurrency_by=user`; the queue keeps their
+number as `concurrency_user`, and the pass report's `workers:` line says whose the count is. While
+memory is above the gate it wins over the §3b default: never pull it back to the default. Memory
+still lowers it: lower with `set-batch concurrency=<n>` alone and leave `concurrency_by` as it is.
+When raising back, return to the user's number (`concurrency_user`, which the `workers:` line
+names), not to the §3b default. `set-batch concurrency_by=null` hands the count back to the ladder.
 
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the pass report (90s, change-only, carrying `vmmem=` and `avail=`), and a sustained-high watch
@@ -1033,8 +1042,10 @@ cat ~/.claude/skills/desk-autopilot/references/batch-notes-header.md >> <state>/
 node ~/.claude/desk/bin/queue.mjs render | tail -n +2; desk-env mem status
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
 
-# apply the ladder — top-level field
+# apply the ladder — top-level field (a lowering leaves concurrency_by as it is)
 node ~/.claude/desk/bin/queue.mjs set-batch concurrency=1
+# a count the user asked for (0 pauses new spawns)
+node ~/.claude/desk/bin/queue.mjs set-batch concurrency=4 concurrency_by=user
 ```
 
 The keys above can be any of the three kinds: a tracker key, an §4 Other work id patterns id, or (Tracker `none`) `issue-<n>` or the slug stated at Stage 2.
