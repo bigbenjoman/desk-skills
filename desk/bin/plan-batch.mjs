@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID } from './desk-env.mjs';
+import { SIZES } from './desk-q-eta.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 const plan = [];
@@ -92,7 +93,6 @@ const kindOf = (r) => (KIND_ORDER.includes(r.change_kind) ? r.change_kind : null
 const radius = (r) => (kindOf(r) ? KIND_ORDER.indexOf(kindOf(r)) : KIND_ORDER.length - 1);
 const kindLabel = (r) => kindOf(r) ?? 'surface (no kind recorded)';
 const named = (r) => records.indexOf(r);
-const SIZES = ['XS', 'S', 'M', 'L', 'XL'];
 const sizeRank = (r) => { const i = SIZES.indexOf(String(r.size ?? '').toUpperCase()); return i < 0 ? SIZES.length : i; };
 const mergesFirst = (a, b) => radius(a) - radius(b) || sizeRank(a) - sizeRank(b) || named(a) - named(b);
 

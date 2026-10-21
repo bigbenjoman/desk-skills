@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 
 export const HISTORY_FILE = 'eta-history.jsonl';
 export const WINDOW_DAYS = 30;
-const SIZES = ['XS', 'S', 'M', 'L', 'XL'];
+// The ticket size scale, smallest first: triage, planning and the history all read sizes against it.
+export const SIZES = ['XS', 'S', 'M', 'L', 'XL'];
 const SPAWN_STAMP = /"timestamp":"([^"]+)"/;
 
 export const historyPath = (state) => join(state, HISTORY_FILE);
@@ -127,14 +128,14 @@ export function buildHistory({ state, queue, mergedPrs = () => ({}), now = Date.
 // only the queue entry is read, unless it predates `spawned_at`.
 export function recordMerge({ state, queue, key, mergedPrs, now = Date.now() }) {
   const hist = readHistory(state);
-  if (hist === null) return { built: true, ...buildHistory({ state, queue, mergedPrs, now }) };
-  if (hist.some((l) => l.key === key)) return { built: false, added: [], already: 1, noSpawn: [] };
+  if (hist === null) return buildHistory({ state, queue, mergedPrs, now });
+  if (hist.some((l) => l.key === key)) return { added: [], already: 1, noSpawn: [] };
   const t = queue.tickets[key];
   const spawned = t.spawned_at ?? firstSpawnFromLogs(state, key);
-  if (!spawned || !t.merged_at || Date.parse(spawned) > Date.parse(t.merged_at)) return { built: false, added: [], already: 0, noSpawn: [key] };
+  if (!spawned || !t.merged_at || Date.parse(spawned) > Date.parse(t.merged_at)) return { added: [], already: 0, noSpawn: [key] };
   const line = historyLine({ key, size: sizeOf(state, key), spawned_at: spawned, merged_at: t.merged_at });
   append(state, [line]);
-  return { built: false, added: [line], already: 0, noSpawn: [] };
+  return { added: [line], already: 0, noSpawn: [] };
 }
 
 export function describe(r) {
