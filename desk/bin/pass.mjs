@@ -16,6 +16,7 @@ import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTota
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
+import { usageLimit, resetText } from './usage-limit.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -137,7 +138,16 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [] };
+
+// The 5-hour usage limit. Claude Code waits for the reset and then carries on, which spends the next
+// usage window: config §3 autopilot-usage-resume decides whether a worker may, and anything but `yes`
+// stops it at the limit. A paused worker is quiet, not wedged, until this long after the reset; then
+// the stall check runs as before.
+const usagePerm = E.permission('autopilot-usage-resume');
+const USAGE_KEY = E.permissionKey('autopilot-usage-resume');
+const mayResumeOnLimit = usagePerm === 'yes';
+const LIMIT_GRACE_MS = 30 * 60 * 1000;
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -251,12 +261,45 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // hangs after printing it must be recorded done, never left running and then parked as wedged.
   const done = park ? undefined : lastDone?.[1];
 
+  // A worker at the 5-hour usage limit (usage-limit.mjs decides; nothing here reads the event). Only
+  // a worker that has neither parked nor finished is acted on.
+  const usage = usageLimit(readFileSync(log, 'utf8'));
+  const limit = !park && !done && usage.last?.kind === 'limit' ? usage.last : null;
+  if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
+    q('set', t.key, `usage_unrecognised=${usage.unrecognised.length}`);
+    report.unrecognised.push(`${t.key}: ${usage.unrecognised.at(-1)}`);
+  }
+  if (mayResumeOnLimit) {
+    for (const l of usage.limits.filter((x) => x.resumed)) {
+      notes.push(`- [${t.key}] resumed after the 5-hour usage limit reset at ${resetText(l.resetsAt)} (config §3 ${USAGE_KEY} is "yes")`);
+    }
+  }
+  if (limit && !mayResumeOnLimit) {
+    // Stopping needs the registry: without it the worker would resume while recorded as parked.
+    if (!registryOk) continue;
+    const isLive = liveSids.has(t.session_id);
+    const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
+    if (pid) sh('kill', [String(pid)], { tolerant: true });
+    const stop = !isLive ? 'its session had already ended' : pid ? `the worker was stopped (pid ${pid})` : `no pid to stop: stop session ${t.session_id} by hand`;
+    const why = `paused on the 5-hour usage limit, which resets ${resetText(limit.resetsAt)}. Config §3 ${USAGE_KEY} is "${usagePerm}", so it does not resume into the next usage window: ${stop}. ` +
+      `After the reset, requeue it with queue.mjs requeue ${t.key}`;
+    q('park', t.key, why);
+    report.parked.push(`${t.key}: ${why}`);
+    for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
+    continue;
+  }
+  const pausedOnLimit = !!limit && !limit.resumed && Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS;
+  if (pausedOnLimit) report.paused.push(`${t.key} until ${resetText(limit.resetsAt)}, then it resumes (config §3 ${USAGE_KEY} is "yes")`);
+
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
   // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
   const bytes = statSync(log).size;
   if (bytes > (t.log_bytes ?? 0)) {
     q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0');
+  } else if (pausedOnLimit) {
+    // Waiting for the reset is not a stall.
+    if (t.idle_passes) q('set', t.key, 'idle_passes=0');
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
@@ -356,7 +399,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       else if (ownsSpecs(t)) checkOwned(t, Number(pr));
     } else {
       q('set', t.key, 'state=failed');
-      report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch} — check ${log}`);
+      report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at the 5-hour usage limit (resets ${resetText(limit.resetsAt)})` : ''} — check ${log}`);
     }
   }
 }
@@ -740,7 +783,7 @@ for (const t of eligible) {
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
-    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null');
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -772,6 +815,8 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
+if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);
+for (const u of report.unrecognised) out.push(`unrecognised usage-limit event: ${u} — not read as a pause, so the stall check applies as before`);
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);
 if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 // A worker count of 0 is a pause, not a finished batch: say what is waiting behind it.

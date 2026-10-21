@@ -76,7 +76,7 @@ a row changes, say which of these applies.
 | `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
-| `pass.mjs` | `autopilot-workers`, `pr-images`, `batch-base-push` (unset is `ask`) |
+| `pass.mjs` | `autopilot-workers`, `pr-images`, `batch-base-push` (unset is `ask`), `autopilot-usage-resume` (unset is `no`) |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
 | `upload-images.mjs` | `pr-images` |
@@ -173,6 +173,7 @@ rows).
 | `autopilot-merge` | no (PRs wait for you) | serial merge driver: each PR merges when green, then the next colliding ticket starts | PRs merge while you are away | yes (only with `pr-merge-green` yes) | owners `autopilot-workers` + `autopilot-merge`: `Bash(~/.claude/desk/bin/merge-driver.sh *)` |
 | `batch-base-push` | ask | a batch on a base branch starts each worker on a current tree: before a pass spawns, the default branch is merged into the base and pushed. A feature-mode batch whose base has no commits beyond the default branch also pushes one empty commit there, so its draft promotion PR can open, and its base gate merges the default branch in once more before it checks the base | pushes to a shared branch while you are away; a merge commit or an empty commit only, never a rebase or a force | yes · no (the base is not synced; a feature-mode batch then spawns nothing, and opens no promotion PR on a base with nothing beyond the default branch) | — (the script reads the row; `ask` is one approval per batch, passed as `AUTOPILOT_BASE_PUSH_APPROVED=1`) |
 | `autopilot-judgement` | yes | engineering and scope calls made and recorded instead of parking the batch | a call you might have made differently; you can overrule | no (park and ask) | — |
+| `autopilot-usage-resume` | no (a worker at the limit is stopped and parked with the reset time) | a worker that reaches the 5-hour usage limit waits for the reset and carries on, so an overnight batch keeps going | the next 5-hour window is spent while you are away, and it is account-wide: your own sessions share it | yes | — (the script reads the row; unset is `no`) |
 
 ## Round 10 — shared state
 
