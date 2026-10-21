@@ -15,8 +15,9 @@
 //
 // A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc; piped output gets the plain text.
-// The only writes are the move and workers commands, each a queue.mjs command against the queue of
-// the repo named.
+// The only queue writes are the move and workers commands, each a queue.mjs command against the queue
+// of the repo named. The one other write is a repo's <state>/eta.jsonl, which gains a ticket's first
+// ship estimate the first time a live batch's forecast dates it.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
@@ -26,7 +27,8 @@ import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfig
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
-import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS } from './desk-q-eta.mjs';
+import { readHistory, recentHistory, sizeOf, forecast, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
+  readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 
 export { LIVE_MS };
 const LABEL = { running: 'running', ready: 'ready', queued: 'queued', waiting: 'waiting', stuck: 'stuck', needs: 'needs you', failed: 'failed', done: 'done' };
@@ -117,29 +119,45 @@ const forecasts = new Map();
 
 // The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
 // 2-second reread runs the simulation again only when the queue, the history or the minute changes.
+// A batch with no pass for LIVE_MS is `paused`: its dates assume passes that are not happening, so
+// they are not shown and not saved. A live forecast saves each ticket's first estimate (eta.jsonl);
+// one dated at the next check-in (c) is a what-if, and saves nothing.
 export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   if (!r.q) return null;
   const at = Math.floor(now / MINUTE) * MINUTE;
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
   const rows = r.rows.map(({ t, k }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with) }));
-  const id = JSON.stringify([r.slug, at, checkin, r.workers, rows, history.map((l) => [l.key, l.size, l.hours])]);
+  const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, history.map((l) => [l.key, l.size, l.hours])]);
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    forecasts.set(id, { ...forecast({ rows, workers: r.workers, history, now: at, checkin }), d: durations(history), sizes });
+    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin }), d: durations(history), sizes, paused: !r.live };
+    // A state directory desk-q cannot write to costs the saved estimate, never the screen.
+    if (!F.none && !F.paused && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
+    forecasts.set(id, F);
   }
   return forecasts.get(id);
 }
 
 const SOON = MINUTE;
-const etaOf = (F, key) => (F && !F.none ? F.T[key] : null);
+const etaOf = (F, key) => (F && !F.none && !F.paused ? F.T[key] : null);
 const startsCell = (F, x, now) => {
+  if (F && !F.none && F.paused) return 'paused';
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
-const shipsCell = (F, x, now) => (!F || F.none ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
+const shipsCell = (F, x, now) => (!F || F.none ? '—' : F.paused ? 'paused' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
+const pausedNote = (r, now) => `Dates paused: ${r.last == null ? 'no pass yet' : `no pass for ${ago(now - r.last).replace(' ago', '')}`}. `
+  + 'The forecast assumes passes keep running, so dates show again at the next pass.';
+
+// How often the repo's saved first estimates held, for a ships view's header.
+function hitLine(r) {
+  const h = hitRate(readEstimates(r.stateDir));
+  return h.pct == null ? `No hit rate yet: ${h.n} merged ticket${h.n === 1 ? ' has' : 's have'} a saved first estimate, and a rate needs ${MIN_HITS}.`
+    : `${h.pct}% shipped before their could-run-to time (last ${h.n} tickets)`;
+}
 const typical = (F, key) => quantile(durationsFor(F.d, F.sizes[key]).v, 0.5).toFixed(1);
 const listed = (keys) => keys.join(', ');
 
@@ -160,6 +178,7 @@ function undatedWhy(r, F, x) {
 function etaLines(r, F, x, now) {
   if (!F) return [];
   if (F.none) return [noHistory(r, F), ''];
+  if (F.paused) return [`Ships: ${pausedNote(r, now)}`, ''];
   const key = x.t.key, e = F.T[key];
   if (!e) {
     const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
@@ -186,7 +205,7 @@ function etaLines(r, F, x, now) {
 // When the repo's last dated ticket ships.
 function queueDone(r, now, checkin) {
   const F = forecastOf(r, { now, checkin });
-  return !F ? '' : F.none ? 'no history' : F.clears ? when(F.clears, now) : 'no date yet';
+  return !F ? '' : F.none ? 'no history' : F.paused ? 'paused' : F.clears ? when(F.clears, now) : 'no date yet';
 }
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
@@ -197,7 +216,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
   for (const { r, F, note } of s.per) {
     if (out.length) out.push('');
     if (note) { out.push(note); continue; }
-    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
+    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), hitLine(r), `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
       out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
     }
@@ -257,12 +276,14 @@ function etaScope(repos, slug, { now, checkin }) {
     if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
     if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
     const F = forecastOf(r, { now, checkin });
-    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : { r, F };
+    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${pausedNote(r, now)}` } : { r, F };
   });
   const dated = per.filter((p) => p.F);
   const notes = per.filter((p) => p.note).map((p) => p.note);
   const items = dated.flatMap(({ r, F }) => r.rows.map((x) => ({ r, F, x, e: etaOf(F, x.t.key) })));
-  const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin)];
+  // One repo's view adds its hit rate; every repo's leaves it to each repo's own.
+  const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin),
+    ...(slug ? [hitLine(list[0])] : [])];
   return { list, per, notes, items, head };
 }
 

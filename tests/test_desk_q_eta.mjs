@@ -136,8 +136,9 @@ writeFileSync(zenv.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|-
 const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
-// ticket, each merged an hour before the last, counting back from `at`.
-function repo(name, port, { workers = 2, tickets, sizes = {}, history, at = FIXED }) {
+// ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
+// (default `at`, so it is live then); null means no pass yet.
+function repo(name, port, { workers = 2, tickets, sizes = {}, history, at = FIXED, pass = at }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
@@ -148,6 +149,10 @@ function repo(name, port, { workers = 2, tickets, sizes = {}, history, at = FIXE
   const state = join(zenv.HOME, '.desk-autopilot', slug);
   mkdirSync(join(state, 'triage'), { recursive: true });
   for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size }));
+  if (pass != null) {
+    mkdirSync(join(state, 'orchestrators'), { recursive: true });
+    writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: name, pid: 1, at: new Date(pass).toISOString() }));
+  }
   writeFileSync(join(state, 'eta-history.jsonl'), history.map(([size, hours], i) => {
     const merged = at - (i + 1) * HOUR;
     return `${JSON.stringify({ key: `H-${i}`, size, spawned_at: new Date(merged - hours * HOUR).toISOString(), merged_at: new Date(merged).toISOString(), hours })}\n`;
@@ -270,6 +275,70 @@ t('DS-161 AC12: from no earlier than the next check-in, Tue 08:00', Q.forecastOf
 input.write('c'); await sleep(20);
 t('DS-161 AC12: c again takes the dates away', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
 ui.finish(0);
+
+// ==== DS-162: each ticket's first estimate, kept beside its merge, and how often it held.
+const { readEstimates } = await import('../desk/bin/desk-q-eta.mjs');
+const stateOf = (name) => join(zenv.HOME, '.desk-autopilot', `acme__${name}`);
+const repoAt = (name, now = FIXED) => Q.loadRepos(now).find((r) => r.name === name);
+const iso = (ms) => new Date(ms).toISOString();
+const MIN = 60_000;
+
+// ---- AC1: the first forecast to date a ticket saves it; a later one leaves it alone
+repo('gamma', 3600, {
+  tickets: { 'G-1': { state: 'triaged' }, 'G-2': { state: 'triaged' }, 'G-3': { state: 'parked', park: { question: 'which copy?' } } },
+  sizes: { 'G-1': 'M', 'G-2': 'M', 'G-3': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+const gF = Q.forecastOf(repoAt('gamma'), { now: FIXED });
+const g1 = readEstimates(stateOf('gamma')).get('G-1');
+t('DS-162 AC1: the first forecast saves its starts, ships and could-run-to times', g1 && [g1.at, g1.starts, g1.ships, g1.could_run_to],
+  [iso(FIXED), iso(gF.T['G-1'].start), iso(gF.T['G-1'].likely), iso(gF.T['G-1'].late)]);
+const gFile = () => readFileSync(join(stateOf('gamma'), 'eta.jsonl'), 'utf8');
+const gBefore = gFile();
+const gLater = Q.forecastOf(repoAt('gamma', FIXED + 10 * MIN), { now: FIXED + 10 * MIN });
+Q.forecastOf(repoAt('gamma', FIXED + 10 * MIN), { now: FIXED + 10 * MIN, checkin: true });
+t('DS-162 AC1: a later forecast with other dates does not overwrite it', [gLater.T['G-1'].likely !== gF.T['G-1'].likely, gFile() === gBefore], [true, true]);
+t('DS-162 AC1: a ticket dated only at the next check-in (c) saves no estimate', readEstimates(stateOf('gamma')).has('G-3'), false);
+
+// ---- AC2: the merge time goes beside the saved estimate
+const gQueue = join(zenv.DESK_HOME, 'repos', 'acme__gamma', 'queue.json');
+const merge = (key, when) => spawnSync(process.execPath, [join(BIN, 'queue.mjs'), 'merged', key, when], { encoding: 'utf8',
+  env: { ...process.env, ...zenv, DESK_QUEUE: gQueue, DESK_AUTOPILOT_STATE: stateOf('gamma'), DESK_GH_REPO: 'acme/gamma' } });
+const m1 = merge('G-1', iso(FIXED + 3 * HOUR));
+t('DS-162 AC2: queue.mjs merged exits 0 and says the estimate was kept', [m1.status, /first estimate kept with its merge/.test(m1.stdout)], [0, true]);
+t('DS-162 AC2: the merge time is saved beside the estimate', readEstimates(stateOf('gamma')).get('G-1'), { ...g1, merged_at: iso(FIXED + 3 * HOUR) });
+merge('G-1', iso(FIXED + 5 * HOUR));
+t('DS-162 AC2: a second merged call keeps the first merge time', readEstimates(stateOf('gamma')).get('G-1').merged_at, iso(FIXED + 3 * HOUR));
+
+// Saved estimates, oldest merge first: [shipped before could-run-to?] per ticket.
+const saved = (name, hits) => writeFileSync(join(stateOf(name), 'eta.jsonl'), hits.flatMap((hit, i) => {
+  const merged = FIXED - (hits.length - i) * HOUR;
+  return [{ key: `E-${i}`, at: iso(merged - 5 * HOUR), starts: iso(merged - 5 * HOUR), ships: iso(merged - HOUR), could_run_to: iso(merged + (hit ? HOUR : -HOUR / 2)) },
+    { key: `E-${i}`, merged_at: iso(merged) }];
+}).map((l) => `${JSON.stringify(l)}\n`).join(''));
+
+// ---- AC3: 31 of the last 40 merged before their could-run-to time; 5 older misses do not count
+repo('hits', 3700, { tickets: { 'X-1': { state: 'triaged' } }, sizes: { 'X-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) });
+saved('hits', [...range(5, () => false), ...range(40, (i) => i % 40 >= 9)]);
+const RATE = '78% shipped before their could-run-to time (last 40 tickets)';
+t('DS-162 AC3: the Timeline header gives the hit rate', Q.timelineScreen(Q.loadRepos(FIXED), 'acme__hits', { now: FIXED }).split('\n').slice(0, 3).includes(RATE), true);
+t('DS-162 AC3: and so does --plain', Q.run(['ships', 'hits', '--plain'], { now: FIXED }).split('\n').slice(0, 3).includes(RATE), true);
+
+// ---- AC4: no pass for 15 minutes marks the dates paused
+repo('quiet', 3800, { tickets: { 'Q-1': { state: 'triaged' } }, sizes: { 'Q-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 20 * MIN });
+const quiet = repoAt('quiet');
+const PAUSED = 'Dates paused: no pass for 20m. The forecast assumes passes keep running, so dates show again at the next pass.';
+t('DS-162 AC4: ships says the dates are paused, and shows none', Q.run(['ships', 'quiet', '--plain'], { now: FIXED }), `quiet · ${PAUSED}`);
+t('DS-162 AC4: the queue screen marks STARTS and SHIPS paused', /\sQ-1\s+ready\s+paused\s+paused\s/.test(Q.repoScreen(quiet, { now: FIXED })), true);
+t('DS-162 AC4: the ticket screen says so in place of its dates', Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n').includes(`Ships: ${PAUSED}`), true);
+t('DS-162 AC4: the overview\'s QUEUE DONE reads paused', /\spaused\s/.test(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? ''), true);
+t('DS-162 AC4: and a paused forecast saves no estimate', readEstimates(stateOf('quiet')).size, 0);
+
+// ---- AC5: under 10 merged estimates, no percentage
+repo('few', 3900, { tickets: { 'F-1': { state: 'triaged' } }, sizes: { 'F-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) });
+saved('few', range(9, () => true));
+const fewHead = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__few', { now: FIXED }).split('\n').slice(0, 3);
+t('DS-162 AC5: 9 merged estimates give no percentage, and say a rate needs 10', [fewHead.some((l) => l.includes('%')), fewHead[1]],
+  [false, 'No hit rate yet: 9 merged tickets have a saved first estimate, and a rate needs 10.']);
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');
 process.exit(fails ? 1 : 0);

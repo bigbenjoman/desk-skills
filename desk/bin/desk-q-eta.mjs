@@ -8,9 +8,10 @@
 // a ticket first spawned before that field existed falls back to its logs.
 //
 // No model, no Jira: local files, plus one `gh pr list` in a build for tickets that merged before
-// the queue recorded `merged_at`. `forecast` turns the history and a queue into desk-q's dates.
+// the queue recorded `merged_at`. `forecast` turns the history and a queue into desk-q's dates, and
+// <state>/eta.jsonl keeps the first of them per ticket beside its merge time, for the hit rate.
 import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, openSync, readSync, closeSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -80,10 +81,10 @@ export function historyLine({ key, size, spawned_at, merged_at }) {
   return { key, size, spawned_at, merged_at, hours };
 }
 
-const append = (state, lines) => {
+const append = (path, lines) => {
   if (!lines.length) return;
-  mkdirSync(state, { recursive: true });
-  appendFileSync(historyPath(state), lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
 };
 
 // Merge times by PR number, from GitHub, for tickets the queue holds no merged_at for.
@@ -120,7 +121,7 @@ export function buildHistory({ state, queue, mergedPrs = () => ({}), now = Date.
     report.added.push(line);
     have.add(key);
   }
-  append(state, lines);
+  append(historyPath(state), lines);
   return report;
 }
 
@@ -134,8 +135,67 @@ export function recordMerge({ state, queue, key, mergedPrs, now = Date.now() }) 
   const spawned = t.spawned_at ?? firstSpawnFromLogs(state, key);
   if (!spawned || !t.merged_at || Date.parse(spawned) > Date.parse(t.merged_at)) return { added: [], already: 0, noSpawn: [key] };
   const line = historyLine({ key, size: sizeOf(state, key), spawned_at: spawned, merged_at: t.merged_at });
-  append(state, [line]);
+  append(historyPath(state), [line]);
   return { added: [line], already: 0, noSpawn: [] };
+}
+
+// ---- saved estimates ---------------------------------------------------------------------------
+//
+// The first date the forecast gave each ticket, kept so a ship date can be checked against what
+// happened: <state>/eta.jsonl gains {key, at, starts, ships, could_run_to} the first time a ticket is
+// dated, then {key, merged_at} when it merges. Appended only, and the first line of each kind per key
+// wins, so a later forecast never overwrites an estimate and two writers racing count once.
+
+export const ESTIMATES_FILE = 'eta.jsonl';
+// The hit rate reads the last HIT_LAST merged estimates, and needs MIN_HITS before it gives one.
+export const HIT_LAST = 40;
+export const MIN_HITS = 10;
+
+export const estimatesPath = (state) => join(state, ESTIMATES_FILE);
+
+// Each key's saved estimate, with its merged_at once it has one: a Map, empty with no file.
+export function readEstimates(state) {
+  const path = estimatesPath(state);
+  const est = new Map(), merges = new Map();
+  if (!existsSync(path)) return est;
+  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+    let d;
+    try { d = JSON.parse(raw); } catch { continue; }
+    if (!d?.key) continue;
+    if (d.could_run_to != null) { if (!est.has(d.key)) est.set(d.key, { key: d.key, at: d.at, starts: d.starts, ships: d.ships, could_run_to: d.could_run_to }); }
+    else if (d.merged_at != null && !merges.has(d.key)) merges.set(d.key, d.merged_at);
+  }
+  for (const [k, m] of merges) if (est.has(k)) est.get(k).merged_at = m;
+  return est;
+}
+
+// A line for every ticket the forecast `T` dates that has no saved estimate yet. -> the lines added
+export function saveEstimates(state, T, now) {
+  const have = readEstimates(state);
+  const iso = (t) => new Date(t).toISOString();
+  const lines = Object.entries(T ?? {}).filter(([k, e]) => e && !have.has(k))
+    .map(([key, e]) => ({ key, at: iso(now), starts: iso(e.start), ships: iso(e.likely), could_run_to: iso(e.late) }));
+  append(estimatesPath(state), lines);
+  return lines;
+}
+
+// The merge time beside a saved estimate, once. -> the estimate with merged_at, or null when the
+// ticket has none saved or its merge is already recorded.
+export function recordEstimateMerge(state, key, mergedAt) {
+  const e = readEstimates(state).get(key);
+  if (!e || e.merged_at) return null;
+  append(estimatesPath(state), [{ key, merged_at: mergedAt }]);
+  return { ...e, merged_at: mergedAt };
+}
+
+// How many of the last HIT_LAST merged estimates merged before their could-run-to time:
+// {n, hits, pct}, with pct null under MIN_HITS.
+export function hitRate(est) {
+  const ok = (s) => Number.isFinite(Date.parse(s));
+  const merged = [...est.values()].filter((e) => ok(e.merged_at) && ok(e.could_run_to))
+    .sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at)).slice(-HIT_LAST);
+  const hits = merged.filter((e) => Date.parse(e.merged_at) < Date.parse(e.could_run_to)).length;
+  return { n: merged.length, hits, pct: merged.length < MIN_HITS ? null : Math.round((hits / merged.length) * 100) };
 }
 
 // ---- the forecast ------------------------------------------------------------------------------

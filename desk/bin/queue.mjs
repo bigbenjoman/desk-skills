@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
-import { recordMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
@@ -508,8 +508,9 @@ switch (cmd) {
     break;
   }
 
-  // The merge driver, once a ticket's PR has merged: the first merge time is kept on the ticket, and
-  // the repo's eta history gains its line (desk-q-eta.mjs), after the queue lock is released.
+  // The merge driver, once a ticket's PR has merged: the first merge time is kept on the ticket, the
+  // repo's eta history gains its line, and its saved first estimate gains the merge time beside it
+  // (desk-q-eta.mjs), after the queue lock is released.
   case 'merged': {
     const [key, at] = args;
     if (!key) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>]');
@@ -521,6 +522,8 @@ switch (cmd) {
     save(q);
     console.log(`${key} merged at ${t.merged_at}`);
     console.log(describeHistory(recordMerge({ state: stateDir(), queue: q, key, mergedPrs: () => ghMergedPrs(ghRepo()) })));
+    const est = recordEstimateMerge(stateDir(), key, t.merged_at);
+    if (est) console.log(`first estimate kept with its merge: could run to ${est.could_run_to}, merged ${Date.parse(est.merged_at) < Date.parse(est.could_run_to) ? 'before' : 'after'} it`);
     break;
   }
 
