@@ -673,6 +673,82 @@ out=$(cd "$A" && "$J" create Story s lint/nocrit.md customfield_10208=M --no-lin
 check "create --no-lint skips the lint" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 1)) ]'
 out=$(cd "$A" && "$J" create Story s lint/adv0.md customfield_10208=M 2>&1); rc=$?
 check "create with only advisory findings goes, and prints them" '[ $rc -eq 0 ] && [ "$(creates)" -eq $((n0 + 2)) ] && printf "%s\n" "$out" | grep -q "^advisory: no \"Verification\" section"'
+n0=$(creates)
+out=$(cd "$A" && "$J" create Story s lint/clean.md customfield_10208=M --check 2>&1); rc=$?
+check "create --check runs the checks and sends nothing" '[ $rc -eq 0 ] && [ "$(creates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -qx "ok: Story \"s\" passes every check (nothing sent)"'
+err=$(cd "$A" && "$J" create Story s lint/nocrit.md customfield_10208=M --check 2>&1); rc=$?
+check "create --check refuses what create refuses" '[ $rc -ne 0 ] && printf "%s\n" "$err" | grep -q "^blocking: no acceptance criteria"'
+err=$(cd "$A" && DESK_JIRA_PENDING_PARENT='{"key":"@1"}' "$J" create Story s lint/clean.md customfield_10208=M parent=@1 --no-lint 2>&1); rc=$?
+check "create refuses parent=@<row> outside a batch check" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "parent=@<row> is for create-batch" && [ "$(creates)" -eq "$n0" ]'
+
+# DS-133 create-batch: every row checked as create checks it, then each sent in order. Its own stub
+# numbers the tickets it creates (KAN-101 up) and rejects a summary of "third".
+printf '{"issues": {}, "children": {}, "create_seq": 101, "create_fail": ["third"], "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}\n' > "$T/batch.json"
+BTPORT=$((PORT + 7)); python3 "$S/stub_jira.py" "$BTPORT" "$T/batch.log" "" "$T/batch.json" & BTSTUB=$!
+trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB $BTSTUB 2>/dev/null' EXIT
+sleep 0.5
+BL="$T/batch.log"
+bcreates() { jq -s '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | length' "$BL"; }
+bsent() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue") | .body | fromjson | .fields | {summary, parent: .parent.key}]' "$BL"; }
+batch() { out=$(cd "$1" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch "${@:2}" 2>&1); rc=$?; }
+CB="$LD/clean.md"
+printf '# the epic first\nEpic\tthe epic\t%s\tcustomfield_10208=M\n\nStory\tfirst child\t%s\tcustomfield_10208=S\tparent=@1\nTask\tsecond child\t%s\tcustomfield_10208=XS\tparent=@1\n' "$CB" "$CB" "$CB" > "$LD/ok.tsv"
+batch "$A" lint/ok.tsv
+check "create-batch AC1: each row is created in order, one created line per row" '[ $rc -eq 0 ] && [ "$(bcreates)" -eq 3 ] &&
+  [ "$(printf "%s\n" "$out" | grep -c "^created KAN-")" -eq 3 ] && printf "%s\n" "$out" | grep "^created KAN-" | sed "s/ .*//" | tr "\n" " " | grep -qx "created created created " &&
+  [ "$(bsent | jq -r "map(.summary) | join(\",\")")" = "the epic,first child,second child" ] && printf "%s\n" "$out" | grep -qx "filed 3 tickets: KAN-101 KAN-102 KAN-103"'
+check "create-batch AC2: parent=@1 is the key row 1 got" '[ "$(bsent | jq -r "map(.parent) | @csv")" = "null,\"KAN-101\",\"KAN-101\"" ]'
+check "create-batch: each ticket is assigned to you, as create assigns it" '[ "$(jq -s "[.[] | select(.method == \"POST\" and .path == \"/rest/api/2/issue\") | .body | fromjson | .fields.assignee.accountId] | unique" "$BL" -c)" = "[\"abc\"]" ]'
+
+n0=$(bcreates)
+printf 'Story\tone\t%s\tcustomfield_10208=S\nStory\ttwo\t%s\tcustomfield_10208=S\nStory\tthree\t%s\tcustomfield_10208=S\n' "$CB" "$LD/nocrit.md" "$CB" > "$LD/lint.tsv"
+batch "$A" lint/lint.tsv
+check "create-batch AC3: a blocking lint finding creates nothing and names the row and its findings" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] &&
+  printf "%s\n" "$out" | grep -q "^row 2 (line 2): Story \"two\"$" && printf "%s\n" "$out" | grep -q "^  blocking: no acceptance criteria" &&
+  printf "%s\n" "$out" | grep -q "nothing created: 1 of 3 rows refused" && ! printf "%s\n" "$out" | grep -q "^row [13] "'
+
+cp "$CB" "$C/clean.md"
+printf 'Story\tsmall\tclean.md\tcustomfield_10208=M\tcustomfield_10207=P2\nStory\ttoo big\tclean.md\tcustomfield_10208=XL\tcustomfield_10207=P2\n' > "$C/rules.tsv"
+out=$(cd "$C" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch rules.tsv 2>&1); rc=$?
+check "create-batch AC4: a field the create rules refuse creates nothing and names the row and the reason" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] &&
+  printf "%s\n" "$out" | grep -q "^row 2 (line 2): Story \"too big\"$" && printf "%s\n" "$out" | grep -q "^  desk-jira: refusing customfield_10208=XL on a Story: split it"'
+
+printf 'Story\tone\t%s\tcustomfield_10208=S\nStory\ttwo\t%s\tcustomfield_10208=S\nStory\tthird\t%s\tcustomfield_10208=S\nStory\tfourth\t%s\tcustomfield_10208=S\nStory\tfifth\t%s\tcustomfield_10208=S\n' "$CB" "$CB" "$CB" "$CB" "$CB" > "$LD/fail.tsv"
+batch "$A" lint/fail.tsv
+check "create-batch AC5: a Jira error on row 3 of 5 keeps rows 1 and 2, sends nothing after, and names them" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq $((n0 + 3)) ] &&
+  [ "$(bsent | jq -r "map(.summary) | .[-3:] | join(\",\")")" = "one,two,third" ] &&
+  printf "%s\n" "$out" | grep -q "HTTP 400" && printf "%s\n" "$out" | grep -q "row 3 (line 3) failed (above): it was not created" &&
+  printf "%s\n" "$out" | grep -qx "  created: KAN-104 (row 1), KAN-105 (row 2)" && printf "%s\n" "$out" | grep -qx "  not sent: rows 4-5"'
+
+n0=$(bcreates)
+printf 'Story\tmine\t%s\tcustomfield_10208=S\nStory\ttheirs\t%s\tcustomfield_10208=S\tassignee=xyz\n' "$CB" "$CB" > "$LD/route.tsv"
+batch "$A" lint/route.tsv
+check "create-batch AC6: another assignee with no --route is refused, as create refuses it" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] &&
+  printf "%s\n" "$out" | grep -q "^row 2 (line 2)" && printf "%s\n" "$out" | grep -q "assignee xyz is not you.*add --route"'
+printf 'Story\ttheirs\t%s\tcustomfield_10208=S\tassignee=xyz\t--route\n' "$CB" > "$LD/route1.tsv"
+batch "$A" lint/route1.tsv
+check "create-batch: a row with --route needs --route on the command, so the harness asks" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "create-batch needs --route too"'
+printf 'Story\ttheirs\t%s\tcustomfield_10208=S\treporter=xyz\n' "$CB" > "$LD/rep.tsv"
+batch "$A" lint/rep.tsv
+check "create-batch: a row setting the reporter needs --route on the command" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "sets the reporter, so create-batch needs --route"'
+batch "$A" lint/route1.tsv --route
+check "create-batch --route with a routing row sends their accountId" '[ $rc -eq 0 ] && [ "$(bcreates)" -eq $((n0 + 1)) ] &&
+  [ "$(jq -sc "[.[] | select(.method == \"POST\" and .path == \"/rest/api/2/issue\")] | last | .body | fromjson | .fields.assignee" "$BL")" = "{\"accountId\":\"xyz\"}" ]'
+
+n0=$(bcreates)
+printf 'Story\tchild\t%s\tcustomfield_10208=S\tparent=@2\nEpic\tthe epic\t%s\tcustomfield_10208=M\n' "$CB" "$CB" > "$LD/fwd.tsv"
+batch "$A" lint/fwd.tsv
+check "create-batch: parent=@<n> must name an earlier row" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "parent=@2 names no earlier row"'
+printf 'Story\tno body\n' > "$LD/short.tsv"
+batch "$A" lint/short.tsv
+check "create-batch: a row with no body file is refused" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "needs a type, a summary and a body file"'
+printf 'Story\tmissing body\tlint/nope.md\tcustomfield_10208=S\n' > "$LD/nobody.tsv"
+batch "$A" lint/nobody.tsv
+check "create-batch: a body file that does not exist is refused" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "body file not found: lint/nope.md"'
+
+# AC7: the skill tells Claude to file an epic's children with create-batch, and shows no helper.
+EPIC=$(awk '/^\*\*Writing an epic\*\*/{p=1} p&&/^## /{exit} p' "$SRC/skills/desk-jira/SKILL.md")
+check "create-batch AC7: Writing an epic files the children with create-batch, no shell helper" '[ -n "$EPIC" ] && printf "%s" "$EPIC" | grep -q "desk-jira create-batch" && ! printf "%s" "$EPIC" | grep -qE "mk\(\)|\(\) *\{"'
 
 rm -f "${TMPDIR:-/tmp}/desk-jira-test-body.md" "${TMPDIR:-/tmp}/desk-jira-test-link"
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

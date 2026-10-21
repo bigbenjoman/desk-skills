@@ -287,6 +287,7 @@ them as a batch. The commands:
 ```bash
 desk-jira children ABC-900                         # its children (or a story's subtasks), rank order
 desk-jira create Story "<summary>" body.md parent=ABC-900 <size field>=M
+desk-jira create-batch tickets.tsv                 # a set of tickets, one line each (below)
 desk-jira link ABC-903 blocked-by ABC-901          # ABC-903 cannot start until ABC-901 merges
 desk-jira link ABC-904 duplicates ABC-850          # any type the site has: relates, is-cloned-by, …
 desk-jira unlink ABC-903 ABC-901                   # remove it; prints ABC-903's links left
@@ -316,9 +317,28 @@ field to a team-managed project: it is a manual step in the project (Project set
 
 **Writing an epic** (usually Bea): the epic and each child in `references/ticket-template.md`'s
 layouts, children of size M or less. **Before the user approves the set,
-run the readiness review in `references/epic-readiness.md`.** File in this order: the epic, the
-children (`parent=`), the links, then read it all back (`desk-jira children <EPIC>`). Every write
-goes through the gate above.
+run the readiness review in `references/epic-readiness.md`.** File in this order: the epic and the
+children in one `desk-jira create-batch`, then the links, then read it all back (`desk-jira children
+<EPIC>`). Every write goes through the gate above.
+
+**File a set of tickets with `create-batch`, never a loop over `create`.** Write each body as a `.md`
+file and a `.tsv` file beside them (both with the Write tool, in the worktree or `$DESK_STATE`),
+one line per ticket, tab-separated: type, summary, body file, then the `field=value` pairs and
+`create` flags that ticket needs. `parent=@1` is the key row 1 gets, so the epic goes on row 1 and
+its children name it; an existing epic is `parent=ABC-900`. Blank lines and `#` lines are skipped.
+
+```
+Epic	Checkout redesign	epic.md	customfield_10208=XL
+Story	Card form validates as you type	card-form.md	parent=@1	customfield_10208=M
+Story	Saved cards on the payment step	saved-cards.md	parent=@1	customfield_10208=S
+```
+
+Every row is checked as `create` checks it (the field rules, the lint, the assignee) before any is
+sent, and one refused row creates nothing: the output names the row and why. Rows then go in order,
+each printing `created <KEY>`; a Jira error stops the batch there and names what was created and
+which rows were not sent. File the rest from a new file holding only the rows not created, with
+each `parent=@<n>` that pointed at a created row replaced by its key. A row that routes the ticket (`--route`, or a `reporter=`) needs `--route` on `create-batch`
+itself, which asks first (gate item 3). Links stay a separate step: `desk-jira link`.
 
 ## Transitions — read them, don't hardcode
 

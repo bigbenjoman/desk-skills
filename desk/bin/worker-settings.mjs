@@ -434,7 +434,7 @@ if (mode === 'triage') {
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
-  grant('jira-create', bash('desk-jira', ' create'));
+  grant('jira-create', bash('desk-jira', ' create', ' create-batch'));
   grant('jira-edit', bash('desk-jira', ' edit', ' labels'));
   deny.push(...bash('desk-jira', ...JIRA_NEVER));
   if (!(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));

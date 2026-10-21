@@ -958,8 +958,14 @@ lint_draft() {  # <type> <description as sent> <fields json> [--json]
   local sf parent ptype='null' sib t
   sf=$(size_field) || return 2
   parent=$(printf '%s' "$3" | jq -r '.parent.key // empty')
-  if [[ -n "$parent" ]]; then ptype=$(api GET "api/2/issue/$parent?fields=issuetype,summary") || return 2; fi
-  sib=$(siblings_of "$parent") || return 2
+  if [[ "$parent" == @* ]]; then
+    # A create-batch row whose parent is an earlier row: that row's type and summary stand in for
+    # it, and it has no children yet.
+    ptype="$PENDING_PARENT"; sib='[]'
+  else
+    if [[ -n "$parent" ]]; then ptype=$(api GET "api/2/issue/$parent?fields=issuetype,summary") || return 2; fi
+    sib=$(siblings_of "$parent") || return 2
+  fi
   t=$(printf '%s\n%s\n%s' "$3" "$ptype" "$sib" | jq -cs --arg type "$1" --arg text "$2" --arg sf "$sf" "$JQ_SIZE"'.[0] as $f | {
     key: "the new ticket", type: $type, text: $text, wiki: true,
     size: ($f | size_of($sf)),
@@ -985,10 +991,19 @@ desk-jira <command> [args]
                                   checks a ticket, or a draft as create would send it (type Story
                                   unless given), against the ticket template: one blocking or
                                   advisory line per finding; exit 1 on any blocking finding
-  create <type> <summary> <desc-file|text> [field=value ...] [--route] [--approved <text>] [--no-lint]
+  create <type> <summary> <desc-file|text> [field=value ...] [--route] [--approved <text>] [--no-lint] [--check]
                                   linted first, and refused on a blocking finding unless --no-lint;
                                   assigned to you when §3 jira-assign-self is yes and no assignee
-                                  is given; anyone else needs --route; the assignee is read back
+                                  is given; anyone else needs --route; the assignee is read back;
+                                  --check runs every check and sends nothing
+  create-batch <file.tsv> [--route]
+                                  files a set of tickets: a line per ticket, tab-separated,
+                                  <type> <summary> <body file> then field=value pairs and create's
+                                  flags; blank and # lines skipped. parent=@<n> is the key row n got.
+                                  Every row is checked as create checks it before any is sent, and
+                                  one refused row creates nothing. Sent in order; the first failure
+                                  stops it, naming what was created and what was not sent. A row
+                                  with --route or a reporter needs --route on the command too
   edit <KEY> <field=value ...> [--approved <text>]
                                   prints each field read back from Jira after the write
   labels <KEY> add|remove <label ...>
@@ -1267,16 +1282,29 @@ case "$cmd" in
 
   create)
     [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
-    [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...] [--route] [--no-lint]'
+    [[ $# -ge 3 ]] || die 'usage: desk-jira create <type> <summary> <desc-file|text> [field=value ...] [--route] [--no-lint] [--check]'
     type="$1"; summary="$2"; desc=$(text_of "$3" && printf x) || exit 2; desc="${desc%x}"; shift 3
     errs=$(desc_errors "$desc") || die "desk-jira: could not check the description"
     [[ -z "$errs" ]] || die "$errs"
     split_approved "$@"
-    route=0; lint=1; pairs=()
+    route=0; lint=1; check=0; pending=''; pairs=()
     for a in ${REST[@]+"${REST[@]}"}; do
-      case "$a" in --route) route=1 ;; --no-lint) lint=0 ;; *) pairs+=("$a") ;; esac
+      case "$a" in
+        --route) route=1 ;; --no-lint) lint=0 ;; --check) check=1 ;;
+        parent=@*) pending="${a#parent=}" ;;
+        *) pairs+=("$a") ;;
+      esac
     done
+    # parent=@<row> names an earlier row of a create-batch, which exists only once the batch sends
+    # it: create-batch checks such a row with --check and DESK_JIRA_PENDING_PARENT, then sends it
+    # with the real key.
+    if [[ -n "$pending" ]]; then
+      PENDING_PARENT="${DESK_JIRA_PENDING_PARENT:-}"
+      [[ "$pending" =~ ^@[0-9]+$ ]] && (( check )) && [[ -n "$PENDING_PARENT" ]] \
+        || die "desk-jira: parent must be an issue key (e.g. ABC-12), got: $pending (parent=@<row> is for create-batch)"
+    fi
     extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+    if [[ -n "$pending" ]]; then extra=$(printf '%s' "$extra" | jq --arg p "$pending" '.parent={key:$p}'); fi
     # An issuetype among the fields replaces <type> in the payload, so the rules read that one.
     # Only {"name"}: Jira resolves an id before a name, so an id would bypass the type read here.
     type=$(printf '%s' "$extra" | jq -r --arg t "$type" 'if has("issuetype") then
@@ -1315,6 +1343,7 @@ case "$cmd" in
         die "desk-jira: assignee $want is not you, which routes the ticket to someone else: add --route if that is meant (§3 jira-route)"
       fi
     fi
+    if (( check )); then echo "ok: $type \"$summary\" passes every check (nothing sent)"; exit 0; fi
     payload=$(jq -n \
       --arg p "$PROJECT" --arg t "$type" --arg s "$summary" --arg d "$desc" --argjson e "$extra" \
       '{fields: ({project:{key:$p}, issuetype:{name:$t}, summary:$s, description:$d} + $e)}')
@@ -1329,6 +1358,99 @@ case "$cmd" in
       echo "  assignee: (could not read back)"
     fi
     if [[ -n "$APPROVED" ]]; then record_approval "$key" "$extra" "$APPROVED"; fi
+    ;;
+
+  create-batch)
+    usage_cb='usage: desk-jira create-batch <file.tsv> [--route]   (a line per ticket: <type> TAB <summary> TAB <body file> [TAB field=value ...])'
+    [[ -n "$PROJECT" ]] || die "no Jira project for $SLUG: set §4 Jira project in $REPO_DIR/config.md, or JIRA_PROJECT"
+    [[ $# -ge 1 ]] || die "$usage_cb"
+    file="$1"; shift; broute=0
+    for a in "$@"; do [[ "$a" == --route ]] && broute=1 || die "$usage_cb"; done
+    [[ -f "$file" ]] || die "desk-jira: no such file: $file"
+    self="${BASH_SOURCE[0]}"
+    # Every line but a blank one or a # comment is a row; rows are numbered from 1 in that order.
+    rows=(); lines=(); ln=0; skip_re='^[[:space:]]*(#|$)'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      ln=$((ln + 1)); line="${line%$'\r'}"
+      [[ "$line" =~ $skip_re ]] && continue
+      rows+=("$line"); lines+=("$ln")
+    done < "$file"
+    [[ ${#rows[@]} -gt 0 ]] || die "desk-jira: $file has no rows"
+    # Every row is checked, as create would check it, before any is sent: one refused row and
+    # nothing is created. Each refusal is printed with its row number.
+    types=(); sums=(); refused=0
+    for i in "${!rows[@]}"; do
+      r=$((i + 1)); IFS=$'\t' read -r -a cols <<<"${rows[$i]}"
+      types+=("${cols[0]:-}"); sums+=("${cols[1]:-}")
+      label="row $r (line ${lines[$i]}): ${cols[0]:-?} \"${cols[1]:-}\""
+      rowerrs=(); penv=''; after_approved=0
+      if [[ ${#cols[@]} -lt 3 ]]; then
+        rowerrs+=("desk-jira: a row needs a type, a summary and a body file, separated by tabs")
+      else
+        [[ -f "${cols[2]}" ]] || rowerrs+=("desk-jira: body file not found: ${cols[2]}")
+        for c in "${cols[@]:3}"; do
+          if (( after_approved )); then after_approved=0; continue; fi
+          case "$c" in
+            --route) (( broute )) || rowerrs+=("desk-jira: the row routes the ticket (--route), so create-batch needs --route too, which asks first (§3 jira-route)") ;;
+            reporter=*) (( broute )) || rowerrs+=("desk-jira: the row sets the reporter, so create-batch needs --route, which asks first (§3 jira-route)") ;;
+            parent=@*)
+              n="${c#parent=@}"
+              if [[ "$n" =~ ^[0-9]+$ ]] && (( 10#$n >= 1 && 10#$n < r )); then
+                n=$((10#$n))
+                penv=$(jq -nc --arg k "@$n" --arg t "${types[$((n - 1))]}" --arg s "${sums[$((n - 1))]}" \
+                  '{key:$k, fields:{issuetype:{name:$t}, summary:$s}}')
+              else
+                rowerrs+=("desk-jira: $c names no earlier row: parent=@<n> takes the number of a row above this one")
+              fi ;;
+            --approved) after_approved=1 ;;
+            --no-lint|--approved=*|*=*) ;;
+            *) rowerrs+=("desk-jira: not a field=value pair or a create flag (--route, --no-lint, --approved): $c") ;;
+          esac
+        done
+        if [[ ${#rowerrs[@]} -eq 0 ]]; then
+          out=$(DESK_JIRA_PENDING_PARENT="$penv" "$self" create "${cols[@]}" --check 2>&1) && rc=0 || rc=$?
+          if (( rc )); then rowerrs+=("$out")
+          else
+            out=$(printf '%s\n' "$out" | grep -v '^ok: .* passes every check (nothing sent)$' || true)
+            [[ -z "$out" ]] || printf '%s\n%s\n' "$label" "$out" | sed '2,$s/^/  /' >&2
+          fi
+        fi
+      fi
+      if [[ ${#rowerrs[@]} -gt 0 ]]; then
+        refused=$((refused + 1))
+        printf '%s\n' "$label" "${rowerrs[@]}" | sed '2,$s/^/  /' >&2
+      fi
+    done
+    (( refused == 0 )) || die "desk-jira: nothing created: $refused of ${#rows[@]} rows refused (above)"
+    # Then each row is sent in order, an @<n> parent as the key row n got. Each was linted above, so
+    # it is not linted again. The first failure stops the batch: what was created stays created.
+    keys=()
+    for i in "${!rows[@]}"; do
+      r=$((i + 1)); IFS=$'\t' read -r -a cols <<<"${rows[$i]}"
+      args=()
+      for c in "${cols[@]:3}"; do
+        case "$c" in parent=@[0-9]*) args+=("parent=${keys[$((10#${c#parent=@} - 1))]}") ;; *) args+=("$c") ;; esac
+      done
+      out=$("$self" create "${cols[0]}" "${cols[1]}" "${cols[2]}" ${args[@]+"${args[@]}"} --no-lint 2>&1) && rc=0 || rc=$?
+      printf '%s\n' "$out"
+      key=$(printf '%s\n' "$out" | sed -n 's/^created \([A-Z][A-Z0-9]*-[0-9][0-9]*\) .*/\1/p' | head -n1)
+      [[ -z "$key" ]] || keys+=("$key")
+      if (( rc )); then
+        made=''; for j in ${keys[@]+"${!keys[@]}"}; do made+="${made:+, }${keys[$j]} (row $((j + 1)))"; done
+        {
+          if [[ -n "$key" ]]; then echo "desk-jira: row $r (line ${lines[$i]}) created $key, then failed (above)"
+          else echo "desk-jira: row $r (line ${lines[$i]}) failed (above): it was not created"; fi
+          echo "  created: ${made:-none}"
+          case $(( ${#rows[@]} - r )) in
+            0) echo "  not sent: none" ;;
+            1) echo "  not sent: row ${#rows[@]}" ;;
+            *) echo "  not sent: rows $((r + 1))-${#rows[@]}" ;;
+          esac
+        } >&2
+        exit 1
+      fi
+    done
+    echo "filed ${#keys[@]} tickets: ${keys[*]}"
     ;;
 
   lint)
