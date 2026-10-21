@@ -260,6 +260,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
   // hangs after printing it must be recorded done, never left running and then parked as wedged.
   const done = park ? undefined : lastDone?.[1];
+  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
 
   // A worker at the 5-hour usage limit (usage-limit.mjs decides; nothing here reads the event). Only
   // a worker that has neither parked nor finished is acted on.
@@ -281,11 +282,15 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
     if (pid) sh('kill', [String(pid)], { tolerant: true });
     const stop = !isLive ? 'its session had already ended' : pid ? `the worker was stopped (pid ${pid})` : `no pid to stop: stop session ${t.session_id} by hand`;
-    const why = `paused on the 5-hour usage limit, which resets ${resetText(limit.resetsAt)}. Config §3 ${USAGE_KEY} is "${usagePerm}", so it does not resume into the next usage window: ${stop}. ` +
-      `After the reset, requeue it with queue.mjs requeue ${t.key}`;
+    // A worker can resume before any pass sees it paused. It is stopped all the same, so it spends
+    // no more of the next window, and the reason says it had resumed.
+    const why = limit.resumed
+      ? `reached the 5-hour usage limit, which reset ${resetText(limit.resetsAt)}, and resumed into the next usage window before a pass saw it. ` +
+        `Config §3 ${USAGE_KEY} is "${usagePerm}", so it goes no further: ${stop}. Requeue it with queue.mjs requeue ${t.key}`
+      : `paused on the 5-hour usage limit, which resets ${resetText(limit.resetsAt)}. Config §3 ${USAGE_KEY} is "${usagePerm}", so it does not resume into the next usage window: ${stop}. ` +
+        `After the reset, requeue it with queue.mjs requeue ${t.key}`;
     q('park', t.key, why);
     report.parked.push(`${t.key}: ${why}`);
-    for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
     continue;
   }
   const pausedOnLimit = !!limit && !limit.resumed && Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS;
@@ -313,7 +318,6 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
     } else if (idle >= 3) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
   }
-  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
 
   // Screenshots the worker captured but cannot upload: one shared browser profile, so the
   // orchestrator does it, one PR at a time, and only once per ticket — and only where config §3

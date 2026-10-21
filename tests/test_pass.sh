@@ -280,6 +280,12 @@ check "DS-121 AC2 with no resume grant, a worker at the limit is parked with tha
 check "DS-121 AC2 the stopped worker is no longer running" '[ "$gone" = yes ] && echo "$out" | grep -q "the worker was stopped (pid $LPID)"'
 kill "$LPID" 2>/dev/null
 q set U-1 state=done
+# U-7: no grant, and the worker resumed before any pass saw it paused: stopped all the same, saying so.
+{ limit_event $((now - 60)); say "AUTOPILOT_STAGE: 5/9 evidence"; } > "$T/state-u/logs/U-7.log"
+quiet_running U-7 live-1; q set U-7 idle_passes=0
+out=$(DESK_CONFIG="$T/config.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 AC2 a worker that resumed before a pass saw it is parked, and the reason says it resumed" '[ "$(field U-7 state)" = "\"parked\"" ] && field U-7 park.question | grep -q "reached the 5-hour usage limit, which reset .* UTC, and resumed into the next usage window before a pass saw it"'
+q set U-7 state=done
 
 # U-2: resume granted and the reset an hour away: paused, not wedged, and the quiet count cleared.
 { say "AUTOPILOT_STAGE: 4/9 verify"; limit_event $((now + 3600)); } > "$T/state-u/logs/U-2.log"
