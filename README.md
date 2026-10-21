@@ -226,6 +226,25 @@ node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 da
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
+**`skill-eval.mjs`** runs a task set once with a skill loaded and once without it, so prose that
+only restates what the model now does by default can be found. Each task is a prompt with pass/fail
+checks on the final reply (`contains`, `absent` or `matches` a regex). Both arms run `claude -p`
+with no setting sources, so no installed skill reaches either, in an empty directory of their own;
+only the skill arm gets the skill's `SKILL.md`. The report lists each task's checks for both arms
+side by side and ends with one verdict: **keep** (the skill arm passed more), **trim** (the same
+number, with the transcripts linked to read) or **drop** (fewer). A run that fails or times out is
+marked failed and counted neither way. It refuses to start without `--max-budget-usd`, each run's
+spend ceiling:
+
+```
+node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> --max-budget-usd <usd> \
+  [--skills-dir skills] [--out <dir>] [--timeout 600] [--model <model>]
+```
+
+```json
+{"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
+```
+
 **`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile
 says a runner is possible (`desk-env machine get runner-possible`). It needs Tart and Softnet
 (`brew install openai/tools/tart openai/tools/softnet`), with Softnet setuid root, which `up` tells
