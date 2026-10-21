@@ -229,13 +229,13 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-function screen(start, columns = 80) {
+function screen(start, columns = 80, clock = Date.now) {
   const input = new PassThrough();
   const modes = [];
   Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on() {}, removeListener() {} };
   const codes = [], opened = [];
-  const ui = Q.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000 });
+  const ui = Q.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
     input, output, modes, codes, opened, ui, frame,
@@ -384,6 +384,111 @@ t('DS-116 AC11 the header gives running, allowed, machine, free memory and the r
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
 t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 (cap 4) · 1 ready with no free slot'), true);
 t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('5 (cap 5)'), true);
+
+// ---- DS-163: the Timeline and By day views, on a fixed clock: Mon 19 Oct 2026 18:51, local time.
+const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
+const HOUR = 3_600_000, DAY = 24 * HOUR;
+// A repo with a ship history: `hours` per merged size M ticket, each merged an hour before the last.
+function dated(name, port, { workers = 2, tickets, hours, at = FIXED }) {
+  const triage = Object.fromEntries(Object.keys(tickets).map((k) => [k, { summary: `${k} title`, size: 'M' }]));
+  put(I.T, I.env, name, { port, conc: '2 / 3', queue: { batch: name, concurrency: workers, tickets }, triage });
+  writeFileSync(join(I.env.HOME, '.desk-autopilot', `acme__${name}`, 'eta-history.jsonl'), hours.map((h, i) => {
+    const merged = at - (i + 1) * HOUR;
+    return `${JSON.stringify({ key: `H-${i}`, size: 'M', spawned_at: new Date(merged - h * HOUR).toISOString(), merged_at: new Date(merged).toISOString(), hours: h })}\n`;
+  }).join(''));
+}
+const ready = { state: 'triaged', open_questions: 0 };
+dated('tidy', 3700, { hours: [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8], tickets: {
+  'T-1': { state: 'running', stage: '4/9' }, 'T-2': ready, 'T-3': ready, 'T-4': { state: 'parked', park: { question: 'which copy?' } },
+  'T-5': { state: 'parked', held_by: 'T-4', park: { question: 'held by orchestrator: blocked by T-4' } }, 'T-6': ready, 'T-7': ready } });
+dated('slow', 3800, { hours: [30, 40, 50, 60, 30, 40, 50, 60, 30, 40, 50, 60], tickets: { 'S-1': ready, 'S-2': ready, 'S-3': ready, 'S-4': ready } });
+dated('zero', 3900, { workers: 0, hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { 'Z-1': ready } });
+dated('piped', 4000, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], at: Date.now(), tickets: { 'P-1': ready, 'P-2': { state: 'parked', park: { question: 'which copy?' } } } });
+const tl = (slug, opts = {}) => lines(Q.timelineScreen(Q.loadRepos(FIXED), slug, { now: FIXED, ...opts }));
+const tidyF = Q.forecastOf(Q.loadRepos(FIXED).find((r) => r.name === 'tidy'), { now: FIXED });
+const tidyTl = tl('acme__tidy');
+const barRow = (rows, key) => rows.find((l) => l.startsWith(`  ${pad10(key)}`)) ?? '';
+function pad10(s) { return s + ' '.repeat(10 - s.length); }
+const datedKeys = Object.keys(tidyF.T).filter((k) => tidyF.T[k]).sort((a, b) => tidyF.T[a].likely - tidyF.T[b].likely);
+const shownDated = tidyTl.filter((l) => /^ {2}T-\d+ .*█/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
+t('DS-163 AC1 one bar row per dated ticket, sorted by ship time', shownDated.join(), datedKeys.join());
+const { when: whenAt } = await import('../desk/bin/desk-q-eta.mjs');
+const t3 = barRow(tidyTl, 'T-3');
+t('DS-163 AC1 a row is its key, its state, a solid bar shaded on, then STARTS and SHIPS at the right',
+  /^ {2}T-3 {7}ready {5} [ ┆]*█+░*[ ┆]*[ ▸] \S/.test(t3) && t3.endsWith(whenAt(tidyF.T['T-3'].likely, FIXED)), true);
+t('DS-163 AC1 the header ends in STARTS and SHIPS', tidyTl.some((l) => /^ +now .*  STARTS {7}SHIPS$/.test(l)), true);
+
+t('DS-163 AC2 under 2 days the scale is hours', Q.scaleFor(1.9 * DAY, FIXED).id, 'hours');
+t('DS-163 AC2 under 21 days it is days, and beyond that weeks', `${Q.scaleFor(20 * DAY, FIXED).id} ${Q.scaleFor(22 * DAY, FIXED).id}`, 'days weeks');
+t('DS-163 AC2 a slow queue reads in days', tl('acme__slow').includes('Scale: days (auto)'), true);
+
+const Gs = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
+await sleep(20);
+const scaleLine = (s) => s.frame().find((l) => l.startsWith('Scale: ')) ?? '';
+t('DS-163 AC2 the header says the scale, that it is auto, and z', scaleLine(Gs), 'Scale: hours (auto) · z to change');
+t('DS-163 AC1 the state shows in colour', /\x1b\[32mrunning/.test(Gs.output.buf) && /\x1b\[34mready/.test(Gs.output.buf), true);
+const zs = [];
+for (let i = 0; i < 4; i++) { await Gs.press('z'); zs.push(scaleLine(Gs).split(' · ')[0]); }
+t('DS-163 AC3 z cycles hours, days, weeks, auto', zs.join(', '), 'Scale: hours, Scale: days, Scale: weeks, Scale: hours (auto)');
+Gs.ui.finish(0);
+
+const hrs = tl('acme__tidy');
+const tickLine = hrs.find((l) => /^ +├/.test(l)) ?? '';
+const railCols = [...tickLine].map((c, i) => (c === '▾' ? i : -1)).filter((i) => i >= 0);
+t('DS-163 AC4 an hours scale marks the check-ins on the axis', railCols.length >= 2, true);
+const barRows = hrs.filter((l) => /^ {2}T-\d .*█/.test(l));
+t('DS-163 AC4 and a dotted rail runs down each bar row wherever no bar covers it', barRows.length > 0
+  && barRows.every((l) => railCols.every((c) => ['┆', '█', '░'].includes([...l][c]))) && barRows.some((l) => [...l][railCols[0]] === '┆'), true);
+
+const zoomed = tl('acme__slow', { zoom: 'hours' });
+t('DS-163 AC5 a bar running past the right edge ends in ▸', zoomed.filter((l) => /^ {2}S-\d .*▸ /.test(l)).length > 0, true);
+t('DS-163 AC5 one that ends inside does not', tidyTl.filter((l) => /^ {2}T-\d .*▸/.test(l)).length, 0);
+
+const everyTl = lines(Q.timelineScreen(Q.loadRepos(FIXED), null, { now: FIXED }));
+t('DS-163 AC6 every repo groups tickets under a row per repo', everyTl.includes('  tidy · 7 tickets') && everyTl.includes('  slow · 4 tickets'), true);
+t('DS-163 AC6 a repo with too little history says so under the rows', everyTl.some((l) => l.startsWith('voicepa · No ship estimate')), true);
+const Hc = screen({ kind: 'timeline', slug: null }, 120, () => FIXED);
+await sleep(20);
+await Hc.press('z');
+for (let i = 0; i < 20 && !/tidy · 7 tickets/.test(Hc.selected()); i++) await Hc.press(DOWN);
+await Hc.press('\r');
+t('DS-163 AC6 Enter on the repo row opens its Timeline', Hc.crumbs(), 'desk-q › tidy › Timeline');
+t('DS-163 AC3 and changing repo puts the scale back to auto', scaleLine(Hc), 'Scale: hours (auto) · z to change');
+Hc.ui.finish(0);
+
+const days = lines(Q.daysScreen(Q.loadRepos(FIXED), 'acme__tidy', { now: FIXED }));
+const groupsOf = (ls) => ls.filter((l) => /^ {2}\S/.test(l)).map((l) => l.trim().replace(/ · \d+ tickets?$/, ''));
+const tidyGroups = groupsOf(days);
+t('DS-163 AC7 By day opens with Today, then Tomorrow, undated last', `${tidyGroups[0]} | ${tidyGroups.includes('Tomorrow · Tue 20 Oct')} | ${tidyGroups.at(-1)}`, 'Today · Mon 19 Oct | true | No date yet');
+t('DS-163 AC7 each dated row has STARTS, SHIPS and its title', days.some((l) => new RegExp(`^ {4}T-3 +ready +\\S.* {2}T-3 title$`).test(l) && l.includes(whenAt(tidyF.T['T-3'].likely, FIXED))), true);
+const at = (...a) => new Date(...a).getTime();
+t('DS-163 AC7 then each day to 6 days out, then the week by its Monday', [at(2026, 9, 21, 10), at(2026, 9, 25, 23), at(2026, 9, 26, 9), at(2026, 10, 4, 9)].map((x) => Q.shipDay(x, FIXED)).join(' | '),
+  'Wed 21 Oct | Sun 25 Oct | Week of Mon 26 Oct | Week of Mon 2 Nov');
+t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { now: FIXED }), Q.daysScreen(Q.loadRepos(FIXED), 'acme__tidy', { now: FIXED }));
+
+// The median of tidy's 12 size M durations, 4 to 10 h: the 7th of them sorted.
+const typicalM = '7.0';
+t('DS-163 AC8 a ticket waiting on you says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Waiting on you · ~${typicalM} h once answered`)), true);
+t('DS-163 AC8 a stuck ticket names what it is stuck behind', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Stuck behind T-4')), true);
+t('DS-163 AC8 workers set to 0 says nothing starts', barRow(tl('acme__zero'), 'Z-1').endsWith('Workers set to 0: nothing starts'), true);
+
+const Ks = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
+await sleep(20);
+const head1 = () => Ks.frame().find((l) => l.startsWith('tidy · forecast')) ?? '';
+const t7 = () => (Ks.frame().find((l) => /^[ ›] T-7 /.test(l)) ?? '').slice(1);
+const before7 = t7();
+for (const c of ':tidy') await Ks.press(c);
+await Ks.press('\r');
+await Ks.press('-');
+await Ks.press('\x1b');
+t('DS-163 AC9 back on the Timeline after a workers change on the queue screen', `${Ks.crumbs()} | ${/ · 1 workers$/.test(head1())}`, 'desk-q › tidy › Timeline | true');
+t('DS-163 AC9 the dates reflect it', t7() !== before7 && t7() !== '', true);
+Ks.ui.finish(0);
+
+const pipedTl = I.run('ships', 'piped'), pipedDays = I.run('piped', 'days');
+t('DS-163 AC10 the Timeline piped is plain text, and exits 0', pipedTl.code === 0 && !pipedTl.out.includes('\x1b') && /^ {2}P-1 .*█/m.test(pipedTl.out), true);
+t('DS-163 AC10 By day piped is plain text, and exits 0', pipedDays.code === 0 && !pipedDays.out.includes('\x1b') && /^ {4}P-1 /m.test(pipedDays.out), true);
+t('DS-163 ships --plain keeps the one-line-per-ticket list', /^ {2}TICKET\s+STATE\s+STARTS\s+SHIPS$/m.test(I.run('ships', 'piped', '--plain').out), true);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
