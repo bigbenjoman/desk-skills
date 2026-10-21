@@ -42,6 +42,14 @@ sh -c 'exit 0' & dead=$!; wait "$dead"
 mkdir "$LOCK"; echo "$dead" > "$LOCK/pid"
 q set T-1 lane=stale
 check "AC2 a dead holder's lock is cleared and the change made"     '[ $rc -eq 0 ] && [ "$(lane T-1)" = stale ] && [ ! -e "$LOCK" ]'
+# Eight writers that all find the same dead holder's lock: one clears it, and none removes the
+# fresh lock another has taken since, so every change still lands.
+mkdir "$LOCK"; echo "$dead" > "$LOCK/pid"
+for i in 1 2 3 4 5 6 7 8; do node "$B/queue.mjs" set "T-$i" "lane=S$i" >/dev/null 2>&1 & done
+wait
+out=""; for i in 1 2 3 4 5 6 7 8; do out="$out $(lane "T-$i")"; done
+check "eight writers racing to clear one stale lock all land"        '[ "$out" = " S1 S2 S3 S4 S5 S6 S7 S8" ] && [ ! -e "$LOCK" ] && [ ! -e "$LOCK.clearing" ]'
+q set T-1 lane=stale
 
 # AC3 and AC4: a lock a live process holds. The default wait is 10 seconds.
 sleep 60 & holder=$!
@@ -50,7 +58,7 @@ before=$(sum); start=$(date +%s)
 q set T-2 lane=late
 took=$(( $(date +%s) - start ))
 check "AC3 a live holder past the wait is refused, naming its pid"  '[ $rc -ne 0 ] && [[ "$out" == *"locked by pid $holder"* ]] && [[ "$out" == *"10s wait"* ]] && [ "$took" -ge 10 ]'
-check "AC3 the queue file is unchanged"                             '[ "$(sum)" = "$before" ] && [ "$(lane T-2)" = L2 ]'
+check "AC3 the queue file is unchanged"                             '[ "$(sum)" = "$before" ] && [ "$(lane T-2)" = S2 ]'
 check "the refused write leaves the holder's lock in place"         '[ "$(cat "$LOCK/pid")" = "$holder" ]'
 start=$(date +%s); q list; took=$(( $(date +%s) - start ))
 check "AC4 list prints the queue without waiting"                   '[ $rc -eq 0 ] && [ "$took" -le 2 ] && [[ "$out" == *"\"T-8\""* ]]'

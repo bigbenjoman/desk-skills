@@ -52,11 +52,37 @@ function load() {
 // error. A directory, because creating one is atomic, with the holder's pid inside. Reads take no
 // lock: save() renames atomically, so a reader always sees one whole version.
 const LOCK = `${QUEUE}.lock`;
-const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS ?? 10_000);
+// The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
+// number of milliseconds there is ignored rather than turning the wait into forever or nothing.
+const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
 let locked = false;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+// A holder that has exited never lets go. One with no pid yet is between its mkdir and its write,
+// unless it has sat that way for a minute (with-lock.sh's rule).
+function stale() {
+  const pid = lockPid(LOCK);
+  try { return pid ? !alive(pid) : Date.now() - statSync(LOCK).mtimeMs > 60_000; } catch { return false; } // already gone
+}
+
+// Clear a stale lock. Writers that all saw the same stale lock must not each remove "the lock", or a
+// slower one removes the fresh lock a faster one has just taken. So clearing takes its own lock and
+// looks again under it: only a clearer can remove the queue lock while it exists, so a lock still
+// stale under the clearing lock is the one that was seen. A clearing lock older than 5 seconds is a
+// clearer that died mid-clear (clearing takes microseconds), and is removed for the next attempt.
+function clearStale() {
+  const clearing = `${LOCK}.clearing`;
+  try { mkdirSync(clearing); } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
+    return false;
+  }
+  try { if (stale()) rmSync(LOCK, { recursive: true, force: true }); }
+  finally { rmSync(clearing, { recursive: true, force: true }); }
+  return true;
+}
 
 function lock() {
   mkdirSync(dirname(QUEUE), { recursive: true });
@@ -68,20 +94,8 @@ function lock() {
       locked = true;
       return;
     } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    if (stale() && clearStale()) continue; // another writer clearing it: wait like any other holder
     const pid = lockPid(LOCK);
-    let age = 0;
-    try { age = Date.now() - statSync(LOCK).mtimeMs; } catch { continue; } // released between the two calls
-    // A holder that has exited never lets go. One with no pid yet is between its mkdir and its write,
-    // unless it has sat that way for a minute (with-lock.sh's rule). Rename before removing, as
-    // with-lock.sh does, so exactly one taker clears it; and put back a lock that turns out to be a
-    // faster taker's new one.
-    if (pid ? !alive(pid) : age > 60_000) {
-      const grave = `${LOCK}.stale.${process.pid}`;
-      try { renameSync(LOCK, grave); } catch { continue; }
-      if (lockPid(grave) === pid) rmSync(grave, { recursive: true, force: true });
-      else try { renameSync(grave, LOCK); } catch { rmSync(grave, { recursive: true, force: true }); }
-      continue;
-    }
     if (Date.now() >= until) {
       throw new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${LOCK})`);
     }
