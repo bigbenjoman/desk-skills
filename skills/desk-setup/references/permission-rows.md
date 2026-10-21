@@ -52,6 +52,19 @@ this table is the summary.
 `slack_send_message_draft` is never denied; it is `slack-draft`'s allow. `--force-with-lease` is
 not denied: `git-force-with-lease` can be `yes`, and it prompts.
 
+## Always written with a repo's plan — orchestrator tools
+
+`harness-rules.py add` adds these to every plan it writes to a repo's `.claude/settings.local.json`,
+whatever the rows say: they are what an orchestrator or interactive desk session uses to wait on a
+batch, read a Claude Design canvas, drive the Chrome extension and keep its memory (decision
+2026-10-21: routine operations get no permission prompts). _Reach_: the Chrome tools act in your
+signed-in browser. Owner `orchestrator-tools`, not a §3 row, so `remove
+orchestrator-tools` revokes them (until the next `add`). Workers never get them.
+
+| Owner | Allows |
+|---|---|
+| `orchestrator-tools` | `Monitor` `mcp__claude-in-chrome__*` `ArtifactComments` `ArtifactData` `Edit(~/.claude/projects/<repo root, each non-alphanumeric character as ->/memory/**)` (the repo's session memory directory, `desk-env paths`'s `DESK_MEMORY_DIR`) |
+
 ## Which rows a script reads
 
 Besides the harness rules below, some rows are read by a script at run time, so changing one takes
@@ -99,9 +112,9 @@ rows).
 
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
-| `jira-assign-self` | yes | starting a ticket without a round-trip; `desk-jira create` assigns a new ticket to you | board shows you on it | ask | `unguard: Bash(desk-jira create *assignee*)` · `ask: Bash(desk-jira create *--route*)`: `desk-jira create` refuses an assignee other than you without `--route`, so `assignee=me` goes through and routing still prompts. No `edit` rule: `desk-jira edit` can set any assignee |
+| `jira-assign-self` | yes | starting a ticket without a round-trip; `desk-jira create` assigns a new ticket to you | board shows you on it | ask | — (`desk-jira create` assigns only you, and refuses another assignee without `--route`, which `jira-create`'s rule keeps prompting. No `edit` rule: `desk-jira edit` can set any assignee) |
 | `jira-comment` | yes | the root-cause + PR-link comment posts as it happens; exact text printed `posted` | text is public to the team under your name; editable. _Reach_: the rule posts on **any** ticket on the Jira site, other people's included; only the skill's `jira-others` check keeps it to yours | ask (every comment prompts) | `Bash(desk-jira comment *)` |
-| `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *assignee*)` (removed when `jira-assign-self` is yes) `ask: Bash(desk-jira create *reporter*)` (routing is `jira-route`). No `attach` rule: it reaches any ticket |
+| `jira-create` | yes | follow-ups a review finds get filed immediately | a new ticket under your name | ask | `Bash(desk-jira create *)` · `ask: Bash(desk-jira create *--route*)` `ask: Bash(desk-jira create *reporter*)` (routing a ticket to someone else is `jira-route`, and prompts). No `assignee` ask: `desk-jira create` assigns only you without `--route`, and `harness-rules.py` drops the one an earlier setup recorded. No `attach` rule: it reaches any ticket |
 | `jira-edit` | yes | narrowing a description to what shipped, the §4 Priority field, labels, an epic's Blocks links | overwrites fields others read | ask | — (`desk-jira edit`, `labels` and `link` reach any ticket and any field, assignee included; `link` is never a worker's) |
 
 ## Round 4 — Jira, board state

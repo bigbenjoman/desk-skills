@@ -98,7 +98,7 @@ git -C "$T/wt2" add .gitignore; git -C "$T/wt2" commit -qm init
 run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" add "$T/allow.json"
 git -C "$T/wt2" worktree add -q "$T/wt2-same" -b same; mkdir -p "$T/wt2-same/.claude"
 cp "$T/wt2/.claude/settings.local.json" "$T/wt2-same/.claude/settings.local.json"
-run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" remove pr-ready
+run --ledger "$T/wt2.json" --settings "$T/wt2/.claude/settings.local.json" remove pr-ready orchestrator-tools
 check "a copy of a file setup created and now removed goes too, backed up" '[ $rc -eq 0 ] && [ ! -e "$T/wt2/.claude/settings.local.json" ] && [ ! -e "$T/wt2-same/.claude/settings.local.json" ] && ls "$T"/wt2-same/.claude/settings.local.json.bak-desk-* >/dev/null 2>&1'
 mkrepo wt3; printf '.claude/settings.local.json\n' > "$T/wt3/.gitignore"
 git -C "$T/wt3" add .gitignore; git -C "$T/wt3" commit -qm init
@@ -174,4 +174,59 @@ run --ledger "$T/legacy.json" --settings "$T/legacy/settings.json" baseline
 check "baseline drops it, backed up" '[ $rc -eq 0 ] && [[ "$out" == *"RETIRED  allow Bash(gh pr merge * --squash)"* ]] && ! grep -q -- "--squash)" "$T/legacy/settings.json" && grep -q -- "--squash)" "$T"/legacy/settings.json.bak-desk-*'
 run --ledger "$T/legacy.json" --settings "$T/legacy/settings.json" baseline --check
 check "baseline --check passes once it is gone" '[ $rc -eq 0 ]'
+
+# orchestrator tools: written with every repo plan, owner orchestrator-tools
+RR="$(cd "$T" && pwd -P)"; MEM="Edit(~/.claude/projects/${RR//[^A-Za-z0-9]/-}-ot/memory/**)"
+mkrepo ot; printf '.claude/settings.local.json\n' > "$T/ot/.gitignore"
+run --ledger "$T/ot.json" --settings "$T/ot/.claude/settings.local.json" add "$T/allow.json"
+ot_ok=1
+for r in Monitor 'mcp__claude-in-chrome__*' ArtifactComments ArtifactData "$MEM"; do
+  jq -e --arg r "$r" '.permissions.allow | index($r)' "$T/ot/.claude/settings.local.json" >/dev/null || ot_ok=0
+  jq -e --arg r "$r" '.rules[] | select(.rule == $r and .list == "allow" and .rows == ["orchestrator-tools"])' "$T/ot.json" >/dev/null || ot_ok=0
+done
+check "AC1: an ignored settings.local.json gets the orchestrator tools, in the file and the ledger" '[ $rc -eq 0 ] && [ $ot_ok = 1 ] && [[ "$out" == *"NEW      allow Monitor  (orchestrator-tools)"* ]]'
+cat > "$T/jira.json" <<'J'
+{"add":[{"list":"ask","rule":"Bash(desk-jira create *--route*)","rows":["jira-create"]}]}
+J
+mkrepo otr; printf '{}\n' > "$T/otr/.claude/settings.local.json"; git -C "$T/otr" add -f .claude/settings.local.json
+run --ledger "$T/otr.json" --settings "$T/otr/.claude/settings.local.json" add "$T/jira.json"
+check "AC2: a tracked settings.local.json is refused by name, even for an ask-only plan" '[ $rc -eq 2 ] && [[ "$out" == *"$T/otr/.claude/settings.local.json is tracked"* ]] && [ "$(cat "$T/otr/.claude/settings.local.json")" = "{}" ] && [ ! -e "$T/otr.json" ]'
+mkrepo otn
+run --ledger "$T/otn.json" --settings "$T/otn/.claude/settings.local.json" add "$T/jira.json"
+check "AC2: a settings.local.json git does not ignore is refused by name" '[ $rc -eq 2 ] && [[ "$out" == *"does not ignore .claude/settings.local.json in $T/otn"* ]] && [ ! -e "$T/otn/.claude/settings.local.json" ]'
+cp "$T/ot/.claude/settings.local.json" "$T/ot-before.json"; cp "$T/ot.json" "$T/ot-ledger-before.json"
+run --ledger "$T/ot.json" --settings "$T/ot/.claude/settings.local.json" add "$T/allow.json"
+check "AC7: every rule already there is reported present, with no backup and no change" '[ $rc -eq 0 ] && [[ "$out" == *"present  allow Monitor  (recorded for orchestrator-tools)"* ]] && [[ "$out" == *"present  allow Bash(gh pr ready *)"* ]] && [[ "$out" != *NEW* ]] && [[ "$out" != *backup* ]] && cmp -s "$T/ot/.claude/settings.local.json" "$T/ot-before.json" && cmp -s "$T/ot.json" "$T/ot-ledger-before.json" && [ "$(ls "$T"/ot/.claude/ | grep -c bak-desk)" = 0 ]'
+mkrepo oty; printf '.claude/settings.local.json\n' > "$T/oty/.gitignore"
+jq -n --arg m "${MEM//-ot\//-oty/}" '{permissions:{allow:["Bash(gh pr ready *)","Monitor","mcp__claude-in-chrome__*","ArtifactComments","ArtifactData",$m],ask:["Bash(gh pr merge *)"]}}' > "$T/oty/.claude/settings.local.json"
+cp "$T/oty/.claude/settings.local.json" "$T/oty-before.json"
+run --ledger "$T/oty.json" --settings "$T/oty/.claude/settings.local.json" add "$T/allow.json"
+check "AC7: rules the user already holds are reported present, with no backup and no change" '[ $rc -eq 0 ] && [[ "$out" == *"present  allow Monitor  (yours"* ]] && [[ "$out" == *"present  allow ${MEM//-ot\//-oty/}  (yours"* ]] && [[ "$out" != *NEW* ]] && [[ "$out" != *backup* ]] && cmp -s "$T/oty/.claude/settings.local.json" "$T/oty-before.json" && [ "$(ls "$T"/oty/.claude/ | grep -c bak-desk)" = 0 ]'
+
+# the desk-jira create assignee ask: retired; the --route ask moves to jira-create
+ASG='Bash(desk-jira create *assignee*)'; RTE='Bash(desk-jira create *--route*)'
+mkrepo asg; printf '.claude/settings.local.json\n' > "$T/asg/.gitignore"
+jq -n --arg a "$ASG" --arg r "$RTE" '{permissions:{allow:["Bash(desk-jira create *)"],ask:[$a,$r]}}' > "$T/asg/.claude/settings.local.json"
+jq -n --arg a "$ASG" --arg r "$RTE" '{rules:[{list:"allow",rule:"Bash(desk-jira create *)",rows:["jira-create"],added:"2026-01-01"},{list:"ask",rule:$a,rows:["jira-create"],added:"2026-01-01"},{list:"ask",rule:$r,rows:["jira-assign-self"],added:"2026-01-01"}]}' > "$T/asg.json"
+run --ledger "$T/asg.json" --settings "$T/asg/.claude/settings.local.json" retire
+check "AC3: retire drops the assignee ask setup recorded, from the file and the ledger" '[ $rc -eq 0 ] && [[ "$out" == *"RETIRED  ask   $ASG  (desk-jira create assigns only you"* ]] && ! grep -qF "*assignee*" "$T/asg/.claude/settings.local.json" && ! grep -qF "*assignee*" "$T/asg.json"'
+check "retire moves the --route ask from jira-assign-self to jira-create" '[[ "$out" == *"REOWNED  ask   $RTE  (jira-assign-self -> jira-create)"* ]] && jq -e --arg r "$RTE" ".rules[] | select(.rule == \$r and .rows == [\"jira-create\"])" "$T/asg.json" >/dev/null'
+run --ledger "$T/asg.json" --settings "$T/asg/.claude/settings.local.json" remove jira-assign-self
+check "revoking jira-assign-self then leaves the --route ask in place" '[ $rc -eq 0 ] && grep -qF -- "*--route*" "$T/asg/.claude/settings.local.json"'
+mkrepo asu; printf '.claude/settings.local.json\n' > "$T/asu/.gitignore"
+jq -n --arg a "$ASG" '{permissions:{ask:[$a]}}' > "$T/asu/.claude/settings.local.json"
+printf '{"rules":[]}\n' > "$T/asu.json"
+run --ledger "$T/asu.json" --settings "$T/asu/.claude/settings.local.json" retire
+check "AC4: an assignee ask the user added is left in place and named as theirs" '[ $rc -eq 0 ] && [[ "$out" == *"retired  ask   $ASG  (yours, left alone"* ]] && [[ "$out" != *RETIRED* ]] && grep -qF "*assignee*" "$T/asu/.claude/settings.local.json"'
+mkrepo asr; printf '.claude/settings.local.json\n' > "$T/asr/.gitignore"
+printf '{"permissions":{"allow":["Bash(desk-jira create *)"]}}\n' > "$T/asr/.claude/settings.local.json"
+jq -n --arg a "$ASG" '{rules:[],removed_guards:[{list:"ask",rule:$a,rows:["jira-assign-self"],guard_rows:["jira-create"],removed:"2026-01-01"}]}' > "$T/asr.json"
+run --ledger "$T/asr.json" --settings "$T/asr/.claude/settings.local.json" retire
+check "retire forgets an assignee guard setup removed, so a revoke never puts it back" '[ $rc -eq 0 ] && [[ "$out" == *"RETIRED  ask   $ASG  (guard record dropped"* ]] && ! grep -qF "*assignee*" "$T/asr.json"'
+run --ledger "$T/asr.json" --settings "$T/asr/.claude/settings.local.json" remove jira-assign-self
+check "  … and revoking jira-assign-self adds no assignee ask" '[ $rc -eq 0 ] && ! grep -qF "*assignee*" "$T/asr/.claude/settings.local.json"'
+JC=$(grep -E '^\| `jira-create` \|' "$ROWS"); JA=$(grep -E '^\| `jira-assign-self` \|' "$ROWS")
+out="$JC"
+check "AC5: with jira-create yes the plan holds no assignee ask" '[[ "$JC" == *"Bash(desk-jira create *)"* ]] && [[ "$JC" != *"ask: Bash(desk-jira create *assignee*)"* ]] && [[ "$JA" != *"ask: "* ]] && [[ "$JA" != *"unguard: "* ]]'
+check "AC6: with jira-create yes the plan still holds the --route ask" '[[ "$JC" == *"ask: Bash(desk-jira create *--route*)"* ]]'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]

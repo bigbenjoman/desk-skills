@@ -702,8 +702,9 @@ case "$rc" in
     ;;
 esac
 
-# Allow rules /desk-setup recorded in a repo's own settings.local.json that no row grants any more
-# (unpinned gh pr merge). Retiring them only takes capability away, so it is not a question.
+# Rules /desk-setup recorded in a repo's own settings.local.json that no row writes any more
+# (unpinned gh pr merge allows, the desk-jira create assignee ask). Retiring them is not a question:
+# the allows only take capability away, and the ask only guarded what desk-jira now refuses itself.
 for ledger in "$CONFIG_ROOT"/repos/*/harness-rules.json; do
   [ -f "$ledger" ] || continue
   slug="$(basename "$(dirname "$ledger")")"
@@ -713,11 +714,11 @@ for ledger in "$CONFIG_ROOT"/repos/*/harness-rules.json; do
     continue
   fi
   rc=0; out="$(python3 "$HARNESS" --settings "$root/.claude/settings.local.json" --ledger "$ledger" retire 2>&1)" || rc=$?
-  lines="$(printf '%s\n' "$out" | grep -E '^(RETIRED|retired|backup|synced|differs|FAILED) ' || true)"
+  lines="$(printf '%s\n' "$out" | grep -E '^(RETIRED|retired|REOWNED|backup|synced|differs|FAILED) ' || true)"
   if [ "$rc" -ne 0 ]; then
-    warn "$slug: could not finish retiring its unpinned merge allows"; show_err "$out"
+    warn "$slug: could not finish retiring its retired rules"; show_err "$out"
   elif [ -n "$lines" ]; then
-    ok "$slug: retired allow rules checked in $root/.claude/settings.local.json"
+    ok "$slug: retired rules checked in $root/.claude/settings.local.json"
     printf '%s\n' "$lines" | sed 's/^/        /'
   fi
 done
