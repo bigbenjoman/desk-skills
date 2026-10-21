@@ -50,7 +50,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models" | the ladder, the test cap, spend guards, the port workers must never take, and each worker's model |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, and where workers run (always locally for now) |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -776,6 +776,11 @@ report. **`RED RATE ROSE`** (more than 5 percentage points above the baseline, e
 say it first, with the PRs that went red, and do not lower it to a note. With no baseline it says so;
 offer `desk-ci measure` rather than reporting the rate as normal.
 
+**The batch report also carries what each worker cost.** The idle pass prints a `WORKER COST` table:
+each worker's input and output tokens, cost in USD and wall time, summed over every round of it in
+this batch, and a total row. Put the table in the report as printed. A worker whose log has no result event reads `unknown`, and
+the total says how many it left out: report those as unknown, never as zero.
+
 ## Why C and D get a second look
 
 Triage is one `claude -p` pass forming one opinion, and for A, B and E that is fine: the worker
@@ -899,6 +904,10 @@ running worker. `queue.mjs requeue` raises a `standard` ticket to `high` when it
 stopped as stalled, and says so in the table; a requeue after a park with a question, or after a
 failed preflight or spawn (no worker ran), keeps the model. A malformed row holds spawns under
 `STALLED`.
+
+**Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
+`cloud`. Cloud workers are not available yet, so every worker runs locally either way, and at
+`cloud` the batch plan's `workers:` line says so. Any other value refuses the plan, naming the row.
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded

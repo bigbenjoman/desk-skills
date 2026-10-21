@@ -565,7 +565,9 @@ dangerous spelling.
 
 **Then §3b** (three rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
-budget, worker models, stage reports, push notification.
+budget, worker models, worker location, stage reports, push notification. For worker location,
+Recommended is `local`; say that `cloud` is accepted but cloud workers are not available yet, so
+every worker still runs locally and the batch plan says so.
 
 **The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
 autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block
@@ -730,7 +732,7 @@ local     : db-per-ticket <a> · clone-staging <a> · staging-write <a> · reind
             slack-draft <a>
 never     : slack-send · merge-bypass · others-prs      stop: product-calls · legal-content
 autonomy  : subagents <a> · workers <a> (cap <a>) · memory <a>GB · spawn gate <a> · tests <a> · port <a> ·
-            park <a>m · budget <a>/<a> · stage reports <a> · push notify <a>
+            park <a>m · budget <a>/<a> · location <a> · stage reports <a> · push notify <a>
 conventions: branches <…> · PR title <…> · attribution <forbidden/allowed> · instructions <files>
 design    : breakpoints <widths / none> · system <files / none> · DESIGN.md <drafted in #<n> / declined / not offered>
 connectors: Atlassian <present/missing/not needed> · Slack <…> · Figma <…> · Vercel <…> · Playwright <…>
