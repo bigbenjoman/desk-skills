@@ -185,6 +185,7 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
 | `autopilot-judgement` | Make and record an engineering or scope call instead of parking (product and other people's rulings still stop) | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
+| `autopilot-usage-resume` | Let a worker that reaches the 5-hour usage limit wait for the reset and carry on, spending the next usage window | `no` | `TODO` |
 
 `autopilot-worker-mode` values: `dontAsk + generated allow-list` (workers are launched with
 `--setting-sources ""`, so your own Claude Code settings, including any broad `Bash(*)` allow, never
@@ -193,6 +194,9 @@ worker's own worktree, every other worktree denied, toolchain allow-listed) or `
 `autopilot-merge` can be `yes` only if `pr-merge-green` is.
 `batch-base-push` unset reads as `ask`: one approval per batch, asked at Stage 3 and passed to
 `pass.mjs` as `AUTOPILOT_BASE_PUSH_APPROVED=1`.
+`autopilot-usage-resume` is `yes` or `no`, and unset reads as `no`: `pass.mjs` stops a worker at the
+5-hour usage limit and parks it with the reset time. At `yes` the pass reports it as paused until the
+reset, and the batch notes record each resume.
 
 ### Local and shared state
 

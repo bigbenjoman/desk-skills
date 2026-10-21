@@ -259,4 +259,76 @@ other '{"tickets": not json'
 spawn_one P-173
 check "DS-117 AC3 an unreadable queue does not stop the spawn, and the report names it" '[ "$(field P-173 state)" = "\"running\"" ] && [ "$(field P-173 port)" = 47501 ] && echo "$out" | grep -qF "ports: $T/desk/repos/acme__other/queue.json is not valid JSON ("'
 
+# DS-121: a worker at the 5-hour usage limit. The event is built from the provisional fixture (the
+# real event at the limit has not been captured yet), with its reset moved to suit each case. Each
+# case is a running ticket whose log stopped growing five passes ago, one pass from the stall killer.
+export DESK_QUEUE="$T/queue-u.json" DESK_AUTOPILOT_STATE="$T/state-u" AUTOPILOT_PORT_FLOOR=47601; mkdir -p "$T/state-u/logs"
+{ cat "$T/config.md"; echo '| `autopilot-usage-resume` | Resume across the usage limit | `no` | `yes` |'; } > "$T/config-resume.md"
+limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1"; }
+quiet_running(){ q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "session_id=$2" idle_passes=5 "log_bytes=$(wc -c < "$T/state-u/logs/$1.log" | tr -d ' ')"; }
+now=$(date +%s)
+q init u
+LPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}, {\"sessionId\": \"lim-1\", \"pid\": $LPID}]'" > "$T/stub/claude"
+
+# U-1: no autopilot-usage-resume row, so the worker is stopped at the limit and parked with the reason.
+{ say "AUTOPILOT_STAGE: 3/9 implement"; limit_event $((now + 3600)); } > "$T/state-u/logs/U-1.log"
+quiet_running U-1 lim-1
+out=$(DESK_CONFIG="$T/config.md" node "$B/pass.mjs" 2>&1)
+gone=no; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$LPID" 2>/dev/null || { gone=yes; break; }; sleep 0.2; done
+check "DS-121 AC2 with no resume grant, a worker at the limit is parked with that reason" '[ "$(field U-1 state)" = "\"parked\"" ] && field U-1 park.question | grep -q "paused on the 5-hour usage limit, which resets .* UTC. Config §3 autopilot-usage-resume is ..no.., so it does not resume into the next usage window" &&! field U-1 park.question | grep -q wedged'
+check "DS-121 AC2 the stopped worker is no longer running" '[ "$gone" = yes ] && echo "$out" | grep -q "the worker was stopped (pid $LPID)"'
+kill "$LPID" 2>/dev/null
+q set U-1 state=done
+# U-7: no grant, and the worker resumed before any pass saw it paused: stopped all the same, saying so.
+{ limit_event $((now - 60)); say "AUTOPILOT_STAGE: 5/9 evidence"; } > "$T/state-u/logs/U-7.log"
+quiet_running U-7 live-1; q set U-7 idle_passes=0
+out=$(DESK_CONFIG="$T/config.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 AC2 a worker that resumed before a pass saw it is parked, and the reason says it resumed" '[ "$(field U-7 state)" = "\"parked\"" ] && field U-7 park.question | grep -q "reached the 5-hour usage limit, which reset .* UTC, and resumed into the next usage window before a pass saw it"'
+q set U-7 state=done
+# U-8: no grant, but the session registry cannot be read: nothing can be stopped, so nothing is parked.
+cp "$T/stub/claude" "$T/claude.ok"; printf '#!/bin/sh\nexit 1\n' > "$T/stub/claude"
+{ say "AUTOPILOT_STAGE: 3/9 implement"; limit_event $((now + 3600)); } > "$T/state-u/logs/U-8.log"
+quiet_running U-8 live-1; q set U-8 idle_passes=0
+out=$(DESK_CONFIG="$T/config.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 AC2 an unreadable registry leaves a worker at the limit running, and says so" '[ "$(field U-8 state)" = "\"running\"" ] && echo "$out" | grep -q "could not read the session registry"'
+cp "$T/claude.ok" "$T/stub/claude"; q set U-8 state=done
+
+# U-2: resume granted and the reset an hour away: paused, not wedged, and the quiet count cleared.
+{ say "AUTOPILOT_STAGE: 4/9 verify"; limit_event $((now + 3600)); } > "$T/state-u/logs/U-2.log"
+quiet_running U-2 live-1
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 AC1 a worker paused at the limit is reported with its reset time" 'echo "$out" | grep -q "^paused on the usage limit: U-2 until $(date -u -r $((now + 3600)) "+%Y-%m-%d %H:%M" 2>/dev/null || date -u -d "@$((now + 3600))" "+%Y-%m-%d %H:%M") UTC, then it resumes"'
+check "DS-121 AC1 and is not stopped as wedged"          '[ "$(field U-2 state)" = "\"running\"" ] && [ "$(field U-2 idle_passes)" = 0 ] && ! echo "$out" | grep -q "U-2: no output"'
+
+# U-3: resume granted, and the model answered after the limit: the batch notes record the resume.
+{ limit_event $((now - 60)); say "AUTOPILOT_STAGE: 5/9 evidence"; } > "$T/state-u/logs/U-3.log"
+quiet_running U-3 live-1; q set U-3 idle_passes=0
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 AC3 a resumed worker's resume is in the batch notes" 'grep -q "^- \[U-3\] resumed after the 5-hour usage limit reset at .* UTC (config §3 autopilot-usage-resume is \"yes\")" "$T/state-u/batch-notes.md"'
+check "DS-121 AC3 a resumed worker is not reported paused" '[ "$(field U-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "paused on the usage limit: .*U-3"'
+q set U-2 state=done; q set U-3 state=done
+
+# U-4: an event that looks like the limit but lacks the fixture's reset time is named, not guessed
+# at, and the stall check runs as before. U-5's only event is ordinary traffic, and the limit event
+# appears only quoted inside a tool result: neither is a pause.
+{ say "AUTOPILOT_STAGE: 4/9 verify"; echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}'; } > "$T/state-u/logs/U-4.log"
+quiet_running U-4 live-1
+{ say "AUTOPILOT_STAGE: 4/9 verify"; cat "$S/fixtures/usage-limit-allowed.json"
+  node -e 'console.log(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: process.argv[1] }] } }))' "$(limit_event $((now + 3600)))"
+} > "$T/state-u/logs/U-5.log"
+quiet_running U-5 live-1
+# U-6: resume granted, but the reset passed over half an hour ago with nothing since: the stall check.
+limit_event $((now - 7200)) > "$T/state-u/logs/U-6.log"
+quiet_running U-6 live-1
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-121 an unrecognised usage-limit event is named in the pass output" 'echo "$out" | grep -q "^unrecognised usage-limit event: U-4: {\"type\":\"rate_limit_event\""'
+check "DS-121 and falls back to the stall check"         '[ "$(field U-4 state)" = "\"parked\"" ] && field U-4 park | grep -q wedged'
+check "DS-121 traffic under the limit, or a quoted event, is not a pause" '[ "$(field U-5 state)" = "\"parked\"" ] && field U-5 park | grep -q wedged && ! echo "$out" | grep -q "unrecognised usage-limit event: U-5"'
+check "DS-121 a limit long past its reset falls back to the stall check" '[ "$(field U-6 state)" = "\"parked\"" ] && field U-6 park | grep -q wedged'
+
+# AC4: a config with no such row gets the question from /desk-setup, with "no" recommended.
+check "DS-121 AC4 the config template has the row, recommended no" 'grep -qE "^\| \`autopilot-usage-resume\` \| .* \| \`no\` \| \`TODO\` \|$" "$SRC/desk-config.md"'
+check "DS-121 AC4 desk-setup asks it in the autopilot round, recommended no" 'awk "/^## Round 9/,/^## Round 10/" "$SRC/skills/desk-setup/references/permission-rows.md" | grep -qE "^\| \`autopilot-usage-resume\` \| no "'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

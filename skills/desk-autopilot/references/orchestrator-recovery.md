@@ -136,11 +136,21 @@ re-running a ticket from scratch.
   Check the newest `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
-- **Empty-reason preflight failures are usually the account session limit.** The preflight is a
-  `claude -p` call; the 5-hour limit is account-wide, so workers across unrelated batches (and
-  repos) die at the same instant with no reason. Look for an HTTP 429 in any concurrently dying
-  agent before debugging permissions or codex, then wait for the reset: retrying only burns calls
-  that produce nothing.
+- **A running worker at the 5-hour usage limit is paused, not dead.** Claude Code waits for the
+  reset and carries on, so the worker goes quiet for up to five hours. `pass.mjs` reads the limit
+  from the worker's log (`usage-limit.mjs`) and acts on config §3 `autopilot-usage-resume`: at `yes`
+  it reports `paused on the usage limit: <TICKET> until <reset>` and never stops it as wedged, and
+  the batch notes record the resume; otherwise (unset included) it stops the worker and parks it
+  with the reset time, so requeue it after the reset. A worker still quiet half an hour after its
+  reset falls back to the stall check. An `unrecognised usage-limit event` line means the log held
+  an event that looked like the limit and did not match the shape the pass knows: it was not read
+  as a pause, so that ticket is under the stall check as before. Keep the line for whoever replaces
+  the provisional fixture (`tests/fixtures/usage-limit-five-hour.provisional.json`).
+- **Empty-reason preflight failures are usually the same limit.** The preflight is a `claude -p`
+  call, and the 5-hour limit is account-wide, so preflights across unrelated batches (and repos)
+  fail at the same instant with no reason. Look for an HTTP 429, or a `paused on the usage limit`
+  line from a running worker, before debugging permissions or codex, then wait for the reset:
+  retrying only burns calls that produce nothing.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.
