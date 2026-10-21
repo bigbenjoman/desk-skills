@@ -102,6 +102,19 @@ out=$(bash "$SRC/desk/bin/with-lock.sh" nolock -- sh -c 'echo ran' 2>&1); rc=$?
 check "with-lock nolock -- <cmd>: runs the command"               '[ $rc -eq 0 ] && [ "$out" = ran ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" browser -- 2>&1); rc=$?
 check "with-lock <lock> -- and nothing else: no command given"     '[ $rc -eq 2 ] && [[ "$out" == *"no command given"* ]]'
+# --cwd: relative or absolute inside the worktree, with or without the --; never outside it or via ..
+sub_real="$(cd "$R/sub" && pwd -P)"
+for spelling in "sub --" "sub" "$R/sub --" "$R/sub"; do
+  # shellcheck disable=SC2086
+  out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd $spelling pwd -P 2>&1); rc=$?
+  check "with-lock --cwd $spelling: runs in the directory"         '[ $rc -eq 0 ] && [ "$out" = "$sub_real" ]'
+done
+out=$(bash "$SRC/desk/bin/with-lock.sh" test --cwd "$R" -- pwd -P 2>&1); rc=$?
+check "with-lock --cwd <worktree root>: runs at the root"           '[ $rc -eq 0 ] && [ "$out" = "$(cd "$R" && pwd -P)" ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd "$T" -- pwd 2>&1); rc=$?
+check "with-lock --cwd <absolute path outside>: refused"            '[ $rc -eq 2 ] && [[ "$out" == *"resolves outside the worktree"* ]]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd "$R/sub/.." -- pwd 2>&1); rc=$?
+check "with-lock --cwd <path with ..>: refused"                     '[ $rc -eq 2 ] && [[ "$out" == *"without .."* ]]'
 rm -f "$DESK_MACHINE"; commit g; push origin main
 check "no profile, lock free: the typecheck runs"     '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ]'
 

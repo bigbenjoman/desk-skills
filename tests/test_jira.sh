@@ -130,6 +130,10 @@ check "get prints attachments under attachments:" 'printf "%s\n" "$out" | grep -
 check "get prints remote web links under web links:" 'printf "%s\n" "$out" | grep -A1 "^web links:$" | grep -qxF "  PR 7 https://github.com/acme/alpha/pull/7 (mentioned in)"'
 check "get prints the description with wiki escapes removed" 'printf "%s\n" "$out" | grep -qxF "Run {{desk-jira get KAN-5}} and *read_it*."'
 check "get leaves a {code} block as written" 'printf "%s\n" "$out" | grep -qxF "{code}grep -c '"'\\\\[x\\\\]'"' f{code}"'
+viewed=$(cd "$A" && "$J" view KAN-5 2>&1); rc=$?
+check "view prints the same as get" '[ $rc -eq 0 ] && [ "$viewed" = "$out" ]'
+helped=$(cd "$A" && "$J" help 2>&1); rc=$?
+check "help and --help print the usage" '[ $rc -eq 0 ] && [[ "$helped" == *"desk-jira <command>"* ]] && [ "$(cd "$A" && "$J" --help 2>&1)" = "$helped" ]'
 raw=$(cd "$A" && "$J" get KAN-5 --json | jq -r .fields.description | head -n1)
 check "get --json keeps the raw description" '[ "$raw" = "Run {{desk\\-jira get KAN\\-5}} and *read\\_it*." ]'
 out=$(cd "$A" && "$J" get KAN-6 2>&1); rc=$?

@@ -145,7 +145,8 @@ a worker cannot:
 - push anything but the exact commands `git push [-u|--set-upstream] origin <its branch>` (and
   `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`); bare
   `git push` is refused;
-- run `git config`, `git -c …`, `git -C …`, git aliases or `git stash`;
+- run `git config`, `git -c …`, `git -C` on anything but its own worktree (and there only the
+  reads), git aliases or `git stash`;
 - run `gh api` in any form, `gh alias`, `gh pr merge`, `gh pr ready`, or approve or request changes;
   so it cannot resolve review threads (it replies with `gh pr comment` under §3 `pr-reply`) and
   opens PRs only with a command beginning `gh pr create --draft` or

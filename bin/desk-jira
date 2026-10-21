@@ -976,7 +976,7 @@ desk-jira <command> [args]
   search <jql> [max] [--json]     key / status / priority (§4 Priority field if set) / summary
   get <KEY> [--json]              the whole issue: parent, custom fields in full, links, subtasks,
                                   attachments, web links, description with wiki escapes removed
-                                  (--json: the raw issue)
+                                  (--json: the raw issue); `view` is the same command
   children <KEY> [--json]         an epic's children or a story's subtasks, in rank order (paged)
   fields [filter]                 field ids and names (find custom fields)
   meta [issuetype]                createmeta: required fields + allowed values
@@ -1035,6 +1035,7 @@ EOF
 
 cmd="${1:-}"; [[ -n "$cmd" ]] || { usage; exit 1; }
 shift || true
+[[ "$cmd" == view ]] && cmd='get'   # the name gh and jira-cli use for it
 command -v jq >/dev/null || die "jq is required"
 command -v curl >/dev/null || die "curl is required"
 

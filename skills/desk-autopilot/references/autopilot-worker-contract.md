@@ -26,11 +26,12 @@ without it and name it in `AUTOPILOT_DONE` and the PR's Testing.
 
 **Read config values with `desk-env`, not by reading the config file.** `desk-env where` (slug,
 `EXISTS`), `desk-env get <id>`, `desk-env list <id>`, `desk-env cmds <id>` and `desk-env perm <key>`
-are your config; the file itself is outside your readable directories, and a refused Read of it is
-expected. `desk-env ids` prints every id it knows. Every "§" below is a row read that way.
+are your config. The config file itself is readable, but the credentials beside it are not, and
+`desk-env` resolves each row the way the scripts do. `desk-env ids` prints every id it knows. Every
+"§" below is a row read that way.
 `EXISTS=no` is a park: print `AUTOPILOT_PARK: no desk config for <slug>: run /desk-setup` and end
-your turn. For Jira, use `desk-jira get <KEY>` and `desk-jira comments <KEY>` (there is no
-`desk-jira view`, and `--help` is not on your allow list).
+your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-jira comments <KEY>`;
+`desk-jira --help` lists the rest.
 
 `<TICKET>` is your ticket's key as the briefing gives
 it: a tracker key (§4 Ticket key pattern), an id matching §4 Other work id patterns, or with §4
@@ -182,7 +183,8 @@ and the suite fails before running (pytest is single-process unless the repo con
 ~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <typecheck CMD>
 ```
 
-For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well. Write the command
+For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well. The `--` is
+optional, and `<DIR>` may also be written as your worktree's absolute path. Write the command
 exactly as the row gives it, then your arguments: the allow rule matches that prefix and nothing
 else.
 
@@ -480,9 +482,10 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **`git push`: only these exact commands** for your own recorded branch: `git push origin <branch>`,
   `git push -u origin <branch>`, `git push --set-upstream origin <branch>`, and, only where §3
   `git-force-with-lease` is `yes`, `git push --force-with-lease origin <branch>`. Bare `git push`,
-  `git push origin HEAD` and any other ref are refused. `git config`, `git -c …`, `git -C …`,
-  aliases and `git stash` are refused. `git rm` and `git mv` are allowed for tracked files in your
-  worktree.
+  `git push origin HEAD` and any other ref are refused. `git config`, `git -c …`, `git -C` with
+  any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
+  takes the read subcommands only. `git rm` and `git mv` are allowed for tracked files in your
+  worktree. An installed package binary runs as `./node_modules/.bin/<tool>`, never with `..`.
 - **`gh`**: reads (`pr view`, `pr list`, `pr checks`, `pr diff`, `run view`, `run list`,
   `issue view`, `repo view`), and only where §3 grants them `gh pr create --draft …` (it must begin
   exactly `gh pr create --draft` or `gh pr create --repo <§0 GitHub repo> --draft`), `pr edit`,

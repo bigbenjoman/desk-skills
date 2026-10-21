@@ -17,8 +17,9 @@
 // own configuration:
 //   - git: named read and local-write subcommands only (status, diff, log, show, add, commit, restore,
 //     checkout/switch, rebase, merge, fetch, clean, rm, mv, ...). `git push` exists only as exact rules for the
-//     ticket's own branch (--branch). `git config`, `git -c`, `git -C`, aliases (any unknown
-//     subcommand), `git stash`, `rebase --exec` and `--upload-pack` are refused.
+//     ticket's own branch (--branch). The reads are also allowed as `git -C <this worktree> <read>`.
+//     `git config`, `git -c`, `git -C` anywhere else, aliases (any unknown subcommand), `git stash`,
+//     `rebase --exec` and `--upload-pack` are refused.
 //   - gh: named read subcommands, plus `pr create --draft`, `pr edit`, `pr comment`, `pr review`,
 //     `pr update-branch`, `run rerun` each only where its §3 row is `yes`. `gh api` (any method) and
 //     `gh alias` are denied: a GET cannot be told from a write by prefix.
@@ -213,7 +214,7 @@ const READ_DENY = [
 // are exact rules and anything wider goes through `for-each-ref`.
 const GIT_READ = [' status', ' diff', ' log', ' show', ' rev-parse', ' rev-list', ' merge-base', ' merge-tree', ' ls-files',
   ' ls-tree', ' for-each-ref', ' grep', ' blame', ' describe', ' cat-file', ' branch --show-current', ' branch --list',
-  ' worktree list', ' remote -v', ' remote get-url'];
+  ' worktree list', ' remote -v', ' remote get-url', ' check-ignore', ' range-diff'];
 const GIT_READ_EXACT = [' branch -a', ' branch -r'];
 // `rm` and `mv` touch only tracked paths of this worktree: git refuses a path outside the repository,
 // and `-C`, `--git-dir` and `--work-tree` are denied below.
@@ -235,11 +236,15 @@ const GH_DENY = [' api', ' alias', ' extension', ' ext', ' pr merge', ' pr ready
   ' secret', ' variable', ' workflow', ' release', ' repo edit', ' repo delete', ' repo create', ' repo fork', ' auth',
   ' pr review *--approve*', ' pr review *--request-changes*', ...shortFlag(' pr review', '-a'), ...shortFlag(' pr review', '-r'),
   ' pr create *--draft=*'];
-// Every desk-jira subcommand that only reads. `transitions` is the read desk-jira requires before
-// any `transition`; the `transition:*` rule is word-bounded, so it neither grants nor denies it.
-// `api` takes one path and always sends GET; desk-jira's render check after a write runs it.
-// `lint` reads the ticket (or a local draft) and writes nothing.
-const JIRA_READ = [' get', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki', ' api', ' lint'];
+// Every desk-jira subcommand that only reads. `api` takes one path and always sends GET; desk-jira's
+// render check after a write runs it. `lint` reads the ticket (or a local draft) and writes nothing.
+// `view` is `get` under the name workers keep reaching for; `help`, `--help` and `-h` print usage.
+const JIRA_READ = [' get', ' view', ' search', ' comments', ' whoami', ' fields', ' children', ' transitions', ' where', ' meta', ' md2wiki', ' api', ' lint',
+  ' help', ' --help', ' -h'];
+// `transitions` is the read desk-jira requires before any `transition`. Workers saw it refused 179
+// times on 2026-10-21 beside a `transition:*` deny, so the write is denied as `transition` plus a
+// space, and bare, which cannot match `transitions` however the harness bounds a prefix.
+const JIRA_TRANSITION_DENY = [...bash('desk-jira', ' transition *'), ...exact('desk-jira', ' transition')];
 // Issue links are Bea's, filed interactively after the user approves an epic: never a worker's or a
 // triage pass's to make or remove, whatever config §3 jira-edit says.
 const JIRA_NEVER = [' link', ' unlink'];
@@ -257,12 +262,21 @@ if (mode === 'triage') {
     ...READ_DENY,
     ...bash('git', ...GIT_DENY, ...GIT_LOCAL, ' rebase', ' push', ' worktree'),
     ...bash('gh', ...GH_DENY, ' pr create', ' pr edit', ' pr comment', ' pr review', ' issue comment', ' run rerun'),
-    ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels', ...JIRA_NEVER),
+    ...bash('desk-jira', ' edit', ' comment', ' create', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     ...[...new Set([PM, ...FORBIDDEN])].filter(Boolean).flatMap((b) => bash(b)),
   );
 } else {
   const WT = opt.wt.replace(/\/+$/, '');
   const DEFAULT = E.defaultBranch();
+  const OWN_C = ` -C ${WT}`;
+  // `git -C <this worktree>` is allowed for the reads, so the blanket `-C*` deny gives way to every
+  // other deny repeated after `-C <this worktree>`. Any other `-C` (another worktree, a relative or
+  // `..` path) matches no allow rule, since each needs this worktree's path then a space; other
+  // worktrees are denied by name below as well.
+  const GIT_DENY_WT = [...GIT_DENY.filter((s) => s !== ' -C*').flatMap((s) => [s, `${OWN_C}${s}`]), `${OWN_C} push`];
+  // An installed package binary, run from the worktree by relative or absolute path. Like the test
+  // command, this runs the worktree's own code; a `..` anywhere is denied so it cannot leave it.
+  const NODE_BIN = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`].flatMap(withPrefix);
 
   // ---- files ---------------------------------------------------------------------------------
   // The worktree, and in the state dir only this ticket's park file and screenshots. Not answers/
@@ -284,6 +298,8 @@ if (mode === 'triage') {
     ...READS.flatMap((b) => bash(b)),
     'Bash(mkdir:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
     ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...[...GIT_READ_EXACT, ...GIT_REBASE].flatMap((t) => exact('git', t)),
+    // The same reads aimed at this worktree by path: `-C <worktree>` is where the command runs anyway.
+    ...bash('git', ...GIT_READ.map((s) => `${OWN_C}${s}`)), ...GIT_READ_EXACT.flatMap((t) => exact('git', `${OWN_C}${t}`)),
     ...bash('gh', ...GH_READ),
     ...bash('desk-jira', ...JIRA_READ),
     // desk-env is read-only (where, get, list, perm, mem, heavy, port-in-use): the shim on PATH, its
@@ -298,14 +314,15 @@ if (mode === 'triage') {
     // A script from the worktree's installed packages (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave node_modules.
     ...withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${c}:*)`),
+    ...NODE_BIN.map((c) => `Bash(${c}*)`),
     // desk-review's verdict lines, computed from the run's results file rather than written by hand.
     ...[VERDICT, ...(tilde(VERDICT) ? [tilde(VERDICT)] : [])].map((p) => `Bash(node ${p}:*)`),
   );
   deny.push(
     ...READ_DENY,
-    ...bash('git', ...GIT_DENY),
+    ...bash('git', ...GIT_DENY_WT),
     ...bash('gh', ...GH_DENY),
-    'Bash(node *..*)', 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
+    'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The one desk-env subcommand that writes: the machine profile is the user's to confirm.
     'Bash(desk-env machine write:*)', `Bash(${E.HOME}/.local/bin/desk-env machine write:*)`, 'Bash(~/.local/bin/desk-env machine write:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs machine write:*)`, `Bash(node ${b}/desk-env.mjs machine write:*)`]),
@@ -315,10 +332,15 @@ if (mode === 'triage') {
   );
 
   // ---- the toolchain: exact configured commands only ------------------------------------------
-  const lockForms = (lock, dir, cmd) => BIN_FORMS.flatMap((b) => withPrefix(cmd).flatMap((c) => [
-    ...(dir === '.' ? [`${b}/with-lock.sh ${lock} ${c}`] : []),
-    `${b}/with-lock.sh ${lock} --cwd ${dir} -- ${c}`,
-  ]));
+  // Every spelling with-lock.sh accepts for the item's directory: relative or under this worktree's
+  // absolute path, the `--` optional, and at the root no --cwd at all.
+  const lockForms = (lock, dir, cmd) => {
+    const cwds = dir === '.' ? ['.', WT] : [dir, `${WT}/${dir}`];
+    return BIN_FORMS.flatMap((b) => withPrefix(cmd).flatMap((c) => [
+      ...(dir === '.' ? [`${b}/with-lock.sh ${lock} ${c}`, `${b}/with-lock.sh ${lock} -- ${c}`] : []),
+      ...cwds.flatMap((d) => [`${b}/with-lock.sh ${lock} --cwd ${d} -- ${c}`, `${b}/with-lock.sh ${lock} --cwd ${d} ${c}`]),
+    ]));
+  };
   const probeBins = new Set();
   for (const it of items) {
     for (const cmd of twins(it.cmd)) {
@@ -405,7 +427,7 @@ if (mode === 'triage') {
   grant('ci-rerun', bash('gh', ' run rerun'));
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
-  grant('jira-transition', bash('desk-jira', ' transition'));
+  grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
   grant('jira-create', bash('desk-jira', ' create'));
   grant('jira-edit', bash('desk-jira', ' edit', ' labels'));
   deny.push(...bash('desk-jira', ...JIRA_NEVER));
@@ -436,7 +458,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun'),
-      ...bash('desk-jira', ' edit', ' comment', ' transition', ' create', ' attach', ' labels', ...JIRA_NEVER),
+      ...bash('desk-jira', ' edit', ' comment', ' create', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }
 
@@ -445,8 +467,21 @@ if (mode === 'triage') {
   try { list = execFileSync('git', ['-C', WT, 'worktree', 'list', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { /* no git yet */ }
   for (const line of list.split('\n')) {
     const other = /^worktree (.+)$/.exec(line)?.[1];
-    if (other && other !== WT) deny.push(`Edit(${abs(other)}/**)`, `Edit(${abs(other)}/**)`);
+    if (other && other !== WT) deny.push(`Edit(${abs(other)}/**)`, `Edit(${abs(other)}/**)`, ...bash('git', ` -C ${other} *`, ` -C ${other}/*`));
   }
+
+  // This repo's desk config.md, by itself: the credentials beside it (the Jira token) stay unreadable,
+  // because the directory is never granted, and are denied by name to every reading tool as well.
+  const configPath = E.configPathOrNull();
+  if (configPath && existsSync(configPath)) allow.push(`Read(${abs(configPath)})`);
+  const creds = E.credsDir();
+  if (creds) {
+    const credForms = [creds, ...(tilde(creds) ? [tilde(creds)] : [])];
+    deny.push(`Read(${abs(creds)}/*token*)`, ...READS.flatMap((b) => bash(b, ...credForms.map((c) => ` *${c}/*token*`))));
+  }
+  // The user's subagent definitions, which workers list and read when a skill names an agent.
+  const agents = join(E.HOME, '.claude', 'agents');
+  if (existsSync(agents)) dirs.add(agents);
 
   const mem = E.memoryDir();
   if (existsSync(mem)) dirs.add(mem);
