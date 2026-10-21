@@ -621,12 +621,12 @@
         "path": "plugins/python-development/skills/async-python-patterns/"
       },
       "pin": {
-        "commit": "be57c0b2e",
-        "date": "2026-05-22"
+        "commit": "1f8ac5288",
+        "date": "2026-10-15"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (2 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "13b48ed612547db11e10179ec1a0d6848ab78f7adc1fd631402cd6905f91bcee"
+      "tree_sha256": "b3f7c8db592f92e423b2989a7abad7c5483307e2ed9540565b995d1e1dcaf969"
     },
     "data-quality-frameworks": {
       "source": {
