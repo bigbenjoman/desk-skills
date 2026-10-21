@@ -1007,6 +1007,9 @@ desk-jira <command> [args]
   attach <KEY> <file ...>
 
   api <path>                      read-only GET of /rest/<path>, raw JSON (e.g. api/3/myself)
+  rest <PUT|POST|DELETE> <path> [<body file>]
+                                  a write to /rest/<path> no other command makes; the body file is
+                                  sent as is (JSON), and the reply is printed raw
   md2wiki <file|->                print the body a file is sent as (no credentials; - is a .md on stdin)
 
 Bodies:        a .md file (create's description, comment, edit description=@file.md) is converted
@@ -1451,6 +1454,29 @@ case "$cmd" in
   api)
     [[ $# -eq 1 ]] || die 'usage: desk-jira api <path>   (GET only; the path is everything after /rest/)'
     api GET "$1"; echo
+    ;;
+
+  rest)
+    # The write `api` never makes, for the REST recipes no other subcommand covers. A separate name so
+    # a harness rule that allows `desk-jira api` as a read never lets a write through with it.
+    usage_rest='usage: desk-jira rest <PUT|POST|DELETE> <path> [<body file>]   (the path is everything after /rest/; a body is sent as is, as JSON)'
+    [[ $# -ge 2 && $# -le 3 ]] || die "$usage_rest"
+    method=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+    case "$method" in
+      PUT|POST|DELETE) ;;
+      GET) die 'desk-jira rest: a read is desk-jira api <path>' ;;
+      *) die "desk-jira rest: the method is PUT, POST or DELETE, not $1" ;;
+    esac
+    if [[ $# -eq 3 ]]; then
+      [[ -f "$3" ]] || die "desk-jira: file not found: $3"
+      check_outgoing_file "$3"
+      ensure_auth
+      json "$method" "$2" --data-binary "@$3" || exit 1
+    else
+      ensure_auth
+      api "$method" "$2" || exit 1
+    fi
+    echo
     ;;
 
   md2wiki)

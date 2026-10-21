@@ -126,14 +126,14 @@ remnant under `.claude/worktrees/` has been the largest worktree on the box afte
 ticket, and only a directory listing found it.
 
 ```bash
-git -C <repo root> worktree list --porcelain | awk '/^worktree /{print substr($0,10)}' | sort > /tmp/registered.$$
-for d in <worktrees dir>/*/ <repo root>/.claude/worktrees/*/; do [ -d "$d" ] && printf '%s\n' "${d%/}"; done | sort > /tmp/on-disk.$$
-comm -13 /tmp/registered.$$ /tmp/on-disk.$$     # on disk, not registered = orphan
-rm -f /tmp/registered.$$ /tmp/on-disk.$$
+comm -13 <(git -C <repo root> worktree list --porcelain | awk '/^worktree /{print substr($0,10)}' | sort) \
+  <(find <worktrees dir> <repo root>/.claude/worktrees -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)   # on disk, not registered = orphan
 ```
 
-(Use the scratchpad instead of `/tmp` when the harness provides one.) The reverse case — registered
-but the directory is gone — shows in `git worktree prune --dry-run -v` and costs nothing on disk.
+Both lists are absolute paths, so give `<worktrees dir>` and `<repo root>` in full. No scratch files:
+a write to `/tmp` is outside the working directory and prompts every time. The reverse case —
+registered but the directory is gone — shows in `git worktree prune --dry-run -v` and costs nothing
+on disk.
 
 An orphan's `.git` file dangles, so `git worktree remove` fails and removal means `rm -rf`, which has
 **no** dirty-tree guard. Rebuild the guard from evidence before proposing it:

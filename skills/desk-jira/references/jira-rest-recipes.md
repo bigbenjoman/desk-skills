@@ -1,25 +1,21 @@
 # Jira REST recipes — what `desk-jira` has no command for
 
-Same Basic auth as the CLI, from **this repo's** config folder: the email in its `jira-email` and
-the token in its `atlassian-token`. `desk-jira where` prints both paths and the site; `desk-jira
-where --dir` prints the folder. Every recipe here is a **write** unless marked otherwise, so the gate
-in SKILL.md applies exactly as it does to a CLI call. §4 Tracker `none` means none of this applies.
+Call the Jira API through `desk-jira`, which signs every request with **this repo's** credentials
+and never shows the token: `desk-jira api <path>` for a read, and `desk-jira rest <PUT|POST|DELETE>
+<path> [<body file>]` for a write. The path is everything after `/rest/`. Every recipe here is a
+**write** unless marked otherwise, so the gate in SKILL.md applies exactly as it does to any other
+CLI call. §4 Tracker `none` means none of this applies.
 
 ```bash
-DIR="$(desk-jira where --dir)"                       # ~/.config/desk/repos/<slug>
-SITE="$(desk-env get jira-site | awk '{print $1}')"  # §4 Jira site
-PROJECT="$(desk-env get jira-project | awk '{print $1}')"  # §4 Jira project key
-EMAIL="${JIRA_EMAIL:-$(tr -d ' \t\r\n' < "$DIR/jira-email")}"
-# Credentials go to curl as a config on stdin (`-K -`), never on its argv, where `ps` shows them to
-# every user on the machine. printf is a shell builtin, so it does not put them on an argv either.
-jcurl() { printf 'user = "%s:%s"\n' "$EMAIL" "$(tr -d ' \t\r\n' < "$DIR/atlassian-token")" | curl -K - -sS "$@"; }
+desk-jira api 'api/3/issue/ABC-123?fields=summary'                 # read: raw JSON
+desk-jira rest PUT api/3/issue/ABC-123 fields.json                 # write: the file is sent as is, as JSON
 ```
 
-Never echo the token, never pass it as `-u`, and never paste it into a command you will show in the
-conversation. `jcurl` reads stdin for the credentials, so send a body with `-d` or `--data-binary
-@<file>` (a file inside the repo, `$DESK_STATE` or a temp dir), never on stdin. Before trusting an
-empty read, check `desk-jira whoami` succeeds: Jira answers an anonymous request with 200 and no
-issues.
+Never define a shell function or call `curl` with the token yourself: a function definition prompts
+every time it runs, and a hand-built credential is one `ps` or a pasted command away from showing.
+Build a JSON body with `jq` into a file in the working directory (`desk-jira rest` refuses a body
+outside the repo, `$DESK_STATE` or a temp dir), then send it. `desk-jira rest` checks the credentials
+before it writes, so a 2xx is never Jira's anonymous answer.
 
 ## Read every write back
 
@@ -41,11 +37,11 @@ No CLI subcommand. `desk-jira comments <KEY>` prints each comment's id.
 # curl sends the file as is. `desk-jira comments` prints wiki markup: edit that text in body.wiki
 # and send it as is. New text written in markdown is converted first:
 desk-jira md2wiki body.md > body.wiki
-jcurl -X PUT -H 'Content-Type: application/json' \
-  "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>" -d "$(jq -n --rawfile b body.wiki '{body:$b}')"
+jq -n --rawfile b body.wiki '{body: $b}' > comment.json
+desk-jira rest PUT api/2/issue/ABC-123/comment/<id> comment.json
 
 # delete a mistaken comment (204)
-jcurl -X DELETE "https://$SITE/rest/api/2/issue/ABC-123/comment/<id>"
+desk-jira rest DELETE api/2/issue/ABC-123/comment/<id>
 ```
 
 Editing the canonical root-cause comment beats leaving a superseded one that now reads as false.
@@ -60,12 +56,13 @@ Inline images live in the description as ADF `mediaSingle` nodes. Writing the fi
 wiki markup (API v2, or `desk-jira edit description=…`) flattens the document, and **the images are
 gone**. Patch the ADF instead:
 
-1. `GET /rest/api/3/issue/ABC-123?fields=description` and save the JSON.
+1. `desk-jira api 'api/3/issue/ABC-123?fields=description' > before.json` (a read).
 2. Change only the offending nodes in the `content` array. Inline code needs
    `marks: [{"type":"code"}]` on the text node.
 3. Assert the `mediaSingle` node ids are identical before and after.
-4. `PUT /rest/api/3/issue/ABC-123` with `{"fields":{"description": <adf>}}` (204 = accepted).
-5. Re-GET and compare. The 204 is not proof.
+4. Write `{"fields":{"description": <adf>}}` to `after.json` and
+   `desk-jira rest PUT api/3/issue/ABC-123 after.json` (204 = accepted).
+5. Re-read with `desk-jira api` and compare. The 204 is not proof.
 
 ## Creating a ticket when `desk-jira create` fails
 
@@ -75,9 +72,9 @@ lists them. Raw fallback, which sends the file as is, so convert the markdown fi
 
 ```bash
 desk-jira md2wiki body.md > body.wiki
-jcurl -X POST -H 'Content-Type: application/json' \
-  "https://$SITE/rest/api/2/issue" \
-  -d "$(jq -n --rawfile d body.wiki --arg p "$PROJECT" '{fields:{project:{key:$p},issuetype:{name:"Bug"},summary:"…",description:$d}}')"
+jq -n --rawfile d body.wiki --arg p <§4 Jira project> \
+  '{fields: {project: {key: $p}, issuetype: {name: "Bug"}, summary: "…", description: $d}}' > issue.json
+desk-jira rest POST api/2/issue issue.json
 ```
 
 ## Sprints and subtasks

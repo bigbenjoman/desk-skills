@@ -63,7 +63,7 @@ agents, scripts and the skill index are copies made by `install.sh`. After any p
 `skills-upstream verify` reports DRIFTED below), run:
 
 ```bash
-(cd "$D" && ./install.sh </dev/null)       # files only: with stdin not a terminal every settings prompt is skipped
+"$D/install.sh" </dev/null       # files only: with stdin not a terminal every settings prompt is skipped
 ```
 
 and report its warning count. Its output ends with a `Skipped (no terminal): <n> prompt(s)` block
@@ -180,9 +180,12 @@ Ask before pushing it. On yes, push that branch and open a PR from it into `main
 
 ```bash
 git -C "$D" push -u origin chore/vendor-<date>
-(cd "$D" && gh pr create --base main --head chore/vendor-<date> \
-  --title "chore(vendor): upgrade <name>..." --body "<one line per skill: old pin -> new pin, what changed>")
+gh pr create --repo <owner/name> --base main --head chore/vendor-<date> \
+  --title "chore(vendor): upgrade <name>..." --body "<one line per skill: old pin -> new pin, what changed>"
 ```
+
+`<owner/name>` is the GitHub repo `git -C "$D" remote get-url origin` names, so the PR opens on the
+desk-skills checkout's origin whatever directory you run it from.
 
 Report the PR URL `gh pr create` prints. Nothing is pushed to `main`: CI and the user merge the PR.
 If the push or the PR fails, report the error and the branch name, and leave it there; never retry
