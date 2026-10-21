@@ -210,7 +210,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
 | 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base), and in feature mode the drafted spine and owner table for approval. Wait. This is the whole promise. See *Asking*. |
-| 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Start the merge driver now, before the first worker finishes. |
+| 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
 | 6b | Notify | When a pass exits 11, send **one** `PushNotification` covering the `waiting` and `parked` entries the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`), or saying the batch is finished when `status` is `idle`. Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
@@ -273,7 +273,8 @@ session is open and after a reboot. `install` (run inside the repo, once per rep
 it). `uninstall` removes it, and no further passes run for that repo. `status` shows the agent, the
 batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 
-- skips while a pass holds `<state>/orchestrator.lock`, and logs the skip;
+- skips while a pass holds `<state>/orchestrator.lock`, or the previous tick's pass still runs, and
+  logs the skip;
 - runs `pass.mjs --json`, passing on only the approvals recorded with the batch (`approved.workers`
   as `AUTOPILOT_USER_APPROVED=1`, `approved.base_push` as `AUTOPILOT_BASE_PUSH_APPROVED=1`). It never
   grants one it was not given, so a batch whose `ask` was never answered spawns nothing and the pass
@@ -281,12 +282,13 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 - appends the report to `<state>/supervisor.log`;
 - sends one macOS notification naming the repo and every item when the pass needs the person for an
   item the last notification did not name. This replaces Stage 6b while the supervisor runs;
-- starts the merge driver (with the queue's tickets, and its holds as `--deps`) while tickets are still
-  to merge and no driver holds `<state>/merge-driver.lock.d`;
+- starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
+  are still to merge and no driver holds `<state>/merge-driver.lock.d`;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
   or a ticket admitted or requeued into this one).
 
-A batch not handed over gets no pass, so the supervisor never runs one before Stage 3 has asked.
+A batch not handed over gets no pass, so the supervisor never runs one before Stage 3 has asked; the
+log says so once per batch.
 Handing over does not hand over the person's side: answers (Stage 5), relaying a gate (Stage 6c),
 recovery and the close-out are still yours, read from `<state>/supervisor.log` and `queue.mjs render`
 rather than a loop. A pass you run by hand while the supervisor's holds the lock refuses; run it again.
@@ -659,8 +661,8 @@ the driver or by you, whatever §3 grants: the repo needs a manual step first (t
 The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
 PR link and its head SHA, and it stays there until the user says they have merged it.
 
-**Start the merge driver at Stage 4, before the first worker finishes: do not merge off your own
-turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
+**Start the merge driver at Stage 4, before the first worker finishes, unless the supervisor is
+installed (it starts one itself): do not merge off your own turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
 unmerged: nothing undrafts, merges or retriggers it until the orchestrator's next turn.
 
 The driver **refuses to start while §4 Merge holds is unset** (write `none` when nothing is held),
@@ -1046,7 +1048,7 @@ node ~/.claude/desk/bin/expand-parent.mjs ABC-900                     # an epic 
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
 AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
-node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop; exit 0 go on, 10 nothing yet, 11 show the person
+node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop unless the supervisor runs passes; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd, at login and every 3 minutes
 node ~/.claude/desk/bin/supervisor.mjs status                         # exit 0 while installed and loaded; uninstall removes it
 node ~/.claude/desk/bin/queue.mjs set-batch supervised=true approved.workers=true   # Stage 4 with the supervisor: only the approvals the user gave
@@ -1064,7 +1066,7 @@ AUTOPILOT_DRY_RUN=1 …                                                 # no pus
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
 AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only when §3 batch-base-push is `ask`/unset and the user approved syncing this batch's base
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
-nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log
+nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log; not where the supervisor is installed
 
 # config
 desk-env where                   # which repo, which config, does it exist

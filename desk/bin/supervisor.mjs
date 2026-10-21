@@ -5,12 +5,14 @@
 //   node supervisor.mjs install [--interval <s>]   install or update this repo's launchd agent (default 180s)
 //   node supervisor.mjs uninstall                  remove it: no further passes run for this repo
 //   node supervisor.mjs status                     the agent, whether the batch is handed over, the log's tail
-//   node supervisor.mjs tick                       one interval; launchd runs this at login and every interval
+//   node supervisor.mjs tick [--foreground]        one interval; launchd runs this at login and every interval.
+//                                                  It starts the work detached and returns; --foreground does it here
 //
 // A tick acts only on a batch the orchestrator handed over at Stage 4 (`queue.mjs set-batch
-// supervised=true`), so a batch still being triaged or planned never gets a pass before Stage 3 asks.
-// For a handed-over batch, each tick:
-//   - skips, saying so in the log, while a pass holds <state>/orchestrator.lock;
+// supervised=true`), so a batch still being triaged or planned never gets a pass before Stage 3 asks;
+// the log says so once per batch. For a handed-over batch, each tick:
+//   - skips, saying so in the log, while a pass holds <state>/orchestrator.lock or the previous tick's
+//     run still holds <state>/supervisor.lock;
 //   - runs `pass.mjs --json` with only the Stage 3 approvals recorded with the batch: `approved.workers`
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
@@ -22,7 +24,7 @@
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
 //     a new batch, or a ticket admitted or requeued into this one.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -160,12 +162,11 @@ function toMerge(q) {
 }
 
 // What a pass's verdict says needs the person, one item per ticket or entry, as pass.mjs's NOTIFY
-// line names them.
+// line names them. An idle batch can still carry parked and failed tickets, named before the finish.
 function needsYou(v) {
-  if (v.status === 'idle') return ['the batch is finished'];
   if (v.status === 'error') return [`the pass refused or failed: ${String(v.message ?? '').split('\n')[0].slice(0, 120)}`];
   const keys = [...(v.parked ?? []).map((p) => p.key), ...(v.waiting ?? []).map((x) => String(x).split(':')[0])];
-  return [...new Set(keys)];
+  return [...new Set(keys), ...(v.status === 'idle' ? ['the batch is finished'] : [])];
 }
 
 function notify(title, body) {
@@ -174,22 +175,56 @@ function notify(title, body) {
 }
 
 // ---- one interval ----------------------------------------------------------------------------
+// launchd runs `tick`, which starts the interval's work detached and returns at once: launchd starts
+// no tick while one runs, so a pass still going at the next interval could not otherwise be logged.
 function tick() {
-  const slug = E.repoSlug();
+  const child = spawn(process.execPath, [join(HERE, 'supervisor.mjs'), 'tick', '--foreground'], { cwd: process.cwd(), env: process.env, detached: true, stdio: 'inherit' });
+  child.unref();
+}
+
+// The supervisor's own run, held in <state>/supervisor.lock from the pass to the last log line.
+const supervisorLock = (state) => join(state, 'supervisor.lock');
+function supervisorHolder(state) {
+  try {
+    const { pid } = JSON.parse(readFileSync(supervisorLock(state), 'utf8'));
+    return pid && pid !== process.pid && alive(pid) ? pid : null;
+  } catch { return null; }
+}
+
+function interval() {
   const state = E.stateDir();
-  const qf = E.queueFile();
   mkdirSync(state, { recursive: true });
   const logFile = join(state, 'supervisor.log');
   const log = (lines) => appendFileSync(logFile, `${lines.join('\n')}\n`);
   const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  if (!existsSync(qf)) return;
+  if (!existsSync(E.queueFile())) return;
   let q;
-  try { q = readQueue(qf); } catch (e) { log([`== ${stamp()} queue unreadable, no pass run: ${describeCrash(e)}`]); return; }
-  if (q.supervised !== true) return;
+  try { q = readQueue(E.queueFile()); } catch (e) { log([`== ${stamp()} queue unreadable, no pass run: ${describeCrash(e)}`]); return; }
   const s = readState(state);
+  if (q.supervised !== true) {
+    // Said once per batch, so a batch never handed over is not mistaken for a supervisor that stopped.
+    if (s.unsupervised !== (q.batch ?? null)) {
+      log([`== ${stamp()} batch ${q.batch ?? '?'} is not handed over: no pass until Stage 4 runs queue.mjs set-batch supervised=true`]);
+      writeState(state, { ...s, unsupervised: q.batch ?? null });
+    }
+    return;
+  }
   if (s.idle && s.idle === fingerprint(q)) return;
-  const holder = orchestratorHolder(state);
+  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`]); return; }
+  try { writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), { flag: 'wx' }); }
+  catch {
+    // A dead holder's lock is taken over; a live one started in the moment since the check above.
+    if (supervisorHolder(state)) { log([`== ${stamp()} skipped: a pass is still running (pid ${supervisorHolder(state)})`]); return; }
+    writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
+  }
+  try { runPass(state, q, s, log, stamp); }
+  finally { try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ } }
+}
+
+function runPass(state, q, s, log, stamp) {
+  const slug = E.repoSlug();
+  const qf = E.queueFile();
 
   const env = { ...process.env };
   delete env.AUTOPILOT_USER_APPROVED;
@@ -222,15 +257,13 @@ function tick() {
     else if (driver) out.push(`merge driver: running (pid ${driver})`);
     else if (ungranted.length) out.push(`merge driver: not started, since config §3 ${ungranted.map((id) => `${E.permissionKey(id)} is "${E.permission(id)}"`).join(' and ')}: green PRs wait for you`);
     else {
+      // The driver takes in every queue ticket and its holds (held_by) on each loop by itself.
       const tickets = Object.keys(qAfter.tickets ?? {});
-      const deps = Object.values(qAfter.tickets ?? {}).filter((t) => isHeld(t) && t.held_by)
-        .map((t) => `${t.key}:${String(t.held_by).split('|').filter(Boolean).join(',')}`);
-      const args = ['--tickets', tickets.join(' '), ...(deps.length ? ['--deps', deps.join(' ')] : []), '--log'];
       try {
-        const child = spawn(join(HERE, 'merge-driver.sh'), args, { cwd: process.cwd(), env: process.env, detached: true, stdio: 'ignore' });
+        const child = spawn(join(HERE, 'merge-driver.sh'), ['--tickets', tickets.join(' '), '--log'], { cwd: process.cwd(), env: process.env, detached: true, stdio: 'ignore' });
         child.on('error', () => {});
         child.unref();
-        out.push(`merge driver: started (pid ${child.pid}) for ${tickets.join(' ')}${deps.length ? ` with deps ${deps.join(' ')}` : ''}; its log is ${join(state, 'merge-driver.log')}`);
+        out.push(`merge driver: started (pid ${child.pid}) for ${tickets.join(' ')}; its log is ${join(state, 'merge-driver.log')}`);
       } catch (e) { out.push(`merge driver: could not start: ${e.message}`); }
     }
   }
@@ -238,11 +271,14 @@ function tick() {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const items = r.status === 11 || v.notify === true || v.status === 'error' ? needsYou(v) : [];
   const fresh = items.filter((i) => !s.notified.includes(i));
+  let sent = true;
   if (fresh.length) {
     const err = notify(`desk: ${slug}`, `${items.length} item(s) need you: ${items.join(', ')}`);
-    out.push(err ? `notification: failed (${err}) for ${items.join(', ')}` : `notification: sent for ${items.join(', ')}`);
+    sent = !err;
+    out.push(err ? `notification: failed (${err}) for ${items.join(', ')}; the next pass tries again` : `notification: sent for ${items.join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
-  s.notified = items;
+  // A failed notification records nothing new, so the next pass sends it again.
+  s.notified = sent ? items : s.notified.filter((i) => items.includes(i));
   writeState(state, s);
   log(out);
 }
@@ -281,6 +317,6 @@ try {
     install(n);
   } else if (cmd === 'uninstall') uninstall();
   else if (cmd === 'status') status();
-  else if (cmd === 'tick') tick();
-  else die('usage: supervisor.mjs install [--interval <s>] | uninstall | status | tick', 2);
+  else if (cmd === 'tick') { if (rest.includes('--foreground')) interval(); else tick(); }
+  else die('usage: supervisor.mjs install [--interval <s>] | uninstall | status | tick [--foreground]', 2);
 } catch (e) { die(describeCrash(e)); }
