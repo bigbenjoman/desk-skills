@@ -97,7 +97,7 @@ t('AC2 drop when fewer', /\*\*drop\*\*/.test(readFileSync(join(dir, 'out-drop', 
 t('AC2 keep/trim/drop by passes', [verdict({ skill: { passed: 2 }, base: { passed: 1 } }), verdict({ skill: { passed: 1 }, base: { passed: 1 } }), verdict({ skill: { passed: 0 }, base: { passed: 1 } })].join(','), 'keep,trim,drop');
 
 // The run reader and the task-set checks.
-t('an error result is failed', readRun({ status: 0, stdout: JSON.stringify({ subtype: 'error_max_budget_usd', is_error: true }) }, 1).ok, false);
+t('an error result is failed', readRun({ status: 0, stdout: JSON.stringify({ subtype: 'error_max_budget_usd', is_error: true, result: 'partial' }) }, 1).why, 'claude reported error_max_budget_usd');
 t('unparseable output is failed', readRun({ status: 0, stdout: 'not json' }, 1).why, 'claude printed no result');
 t('a task needs checks', /no checks/.test(throws(() => loadTasks(taskSet('nochecks', [{ id: 'a', prompt: 'p', checks: [] }])))), true);
 t('a check needs exactly one kind', /exactly one/.test(throws(() => loadTasks(taskSet('twokinds', [{ id: 'a', prompt: 'p', checks: [{ name: 'x', contains: 'a', absent: 'b' }] }])))), true);

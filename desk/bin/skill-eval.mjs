@@ -78,7 +78,7 @@ export function checkPasses(check, reply) {
   return new RegExp(check.matches).test(reply);
 }
 
-// One finished claude process -> {ok, reply, cost, why}. Anything other than a successful JSON
+// One finished claude process -> {ok, reply, why}. Anything other than a successful JSON
 // result is failed, with the reason.
 export function readRun({ status, signal, error, stdout }, timeout) {
   if (error?.code === 'ETIMEDOUT') return { ok: false, why: `timed out after ${timeout}s` };
@@ -89,7 +89,7 @@ export function readRun({ status, signal, error, stdout }, timeout) {
   if (status !== 0) return { ok: false, why: `claude exited ${status}${r?.subtype ? ` (${r.subtype})` : ''}` };
   if (!r || typeof r.result !== 'string') return { ok: false, why: 'claude printed no result' };
   if (r.is_error || (r.subtype && r.subtype !== 'success')) return { ok: false, why: `claude reported ${r.subtype || 'an error'}` };
-  return { ok: true, reply: r.result, cost: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : null };
+  return { ok: true, reply: r.result };
 }
 
 // The claude arguments for one arm. The base arm differs only by not having the skill.
