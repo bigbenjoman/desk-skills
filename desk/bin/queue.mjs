@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // The autopilot queue: the orchestrator's only piece of state.
 //
-// Lives outside any repo so worktree churn cannot take it. Single writer (the
-// orchestrator); workers never touch it — their state is derived from their own
-// logs plus `claude agents --json`. Created on first use; never shipped.
+// Lives outside any repo so worktree churn cannot take it. Written by the orchestrator's passes, the
+// merge driver and desk-q, every one through this file, which locks each change (lock() below);
+// workers never touch it — their state is derived from their own logs plus `claude agents --json`.
+// Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
@@ -46,11 +47,77 @@ function load() {
   return readQueue(QUEUE);
 }
 
+// A command that changes the queue holds this lock from its read to its save: two read-change-writes
+// that overlap would otherwise each save their own copy, and the first one's change is lost with no
+// error. A directory, because creating one is atomic, with the holder's pid inside. Reads take no
+// lock: save() renames atomically, so a reader always sees one whole version.
+const LOCK = `${QUEUE}.lock`;
+// The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
+// number of milliseconds there is ignored rather than turning the wait into forever or nothing.
+const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
+let locked = false;
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+// A holder that has exited never lets go. One with no pid yet is between its mkdir and its write,
+// unless it has sat that way for a minute (with-lock.sh's rule).
+function stale() {
+  const pid = lockPid(LOCK);
+  try { return pid ? !alive(pid) : Date.now() - statSync(LOCK).mtimeMs > 60_000; } catch { return false; } // already gone
+}
+
+// Clear a stale lock. Writers that all saw the same stale lock must not each remove "the lock", or a
+// slower one removes the fresh lock a faster one has just taken. So clearing takes its own lock and
+// looks again under it: only a clearer can remove the queue lock while it exists, so a lock still
+// stale under the clearing lock is the one that was seen. A clearing lock older than 5 seconds is a
+// clearer that died mid-clear (clearing takes microseconds), and is removed for the next attempt.
+function clearStale() {
+  const clearing = `${LOCK}.clearing`;
+  try { mkdirSync(clearing); } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
+    return false;
+  }
+  try { if (stale()) rmSync(LOCK, { recursive: true, force: true }); }
+  finally { rmSync(clearing, { recursive: true, force: true }); }
+  return true;
+}
+
+function lock() {
+  mkdirSync(dirname(QUEUE), { recursive: true });
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(LOCK);
+      writeFileSync(join(LOCK, 'pid'), `${process.pid}\n`);
+      locked = true;
+      return;
+    } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    if (stale() && clearStale()) continue; // another writer clearing it: wait like any other holder
+    const pid = lockPid(LOCK);
+    if (Date.now() >= until) {
+      throw new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${LOCK})`);
+    }
+    sleep(50);
+  }
+}
+
+function unlock() {
+  if (!locked) return;
+  locked = false;
+  if (lockPid(LOCK) === process.pid) rmSync(LOCK, { recursive: true, force: true });
+}
+process.on('exit', unlock);
+
+// Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
+// reject's briefing write, never keeps another writer waiting.
 function save(q) {
   mkdirSync(dirname(QUEUE), { recursive: true });
   const tmp = `${QUEUE}.tmp.${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(q, null, 2)}\n`);
   renameSync(tmp, QUEUE); // atomic within the same filesystem
+  unlock();
 }
 
 function ticket(q, key) {
@@ -97,6 +164,27 @@ function liveOrchestrator() {
   return null;
 }
 
+// pass.mjs spawns eligible tickets in `.tickets` key order. A ticket's place in that order is its
+// position among the unfinished tickets; done and failed ones keep their slots and are never counted.
+const FINISHED = ['done', 'failed'];
+const unfinished = (q) => Object.keys(q.tickets).filter((k) => !FINISHED.includes(q.tickets[k].state));
+const position = (q, key) => unfinished(q).indexOf(key) + 1;
+
+// Lay `order` (every unfinished key, in their new order) over the unfinished slots.
+function reorder(q, order) {
+  const next = order[Symbol.iterator]();
+  const keys = Object.keys(q.tickets).map((k) => (FINISHED.includes(q.tickets[k].state) ? k : next.next().value));
+  q.tickets = Object.fromEntries(keys.map((k) => [k, q.tickets[k]]));
+}
+
+// The front of the spawn order, unless the user placed the ticket (queue.mjs move): then it stays
+// where they put it, and the returned text says so.
+function toFront(q, key) {
+  if (q.tickets[key].placed) return `stays at position ${position(q, key)} of the spawn order, where the user placed it`;
+  q.tickets = { [key]: q.tickets[key], ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
+  return 'moved to the front of the spawn order';
+}
+
 // Send a ticket back for another worker: every field a requeue needs, not one of them left to a hand
 // edit that fails silently. The last round's log, park record and mailbox move aside to one
 // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
@@ -132,14 +220,17 @@ function requeue(q, key) {
   const moved = rotateRound(key, { answers: true });
   Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
-  q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
+  const placed = toFront(q, key);
   save(q);
-  return `${key} requeued at the front of the spawn order${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  return `${key} requeued: ${placed}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 const [, , cmd, ...args] = process.argv;
 
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'requeue', 'approve', 'reject', 'front', 'move', 'drop'];
+
 try {
+if (WRITES.includes(cmd)) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
 
 switch (cmd) {
@@ -380,13 +471,33 @@ switch (cmd) {
   }
 
   // pass.mjs spawns eligible tickets in `.tickets` key order, so a released chain head has to move
-  // to the front or it waits behind every independent ticket.
+  // to the front or it waits behind every independent ticket. A ticket the user placed stays put.
   case 'front': {
     const key = args[0];
-    const t = ticket(q, key);
-    q.tickets = { [key]: t, ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
+    ticket(q, key);
+    const msg = toFront(q, key);
     save(q);
-    console.log(`${key} moved to the front of the spawn order`);
+    console.log(`${key} ${msg}`);
+    break;
+  }
+
+  // The user's own order: put an unfinished ticket at a position among the unfinished tickets (1 is
+  // spawned first), and mark it placed so a later front or requeue leaves it there.
+  case 'move': {
+    const [key, to] = args;
+    if (!key || !to) throw new Error('usage: queue.mjs move <TICKET> <position|last>   (1 is spawned first)');
+    const t = ticket(q, key);
+    if (t.state === 'running') throw new Error(`${key} is running: its worker has started, so it has no place left in the spawn order`);
+    if (FINISHED.includes(t.state)) throw new Error(`${key} is ${t.state}: only unfinished tickets have a place in the spawn order`);
+    const order = unfinished(q);
+    const n = to === 'last' ? order.length : /^\d+$/.test(to) ? Number(to) : NaN;
+    if (!(n >= 1 && n <= order.length)) throw new Error(`position ${to} is out of range: give 1 to ${order.length} (the unfinished tickets), or last`);
+    const rest = order.filter((k) => k !== key);
+    reorder(q, [...rest.slice(0, n - 1), key, ...rest.slice(n - 1)]);
+    t.placed = true;
+    t.updated_at = new Date().toISOString();
+    save(q);
+    console.log(`${key} moved to position ${n} of ${order.length} in the spawn order and marked placed: front and requeue leave it there`);
     break;
   }
 
@@ -434,7 +545,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|drop|get|list|render`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|get|list|render`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
