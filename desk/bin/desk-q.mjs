@@ -51,6 +51,21 @@ function wrap(s, w) {
   return out;
 }
 
+// A title's leading tag ("autopilot: ", "Your day 7/14: "): its length with the space after it, and
+// an id that drops any "n/m" count, so "Your day 7/14" and "Your day 8/14" are one tag.
+const tagOf = (s) => {
+  const m = /^([^:]{1,28}):\s+/.exec(s ?? '');
+  return m ? { len: m[0].length, id: m[1].replace(/\s*\d+\s*\/\s*\d+\s*$/, '').trim().toLowerCase() } : null;
+};
+
+// Titles for one list: a tag that starts at least half of them is dropped, because it tells those
+// rows apart from nothing. A tag fewer share stays.
+export function titler(titles) {
+  const n = {};
+  for (const s of titles) { const g = tagOf(s); if (g) n[g.id] = (n[g.id] ?? 0) + 1; }
+  return (s) => { const g = tagOf(s); return g && n[g.id] >= 2 && n[g.id] * 2 >= titles.length ? s.slice(g.len) : s ?? ''; };
+}
+
 // ---- reading ---------------------------------------------------------------------------------
 
 // The shown state: "parked" splits three ways with waitingOnMerge, the orchestrator's own test. A
@@ -327,18 +342,25 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]];
 const why = (i) => capital(undatedWhy(i.r, i.F, i.x)) || 'No date yet';
 const openTicket = (i) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key });
+const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
-// The label columns before a Timeline bar, and the STARTS and SHIPS after it (behind its end mark).
-const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_BAR = 64;
+// The label columns before a Timeline bar, the STARTS and SHIPS after it (behind its end mark), and
+// the gap before TITLE.
+const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_GAP = 2, TL_BAR = 64;
 
-// One bar per ticket from STARTS to SHIPS, shaded on to its could-run-to time, sorted by ship time;
-// every repo's view groups them under a row per repo. `width` null is the plain output.
+// One bar per ticket from STARTS to SHIPS, shaded on to its could-run-to time, sorted by ship time,
+// each row ending in its title; every repo's view groups them under a row per repo. `width` null is the plain
+// output. The bar and the title share what the row has left, the bar taking at most TL_BAR.
 function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto' } = {}) {
   const s = etaScope(repos, slug, { now, checkin });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
-  const cw = width == null ? TL_BAR : Math.max(12, width - TL_LEAD - TL_TAIL);
+  const spare = width == null ? null : width - TL_LEAD - TL_TAIL - TL_GAP;
+  const cw = width == null ? TL_BAR : Math.max(12, Math.min(TL_BAR, Math.ceil(spare / 2)));
+  const tw = width == null ? 60 : Math.max(1, spare - cw);
+  const tt = titler(s.items.map(summaryOf));
+  const title = (i) => [`${' '.repeat(TL_GAP)}${cut(tt(summaryOf(i)), tw)}`, null];
   const dated = s.items.filter((i) => i.e).sort((a, b) => a.e.likely - b.e.likely);
   const undated = s.items.filter((i) => !i.e);
   const sc = scaleFor((dated.length ? Math.max(...dated.map((i) => i.e.late)) : now + DAY) - now, now, zoom);
@@ -357,7 +379,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   [...'now'].forEach((ch, j) => { lab[j] = ch; });
   const ind = ' '.repeat(TL_LEAD);
   const head = [...s.head, `Scale: ${sc.id}${zoom === 'auto' ? ' (auto)' : ''}${width == null ? '' : ' · z to change'}`, ''];
-  if (s.items.length) head.push(`${ind}${lab.join('')}  STARTS       SHIPS`, `${ind}${tick.join('')}`);
+  if (s.items.length) head.push(`${ind}${lab.join('')}  ${pad('STARTS', 13)}${pad('SHIPS', 12 + TL_GAP)}TITLE`, `${ind}${tick.join('')}`);
   // Each run of bar glyphs is one segment, so it is coloured once and cut as a whole.
   const bar = (e, sgr) => {
     const a = Math.max(0, col(e.start)), b = Math.max(a, col(e.likely)), c = Math.max(b, col(e.late));
@@ -378,9 +400,10 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     }
     for (const i of mine(dated)) {
       const sgr = STATE_SGR[i.x.k];
-      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null]], openTicket(i)));
+      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], title(i)], openTicket(i)));
     }
-    for (const i of mine(undated)) rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], [why(i), STATE_SGR[i.x.k]]], openTicket(i)));
+    // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
+    for (const i of mine(undated)) rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], [why(i).padEnd(cw + TL_TAIL), STATE_SGR[i.x.k]], title(i)], openTicket(i)));
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
   if (!s.items.length) foot.push('', 'Nothing unfinished here.');
@@ -415,13 +438,14 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
   for (const i of s.items.filter((y) => !y.e)) add('No date yet', i);
   const lead = 4 + (all ? 12 : 0) + 20 + 27;
   const tw = width == null ? 60 : Math.max(1, width - lead);
+  const tt = titler(s.items.map(summaryOf));
   const head = [...s.head, ''];
   if (s.items.length) head.push(`    ${all ? pad('', 12) : ''}${pad('TICKET', 10)}${pad('STATE', 10)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`);
   const rows = [];
   for (const [g, list] of groups) {
     rows.push(segRow(`day ${g}`, [[`  ${g}`, BOLD], [` · ${list.length} ticket${list.length === 1 ? '' : 's'}`, DIM]], null));
     for (const i of list) {
-      const title = cut(triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '', tw);
+      const title = cut(tt(summaryOf(i)), tw);
       const dates = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, null]
         : [why(i).length <= 25 ? pad(why(i), 27) : `${why(i)}  `, STATE_SGR[i.x.k]];
       rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), dates, [title, null]], openTicket(i)));
@@ -534,9 +558,10 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false } = {}) 
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
   const F = forecastOf(r, { now, checkin });
+  const summary = (x) => summaryOf({ r, x });
+  const tt = titler(r.rows.map(summary));
   const rows = r.rows.map((x) => {
-    const title = triageOf(r.stateDir, x.t.key)?.summary ?? '';
-    const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(title, tw)}`.trimEnd();
+    const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`.trimEnd();
     return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key } };
   });
   const foot = !r.rows.length ? ['  No unfinished tickets.']
