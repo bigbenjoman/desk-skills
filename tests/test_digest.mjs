@@ -92,14 +92,17 @@ t('AC5 the missed 08:00 slot is sent by the first pass after it', `${r3.status} 
 t('AC5 it covers the decision taken since the last digest, and no earlier one', page3.includes('id `d3`') && !page3.includes('id `d1`'), true);
 t('AC11 an unanswered question is listed again at the next check-in', page3.includes('`B-1` (triage)'), true);
 t('AC7 an answered question is not', page3.includes('`A-1`'), false);
+writeFileSync(A.queue, JSON.stringify({ batch: 'b', tickets: { 'A-1': { key: 'A-1', state: 'parked', park: { question: 'which empty-state copy?', since: '2026-10-23T11:00:00.000Z' } } } }));
+const r3b = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '17:01'), dir, list, bin: BIN, self: 'acme__a' });
+t('the same question parked again after an answer is listed and pushed as new', `${readFileSync(r3b.page, 'utf8').includes('`A-1` (parked)')} ${r3b.push?.key}`, 'true digest:2026-10-23T17:00');
 
 t('a decision taken since is new, so the missed slot pushes', r3.push?.key, 'digest:2026-10-23T08:00');
 
 // AC6: nothing new since the last digest. B-1 is still open and listed, but the last page listed it.
-const r4 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '17:05'), dir, list, bin: BIN, self: 'acme__a' });
+const r4 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-24', '08:05'), dir, list, bin: BIN, self: 'acme__a' });
 t('AC6 nothing new: no push', `${r4.status} ${r4.push}`, 'sent null');
 t('AC11 the carried question is still on the page', readFileSync(r4.page, 'utf8').includes('`B-1` (triage)'), true);
-const r5 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-24', '08:05'), dir, list: [repo('acme__e', {})], bin: BIN, self: 'acme__a' });
+const r5 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-24', '17:05'), dir, list: [repo('acme__e', {})], bin: BIN, self: 'acme__a' });
 t('AC6 with nothing open at all, the page says there is nothing to answer', `${r5.push} ${readFileSync(r5.page, 'utf8').includes('Nothing to answer')}`, 'null true');
 
 // AC9 and AC10: only a production-broken park is pushed between check-ins.

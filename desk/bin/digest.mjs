@@ -98,11 +98,14 @@ export function openQuestions(r, answered = {}) {
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       const text = String(t.park?.question ?? 'parked, with no question recorded');
-      if (!answered[questionKey(r.slug, t.key, text)]) out.push({ ticket: t.key, kind: 'parked', text });
+      // Keyed to this park, so the same question parked again after a requeue is a new one.
+      const key = questionKey(r.slug, t.key, `${text}\0${t.park?.since ?? ''}`);
+      if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text, key });
     } else if (t.state === 'triaged' && (t.open_questions ?? 0) > 0) {
       const unknowns = readJson(join(r.state, 'triage', `${t.key}.json`), {})?.unknowns;
       const text = Array.isArray(unknowns) && unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
-      if (!answered[questionKey(r.slug, t.key, text)]) out.push({ ticket: t.key, kind: 'triage', text });
+      const key = questionKey(r.slug, t.key, text);
+      if (!answered[key]) out.push({ ticket: t.key, kind: 'triage', text, key });
     }
   }
   return out.sort((a, b) => a.ticket.localeCompare(b.ticket));
@@ -172,7 +175,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
-    const listed = groups.flatMap((g) => g.questions.map((q) => questionKey(g.slug, q.ticket, q.text)));
+    const listed = groups.flatMap((g) => g.questions.map((q) => q.key));
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const repoCount = groups.filter((g) => g.questions.length || g.decisions.length).length;
     const push = nd || fresh.length
@@ -218,7 +221,7 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
   if (question) {
     const answered = readJson(answeredFile(dir), {});
-    answered[questionKey(slug, ticket, question.text)] = now.toISOString();
+    answered[question.key] = now.toISOString();
     mkdirSync(dir, { recursive: true });
     writeFileSync(answeredFile(dir), `${JSON.stringify(answered, null, 2)}\n`);
   }
