@@ -457,15 +457,27 @@ t('DS-165 fix: and with nothing queued it shows as shipped, not run forward',
 t('DS-165 fix: with workers set to 0, children not queued leave the epic undated',
   forecast({ rows: [], workers: 0, history: vHist, now: FIXED, epics: { 'EP-9': { missing: 2 } } }).E['EP-9'], null);
 
-// ---- DS-184: a batch with nothing left for autopilot is not paused, and a paused batch keeps its tickets
+// ---- a batch with nothing left for autopilot is not paused, and a paused batch keeps its tickets
 const hist12 = range(12, (i) => ['M', 2 + (i % 5)]);
+// The Epics view is on the interactive screen only: open the repo, press 4, read the frame.
+const { PassThrough } = await import('node:stream');
+async function epicsView(slug) {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
+  const output = { buf: '', columns: 200, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  Q.interactive({ input, output, start: { kind: 'repo', slug }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED });
+  input.write('4');
+  await new Promise((res) => setTimeout(res, 20));
+  const frame = output.buf.split('\x1b[H').at(-1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  input.write('q');
+  return frame;
+}
 repo('idle', 4700, { tickets: { 'I-1': { state: 'parked', lane: 'C', park: { question: 'lane C: agree the plan first' } }, 'I-2': { state: 'parked', lane: 'C', park: { question: 'which copy?' } },
   'I-3': { state: 'done', result: { pr: 4 } } }, sizes: { 'I-1': 'M', 'I-2': 'M' }, history: hist12, pass: FIXED - 112 * MIN });
 const IDLE = 'idle · Nothing left for autopilot: 2 tickets need you (2 need an interactive session).';
 const idleViews = { Timeline: Q.timelineScreen(Q.loadRepos(FIXED), 'acme__idle', { now: FIXED }), 'By day': Q.daysScreen(Q.loadRepos(FIXED), 'acme__idle', { now: FIXED }),
-  Epics: Q.run(['idle', 'epics', '--plain'], { now: FIXED }), ships: Q.run(['ships', 'idle', '--plain'], { now: FIXED }) };
+  Epics: await epicsView('acme__idle'), ships: Q.run(['ships', 'idle', '--plain'], { now: FIXED }) };
 t('DS-184 AC1-AC4: Timeline, By day, Epics and ships say nothing is left for autopilot, and not that dates are paused',
-  Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split('\n').includes(IDLE), /Dates paused/.test(s)]])),
+  Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split(/\r?\n/).includes(IDLE), /Dates paused/.test(s)]])),
   { Timeline: [true, false], 'By day': [true, false], Epics: [true, false], ships: [true, false] });
 t('DS-184 AC5: the overview\'s QUEUE DONE for it does not read paused',
   (Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}idle /.test(l)) ?? '').match(/\s(paused|nothing left)\s/)?.[1], 'nothing left');
@@ -485,9 +497,9 @@ t('DS-184 AC6: a paused batch\'s Timeline shows the note first, then each unfini
 t('DS-184 AC6: and so does By day, the tickets under "No date yet"',
   [sdy.split('\n')[0], sdy.split('\n').some((l) => l.startsWith('  No date yet · 3 tickets')), /^ {4}P-2 +ready +Starts when passes resume/.test(row(sdy, 'P-2'))], [stalledNote, true, true]);
 repo('stalledep', 4730, { tickets: { 'S-1': { state: 'triaged' } }, sizes: { 'S-1': 'M' }, epics: { 'S-1': { key: 'EP-5', summary: 'Stalled epic', children: [{ key: 'S-1', done: false }] } }, history: hist12, pass: FIXED - 20 * MIN });
-const sep = Q.run(['stalledep', 'epics', '--plain'], { now: FIXED });
-t('DS-184 AC6: and Epics lists its epics undated, under the note',
-  [sep.split('\n')[0].startsWith('stalledep · Dates paused'), /^ {2}EP-5 .*No date while passes are stopped$/m.test(sep)], [true, true]);
+const sep = (await epicsView('acme__stalledep')).split('\r\n');
+const sepNote = sep.findIndex((l) => l.startsWith('stalledep · Dates paused')), sepRow = sep.findIndex((l) => /^[ ›] {1,2}EP-5 .*No date while passes are stopped$/.test(l));
+t('DS-184 AC6: and Epics lists its epics undated, under the note', [sepNote >= 0, sepRow > sepNote], [true, true]);
 
 // AC7: at a width narrower than the note, it wraps at word boundaries; AC8: with no width it is one line.
 const narrow = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__stalled', { now: FIXED, width: 50 }).split('\n');

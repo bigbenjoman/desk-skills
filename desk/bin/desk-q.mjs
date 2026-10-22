@@ -211,9 +211,7 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && x.k === 'running') return `stage ${x.t.stage ?? '?'} · dated again at the next pass`;
-  if (F.paused && x.k === 'ready') return readyWhy(r, x.t);
-  if (F.paused && x.k === 'waiting') return `behind ${listed(unmergedBlockers(r.q, x.t))}`;
-  if (F.paused && x.k === 'queued') return 'triaged at the next pass';
+  if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
   if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return `stuck behind ${listed(unmergedBlockers(r.q, x.t))}`;
   if (x.k === 'failed') return 'failed: requeue it';
