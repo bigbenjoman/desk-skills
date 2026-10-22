@@ -50,7 +50,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), whether a batch may borrow idle machine slots, and how often a worker a reboot or crash killed is resumed in its own session |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)", "Usage pacing headroom (points)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), whether a batch may borrow idle machine slots, how often a worker a reboot or crash killed is resumed in its own session, and how far 7-day usage may run ahead of an even weekly pace before new spawns hold |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -911,6 +911,16 @@ for 15 minutes. The report always carries one `health:` line. A failing required
 new spawn (running workers carry on), is named under `STALLED` with the command that fixes it, and
 goes into `push` as `health:<slug>:<check>`, which is pushed once while it stays failing. Signing
 back in is always the person's; the line says `recovered` on the first pass that sees it pass.
+
+**Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
+newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
+last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,
+read from the event's `resetsAt`. While utilisation is more than §3b "Usage pacing headroom
+(points)" (unset: 5; `off` turns it off) above pace, new spawns hold under `STALLED` and running
+workers carry on; it releases by itself as the week goes on. The report always carries one `usage:`
+line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent data` (no reading,
+or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
+`off` holds every spawn, naming the row, as a malformed budget does.
 
 - **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
   sent make the first pass on the machine, in any repo, the only one to build it, and only that
