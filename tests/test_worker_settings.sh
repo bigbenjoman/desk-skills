@@ -267,6 +267,10 @@ check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ 
 : > "$T/repo/compose.override.yaml"
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
 check "local services: the main checkout's override file is merged in" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/compose.override.yaml up -d --no-recreate --no-deps typesense" && no "$UP typesense"'
+mv "$T/repo/compose.override.yaml" "$T/repo/docker-compose.override.yml"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: an override from the other name family is merged in too" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/docker-compose.override.yml up -d --no-recreate --no-deps typesense"'
+mv "$T/repo/docker-compose.override.yml" "$T/repo/compose.override.yaml"
 printf 'COMPOSE_FILE=compose.yaml:compose.dev.yaml\n' > "$T/repo/.env"
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
 check "local services: a stack picked by COMPOSE_FILE warns, nothing allowed" '[[ "$out" == *"COMPOSE_FILE"* ]] && ! jq -e ".permissions.allow[] | select(test(\"compose\"))" "$T/ws.json" >/dev/null'

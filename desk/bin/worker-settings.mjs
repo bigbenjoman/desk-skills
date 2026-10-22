@@ -505,9 +505,8 @@ if (mode === 'triage') {
   let composeEnv = '';
   try { composeEnv = ROOT ? readFileSync(`${ROOT}/.env`, 'utf8') : ''; } catch { /* no .env */ }
   const stackByEnv = /^\s*(export\s+)?COMPOSE_FILE\s*=/m.test(composeEnv);
-  const base = inRoot(['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']);
-  const override = base && inRoot(base.includes('docker-compose') ? ['docker-compose.override.yaml', 'docker-compose.override.yml']
-    : ['compose.override.yaml', 'compose.override.yml']);
+  const base = inRoot(['compose.yaml', 'compose.yml', 'docker-compose.yml', 'docker-compose.yaml']);
+  const override = base && inRoot(['compose.override.yml', 'compose.override.yaml', 'docker-compose.override.yml', 'docker-compose.override.yaml']);
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
