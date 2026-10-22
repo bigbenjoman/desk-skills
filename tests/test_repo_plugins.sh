@@ -3,6 +3,8 @@
 # Tests desk-setup's repo-plugins.py against a throwaway HOME holding a stub plugin list, a temporary
 # git repo and a stub desk-env: the per-plugin rules, the unjudged listing, the /desk-update offer
 # check, and the refusal to write a tracked settings.local.json.
+# check() evals its condition string, so the variables it reads look unused to shellcheck.
+# shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"
 export HOME="$T/home"
