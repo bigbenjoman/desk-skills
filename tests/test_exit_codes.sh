@@ -110,7 +110,7 @@ q drop T-4
 
 # A worker that exits with no marker and no PR fails in this pass, while T-1 still runs.
 q add T-9; q set T-9 state=running lane=A branch=fix/T-9 session_id=gone
-say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state/logs/T-9.log"
+{ say "AUTOPILOT_STAGE: 3/9 implement"; echo '{"type":"result","is_error":false,"num_turns":1,"result":""}'; } > "$T/state/logs/T-9.log"
 pj
 check "pass: a ticket that fails this pass exits 11 while others run" '[ $rc -eq 11 ] && [ "$(js .status)" = show_person ] && js ".waiting[]" | grep -q "^T-9: exited with no marker"'
 q drop T-9

@@ -142,6 +142,8 @@ for (const line of script) {
     console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: line }] } }));
   }
 }
+// A session that ends on its own closes its log with a result event, as the real CLI does.
+console.log(JSON.stringify({ type: 'result', is_error: false, num_turns: script.length, result: '' }));
 fs.unlinkSync(reg);
 EOF
 # The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, `pr list` finds no PR, and

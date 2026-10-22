@@ -220,7 +220,8 @@ function requeue(q, key) {
     ? `; PR #${t.result.pr} left draft when it was approved: put it back (gh pr ready ${t.result.pr} --repo ${ghRepo()} --undo) before the merge driver merges it`
     : '';
   const moved = rotateRound(key, { answers: true });
-  Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0,
+  // A fresh session, so a killed worker waiting to resume no longer does.
+  Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   save(q);

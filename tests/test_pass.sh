@@ -407,4 +407,84 @@ check "DS-140 AC3 a malformed Check-in times row holds spawns under STALLED, nam
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC3 and the same ticket spawns once the row reads" 'echo "$out" | grep -q "spawned: C-4"'
 
+# DS-145: a worker killed mid-run (its log ends without a result event, no marker, no open PR) is
+# resumed in its own session. The stub spawn-worker records each call and whether it was a resume.
+export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-k.json" DESK_AUTOPILOT_STATE="$T/state-k" AUTOPILOT_PORT_FLOOR=47701
+mkdir -p "$T/state-k/logs"; : > "$T/spawns"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
+EOF
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
+result_event(){ node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 3, total_cost_usd: 0.5, result: "ended" }))'; }
+killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
+  say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-k/logs/$1.log"; touch -t 202601010000 "$T/state-k/logs/$1.log"; }
+spawned_for(){ grep "^$1 " "$T/spawns"; }
+q init k
+killed K-1 sess-k1
+out=$(DESK_BOOT_TIME=2026-06-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-145 AC1 a worker killed by a reboot is resumed in its own session, and the pass says so" 'echo "$out" | grep -q "K-1 resumed after it was killed (1 of 2) — the computer restarted after its last log write" && spawned_for K-1 | grep -q "^K-1 sess-k1 port=47750 resume=yes$"'
+check "DS-145 AC1 it keeps its session, branch and worktree, and counts the resume" '[ "$(field K-1 state)" = "\"running\"" ] && [ "$(field K-1 session_id)" = "\"sess-k1\"" ] && [ "$(field K-1 branch)" = "\"fix/K-1\"" ] && [ "$(field K-1 worktree)" = "\"$T/wt/K-1\"" ] && [ "$(field K-1 resumes)" = 1 ] && [ "$(field K-1 resume)" = null ] && grep -q "4/9 verify" "$T/state-k/logs/K-1.log"'
+# K-1's resumed worker counts as live while K-2 is killed.
+q set K-1 session_id=live-1
+killed K-2 sess-k2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
+q set K-2 state=done
+# K-1's resumed worker is killed again, once it has had both resumes the row allows.
+q set K-1 session_id=sess-k1 resumes=2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-145 AC3 a ticket resumed as often as the row allows is parked, naming the limit and the session" '[ "$(field K-1 state)" = "\"parked\"" ] && field K-1 park.question | grep -q "after 2 resume(s), the most config §3b ..Resume a killed worker (times).. allows (2), so it is not resumed. Session sess-k1" && [ "$(spawned_for K-1 | wc -l | tr -d " ")" = 1 ]'
+# K-4 ended normally: its log's last event is the result.
+killed K-4 sess-k4; result_event >> "$T/state-k/logs/K-4.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC4 a session that ended normally with no marker is marked failed, not resumed" '[ "$(field K-4 state)" = "\"failed\"" ] && echo "$out" | grep -q "K-4: exited with no marker and no open PR on fix/K-4" && ! spawned_for K-4'
+# K-4b ended normally too, and the CLI wrote a command_lifecycle event after its result, as real logs show.
+killed K-4b sess-k4b; { result_event; echo '{"type":"command_lifecycle","state":"completed","session_id":"sess-k4b"}'; } >> "$T/state-k/logs/K-4b.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC4 bookkeeping after the result still reads as a normal end" '[ "$(field K-4b state)" = "\"failed\"" ] && ! spawned_for K-4b'
+# K-9's log was written seconds ago: before a boot a minute from now it was a reboot, so resumed at
+# once; with the computer up it may be a worker the registry has not listed yet, so it is left.
+killed K-9 sess-k9; touch "$T/state-k/logs/K-9.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 a log written in the last 2 minutes with the computer up is left running" '[ "$(field K-9 state)" = "\"running\"" ] && ! spawned_for K-9 && echo "$out" | grep -q "K-9: not in the session registry, but its log was written in the last 2 minutes"'
+out=$(DESK_BOOT_TIME=$(( $(date +%s) + 60 )) node "$B/pass.mjs" 2>&1)
+check "DS-145 AC1 a log written just before a reboot is resumed on the first pass" 'spawned_for K-9 | grep -q "resume=yes" && echo "$out" | grep -q "K-9 resumed after it was killed (1 of 2) — the computer restarted"'
+q set K-9 state=done
+# K-5 is stopped as wedged this pass (its session gone from the registry), then a pass runs again.
+killed K-5 sess-k5; q set K-5 idle_passes=5 "log_bytes=$(wc -c < "$T/state-k/logs/K-5.log" | tr -d ' ')"
+out=$(node "$B/pass.mjs" 2>&1); out=$out$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC5 a worker stopped as wedged is not resumed" '! spawned_for K-5 && ! echo "$out" | grep -q "K-5 resumed"'
+q set K-5 state=done
+# K-6: the row is 0.
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Resume a killed worker (times) | `2` | `0` |\n'; } > "$T/config-k0.md"
+killed K-6 sess-k6
+out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
+check "DS-145 AC6 with the row at 0 a killed worker is marked failed, and the report says resuming is off" '[ "$(field K-6 state)" = "\"failed\"" ] && echo "$out" | grep -q "K-6: killed before it finished .*Resuming is off (config §3b \"Resume a killed worker (times)\" is 0)" && ! spawned_for K-6'
+# K-3 was queued to resume, then the row went to 0 before a slot freed.
+killed K-3 sess-k3; q set K-3 state=triaged resume=pending "resume_why=its process died while the computer stayed up"
+out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
+check "DS-145 AC6 a resume still waiting when the row goes to 0 is marked failed, not resumed" '[ "$(field K-3 state)" = "\"failed\"" ] && ! spawned_for K-3 && echo "$out" | grep -q "K-3: killed before it finished, and could not be resumed: Resuming is off"'
+# K-7 is killed while the batch's one slot is held by a live worker; N-1 is a new ticket behind it.
+q set-batch concurrency=1 concurrency_by=user
+q add L-1; q set L-1 state=running lane=A branch=fix/L-1 session_id=live-1; say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state-k/logs/L-1.log"
+q add N-1; q set N-1 state=triaged lane=A branch=fix/N-1
+killed K-7 sess-k7
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC7 with no free slot the killed worker waits to resume, and the report says so" '[ "$(field K-7 state)" = "\"triaged\"" ] && [ "$(field K-7 resume)" = "\"pending\"" ] && [ "$(field K-7 session_id)" = "\"sess-k7\"" ] && echo "$out" | grep -q "waiting to resume (killed; resumed ahead of new tickets when a slot frees): K-7" && ! spawned_for K-7'
+q set L-1 state=done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC7 when a slot frees it is resumed ahead of a new ticket" 'spawned_for K-7 | grep -q "^K-7 sess-k7 .*resume=yes$" && [ "$(field N-1 state)" = "\"triaged\"" ]'
+say "AUTOPILOT_DONE: pr=77 jira=none" >> "$T/state-k/logs/K-7.log"
+q set N-1 state=done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC8 a resumed worker that prints DONE is recorded done, keeping its resume count" '[ "$(field K-7 state)" = "\"done\"" ] && [ "$(field K-7 result.pr)" = 77 ] && [ "$(field K-7 resumes)" = 1 ]'
+node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) if (t.state !== "done") t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-145 AC8 the batch report lists the resumes" 'echo "$out" | grep -q "^resumed after a kill: .*K-7 1 time(s) (done)"'
+q set K-1 state=triaged resume=pending resume_why=x
+out=$(node "$B/queue.mjs" requeue K-1 2>&1)
+check "DS-145 a requeue clears a pending resume" '[ "$(field K-1 resume)" = null ] && [ "$(field K-1 resume_why)" = null ] && [ "$(field K-1 session_id)" = null ]'
+check "DS-145 the config template has the row, recommended 2" 'grep -qE "^\| Resume a killed worker \(times\) \| \`2\` \| \`TODO\`" "$SRC/desk-config.md"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

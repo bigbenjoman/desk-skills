@@ -50,6 +50,22 @@ export function markersIn(texts) {
 
 export const workerMarkers = (logText) => markersIn(readLog(logText).said);
 
+// A session that ended on its own closes its last turn with a result event; one that was killed (a
+// reboot, a crash, a kill) stops mid-turn. Bookkeeping the CLI writes after a result (a
+// command_lifecycle event, say) is not a turn, so only turn events after the last result count.
+// Lines that are not JSON (stderr) are skipped.
+const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
+export function endedNormally(logText) {
+  const lines = logText.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let d;
+    try { d = JSON.parse(lines[i]); } catch { continue; }
+    if (d?.type === 'result') return true;
+    if (TURN_EVENTS.has(d?.type)) return false;
+  }
+  return false;
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }

@@ -7,11 +7,12 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
-import { workerMarkers } from './harvest.mjs';
+import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
@@ -260,6 +261,37 @@ function logDecisions(t, log, pr) {
   if (entries.length) appendDecisions(entries, STATE);
 }
 
+// A worker killed before it finished (no result event, no marker, no open PR) is resumed in its own
+// session, worktree and branch by the spawn below, up to config §3b "Resume a killed worker (times)"
+// per ticket. Unset is 2; anything but a whole number is said and read as 0, which marks a killed
+// worker failed.
+const RESUME_ROW = E.CONFIG_ROWS['resume-killed'].row;
+const RESUME = (() => {
+  const raw = E.configValue('resume-killed');
+  if (raw == null || E.isNone(raw)) return { limit: raw == null ? 2 : 0, bad: null };
+  if (/^\d+$/.test(String(raw).trim())) return { limit: Number(raw), bad: null };
+  return { limit: 0, bad: `config §3b "${RESUME_ROW}" is "${raw}" — want a whole number; read as 0, so a killed worker is marked failed` };
+})();
+// When this computer last started, for telling a reboot from a crash. DESK_BOOT_TIME (ISO, or epoch
+// seconds) stands in for it in tests.
+const bootMs = (() => {
+  const v = process.env.DESK_BOOT_TIME;
+  if (v) return /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v);
+  return Date.now() - uptime() * 1000;
+})();
+const REBOOT = 'the computer restarted after its last log write';
+const killedBy = (log) => (statSync(log).mtimeMs < bootMs ? REBOOT : 'its process died while the computer stayed up');
+// Where a killed worker's resume stops: off, or this ticket has had as many as the row allows.
+const resumeRefusal = (t, why) => {
+  const n = t.resumes ?? 0;
+  if (RESUME.limit <= 0) return { fail: `Resuming is off (${RESUME.bad ?? `config §3b "${RESUME_ROW}" is 0`}), so it is marked failed` };
+  if (n >= RESUME.limit) {
+    return { park: `killed again (${why}) after ${n} resume(s), the most config §3b "${RESUME_ROW}" allows (${RESUME.limit}), so it is not resumed. ` +
+      `Session ${t.session_id}, worktree ${t.worktree}. Requeue it for a fresh worker with queue.mjs requeue ${t.key}` };
+  }
+  return null;
+};
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
   const log = join(STATE, 'logs', `${t.key}.log`);
@@ -285,7 +317,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   // A worker at the 5-hour usage limit (usage-limit.mjs decides; nothing here reads the event). Only
   // a worker that has neither parked nor finished is acted on.
-  const usage = usageLimit(readFileSync(log, 'utf8'));
+  const logText = readFileSync(log, 'utf8');
+  const usage = usageLimit(logText);
   const limit = !park && !done && usage.last?.kind === 'limit' ? usage.last : null;
   if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
     q('set', t.key, `usage_unrecognised=${usage.unrecognised.length}`);
@@ -321,6 +354,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
   // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
   const bytes = statSync(log).size;
+  let wedged = false;
   if (bytes > (t.log_bytes ?? 0)) {
     q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0');
   } else if (pausedOnLimit) {
@@ -335,6 +369,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
         .find((a) => a.sessionId === t.session_id) ?? {}).pid;
       if (pid) sh('kill', [String(pid)], { tolerant: true });
+      wedged = true;
       q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
       report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
     } else if (idle >= 3) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
@@ -424,6 +459,24 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
       else if (ownsSpecs(t)) checkOwned(t, Number(pr));
+    } else if (!wedged && !endedNormally(logText) && t.session_id) {
+      // Killed mid-run: resumed in its own session by the spawn below, ahead of new tickets.
+      const why = killedBy(log);
+      const stop = resumeRefusal(t, why);
+      // A log written in the last two minutes, since this computer started, is a worker the registry
+      // has not caught up with, not a dead one: resuming it would put two processes on one session.
+      if (why !== REBOOT && Date.now() - statSync(log).mtimeMs < 120_000) {
+        report.quiet.push(`${t.key}: not in the session registry, but its log was written in the last 2 minutes — left running, checked again next pass`);
+      } else if (stop?.fail) {
+        q('set', t.key, 'state=failed');
+        report.failed.push(`${t.key}: killed before it finished (${why}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
+      } else if (stop?.park) {
+        q('park', t.key, stop.park);
+        report.parked.push(`${t.key}: ${stop.park}`);
+      } else {
+        q('set', t.key, 'state=triaged', 'resume=pending', `resume_why=${why}`);
+        report.advanced.push(`${t.key} killed before it finished (${why}): queued to resume`);
+      }
     } else {
       q('set', t.key, 'state=failed');
       report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at the 5-hour usage limit (resets ${resetText(limit.resetsAt)})` : ''} — check ${log}`);
@@ -541,7 +594,9 @@ const eligibleBase = all.filter((r) =>
   (r.open_questions ?? 0) === 0 &&
   !collidesWithRunning(r));
 const blockedByDone = eligibleBase.filter(alreadyFinished);
-const eligible = eligibleBase.filter((r) => !alreadyFinished(r));
+// A killed worker waiting to resume goes ahead of every new ticket.
+const toResume = (r) => r.resume === 'pending';
+const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => toResume(b) - toResume(a));
 if (!maySpawn && eligible.length) {
   personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
     (headlessPerm === 'ask' ? ' — confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1' : ' — run /desk-setup to grant it'));
@@ -734,11 +789,82 @@ function otherQueuePorts() {
   }
   return ports;
 }
+// Assign a port nothing else holds. Three things make one unavailable: another ticket in this batch
+// already holds it (a worker's port is unbound until it starts a server, so a bind check alone races),
+// a running worker in another repo's queue holds it (two repos' worker blocks can meet), or something
+// is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
+// spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
+async function freePort(own = null) {
+  const taken = new Set([...Object.values(queue().tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), ...otherQueuePorts()]);
+  if (Number(own?.port) > 0 && !taken.has(Number(own.port)) && !(await E.portInUse(Number(own.port)))) return Number(own.port);
+  let port = E.workerPortFloor();
+  while (taken.has(port) || await E.portInUse(port)) port += 1;
+  return port;
+}
+
+// Prove the generated permissions behave before committing a worker to a ticket: null on a pass,
+// else what failed.
+function preflightFailure(key, wt, workerEnv) {
+  const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
+    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
+  }).out;
+  return /\[preflight\] pass/.test(pre) ? null : pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300);
+}
+const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn refused — ${out.split('\n').slice(-3).join(' ')}`);
+
+// A killed worker resumes in its own session, worktree, branch and log, through spawn-worker.sh and
+// so inside the worker sandbox, with AUTOPILOT_RESUME as its next prompt. Its briefing is the one it
+// was spawned with.
+async function resumeKilled(t) {
+  const n = (t.resumes ?? 0) + 1;
+  // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
+  const fail = (why) => {
+    q('set', t.key, 'state=failed', 'resume=null', 'port=null', 'spawn_failed=true');
+    report.failed.push(`${t.key}: killed before it finished, and could not be resumed: ${why}`);
+  };
+  // The row may have changed while it waited for a slot.
+  const stop = resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  if (stop?.fail) return fail(stop.fail);
+  if (stop?.park) {
+    q('set', t.key, 'resume=null');
+    q('park', t.key, stop.park);
+    report.parked.push(`${t.key}: ${stop.park}`);
+    return undefined;
+  }
+  if (!t.worktree || !existsSync(t.worktree)) return fail(`its worktree ${t.worktree ?? '(none recorded)'} is gone. Requeue it for a fresh worker with queue.mjs requeue ${t.key}`);
+  const model = t.model && t.model !== 'default' ? t.model : '';
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
+  const pre = preflightFailure(t.key, t.worktree, workerEnv);
+  if (pre) return fail(`preflight failed —\n${pre}`);
+  const port = await freePort(t);
+  const briefPath = join(STATE, 'briefings', `${t.key}.md`);
+  const prompt = `Your previous run of this session was killed before it finished (${t.resume_why ?? 'reboot or crash'}). ` +
+    `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
+    'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
+    `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.`;
+  const log = join(STATE, 'logs', `${t.key}.log`);
+  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0',
+    `log_bytes=${existsSync(log) ? statSync(log).size : 0}`);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return fail(refused);
+  report.spawned.push(`${t.key} resumed after it was killed (${n} of ${RESUME.limit}) — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}`);
+  runningKeys.add(t.key);
+}
+
 for (const t of eligible) {
   if (baseHold || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
   attempts += 1;
+  if (toResume(t)) {
+    // eslint-disable-next-line no-await-in-loop
+    await resumeKilled(t);
+    continue;
+  }
   const wt = join(WORKTREES, t.key);
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
@@ -802,28 +928,18 @@ for (const t of eligible) {
     ? `${brief.slice(0, MAX_BRIEF)}\n\n[briefing truncated to stay under the argv limit]`
     : brief);
 
-  // Prove the generated permissions behave before committing a worker to this ticket.
-  const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, 'preflight'], {
-    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
-  }).out;
-  if (!/\[preflight\] pass/.test(pre)) {
+  const pre = preflightFailure(t.key, wt, workerEnv);
+  if (pre) {
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
     q('set', t.key, 'state=failed', 'spawn_failed=true');
-    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}`);
+    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre}`);
     continue;
   }
 
   const sid = E.uuid();
 
-  // Assign a port nothing else holds. Three things make one unavailable: another ticket in this
-  // batch already holds it (a worker's port is unbound until it starts a server, so a bind check
-  // alone races), a running worker in another repo's queue holds it (two repos' worker blocks can
-  // meet), or something is listening on it. The floor is one above the user's own dev port
-  // (E.workerPortFloor, shared with spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides).
-  const taken = new Set([...Object.values(queue().tickets).map((r) => Number(r.port)).filter(Boolean), ...otherQueuePorts()]);
-  let port = E.workerPortFloor();
   // eslint-disable-next-line no-await-in-loop
-  while (taken.has(port) || await E.portInUse(port)) port += 1;
+  const port = await freePort();
 
   // Reset the stall counters: a respawn after a log rotation starts a smaller log than the stored
   // size, and without this the stall killer shoots each fresh worker within a pass or two.
@@ -836,7 +952,9 @@ for (const t of eligible) {
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
-    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null');
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
+    // A fresh session has not been resumed.
+    'resume=null', 'resume_why=null', 'resumes=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();
@@ -846,9 +964,10 @@ for (const t of eligible) {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
-  if (!/\[spawn\] ticket=/.test(spawned.out)) {
+  const refused = spawnRefusal(spawned.out);
+  if (refused) {
     q('set', t.key, 'state=failed', 'session_id=null', 'port=null', 'spawn_failed=true');
-    report.failed.push(`${t.key}: spawn refused — ${spawned.out.split('\n').slice(-3).join(' ')}`);
+    report.failed.push(`${t.key}: ${refused}`);
     continue;
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
@@ -1071,6 +1190,8 @@ const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 
 if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
+const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r));
+if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 
@@ -1113,6 +1234,8 @@ if (idle) {
   lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
   const sc = batchScopeTotals(Object.values(qEnd.tickets));
   lines.push(`scope: ${sc.tickets} of ${sc.checked} checked ticket(s) changed files outside their triaged scope, ${sc.files} file(s) in all (report only)`);
+  const resumed = Object.values(qEnd.tickets).filter((t) => t.resumes > 0);
+  if (resumed.length) lines.push(`resumed after a kill: ${resumed.map((t) => `${t.key} ${t.resumes} time(s) (${t.state})`).join(', ')}`);
   const cost = batchCost(STATE, Object.values(qEnd.tickets));
   if (cost.length) lines.push(costTable(cost));
 }

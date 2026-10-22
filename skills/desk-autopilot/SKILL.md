@@ -50,7 +50,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), and whether a batch may borrow idle machine slots |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), whether a batch may borrow idle machine slots, and how often a worker a reboot or crash killed is resumed in its own session |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -956,8 +956,9 @@ recommendation like any other.
 
 `spawn-worker.sh` takes **`AUTOPILOT_TASK`**: a prompt for a *fresh* worker that replaces the default
 "work the ticket with desk-ticket" instruction. `$TICKET`, `$WT` and `$PORT` are substituted into
-it, so one task string serves the whole batch. `AUTOPILOT_RESUME` takes precedence, but it does not
-work through `pass.mjs`: see `references/orchestrator-recovery.md`. Set `AUTOPILOT_TASK` once in
+it, so one task string serves the whole batch. `AUTOPILOT_RESUME` takes precedence; `pass.mjs` sets
+it only to resume a worker a reboot or crash killed, and setting it yourself does not work: see
+`references/orchestrator-recovery.md`. Set `AUTOPILOT_TASK` once in
 `pass.mjs`'s environment and every worker gets it; the worker contract's section 0 says a task
 overrides the ticket-implementation stages.
 
