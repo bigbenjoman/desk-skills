@@ -670,7 +670,9 @@ python3 $H "${REPO_RULES[@]}" automode "${TMPDIR:-/tmp}/desk-automode-plan-$SLUG
    repo's entries from the user settings and leaves other repos' alone. An entry it did not write is
    printed `yours` and never touched; an `unscoped` line names an environment entry that mentions
    this repo but applies in every repo: offer to scope it. Exit 2 with `could not be read` means the
-   user settings file is unreadable and nothing was written: say so and stop this step.
+   user settings file is unreadable and nothing was written: say so and stop this step. In a later
+   `remove`, the same file unreadable prints `FAILED autoMode.allow …` and exits 1: the permission
+   rules were still revoked, the auto-mode entries were not, and stay recorded for the next `remove`.
 
 Existing worktrees you open yourself do not see the file; offer to copy it into the ones
 `git worktree list` shows (backing up any that exist). A later `remove` updates those copies too,

@@ -70,7 +70,8 @@ entry the ledger did not record is never changed. Re-running it with a changed p
 whose text changed and drops one whose condition no longer holds. A `scope_environment` entry
 found verbatim in autoMode.environment is prefixed "In <repo> only: ". Creating autoMode.allow
 starts it with "$defaults", so the built-in rules stay. An unreadable --user-settings stops it
-with nothing written (exit 2).
+with nothing written (exit 2); in `remove` it is named FAILED, its entries stay recorded for a
+later remove, the permission revoke still runs, and `remove` exits 1.
 """
 
 import datetime
@@ -261,7 +262,7 @@ class State:
         self.ledger.setdefault("rules", [])          # [{list, rule, rows, added}]
         self.ledger.setdefault("removed_guards", [])  # [{list, rule, rows, guard_rows, removed}]
         self.ledger.setdefault("created", [])         # keys setup created: "file", "permissions", "permissions.allow"
-        self.ledger.setdefault("automode", [])        # [{repo, kind, list, text, rows, added}] in --user-settings
+        self.ledger.setdefault("automode", [])        # [{repo, kind, text, rows, added}] in --user-settings' autoMode.allow
         self.ledger.setdefault("automode_created", [])  # "autoMode", "autoMode.allow" setup created there
         self.log = []
         self.before_ledger = json.dumps(self.ledger, sort_keys=True)
@@ -523,7 +524,7 @@ def cmd_baseline(st, plan_path, prefixes, check):
 
 
 def cmd_remove(st, rows, everything, user_settings):
-    us = revoke_automode(st, user_settings, rows, everything)
+    us, auto_failed = revoke_automode(st, user_settings, rows, everything)
     revoked = set(rows)
     hit = (lambda owners: True) if everything else (lambda owners: bool(revoked & set(owners)))
     missing = not st.settings_existed
@@ -566,7 +567,7 @@ def cmd_remove(st, rows, everything, user_settings):
     if us:
         us.save(st, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     st.save()
-    return sync_copies(st, before)
+    return sync_copies(st, before) or auto_failed
 
 
 def cmd_list(st, markdown):
@@ -642,24 +643,31 @@ def automode_entries(plan):
     return out
 
 
-class UserSettings:
-    """--user-settings, read only when an autoMode entry is written or revoked."""
+class Unreadable(Exception):
+    pass
 
-    def __init__(self, path):
+
+class UserSettings:
+    """--user-settings, read only when an autoMode entry is written or revoked. When it is the
+    same file as --settings, it works on State's copy and leaves the write to State.save."""
+
+    def __init__(self, path, st=None):
         self.path, self.existed = path, os.path.exists(path)
-        self.data = {}
-        if self.existed:
+        self.shared = st is not None and hasattr(st, "settings") and \
+            os.path.realpath(path) == os.path.realpath(st.settings_path)
+        self.data = st.settings if self.shared else {}
+        if self.existed and not self.shared:
             try:
                 with open(path) as f:
                     raw = f.read()
                 self.data = json.loads(raw) if raw.strip() else {}
             except Exception as e:  # noqa: BLE001
-                die(f"{path} could not be read ({e}); no auto-mode entry was written or removed")
+                raise Unreadable(f"{path} could not be read ({e})") from None
         am = self.data.get("autoMode") if isinstance(self.data, dict) else None
         if not isinstance(self.data, dict) or (am is not None and (
                 not isinstance(am, dict) or any(not isinstance(am.get(k, []), list)
                                                 for k in ("allow", "environment")))):
-            die(f"{path} could not be read: its autoMode block is malformed; nothing changed")
+            raise Unreadable(f"{path} could not be read: its autoMode block is malformed")
         self.before = json.dumps(self.data, sort_keys=True)
 
     def allow(self, st, create):
@@ -688,7 +696,7 @@ class UserSettings:
         if isinstance(am, dict) and "autoMode" in created and am == {}:
             del self.data["autoMode"]
             created.remove("autoMode")
-        if json.dumps(self.data, sort_keys=True) == self.before:
+        if self.shared or json.dumps(self.data, sort_keys=True) == self.before:
             return
         b = backup(self.path, stamp)
         if b:
@@ -737,7 +745,10 @@ def drop_automode(st, us, rec):
 def cmd_automode(st, user_settings, plan_path):
     plan = read_automode_plan(plan_path)
     repo, want = plan["repo"], automode_entries(plan)
-    us = UserSettings(user_settings)
+    try:
+        us = UserSettings(user_settings)
+    except Unreadable as e:
+        die(f"{e}; no auto-mode entry was written")
     today = datetime.date.today().isoformat()
     for kind in ("merge", "migrate"):
         rec = next((r for r in st.ledger["automode"] if r["repo"] == repo and r["kind"] == kind), None)
@@ -759,8 +770,8 @@ def cmd_automode(st, user_settings, plan_path):
                           "never removed)")
         else:
             us.allow(st, create=True).append(text)
-            st.ledger["automode"].append({"repo": repo, "kind": kind, "list": "allow", "text": text,
-                                          "rows": rows, "added": today})
+            st.ledger["automode"].append({"repo": repo, "kind": kind, "text": text, "rows": rows,
+                                          "added": today})
             st.log.append(f"NEW      autoMode.allow [{repo}] {kind}  ({', '.join(rows)}): {text}")
     env = (us.data.get("autoMode") or {}).get("environment") or []
     for text in plan.get("scope_environment", []):
@@ -782,15 +793,22 @@ def cmd_automode(st, user_settings, plan_path):
 
 
 def revoke_automode(st, user_settings, rows, everything):
-    """`remove`'s part for autoMode entries this ledger recorded."""
+    """`remove`'s part for autoMode entries this ledger recorded: (UserSettings or None, failed).
+    An unreadable file keeps the records for a later remove; the permission revoke still runs."""
     revoked = set(rows)
     hits = [r for r in st.ledger["automode"] if everything or revoked & set(r["rows"])]
     if not hits:
-        return None
-    us = UserSettings(user_settings)
+        return None, False
+    try:
+        us = UserSettings(user_settings, st)
+    except Unreadable as e:
+        for rec in hits:
+            st.log.append(f"FAILED   autoMode.allow [{rec['repo']}] {rec['kind']}  ({e}; still in place and "
+                          "recorded: fix the file and remove again)")
+        return None, True
     for rec in hits:
         drop_automode(st, us, rec)
-    return us
+    return us, False
 
 
 def main(argv):

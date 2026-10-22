@@ -283,4 +283,15 @@ run --ledger "$T/am-fresh-ledger.json" --user-settings "$F" automode "$T/am-vp.j
 check "a fresh autoMode.allow starts with \$defaults" '[ $rc -eq 0 ] && [ "$(jq -r ".autoMode.allow[0]" "$F")" = "\$defaults" ]'
 run --ledger "$T/am-fresh-ledger.json" --user-settings "$F" --settings "$T/am-none.json" remove pr-merge-green
 check "  … and revoking its only entry drops the block setup created" '[ $rc -eq 0 ] && [ "$(jq -c . "$F")" = "{}" ]'
+SF="$T/am-same.json"; printf '{"permissions":{"deny":["Bash(rm -rf *)"]}}\n' > "$SF"
+run --ledger "$T/am-same-ledger.json" --settings "$SF" --user-settings "$SF" automode "$T/am-vp.json"
+run --ledger "$T/am-same-ledger.json" --settings "$SF" --user-settings "$SF" remove pr-merge-green
+check "remove with --settings and --user-settings on one file keeps the revoke" '[ $rc -eq 0 ] && [[ "$out" == *"REMOVED  autoMode.allow"* ]] && ! grep -q "gh pr merge" "$SF" && grep -qF "rm -rf" "$SF"'
+mkrepo amr; printf '.claude/settings.local.json\n' > "$T/amr/.gitignore"
+run --ledger "$T/amr-ledger.json" --settings "$T/amr/.claude/settings.local.json" add "$T/allow.json"
+BADU="$T/am-badu.json"; printf '{}\n' > "$BADU"
+run --ledger "$T/amr-ledger.json" --user-settings "$BADU" automode "$T/am-vp.json"
+printf '{"autoMode": {' > "$BADU"
+run --ledger "$T/amr-ledger.json" --user-settings "$BADU" --settings "$T/amr/.claude/settings.local.json" remove pr-merge-green pr-ready
+check "an unreadable user settings file in remove: named as failed, exit 1, permission rules still revoked" '[ $rc -eq 1 ] && [[ "$out" == *"FAILED   autoMode.allow [bigbenjoman/voicepa] merge"* ]] && [[ "$out" == *"REMOVED  allow Bash(gh pr ready *)"* ]] && ! grep -q "gh pr ready" "$T/amr/.claude/settings.local.json" && jq -e ".automode[] | select(.kind == \"merge\")" "$T/amr-ledger.json" >/dev/null'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]
