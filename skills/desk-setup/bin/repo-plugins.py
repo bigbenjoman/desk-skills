@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Which of the user's plugins a repo needs, and switching the rest off for that repo only.
 
-  repo-plugins.py --root <repo> suggest             JSON: each repo-specific plugin enabled at user
-                                                    level, its skill count, keep/off and the evidence
+  repo-plugins.py --root <repo> suggest             JSON: each plugin enabled at user level, its skill
+                                                    count, keep/off/unjudged and the evidence
+  repo-plugins.py --root <repo> offer               exit 0 and "offer: <n> plugins, <m> skills (<ids>)"
+                                                    when settings.local.json has no plugin entries and
+                                                    some plugin is suggested off; exit 1 otherwise
   repo-plugins.py --root <repo> apply --off a,b [--on c,d]
                                                     write enabledPlugins false (or remove our false, for
                                                     --on) in <repo>/.claude/settings.local.json
@@ -11,9 +14,9 @@ Why: Claude Code lists every enabled plugin's skills on every turn, and plugin s
 listed by name only (skillOverrides does not reach them), so a repo that never touches Stripe
 still pays for Stripe's skills, and look-alike skills (40 vercel:*) are the main cause of wrong
 picks in large skill libraries. Settings precedence is user < project < local, so a false here
-wins over the user-level true. Only plugins whose relevance a repo's own files can show are
-suggested; general ones (codex for desk-review, playwright for screenshots, review and process
-plugins) are never touched here.
+wins over the user-level true. A plugin is suggested off when a repo's own files show no need for
+it (SIGNALS), or when no repo needs it (ALWAYS_OFF); the general ones desk uses everywhere (GENERAL)
+are kept, and any other plugin is listed as unjudged, never suggested off.
 
 Like harness-rules.py, it writes only a settings.local.json that git ignores in this repo (exit 2
 otherwise, nothing written), and backs the file up first. Exit 0 done, 2 refused or unreadable.
@@ -83,6 +86,18 @@ SIGNALS = {
     "privacy-legal": ("handles privacy compliance work", lambda root: tracked_text(root, r"\b(DPIA|data processing agreement|DSAR)\b")),
     "atlassian": ("tracks work in Jira", lambda root: desk_tracker() == "jira"),
     "typesafe": ("calls TypeSafe / Jev", lambda root: manifests_mention(root, "typesafe") or manifests_mention(root, "@typesafe-ai")),
+    "legal": ("holds contracts to review", lambda root: contract_files(root)),
+}
+
+# Suggested off wherever it is installed: no repo's files can show a need for it.
+ALWAYS_OFF = {
+    "everything-claude-code": "a general skill collection that repeats what desk and the other plugins already do",
+}
+
+# Used by desk in every repo, so kept without a rule.
+GENERAL = {
+    "codex": "desk-review refutes findings with it",
+    "playwright": "desk takes screenshots with it",
 }
 
 
@@ -104,6 +119,26 @@ def user_plugins():
         n = sum(1 for d in os.listdir(skills) if os.path.isfile(os.path.join(skills, d, "SKILL.md"))) if os.path.isdir(skills) else 0
         out[pid] = n
     return out
+
+
+def suggest(root, local):
+    rows = []
+    for pid, n in sorted(user_plugins().items()):
+        name = pid.split("@")[0]
+        if name in SIGNALS:
+            why, test = SIGNALS[name]
+            seen = bool(test(root))
+            verdict = "keep" if seen else "off"
+            evidence = f"this repo {why}" if seen else f"nothing shows this repo {why}"
+        elif name in ALWAYS_OFF:
+            verdict, evidence = "off", ALWAYS_OFF[name]
+        elif name in GENERAL:
+            verdict, evidence = "keep", GENERAL[name]
+        else:
+            verdict, evidence = "unjudged", "no rule for this plugin; the user decides"
+        rows.append({"plugin": pid, "skills": n, "suggest": verdict, "evidence": evidence,
+                     "now": "off here" if local.get(pid) is False else "on"})
+    return rows
 
 
 def local_settings(root):
@@ -146,17 +181,19 @@ def main(argv):
     local = current.get("enabledPlugins") or {}
 
     if cmd[:1] == ["suggest"]:
-        rows = []
-        for pid, n in sorted(user_plugins().items()):
-            name = pid.split("@")[0]
-            if name not in SIGNALS:
-                continue
-            why, test = SIGNALS[name]
-            seen = bool(test(root))
-            rows.append({"plugin": pid, "skills": n, "suggest": "keep" if seen else "off",
-                         "evidence": f"this repo {why}" if seen else f"nothing shows this repo {why}",
-                         "now": "off here" if local.get(pid) is False else "on"})
-        print(json.dumps(rows, indent=1))
+        print(json.dumps(suggest(root, local), indent=1))
+        return 0
+
+    if cmd[:1] == ["offer"]:
+        if local:
+            print("no offer: this repo's settings.local.json already has plugin entries")
+            return 1
+        off = [r for r in suggest(root, local) if r["suggest"] == "off"]
+        if not off:
+            print("no offer: nothing to switch off here")
+            return 1
+        print(f"offer: {len(off)} plugins, {sum(r['skills'] for r in off)} skills "
+              f"({', '.join(r['plugin'] for r in off)})")
         return 0
 
     if cmd[:1] == ["apply"]:

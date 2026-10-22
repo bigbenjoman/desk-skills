@@ -92,9 +92,14 @@ jq -e '[.hooks.UserPromptSubmit, .hooks.PostToolUse, .hooks.Stop, .hooks.Session
   | all([.[]?.hooks[]?.command] | any(test("desk-handoff")))' ~/.claude/settings.json
                                                     # false: no context handoff on one or more events
 eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a configured repo
-python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" suggest
-                                                    # only when EXISTS=yes: rows with suggest off, now on
+python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" offer
+                                                    # only when EXISTS=yes: exit 0 prints the PLUGINS line's
+                                                    # counts; exit 1, no plugin choice to offer here
 ```
+
+The plugin pass is offered only where no plugin choice was ever made: `offer` exits 1 once this
+repo's `.claude/settings.local.json` has any `enabledPlugins` entry, so a repo the user has already
+been through is not asked again.
 
 `skills-upstream plugins` compares the installed plugin folder with the marketplace's copy (or the
 version the marketplace pins) and lists what changed, e.g. `+LICENSE`, `~skills/x/SKILL.md`. Say
@@ -137,7 +142,7 @@ SETTING       no context handoff: past §2 Handoff at context % the session woul
               and the session after /clear or a compaction would pick it up
 SETTING       skipped by install.sh: <question>
               apply: <the apply line install.sh printed under it, verbatim>
-PLUGINS       <repo>: <n> plugins this repo does not need (<ids>), <m> skills listed every turn
+PLUGINS       <repo>: no plugin choice made here; switching off <n> plugins (<ids>) removes <m> skills from every turn
 ```
 
 One `skipped by install.sh` row per `SKIP` line in §1's block, none dropped. Where a skipped prompt is
