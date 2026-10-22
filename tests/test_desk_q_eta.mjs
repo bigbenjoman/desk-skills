@@ -460,7 +460,6 @@ t('DS-165 fix: with workers set to 0, children not queued leave the epic undated
 // ---- a batch with nothing left for autopilot is not paused, and a paused batch keeps its tickets
 const hist12 = range(12, (i) => ['M', 2 + (i % 5)]);
 // The Epics view is on the interactive screen only: open the repo, press 4, read the frame.
-const { PassThrough } = await import('node:stream');
 async function epicsView(slug) {
   const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns: 200, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
