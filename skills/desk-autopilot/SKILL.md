@@ -251,7 +251,9 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 
 On 11 from `pass.mjs`, put `waiting` and `parked` in front of the person, then keep the loop going
 unless `status` is `idle` or `error`. Push only `push`, and only the entries the last notification
-did not already carry (Stage 6b): the rest waits for the check-in.
+did not already carry (Stage 6b): the rest waits for the check-in. An `idle` batch with tickets still
+parked, and no supervisor running, is not finished with: wake at each check-in time and run
+`node ~/.claude/desk/bin/digest.mjs checkin`, pushing its `push` the same way, until nothing is parked.
 
 Run `plan-batch.mjs --json` too. It exits 0 when every ticket can start with nothing to settle, and
 11 when something needs the person before Stage 3, or on a refusal. Its stdout is one object:
@@ -903,11 +905,13 @@ HH:MM times holds spawns under `STALLED`, naming the row.
 - **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
   sent make the first pass on the machine, in any repo, the only one to build it, and only that
   pass's `push` carries it. A slot no pass saw (nothing running at 08:00) is covered by the first
-  pass after it, back to the last digest sent.
+  pass after it, back to the last digest sent. An idle batch runs no pass, so the supervisor's tick,
+  or the loop (`digest.mjs checkin`), runs the check-in on its own while its tickets stay parked.
 - **What it lists.** Per repo: every open question (each parked ticket's question, a hold is not
   one, and each triaged ticket's unknowns) and every call taken since the last digest. A question
   still open at the next check-in is listed again, and the batch carries on meanwhile with every
-  ticket it does not block. With nothing to list, the page says so and nothing is pushed.
+  ticket it does not block. It is pushed only when something is new (a question the last page did
+  not list, or a call taken since); otherwise the page is written and nothing is pushed.
 - **Where.** `~/.desk-autopilot/digest/<date>T<HHMM>.md`, named in the push.
 - **Answering from it.** Each line carries its command. An answer goes through that repo's
   `answer.mjs`, exactly as Stage 5, and the page marks it answered:

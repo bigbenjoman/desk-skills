@@ -5,12 +5,13 @@
 // first pass past a slot the only one to build it, and a slot no pass saw is covered by the next one.
 // Only a park reading `PRODUCTION BROKEN: …` is pushed between check-ins (urgentParks).
 //
+//   digest.mjs checkin                                    this repo's check-in now, as JSON (the supervisor's idle ticks)
 //   digest.mjs answer <slug> <TICKET> "<answer>"          record it through that repo's answer.mjs
 //   digest.mjs override <slug> <decision-id> "<choice>"   record an override in that repo's decision log
 //
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
 // recorded, 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
@@ -18,11 +19,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
+import { takeBorrowLock } from './borrow.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
 export const digestDir = () => E.expandHome(process.env.DESK_DIGEST_DIR ?? join(E.HOME, '.desk-autopilot', 'digest'));
 const stateRoot = () => join(E.HOME, '.desk-autopilot');
+
+// The row as read from config: every backtick span, since `08:00`, `17:00` is two of them.
+export const checkinRow = () => (E.configValues('checkin-times') ?? []).join(' ') || null;
 
 // The §3b row as sorted HH:MM strings: {ok, times} or {ok: false, why}. Unset is the default.
 export function checkinTimes(raw) {
@@ -136,40 +141,25 @@ export function renderPage({ slot, since, groups, bin = E.binDir() }) {
   return lines.join('\n');
 }
 
-// A machine-wide lock for building a digest, never waited on: a holder that is alive is building
-// the same slot, so the caller leaves it to them. A holder that died is cleared.
-export function takeLock(dir, pid = process.pid) {
-  const path = join(dir, 'digest.lock.d');
-  const holder = () => { try { return Number(readFileSync(join(path, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-  const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-  mkdirSync(dir, { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      mkdirSync(path);
-      writeFileSync(join(path, 'pid'), String(pid));
-      return { ok: true, release: () => { if (holder() === pid) rmSync(path, { recursive: true, force: true }); } };
-    } catch (e) { if (e.code !== 'EEXIST') return { ok: false, why: `${path} cannot be made (${e.code ?? e.message})` }; }
-    const p = holder();
-    let old = false;
-    try { old = Date.now() - statSync(path).mtimeMs > 60000; } catch { continue; }
-    if (p ? alive(p) : !old) return { ok: false, why: `pid ${p ?? '?'} is building the digest` };
-    rmSync(path, { recursive: true, force: true });
-  }
-  return { ok: false, why: 'the digest lock could not be taken' };
-}
-
-// Builds the digest for the latest slot if no digest has covered it yet. Returns {status, ...}:
-// `not_due` (the latest slot already has one), `busy` (another pass holds the lock), or `sent` with
-// the page, the counts and `push` (the notification text, or null when there is nothing to answer).
-export function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), pid = process.pid } = {}) {
+// Builds the digest for the latest slot if no digest has covered it yet, under a machine-wide lock
+// never waited on: a live holder is building the same slot. Returns {status, push, ...}: `sent` with
+// the page and counts, `not_due` (the latest slot already has one) or `busy`. `push` is {key, text},
+// or null when nothing is new since the last digest: a question the last page did not list, or a
+// decision taken since. The repo that built the latest digest keeps getting its push until the next
+// slot, so a notification that failed goes out on a later pass; consumers send each key once.
+export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid } = {}) {
   const slot = latestSlot(times, now);
-  if (!slot) return { status: 'not_due' };
-  const lock = takeLock(dir, pid);
-  if (!lock.ok) return { status: 'busy', why: lock.why };
+  if (!slot) return { status: 'not_due', push: null };
+  mkdirSync(dir, { recursive: true });
+  const lock = await takeBorrowLock({ dir, name: 'digest.lock.d', waitMs: 0, pid });
+  if (!lock.ok) return { status: 'busy', why: lock.why, push: null };
   try {
     // Read under the lock: a pass that took it a moment earlier may have just sent this slot.
     const last = readJson(lastFile(dir), null);
-    if (last?.slot && last.slot >= slot.id) return { status: 'not_due', slot: slot.id };
+    if (last?.slot && last.slot >= slot.id) {
+      const carried = last.slot === slot.id && self && last.by === self ? last.push ?? null : null;
+      return { status: 'not_due', slot: slot.id, push: carried };
+    }
     const answered = readJson(answeredFile(dir), {});
     const since = last?.through ?? null;
     const groups = list.map((r) => {
@@ -182,9 +172,13 @@ export function checkin({ times, now = new Date(), dir = digestDir(), list = rep
     writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
+    const listed = groups.flatMap((g) => g.questions.map((q) => questionKey(g.slug, q.ticket, q.text)));
+    const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const repoCount = groups.filter((g) => g.questions.length || g.decisions.length).length;
-    writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd }, null, 2)}\n`);
-    const push = nq || nd ? `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s) across ${repoCount} repo(s). ${page}` : null;
+    const push = nd || fresh.length
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s) across ${repoCount} repo(s). ${page}` }
+      : null;
+    writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, decisions: nd, push };
   } finally { lock.release(); }
 }
@@ -270,6 +264,13 @@ if (isMain) {
   const [cmd, slug, target, ...rest] = process.argv.slice(2);
   const text = rest.join(' ').trim();
   const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
+  if (cmd === 'checkin') {
+    const times = checkinTimes(checkinRow());
+    if (!times.ok) refuse(times.why);
+    const self = E.repoSlug();
+    console.log(JSON.stringify(await checkin({ times: times.times, self, list: repos({ self: { slug: self, state: E.stateDir(), queue: E.queueFile() } }) })));
+    process.exit(0);
+  }
   if (!['answer', 'override'].includes(cmd) || !slug || !target || !text) {
     refuse('usage: digest.mjs answer <slug> <TICKET> "<answer>" | digest.mjs override <slug> <decision-id> "<choice>"');
   }

@@ -213,7 +213,7 @@ function interval() {
     }
     return;
   }
-  if (s.idle && s.idle === fingerprint(q)) return;
+  if (s.idle && s.idle === fingerprint(q)) { idleCheckin(state, s, log, stamp); return; }
   const holder = orchestratorHolder(state) ?? supervisorHolder(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`]); return; }
   try { writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), { flag: 'wx' }); }
@@ -224,6 +224,21 @@ function interval() {
   }
   try { runPass(state, q, s, log, stamp); }
   finally { try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ } }
+}
+
+// An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
+// the check-in alone and pushes what it returns, once per key, as a pass's push would be.
+function idleCheckin(state, s, log, stamp) {
+  const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+  let d;
+  try { d = JSON.parse(String(r.stdout ?? '').trim()); } catch {
+    log([`== ${stamp()} idle check-in: failed (${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-2).join(' / ')})`]);
+    return;
+  }
+  if (!d.push?.key || s.notified.includes(d.push.key)) return;
+  const err = notify(`desk: ${E.repoSlug()}`, d.push.text);
+  log([`== ${stamp()} idle check-in: ${err ? `notification failed (${err}) for ${d.push.key}; the next tick tries again` : `notification sent for ${d.push.key}`}`]);
+  if (!err) writeState(state, { ...s, notified: [...s.notified, d.push.key] });
 }
 
 function runPass(state, q, s, log, stamp) {

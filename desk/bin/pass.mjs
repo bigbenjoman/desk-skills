@@ -12,8 +12,8 @@ import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_A
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
-import { parseDecision, decisionEntry, appendDecisions, decisionsPath } from './decisions.mjs';
-import { checkinTimes, checkin, urgentParks, repos as digestRepos } from './digest.mjs';
+import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
+import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
@@ -471,7 +471,8 @@ try { models = E.workerModels(); } catch (e) { modelsBad = e.message; }
 if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 // §3b "Check-in times": when the digest goes out. A row that does not read holds spawns, since the
 // questions a new worker parks would have no check-in to reach.
-const CHECKIN = checkinTimes(E.configValue('checkin-times'));
+let CHECKIN;
+try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
 if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
@@ -1052,13 +1053,9 @@ function reportOverrides() {
   const seenFile = join(STATE, 'overrides-reported.json');
   let seen = [];
   try { seen = JSON.parse(readFileSync(seenFile, 'utf8')); } catch { /* none reported yet */ }
-  let lines = [];
-  try { lines = readFileSync(decisionsPath(STATE), 'utf8').split('\n'); } catch { return; }
   const fresh = [];
-  for (const line of lines) {
-    let e;
-    try { e = JSON.parse(line); } catch { continue; }
-    if (!e?.override_of || seen.includes(e.id)) continue;
+  for (const e of readDecisions(STATE).overrides) {
+    if (seen.includes(e.id)) continue;
     fresh.push(e.id);
     report.waiting.push(`${e.ticket}: decision overridden — "${e.question}" is now "${e.chose}" (was "${e.was}"), by ${e.by} at ${e.at}`);
   }
@@ -1100,11 +1097,9 @@ else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run
 const SLUG = E.repoSlug();
 const push = urgentParks(parked, SLUG);
 if (CHECKIN.ok && !DRY) {
-  const d = checkin({ times: CHECKIN.times, list: digestRepos({ self: { slug: SLUG, state: STATE, queue: QUEUE_FILE } }) });
-  if (d.status === 'sent') {
-    lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing to answer: no push)'}`);
-    if (d.push) push.unshift({ key: `digest:${d.slot}`, text: d.push });
-  }
+  const d = await checkin({ times: CHECKIN.times, self: SLUG, list: digestRepos({ self: { slug: SLUG, state: STATE, queue: QUEUE_FILE } }) });
+  if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
+  if (d.push) push.unshift(d.push);
 }
 for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');

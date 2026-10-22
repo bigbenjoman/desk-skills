@@ -397,11 +397,14 @@ check "DS-140 AC8 and only once" '! echo "$out" | grep -q "decision overridden"'
 rm "$T/digest/last.json"
 out=$(node "$B/pass.mjs" --json 2>&1)
 check "DS-140 AC1 a pass past a slot builds the digest and pushes it" 'pushes | grep -q "^digest:20" && ls "$T/digest"/*.md >/dev/null 2>&1'
+first=$(pushes); pages=$(ls "$T/digest"/*.md | wc -l)
 out=$(node "$B/pass.mjs" --json 2>&1)
-check "DS-140 AC4 the next pass does not send that slot again" '! pushes | grep -q digest:'
+check "DS-140 AC4 the next pass builds no second page, and carries the same key for a failed notification to retry" '[ "$(ls "$T/digest"/*.md | wc -l)" = "$pages" ] && [ "$(pushes | grep -o "digest:[^ ]*")" = "$(echo "$first" | grep -o "digest:[^ ]*")" ]'
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Check-in times | `08:00, 17:00` | `8am and 5pm` |\n'; } > "$T/config-c.md"
-q add C-4
+q add C-4; q set C-4 state=triaged lane=A branch=fix/C-4
 out=$(DESK_CONFIG="$T/config-c.md" node "$B/pass.mjs" 2>&1)
 check "DS-140 AC3 a malformed Check-in times row holds spawns under STALLED, naming the row" 'echo "$out" | awk "/^STALLED/,0" | grep -qF "config §3b \"Check-in times\" is \"8am and 5pm\"" && ! echo "$out" | grep -q "spawned: C-4"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-140 AC3 and the same ticket spawns once the row reads" 'echo "$out" | grep -q "spawned: C-4"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

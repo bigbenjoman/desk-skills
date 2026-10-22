@@ -53,6 +53,13 @@ const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
 console.log(JSON.stringify(v));
 process.exitCode = v.code;
 EOF
+# The check-in an idle tick runs: whatever $T/checkin.json holds.
+cat > "$T/bin/digest.mjs" <<EOF
+import { readFileSync } from 'node:fs';
+let d = { status: 'not_due', push: null };
+try { d = JSON.parse(readFileSync('$T/checkin.json', 'utf8')); } catch {}
+console.log(JSON.stringify(d));
+EOF
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
 cat > "$T/fakes/launchctl" <<EOF
 #!/bin/sh
@@ -203,6 +210,11 @@ check "DS-140: a finished batch pushes only its push entries" '[ "$(count "$T/no
 out=$(tick); out=$(tick)
 check "AC9: no pass once the batch is idle" '[ "$(count "$T/pass.calls")" = 2 ]'
 check "AC9: no merge driver once the batch is idle" '[ "$(started)" = "$n" ]'
+notified=$(count "$T/notify.calls")
+echo '{"status":"sent","push":{"key":"digest:2026-10-23T17:00","text":"Check-in 17:00: 1 question(s)"}}' > "$T/checkin.json"
+out=$(tick); out=$(tick)
+check "DS-140: an idle batch still pushes the check-in, once, and runs no pass" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|Check-in 17:00: 1 question(s)|$" && [ "$(count "$T/pass.calls")" = 2 ]'
+rm -f "$T/checkin.json"
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"triaged"}}'

@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkinTimes, latestSlot, checkin, takeLock, answer, override, urgentParks, readDecisions, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { takeBorrowLock } from '../desk/bin/borrow.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
@@ -40,9 +41,9 @@ const C = repo('acme__c', {}, [dec('d1', 'C-1', at('2026-10-22', '09:00').toISOS
 const list = [A, B, C];
 const dir = join(root, 'digest');
 
-const r1 = checkin({ times: DEFAULT_TIMES, now: at('2026-10-22', '17:01'), dir, list, bin: BIN });
+const r1 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-22', '17:01'), dir, list, bin: BIN, self: 'acme__a' });
 t('AC1 the first pass past 17:00 sends the digest', r1.status, 'sent');
-t('AC1 the push names the counts', /^Check-in 17:00: 2 question\(s\), 2 decision\(s\) across 3 repo\(s\)\./.test(r1.push), true);
+t('AC1 the push names the counts', /^Check-in 17:00: 2 question\(s\), 2 decision\(s\) across 3 repo\(s\)\./.test(r1.push?.text), true);
 const page = readFileSync(r1.page, 'utf8');
 t('AC1 the page groups by repo', ['## acme__a', '## acme__b', '## acme__c'].every((h) => page.includes(h)), true);
 t('AC1 a parked question is listed', page.includes('`A-1` (parked): which empty-state copy?'), true);
@@ -50,18 +51,21 @@ t('a hold is not a question', page.includes('A-2'), false);
 t('AC1 a triage unknown is listed by its text', page.includes('`B-1` (triage): Which plan tier gets the export?'), true);
 t('AC1 each decision is listed with its override command', page.includes('id `d1`') && page.includes('override acme__c d1'), true);
 
-const r2 = checkin({ times: DEFAULT_TIMES, now: at('2026-10-22', '17:04'), dir, list, bin: BIN });
-t('AC4 a second pass past the same slot sends nothing', r2.status, 'not_due');
+const r2 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-22', '17:04'), dir, list, bin: BIN, self: 'acme__b' });
+t('AC4 a pass in another repo past the same slot sends nothing', `${r2.status} ${r2.push}`, 'not_due null');
+const again = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-22', '17:04'), dir, list, bin: BIN, self: 'acme__a' });
+t('the building repo keeps the same push until the next slot, for a failed notification to retry', again.push?.key, 'digest:2026-10-22T17:00');
 
 // AC4: a lock held by a live process makes the other caller leave the slot to it.
 const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)']);
-const held = takeLock(dir, holder.pid);
+const held = await takeBorrowLock({ dir, name: 'digest.lock.d', waitMs: 0, pid: holder.pid });
 t('the lock is taken', held.ok, true);
-t('AC4 a contended lock leaves the slot to its holder', checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '08:01'), dir, list, bin: BIN }).status, 'busy');
+t('AC4 a contended lock leaves the slot to its holder', (await checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '08:01'), dir, list, bin: BIN })).status, 'busy');
 holder.kill();
 await new Promise((res) => holder.on('exit', res));
-t('a lock whose holder died is cleared', takeLock(dir).ok, true);
-rmSync(join(dir, 'digest.lock.d'), { recursive: true, force: true });
+const freed = await takeBorrowLock({ dir, name: 'digest.lock.d', waitMs: 0 });
+t('a lock whose holder died is cleared', freed.ok, true);
+freed.release();
 
 // AC7: answering from the digest goes through that repo's answer.mjs and marks the page.
 process.env.DESK_HOME = join(BIN, '..');
@@ -82,18 +86,21 @@ t('an unknown decision is refused', override({ slug: 'acme__c', id: 'zz', choice
 // AC5 and AC11: nothing ran at 08:00; the first pass after covers everything since the last digest,
 // and B-1's question, still open, is listed again.
 appendFileSync(join(C.state, 'decisions.jsonl'), `${JSON.stringify(dec('d3', 'C-3', at('2026-10-22', '17:30').toISOString()))}\n`);
-const r3 = checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '10:30'), dir, list, bin: BIN });
+const r3 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '10:30'), dir, list, bin: BIN, self: 'acme__a' });
 const page3 = readFileSync(r3.page, 'utf8');
 t('AC5 the missed 08:00 slot is sent by the first pass after it', `${r3.status} ${r3.slot}`, 'sent 2026-10-23T08:00');
 t('AC5 it covers the decision taken since the last digest, and no earlier one', page3.includes('id `d3`') && !page3.includes('id `d1`'), true);
 t('AC11 an unanswered question is listed again at the next check-in', page3.includes('`B-1` (triage)'), true);
 t('AC7 an answered question is not', page3.includes('`A-1`'), false);
 
-// AC6: nothing new since the last digest.
-const empty = [repo('acme__e', {})];
-const r4 = checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '17:05'), dir, list: empty, bin: BIN });
+t('a decision taken since is new, so the missed slot pushes', r3.push?.key, 'digest:2026-10-23T08:00');
+
+// AC6: nothing new since the last digest. B-1 is still open and listed, but the last page listed it.
+const r4 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-23', '17:05'), dir, list, bin: BIN, self: 'acme__a' });
 t('AC6 nothing new: no push', `${r4.status} ${r4.push}`, 'sent null');
-t('AC6 and the page says there is nothing to answer', readFileSync(r4.page, 'utf8').includes('Nothing to answer'), true);
+t('AC11 the carried question is still on the page', readFileSync(r4.page, 'utf8').includes('`B-1` (triage)'), true);
+const r5 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-24', '08:05'), dir, list: [repo('acme__e', {})], bin: BIN, self: 'acme__a' });
+t('AC6 with nothing open at all, the page says there is nothing to answer', `${r5.push} ${readFileSync(r5.page, 'utf8').includes('Nothing to answer')}`, 'null true');
 
 // AC9 and AC10: only a production-broken park is pushed between check-ins.
 const urgent = urgentParks([{ key: 'X-1', question: 'PRODUCTION BROKEN: checkout 500s' }, { key: 'X-2', question: 'which copy?' }], 'acme__x');
