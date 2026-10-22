@@ -2,7 +2,7 @@
 # suite: context handoff hook (threshold, Stop block, clear/compact resume)
 # The context handoff hook (hooks/desk-handoff.py), fed hook inputs and fixture transcripts in a
 # throwaway repo: one injection past the §2 threshold and none under it, the main chain only, the
-# window (200k, [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (default 25), a
+# window (200k, [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a
 # single Stop block, the .handoffs/ exclude
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only).
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -95,14 +95,25 @@ hook SessionStart s21 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-
 hook PostToolUse s21 "$T/high.jsonl"
 check "1M AC1: a [1m] model at 10% of 1M passes 10"       '[[ "$(ctx)" == *"(threshold 10%)"* ]]'
 config '`45`'
-transcript "$T/240k.jsonl" 240000
-hook PostToolUse s22 "$T/240k.jsonl"
-check "1M AC2: no 1M row, 24% of 1M: nothing"             '[ -z "$out" ]'
 hook PostToolUse s22 "$T/300k.jsonl"
-check "1M AC2: no 1M row, 30% of 1M passes 25"            '[[ "$(ctx)" == *"context is at 30% of a 1,000,000-token window (threshold 25%)"* ]]'
+check "no 1M row: 30% of 1M is under the 45 row, nothing" '[ -z "$out" ]'
+transcript "$T/440k.jsonl" 440000
+hook PostToolUse s22 "$T/440k.jsonl"
+check "no 1M row: 44% of 1M, nothing"                     '[ -z "$out" ]'
+hook PostToolUse s22 "$T/500k.jsonl"
+check "no 1M row: 50% of 1M passes the 45 row"            '[[ "$(ctx)" == *"context is at 50% of a 1,000,000-token window (threshold 45%)"* ]]'
 config '`45`' '`TODO`'
-hook PostToolUse s23 "$T/300k.jsonl"
-check "1M AC2: a TODO 1M row is 25 too"                   '[[ "$(ctx)" == *"(threshold 25%)"* ]]'
+hook PostToolUse s23 "$T/500k.jsonl"
+check "a TODO 1M row is the 45 row too"                   '[[ "$(ctx)" == *"(threshold 45%)"* ]]'
+config '`60`'
+hook PostToolUse s30 "$T/500k.jsonl"
+check "no 1M row, the row above at 60: 50% of 1M, nothing" '[ -z "$out" ]'
+transcript "$T/650k.jsonl" 650000
+hook PostToolUse s30 "$T/650k.jsonl"
+check "no 1M row, the row above at 60: 65% fires at 60"   '[[ "$(ctx)" == *"(threshold 60%)"* ]]'
+config '`45`' '`25`'
+hook PostToolUse s31 "$T/300k.jsonl"
+check "a 1M row at 25 still fires at 25"                  '[[ "$(ctx)" == *"context is at 30% of a 1,000,000-token window (threshold 25%)"* ]]'
 config '`45`' '`10`'
 transcript "$T/80k.jsonl" 80000
 hook PostToolUse s24 "$T/80k.jsonl"

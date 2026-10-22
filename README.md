@@ -446,7 +446,7 @@ repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at ses
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
 **`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
-context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, default 25), and points the session after `/clear` or a compaction at it.
+context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which unset is the same), and points the session after `/clear` or a compaction at it.
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.

@@ -369,10 +369,9 @@ How to turn what you find into rows:
   window, the `desk-handoff.py` hook (registered by `install.sh`) has it finish its step and write
   `.handoffs/<yyyy-mm-dd>[-n].md`, and the session after `/clear` or a compaction picks that up on
   its own. A whole number from `1` to `99`, or `0` to turn it off for this repo.
-- **Handoff at context % on a 1M window.** Propose `25`. The same handoff for a session with a
-  1,000,000-token window, where 45% would be about 450,000 tokens and recall has already dropped
-  by then. A whole number from `1` to `99`, or `0` to turn it off on 1M windows only. Left unset it
-  is `25`, or off when the row above is `0`.
+- **Handoff at context % on a 1M window.** Propose the row above's value (`45`). The same handoff
+  for a session with a 1,000,000-token window. A whole number from `1` to `99`, or `0` to turn it
+  off on 1M windows only. Left unset it is the row above's value.
 - **Design canvases directory.** Propose `docs/design/`, or the directory the repo already commits
   canvases in when the design scan found one. It is relative to the repo root and committed, so
   autopilot workers and the design agents read the same files; a shared artifact link alone is not
