@@ -60,7 +60,9 @@ Workers can read the mailbox but never delete it (their only writable state file
 record and images), so **clearing it after it has been read is always yours**.
 
 A contract or rule change does not reach a live worker either: it read the contract at spawn.
-Message each running worker as well as editing the file.
+Message each running worker as well as editing the file. The stage sections
+(`worker-contract-stage-*.md`) are the exception in part: a worker reads each one when it reaches
+that stage, so an edit reaches a worker still before that stage, and never one already past it.
 
 ## Requeueing a ticket
 

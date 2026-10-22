@@ -227,6 +227,10 @@ check "the first pass spawns both independent tickets, and exits 0" '[ $rc -eq 0
 check "the colliding ticket does not spawn beside its blocker" '[ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ] && echo "$out" | grep -q "held back by a collision: T-3"'
 check "each worker runs in its own worktree on its own branch"  'grep -q "\"cwd\":\"$T/wt/T-1\"" "$T/runs/T-1.1" && [ "$(git -C "$T/wt/T-1" branch --show-current)" = fix/T-1 ]'
 check "each worker passed a real preflight first"               '[ "$(grep -c "^claude preflight" "$T/calls.log")" = 2 ]'
+REFS="$SRC/skills/desk-autopilot/references"
+check "a ticket worker's system prompt holds the core contract and its briefing" 'grep -q "Stage sections: read each one when you reach it" "$T/runs/T-1.1" && grep -q "# Briefing for this ticket" "$T/runs/T-1.1"'
+check "and no stage section: verification, command forms, the orchestrator's part, Jira, the task" '! grep -qE "## 3\. Verification|### Self-review|## 6\. Command forms|## 5\. What the orchestrator|### Jira comments|## 0\. If you were given a task|## Review-sweep" "$T/runs/T-1.1"'
+check "and the directory its stage sections are read from" 'grep -q "in \`$REFS\`" "$T/runs/T-1.1" && ! grep -q "{{STAGE_DIR}}" "$T/runs/T-1.1"'
 check "with no Worker models row, no worker or preflight is passed a model" '[ "$(ran_on T-1 1)" = none ] && [ "$(ran_on T-2 1)" = none ] && [ "$(grep -c "^claude preflight model=none$" "$T/calls.log")" = 2 ] && [ "$(field T-1 model)" = "\"default\"" ]'
 
 pass
@@ -282,6 +286,18 @@ check "a worker with no done marker and no PR is reported failed, exit 11 naming
 out=$(node "$B/queue.mjs" requeue T-7 2>&1)
 check "with no Worker models row, a requeue after a failure claims no model change" '[ "$(field T-7 model_tier)" = null ] && [ "$(field T-7 model_note)" = null ] && ! echo "$out" | grep -q "high model"'
 q drop T-7
+
+# ---- a task instead of a ticket: its worker gets the task section and every stage section up front --
+record T-60 src/t.txt
+printf 'WAIT\nAUTOPILOT_DONE: pr=160 jira=none\n' > "$T/scripts/T-60.1"
+q admit T-60
+export AUTOPILOT_TASK='Review the open PR for this ticket. Your ticket is $TICKET. Your worktree is $WT.'
+pass; unset AUTOPILOT_TASK
+check "a task worker is spawned with the task as its prompt" 'grep -q "Review the open PR for this ticket. Your ticket is T-60. Your worktree is $T/wt/T-60" "$T/runs/T-60.1"'
+check "its system prompt holds the core, the task section and the review-sweep rules" 'grep -q "Stage sections: read each one when you reach it" "$T/runs/T-60.1" && grep -q "## 0. If you were given a task instead of a ticket" "$T/runs/T-60.1" && grep -q "## Review-sweep tasks: the comment is the deliverable" "$T/runs/T-60.1"'
+check "and every stage section, self-review included"                'grep -q "## 3. Verification must cover what CI covers" "$T/runs/T-60.1" && grep -q "### Self-review" "$T/runs/T-60.1" && grep -q "## 6. Command forms that are silently denied" "$T/runs/T-60.1" && grep -q "## 5. What the orchestrator owns, not you" "$T/runs/T-60.1" && grep -q "### Jira comments and transitions follow config" "$T/runs/T-60.1"'
+finish T-60; pass
+q drop T-60
 
 # ---- worker models: a standard and a high model, picked per ticket from its triage ----------------
 config "standard=sonnet high=opus"

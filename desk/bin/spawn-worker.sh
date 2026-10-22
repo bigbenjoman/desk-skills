@@ -35,6 +35,10 @@ command -v claude >/dev/null 2>&1 || { echo "FAIL: claude CLI not on PATH" >&2; 
 STATE="$DESK_STATE"
 BIN="$DESK_BIN"
 CONTRACT="$DESK_SKILLS_DIR/desk-autopilot/references/autopilot-worker-contract.md"
+# The core rides in every turn's system prompt; each stage section is a file beside it that the
+# worker Reads when it reaches that stage (the core's stage table names them). A task worker has no
+# stages to reach, so it gets the task section and every stage section up front.
+CONTRACT_DIR="$(dirname "$CONTRACT")"
 LOG="$STATE/logs/$TICKET.log"
 # Per repo: $DESK_STATE is this repo's batch state, so two repos with the same ticket key never
 # share (or overwrite) one another's permission file.
@@ -209,6 +213,15 @@ else
 fi
 
 SYSTEM="$(cat "$CONTRACT")"
+SYSTEM="${SYSTEM//\{\{STAGE_DIR\}\}/$CONTRACT_DIR}"
+if [ -n "${AUTOPILOT_TASK:-}" ]; then
+  for f in "$CONTRACT_DIR/worker-contract-task.md" "$CONTRACT_DIR"/worker-contract-stage-*.md; do
+    [ -f "$f" ] || { echo "FAIL: worker contract section missing at $f" >&2; exit 1; }
+    SYSTEM="$SYSTEM
+
+$(cat "$f")"
+  done
+fi
 # A batch base (queue.mjs set-batch base=…) arrives as DESK_DEFAULT_BRANCH. The skills read
 # <default> from config §0, which still names the repo default, so the worker is told outright.
 CFG_DEFAULT="$(node "$DESK_ENV_MJS" get default-branch 2>/dev/null </dev/null; true)"
