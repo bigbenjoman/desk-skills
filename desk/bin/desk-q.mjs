@@ -326,7 +326,9 @@ export function scaleFor(dur, now, zoom = 'auto') {
 }
 
 // One row drawn in coloured runs: `segs` is [text, SGR code or null] pairs, `line` their plain text.
+// Trailing blanks are trimmed across runs, as a plain row's are.
 const segRow = (id, segs, open) => {
+  while (segs.length > 1 && !segs.at(-1)[0].trim()) segs.pop();
   const last = segs.at(-1);
   if (last) last[0] = last[0].trimEnd();
   return { id, segs, line: segs.map((s) => s[0]).join(''), open };
@@ -585,7 +587,10 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     you += count(r, 'needs'); stuck += count(r, 'stuck');
     const last = r.live ? `live ${ago(now - r.last).replace(' ago', '')}` : ago(r.last == null ? null : now - r.last);
-    row(r, `  ${pad(r.name, w)}${pad(last, 15)}${rpad(count(r, 'running'), 4)}${rpad(count(r, ['ready', 'queued']), 7)}${rpad(count(r, 'waiting'), 6)}${rpad(count(r, 'stuck'), 7)}${rpad(count(r, 'needs'), 11)}${rpad(count(r, 'failed'), 8)}${rpad(r.done, 6)}  ${pad(queueDone(r, now, checkin), 12)}  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`);
+    // Each state count in its state's colour, a zero plain.
+    const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : null]; };
+    rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}${pad(last, 15)}`, null], n('running', 4), n(['ready', 'queued'], 7, STATE_SGR.ready), n('waiting', 6), n('stuck', 7), n('needs', 11), n('failed', 8),
+      [`${rpad(r.done, 6)}  ${pad(queueDone(r, now, checkin), 12)}  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`, null]], { kind: 'repo', slug: r.slug }));
   }
   const none = repos.filter((r) => !hasBatch(r));
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', 78)}  cap ${r.cap}`);
@@ -640,10 +645,10 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const list = epic ? r.rows.filter((x) => F.of[x.t.key] === epic) : r.rows;
   const summary = (x) => summaryOf({ r, x });
   const tt = titler(list.map(summary));
-  const rows = list.map((x) => {
-    const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`.trimEnd();
-    return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) } };
-  });
+  const rows = list.map((x) => segRow(x.t.key, [
+    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], 11), STATE_SGR[x.k]],
+    [`${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`, null],
+  ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) }));
   const foot = !list.length ? ['  No unfinished tickets.']
     : list.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];
   return { head, rows, foot };
@@ -889,8 +894,9 @@ const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t
 
 // A row cut to `w` columns as `cut` would, `›` in its first column when selected, then each coloured
 // run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
-// reverse video holds across the runs.
+// reverse video holds across the runs. NO_COLOR drops the colours and keeps bold, dim and reverse.
 function paint(x, w, selected) {
+  const plain = !!process.env.NO_COLOR;
   let segs = (x.segs ?? [[x.line, null]]).map(([s, k]) => [s, k]);
   if (selected) segs[0][0] = `›${segs[0][0].slice(1)}`;
   if (x.line.length > w) {
@@ -899,7 +905,7 @@ function paint(x, w, selected) {
     for (const [s, k] of segs) { if (room <= 0) break; kept.push([s.slice(0, room), k]); room -= s.length; }
     segs = [...kept, ['…', null]];
   }
-  return segs.map(([s, k]) => (k && s ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : k === REVERSE ? '27' : '39'}m` : s)).join('');
+  return segs.map(([s, k]) => (k && s && !(plain && ![BOLD, DIM, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : k === REVERSE ? '27' : '39'}m` : s)).join('');
 }
 
 // Labels joined by `sep`, each with the columns it covers (from, up to end), so a click's column

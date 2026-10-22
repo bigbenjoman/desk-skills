@@ -756,5 +756,51 @@ const everyFeat = lines(Q.timelineScreen(featRepos, null, { now: FIXED }));
 t('DS-166 AC10 every repo\'s Timeline stays one bar per ticket, grouped by repo', `${everyFeat.includes('  feat · 6 tickets')} ${['F-1', 'F-2', 'F-4', 'F-6'].every((k) => everyFeat.some((l) => l.startsWith(`  ${pad10(k)}`)))} ${everyFeat.some((l) => /Other work|Smart scheduling/.test(l))}`,
   'true true false');
 
+// ---- DS-181: the Queue views' state counts and state cells in their state's colour
+dated('hue', 4100, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: {
+  'H-1': { state: 'running', stage: '4/9' }, 'H-2': ready, 'H-3': { state: 'parked', held_by: 'H-1', park: { question: 'held by orchestrator: blocked by H-1' } },
+  'H-4': { state: 'parked', park: { question: 'which copy?' } }, 'H-5': { state: 'parked', held_by: 'H-4', park: { question: 'held by orchestrator: blocked by H-4' } },
+  'H-6': { state: 'failed', park: { question: 'tests red' } } } });
+const lastFrame = (s) => s.output.buf.split('\x1b[H').at(-1).split('\r\n');
+const coloured = (l) => [...l.matchAll(/\x1b\[(3\d)m([^\x1b]*)\x1b\[39m/g)].map((m) => `${m[1]}:${m[2].trim()}`);
+const ovRow = (s, name) => lastFrame(s).find((l) => l.replace(ANSI, '').replace(/^›/, ' ').startsWith(`  ${name} `)) ?? '';
+const Ov = nav({ kind: 'overview', all: false });
+await sleep(20);
+t('DS-181 AC1 each non-zero count in its state\'s colour: RUN, READY, WAIT, STUCK, NEEDS YOU, FAILED', coloured(ovRow(Ov, 'hue')).join(' '), '32:1 34:1 33:1 31:1 35:1 31:1');
+t('DS-181 AC1 zero counts and the other columns stay plain', coloured(ovRow(Ov, 'voicepa')).join(' '), '32:2 34:1 33:1');
+Ov.ui.finish(0);
+
+const Hq = nav({ kind: 'repo', slug: 'acme__hue' });
+await sleep(20);
+const stateCell = (s, key) => coloured(lastFrame(s).find((l) => l.replace(ANSI, '').slice(1).includes(` ${key} `)) ?? '')[0] ?? '';
+const keys = ['H-1', 'H-2', 'H-3', 'H-4', 'H-5'];
+const queueCells = keys.map((k) => stateCell(Hq, k));
+t('DS-181 AC2 one repo\'s Queue shows each state cell in its colour', queueCells.join(' '), '32:running 34:ready 33:waiting 35:needs you 31:stuck');
+await Hq.press('2');
+t('DS-181 AC2 the same colours as the ticket\'s state cell on the Timeline', keys.map((k) => stateCell(Hq, k)).join(' '), queueCells.join(' '));
+await Hq.press('1');
+await Hq.press(DOWN);
+const selRaw = lastFrame(Hq).find((l) => l.replace(ANSI, '').startsWith('›')) ?? '';
+t('DS-181 AC3 the selected row\'s reverse video opens before its first cell and closes only after its last',
+  `${selRaw.startsWith('\x1b[7m')} ${selRaw.endsWith('\x1b[27m')} ${selRaw.slice(4, -5).includes('\x1b[27m') || selRaw.includes('\x1b[0m')} ${coloured(selRaw).length}`, 'true true false 1');
+Hq.ui.finish(0);
+
+const Hn = screen({ kind: 'repo', slug: 'acme__hue' }, 24, () => FIXED);
+await sleep(20);
+const narrow = lastFrame(Hn).filter((l) => /H-\d/.test(l));
+t('DS-181 AC4 a truncated row ends in … at the width, every colour closed before it',
+  narrow.length > 0 && narrow.every((l) => { const p = l.replace(ANSI, ''); return p.length === 24 && p.endsWith('…') && (l.match(/\x1b\[3\dm/g) ?? []).length === (l.match(/\x1b\[39m/g) ?? []).length; }), true);
+Hn.ui.finish(0);
+
+process.env.NO_COLOR = '1';
+const Nc = nav({ kind: 'repo', slug: 'acme__hue' });
+await sleep(20);
+const ncFrame = lastFrame(Nc).join('\n');
+t('DS-181 AC5 with NO_COLOR, no colour codes, and the selected row still in reverse video', `${/\x1b\[3\dm/.test(ncFrame)} ${/\x1b\[7m›/.test(ncFrame)}`, 'false true');
+await Nc.press('\x1b');
+t('DS-181 AC5 nor on every repo\'s Queue', /\x1b\[3\dm/.test(lastFrame(Nc).join('\n')), false);
+Nc.ui.finish(0);
+delete process.env.NO_COLOR;
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
