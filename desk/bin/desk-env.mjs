@@ -263,6 +263,7 @@ export const CONFIG_ROWS = Object.freeze({
   'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
   'spawn-gate': { section: '3b', row: 'Spawn gate (available memory)' },
   'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
+  'checkin-times': { section: '3b', row: 'Check-in times' },
   'env-files': { section: '4', row: 'Env files' },
   'local-db': { section: '4', row: 'Local database' },
   'local-services': { section: '4', row: 'Local services' },

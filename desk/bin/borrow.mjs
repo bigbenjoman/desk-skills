@@ -156,8 +156,8 @@ export function borrowedLine(plan, { share, running, spawned }) {
 // holder that has exited never lets go, so its lock is cleared; one with no pid yet is between its
 // mkdir and its write, unless it has sat that way for a minute. It waits at most `waitMs`; a pass
 // that cannot take it counts nothing that pass. -> { ok: true, release } | { ok: false, why }
-export async function takeBorrowLock({ dir = E.lockDir(), waitMs = 120000, pollMs = 250, pid = process.pid } = {}) {
-  const path = join(dir, 'desk-borrow.lock.d');
+export async function takeBorrowLock({ dir = E.lockDir(), name = 'desk-borrow.lock.d', waitMs = 120000, pollMs = 250, pid = process.pid } = {}) {
+  const path = join(dir, name);
   const holder = () => { try { return Number(readFileSync(join(path, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
   const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
   const stale = () => { const p = holder(); try { return p ? !alive(p) : Date.now() - statSync(path).mtimeMs > 60000; } catch { return false; } };

@@ -378,4 +378,33 @@ q set D-1 state=running
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-139 AC8 harvesting the same run again adds nothing" '[ "$(wc -l < "$dlog" | tr -d " ")" = 1 ] && [ "$(field D-1 state)" = "\"done\"" ]'
 
+# The check-in digest. C-1 parks on a broken live service, C-2 on an ordinary question; a last digest
+# dated in the future keeps the check-in itself out of the way until it is removed.
+export DESK_QUEUE="$T/queue-c.json" DESK_AUTOPILOT_STATE="$T/state-c" DESK_DIGEST_DIR="$T/digest"; mkdir -p "$T/state-c/logs" "$T/digest"
+echo '{"slot":"9999-01-01T00:00","through":"9999-01-01T00:00:00.000Z"}' > "$T/digest/last.json"
+q init c
+for k in C-1 C-2 C-3; do q add "$k"; done
+q park C-1 "PRODUCTION BROKEN: checkout returns 500 on every order"; q park C-2 "which empty-state copy?"; q set C-3 state=done
+out=$(node "$B/pass.mjs" --json 2>&1)
+pushes(){ echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).push.map(p=>p.key).join(" ")))'; }
+check "DS-140 AC9 a production-broken park is pushed at once, alone" 'pushes | grep -qxE "urgent:[^ ]+:C-1"'
+check "DS-140 AC10 an ordinary park is not pushed between check-ins" '! pushes | grep -q C-2'
+printf '%s\n' '{"id":"o1","override_of":"d1","at":"2026-10-22T09:00:00.000Z","repo":"acme/widgets","ticket":"C-3","question":"Badge colour?","was":"brand","chose":"neutral","by":"Ben"}' > "$T/state-c/decisions.jsonl"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-140 AC8 the next pass lists an overridden decision under WAITING ON YOU" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -qF "C-3: decision overridden — \"Badge colour?\" is now \"neutral\" (was \"brand\"), by Ben at 2026-10-22T09:00:00.000Z"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-140 AC8 and only once" '! echo "$out" | grep -q "decision overridden"'
+rm "$T/digest/last.json"
+out=$(node "$B/pass.mjs" --json 2>&1)
+check "DS-140 AC1 a pass past a slot builds the digest and pushes it" 'pushes | grep -q "^digest:20" && ls "$T/digest"/*.md >/dev/null 2>&1'
+first=$(pushes); pages=$(ls "$T/digest"/*.md | wc -l)
+out=$(node "$B/pass.mjs" --json 2>&1)
+check "DS-140 AC4 the next pass builds no second page, and carries the same key for a failed notification to retry" '[ "$(ls "$T/digest"/*.md | wc -l)" = "$pages" ] && [ "$(pushes | grep -o "digest:[^ ]*")" = "$(echo "$first" | grep -o "digest:[^ ]*")" ]'
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Check-in times | `08:00, 17:00` | `8am and 5pm` |\n'; } > "$T/config-c.md"
+q add C-4; q set C-4 state=triaged lane=A branch=fix/C-4
+out=$(DESK_CONFIG="$T/config-c.md" node "$B/pass.mjs" 2>&1)
+check "DS-140 AC3 a malformed Check-in times row holds spawns under STALLED, naming the row" 'echo "$out" | awk "/^STALLED/,0" | grep -qF "config §3b \"Check-in times\" is \"8am and 5pm\"" && ! echo "$out" | grep -q "spawned: C-4"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-140 AC3 and the same ticket spawns once the row reads" 'echo "$out" | grep -q "spawned: C-4"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

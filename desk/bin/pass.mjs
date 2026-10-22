@@ -13,6 +13,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
 import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
+import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
@@ -30,7 +31,7 @@ const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: E
 function verdict(status, message, fields = {}) {
   const code = CODES[status];
   if (AS_JSON) {
-    console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, release_due: [], stuck: [], ...fields }));
+    console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, push: [], release_due: [], stuck: [], ...fields }));
   } else if (status === 'error') console.error(message);
   else console.log(message);
   return code;
@@ -468,6 +469,11 @@ let models = { off: true };
 let modelsBad = null;
 try { models = E.workerModels(); } catch (e) { modelsBad = e.message; }
 if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
+// §3b "Check-in times": when the digest goes out. A row that does not read holds spawns, since the
+// questions a new worker parks would have no check-in to reach.
+let CHECKIN;
+try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
+if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -554,6 +560,7 @@ if (blockedByDone.length) {
 // on (borrow.mjs).
 const BORROW = borrowSetting();
 const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
+  : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
 let borrowLock = null;
 let others = [];
@@ -1040,6 +1047,22 @@ function updateLedger(qx) {
 }
 updateLedger(queue());
 
+// A taken call the person overrode from the digest (digest.mjs override) is listed once, on the next
+// pass, for the orchestrator to act on: the work may need redoing to the new choice.
+function reportOverrides() {
+  const seenFile = join(STATE, 'overrides-reported.json');
+  let seen = [];
+  try { seen = JSON.parse(readFileSync(seenFile, 'utf8')); } catch { /* none reported yet */ }
+  const fresh = [];
+  for (const e of readDecisions(STATE).overrides) {
+    if (seen.includes(e.id)) continue;
+    fresh.push(e.id);
+    report.waiting.push(`${e.ticket}: decision overridden — "${e.question}" is now "${e.chose}" (was "${e.was}"), by ${e.by} at ${e.at}`);
+  }
+  if (fresh.length && !DRY) writeFileSync(seenFile, `${JSON.stringify([...seen, ...fresh])}\n`);
+}
+reportOverrides();
+
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 
 // Blocked-on-questions must be visible, or "no change this pass" reads as "idle" when it
@@ -1069,6 +1092,16 @@ const lines = [];
 const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
 if (needsYou.length) lines.push(`NOTIFY: ${needsYou.length} item(s) need you — ${[...new Set(needsYou)].join(', ')}`);
 else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run');
+// What is pushed now, as against shown in the session: the check-in digest once a slot has passed (one
+// pass on the machine builds it), and a park reading production broken. Nothing else interrupts.
+const SLUG = E.repoSlug();
+const push = urgentParks(parked, SLUG);
+if (CHECKIN.ok && !DRY) {
+  const d = await checkin({ times: CHECKIN.times, self: SLUG, list: digestRepos({ self: { slug: SLUG, state: STATE, queue: QUEUE_FILE } }) });
+  if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
+  if (d.push) push.unshift(d.push);
+}
+for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 lines.push(CONC.line);
@@ -1085,5 +1118,5 @@ if (idle) {
 }
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
-  waiting, parked, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
+  waiting, parked, push, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
 });

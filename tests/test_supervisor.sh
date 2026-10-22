@@ -53,6 +53,13 @@ const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
 console.log(JSON.stringify(v));
 process.exitCode = v.code;
 EOF
+# The check-in an idle tick runs: whatever $T/checkin.json holds.
+cat > "$T/bin/digest.mjs" <<EOF
+import { readFileSync } from 'node:fs';
+let d = { status: 'not_due', push: null };
+try { d = JSON.parse(readFileSync('$T/checkin.json', 'utf8')); } catch {}
+console.log(JSON.stringify(d));
+EOF
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
 cat > "$T/fakes/launchctl" <<EOF
 #!/bin/sh
@@ -158,23 +165,28 @@ for lock in supervisor.lock orchestrator.lock; do
 done
 check "a finished run releases its lock" '[ ! -f "$T/state/supervisor.lock" ]'
 
-# ---- AC6 and AC7: one notification per new set of items ----------------------------------------
+# ---- AC6 and AC7: one notification per new push, and nothing else pushed ---------------------
 check "no notification while nothing needs the person" '[ "$(count "$T/notify.calls")" = 0 ]'
-verdict '{"status":"show_person","code":11,"message":"NOTIFY: 2 item(s) need you","waiting":["B: FAILED — requeue it"],"parked":[{"key":"A","question":"which copy?"}],"notify":true}'
+verdict '{"status":"show_person","code":11,"message":"NOTIFY: 2 item(s) need you","waiting":["B: FAILED — requeue it"],"parked":[{"key":"A","question":"which copy?"}],"notify":true,"push":[]}'
 out=$(tick)
-check "AC6: one notification" '[ "$(count "$T/notify.calls")" = 1 ]'
-check "AC6: it names the repo and both items" 'grep -q "|desk: acme__widgets|2 item(s) need you: A, B|$" "$T/notify.calls"'
+check "DS-140 AC10: parks and failures between check-ins push nothing" '[ "$(count "$T/notify.calls")" = 0 ]'
+DIG='{"key":"digest:2026-10-22T17:00","text":"Check-in 17:00: 1 question(s), 0 decision(s) across 1 repo(s). /p.md"}'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[{\"key\":\"A\",\"question\":\"which copy?\"}],\"notify\":true,\"push\":[$DIG]}"
 out=$(tick)
-check "AC7: the same items send no second notification" '[ "$(count "$T/notify.calls")" = 1 ] && grep -q "notification: not sent, the last one already named A, B" "$LOG"'
-verdict '{"status":"show_person","code":11,"message":"x","waiting":["C: FAILED"],"parked":[{"key":"A","question":"which copy?"}],"notify":true}'
+check "AC6: the check-in digest is one notification" '[ "$(count "$T/notify.calls")" = 1 ]'
+check "AC6: it names the repo and carries the push text" 'grep -q "|desk: acme__widgets|Check-in 17:00: 1 question(s), 0 decision(s) across 1 repo(s). /p.md|$" "$T/notify.calls"'
+out=$(tick)
+check "AC7: the same push sends no second notification" '[ "$(count "$T/notify.calls")" = 1 ] && grep -q "notification: not sent, the last one already named digest:2026-10-22T17:00" "$LOG"'
+URG='{"key":"urgent:acme__widgets:C","text":"C: PRODUCTION BROKEN: checkout 500s"}'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$DIG,$URG]}"
 touch "$T/notify.fails"; out=$(tick); rm -f "$T/notify.fails"
 check "a notification that fails is logged" 'grep -q "notification: failed .* the next pass tries again" "$LOG"'
 out=$(tick)
-check "a failed notification is sent again on the next pass, naming every item" '[ "$(count "$T/notify.calls")" = 2 ] && tail -1 "$T/notify.calls" | grep -q "need you: A, C|$"'
+check "a failed notification is sent again, carrying only what is new" '[ "$(count "$T/notify.calls")" = 2 ] && tail -1 "$T/notify.calls" | grep -q "|C: PRODUCTION BROKEN: checkout 500s|$"'
 verdict "$NOTHING"; out=$(tick)
-verdict '{"status":"show_person","code":11,"message":"x","waiting":["C: FAILED"],"parked":[],"notify":true}'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$URG]}"
 out=$(tick)
-check "an item that went away and came back notifies again" '[ "$(count "$T/notify.calls")" = 3 ]'
+check "a push that went away and came back notifies again" '[ "$(count "$T/notify.calls")" = 3 ]'
 
 # ---- AC8: only the approvals recorded with the batch are passed on -----------------------------
 config ask yes; verdict "$NOTHING"; : > "$T/pass.calls"
@@ -188,15 +200,21 @@ config yes yes; queue true '{}' "$RUNNING"
 # ---- AC9: an idle batch runs nothing until it changes -------------------------------------------
 DONE='{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"failed"}}'
 queue true '{}' "$DONE"; : > "$T/pass.calls"; n=$(started)
-verdict '{"status":"idle","code":11,"message":"IDLE","waiting":["B: FAILED — requeue it"],"parked":[],"notify":true}'
+notified=$(count "$T/notify.calls")
+verdict "{\"status\":\"idle\",\"code\":11,\"message\":\"IDLE\",\"waiting\":[\"B: FAILED — requeue it\"],\"parked\":[],\"notify\":true,\"push\":[{\"key\":\"digest:2026-10-23T08:00\",\"text\":\"Check-in 08:00\"}]}"
 touch "$T/notify.fails"; out=$(tick); rm -f "$T/notify.fails"
 check "an idle batch whose notification failed is not recorded idle" '! grep -q "batch b1 is idle" "$LOG"'
 out=$(tick)
 check "the idle pass is logged and the batch recorded idle" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "batch b1 is idle" "$LOG"'
-check "the finished batch notifies, naming what still needs the person" 'tail -1 "$T/notify.calls" | grep -q "need you: B, the batch is finished|$"'
+check "DS-140: a finished batch pushes only its push entries" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|Check-in 08:00|$"'
 out=$(tick); out=$(tick)
 check "AC9: no pass once the batch is idle" '[ "$(count "$T/pass.calls")" = 2 ]'
 check "AC9: no merge driver once the batch is idle" '[ "$(started)" = "$n" ]'
+notified=$(count "$T/notify.calls")
+echo '{"status":"sent","push":{"key":"digest:2026-10-23T17:00","text":"Check-in 17:00: 1 question(s)"}}' > "$T/checkin.json"
+out=$(tick); out=$(tick)
+check "DS-140: an idle batch still pushes the check-in, once, and runs no pass" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|Check-in 17:00: 1 question(s)|$" && [ "$(count "$T/pass.calls")" = 2 ]'
+rm -f "$T/checkin.json"
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"triaged"}}'

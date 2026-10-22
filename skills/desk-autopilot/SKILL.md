@@ -213,7 +213,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
-| 6b | Notify | When a pass exits 11, send **one** `PushNotification` covering the `waiting` and `parked` entries the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`), or saying the batch is finished when `status` is `idle`. Never one per park: they are coalesced deliberately. Say the ticket and the question in one line each. |
+| 6b | Notify | Push only what a pass's `push` lists, whatever its exit: send **one** `PushNotification` carrying the `text` of each entry whose `key` the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`). That is the check-in digest, once a §3b "Check-in times" slot has passed, and a park reading `PRODUCTION BROKEN: …`, at once. Everything else waiting on the person reaches them in the next digest (*The check-in digest*), so a park, a failure or a finished batch is shown in the session and never pushed on its own. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
 | 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
@@ -245,12 +245,15 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 | `waiting` | one line per thing waiting on the person: everything under `WAITING ON YOU`, a stall only they can clear (a budget, a config row, a grant, a deliberate re-run), unanswered triage questions, and every failed ticket |
 | `parked` | `{key, question}` for every ticket parked for its own reason (a hold is not one) |
 | `notify` | true exactly when the exit is 11 |
+| `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, and each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`). Empty otherwise, on any exit |
 | `release_due` | held tickets whose every blocker's PR has merged (under `waiting` too when no merge driver is running) |
 | `stuck` | held tickets whose blocker can no longer merge on its own (under `waiting` too) |
 
 On 11 from `pass.mjs`, put `waiting` and `parked` in front of the person, then keep the loop going
-unless `status` is `idle` or `error`. The person stays needed on every pass until each entry is dealt
-with, so notify only for the entries the last notification did not already carry (Stage 6b).
+unless `status` is `idle` or `error`. Push only `push`, and only the entries the last notification
+did not already carry (Stage 6b): the rest waits for the check-in. An `idle` batch with tickets still
+parked, and no supervisor running, is not finished with: wake at each check-in time and run
+`node ~/.claude/desk/bin/digest.mjs checkin`, pushing its `push` the same way, until nothing is parked.
 
 Run `plan-batch.mjs --json` too. It exits 0 when every ticket can start with nothing to settle, and
 11 when something needs the person before Stage 3, or on a refusal. Its stdout is one object:
@@ -280,8 +283,9 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   grants one it was not given, so a batch whose `ask` was never answered spawns nothing and the pass
   says why;
 - appends the report to `<state>/supervisor.log`;
-- sends one macOS notification naming the repo and every item when the pass needs the person for an
-  item the last notification did not name. This replaces Stage 6b while the supervisor runs;
+- sends one macOS notification, titled with the repo, for the pass's `push` entries the last
+  notification did not carry (the check-in digest, a production-broken park), or for a pass that
+  refused or failed. This replaces Stage 6b while the supervisor runs;
 - starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
   are still to merge and no driver holds `<state>/merge-driver.lock.d`;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
@@ -891,6 +895,37 @@ node ~/.claude/desk/bin/decisions.mjs log <TICKET> '{"question": "…", "options
 A category is one of `product`, `design`, `wording`, `review`, `engineering`, `scope` or `tracker`;
 the CLI refuses an ask category with exit 11, because that call is asked, never taken. A Jira write
 that §3 grants is a `tracker` entry.
+
+## The check-in digest
+
+Questions and taken calls reach the person at the config §3b "Check-in times" (unset: `08:00,
+17:00` local), from every repo at once, as one page and one push. A row that does not read as
+HH:MM times holds spawns under `STALLED`, naming the row.
+
+- **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
+  sent make the first pass on the machine, in any repo, the only one to build it, and only that
+  pass's `push` carries it. A slot no pass saw (nothing running at 08:00) is covered by the first
+  pass after it, back to the last digest sent. An idle batch runs no pass, so the supervisor's tick,
+  or the loop (`digest.mjs checkin`), runs the check-in on its own while its tickets stay parked.
+- **What it lists.** Per repo: every open question (each parked ticket's question, a hold is not
+  one, and each triaged ticket's unknowns) and every call taken since the last digest. A question
+  still open at the next check-in is listed again, and the batch carries on meanwhile with every
+  ticket it does not block. It is pushed only when something is new (a question the last page did
+  not list, or a call taken since); otherwise the page is written and nothing is pushed.
+- **Where.** `~/.desk-autopilot/digest/<date>T<HHMM>.md`, named in the push.
+- **Answering from it.** Each line carries its command. An answer goes through that repo's
+  `answer.mjs`, exactly as Stage 5, and the page marks it answered:
+
+```
+node ~/.claude/desk/bin/digest.mjs answer <slug> <TICKET> "<answer>"
+node ~/.claude/desk/bin/digest.mjs override <slug> <decision-id> "<choice>"
+```
+
+  An override is recorded in that repo's decision log with who and when, and the next pass there
+  lists the ticket under `WAITING ON YOU` as `decision overridden`: redo the work to the new
+  choice, or put it back to the person if it cannot be.
+- **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
+  and on its own (the worker contract says when a worker may use it).
 
 ## Asking
 
