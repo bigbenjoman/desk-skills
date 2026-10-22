@@ -14,6 +14,15 @@ export const MARKER = /^[\s`>*#-]*(AUTOPILOT_[A-Z_]+):[ \t]*(.*?)[\s`]*$/gm;
 // STAGE only, and only as the command's start: DONE, PARK and IMAGES must stay in the worker's text.
 const ECHO_STAGE = /^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*([^"'\n]*?)\s*\1/;
 
+// What one content block of an assistant message says: a text block's text, a stage echoed at the
+// start of a Bash command as its marker line, or nothing.
+export function saidIn(c) {
+  if (c?.type === 'text' && typeof c.text === 'string') return c.text;
+  const m = c?.type === 'tool_use' && c.name === 'Bash' && typeof c.input?.command === 'string'
+    && c.input.command.match(ECHO_STAGE);
+  return m ? `AUTOPILOT_STAGE: ${m[2]}` : null;
+}
+
 // Only what the worker itself said: its text blocks and its final result (`texts`). Tool inputs
 // and tool results are never read, so a grep for a marker, or a file that quotes one, is not the
 // worker printing it. The one exception is a stage the worker echoed at the start of a Bash
@@ -27,10 +36,9 @@ export function readLog(logText) {
     try { d = JSON.parse(line); } catch { continue; }
     if (d.type === 'assistant') {
       for (const c of d.message?.content ?? []) {
-        if (c.type === 'text') { texts.push(c.text); said.push(c.text); }
-        const m = c.type === 'tool_use' && c.name === 'Bash' && typeof c.input?.command === 'string'
-          && c.input.command.match(ECHO_STAGE);
-        if (m) said.push(`AUTOPILOT_STAGE: ${m[2]}`);
+        if (c.type === 'text') texts.push(c.text);
+        const s = saidIn(c);
+        if (s != null) said.push(s);
       }
     } else if (d.type === 'result') {
       result = d;
