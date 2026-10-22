@@ -33,6 +33,8 @@ t('the log holds two lines', readFileSync(decisionsPath(dir), 'utf8').trim().spl
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'decisions.mjs');
 const sdir = join(dir, 'session');
 const env = { ...process.env, DESK_AUTOPILOT_STATE: sdir, DESK_GH_REPO: 'acme/widgets', CLAUDE_CODE_SESSION_ID: 's-1', DESK_CONFIG: join(dir, 'none.md') };
+// The repo comes from DESK_GH_REPO alone: an inherited repo dir or override would outrank it.
+for (const k of ['DESK_REPO_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG']) delete env[k];
 const run = (args) => { try { return { code: 0, out: execFileSync('node', [cli, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: dir }) }; } catch (x) { return { code: x.status, out: `${x.stdout}${x.stderr}` }; } };
 const call = raw({ question: 'Accept the reviewer wording?', options: ['take it', 'keep ours'], chose: 'take it', category: 'review' });
 t('AC5 a session call is logged', /^logged: /.test(run(['log', 'S-1', call, '--pr', '9']).out), true);

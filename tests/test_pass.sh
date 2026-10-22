@@ -354,7 +354,7 @@ check "DS-121 a limit long past its reset falls back to the stall check" '[ "$(f
 check "DS-121 AC4 the config template has the row, recommended no" 'grep -qE "^\| \`autopilot-usage-resume\` \| .* \| \`no\` \| \`TODO\` \|$" "$SRC/desk-config.md"'
 check "DS-121 AC4 desk-setup asks it in the autopilot round, recommended no" 'awk "/^## Round 9/,/^## Round 10/" "$SRC/skills/desk-setup/references/permission-rows.md" | grep -qE "^\| \`autopilot-usage-resume\` \| no "'
 
-# DS-139: the decision log. D-1 finishes with a call it took, said in its text and again in its
+# The decision log. D-1 finishes with a call it took, said in its text and again in its
 # result; D-2 with a line the log cannot hold. Both runs have exited.
 unset DESK_GH_REPO
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-d.json" DESK_AUTOPILOT_STATE="$T/state-d"; mkdir -p "$T/state-d/logs"
