@@ -272,9 +272,11 @@ function epicLine(r, F, e, now, checkin) {
   if (!d) return `${lead}${pad('—', 13)}${epicWhy(r, F, e, checkin)}`;
   const running = r.rows.some((x) => F.of[x.t.key] === e.key && x.k === 'running');
   const starts = d.start == null ? '—' : d.start <= now + SOON ? (running ? 'running' : 'now') : when(d.start, now);
-  const note = e.missing == null ? 'provisional: children not read' : e.missing ? `provisional: ${e.missing} not queued` : d.setBy ? `set by ${d.setBy}` : '';
-  return `${lead}${pad(starts, 13)}${pad(when(d.likely, now), 14)}${note}`.trimEnd();
+  return `${lead}${pad(starts, 13)}${pad(when(d.likely, now), 14)}${epicNote(e, d)}`.trimEnd();
 }
+
+// A dated epic's note: why it is provisional, else the child that sets its date.
+const epicNote = (e, d) => (e.missing == null ? 'provisional: children not read' : e.missing ? `provisional: ${e.missing} not queued` : d.setBy ? `set by ${d.setBy}` : '');
 
 // An epic's name as people say it: its summary up to the first colon or dash, else its key.
 const epicShort = (e) => String(e?.summary ?? '').split(/:| — | - /)[0].trim() || e?.summary?.trim() || e?.key || '';
@@ -521,8 +523,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false } = {}) {
   const rows = list.map(({ r, F, e, d }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
-    const note = e.missing == null ? 'provisional: children not read' : e.missing ? `provisional: ${e.missing} not queued` : d?.setBy ? `set by ${d.setBy}` : '';
-    const date = d ? [[pad(when(d.likely, now), 14), null], [note, provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), STATE_SGR.needs]];
+    const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), STATE_SGR.needs]];
     return segRow(`${r.slug} ${e.key}`, [[`  ${all ? pad(r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], ['□'.repeat(EP_BAR - done - queued), DIM],
       [` ${rpad(`${e.done}/${e.total}`, 6)}  `, null], ...date], { kind: 'epic', slug: r.slug, epic: e.key });
@@ -532,8 +533,6 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false } = {}) {
   if (list.length) foot.push('', '■ done  ■ in the queue  □ not queued yet (date is provisional). An epic ships when its last child merges.');
   return { head, rows, foot };
 }
-
-export const epicsScreen = (repos, slug, opts) => joined(epicsParts(repos, slug, opts));
 
 // The screens' header note on tickets waiting on the user.
 const parkedBadge = (checkin) => (checkin ? 'Parked: dated at the next check-in · c to undo' : 'Parked: no date · c to date them at check-ins');
@@ -868,6 +867,8 @@ const REVERSE = '7';
 export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics']];
 const VIEW_KEYS = 'tab or 1–4 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
+// An epic's Queue hides the tickets a move steps past, so the order is set on the repo's.
+export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
 export const NO_EPICS_HERE = "An epic has no Epics view: you're already in one.";
 
 function jiraUrlFor(slug, key) {
@@ -982,9 +983,8 @@ export function interactive({
       return { badge: badge(repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · ${cmdKeys}` };
     }
-    if (view.kind === 'repo' || view.kind === 'epic') {
-      return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic ?? null }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
-    }
+    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
     if (!r.q?.tickets?.[view.key]) return { head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
@@ -1168,7 +1168,7 @@ export function interactive({
     }
     // On a repo's Queue the selected ticket moves; on a ticket's screen, that ticket. On a Timeline
     // or By day nothing moves: the order is set on the Queue, and the dates follow from it.
-    const queueView = (['repo', 'epic'].includes(view.kind) && tab === 'queue') || view.kind === 'ticket';
+    const queueView = (view.kind === 'repo' && tab === 'queue') || view.kind === 'ticket';
     const moveVerb = key.shift && key.name === 'up' ? 'up' : key.shift && key.name === 'down' ? 'down' : str === 't' ? 'top' : str === 'b' ? 'bottom' : null;
     const viewNo = VIEWS.findIndex((_, i) => str === String(i + 1));
     if (hasTabs() && key.name === 'tab') {
@@ -1177,6 +1177,7 @@ export function interactive({
       setTab(ok[(i + (key.shift ? -1 : 1) + ok.length) % ok.length][0]);
     } else if (hasTabs() && viewNo >= 0) setTab(VIEWS[viewNo][0]);
     else if (hasTabs() && str === 'w') setTab('timeline');
+    else if (view.kind === 'epic' && moveVerb) msg = REORDER_IN_REPO;
     else if (hasTabs() && tab !== 'queue' && moveVerb) msg = REORDER_HERE;
     else if (queueView && moveVerb) {
       const k = view.kind === 'ticket' ? view.key : rows[sel]?.id;

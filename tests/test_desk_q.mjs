@@ -745,6 +745,9 @@ t('DS-166 AC9 4 in an epic leaves the view as it is', where(Fa), 'desk-q › fea
 t('DS-166 AC9 and the status line says why', Fa.frame().includes("An epic has no Epics view: you're already in one."), true);
 await Fa.press('1');
 t('the epic\'s Queue lists its children only', Fa.frame().filter((l) => /^[ ›] +\d+ {2}F-\d /.test(l)).map((l) => l.trim().replace(/^›\s*/, '').split(/\s+/)[1]).sort().join(), 'F-1,F-2');
+const featFile = join(I.env.DESK_HOME, 'repos', 'acme__feat', 'queue.json'), featBefore = readFileSync(featFile, 'utf8');
+await Fa.press(DOWN); await Fa.press(SHIFT_UP); await Fa.press('t');
+t('the epic\'s Queue moves nothing, and says to reorder on the repo\'s', `${readFileSync(featFile, 'utf8') === featBefore} ${Fa.frame().includes(Q.REORDER_IN_REPO)}`, 'true true');
 await Fa.press('\t'); await Fa.press('\t'); await Fa.press('\t');
 t('Tab in an epic skips the Epics view', where(Fa), 'desk-q › feat › Smart scheduling, your day | 1 Queue | queue');
 Fa.ui.finish(0);
