@@ -236,4 +236,62 @@ JC=$(grep -E '^\| `jira-create` \|' "$ROWS"); JA=$(grep -E '^\| `jira-assign-sel
 out="$JC"
 check "AC5: with jira-create yes the plan holds no assignee ask" '[[ "$JC" == *"Bash(desk-jira create *)"* ]] && [[ "$JC" != *"ask: Bash(desk-jira create *assignee*)"* ]] && [[ "$JA" != *"ask: "* ]] && [[ "$JA" != *"unguard: "* ]]'
 check "AC6: with jira-create yes the plan still holds the --route ask" '[[ "$JC" == *"ask: Bash(desk-jira create *--route*)"* ]]'
+
+# DS-136 automode: classifier entries per repo in the user settings, recorded in each repo's ledger
+U="$T/am-user.json"; DEPLOY='Bash(gh workflow run production-deploy*)'
+ENV_PN='Trusted repo: bigbenjoman/pr-ninja and its Vercel previews'
+jq -n --arg d "$DEPLOY" --arg e "$ENV_PN" '{permissions:{ask:[$d]},autoMode:{environment:[$e,"Ben works on a Mac"],allow:["$defaults","Routine dev work in the user'"'"'s own repos and worktrees"]}}' > "$U"
+cat > "$T/am-pn.json" <<'J'
+{"repo":"bigbenjoman/pr-ninja","granted":["pr-merge-green","pr-ready"],"merge":"--squash","migrate":"pnpm prisma migrate deploy","scope_environment":["Trusted repo: bigbenjoman/pr-ninja and its Vercel previews"]}
+J
+cat > "$T/am-vp.json" <<'J'
+{"repo":"bigbenjoman/voicepa","granted":["pr-merge-green"],"merge":"--merge","migrate":null}
+J
+am(){ run --ledger "$T/am-$1-ledger.json" --user-settings "$U" "${@:2}"; }
+allow_for(){ jq -r --arg p "In $1 only: " '.autoMode.allow[] | select(startswith($p))' "$U"; }
+am pn automode "$T/am-pn.json"
+pn_merge=$(allow_for bigbenjoman/pr-ninja | grep -F 'gh pr merge <n> --squash --match-head-commit <sha>')
+check "DS-136 AC1: pr-merge-green yes writes a pinned merge entry naming the repo, merge driver included" '[ $rc -eq 0 ] && [[ "$pn_merge" == *"merge-driver.sh"* ]] && [[ "$pn_merge" == *"gh pr ready <n>"* ]] && jq -e ".automode[] | select(.repo == \"bigbenjoman/pr-ninja\" and .kind == \"merge\" and .rows == [\"pr-merge-green\"])" "$T/am-pn-ledger.json" >/dev/null'
+check "DS-136 AC1: the user's own allow entries and \$defaults are kept" 'jq -e ".autoMode.allow | index(\"\$defaults\") and index(\"Routine dev work in the user'"'"'s own repos and worktrees\")" "$U" >/dev/null && ls "$T"/am-user.json.bak-desk-* >/dev/null 2>&1'
+pn_mig=$(allow_for bigbenjoman/pr-ninja | grep -F 'pnpm prisma migrate deploy')
+check "DS-136 AC2: a §4 migration runner writes a local/per-ticket migration entry naming the repo" '[[ "$pn_mig" == *"local database or a per-ticket database"* ]] && jq -e ".automode[] | select(.kind == \"migrate\" and .rows == [\"db-migrate\"])" "$T/am-pn-ledger.json" >/dev/null'
+am vp automode "$T/am-vp.json"
+check "  … a repo with no migration runner gets no migration entry" '[ $rc -eq 0 ] && [ "$(allow_for bigbenjoman/voicepa | grep -c .)" = 1 ] && ! allow_for bigbenjoman/voicepa | grep -q migrations'
+cp "$U" "$T/am-before.json"
+am pn automode "$T/am-pn.json"
+check "  … a second run reports present and writes nothing" '[ $rc -eq 0 ] && [[ "$out" == *"present  autoMode.allow [bigbenjoman/pr-ninja] merge  (recorded"* ]] && [[ "$out" != *NEW* ]] && [[ "$out" != *backup* ]] && cmp -s "$U" "$T/am-before.json"'
+am pn --settings "$T/am-none.json" remove pr-merge-green
+check "DS-136 AC3: revoking pr-merge-green removes this repo's merge entry, not another repo's" '[ $rc -eq 0 ] && [[ "$out" == *"REMOVED  autoMode.allow [bigbenjoman/pr-ninja] merge"* ]] && ! allow_for bigbenjoman/pr-ninja | grep -q "gh pr merge" && allow_for bigbenjoman/pr-ninja | grep -q "prisma migrate" && allow_for bigbenjoman/voicepa | grep -q "gh pr merge <n> --merge" && ! jq -e ".automode[] | select(.kind == \"merge\")" "$T/am-pn-ledger.json" >/dev/null'
+jq '.migrate = null' "$T/am-pn.json" > "$T/am-pn2.json"
+am pn automode "$T/am-pn2.json"
+check "  … and a plan whose migration runner went drops that entry" '[ $rc -eq 0 ] && [[ "$out" == *"REMOVED  autoMode.allow [bigbenjoman/pr-ninja] migrate"* ]] && ! allow_for bigbenjoman/pr-ninja | grep -q migrations && ! jq -e ".automode[] | select(.kind == \"migrate\")" "$T/am-pn-ledger.json" >/dev/null'
+check "DS-136 AC4: the PR Ninja environment entry is scoped to bigbenjoman/pr-ninja, others untouched" 'jq -e --arg e "In bigbenjoman/pr-ninja only: $ENV_PN" ".autoMode.environment | index(\$e)" "$U" >/dev/null && jq -e ".autoMode.environment | index(\"Ben works on a Mac\")" "$U" >/dev/null && [ "$(jq ".autoMode.environment | length" "$U")" = 2 ]'
+am pn automode "$T/am-pn.json"
+check "  … and stays scoped once on a re-run" '[[ "$out" == *"scoped   autoMode.environment  (already names bigbenjoman/pr-ninja)"* ]] && [ "$(jq "[.autoMode.environment[] | select(startswith(\"In bigbenjoman/pr-ninja only: In \"))] | length" "$U")" = 0 ]'
+check "DS-136 AC5: no entry allows a production deploy, and the production-deploy ask is still there" '! jq -r ".autoMode.allow[]" "$U" | grep -i "production" | grep -vqi "not covered" && jq -e --arg d "$DEPLOY" ".permissions.ask == [\$d]" "$U" >/dev/null'
+jq '.autoMode.allow += ["In bigbenjoman/voicepa only: a rule Ben wrote himself"]' "$U" > "$T/am-tmp.json"; cp "$T/am-tmp.json" "$U"
+VP_MERGE=$(allow_for bigbenjoman/voicepa | grep -F 'gh pr merge')
+run --ledger "$T/am-vp2-ledger.json" --user-settings "$U" automode "$T/am-vp.json"
+check "DS-136 AC6: an entry setup did not record is reported as yours and never recorded" '[ $rc -eq 0 ] && [[ "$out" == *"(yours: already there"* ]] && [[ "$out" != *NEW* ]] && ! grep -qs "voicepa" "$T/am-vp2-ledger.json"'
+run --ledger "$T/am-vp2-ledger.json" --user-settings "$U" --settings "$T/am-none.json" remove --all
+check "  … and a remove leaves it, and the user's own entry, in place" '[ $rc -eq 0 ] && jq -e --arg m "$VP_MERGE" ".autoMode.allow | index(\$m)" "$U" >/dev/null && allow_for bigbenjoman/voicepa | grep -q "a rule Ben wrote himself"'
+printf '{"autoMode": {' > "$T/am-bad.json"; cp "$T/am-bad.json" "$T/am-bad-before.json"
+run --ledger "$T/am-bad-ledger.json" --user-settings "$T/am-bad.json" automode "$T/am-pn.json"
+check "DS-136 AC7: an unreadable user settings file: exit 2, says so, nothing written" '[ $rc -eq 2 ] && [[ "$out" == *"am-bad.json could not be read"* ]] && cmp -s "$T/am-bad.json" "$T/am-bad-before.json" && [ ! -e "$T/am-bad-ledger.json" ] && ! ls "$T"/am-bad.json.bak-desk-* >/dev/null 2>&1'
+F="$T/am-fresh.json"
+run --ledger "$T/am-fresh-ledger.json" --user-settings "$F" automode "$T/am-vp.json"
+check "a fresh autoMode.allow starts with \$defaults" '[ $rc -eq 0 ] && [ "$(jq -r ".autoMode.allow[0]" "$F")" = "\$defaults" ]'
+run --ledger "$T/am-fresh-ledger.json" --user-settings "$F" --settings "$T/am-none.json" remove pr-merge-green
+check "  … and revoking its only entry drops the block setup created" '[ $rc -eq 0 ] && [ "$(jq -c . "$F")" = "{}" ]'
+SF="$T/am-same.json"; printf '{"permissions":{"deny":["Bash(rm -rf *)"]}}\n' > "$SF"
+run --ledger "$T/am-same-ledger.json" --settings "$SF" --user-settings "$SF" automode "$T/am-vp.json"
+run --ledger "$T/am-same-ledger.json" --settings "$SF" --user-settings "$SF" remove pr-merge-green
+check "remove with --settings and --user-settings on one file keeps the revoke" '[ $rc -eq 0 ] && [[ "$out" == *"REMOVED  autoMode.allow"* ]] && ! grep -q "gh pr merge" "$SF" && grep -qF "rm -rf" "$SF"'
+mkrepo amr; printf '.claude/settings.local.json\n' > "$T/amr/.gitignore"
+run --ledger "$T/amr-ledger.json" --settings "$T/amr/.claude/settings.local.json" add "$T/allow.json"
+BADU="$T/am-badu.json"; printf '{}\n' > "$BADU"
+run --ledger "$T/amr-ledger.json" --user-settings "$BADU" automode "$T/am-vp.json"
+printf '{"autoMode": {' > "$BADU"
+run --ledger "$T/amr-ledger.json" --user-settings "$BADU" --settings "$T/amr/.claude/settings.local.json" remove pr-merge-green pr-ready
+check "an unreadable user settings file in remove: named as failed, exit 1, permission rules still revoked" '[ $rc -eq 1 ] && [[ "$out" == *"FAILED   autoMode.allow [bigbenjoman/voicepa] merge"* ]] && [[ "$out" == *"REMOVED  allow Bash(gh pr ready *)"* ]] && ! grep -q "gh pr ready" "$T/amr/.claude/settings.local.json" && jq -e ".automode[] | select(.kind == \"merge\")" "$T/amr-ledger.json" >/dev/null'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]

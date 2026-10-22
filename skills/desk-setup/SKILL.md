@@ -650,6 +650,30 @@ or un-ignored file and any user-level file (exit 2, nothing written). Pass its r
 (their call, in a PR). On a refusal, offer that `.gitignore` line (and `git rm --cached` for a
 tracked copy) as the user's own action.
 
+5. **Auto-mode entries**, written to `~/.claude/settings.json` because Claude Code reads `autoMode`
+   only from user or managed settings (docs, settings-reference, checked 2026-10-22). They tell
+   the auto-mode classifier what the user has sanctioned **in this repo**, so a pinned merge or a
+   local migration is not blocked while production deploys still prompt. Build the plan from facts,
+   never prose (the script owns the wording; shape in its header): `repo` (§0 GitHub repo),
+   `granted` (every §3 row that is `yes`), `merge` (§4 Merge method as a flag), `migrate` (§4
+   Database migrate, or `null` when `none`). Then read `autoMode.environment` in
+   `~/.claude/settings.json`, and for each entry that describes only this repo (a trusted repo, its
+   deploy targets, its services) but does not start `In <repo> only:`, ask the user whether to scope
+   it here. List those they confirm, verbatim, in `scope_environment`. Show the entries the script
+   will write (permission-rows.md, "Auto-mode entries") and get a yes, then:
+
+```bash
+python3 $H "${REPO_RULES[@]}" automode "${TMPDIR:-/tmp}/desk-automode-plan-$SLUG.json"
+```
+
+   It records each entry in this repo's ledger, so `remove <row>` with `REPO_RULES` also drops this
+   repo's entries from the user settings and leaves other repos' alone. An entry it did not write is
+   printed `yours` and never touched; an `unscoped` line names an environment entry that mentions
+   this repo but applies in every repo: offer to scope it. Exit 2 with `could not be read` means the
+   user settings file is unreadable and nothing was written: say so and stop this step. In a later
+   `remove`, the same file unreadable prints `FAILED autoMode.allow …` and exits 1: the permission
+   rules were still revoked, the auto-mode entries were not, and stay recorded for the next `remove`.
+
 Existing worktrees you open yourself do not see the file; offer to copy it into the ones
 `git worktree list` shows (backing up any that exist). A later `remove` updates those copies too,
 as long as nobody has edited them since. **Autopilot worker worktrees never get a

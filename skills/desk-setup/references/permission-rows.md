@@ -65,6 +65,23 @@ orchestrator-tools` revokes them (until the next `add`). Workers never get them.
 |---|---|
 | `orchestrator-tools` | `Monitor` `mcp__claude-in-chrome__*` `ArtifactComments` `ArtifactData` `Edit(~/.claude/projects/<repo root, each non-alphanumeric character as ->/memory/**)` (the repo's session memory directory, `desk-env paths`'s `DESK_MEMORY_DIR`) |
 
+## Auto-mode entries — per repo, in the user settings
+
+`harness-rules.py automode` (desk-setup §4 step 5) writes these to `autoMode.allow` in
+`~/.claude/settings.json`, the only place Claude Code reads `autoMode` besides managed settings.
+Each starts `In <owner/name> only:`, is recorded in this repo's ledger, and goes when its owner is
+revoked. The script owns the wording; none covers a deploy, and `permissions` (the
+`gh workflow run production-deploy*` ask included) is never touched. A new `allow` array starts with
+`"$defaults"`, so the built-in rules stay.
+
+| Owner | Entry |
+|---|---|
+| `pr-merge-green` | merging a PR whose required checks are green: the merge driver, or `gh pr ready <n>` followed by `gh pr merge <n> <merge> --match-head-commit <sha>`. Unpinned, `--admin` and other repos are named as not covered |
+| `db-migrate` (not a §3 row: present while §4 Database migrate is set) | running migrations with §4 Database migrate against a local or per-ticket database. Shared, staging and production databases, and any production deploy, are named as not covered |
+
+`scope_environment` prefixes an `autoMode.environment` entry the user confirms describes only this
+repo with `In <owner/name> only:`, so one repo's environment stops applying everywhere.
+
 ## Which rows a script reads
 
 Besides the harness rules below, some rows are read by a script at run time, so changing one takes
