@@ -703,16 +703,21 @@ listed by name only, so a repo pays for plugins it never uses, and look-alike sk
 
 ```bash
 P=~/.agents/skills/desk-setup/bin/repo-plugins.py
-python3 $P --root "$ROOT" suggest          # JSON: plugin, skills, suggest keep/off, evidence, now
+python3 $P --root "$ROOT" suggest          # JSON: plugin, skills, suggest keep/off/unjudged, evidence, now
 ```
 
-It only covers plugins whose relevance this repo's own files can show (Vercel, Stripe, Figma, the
-two legal plugins, Atlassian, TypeSafe). General ones are never offered here: codex (desk-review's
-refutation), playwright (screenshots), review and process plugins.
+It lists every plugin enabled at user level. Those whose relevance this repo's own files can show
+(Vercel, Stripe, Figma, the three legal plugins, Atlassian, TypeSafe) are `keep` or `off` on that
+evidence; everything-claude-code is always `off`; codex (desk-review's refutation) and playwright
+(screenshots) are always `keep`. Any other plugin is `unjudged`: listed with its skill count, never
+suggested off.
 
-1. Show each row as `keep`/`off`, its skill count and the evidence in one line, then **one**
-   `AskUserQuestion` (multiSelect): "Switch these plugins off in this repo?", every suggested `off`
-   pre-listed first and marked (Recommended), the evidence as each description. The suggestion is a
+1. Show each row as `keep`/`off`/`unjudged`, its skill count and the evidence in one line, then
+   **one** `AskUserQuestion` call: "Switch these plugins off in this repo?", multiSelect, the
+   evidence as each option's description. A question holds at most four options, so split the rows
+   over up to four questions in that call: every suggested `off` first, marked (Recommended), then
+   the `unjudged` ones unmarked. Any rows still left over are named in the last question's text, for
+   the user to give in its free-text answer. The suggestion is a
    starting point: the user knows what the repo touches outside its files (a Stripe dashboard, a
    contract they review here).
 2. Apply what they pick, and only that, to this repo:
