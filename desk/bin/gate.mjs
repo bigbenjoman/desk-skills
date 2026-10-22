@@ -18,12 +18,17 @@
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
 //   matchHolds(files, holds, contents) -> [{ glob, why, files }]
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
+//   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
+//   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
-//     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks), holds
+//     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks), holds,
+//     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
 //     (with no diff to read, a `#<key>` hold on a listed file holds)
+//   node gate.mjs flaky                            print each known flaky check as `<check>\t<globs>`;
+//     exit 1 naming the row when it does not parse
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -190,6 +195,55 @@ export function matchHolds(files, holds, contents) {
   }).filter((h) => h.files.length);
 }
 
+// §4 Known flaky checks items: `<check>: <glob> [<glob>…]`, split on the last `: ` so a check name may
+// hold one. The globs are the paths whose change can make that check fail for real: a PR touching one
+// never has the check waived. An item with no check or no glob is an error, never a guess.
+export function parseFlaky(items) {
+  const flaky = [];
+  const errors = [];
+  for (const x of items || []) {
+    if (!x || /^none$/i.test(x.trim())) continue;
+    const i = x.lastIndexOf(': ');
+    const name = i < 0 ? '' : x.slice(0, i).trim();
+    const paths = i < 0 ? [] : x.slice(i + 2).trim().split(/\s+/).filter(Boolean);
+    if (!name || !paths.length) errors.push(`\`${x}\``);
+    else flaky.push({ name, paths });
+  }
+  return { flaky, errors };
+}
+
+// Whether a red head may merge past its failures because each is a §4 Known flaky check. null when
+// there is nothing to waive (not red, or no row). Otherwise `applies` is true only when every failing
+// check is listed, none is required (branch protection enforces those, and merging past one is a
+// bypass: §3 merge-bypass is never), the PR's files touch none of their globs, and the gate passes
+// with them set aside. `reason` says which test failed: unlisted, required, files (unreadable), paths
+// (with `hits`), or gate (something else keeps it red or pending). The driver's two reruns come first.
+export function flakyWaiver(checks, { required = [], advisory = [], runs = [], flaky = [], files = null } = {}) {
+  const gate = evaluateGate(checks, { required, advisory, runs });
+  if (gate.state !== 'fail' || !gate.failing.length || !flaky.length) return null;
+  const globs = new Map();
+  for (const f of flaky) globs.set(f.name, [...(globs.get(f.name) ?? []), ...f.paths]);
+  const names = [...new Set(gate.failing.map((f) => f.name))];
+  const no = (reason, extra = {}) => ({ applies: false, reason, checks: names, ...extra });
+  const unlisted = names.filter((n) => !globs.has(n));
+  if (unlisted.length) return no('unlisted', { checks: unlisted });
+  const req = names.filter((n) => required.includes(n));
+  if (req.length) return no('required', { checks: req });
+  if (!files) return no('files');
+  const hits = [];
+  for (const n of names) {
+    for (const glob of globs.get(n)) {
+      const re = globToRegExp(glob);
+      const hit = files.filter((f) => re.test(f));
+      if (hit.length) hits.push({ check: n, glob, files: hit.slice(0, 5) });
+    }
+  }
+  if (hits.length) return no('paths', { hits });
+  const rest = evaluateGate(checks, { required, advisory: [...advisory, ...names], runs });
+  if (rest.state !== 'pass') return no('gate', { reasons: rest.reasons });
+  return { applies: true, reason: null, checks: names };
+}
+
 // The files a `#<key>` hold has to look inside, read at the PR's merge base and at its head. A file
 // absent on one side (added or deleted) reads as null; one that cannot be read is left out, so
 // matchHolds holds it. run(ghArgs) returns gh's stdout, or a promise of it, and throws on failure.
@@ -221,6 +275,12 @@ async function loadConfigLists() {
   const E = await import('./desk-env.mjs');
   const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
   return { E, required: list('required-checks'), advisory: list('advisory-checks'), holds: parseHolds(E.configValues('merge-holds')) };
+}
+// §4 Known flaky checks, refused whole when any item does not parse: unset or `none` waives nothing.
+function loadFlaky(E) {
+  const { flaky, errors } = parseFlaky(E.configValues('flaky-checks'));
+  if (errors.length) throw new Error(`config §4 Known flaky checks does not parse: ${errors.join(', ')} (want \`<check>: <glob> [<glob>…]\`, one span per check, or \`none\`). Run /desk-setup`);
+  return flaky;
 }
 const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 
@@ -255,18 +315,25 @@ if (isMain) {
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
       const held = filesOk ? matchHolds(files, holds, contents) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];
+      const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
+      // The failing runs of the checks it would waive, for the ticket filed after the merge.
+      if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
+      if (waiver && !waiver.runs.length) waiver.runs = [...ids];
       console.log(JSON.stringify({
         number: pr.number, sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids] },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
+        waiver,
       }));
     } else if (cmd === 'holds') {
       const { holds } = await loadConfigLists();
       const files = readFileSync(rest[0] ?? '/dev/stdin', 'utf8').split('\n').filter(Boolean);
       for (const h of matchHolds(files, holds)) console.log(`${h.glob}\t${h.why}\t${h.files.length}`);
+    } else if (cmd === 'flaky') {
+      for (const f of loadFlaky(await import('./desk-env.mjs'))) console.log(`${f.name}\t${f.paths.join(' ')}`);
     } else {
-      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file>');
+      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file> | gate.mjs flaky');
       process.exit(2);
     }
   } catch (e) {

@@ -34,6 +34,13 @@
 #                                            green across two loops before it merges, so a check that
 #                                            passes before the rest of CI has even queued cannot land it
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
+# The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
+# none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
+# files touch none of the paths the row gives for it, each is still red after two reruns the driver
+# had accepted at this head (the last given its cooldown to report), and the rest of the gate passes. It is logged `WAIVED <check>`, confirmed across two
+# loops like a green head, and once merged a ticket naming the check, the PR, the head SHA and the
+# failing run is filed with `desk-jira create` where §3 jira-create is yes (otherwise the log names
+# its body file). A row that does not parse stops the driver at start.
 # The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
 # `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl.
@@ -136,6 +143,13 @@ if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 desk_apply_batch_base || exit 1
 desk_load_paths || exit 1
 desk_load_identity || exit 1
+# §4 Known flaky checks: what may be waived, and how a waiver's ticket is filed. Unset waives nothing.
+if ! FLAKY="$(node "$DESK_BIN/gate.mjs" flaky 2>&1)"; then
+  echo "FAIL: $(printf '%s' "$FLAKY" | sed 's/^gate: //') — the driver waives nothing until it does." >&2; exit 1
+fi
+TRACKER="$(desk_cfg tracker 2>/dev/null | tr 'A-Z' 'a-z' || true)"
+JIRA_CREATE_PERM="$(desk_perm jira-create)"
+SIZE_FIELD="$(desk_cfg jira-size-field 2>/dev/null || true)"
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 
@@ -287,8 +301,13 @@ behind(){ # behind <n> <sha> <key>
   fi
 }
 
+# Reruns per check per head: at most RERUNS_MAX tried, RERUN_COOLDOWN seconds apart. reruns-<n>-<sha>
+# lists every check a rerun was tried for, reruns-ok-<n>-<sha> only those GitHub accepted.
+RERUNS_MAX=2; RERUN_COOLDOWN=720
+reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
+
 rerun(){ # rerun <n> <sha> <gate json>
-  local g="$3" pend ids names rid name cnt cd_file now last
+  local g="$3" pend ids names rid name cnt cd_file now last all_ok=1 ok=""
   [ "$RERUN_PERM" = yes ] || { log "#$1 red at ${2:0:9} — config §3 ci-rerun is $RERUN_PERM, so not rerunning; report it"; return; }
   pend=$(printf '%s' "$g" | jq -r '.gate.pending | length')
   [ "$pend" = 0 ] || { log "#$1 red, but $pend check(s) still running — waiting for them before any rerun"; return; }
@@ -298,23 +317,110 @@ rerun(){ # rerun <n> <sha> <gate json>
   # At most twice per check per head: a check red after two reruns is red, not flaky.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    cnt=$(grep -cxF "$name" "$SD/reruns-$1-$2" 2>/dev/null || true)
-    if [ "${cnt:-0}" -ge 2 ]; then log "#$1 \"$name\" still red after 2 reruns at ${2:0:9} — not rerunning again; report it"; return; fi
+    cnt=$(reruns_at "$1" "$2" "$name")
+    if [ "${cnt:-0}" -ge "$RERUNS_MAX" ]; then log "#$1 \"$name\" still red after $RERUNS_MAX reruns at ${2:0:9} — not rerunning again; report it"; return; fi
   done <<EOF_NAMES
 $names
 EOF_NAMES
   cd_file="$SD/cooldown-$1"; now=$(date +%s); last=$(cat "$cd_file" 2>/dev/null || echo 0)
-  if [ $((now - last)) -lt 720 ]; then log "#$1 red, cooling down ($(( (720 - (now - last)) / 60 ))m left)"; return; fi
+  if [ $((now - last)) -lt "$RERUN_COOLDOWN" ]; then log "#$1 red, cooling down ($(( (RERUN_COOLDOWN - (now - last)) / 60 ))m left)"; return; fi
   for rid in $ids; do
     log "#$1 red + completed -> rerun --failed on run $rid"
-    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then echo "$now" > "$cd_file"
-    else log "#$1 rerun of $rid refused"; fi
+    # An accepted rerun credits only the checks of that run; one with no run id, only if every rerun was accepted.
+    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then
+      echo "$now" > "$cd_file"
+      ok="$ok$(printf '%s' "$g" | jq -r --arg r "$rid" '.gate.failing[] | select(.runId == $r) | .name')
+"
+    else log "#$1 rerun of $rid refused"; all_ok=""; fi
   done
+  [ -n "$all_ok" ] && ok="$ok$(printf '%s' "$g" | jq -r '.gate.failing[] | select(.runId == null) | .name')"
   printf '%s\n' "$names" >> "$SD/reruns-$1-$2"
+  ok=$(printf '%s\n' "$ok" | awk 'NF && !seen[$0]++')
+  if [ -n "$ok" ]; then printf '%s\n' "$ok" >> "$SD/reruns-ok-$1-$2"; fi
+}
+
+# waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
+# with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
+# Only reruns GitHub accepted count, and the last must have had its cooldown to report.
+WAIVED=""
+waivable(){
+  local w reason checks name cnt short last
+  WAIVED=""
+  w=$(printf '%s' "$3" | jq -c '.waiver // empty'); [ -n "$w" ] || return 1
+  reason=$(printf '%s' "$w" | jq -r '.reason // ""')
+  checks=$(printf '%s' "$w" | jq -r '.checks[]')
+  short=$(printf '%s' "$w" | jq -r '[.checks[] | "\"\(.)\""] | join(", ")')
+  case "$reason" in
+    unlisted) return 1 ;;   # a red check nobody has written a waiver for: red, as ever
+    required)
+      log "#$1 $short is in §4 Known flaky checks but is a §4 Required check: branch protection enforces it, so it is never waived (a bypass is never used) — report it"
+      queue_note "$4" "red on required check $short, listed as flaky: never waived; a person merges it once it passes"
+      return 1 ;;
+    paths) log "#$1 the waiver for $short does not apply: the diff touches $(printf '%s' "$w" | jq -r '[.hits[] | "\(.files[0]) (\(.glob), for \"\(.check)\")"] | join("; ")')"; return 1 ;;
+    files) log "#$1 the waiver for $short does not apply: the PR's file list could not be read"; return 1 ;;
+    gate) log "#$1 the waiver for $short does not apply: $(printf '%s' "$w" | jq -r '(.reasons // [])[:2] | join("; ")')"; return 1 ;;
+    "") ;;
+    *) return 1 ;;
+  esac
+  [ "$RERUN_PERM" = yes ] || { log "#$1 $short is a known flaky check, but it is waived only after the driver's two reruns and §3 ci-rerun is $RERUN_PERM — report it"; return 1; }
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    cnt=$(reruns_at "$1" "$2" "$name" ok)
+    if [ "${cnt:-0}" -lt "$RERUNS_MAX" ]; then log "#$1 \"$name\" is a known flaky check: waived only once still red after $RERUNS_MAX accepted reruns at ${2:0:9} (${cnt:-0} so far)"; return 1; fi
+  done <<EOF_WAIVE
+$checks
+EOF_WAIVE
+  last=$(cat "$SD/cooldown-$1" 2>/dev/null || echo 0)
+  if [ $(( $(date +%s) - last )) -lt "$RERUN_COOLDOWN" ]; then log "#$1 $short is a known flaky check: waiting out the last rerun's cooldown before reading it as still red"; return 1; fi
+  WAIVED="$short"
+}
+
+# flaky_ticket <n> <sha> <gate json> <key> <waived checks>: once a waived PR has merged, the ticket that
+# gets the flake fixed. Filed once per PR and head; the body stays in <state>/merge-driver for whoever
+# files it by hand.
+flaky_ticket(){
+  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline=""
+  [ -f "$SD/flaky-filed-$1-$2" ] && return 0
+  # desk-jira's lint wants a size: the §4 Size field where there is one, else the body's first line.
+  if [ -n "$SIZE_FIELD" ] && [ "$SIZE_FIELD" != none ]; then size=("$SIZE_FIELD=S"); else sizeline="Size: S"; fi
+  printf '%s' "$3" | jq -r --arg repo "$REPO" --arg n "$1" --arg sha "$2" --arg key "$4" --arg size "$sizeline" '
+    def run: "https://github.com/\($repo)/actions/runs/\(.)";
+    (if $size != "" then $size, "" else empty end),
+    "## Outcome",
+    "The merge driver merged [PR #\($n)](https://github.com/\($repo)/pull/\($n)) (\($key)) at head `\($sha)` past a red check named in config §4 Known flaky checks. It was still red after two reruns and the PR touched none of the paths the row gives for it. This ticket is the cost of that waiver: make the check pass reliably, so nothing is merged past it again.",
+    "",
+    "- Check: \(.waiver.checks | map("`\(.)`") | join(", "))",
+    "- PR: https://github.com/\($repo)/pull/\($n)",
+    "- Head SHA: `\($sha)`",
+    "- Failing run: \(if (.waiver.runs | length) > 0 then (.waiver.runs | map(run) | join(", ")) else "(no run id reported)" end)",
+    "",
+    "## Acceptance criteria",
+    "1. AC1: Given the check named above, when it runs on a change that does not touch the paths its §4 Known flaky checks row gives, then it passes on the first run.",
+    "",
+    "## Verification",
+    "- The failing run above, read for the cause before any fix.",
+    "",
+    "## Design",
+    "No UI.",
+    "",
+    "## Out of scope",
+    "- Changing the code PR #\($n) merged."' > "$body" || { log "#$1 waiver ticket body could not be written"; return 1; }
+  if [ "$TRACKER" != jira ]; then
+    log "#$1 WAIVED: no tracker (§4 Tracker is ${TRACKER:-unset}), so no ticket filed — the flake's details are in $body"; touch "$SD/flaky-filed-$1-$2"; return 0
+  fi
+  if [ "$JIRA_CREATE_PERM" != yes ]; then
+    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: desk-jira create Bug \"$summary\" $body"; touch "$SD/flaky-filed-$1-$2"; return 0
+  fi
+  if out=$(desk-jira create Bug "$summary" "$body" ${size[@]+"${size[@]}"} 2>&1); then
+    touch "$SD/flaky-filed-$1-$2"; log "#$1 WAIVED: filed $(printf '%s' "$out" | grep -m1 '^created' | sed 's/^created //')"
+  else
+    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: desk-jira create Bug \"$summary\" $body"
+    touch "$SD/flaky-filed-$1-$2"
+  fi
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out
+  local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out waived label
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -344,20 +450,28 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
     BEHIND) behind "$n" "$sha" "$key"; return 1 ;;
   esac
 
+  waived=""
   case "$state" in
     pass) ;;
-    fail) log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"; rerun "$n" "$sha" "$g"; return 1 ;;
+    fail)
+      log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
+      if waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
+      else rerun "$n" "$sha" "$g"; return 1; fi ;;
     *) log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
+  # A waived head is held like a green one: the same head, still only red on its known flakes, a loop later.
+  label="green"; [ -n "$waived" ] && label="green but for WAIVED $waived"
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)
-  if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n green at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
-  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n green at ${sha:0:9} — confirming"; return 1; fi
+  if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
+  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
-  log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"
+  if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
+  else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
+    [ -n "$waived" ] && flaky_ticket "$n" "$sha" "$g" "$key" "$waived"
     # The merge time on the ticket, and its line in the eta history. A failure here never undoes the merge.
     if rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
@@ -368,7 +482,7 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   return 1
 }
 
-log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW"
+log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)]"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
 # pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run.
