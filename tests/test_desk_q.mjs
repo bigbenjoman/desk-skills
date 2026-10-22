@@ -554,7 +554,8 @@ const nav = (start) => screen(start, 120, () => FIXED);
 // Which view the body shows, from what only that view draws.
 const shows = (s) => {
   const f = s.frame();
-  return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO /.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline' : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : 'none';
+  return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO {2,}LAST PASS/.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline'
+    : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics' : 'none';
 };
 // Wide enough that every keys line is one line.
 const keysLine = (s) => s.frame().at(-1);
@@ -565,10 +566,10 @@ await sleep(20);
 t('DS-164 the Queue shows first, its tab line under the breadcrumb', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 1 Queue | queue | true');
 await N1.press('\t');
 t('DS-164 AC1 Tab on a repo\'s Queue shows its Timeline, Timeline highlighted', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 2 Timeline | timeline | true');
-await N1.press('\t'); await N1.press('\t');
-t('DS-164 Tab from By day wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
+await N1.press('\t'); await N1.press('\t'); await N1.press('\t');
+t('DS-164 Tab from Epics wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
 await N1.press('\x1b[Z');
-t('DS-164 shift+Tab steps back', where(N1), 'desk-q › tidy | 3 By day | days');
+t('DS-164 shift+Tab steps back', where(N1), 'desk-q › tidy | 4 Epics | epics');
 N1.ui.finish(0);
 
 const threes = [];
@@ -660,13 +661,15 @@ views10.ticket = keysLine(N10r);
 N10r.ui.finish(0);
 const has = (line, k) => line.includes(k);
 const want10 = {
-  'every queue': { yes: ['tab or 1–3 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
-  'every timeline': { yes: ['tab or 1–3 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
-  'every days': { yes: ['tab or 1–3 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'repo queue': { yes: ['tab or 1–3 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
-  'repo timeline': { yes: ['tab or 1–3 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
-  'repo days': { yes: ['tab or 1–3 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['tab or 1–3 view', 'z scale', 'a all repos'] },
+  'every queue': { yes: ['tab or 1–4 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
+  'every timeline': { yes: ['tab or 1–4 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
+  'every days': { yes: ['tab or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'every epics': { yes: ['tab or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'repo queue': { yes: ['tab or 1–4 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
+  'repo timeline': { yes: ['tab or 1–4 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
+  'repo days': { yes: ['tab or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  'repo epics': { yes: ['tab or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['tab or 1–4 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
   ...yes.filter((k) => !has(views10[v] ?? '', k)).map((k) => `${v} lacks ${k}`), ...no.filter((k) => has(views10[v] ?? '', k)).map((k) => `${v} lists ${k}`)]).join(' | '), '');
@@ -687,6 +690,68 @@ t('DS-164 a click on a repo row opens it, even when the report comes in three re
 t('DS-164 a click leaves no stray keys behind', Nc.frame().at(-1).startsWith(':'), false);
 Nc.ui.finish(0);
 t('DS-164 leaving the screen turns mouse reporting off', Q.LEAVE_SCREEN.includes('\x1b[?1000l') && Q.LEAVE_SCREEN.includes('\x1b[?1006l'), true);
+
+// ---- DS-166: a repo's Timeline by epic, the epic as a place, and the Epics view. The ACs' voicepa
+// is feat here: three epics (one under way, one provisional, one with no date) and two tickets in none.
+const EP1 = { key: 'E-1', summary: 'Smart scheduling, your day: plan the day ahead', children: [{ key: 'F-1', done: false }, { key: 'F-2', done: false }, { key: 'F-3', done: true }] };
+const EP2 = { key: 'E-2', summary: 'Beats - list and detail', children: [{ key: 'F-4', done: false }, { key: 'F-9', done: false }] };
+const EP3 = { key: 'E-3', summary: 'Outlets — sync', children: [{ key: 'F-5', done: false }] };
+dated('feat', 4600, { hours: [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8], tickets: {
+  'F-1': { state: 'running', stage: '4/9' }, 'F-2': ready, 'F-3': { state: 'done', result: { pr: 3 }, merged_at: new Date(FIXED - 2 * HOUR).toISOString() },
+  'F-4': ready, 'F-5': { state: 'parked', park: { question: 'which copy?' } }, 'F-6': ready, 'F-7': ready } });
+for (const [k, epic] of Object.entries({ 'F-1': EP1, 'F-2': EP1, 'F-3': EP1, 'F-4': EP2, 'F-5': EP3 })) {
+  writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__feat', 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size: 'M', epic }));
+}
+const featRepos = Q.loadRepos(FIXED);
+const featF = Q.forecastOf(featRepos.find((r) => r.name === 'feat'), { now: FIXED });
+const featTl = lines(Q.timelineScreen(featRepos, 'acme__feat', { now: FIXED }));
+const epicRowOf = (name) => featTl.find((l) => l.startsWith(`  ${name} `)) ?? '';
+const e1 = epicRowOf('Smart scheduling, your day'), e2 = epicRowOf('Beats'), e3 = epicRowOf('Outlets');
+t('DS-166 AC1 an epic is one row named by its summary up to the colon, with children done of total and a bar',
+  /^ {2}Smart scheduling, your day +1\/3 [ ┆]*█+░*[ ┆]*[ ▸] /.test(e1), true);
+t('DS-166 AC1 then its STARTS and SHIPS, the header naming both', `${e1.endsWith(`started${' '.repeat(6)}${whenAt(featF.E['E-1'].likely, FIXED)}`)} ${featTl.some((l) => /^ +now .* {2}STARTS {7}SHIPS$/.test(l))}`, 'true true');
+const datedEpics = ['E-1', 'E-2'].sort((a, b) => featF.E[a].likely - featF.E[b].likely).map((k) => ({ 'E-1': e1, 'E-2': e2 })[k]);
+t('DS-166 AC1 sorted by SHIPS, the undated one last', featTl.filter((l) => [e1, e2, e3].includes(l)).join('\n'), [...datedEpics, e3].join('\n'));
+t('DS-166 AC2 an epic under way reads "started"', /\sstarted\s/.test(e1), true);
+t('DS-166 AC3 a provisional epic\'s row ends "provisional"', /^ {2}Beats +0\/2 .*█.* {2}provisional$/.test(e2), true);
+t('DS-166 AC4 an epic with no date gives the reason instead of a bar', `${e3.includes('No date: 1 waiting on you')} ${e3.includes('█')}`, 'true false');
+const other = featTl.findIndex((l) => l === '  Other work · 2 tickets with no epic');
+t('DS-166 AC5 the tickets in no epic follow under "Other work", each by title and state with its own bar',
+  other > featTl.indexOf(e3) && featTl.slice(other + 1, other + 3).map((l) => /^ {4}(F-\d) title +ready +[ ┆]*█/.exec(l)?.[1]).sort().join(), 'F-6,F-7');
+t('DS-166 AC5 none of an epic\'s tickets is a row of its own', featTl.some((l) => /F-[1-5]/.test(l)), false);
+
+const Fa = nav({ kind: 'timeline', slug: 'acme__feat' });
+await sleep(20);
+const rawLine = (s, text) => s.output.buf.split('\x1b[H').at(-1).split('\r\n').find((l) => l.replace(ANSI, '').includes(text)) ?? '';
+t('DS-166 AC3 a provisional epic\'s bar is amber', rawLine(Fa, 'Beats').includes('\x1b[33m█'), true);
+for (let i = 0; i < 10 && !Fa.selected().includes('Smart scheduling'); i++) await Fa.press(DOWN);
+await Fa.press('\r');
+const kidRows = Fa.frame().filter((l) => /^[ ›] F-\d /.test(l)).map((l) => l.slice(2, 5));
+t('DS-166 AC6 Enter on an epic: its Timeline, one bar per child, under its breadcrumb', `${where(Fa)} | ${kidRows.sort().join()}`, 'desk-q › feat › Smart scheduling, your day | 2 Timeline | timeline | F-1,F-2');
+t('DS-166 AC6 the header names the epic\'s key and children done', Fa.frame().some((l) => l.startsWith('feat · forecast') && l.endsWith(' · E-1: 1 of 3 children done')), true);
+await Fa.press('\x1b');
+t('DS-166 AC7 Esc on the epic\'s Timeline: the repo\'s Timeline, the epic still selected', `${where(Fa)} | ${Fa.selected().includes('Smart scheduling')}`, 'desk-q › feat | 2 Timeline | timeline | true');
+await Fa.press('4');
+const epicsRows = Fa.frame().filter((l) => /^[ ›] {1,2}E-\d /.test(l));
+const epicsRow = (k) => epicsRows.find((l) => l.slice(2).startsWith(k)) ?? '';
+t('DS-166 AC8 4 shows the Epics view, one row per epic', `${where(Fa)} | ${epicsRows.length}`, 'desk-q › feat | 4 Epics | epics | 3');
+t('DS-166 AC8 each with a bar of done, queued and not-yet-queued children', `${epicsRow('E-1').includes(`${'■'.repeat(16)}    1/3`)} ${epicsRow('E-2').includes(`${'■'.repeat(8)}${'□'.repeat(8)}    0/2`)}`, 'true true');
+t('DS-166 AC8 its SHIPS and the child that sets the date', epicsRow('E-1').endsWith(`${whenAt(featF.E['E-1'].likely, FIXED).padEnd(14)}set by ${featF.E['E-1'].setBy}`), true);
+t('DS-166 AC8 a provisional or undated epic says so there', `${epicsRow('E-2').endsWith('provisional: 1 not queued')} ${epicsRow('E-3').includes('No date: 1 waiting on you')}`, 'true true');
+await Fa.press('\r');
+t('DS-166 AC8 Enter on an epic there opens its Timeline', where(Fa), 'desk-q › feat › Smart scheduling, your day | 2 Timeline | timeline');
+await Fa.press('4');
+t('DS-166 AC9 4 in an epic leaves the view as it is', where(Fa), 'desk-q › feat › Smart scheduling, your day | 2 Timeline | timeline');
+t('DS-166 AC9 and the status line says why', Fa.frame().includes("An epic has no Epics view: you're already in one."), true);
+await Fa.press('1');
+t('the epic\'s Queue lists its children only', Fa.frame().filter((l) => /^[ ›] +\d+ {2}F-\d /.test(l)).map((l) => l.trim().replace(/^›\s*/, '').split(/\s+/)[1]).sort().join(), 'F-1,F-2');
+await Fa.press('\t'); await Fa.press('\t'); await Fa.press('\t');
+t('Tab in an epic skips the Epics view', where(Fa), 'desk-q › feat › Smart scheduling, your day | 1 Queue | queue');
+Fa.ui.finish(0);
+
+const everyFeat = lines(Q.timelineScreen(featRepos, null, { now: FIXED }));
+t('DS-166 AC10 every repo\'s Timeline stays one bar per ticket, grouped by repo', `${everyFeat.includes('  feat · 6 tickets')} ${['F-1', 'F-2', 'F-4', 'F-6'].every((k) => everyFeat.some((l) => l.startsWith(`  ${pad10(k)}`)))} ${everyFeat.some((l) => /Other work|Smart scheduling/.test(l))}`,
+  'true true false');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

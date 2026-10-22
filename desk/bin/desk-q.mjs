@@ -7,16 +7,17 @@
 //   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
 //   desk-q ships [<repo>]                the Timeline: a bar per unfinished ticket from when it starts
-//                                        to when it ships (`when` too); with --plain, one line per ticket,
-//                                        then one per epic with children in the queue
+//                                        to when it ships (`when` too), and in one repo with an epic, a bar
+//                                        per epic first; with --plain, one line per ticket, then one per
+//                                        epic with children in the queue
 //   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //
 // A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
-// the same views open full-screen, with arrow keys, Enter and Esc, Tab or 1–3 for a place's Queue,
-// Timeline and By day, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
+// the same views open full-screen, with arrow keys, Enter and Esc, Tab or 1–4 for a place's Queue,
+// Timeline, By day and Epics, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. The one other write is a repo's <state>/eta.jsonl, which gains a ticket's first
 // ship estimate the first time a live batch's forecast dates it.
@@ -275,6 +276,18 @@ function epicLine(r, F, e, now, checkin) {
   return `${lead}${pad(starts, 13)}${pad(when(d.likely, now), 14)}${note}`.trimEnd();
 }
 
+// An epic's name as people say it: its summary up to the first colon or dash, else its key.
+const epicShort = (e) => String(e?.summary ?? '').split(/:| — | - /)[0].trim() || e?.summary?.trim() || e?.key || '';
+// The epics the forecast runs forward: a child unfinished, or one not queued yet.
+const openEpics = (F) => Object.values(F?.epics ?? {}).filter((e) => F.E && e.key in F.E);
+// Provisional while some children are not queued, or the list of them could not be read.
+const provisional = (e) => e.missing !== 0;
+// "started" once a child is done or running.
+const epicStarts = (r, F, e, d, now) => (e.done > 0 || r.rows.some((x) => F.of[x.t.key] === e.key && x.k === 'running') ? 'started'
+  : d.start == null ? '—' : d.start <= now + SOON ? 'now' : when(d.start, now));
+// Whether the epic still has an unfinished ticket in this repo's queue.
+const epicIn = (r, F, key) => !!F?.epics?.[key] && r.rows.some((x) => F.of[x.t.key] === key);
+
 // ---- Timeline and By day -----------------------------------------------------------------------
 
 // What z cycles through on the Timeline, auto first.
@@ -318,8 +331,9 @@ const segRow = (id, segs, open) => {
 };
 
 // The repos a ships view dates: one repo, or every repo with a batch. `per` holds each in order with
-// its forecast, or a note saying why it has none; `items` is every unfinished ticket of the dated ones.
-function etaScope(repos, slug, { now, checkin }) {
+// its forecast, or a note saying why it has none; `items` is every unfinished ticket of the dated ones,
+// or with `epic`, of that epic only.
+function etaScope(repos, slug, { now, checkin, epic = null }) {
   const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
   const per = list.map((r) => {
     if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
@@ -329,10 +343,11 @@ function etaScope(repos, slug, { now, checkin }) {
   });
   const dated = per.filter((p) => p.F);
   const notes = per.filter((p) => p.note).map((p) => p.note);
-  const items = dated.flatMap(({ r, F }) => r.rows.map((x) => ({ r, F, x, e: etaOf(F, x.t.key) })));
-  // One repo's view adds its hit rate; every repo's leaves it to each repo's own.
-  const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin),
-    ...(slug ? [hitLine(list[0])] : [])];
+  const items = dated.flatMap(({ r, F }) => r.rows.filter((x) => !epic || F.of[x.t.key] === epic).map((x) => ({ r, F, x, e: etaOf(F, x.t.key) })));
+  // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
+  const ep = epic ? dated[0]?.F.epics[epic] : null;
+  const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin)
+    + (ep ? ` · ${ep.key}: ${ep.done} of ${ep.total} children done` : ''), ...(slug ? [hitLine(list[0])] : [])];
   return { list, per, notes, items, head };
 }
 
@@ -343,29 +358,41 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]];
 const why = (i) => capital(undatedWhy(i.r, i.F, i.x)) || 'No date yet';
-const openTicket = (i) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key });
+// A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
+const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
 // The label columns before a Timeline bar, the STARTS and SHIPS after it (behind its end mark), and
 // the gap before TITLE.
 const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_GAP = 2, TL_BAR = 64;
+// By epic, the name and children-done columns before the bar, and the note after SHIPS.
+const EP_NAME = 27, EP_LEAD = 2 + EP_NAME + 5 + 1, EP_NOTE = '  provisional'.length;
 
 // One bar per ticket from STARTS to SHIPS, shaded on to its could-run-to time, sorted by ship time,
 // each row ending in its title; every repo's view groups them under a row per repo. `width` null is the plain
 // output. The bar and the title share what the row has left, the bar taking at most TL_BAR.
-function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto' } = {}) {
-  const s = etaScope(repos, slug, { now, checkin });
+// One repo with an open epic is by feature instead: a bar per epic from its first child's start to its
+// last child's ship, then the tickets in no epic under "Other work", each led by its title. `epic` keeps
+// to that epic's tickets.
+function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto', epic = null } = {}) {
+  const s = etaScope(repos, slug, { now, checkin, epic });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
-  const spare = width == null ? null : width - TL_LEAD - TL_TAIL - TL_GAP;
-  const cw = width == null ? TL_BAR : Math.max(12, Math.min(TL_BAR, Math.ceil(spare / 2)));
+  const F0 = slug && !epic ? s.per[0]?.F : null;
+  const epics = openEpics(F0).map((e) => ({ e, d: F0.E[e.key] })).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const byEpic = epics.length > 0;
+  const items = byEpic ? s.items.filter((i) => !i.F.of[i.x.t.key]) : s.items;
+  const lead = byEpic ? EP_LEAD : TL_LEAD;
+  const spare = width == null ? null : width - lead - TL_TAIL - (byEpic ? EP_NOTE : TL_GAP);
+  const cw = width == null ? TL_BAR : Math.max(12, Math.min(TL_BAR, byEpic ? spare : Math.ceil(spare / 2)));
   const tw = width == null ? 60 : Math.max(1, spare - cw);
-  const tt = titler(s.items.map(summaryOf));
+  const tt = titler(items.map(summaryOf));
   const title = (i) => [`${' '.repeat(TL_GAP)}${cut(tt(summaryOf(i)), tw)}`, null];
-  const dated = s.items.filter((i) => i.e).sort((a, b) => a.e.likely - b.e.likely);
-  const undated = s.items.filter((i) => !i.e);
-  const sc = scaleFor((dated.length ? Math.max(...dated.map((i) => i.e.late)) : now + DAY) - now, now, zoom);
+  const dated = items.filter((i) => i.e).sort((a, b) => a.e.likely - b.e.likely);
+  const undated = items.filter((i) => !i.e);
+  const ends = [...dated.map((i) => i.e.late), ...epics.filter((x) => x.d).map((x) => x.d.late)];
+  const sc = scaleFor((ends.length ? Math.max(...ends) : now + DAY) - now, now, zoom);
   const col = (t) => Math.floor(((t - now) / sc.span) * cw);
   const rails = new Set();
   if (sc.id === 'hours' || (sc.id === 'days' && sc.span <= 8 * DAY)) for (let c = nextCheckin(now); c != null && c < now + sc.span; c = nextCheckin(c)) rails.add(col(c));
@@ -379,9 +406,9 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   for (const c of rails) if (c >= 0 && c < cw) tick[c] = '▾';
   tick[0] = '├';
   [...'now'].forEach((ch, j) => { lab[j] = ch; });
-  const ind = ' '.repeat(TL_LEAD);
+  const ind = ' '.repeat(lead);
   const head = [...s.head, `Scale: ${sc.id}${zoom === 'auto' ? ' (auto)' : ''}${width == null ? '' : ' · z to change'}`, ''];
-  if (s.items.length) head.push(`${ind}${lab.join('')}  ${pad('STARTS', 13)}${pad('SHIPS', 12 + TL_GAP)}TITLE`, `${ind}${tick.join('')}`);
+  if (s.items.length) head.push(`${ind}${lab.join('')}  ${pad('STARTS', 13)}${byEpic ? 'SHIPS' : `${pad('SHIPS', 12 + TL_GAP)}TITLE`}`, `${ind}${tick.join('')}`);
   // Each run of bar glyphs is one segment, so it is coloured once and cut as a whole.
   const bar = (e, sgr) => {
     const a = Math.max(0, col(e.start)), b = Math.max(a, col(e.likely)), c = Math.max(b, col(e.late));
@@ -394,6 +421,21 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     return out;
   };
   const rows = [];
+  if (byEpic) {
+    const r = s.per[0].r;
+    for (const { e, d } of epics) {
+      const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
+      const open = { kind: 'epic', slug: r.slug, epic: e.key };
+      if (!d) { rows.push(segRow(`${r.slug} ${e.key}`, [...name, [epicWhy(r, F0, e, checkin), STATE_SGR.needs]], open)); continue; }
+      const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
+      rows.push(segRow(`${r.slug} ${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
+        [` ${pad(epicStarts(r, F0, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
+    }
+    if (items.length) rows.push(segRow(`${r.slug} other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
+  }
+  // By epic, a ticket is led by its title and has no TITLE column.
+  const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 19), 20)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
+  const tail = (i) => (byEpic ? [] : [title(i)]);
   for (const r of slug ? s.list : [...new Set(s.items.map((i) => i.r))]) {
     const mine = (list) => list.filter((i) => i.r === r);
     if (!slug) {
@@ -402,14 +444,19 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     }
     for (const i of mine(dated)) {
       const sgr = STATE_SGR[i.x.k];
-      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], title(i)], openTicket(i)));
+      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
     }
     // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
-    for (const i of mine(undated)) rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...ticketLead(i, '  '), [' ', null], [why(i).padEnd(cw + TL_TAIL), STATE_SGR[i.x.k]], title(i)], openTicket(i)));
+    for (const i of mine(undated)) {
+      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...tlead(i), [' ', null], [byEpic ? why(i) : why(i).padEnd(cw + TL_TAIL), STATE_SGR[i.x.k]], ...tail(i)], openTicket(i, epic)));
+    }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
   if (!s.items.length) foot.push('', 'Nothing unfinished here.');
-  else {
+  else if (byEpic) {
+    foot.push('', `One bar per epic: █ first child starts to last child ships   ░ could run to   n/m children done${width == null ? '' : '   amber: provisional'}`,
+      'Enter on an epic shows its tickets. ┆ check-ins at 08:00 and 17:00. Within a week: day and time; beyond, the date.');
+  } else {
     foot.push('', `█ starts to ships   ░ could run to (1 run in 5 is later)   ┆ check-ins at 08:00 and 17:00${width == null ? '' : '   colour shows state'}`,
       'Within a week: day and time. Beyond a week: the date.');
   }
@@ -429,8 +476,8 @@ export function shipDay(t, now) {
 
 // Tickets grouped by the day they ship, undated ones last under "No date yet", each with its STARTS,
 // SHIPS and title; an undated one says why in place of its dates.
-function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false } = {}) {
-  const s = etaScope(repos, slug, { now, checkin });
+function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false, epic = null } = {}) {
+  const s = etaScope(repos, slug, { now, checkin, epic });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
   const all = !slug;
@@ -450,7 +497,7 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
       const title = cut(tt(summaryOf(i)), tw);
       const dates = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, null]
         : [why(i).length <= 25 ? pad(why(i), 27) : `${why(i)}  `, STATE_SGR[i.x.k]];
-      rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), dates, [title, null]], openTicket(i)));
+      rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), dates, [title, null]], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
@@ -459,6 +506,34 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
 }
 
 export const daysScreen = (repos, slug, opts) => joined(daysParts(repos, slug, opts));
+
+// The Epics view: each open epic, soonest first, with a bar of its children done, queued and not
+// queued yet, its SHIPS and the child that sets it. Enter opens the epic.
+const EP_BAR = 16;
+function epicsParts(repos, slug, { now = Date.now(), checkin = false } = {}) {
+  const s = etaScope(repos, slug, { now, checkin });
+  if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
+  const all = !slug;
+  const list = s.per.filter((p) => p.F).flatMap(({ r, F }) => openEpics(F).map((e) => ({ r, F, e, d: F.E[e.key] })))
+    .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const head = [...s.head, ''];
+  if (list.length) head.push(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`);
+  const rows = list.map(({ r, F, e, d }) => {
+    const done = Math.round((e.done / e.total) * EP_BAR);
+    const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
+    const note = e.missing == null ? 'provisional: children not read' : e.missing ? `provisional: ${e.missing} not queued` : d?.setBy ? `set by ${d.setBy}` : '';
+    const date = d ? [[pad(when(d.likely, now), 14), null], [note, provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), STATE_SGR.needs]];
+    return segRow(`${r.slug} ${e.key}`, [[`  ${all ? pad(r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
+      ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], ['□'.repeat(EP_BAR - done - queued), DIM],
+      [` ${rpad(`${e.done}/${e.total}`, 6)}  `, null], ...date], { kind: 'epic', slug: r.slug, epic: e.key });
+  });
+  const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
+  if (s.per.some((p) => p.F) && !list.length) foot.push('', 'No queued ticket here belongs to an epic.');
+  if (list.length) foot.push('', '■ done  ■ in the queue  □ not queued yet (date is provisional). An epic ships when its last child merges.');
+  return { head, rows, foot };
+}
+
+export const epicsScreen = (repos, slug, opts) => joined(epicsParts(repos, slug, opts));
 
 // The screens' header note on tickets waiting on the user.
 const parkedBadge = (checkin) => (checkin ? 'Parked: dated at the next check-in · c to undo' : 'Parked: no date · c to date them at check-ins');
@@ -546,8 +621,9 @@ function detail(r, x) {
 // The columns before TITLE on a ticket row.
 const ROW_LEAD = 82;
 
-// `width` is the terminal's: titles take what the row has left, rather than a fixed 60.
-function repoParts(r, { now = Date.now(), width = null, checkin = false } = {}) {
+// `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
+// to that epic's tickets, each keeping its place in the whole queue.
+function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
@@ -560,14 +636,17 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false } = {}) 
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
   const F = forecastOf(r, { now, checkin });
+  const ep = epic ? F.epics[epic] : null;
+  if (ep) head.splice(1, 0, `${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`);
+  const list = epic ? r.rows.filter((x) => F.of[x.t.key] === epic) : r.rows;
   const summary = (x) => summaryOf({ r, x });
-  const tt = titler(r.rows.map(summary));
-  const rows = r.rows.map((x) => {
+  const tt = titler(list.map(summary));
+  const rows = list.map((x) => {
     const line = `  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`.trimEnd();
-    return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key } };
+    return { id: x.t.key, line, open: { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) } };
   });
-  const foot = !r.rows.length ? ['  No unfinished tickets.']
-    : r.rows.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];
+  const foot = !list.length ? ['  No unfinished tickets.']
+    : list.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];
   return { head, rows, foot };
 }
 
@@ -784,10 +863,12 @@ export const LEAVE_SCREEN = `${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`;
 const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 const PARTIAL_MS = 30;
 const REVERSE = '7';
-// The views every place but a ticket has, in the order Tab and the number keys take them.
-export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day']];
-const VIEW_KEYS = 'tab or 1–3 view';
+// The views every place but a ticket has, in the order Tab and the number keys take them. An epic
+// has every one but Epics.
+export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics']];
+const VIEW_KEYS = 'tab or 1–4 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
+export const NO_EPICS_HERE = "An epic has no Epics view: you're already in one.";
 
 function jiraUrlFor(slug, key) {
   const site = repoConfigValue(slug, 'jira-site');
@@ -839,8 +920,8 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
   ? { place: v.slug ? { kind: 'repo', slug: v.slug } : { kind: 'overview', all: false }, tab: v.kind }
   : { place: v, tab: null });
 
-// The full-screen view is a place (every repo, a repo, a ticket) and, for every place but a ticket,
-// a view of it: Queue, Timeline or By day. Tab, 1–3, w and a click on the tab line change the view
+// The full-screen view is a place (every repo, a repo, an epic, a ticket) and, for every place but a
+// ticket, a view of it: Queue, Timeline, By day or Epics. Tab, 1–4, w and a click on the tab line change the view
 // and keep the place; Enter, Esc and a click on the breadcrumb change the place and keep the view.
 // ↑↓ select, : takes a command, q quits. Rereads the queues every REFRESH_MS, keeping the selection
 // on the same repo or ticket.
@@ -860,7 +941,9 @@ export function interactive({
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
   const repoOf = (slug) => repos.find((r) => r.slug === slug);
-  const hasTabs = () => view.kind === 'overview' || view.kind === 'repo';
+  const hasTabs = () => ['overview', 'repo', 'epic'].includes(view.kind);
+  const tabOk = (id) => !(view.kind === 'epic' && id === 'epics');
+  const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
   // The parked note is shown while any ticket in view waits on the user, or c is on.
   const badge = (rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? parkedBadge(checkin) : '');
 
@@ -869,12 +952,14 @@ export function interactive({
     const r = view.slug ? repoOf(view.slug) : null;
     const parts = [{ label: 'desk-q', to: { kind: 'overview', all: false } }];
     if (view.slug) parts.push({ label: r?.name ?? view.slug, to: { kind: 'repo', slug: view.slug } });
-    if (view.key) parts.push({ label: view.key, to: { kind: 'ticket', slug: view.slug, key: view.key } });
+    if (view.epic) parts.push({ label: cut(epicShort(epicFacts()?.epics?.[view.epic] ?? { key: view.epic }), 40), to: { kind: 'epic', slug: view.slug, epic: view.epic } });
+    if (view.key) parts.push({ label: view.key, to: { kind: 'ticket', slug: view.slug, key: view.key, ...(view.epic ? { epic: view.epic } : {}) } });
     if (view.kind === 'log') parts.push({ label: 'log', to: null });
     return spans(parts, ' › ');
   }
 
-  // "1 Queue  2 Timeline  3 By day", the view shown in reverse video.
+  // "1 Queue  2 Timeline  3 By day  4 Epics", the view shown in reverse video and one this place
+  // lacks dimmed.
   const tabParts = () => spans(VIEWS.map(([id, label], i) => ({ label: `${i + 1} ${label}`, id })), '  ');
 
   function build() {
@@ -884,17 +969,22 @@ export function interactive({
     const esc = view.kind === 'overview' ? '' : 'esc back · ';
     const cmdKeys = `: command · ${esc}q quit`;
     if (view.slug && !r) return { head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: cmdKeys };
+    if (!tabOk(tab)) tab = 'timeline';
+    if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
-      const opts = { now, width: w, checkin, zoom };
-      return { badge: badge(r ? [r] : repos), ...(tl ? timelineParts(repos, view.slug ?? null, opts) : daysParts(repos, view.slug ?? null, opts)),
+      const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null };
+      const parts = tl ? timelineParts : tab === 'days' ? daysParts : epicsParts;
+      return { badge: badge(r ? [r] : repos), ...parts(repos, view.slug ?? null, opts),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${tl ? 'z scale · ' : ''}c parked dates · ${cmdKeys}` };
     }
     if (view.kind === 'overview') {
       return { badge: badge(repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · ${cmdKeys}` };
     }
-    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    if (view.kind === 'repo' || view.kind === 'epic') {
+      return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic ?? null }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    }
     if (!r.q?.tickets?.[view.key]) return { head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
@@ -923,7 +1013,7 @@ export function interactive({
     const crumbs = crumbParts().map((p) => p.label).join(' › ');
     const pinned = [];
     if (hasTabs()) {
-      const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : null]]);
+      const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : tabOk(p.id) ? null : DIM]]);
       if (screen.badge) segs.push([`    ${screen.badge}`, null]);
       pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false));
     } else pinned.push(fit(screen.badge ? `${crumbs}    ${screen.badge}` : crumbs));
@@ -951,11 +1041,13 @@ export function interactive({
   }
 
   // A new place pushes the one you were on, so Esc comes back to it with its selection; the view
-  // stays whatever it is. A Timeline or By day row opening a repo opens that repo's same view.
+  // stays whatever it is. A Timeline or By day row opening a repo opens that repo's same view, and an
+  // Epics row opens its epic's Timeline.
   function go(v) {
     const p = placeOf(v);
     stack.push({ view, sel, selId, tab });
     view = p.place; if (p.tab) tab = p.tab;
+    if (!tabOk(tab)) tab = 'timeline';
     sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto';
   }
   // The selection comes back only to the view it was made on: another view's rows are other rows.
@@ -970,12 +1062,19 @@ export function interactive({
     if (p.tab) tab = p.tab;
     stack.length = 0;
     const up = (u) => stack.push({ view: u, sel: 0, selId: null, tab });
-    if (p.place.kind !== 'overview') up({ kind: 'overview', all: false });
-    if (['ticket', 'log'].includes(p.place.kind)) up({ kind: 'repo', slug: p.place.slug });
-    if (p.place.kind === 'log') up({ kind: 'ticket', slug: p.place.slug, key: p.place.key });
+    const { kind, slug, epic, key } = p.place;
+    if (kind !== 'overview') up({ kind: 'overview', all: false });
+    if (['epic', 'ticket', 'log'].includes(kind)) up({ kind: 'repo', slug });
+    if (epic && kind !== 'epic') up({ kind: 'epic', slug, epic });
+    if (kind === 'log') up({ kind: 'ticket', slug, key, ...(epic ? { epic } : {}) });
     view = p.place; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto';
+    if (!tabOk(tab)) tab = 'timeline';
   }
-  function setTab(id) { tab = id; sel = 0; selId = null; scroll = null; msg = ''; }
+  // A view this place lacks leaves the view as it is and says why.
+  function setTab(id) {
+    if (!tabOk(id)) { msg = NO_EPICS_HERE; return; }
+    tab = id; sel = 0; selId = null; scroll = null; msg = '';
+  }
 
   // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
   // selects and opens it. The wheel moves the selection as the arrows do.
@@ -1069,12 +1168,13 @@ export function interactive({
     }
     // On a repo's Queue the selected ticket moves; on a ticket's screen, that ticket. On a Timeline
     // or By day nothing moves: the order is set on the Queue, and the dates follow from it.
-    const queueView = (view.kind === 'repo' && tab === 'queue') || view.kind === 'ticket';
+    const queueView = (['repo', 'epic'].includes(view.kind) && tab === 'queue') || view.kind === 'ticket';
     const moveVerb = key.shift && key.name === 'up' ? 'up' : key.shift && key.name === 'down' ? 'down' : str === 't' ? 'top' : str === 'b' ? 'bottom' : null;
     const viewNo = VIEWS.findIndex((_, i) => str === String(i + 1));
     if (hasTabs() && key.name === 'tab') {
-      const i = VIEWS.findIndex(([id]) => id === tab);
-      setTab(VIEWS[(i + (key.shift ? -1 : 1) + VIEWS.length) % VIEWS.length][0]);
+      const ok = VIEWS.filter(([id]) => tabOk(id));
+      const i = ok.findIndex(([id]) => id === tab);
+      setTab(ok[(i + (key.shift ? -1 : 1) + ok.length) % ok.length][0]);
     } else if (hasTabs() && viewNo >= 0) setTab(VIEWS[viewNo][0]);
     else if (hasTabs() && str === 'w') setTab('timeline');
     else if (hasTabs() && tab !== 'queue' && moveVerb) msg = REORDER_HERE;
@@ -1102,7 +1202,7 @@ export function interactive({
     }
     else if (str === 'l' && view.kind === 'ticket') {
       const r = repoOf(view.slug);
-      if (r && existsSync(logPath(r, view.key))) go({ kind: 'log', slug: view.slug, key: view.key });
+      if (r && existsSync(logPath(r, view.key))) go({ ...view, kind: 'log' });
       else msg = `${view.key} has no log yet.`;
     } else if (str === 'o' && view.kind === 'ticket') {
       const url = jiraUrlFor(view.slug, view.key);
