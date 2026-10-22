@@ -213,7 +213,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
-| 6b | Notify | Push only what a pass's `push` lists, whatever its exit: send **one** `PushNotification` carrying the `text` of each entry whose `key` the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`). That is the check-in digest, once a §3b "Check-in times" slot has passed, and a park reading `PRODUCTION BROKEN: …`, at once. Everything else waiting on the person reaches them in the next digest (*The check-in digest*), so a park, a failure or a finished batch is shown in the session and never pushed on its own. |
+| 6b | Notify | Push only what a pass's `push` lists, whatever its exit: send **one** `PushNotification` carrying the `text` of each entry whose `key` the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`). That is the check-in digest, once a §3b "Check-in times" slot has passed, a park reading `PRODUCTION BROKEN: …`, at once, and a health check newly failing. Everything else waiting on the person reaches them in the next digest (*The check-in digest*), so a park, a failure or a finished batch is shown in the session and never pushed on its own. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
 | 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
 | 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
@@ -245,7 +245,7 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 | `waiting` | one line per thing waiting on the person: everything under `WAITING ON YOU`, a stall only they can clear (a budget, a config row, a grant, a deliberate re-run), unanswered triage questions, and every failed ticket |
 | `parked` | `{key, question}` for every ticket parked for its own reason (a hold is not one) |
 | `notify` | true exactly when the exit is 11 |
-| `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, and each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`). Empty otherwise, on any exit |
+| `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`), and each failing health check (`health:<slug>:<check>`, below). Empty otherwise, on any exit |
 | `release_due` | held tickets whose every blocker's PR has merged (under `waiting` too when no merge driver is running) |
 | `stuck` | held tickets whose blocker can no longer merge on its own (under `waiting` too) |
 
@@ -901,6 +901,16 @@ that §3 grants is a `tracker` entry.
 Questions and taken calls reach the person at the config §3b "Check-in times" (unset: `08:00,
 17:00` local), from every repo at once, as one page and one push. A row that does not read as
 HH:MM times holds spawns under `STALLED`, naming the row.
+
+**The health watchdog.** Each pass checks that the machine can still do the work (`health.mjs`):
+`gh auth status`, `desk-jira whoami` (where §4 Tracker is `jira`), `claude auth status`,
+`codex login status` (unless §3 `codex-review` is `no`), the browser profile's saved GitHub login
+(unless §3 `pr-images` is `no`), and free disk on the worktrees disk against §3b "Free disk floor
+(GB)" (unset: 20). A check with no answer in 20 seconds fails as `timed out`, and results are reused
+for 15 minutes. The report always carries one `health:` line. A failing required check holds every
+new spawn (running workers carry on), is named under `STALLED` with the command that fixes it, and
+goes into `push` as `health:<slug>:<check>`, which is pushed once while it stays failing. Signing
+back in is always the person's; the line says `recovered` on the first pass that sees it pass.
 
 - **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
   sent make the first pass on the machine, in any repo, the only one to build it, and only that

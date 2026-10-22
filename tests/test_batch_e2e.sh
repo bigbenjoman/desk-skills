@@ -189,7 +189,7 @@ ln -s "$NODE" "$T/stub/node"
 
 export PATH="$T/stub:/usr/bin:/bin:/usr/sbin:/sbin" DESK_CONFIG="$T/config.md" DESK_HOME="$SRC/desk" \
   DESK_SKILLS_DIR="$SRC/skills" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" \
-  AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test-orchestrator \
+  AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test-orchestrator \
   DESK_LOCK_DIR="$T/locks"   # pass.mjs runs a child's specs under the test lock: never the box's, which this suite may be under
 mkdir -p "$T/locks"
 cd "$T/repo" || exit 1

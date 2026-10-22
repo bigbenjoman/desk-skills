@@ -22,6 +22,7 @@ import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs } from './desk-q-eta.mjs';
+import { health } from './health.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineCap, takeBorrowLock } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -527,6 +528,10 @@ if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 let CHECKIN;
 try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
 if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
+// The health watchdog (health.mjs): a required sign-in or the free disk failing holds every new spawn.
+// Running workers carry on; the report names each failure and its fix, and the push names it once.
+const HEALTH = await health({ state: STATE });
+for (const s of HEALTH.stalls) personStall(s);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -616,6 +621,7 @@ if (blockedByDone.length) {
 const BORROW = borrowSetting();
 const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
+  : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
 let borrowLock = null;
 let others = [];
@@ -1222,8 +1228,10 @@ if (CHECKIN.ok && !DRY) {
   if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
   if (d.push) push.unshift(d.push);
 }
+push.push(...HEALTH.push);
 for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
+lines.push(HEALTH.line);
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 lines.push(CONC.line);
 if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);

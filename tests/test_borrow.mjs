@@ -192,7 +192,7 @@ function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'o
   writeFileSync(q, JSON.stringify({ version: 1, batch: slug, tickets }));
   const penv = { ...gitEnv, PATH: `${join(W, 'stub')}:${process.env.PATH}`, DESK_CONFIG: config, DESK_QUEUE: q,
     DESK_AUTOPILOT_STATE: state, DESK_MACHINE: join(W, 'machine.md'), WT_DIR: join(R, 'wt'),
-    AUTOPILOT_MIN_AVAIL_GB: minAvail, AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor) };
+    AUTOPILOT_MIN_AVAIL_GB: minAvail, AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor) };
   return () => new Promise((res) => {
     const c = spawn('node', [join(BIN, 'pass.mjs')], { env: penv, cwd: join(R, 'repo') });
     let out = '';

@@ -42,7 +42,7 @@ esac
 exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/git"
-export PATH="$T/stub:$PATH" DESK_HOME="$T/desk" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test
+export PATH="$T/stub:$PATH" DESK_HOME="$T/desk" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
 
 # fresh <case> [batch-base-push value] [base]: an origin holding main and feat/x, with main two commits
 # ahead, a primary checkout on main, and a queue with one triaged ticket. No base when <base> is -.
