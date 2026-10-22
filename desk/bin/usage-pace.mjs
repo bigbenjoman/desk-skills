@@ -114,7 +114,8 @@ export function usagePace({ setting = pacingSetting(), usage = undefined, now = 
   }
   if (!u) return { hold: false, bad: null, line: 'usage: no recent data' };
   if (!known) return { hold: false, bad: null, line: `usage: no recent data (the newest reading's 7-day window reset at ${resetText(u.resetsAt)})` };
-  const used = u.utilization * 100;
+  // To a tenth of a point: 0.55 * 100 is 55.00000000000001, which would hold at exactly pace + headroom.
+  const used = Math.round(u.utilization * 1000) / 10;
   const pace = paceAt(u.resetsAt, now);
   const fig = `7-day ${Math.round(used)}%, pace ${Math.round(pace)}%`;
   if (used > pace + setting.headroom) return { hold: true, bad: null, line: `usage: ${fig} + ${setting.headroom}: holding spawns` };
