@@ -5,8 +5,8 @@ One script, registered by install.sh on four events; it reads `hook_event_name` 
 
   UserPromptSubmit, PostToolUse  Once the session's input-side context passes config §2 "Handoff at
                                  context %" (default 45, `0` disables), or on a 1M window §2
-                                 "Handoff at context % on a 1M window" (default 25, or off when the
-                                 first row is `0`; `0` disables), inject once: finish the current
+                                 "Handoff at context % on a 1M window" (unset, the first row's value;
+                                 `0` disables), inject once: finish the current
                                  step, write the handoff, start no new work.
   Stop                           After that has fired, and while no handoff newer than the firing
                                  exists, block the end of the turn once ("write the handoff first").
@@ -33,7 +33,6 @@ import sys
 import time
 
 DEFAULT_PCT = 45
-DEFAULT_PCT_1M = 25  # recall on a 1M window falls off well before 45% of it
 SMALL_WINDOW = 200_000
 LARGE_WINDOW = 1_000_000
 FRESH_SECONDS = 24 * 3600
@@ -76,12 +75,12 @@ def row_pct(root, row, default):
 
 def threshold(root):
     """The §2 percentages for this repo, (200k window, 1M window); 0 for one the rows disable, and
-    (0, 0) when it is not a desk repo. An unset 1M row is 25, or 0 when the 200k row is 0."""
+    (0, 0) when it is not a desk repo. An unset 1M row is the 200k row's value."""
     rc, out = desk_env(root, "where")
     if rc != 0 or "EXISTS=yes" not in out:
         return 0, 0
     pct = row_pct(root, "handoff-pct", DEFAULT_PCT)
-    return pct, row_pct(root, "handoff-pct-1m", DEFAULT_PCT_1M if pct else 0)
+    return pct, row_pct(root, "handoff-pct-1m", pct)
 
 
 def state_path(session):

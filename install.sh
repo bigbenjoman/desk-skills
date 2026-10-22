@@ -656,7 +656,7 @@ case "$rc" in
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the context handoff" ;;
   *)
     note "Registers one hook on $HANDOFF_EVENTS. In a repo with a desk config, once the"
-    note "context passes §2 'Handoff at context %' (default 45, 0 turns it off; 25 on a 1M window) it asks the session to"
+    note "context passes §2 'Handoff at context %' (default 45, 0 turns it off; a 1M window has its own row) it asks the session to"
     note "finish its step and write .handoffs/<date>.md, blocks the end of that turn once until it is"
     note "written, and after /clear or a compaction tells the next session to read it. Other hooks are kept."
     if confirm "Register the context handoff in ~/.claude/settings.json (backed up first)?"; then
