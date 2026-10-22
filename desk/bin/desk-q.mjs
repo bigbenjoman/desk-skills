@@ -588,7 +588,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   const allowed = liveAllowed(repos);
   const room = headroom({ running, cap, avail, gate, perWorker });
-  const at = new Date(now).toTimeString().slice(0, 5);
+  const at = clock(now);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
     `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
@@ -658,7 +658,7 @@ function readyWhy(r, t) {
 function detail(r, x) {
   const { t, k } = x;
   // A stage is the last pass's reading: the worker may be further on.
-  if (k === 'running') return `stage ${t.stage ?? '?'}${r.last == null ? '' : ` as of ${clock(r.last)}`}`;
+  if (k === 'running') return `stage ${t.stage ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
   if (k === 'ready') return readyWhy(r, t);
   if (k === 'waiting' || k === 'stuck') return `behind ${unmergedBlockers(r.q, t).join(', ') || 'PRs of done tickets'}`;
   if (k === 'needs') return t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`;

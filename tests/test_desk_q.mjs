@@ -520,7 +520,7 @@ t('DS-167 AC3 a tag on one title alone stays', Q.titler(['desk-q: a'])('desk-q: 
 t('DS-167 AC4 the ticket screen shows the full title with its tag', lines(Q.ticketScreen(repoOf('skills8'), 'A-1', { width: 160 }))[2], 'autopilot: one');
 
 const head8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /^ +# /.test(l));
-// 36 since DS-185, to hold "waits for a worker (2 of 2 busy)".
+// Wide enough for "waits for a worker (2 of 2 busy)".
 t('DS-167 AC7 the DETAIL column is 36 columns wide', head8.indexOf('STARTS') - head8.indexOf('DETAIL'), 36);
 const a8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /A-8 /.test(l));
 t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('DETAIL'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 33)}…  `);

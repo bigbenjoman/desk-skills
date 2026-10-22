@@ -16,8 +16,8 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
 
-// A heartbeat fresher than this is a live batch, as is one whose recorded next pass is still to come
-// (liveBeat): queue.mjs init, desk-q and borrowing all use it.
+// A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
+// desk-q through liveBeat, which also counts a recorded next pass still to come.
 export const LIVE_MS = 15 * 60 * 1000;
 
 // Config §3b "Borrow idle workers": `on` or `off`, unset meaning off. Anything else is said and read
@@ -67,7 +67,6 @@ export function lastBeat(stateDir, queuePath) {
   }
   return last;
 }
-export const lastPass = (stateDir, queuePath) => lastBeat(stateDir, queuePath)?.at ?? null;
 
 // A batch is live while its last pass is fresher than LIVE_MS, or while the next pass it recorded is
 // not yet PASS_GRACE_MS overdue: an orchestrator waiting longer than LIVE_MS between passes has not gone.
@@ -129,9 +128,10 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
   return queues.map(({ slug, path, q, error }) => {
     if (error) return { slug, error };
     const tickets = Object.values(q.tickets ?? {});
+    const last = lastBeat(join(stateRoot, slug), path)?.at ?? null;
     return {
       slug,
-      live: liveBeat(lastBeat(join(stateRoot, slug), path), now),
+      live: last != null && now - last < LIVE_MS,
       running: tickets.filter((t) => t?.state === 'running').length,
       ready: tickets.filter(isReady).length,
       share: batchConcurrency(q, E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency'))).n,
