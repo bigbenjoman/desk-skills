@@ -52,7 +52,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
 | §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), and whether a batch may borrow idle machine slots |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
-| §4 "Required checks", "Advisory checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
+| §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
@@ -185,7 +185,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | `codex-review` | workers get `codex`; the preflight asserts `CODEX=OK` (fails if codex is missing, unless `AUTOPILOT_ALLOW_NO_CODEX=1`) | `codex` is denied and the preflight asserts `CODEX=BLOCKED`; refutations are same-vendor, and where a required check demands a cross-vendor verdict those PRs cannot pass it: say so |
 | `pr-images` | `pass.mjs` uploads automatically | `pass.mjs` reports the directory; ask, then run the uploader with `DESK_UPLOAD_APPROVED=1` |
 | `read-figma` | workers get the Figma read tools | a ticket needing the frame parks |
-| `pr-ready` | you undraft once the checks in Stage 7 hold | report the PR as ready to undraft |
+| `pr-ready` | you undraft once the checks in Stage 7 hold | `ask`: ask once at Stage 3 for the whole batch, never once per PR: "Undraft this batch's PRs once each is clean and green?" Approved: `queue.mjs set-batch approved.undraft=true`, then undraft each PR without asking once the checks in Stage 7 hold, and note the approval each time in `batch-notes.md`. Declined, or `no`: report the PR as ready to undraft |
 | `pr-auto-merge` | not used in a batch: neither you nor the driver arms auto-merge, because the platform's idea of green is not the config's | — |
 | `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green, pinned to the head | the driver refuses to start (exit 1); report green PRs to the user |
 | `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms any auto-merge armed on it | the checks alone decide; feedback is still worked and reported |
@@ -209,7 +209,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a call *Ask or take* keeps (a missing design, copy or product fact, or a call with no recommendation) is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
-| 3 | Ask once | Every unknown across every ticket that *Ask or take* keeps as a question, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base), and in feature mode the drafted spine and owner table for approval. Leave out what you take instead: a call outside the ask categories that has a recommendation, and any write §3 grants (a Jira comment, edit or transition under a `yes` row), which you make and then log. Wait. This is the whole promise. See *Asking*. |
+| 3 | Ask once | Every unknown across every ticket that *Ask or take* keeps as a question, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base, undrafting), each as one question for the whole batch, and in feature mode the drafted spine and owner table for approval. Leave out what you take instead: a call outside the ask categories that has a recommendation, and any write §3 grants (a Jira comment, edit or transition under a `yes` row), which you make and then log. Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
@@ -661,6 +661,25 @@ the driver or by you, whatever §3 grants: the repo needs a manual step first (t
 The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
 PR link and its head SHA, and it stays there until the user says they have merged it.
 
+**Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
+flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once
+each of them is still red after the driver's two reruns at that head, the PR's files touch none of
+the globs the row gives for that check, and nothing else in the gate is red or pending. It logs
+`WAIVED <check>`, and once merged files a ticket naming the check, the PR, the head SHA and the
+failing run (`desk-jira create`, under §3 `jira-create`). Where it cannot file one (§3 not `yes`,
+Tracker `none`, or `create` refused), its log names the body file under `<state>/merge-driver/`:
+put that under `WAITING ON YOU`. It never waives:
+
+- a check the PR's diff could have broken (it touches one of the row's globs): logged as the waiver
+  not applying, and red as ever;
+- a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
+  would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
+  report the PR;
+- a check the row does not name: red, as it always was.
+
+A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
+Unset waives nothing.
+
 **Start the merge driver at Stage 4, before the first worker finishes, unless the supervisor is
 installed (it starts one itself): do not merge off your own turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
 unmerged: nothing undrafts, merges or retriggers it until the orchestrator's next turn.
@@ -698,7 +717,8 @@ loop that re-reads too soon after a rerun sees the stale `completed` and fires a
 forever) and **only one PR may be building a preview at a time** (see the preview-build cap below).
 
 - **Merge on green as defined, not on the checks you like.** A red check is advisory only when §4
-  Advisory checks names it; a skipped required check is not a pass. Read checks with
+  Advisory checks names it, and waivable only by the driver under §4 Known flaky checks (above),
+  never by you; a skipped required check is not a pass. Read checks with
   `gh pr checks <n> --json name,state,bucket` against the head SHA you will pin, or `awk -F'\t'` on
   the plain output: it is tab-separated and a name column that carries an emoji makes splitting on
   whitespace silently yield the wrong word instead of the verdict, and nothing ever merges.
@@ -714,7 +734,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   header says it is generated) is resolved by taking `<default>`'s version and re-running only that
   generator.
 - **Undraft only once the PR is done and reviewed with no findings**, and only where config §3
-  `pr-ready` is `yes`, then do whatever is needed to merge it immediately. Done and reviewed means the review verdict on the PR's **current**
+  `pr-ready` is `yes`, or is `ask` and the user approved undrafting for this batch at Stage 3 (the
+  queue's `approved.undraft` is `true`), then do whatever is needed to merge it immediately. Under
+  that batch approval, undraft without asking again, and add one line to `batch-notes.md` with the
+  Edit tool each time: `- [<TICKET>] undrafted #<n> at <head sha>: §3 pr-ready is ask, batch approval
+  given at Stage 3`. Declined, or never asked, is today's rule: report the PR as ready to undraft. Done and reviewed means the review verdict on the PR's **current**
   `headRefOid` reads as §4 Clean review verdict with nothing deferred and no requirement gaps, the
   screenshots are uploaded (or the body says nothing renders differently), and `mergeStateStatus` is
   not `DIRTY`. A review gate may pass with gaps open, so a gap count above 0 is a question for the
@@ -1128,6 +1152,7 @@ node ~/.claude/desk/bin/pass.mjs --json                               # one pass
 node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd, at login and every 3 minutes
 node ~/.claude/desk/bin/supervisor.mjs status                         # exit 0 while installed and loaded; uninstall removes it
 node ~/.claude/desk/bin/queue.mjs set-batch supervised=true approved.workers=true   # Stage 4 with the supervisor: only the approvals the user gave
+node ~/.claude/desk/bin/queue.mjs set-batch approved.undraft=true     # Stage 3: §3 pr-ready is ask and the user approved undrafting this batch's clean PRs
 node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed

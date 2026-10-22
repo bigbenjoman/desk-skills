@@ -74,13 +74,17 @@ if (a[0] === 'pr' && a[1] === 'list') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
     mergeStateStatus: 'CLEAN', reviewDecision: '', autoMergeRequest: null,
-    statusCheckRollup: p.checks.map(([name, conclusion]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci' })) });
+    statusCheckRollup: p.checks.map(([name, conclusion, run]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
+      detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/1' : undefined })) });
 } else if (a[0] === 'run' && a[1] === 'list') {
   out([]);
+} else if (a[0] === 'run' && a[1] === 'rerun') {
+  // recorded in gh.log above
 } else if (a[0] === 'api' && a.includes('graphql')) {
   out('NONE 0');
 } else if (a[0] === 'api') {
-  out('src/a.txt');
+  const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
+  out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
 } else if (a[0] === 'pr' && a[1] === 'ready') {
   prs[a[2]].draft = false;
   fs.writeFileSync(F, JSON.stringify(prs));
@@ -196,5 +200,60 @@ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh
 check "--log: nothing on the terminal, the loop appended to <state>/merge-driver.log" '[ $rc -eq 0 ] && [ -z "$out" ] && [ "$(head -n 1 "$T/state/merge-driver.log")" = "earlier run" ] && grep -q "merge driver up" "$T/state/merge-driver.log" && grep -q "no ready batch PRs" "$T/state/merge-driver.log"'
 out=$(bash "$B/merge-driver.sh" --tickets "T-1" --log "$T/elsewhere.log" 2>&1); rc=$?
 check "--log takes no path: one is a usage error on the terminal, and nothing is written there" '[ $rc -eq 2 ] && echo "$out" | grep -q "\[--log\]" && [ ! -e "$T/elsewhere.log" ]'
+
+# ---- DS-141: the written waiver for §4 Known flaky checks -----------------------------------------
+# A config that reruns, files tickets in Jira, and names `e2e` (and the required `test`) as flaky.
+sed -e 's/| `ci-rerun` | Rerun CI | `yes` | `no` |/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
+  | awk '{ print } /^\| `pr-ready`/ { print "| `jira-create` | File tickets | `yes` | `yes` |" }' > "$T/config-flaky.md"
+cp "$T/config-flaky.md" "$T/config-bad.md"
+echo '| Known flaky checks | `e2e: e2e/** playwright.config.ts` `test: src/**` |' >> "$T/config-flaky.md"
+echo '| Known flaky checks | `e2e: e2e/**` `lint` |' >> "$T/config-bad.md"
+cat > "$T/stub/desk-jira" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/jira.log"; cp "\$4" "$T/jira-body.md"; echo "created DS-999  https://example.atlassian.net/browse/DS-999"
+EOF
+chmod +x "$T/stub/desk-jira"
+SHA11=a111111111111111111111111111111111111111; SHA12=a222222222222222222222222222222222222222
+SHA13=a333333333333333333333333333333333333333; SHA14=a444444444444444444444444444444444444444
+SHA15=a555555555555555555555555555555555555555
+cat > "$T/prs.json" <<EOF
+{
+  "111": { "head": "fix/T-11", "base": "main", "sha": "$SHA11", "state": "open", "draft": false, "files": ["src/x.ts"],
+           "checks": [["test", "SUCCESS", 9001], ["e2e", "FAILURE", 9111]] },
+  "112": { "head": "fix/T-12", "base": "main", "sha": "$SHA12", "state": "open", "draft": false, "files": ["src/y.ts", "e2e/login.spec.ts"],
+           "checks": [["test", "SUCCESS", 9002], ["e2e", "FAILURE", 9112]] },
+  "113": { "head": "fix/T-13", "base": "main", "sha": "$SHA13", "state": "open", "draft": false, "files": ["docs/readme.md"],
+           "checks": [["test", "FAILURE", 9113], ["e2e", "SUCCESS", 9003]] },
+  "114": { "head": "fix/T-14", "base": "main", "sha": "$SHA14", "state": "open", "draft": false, "files": ["src/z.ts"],
+           "checks": [["test", "SUCCESS", 9004], ["lint", "FAILURE", 9114]] },
+  "115": { "head": "fix/T-15", "base": "main", "sha": "$SHA15", "state": "open", "draft": false, "files": ["src/w.ts"],
+           "checks": [["test", "SUCCESS", 9005], ["e2e", "FAILURE", 9115]] }
+}
+EOF
+for k in T-11 T-12 T-13 T-14 T-15; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+mkdir -p "$T/state/merge-driver"
+# The driver's two reruns already spent at these heads (each one rerun is 12 minutes apart for real).
+printf 'e2e\ne2e\n' > "$T/state/merge-driver/reruns-111-$SHA11"
+printf 'e2e\ne2e\n' > "$T/state/merge-driver/reruns-112-$SHA12"
+printf 'test\ntest\n' > "$T/state/merge-driver/reruns-113-$SHA13"
+printf 'lint\nlint\n' > "$T/state/merge-driver/reruns-114-$SHA14"
+printf 'e2e\n' > "$T/state/merge-driver/reruns-115-$SHA15"
+: > "$T/merges.log"
+DESK_CONFIG="$T/config-flaky.md" loop
+check "AC4: the driver starts with the flaky row read"                 '[ $rc -eq 0 ] && echo "$out" | grep -q "flaky=\[e2e,test\]"'
+check "AC4: a waivable head is held a loop like a green one, not merged yet" '[ -z "$(merged)" ] && echo "$out" | grep -q "#111 green but for WAIVED \"e2e\" at a11111111 — confirming on the next loop"'
+check "AC6: a diff touching the check'\''s paths is not waived, and says so" 'echo "$out" | grep -q "#112 the waiver for \"e2e\" does not apply: the diff touches e2e/login.spec.ts (e2e/\*\*, for \"e2e\")"'
+check "AC7: a required check is never waived, and the PR is reported"   'echo "$out" | grep -q "#113 \"test\" is in §4 Known flaky checks but is a §4 Required check" && [ "$(qf T-13 .merge_blocked)" != null ]'
+check "AC8: an unlisted red check waives nothing and reads red as today" 'echo "$out" | grep -q "#114 red at a44444444: \"lint\" failure" && ! echo "$out" | grep -q "#114.*waive"'
+check "AC4: one rerun is not enough to waive"                          'echo "$out" | grep -q "#115 \"e2e\" is a known flaky check: waived only once still red after 2 reruns at a55555555 (1 so far)"'
+DESK_CONFIG="$T/config-flaky.md" loop
+check "AC4: the waived PR merges pinned to its head and logs WAIVED"   '[ "$(merged)" = 111 ] && grep -qx "111 main $SHA11" "$T/merges.log" && echo "$out" | grep -q "#111 WAIVED \"e2e\" at a11111111"'
+check "AC5: a ticket is filed naming the check, PR, head SHA and failing run" 'grep -q "^create Bug Flaky check \"e2e\" waived to merge PR #111 " "$T/jira.log" && grep -q "\`e2e\`" "$T/jira-body.md" && grep -q "https://github.com/acme/widgets/pull/111" "$T/jira-body.md" && grep -q "$SHA11" "$T/jira-body.md" && grep -q "https://github.com/acme/widgets/actions/runs/9111" "$T/jira-body.md" && echo "$out" | grep -q "#111 WAIVED: filed DS-999"'
+check "AC6-8: nothing else merged"                                    '! grep -qE "^11[2-5] " "$T/merges.log"'
+DESK_CONFIG="$T/config-flaky.md" loop
+check "AC5: the ticket is filed once, not on every later loop"         '[ "$(wc -l < "$T/jira.log" | tr -d " ")" = 1 ]'
+
+out=$(DESK_CONFIG="$T/config-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-11" 2>&1); rc=$?
+check "AC9: a row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: config §4 Known flaky checks does not parse: \`lint\`" && ! echo "$out" | grep -q "merge driver up"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

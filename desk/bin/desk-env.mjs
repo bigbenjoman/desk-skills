@@ -253,6 +253,7 @@ export const CONFIG_ROWS = Object.freeze({
   'db-migrate-cmd': { section: '4', row: 'Database migrate' },
   'branch-protection': { section: '4', row: 'Branch protection' },
   'advisory-checks': { section: '4', row: 'Advisory checks' },
+  'flaky-checks': { section: '4', row: 'Known flaky checks' },
   'repo-merge-settings': { section: '4', row: 'Repo merge settings' },
   vercel: { section: '4', row: 'Vercel' },
   'staging-bypass': { section: '4', row: 'Staging bypass token location' },
