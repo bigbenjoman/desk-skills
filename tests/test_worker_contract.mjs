@@ -42,26 +42,10 @@ t('AC2 the core sends the worker to the Stage 4 section before any suite', /abou
 t('AC2 the Stage 4 section holds verification and self-review', read('worker-contract-stage-4.md').includes('## 3. Verification must cover what CI covers') && read('worker-contract-stage-4.md').includes('### Self-review'), true);
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
-const BEFORE_HEADINGS = [
-  '# Autopilot worker contract',
-  '## 0. If you were given a task instead of a ticket',
-  '## 1. You cannot ask, so ask through the orchestrator',
-  '## 2. Gates',
-  '### Jira comments and transitions follow config §3',
-  '## 3. Verification must cover what CI covers',
-  '### First: every suite is locked and capped, because you are sharing one machine',
-  '### Then: the suites themselves',
-  '### Self-review — `desk-ticket` Stage 4b',
-  '## 4. Before you push: rebase',
-  '## 5. What the orchestrator owns, not you',
-  '## 6. Command forms that are silently denied',
-  '## 7. Reporting',
-  '## Review-sweep tasks: the comment is the deliverable',
-];
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
-const fixtureHeadings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
-t('AC4 the list names every heading the contract had', JSON.stringify(fixtureHeadings), JSON.stringify(BEFORE_HEADINGS));
-for (const h of BEFORE_HEADINGS) {
+const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
+t('AC4 the old contract has its 14 headings', headings.length, 14);
+for (const h of headings) {
   const homes = files.filter((f) => read(f).split('\n').includes(h));
   t(`AC4 "${h}" is in exactly one file`, homes.length, 1);
 }
@@ -70,7 +54,8 @@ for (const h of BEFORE_HEADINGS) {
 // for word (whitespace aside): the split moves text, it does not reword it.
 const norm = (s) => s.replace(/\s+/g, ' ').trim();
 const after = norm(files.map(read).join('\n\n'));
-const paras = before.split(/\n[ \t]*\n/).map(norm).filter(Boolean);
+// A paragraph ends at a blank line or where a list item starts, so each bullet is checked on its own.
+const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).map(norm).filter(Boolean);
 const dropped = paras.filter((p) => !after.includes(p));
 t(`AC4 every paragraph of the old contract survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);

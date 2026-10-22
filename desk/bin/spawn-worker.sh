@@ -215,11 +215,23 @@ fi
 SYSTEM="$(cat "$CONTRACT")"
 SYSTEM="${SYSTEM//\{\{STAGE_DIR\}\}/$CONTRACT_DIR}"
 if [ -n "${AUTOPILOT_TASK:-}" ]; then
-  for f in "$CONTRACT_DIR/worker-contract-task.md" "$CONTRACT_DIR"/worker-contract-stage-*.md; do
-    [ -f "$f" ] || { echo "FAIL: worker contract section missing at $f" >&2; exit 1; }
+  # Every stage file the core's table names, so a missing one refuses the spawn rather than dropping out.
+  STAGES="$(grep -oE 'worker-contract-stage-[0-9]+\.md' "$CONTRACT" | uniq || true)"
+  [ -n "$STAGES" ] || { echo "FAIL: worker contract core names no stage sections" >&2; exit 1; }
+  for f in worker-contract-task.md $STAGES; do
+    [ -s "$CONTRACT_DIR/$f" ] || { echo "FAIL: worker contract section missing at $CONTRACT_DIR/$f" >&2; exit 1; }
+  done
+  # The task section goes where §0 always sat, after the header and before section 1, so "everything
+  # below" in it still covers the whole contract.
+  MARK="## Stage sections: read each one when you reach it"
+  case "$SYSTEM" in *"$MARK"*) ;; *) echo "FAIL: worker contract core has no \"$MARK\" heading" >&2; exit 1 ;; esac
+  SYSTEM="${SYSTEM%%"$MARK"*}$(cat "$CONTRACT_DIR/worker-contract-task.md")
+
+$MARK${SYSTEM#*"$MARK"}"
+  for f in $STAGES; do
     SYSTEM="$SYSTEM
 
-$(cat "$f")"
+$(cat "$CONTRACT_DIR/$f")"
   done
 fi
 # A batch base (queue.mjs set-batch base=…) arrives as DESK_DEFAULT_BRANCH. The skills read

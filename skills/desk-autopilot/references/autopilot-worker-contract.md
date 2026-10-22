@@ -49,8 +49,8 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
   included): read the Stage 4 file first;
 - you are about to run anything but `desk-env`, `desk-jira`, a reading tool or a `git` read
   (`status`, `log`, `show`, `diff`, `fetch`, `branch`) before Stage 3: read the Stage 3 file first;
-- you are about to start a dev server, or touch an env file or a database variable: read the
-  Stage 5 file first;
+- you are about to start a dev server, touch an env file or a database variable, or rebase (the
+  self-review's "§4's rebase check" is section 4 of that file): read the Stage 5 file first;
 - you are about to write to the tracker (a comment, a transition, a field edit), at any stage: read
   the Stage 8 file first.
 

@@ -296,6 +296,7 @@ pass; unset AUTOPILOT_TASK
 check "a task worker is spawned with the task as its prompt" 'grep -q "Review the open PR for this ticket. Your ticket is T-60. Your worktree is $T/wt/T-60" "$T/runs/T-60.1"'
 check "its system prompt holds the core, the task section and the review-sweep rules" 'grep -q "Stage sections: read each one when you reach it" "$T/runs/T-60.1" && grep -q "## 0. If you were given a task instead of a ticket" "$T/runs/T-60.1" && grep -q "## Review-sweep tasks: the comment is the deliverable" "$T/runs/T-60.1"'
 check "and every stage section, self-review included"                'grep -q "## 3. Verification must cover what CI covers" "$T/runs/T-60.1" && grep -q "### Self-review" "$T/runs/T-60.1" && grep -q "## 6. Command forms that are silently denied" "$T/runs/T-60.1" && grep -q "## 5. What the orchestrator owns, not you" "$T/runs/T-60.1" && grep -q "### Jira comments and transitions follow config" "$T/runs/T-60.1"'
+check "the task section sits where section 0 always did: after the header, before section 1" '[ "$(node -e '"'"'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).system; const at = (h) => s.indexOf(h); console.log(at("Read config values with") < at("## 0. If you were given") && at("## 0. If you were given") < at("## 1. You cannot ask"))'"'"' "$T/runs/T-60.1")" = true ]'
 finish T-60; pass
 q drop T-60
 
