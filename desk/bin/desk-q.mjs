@@ -210,7 +210,6 @@ const undatedBlockers = (r, F, t) => String(t.held_by ?? '').split('|').filter((
 function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
-  if (F.paused && x.k === 'running') return `stage ${x.t.stage ?? '?'} · dated again at the next pass`;
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
   if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return `stuck behind ${listed(unmergedBlockers(r.q, x.t))}`;
@@ -404,7 +403,8 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
 
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]];
-const why = (i) => capital(undatedWhy(i.r, i.F, i.x)) || 'No date yet';
+// With passes stopped, a running row has no STARTS column here to say so, so its stage stands in.
+const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.t.stage ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
