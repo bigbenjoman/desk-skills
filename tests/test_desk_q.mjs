@@ -674,6 +674,8 @@ await N9.press('\t'); await N9.press('2'); await N9.press('w');
 t('DS-164 AC9 and Tab, 2 and w leave it on the ticket', `${N9.crumbs()} | ${tabsShown()}`, 'desk-q › tidy › T-3 | false');
 const ticketFrame = N9.frame().join('\n');
 await N9.press(RIGHT); await N9.press(LEFT); await N9.press(SS3_RIGHT); await N9.press(SS3_LEFT);
+// An odd count, so a tab changed out of sight would not step back to where it started.
+await N9.press(RIGHT);
 const ticketAfter = N9.frame().join('\n');
 await N9.press('\x1b');
 t('DS-182 AC7 ← and → on a ticket change nothing, not even the view Esc goes back to', `${ticketAfter === ticketFrame} | ${where(N9)}`, 'true | desk-q › tidy | 1 Queue | queue');
