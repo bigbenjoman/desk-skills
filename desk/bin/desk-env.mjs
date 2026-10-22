@@ -385,8 +385,9 @@ const expandSlug = (v) => (typeof v === 'string' && v.includes('<slug>') && curr
 
 // ---- the machine profile -------------------------------------------------------------------
 // One per computer, beside the repo configs. §3b rows that are about the computer rather than the
-// repo fall back to it when the repo leaves them TODO or absent; a set repo row always wins, and
-// with no profile they read as unset exactly as before.
+// repo fall back to it when the repo leaves them TODO or absent; a set repo row wins, and with no
+// profile they read as unset exactly as before. The memory ceiling is the exception: the profile's
+// is a hard limit across every repo, so a repo row may set it lower, never higher (machineLimited).
 export const machineProfilePath = () => expandHome(process.env.DESK_MACHINE ?? join(deskConfigRoot(), 'machine.md'));
 const MACHINE_FALLBACK = Object.freeze({
   concurrency: 'autopilot-concurrency',
@@ -413,10 +414,39 @@ export function configValue(id) {
 }
 
 function configValueIn(parsed, id) {
+  const own = repoValueIn(parsed, id);
+  if (own != null) return id === 'memory-ceiling' ? machineLimited(own).value : own;
+  return MACHINE_FALLBACK[id] ? machineValue(MACHINE_FALLBACK[id]) : null;
+}
+// The repo's own row, with no machine fallback. Unset is null.
+function repoValueIn(parsed, id) {
   const { section, row } = rowFor(id);
   const e = parsed.sections[section]?.byName[norm(row)];
-  if (!unset(e?.value)) return expandSlug(e.value);
-  return MACHINE_FALLBACK[id] ? machineValue(MACHINE_FALLBACK[id]) : null;
+  return unset(e?.value) ? null : expandSlug(e.value);
+}
+
+// A repo memory ceiling above the machine profile's reads as the machine's.
+//   -> { value, repo: GB | null, machine: GB | null, limited }
+const gbOf = (v) => { const n = Number(/\d+(\.\d+)?/.exec(String(v ?? ''))?.[0]); return n > 0 ? n : null; };
+function machineLimited(own) {
+  const repo = gbOf(own);
+  const machine = gbOf(machineValue('memory-ceiling-gb'));
+  const limited = repo != null && machine != null && repo > machine;
+  return { value: limited ? String(machine) : own, repo, machine, limited };
+}
+
+// The memory ceiling a pass budgets against, and whose figure it is (DS-147). DESK_MEM_CEILING_GB
+// overrides; then this repo's row, at most the machine profile's; then the profile's; then 16.
+//   -> { gb, by: 'env' | 'repo' | 'machine' | 'default', repo, machine, line }
+export function memoryCeiling() {
+  const env = gbOf(process.env.DESK_MEM_CEILING_GB);
+  const { repo, machine, limited } = machineLimited(repoValueIn(parseConfig(), 'memory-ceiling'));
+  const row = `config §3b "${CONFIG_ROWS['memory-ceiling'].row}"`;
+  if (env != null) return { gb: env, by: 'env', repo, machine, line: `memory ceiling ${env}G (DESK_MEM_CEILING_GB)` };
+  if (limited) return { gb: machine, by: 'machine', repo, machine, line: `memory ceiling ${machine}G, the machine profile's limit (this repo's ${row} says ${repo}G, and a repo may not raise the machine's)` };
+  if (repo != null) return { gb: repo, by: 'repo', repo, machine, line: `memory ceiling ${repo}G (${row}${machine != null ? `, within the machine's ${machine}G` : ''})` };
+  if (machine != null) return { gb: machine, by: 'machine', repo, machine, line: `memory ceiling ${machine}G, the machine profile's limit` };
+  return { gb: 16, by: 'default', repo, machine, line: `memory ceiling 16G (the default: no ${row} and no machine profile)` };
 }
 
 // Every item of a row, one per backtick span, in order. Items are never split on commas: a check
@@ -822,7 +852,7 @@ export function memStatusLine() {
   return `vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`;
 }
 
-export const memCeilingGiB = () => Number(/\d+(\.\d+)?/.exec(resolve({ env: 'DESK_MEM_CEILING_GB', id: 'memory-ceiling', fallback: '16' }))?.[0]) || 16;
+export const memCeilingGiB = () => memoryCeiling().gb;
 
 // Heavy processes (suites, typecheck, dev servers) counted by argv[0]/argv[1], never `pgrep -f`:
 // a claude worker carries its briefing in argv (which mentions jest, vitest and tsc), and the

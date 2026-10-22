@@ -23,7 +23,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineCap, takeBorrowLock } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -617,8 +617,10 @@ if (blockedByDone.length) {
 // free slots are counted, from every repo's queue, and the workers started under one lock every
 // repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
 // machine has room, then above it up to the §3b cap into slots no other live batch has first claim
-// on (borrow.mjs).
+// on (borrow.mjs). Either way, with a machine profile its worker cap is a hard limit across every
+// repo (machineBudget), counted under the same lock.
 const BORROW = borrowSetting();
+const MACHINE_CAP = machineCap();
 const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
@@ -626,19 +628,24 @@ const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'co
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if (BORROW.on && concurrency > 0 && eligible.length && !held && !lowMemory) {
+if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && !held && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
     process.on('exit', l.release);
-    others = otherBatches({ self: QUEUE_FILE });
   } else lockWhy = l.why;
 }
+// Read under the lock when it was taken; without it the count may race another pass, and says so.
+const otherRepos = MACHINE_CAP != null || borrowLock ? otherQueues({ self: QUEUE_FILE }) : [];
+if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const plan = borrowPlan({
   on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: eligible.length,
-  others, machine: machineCap(), memory: { avail: gateGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
+  others, machine: MACHINE_CAP, memory: { avail: gateGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
 });
-const slots = plan.slots;
+const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, eligible.length), machine: MACHINE_CAP, queues: otherRepos });
+const slots = Math.min(plan.slots, MACHINE.room);
+const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
+const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
 // A batch with a base keeps its own worktree for it (every pass makes sure it exists), and the default
@@ -1233,7 +1240,9 @@ for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(HEALTH.line);
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
+lines.push(CEILING.line);
 lines.push(CONC.line);
+lines.push(machineLine);
 if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);
 if (borrowLine) lines.push(borrowLine);
 lines.push('');

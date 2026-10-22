@@ -394,6 +394,11 @@ How to turn what you find into rows:
   row. On a no, the row keeps the token files, or `none`.
 - **codex**: only the exit code and a `CODEX_OK` in the output count.
 - **Memory ceiling** default: the machine profile's, else WSL `16`; otherwise physical RAM minus ~8.
+  The profile's figure (`desk-env machine get memory-ceiling-gb`) is a hard limit across every repo:
+  a row set above it reads as the machine's anyway. So when the row already holds a figure above the
+  machine's, propose the machine's figure in its place and say why: "the machine profile limits
+  every repo to <machine> GB (memory less 8 for the OS and the runner VM's reservation), and a repo
+  row may be lower but never higher". A figure at or below the machine's stays as it is.
 - **What review asks for** (optional): offer to mine the last 30 review comments on merged PRs
   (`gh api repos/{owner}/{repo}/pulls/comments?per_page=100`) into §4's table. Say it reads
   colleagues' review text; skip on a `no`.

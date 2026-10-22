@@ -263,6 +263,9 @@ Worker concurrency, the memory ceiling and the test worker cap are about the com
 repo. Left `TODO` or absent, each falls back to the machine profile, `~/.config/desk/machine.md`
 (`desk-env machine get autopilot-concurrency`, `memory-ceiling-gb`, `test-cap`), which `/desk-setup`
 sizes from the detected hardware; a value set here wins. With no profile they behave as unset.
+The profile's memory ceiling and worker cap are hard limits across every repo: a memory ceiling set
+here above the profile's reads as the profile's, and a pass starts no worker once the workers running
+in every repo's queue reach the profile's cap (a queue that cannot be read counts at its repo's cap).
 
 ## 3c. Harness rules written by setup
 
