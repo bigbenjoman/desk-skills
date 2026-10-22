@@ -245,7 +245,7 @@ function screen(start, columns = 80, clock = Date.now) {
     // The crumbs, less the parked note that follows them.
     crumbs: () => frame()[0].split('    ')[0],
     selected: () => frame().find((l) => l.startsWith('›')) ?? '',
-    // The tab drawn in reverse video on the tab line, the view shown (DS-164).
+    // The tab drawn in reverse video on the tab line, the view shown.
     tabOn: () => /\x1b\[7m([^\x1b]+)\x1b\[27m/.exec(output.buf.split('\x1b[H').at(-1).split('\r\n')[1] ?? '')?.[1] ?? null,
     // A left click at a 1-based column and row: the SGR press and release a terminal sends.
     click: async (x, y) => { input.write(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`); await sleep(20); },
@@ -680,9 +680,10 @@ N80.ui.finish(0);
 const Nc = nav({ kind: 'overview', all: false });
 await sleep(20);
 const tidyRow = Nc.frame().findIndex((l) => /^[ ›] {1,2}tidy /.test(l));
-Nc.input.write(`\x1b[<0;5;${tidyRow + 1}`); await sleep(20);
+Nc.input.write('\x1b['); await sleep(5);
+Nc.input.write(`<0;5;${tidyRow + 1}`); await sleep(5);
 Nc.input.write('M'); await sleep(20);
-t('DS-164 a click on a repo row opens it, even when the report comes in two reads', `${Nc.crumbs()} | ${Nc.tabOn()}`, 'desk-q › tidy | 1 Queue');
+t('DS-164 a click on a repo row opens it, even when the report comes in three reads', `${Nc.crumbs()} | ${Nc.tabOn()}`, 'desk-q › tidy | 1 Queue');
 t('DS-164 a click leaves no stray keys behind', Nc.frame().at(-1).startsWith(':'), false);
 Nc.ui.finish(0);
 t('DS-164 leaving the screen turns mouse reporting off', Q.LEAVE_SCREEN.includes('\x1b[?1000l') && Q.LEAVE_SCREEN.includes('\x1b[?1006l'), true);

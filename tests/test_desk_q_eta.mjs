@@ -266,7 +266,7 @@ const output = { buf: '', columns: 160, rows: 40, write(s) { this.buf += s; }, o
 const ui = Q.interactive({ input, output, start: { kind: 'repo', slug: 'acme__alpha' }, exit: () => {}, refreshMs: 600000, clock: () => FIXED });
 const frame = () => output.buf.split('\x1b[H').at(-1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\r\n');
 const a6 = () => frame().find((l) => /\sA-6\s/.test(l)) ?? '';
-// The note follows the tab line, under the breadcrumb (DS-164).
+// The note follows the tab line, under the breadcrumb.
 const note = () => frame()[1];
 await sleep(20);
 t('DS-161 AC12: before c, the header says parked tickets have no date', note().endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);

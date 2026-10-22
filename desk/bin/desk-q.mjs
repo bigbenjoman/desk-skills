@@ -782,6 +782,7 @@ const ESC = '\x1b[';
 const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l${ESC}?1000h${ESC}?1006h`;
 export const LEAVE_SCREEN = `${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`;
 const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+const PARTIAL_MS = 30;
 const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them.
 export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day']];
@@ -1003,24 +1004,29 @@ export function interactive({
   }
 
   // Mouse reports are taken out of the input before readline reads it for keys, which would
-  // otherwise split one into stray keypresses. One cut across two reads waits for the rest.
+  // otherwise split one into stray keypresses. A read ending in what may be the start of one (ESC,
+  // ESC [, ESC [ < …) waits for the next read; with none within PARTIAL_MS it goes on to readline
+  // as keys, so a lone Esc still arrives.
   const keys = new PassThrough();
-  let partial = '';
+  let partial = '', flush = null;
   function onData(chunk) {
+    clearTimeout(flush);
     let s = partial + String(chunk);
-    const cutAt = s.search(/\x1b\[<[\d;]*$/);
+    const cutAt = s.search(/\x1b(\[(<[\d;]*)?)?$/);
     partial = cutAt >= 0 ? s.slice(cutAt) : '';
     if (cutAt >= 0) s = s.slice(0, cutAt);
     const clicks = [];
     s = s.replace(MOUSE, (_, b, x, y, m) => { if (m === 'M') clicks.push([Number(b), Number(x), Number(y)]); return ''; });
     if (s) keys.write(s);
     for (const c of clicks) onMouse(...c);
+    if (partial) flush = setTimeout(() => { const p = partial; partial = ''; if (!done) keys.write(p); }, PARTIAL_MS);
   }
 
   function finish(code) {
     if (done) return;
     done = true;
     clearInterval(timer);
+    clearTimeout(flush);
     input.removeListener('data', onData);
     keys.removeListener('keypress', onKey);
     output.removeListener?.('resize', draw);
