@@ -111,6 +111,11 @@ check "no 1M row, the row above at 60: 50% of 1M, nothing" '[ -z "$out" ]'
 transcript "$T/650k.jsonl" 650000
 hook PostToolUse s30 "$T/650k.jsonl"
 check "no 1M row, the row above at 60: 65% fires at 60"   '[[ "$(ctx)" == *"(threshold 60%)"* ]]'
+config '`60`'; printf '| Handoff at context %% on a 1M window |  | |\n' >> "$DESK_CONFIG"
+hook PostToolUse s32 "$T/500k.jsonl"
+check "an empty 1M row, the row above at 60: 50%, nothing" '[ -z "$out" ]'
+hook PostToolUse s32 "$T/650k.jsonl"
+check "an empty 1M row follows the row above (60)"        '[[ "$(ctx)" == *"(threshold 60%)"* ]]'
 config '`45`' '`25`'
 hook PostToolUse s31 "$T/300k.jsonl"
 check "a 1M row at 25 still fires at 25"                  '[[ "$(ctx)" == *"context is at 30% of a 1,000,000-token window (threshold 25%)"* ]]'
