@@ -144,7 +144,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `jira-edit` | Edit your ticket's description or fields (priority field, labels), and issue links (`desk-jira link` and `unlink`, never a worker's) | `yes` | `TODO` |
 | `jira-transition` | Move your ticket between working states (§4 In-progress state, Review state) | `yes` | `TODO` |
 | `jira-close-own-merged` | Move your ticket to §4 Done state once your own last PR for it has merged | `yes` | `TODO` |
-| `jira-close` | Close a ticket any other way (duplicate, not a bug, out of scope, already fixed) | `ask` | `TODO` |
+| `jira-close` | Close a ticket any other way (duplicate, not a bug, out of scope, already fixed) | `yes` | `TODO` |
 | `jira-route` | Assign or route a ticket to another person | `ask` | `TODO` |
 | `jira-others` | Comment on or transition someone else's ticket, or an unassigned one | `no` | `TODO` |
 
@@ -154,7 +154,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 |---|---|---|---|
 | `git-commit` | Commit locally | `yes` | `TODO` |
 | `git-push` | Push your own branch (no force) | `yes` | `TODO` |
-| `git-force-with-lease` | Force-push your own branch with `--force-with-lease` | `ask` | `TODO` |
+| `git-force-with-lease` | Force-push your own branch with `--force-with-lease` | `yes` | `TODO` |
 | `pr-open` | Open a draft PR | `yes` | `TODO` |
 | `pr-edit` | Edit your PR's title or body | `yes` | `TODO` |
 | `pr-images` | Drive a signed-in browser to upload PR screenshots | `yes` | `TODO` |
@@ -162,9 +162,9 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `pr-review-others` | Post a `/desk-review` review (`COMMENTED`, never approve or request changes) on someone else's PR | `ask` | `TODO` |
 | `pr-reply` | Reply to and resolve review threads on your PR | `yes` | `TODO` |
 | `pr-request-review` | Request review, hand a PR back to its reviewer, add the infra/security owner (§4) | `yes` | `TODO` |
-| `pr-ready` | Undraft your PR once its self-review is clean at head | `ask` | `TODO` |
+| `pr-ready` | Undraft your PR once its self-review is clean at head | `yes` | `TODO` |
 | `pr-auto-merge` | Arm auto-merge (`gh pr merge --auto`), where the repo allows it | `ask` | `TODO` |
-| `pr-merge-green` | Merge a PR once §4 Required checks are green (no approval wait) | `ask` | `TODO` |
+| `pr-merge-green` | Merge a PR once §4 Required checks are green (no approval wait) | `yes` (`ask` where §4 Branch protection is `none`) | `TODO` |
 | `merge-feedback-first` | Work outstanding review feedback before merging | `yes` | `TODO` |
 | `pr-update-branch` | Update your PR branch from the default branch (`gh pr update-branch`) | `yes` | `TODO` |
 | `pr-conflict-unreviewed` | Resolve a merge conflict on your PR before any human has reviewed it | `yes` | `TODO` |
@@ -175,8 +175,10 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 
 `pr-auto-merge` merges on green by itself, so it needs `pr-merge-green` as well; setup asks again
 if the two differ. `pr-merge-green` `no` means you merge: skills report a PR ready at `APPROVED` +
-green. Undrafting and merging are recommended at `ask`: where §4 Branch protection requires no
-approvals, the agent's own review verdict is otherwise the last check before the default branch.
+green. Undrafting and merging are recommended at `yes`: the gate is the clean local review at head
+plus every §4 Required check green, and that is how batches run unattended. Where §4 Branch
+protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` and
+`autopilot-merge` are recommended at `ask` there.
 
 ### Autopilot — unattended batches
 
@@ -184,7 +186,7 @@ approvals, the agent's own review verdict is otherwise the last check before the
 |---|---|---|---|
 | `autopilot-workers` | Run detached headless workers (`claude -p`) that work tickets while nobody watches | `yes` | `TODO` |
 | `autopilot-worker-mode` | Worker permission mode | `dontAsk` + generated allow-list | `TODO` |
-| `autopilot-merge` | Merge a worker's PR on green, serially, without you looking first | `no` | `TODO` |
+| `autopilot-merge` | Merge a worker's PR on green, serially, without you looking first | `yes` (`ask` where §4 Branch protection is `none`) | `TODO` |
 | `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
 | `autopilot-judgement` | Take the recommendation on any call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) and log it, instead of parking; ask-category calls and other people's rulings still stop | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
@@ -216,7 +218,7 @@ worker, which parks naming the row.
 | `staging-write` | Write to real staging | `ask` + backup + independent review | `TODO` (`ask` or `no` only) |
 | `local-reindex` | Rebuild a shared local index or cache that every session uses (§4 Local services) | `ask` | `TODO` |
 | `tests-shared-db` | Run database-backed tests against a database another session may be using | `no` | `TODO` |
-| `worktree-remove` | Remove a worktree whose PR has merged | `ask` | `TODO` |
+| `worktree-remove` | Remove a worktree whose PR has merged | `yes` | `TODO` |
 | `branch-delete` | Delete a local branch | `no` | `TODO` |
 | `server-stop` | Stop a dev server you started for a finished ticket | `ask` | `TODO` |
 | `skills-edit` | Edit your installed `desk-*` skill files | `ask` | `TODO` |
