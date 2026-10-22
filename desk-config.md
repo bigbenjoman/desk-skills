@@ -183,7 +183,7 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `autopilot-worker-mode` | Worker permission mode | `dontAsk` + generated allow-list | `TODO` |
 | `autopilot-merge` | Merge a worker's PR on green, serially, without you looking first | `no` | `TODO` |
 | `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
-| `autopilot-judgement` | Make and record an engineering or scope call instead of parking (product and other people's rulings still stop) | `yes` | `TODO` |
+| `autopilot-judgement` | Take the recommendation on any call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) and log it, instead of parking; ask-category calls and other people's rulings still stop | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 | `autopilot-usage-resume` | Let a worker that reaches the 5-hour usage limit wait for the reset and carry on, spending the next usage window | `no` | `TODO` |
 
@@ -221,7 +221,7 @@ reset, and the batch notes record each resume.
 | `slack-send` | Send or schedule a Slack message as you | `never`: draft only, whatever the wording of the request |
 | `merge-bypass` | Merge past required checks (`--admin`), or push with plain `--force` | `never` |
 | `others-prs` | Push to, merge, undraft or close someone else's PR | `never` |
-| `product-calls` | Decide a product, design or content question, or invent product data | `stop`: write the recommendation, label it pending the owner's sign-off (§4) |
+| `product-calls` | Invent product data, or decide a product, design or content question that is in an ask category or has no recommendation (one outside them is taken on its recommendation and logged) | `stop`: write the recommendation, label it pending the owner's sign-off (§4) |
 | `legal-content` | Commit legal or compliance content changes | `stop`: findings first, as a ticket comment; implement after sign-off |
 
 These are not oversights. Editing them to `yes` changes nothing; the skills refuse independently.

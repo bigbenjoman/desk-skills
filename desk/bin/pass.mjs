@@ -12,6 +12,7 @@ import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_A
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { workerMarkers } from './harvest.mjs';
+import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
@@ -242,6 +243,22 @@ function ownedBrief(t, wt) {
   ].join('\n');
 }
 
+// The calls a finished worker took on its own recommendation go to the decision log, one entry per
+// call per run however often its log is read. A line the log cannot hold waits on the person, raw.
+function logDecisions(t, log, pr) {
+  let markers;
+  try { markers = workerMarkers(readFileSync(log, 'utf8')); } catch { return; }
+  const entries = [];
+  const unreadable = new Set();
+  for (const [k, v] of markers) {
+    if (k !== 'AUTOPILOT_DECISION') continue;
+    const d = parseDecision(v);
+    if (d.ok) entries.push(decisionEntry({ decision: d.decision, ticket: t.key, run: t.session_id, repo: GH_REPO, pr, source: 'worker' }));
+    else if (!unreadable.has(v)) { unreadable.add(v); report.waiting.push(`${t.key}: unreadable decision (${d.why}), nothing logged: ${v}`); }
+  }
+  if (entries.length) appendDecisions(entries, STATE);
+}
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
   const log = join(STATE, 'logs', `${t.key}.log`);
@@ -382,11 +399,12 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
-  if (park) { q('park', t.key, park.trim()); report.parked.push(`${t.key}: ${park.trim()}`); }
+  if (park) { q('park', t.key, park.trim()); report.parked.push(`${t.key}: ${park.trim()}`); logDecisions(t, log, null); }
   else if (done) {
     const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
     if (cost) q('set', t.key, `cost=${cost}`);
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
+    logDecisions(t, log, pr);
     q('set', t.key, 'state=done', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
     report.done.push(`${t.key}: ${done.trim()}${stopped}`);
     recordScope(t);
@@ -398,6 +416,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // means a PR exists, NOT that the review posted or that it merged — verify those separately.
     const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
+    logDecisions(t, log, /^\d+$/.test(pr) ? pr : null);
     if (/^\d+$/.test(pr)) {
       q('set', t.key, 'state=done', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
       report.done.push(`${t.key}: PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`);

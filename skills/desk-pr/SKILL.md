@@ -136,6 +136,9 @@ parentheses at the end when it reads naturally (<TICKET>).>
 ### Carried review findings     <- optional: only when round 3 of the self-review carried P2s
 <verdict.mjs --carried output, verbatim: the fix range, then `file:line` and title for each>
 
+### Decisions taken     <- optional: only when the work took a call on its recommendation
+- <the question> — chose **<option>** over <the others> (<category>)
+
 ### Before / after — <optional context>     <- omit this whole section unless it earns its place
 | Before | After |
 | --- | --- |
@@ -151,8 +154,12 @@ them written exactly so, never as a `<!-- name -->` … `<!-- /name -->` pair: `
 that shape as a generated block when it looks for author-written intent, and would read desk's own
 body as none.
 
-Only the sections §5 PR body names (plus `Not migrated` and `Carried review findings` when they
-apply). No title in the body, and no headings §5 does not list.
+Only the sections §5 PR body names (plus `Not migrated`, `Carried review findings` and `Decisions
+taken` when they apply). No title in the body, and no headings §5 does not list.
+
+**Decisions taken** lists every call the work took on its recommendation instead of asking
+(`desk-ticket` "Ask or take"), one line each, the same calls the decision log holds, so the reviewer
+can overrule one in review rather than finding it in the diff.
 
 **Carried review findings** are the P2s a third self-review round carried rather than fixed
 (`desk-ticket` "Three rounds, then stop"). Print the section with `node <desk-review>/bin/verdict.mjs

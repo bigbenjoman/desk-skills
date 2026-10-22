@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+// The decision log: one JSON line per call a session took on its own recommendation rather than
+// asking, in <state>/decisions.jsonl, for the check-in digest to list. A worker prints
+// `AUTOPILOT_DECISION: <json>` and pass.mjs appends it when it harvests the run; an interactive
+// session appends through this file's CLI:
+//
+//   decisions.mjs log <TICKET> '<json>' [--pr <number or URL>]
+//
+// <json> is {"question", "options": [...], "chose", "category"}. Exits 0 once the entry is in the
+// log (or already was), 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
+import { readFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { stateDir, ghRepo, SAFE_ID } from './desk-env.mjs';
+
+// The calls that are always asked, never taken: money, legal or regulatory, production data or
+// credentials, customer copy where length means cost, and facts only the user holds.
+export const ASK_CATEGORIES = ['money', 'legal', 'production', 'customer-copy', 'user-fact'];
+// Everything else is taken on the recommendation and logged, under one of these.
+export const TAKE_CATEGORIES = ['product', 'design', 'wording', 'review', 'engineering', 'scope', 'tracker'];
+
+export const decisionsPath = (dir = stateDir()) => join(dir, 'decisions.jsonl');
+
+const text = (v) => typeof v === 'string' && v.trim() !== '';
+
+// {ok: true, decision} or {ok: false, why}. An ask category is refused: that call parks or asks,
+// and is never logged as taken.
+export function parseDecision(raw) {
+  let d;
+  try { d = JSON.parse(String(raw ?? '').trim()); } catch { return { ok: false, why: 'not JSON' }; }
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return { ok: false, why: 'not a JSON object' };
+  if (!text(d.question)) return { ok: false, why: 'no question' };
+  if (!Array.isArray(d.options) || d.options.length < 2 || !d.options.every(text)) {
+    return { ok: false, why: 'options must list at least two choices' };
+  }
+  if (!text(d.chose) || !d.options.includes(d.chose)) return { ok: false, why: 'chose is not one of the options' };
+  if (ASK_CATEGORIES.includes(d.category)) return { ok: false, why: `${d.category} is an ask category: ask, never take it` };
+  if (!TAKE_CATEGORIES.includes(d.category)) return { ok: false, why: `category must be one of ${TAKE_CATEGORIES.join(', ')}` };
+  return { ok: true, decision: { question: d.question.trim(), options: d.options.map((o) => o.trim()), chose: d.chose.trim(), category: d.category } };
+}
+
+export const prLink = (pr, repo) => {
+  if (pr == null || pr === '') return null;
+  if (/^https?:\/\//.test(String(pr))) return String(pr);
+  return /^\d+$/.test(String(pr)) && repo ? `https://github.com/${repo}/pull/${pr}` : null;
+};
+
+// One run taking one call is one entry, however often its log is read.
+export function decisionEntry({ decision, ticket, run, repo, pr, at = new Date().toISOString(), source }) {
+  const id = createHash('sha256').update([ticket, run ?? '', decision.question, decision.chose].join('\0')).digest('hex').slice(0, 16);
+  return { id, at, repo, ticket, ...decision, pr: prLink(pr, repo), source, run: run ?? null };
+}
+
+const loggedIds = (path) => {
+  if (!existsSync(path)) return new Set();
+  const ids = new Set();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    try { const e = JSON.parse(line); if (e?.id) ids.add(e.id); } catch { /* a torn line is not an entry */ }
+  }
+  return ids;
+};
+
+// Appends the entries the log does not already hold; returns those it appended.
+export function appendDecisions(entries, dir = stateDir()) {
+  const path = decisionsPath(dir);
+  const seen = loggedIds(path);
+  const fresh = [];
+  for (const e of entries) if (!seen.has(e.id)) { seen.add(e.id); fresh.push(e); }
+  if (fresh.length) {
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(path, fresh.map((e) => `${JSON.stringify(e)}\n`).join(''));
+  }
+  return fresh;
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+
+if (isMain) {
+  const { EXIT, crashShowsPerson } = await import('./batch-state.mjs');
+  crashShowsPerson();
+  const args = process.argv.slice(2);
+  const prAt = args.indexOf('--pr');
+  const pr = prAt >= 0 ? args[prAt + 1] : null;
+  const [cmd, ticket, raw] = prAt >= 0 ? [...args.slice(0, prAt), ...args.slice(prAt + 2)] : args;
+  const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
+  if (cmd !== 'log' || !ticket || !raw) refuse('usage: decisions.mjs log <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]');
+  if (!SAFE_ID.test(ticket) || ticket.includes('..')) refuse(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
+  const repo = ghRepo();
+  if (prAt >= 0 && !prLink(pr, repo)) refuse(`--pr takes a PR number or URL, not '${pr ?? ''}'`);
+  const parsed = parseDecision(raw);
+  if (!parsed.ok) refuse(`not logged: ${parsed.why}`);
+  const entry = decisionEntry({
+    decision: parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? 'session', repo, pr, source: 'session',
+  });
+  const added = appendDecisions([entry]);
+  console.log(`${added.length ? 'logged' : 'already logged'}: ${entry.id} in ${decisionsPath()}`);
+}

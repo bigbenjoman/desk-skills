@@ -143,7 +143,9 @@ People run several sessions at once and need to know where each one is without a
 - **Say immediately when something unexpected happens.** Don't work around it quietly and mention
   it later. A blocker heard about at the time costs a question; one heard about at the end costs the
   work. If a step was skipped, failed or only partly worked, say so in those words.
-- **Any uncertainty is a question**, not a sensible default to carry on with.
+- **Uncertainty in an ask category, or with no recommendation, is a question**, not a sensible
+  default to carry on with. Any other call you take on its recommendation and log (`desk-ticket`
+  "Ask or take").
 - **A question from the user is not authorisation.** "Should we…?", "Is it worth…?" open a
   discussion; answer with a proposal, not a file write.
 - **Never go quiet for a long stretch.** If a step is genuinely slow, say it's running and what
