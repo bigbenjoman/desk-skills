@@ -435,18 +435,18 @@ function machineLimited(own) {
   return { value: limited ? String(machine) : own, repo, machine, limited };
 }
 
-// The memory ceiling a pass budgets against, and whose figure it is (DS-147). DESK_MEM_CEILING_GB
+// This repo's memory ceiling, and the report line naming whose figure it is. DESK_MEM_CEILING_GB
 // overrides; then this repo's row, at most the machine profile's; then the profile's; then 16.
-//   -> { gb, by: 'env' | 'repo' | 'machine' | 'default', repo, machine, line }
+//   -> { gb, line }
 export function memoryCeiling() {
   const env = gbOf(process.env.DESK_MEM_CEILING_GB);
   const { repo, machine, limited } = machineLimited(repoValueIn(parseConfig(), 'memory-ceiling'));
   const row = `config §3b "${CONFIG_ROWS['memory-ceiling'].row}"`;
-  if (env != null) return { gb: env, by: 'env', repo, machine, line: `memory ceiling ${env}G (DESK_MEM_CEILING_GB)` };
-  if (limited) return { gb: machine, by: 'machine', repo, machine, line: `memory ceiling ${machine}G, the machine profile's limit (this repo's ${row} says ${repo}G, and a repo may not raise the machine's)` };
-  if (repo != null) return { gb: repo, by: 'repo', repo, machine, line: `memory ceiling ${repo}G (${row}${machine != null ? `, within the machine's ${machine}G` : ''})` };
-  if (machine != null) return { gb: machine, by: 'machine', repo, machine, line: `memory ceiling ${machine}G, the machine profile's limit` };
-  return { gb: 16, by: 'default', repo, machine, line: `memory ceiling 16G (the default: no ${row} and no machine profile)` };
+  if (env != null) return { gb: env, line: `memory ceiling ${env}G (DESK_MEM_CEILING_GB)` };
+  if (limited) return { gb: machine, line: `memory ceiling ${machine}G, the machine profile's limit (this repo's ${row} says ${repo}G, and a repo may not raise the machine's)` };
+  if (repo != null) return { gb: repo, line: `memory ceiling ${repo}G (${row}${machine != null ? `, within the machine's ${machine}G` : ''})` };
+  if (machine != null) return { gb: machine, line: `memory ceiling ${machine}G, the machine profile's limit` };
+  return { gb: 16, line: `memory ceiling 16G (the default: no ${row} and no machine profile)` };
 }
 
 // Every item of a row, one per backtick span, in order. Items are never split on commas: a check

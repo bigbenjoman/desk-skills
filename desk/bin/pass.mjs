@@ -618,7 +618,7 @@ if (blockedByDone.length) {
 // repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
 // machine has room, then above it up to the §3b cap into slots no other live batch has first claim
 // on (borrow.mjs). Either way, with a machine profile its worker cap is a hard limit across every
-// repo (machineBudget), counted under the same lock.
+// repo (machineBudget), counted under the same lock when it can be taken.
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
 const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'

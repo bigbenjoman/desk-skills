@@ -66,33 +66,33 @@ export function otherQueues({ self, home = E.deskHome() } = {}) {
   return out;
 }
 
-// The machine-wide worker budget (DS-147), borrowing on or off: the machine profile's cap is a hard
-// limit on the workers running in every repo together, so a pass starts at most the cap less every
-// queue's running workers. A queue that cannot be read counts at its repo's own §3b cap, the most it
-// could be running. With no machine total there is no budget and each repo uses its own rows.
+// The machine-wide worker budget, borrowing on or off: the machine profile's cap is a hard limit on
+// the workers running in every repo together, so a pass starts at most the cap less every queue's
+// running workers. A queue that cannot be read counts at its repo's own §3b cap, the most it could
+// be running. With no machine total there is no budget and each repo uses its own rows.
 //   running   this batch's running workers
 //   wanted    the slots this pass would otherwise fill
 //   queues    otherQueues()
-// -> { machine, running, room, unreadable, line }   room is Infinity with no machine total
-export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [], profile = E.machineProfile() != null }) {
+// -> { room, line }   room is Infinity with no machine total
+export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [] }) {
   if (machine == null) {
-    return { machine: null, running, room: Infinity, unreadable: [], line: `machine budget: none — ${profile ? 'the machine profile has no autopilot-concurrency' : 'no machine profile'}, so this repo uses its own §3b rows` };
+    const why = E.machineProfile() != null ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
+    return { room: Infinity, line: `machine budget: none — ${why}, so this repo uses its own §3b rows` };
   }
   let all = running;
-  const unreadable = [];
+  let why = '';
   for (const o of queues) {
     if (o.error) {
       const counted = E.concurrencyLimits(E.repoConfigValue(o.slug, 'concurrency')).cap;
-      unreadable.push({ slug: o.slug, path: o.path, error: o.error, counted });
+      why += `; ${repoName(o.slug)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
       all += counted;
     } else all += Object.values(o.q.tickets ?? {}).filter((t) => t?.state === 'running').length;
   }
   const room = Math.max(0, machine - all);
-  const why = unreadable.map((u) => `; ${repoName(u.slug)}'s queue cannot be read (${u.error}), so it counts at its cap of ${workers(u.counted)}`).join('');
   const head = `machine budget: ${all} of the machine's ${machine} worker(s) running across every repo${why}`;
   const tail = room === 0 && wanted > 0 ? ': the machine is at its cap, so nothing starts this pass'
     : room < wanted ? `: starting at most ${room}` : '';
-  return { machine, running: all, room, unreadable, line: head + tail };
+  return { room, line: head + tail };
 }
 
 // A ticket another batch could start now: triaged, with no question open, and not held.

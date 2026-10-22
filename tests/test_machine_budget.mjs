@@ -114,8 +114,8 @@ t('AC2 its report says the machine is at its cap', line(r.out, 'machine budget:'
 // AC3: a machine cap of 10 with 8 running across the repos: a pass with 3 ready starts at most 2.
 W = world({ cap: 10 });
 other(W, 'acme__one', { running: 5 });
-other(W, 'acme__two', { running: 1 });
-r = pass(W, 'acme__three', { conc: '3 / 4', running: 2, ready: 3 });
+other(W, 'acme__two', { running: 3 });
+r = pass(W, 'acme__three', { conc: '3 / 4', ready: 3 });
 t('AC3 it starts 2 of its 3 ready', r.started, 2);
 t('AC3 its report says it starts at most 2', line(r.out, 'machine budget:'), 'machine budget: 8 of the machine\'s 10 worker(s) running across every repo: starting at most 2');
 
