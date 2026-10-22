@@ -573,6 +573,34 @@ await N1.press('\x1b[Z');
 t('DS-164 shift+Tab steps back', where(N1), 'desk-q › tidy | 4 Epics | epics');
 N1.ui.finish(0);
 
+// DS-182: ← and → step along the tab bar and stop at its ends, in both arrow encodings.
+const RIGHT = '\x1b[C', LEFT = '\x1b[D', SS3_RIGHT = '\x1bOC', SS3_LEFT = '\x1bOD';
+const Ar = nav(tidyQ);
+await sleep(20);
+const topRow = Ar.selected();
+await Ar.press(LEFT);
+t('DS-182 AC4 ← on the Queue stays on the Queue', where(Ar), 'desk-q › tidy | 1 Queue | queue');
+await Ar.press(RIGHT);
+t('DS-182 AC1 → (CSI) on the Queue shows the Timeline', where(Ar), 'desk-q › tidy | 2 Timeline | timeline');
+await Ar.press(SS3_RIGHT);
+t('DS-182 AC1 → (SS3) on the Timeline shows By day', where(Ar), 'desk-q › tidy | 3 By day | days');
+await Ar.press(RIGHT); await Ar.press(RIGHT);
+t('DS-182 → on the rightmost tab stays there', where(Ar), 'desk-q › tidy | 4 Epics | epics');
+await Ar.press('\t');
+t('DS-182 AC5 Tab on the rightmost tab still wraps to the Queue', where(Ar), 'desk-q › tidy | 1 Queue | queue');
+await Ar.press('4');
+await Ar.press(LEFT);
+t('DS-182 AC2 ← (CSI) on Epics shows By day', where(Ar), 'desk-q › tidy | 3 By day | days');
+await Ar.press(SS3_LEFT); await Ar.press(SS3_LEFT);
+t('DS-182 AC2 ← (SS3) steps back to the Queue', where(Ar), 'desk-q › tidy | 1 Queue | queue');
+await Ar.press(DOWN); await Ar.press(DOWN);
+const selBefore = Ar.selected();
+await Ar.press(RIGHT); await Ar.press(LEFT);
+t('DS-182 AC6 an arrow switch keeps the place and resets the selection', `${where(Ar)} | ${selBefore !== topRow} | ${Ar.selected() === topRow}`, 'desk-q › tidy | 1 Queue | queue | true | true');
+await Ar.press(':'); await Ar.press(RIGHT); await Ar.press(SS3_LEFT);
+t('DS-182 AC8 the arrows leave the view alone while a : command is typed', `${where(Ar)} | ${Ar.frame().at(-1).startsWith(':')}`, 'desk-q › tidy | 1 Queue | queue | true');
+Ar.ui.finish(0);
+
 const threes = [];
 for (const start of [{ kind: 'overview', all: false }, tidyQ, { kind: 'timeline', slug: 'acme__tidy' }]) {
   const s = nav(start);
@@ -644,6 +672,13 @@ const tabsShown = () => N9.frame().some((l) => l.includes(TABS));
 t('DS-164 AC9 a ticket screen has no tab line', `${N9.crumbs()} | ${N9.frame()[1]} | ${tabsShown()}`, 'desk-q › tidy › T-3 |  | false');
 await N9.press('\t'); await N9.press('2'); await N9.press('w');
 t('DS-164 AC9 and Tab, 2 and w leave it on the ticket', `${N9.crumbs()} | ${tabsShown()}`, 'desk-q › tidy › T-3 | false');
+const ticketFrame = N9.frame().join('\n');
+await N9.press(RIGHT); await N9.press(LEFT); await N9.press(SS3_RIGHT); await N9.press(SS3_LEFT);
+// An odd count, so a tab changed out of sight would not step back to where it started.
+await N9.press(RIGHT);
+const ticketAfter = N9.frame().join('\n');
+await N9.press('\x1b');
+t('DS-182 AC7 ← and → on a ticket change nothing, not even the view Esc goes back to', `${ticketAfter === ticketFrame} | ${where(N9)}`, 'true | desk-q › tidy | 1 Queue | queue');
 await N9.click(4, 1);
 t('DS-164 a click on desk-q from a ticket goes to every repo', N9.crumbs(), 'desk-q');
 N9.ui.finish(0);
@@ -662,15 +697,15 @@ views10.ticket = keysLine(N10r);
 N10r.ui.finish(0);
 const has = (line, k) => line.includes(k);
 const want10 = {
-  'every queue': { yes: ['tab or 1–4 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
-  'every timeline': { yes: ['tab or 1–4 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
-  'every days': { yes: ['tab or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'every epics': { yes: ['tab or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'repo queue': { yes: ['tab or 1–4 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
-  'repo timeline': { yes: ['tab or 1–4 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
-  'repo days': { yes: ['tab or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  'repo epics': { yes: ['tab or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['tab or 1–4 view', 'z scale', 'a all repos'] },
+  'every queue': { yes: ['←→ or 1–4 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
+  'every timeline': { yes: ['←→ or 1–4 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
+  'every days': { yes: ['←→ or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'every epics': { yes: ['←→ or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'repo queue': { yes: ['←→ or 1–4 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
+  'repo timeline': { yes: ['←→ or 1–4 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
+  'repo days': { yes: ['←→ or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  'repo epics': { yes: ['←→ or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–4 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
   ...yes.filter((k) => !has(views10[v] ?? '', k)).map((k) => `${v} lacks ${k}`), ...no.filter((k) => has(views10[v] ?? '', k)).map((k) => `${v} lists ${k}`)]).join(' | '), '');
@@ -751,6 +786,8 @@ await Fa.press(DOWN); await Fa.press(SHIFT_UP); await Fa.press('t');
 t('the epic\'s Queue moves nothing, and says to reorder on the repo\'s', `${readFileSync(featFile, 'utf8') === featBefore} ${Fa.frame().includes(Q.REORDER_IN_REPO)}`, 'true true');
 await Fa.press('\t'); await Fa.press('\t'); await Fa.press('\t');
 t('Tab in an epic skips the Epics view', where(Fa), 'desk-q › feat › Smart scheduling, your day | 1 Queue | queue');
+await Fa.press('3'); await Fa.press(RIGHT); await Fa.press(SS3_RIGHT);
+t('DS-182 AC3 → on By day in an epic stays on By day', `${where(Fa)} | ${Fa.frame().includes(Q.NO_EPICS_HERE)}`, 'desk-q › feat › Smart scheduling, your day | 3 By day | days | false');
 Fa.ui.finish(0);
 
 const everyFeat = lines(Q.timelineScreen(featRepos, null, { now: FIXED }));

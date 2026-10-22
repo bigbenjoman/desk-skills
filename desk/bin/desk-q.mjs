@@ -16,7 +16,7 @@
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //
 // A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
-// the same views open full-screen, with arrow keys, Enter and Esc, Tab or 1–4 for a place's Queue,
+// the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–4 for a place's Queue,
 // Timeline, By day and Epics, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. The one other write is a repo's <state>/eta.jsonl, which gains a ticket's first
@@ -917,7 +917,7 @@ const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them. An epic
 // has every one but Epics.
 export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics']];
-const VIEW_KEYS = 'tab or 1–4 view';
+const VIEW_KEYS = '←→ or 1–4 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
 // An epic's Queue hides the tickets a move steps past, so the order is set on the repo's.
 export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
@@ -1228,6 +1228,11 @@ export function interactive({
       const ok = VIEWS.filter(([id]) => tabOk(id));
       const i = ok.findIndex(([id]) => id === tab);
       setTab(ok[(i + (key.shift ? -1 : 1) + ok.length) % ok.length][0]);
+    } else if (hasTabs() && (key.name === 'left' || key.name === 'right')) {
+      // ← and → follow the tab bar and stop at its ends; Tab wraps.
+      const ok = VIEWS.filter(([id]) => tabOk(id));
+      const next = ok[ok.findIndex(([id]) => id === tab) + (key.name === 'left' ? -1 : 1)];
+      if (next) setTab(next[0]);
     } else if (hasTabs() && viewNo >= 0) setTab(VIEWS[viewNo][0]);
     else if (hasTabs() && str === 'w') setTab('timeline');
     else if (view.kind === 'epic' && moveVerb) msg = REORDER_IN_REPO;
