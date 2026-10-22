@@ -63,7 +63,7 @@ t('cmds prints nothing for a plain none', plain('cmds', 'lint-cmd'), '');
 t('list prints a plain none', plain('list', 'lint-cmd'), 'none');
 t('a backticked note in trailing parens is still one none', plain('cmds', 'test-cmd'), '');
 
-// The worker rows (DS-135): known ids, `no` when the row is missing, read by key when it is there.
+// The worker rows: known ids, `no` when the row is missing, read by key when it is there.
 const perms = join(T, 'perms.md');
 writeFileSync(perms, '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
   + '| `worker-screenshots` | Capture | `ask` | `yes` |\n| `worker-local-services` | Start | `ask` | `ask` |\n');

@@ -355,13 +355,17 @@ if (mode === 'triage') {
     ]));
   };
   const probeBins = new Set();
+  // §4 Install takes no arguments of the worker's unless §3 worker-dependency-install is `yes`:
+  // `npm install <pkg>` is a new dependency, so the configured command is allowed exactly.
+  const depsOk = E.permission('worker-dependency-install') === 'yes';
   for (const it of items) {
+    const form = (c) => (it.id === 'install-cmd' && !depsOk ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.') allow.push(...withPrefix(cmd).map((c) => rule(c, '')));
+      if (it.dir === '.') allow.push(...withPrefix(cmd).map(form));
       // A directory item has no bare form (the worker cannot `cd`), so it runs through with-lock.sh:
       // under its lock where it has one, else `nolock`, which only changes directory.
       const lock = E.lockFor(it.id);
-      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map((c) => rule(c, '')));
+      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map(form));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
   }
@@ -462,10 +466,15 @@ if (mode === 'triage') {
   const depSubs = DEP_SUBS[PM] ?? [];
   // Never called with no patterns: bash() would then return the package manager wholesale.
   const pmRules = (pats) => (pats.length ? [...bash(PM, ...pats), ...(PREFIX ? pats.map((s) => rule(`${PREFIX} ${PM}`, s)) : [])] : []);
-  const depBare = new Set([' install', ' i']);
+  // Refused, only the forms that add a package are denied outright: bare `install` and a sync form
+  // §4 Install itself uses (`uv sync --frozen`) stay with the exact rules above.
+  const depBare = new Set([' install', ' i', ...depSubs.filter((s) => items.some((i) => i.id === 'install-cmd' && (i.cmd === `${PM}${s}` || i.cmd.startsWith(`${PM}${s} `))))]);
+  // Each manager's own way of pointing at another project, beside the common ones.
+  const DEP_ELSEWHERE = { composer: [' *--working-dir*', '-d'], pdm: ['-p'], bundle: [' *--gemfile*'] };
+  const elsewhere = (s) => (DEP_ELSEWHERE[PM] ?? []).flatMap((f) => (f.startsWith(' ') ? [`${s}${f}`] : shortFlag(s, f)));
   if (grant('worker-dependency-install', pmRules(depSubs.map((s) => `${s} *`)), pmRules(depSubs.filter((s) => !depBare.has(s)).map((s) => `${s} *`)))) {
     deny.push(...pmRules(depSubs.flatMap((s) => [`${s} *..*`, `${s} *--global*`, `${s} *--location*`, `${s} *--prefix*`, `${s} *--dir*`, `${s} *--cwd*`,
-      `${s} *--directory*`, `${s} *--project*`, `${s} *--manifest-path*`, ...shortFlag(s, '-g'), ...shortFlag(s, '-C')])));
+      `${s} *--directory*`, `${s} *--project*`, `${s} *--manifest-path*`, ...shortFlag(s, '-g'), ...shortFlag(s, '-C'), ...elsewhere(s)])));
     if (!depSubs.length) warns.push(`§3 worker-dependency-install is yes, but §4 Package manager "${PM || 'none'}" has no known add or sync command — nothing allowed`);
   }
 
@@ -482,17 +491,25 @@ if (mode === 'triage') {
   grant('worker-screenshots', shots, []);
 
   // Starting a §4 Local services entry, detached, by its compose service name (each item's first
-  // word). Only `up -d`, exactly: no flag that recreates a shared container or renews its volumes.
-  // Stopping or removing one stays denied above: another session may be using it.
+  // word). Compose names a project after its directory, so from a worktree a bare `up` would start a
+  // second stack: the one form allowed reads the main checkout's compose file, the shared project,
+  // and never recreates a running container or starts its dependencies. Stopping or removing one
+  // stays denied above: another session may be using it.
+  let ROOT = null;
+  try { ROOT = E.repoRoot(); } catch { /* §2 Primary repo root unset */ }
+  // Compose's own lookup order.
+  const composeFile = ROOT && ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'].map((f) => `${ROOT}/${f}`).find((f) => existsSync(f));
   const services = [];
   for (const raw of cfgList('local-services')) {
     const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
     if (name) services.push(name);
     else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
   }
-  const ups = services.flatMap((s) => [...exact('docker', ` compose up -d ${s}`), ...exact('docker', ` compose up -d --wait ${s}`), ...exact('docker-compose', ` up -d ${s}`)]);
-  if (grant('worker-local-services', [...ups, ...bash('docker', ' compose ps', ' ps')], [...bash('docker', ' compose up'), ...bash('docker-compose', ' up')]) && !services.length) {
-    warns.push('§3 worker-local-services is yes, but §4 Local services names no service — nothing to start');
+  const ups = !composeFile ? [] : services.flatMap((s) => [...exact('docker', ` compose -f ${composeFile} up -d --no-recreate --no-deps ${s}`),
+    ...exact('docker-compose', ` -f ${composeFile} up -d --no-recreate --no-deps ${s}`)]);
+  if (grant('worker-local-services', ups, [...bash('docker', ' compose up', ' compose -f'), ...bash('docker-compose', ' up', ' -f')])) {
+    if (!services.length) warns.push('§3 worker-local-services is yes, but §4 Local services names no service — nothing to start');
+    else if (!composeFile) warns.push(`§3 worker-local-services is yes, but the main checkout (${ROOT ?? '§2 Primary repo root unset'}) has no compose file — nothing to start`);
   }
 
   // Figma: reads only, and only where the user granted reading linked Figma files.

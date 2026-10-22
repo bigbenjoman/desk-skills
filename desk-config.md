@@ -191,7 +191,7 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `autopilot-usage-resume` | Let a worker that reaches the 5-hour usage limit wait for the reset and carry on, spending the next usage window | `no` | `TODO` |
 | `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
 | `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
-| `worker-local-services` | Let a worker start a §4 Local services entry (`docker compose up -d <service>`); stopping or removing one stays refused | `ask` | `TODO` |
+| `worker-local-services` | Let a worker start a §4 Local services entry in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml up -d --no-recreate --no-deps <service>`); stopping, removing or recreating one stays refused | `ask` | `TODO` |
 
 `autopilot-worker-mode` values: `dontAsk + generated allow-list` (workers are launched with
 `--setting-sources ""`, so your own Claude Code settings, including any broad `Bash(*)` allow, never
