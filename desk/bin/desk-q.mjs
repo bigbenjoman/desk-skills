@@ -15,7 +15,8 @@
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //
 // A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
-// the same views open full-screen, with arrow keys, Enter and Esc; piped output gets the plain text.
+// the same views open full-screen, with arrow keys, Enter and Esc, Tab or 1–3 for a place's Queue,
+// Timeline and By day, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. The one other write is a repo's <state>/eta.jsonl, which gains a ticket's first
 // ship estimate the first time a live batch's forecast dates it.
@@ -23,6 +24,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
@@ -775,8 +777,16 @@ export const REFRESH_MS = 2000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 const ESC = '\x1b[';
-const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l`;
-export const LEAVE_SCREEN = `${ESC}?25h${ESC}?1049l`;
+// Mouse reporting in SGR form (1000 + 1006), so a click on the breadcrumb, a tab or a row arrives
+// as ESC [ < button ; column ; row M.
+const ENTER_SCREEN = `${ESC}?1049h${ESC}?25l${ESC}?1000h${ESC}?1006h`;
+export const LEAVE_SCREEN = `${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`;
+const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+const REVERSE = '7';
+// The views every place but a ticket has, in the order Tab and the number keys take them.
+export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day']];
+const VIEW_KEYS = 'tab or 1–3 view';
+export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
 
 function jiraUrlFor(slug, key) {
   const site = repoConfigValue(slug, 'jira-site');
@@ -806,11 +816,33 @@ function paint(x, w, selected) {
     for (const [s, k] of segs) { if (room <= 0) break; kept.push([s.slice(0, room), k]); room -= s.length; }
     segs = [...kept, ['…', null]];
   }
-  return segs.map(([s, k]) => (k && s ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : '39'}m` : s)).join('');
+  return segs.map(([s, k]) => (k && s ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : k === REVERSE ? '27' : '39'}m` : s)).join('');
 }
 
-// The full-screen view: ↑↓ select, Enter opens, Esc goes back, : takes a command, q quits.
-// Rereads the queues every REFRESH_MS, keeping the selection on the same repo or ticket.
+// Labels joined by `sep`, each with the columns it covers (from, up to end), so a click's column
+// finds its label.
+function spans(parts, sep) {
+  let at = 0;
+  return parts.map((p, i) => { const from = at + (i ? sep.length : 0); at = from + p.label.length; return { ...p, from, end: at }; });
+}
+
+// A keys line too long for the terminal breaks between keys rather than losing the last ones.
+function wrapKeys(s, w) {
+  const out = [];
+  for (const k of s.split(' · ')) { if (out.length && `${out.at(-1)} · ${k}`.length <= w) out[out.length - 1] += ` · ${k}`; else out.push(k); }
+  return out;
+}
+
+// A Timeline or By day view names its place by repo, or every repo, as the screen does.
+const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
+  ? { place: v.slug ? { kind: 'repo', slug: v.slug } : { kind: 'overview', all: false }, tab: v.kind }
+  : { place: v, tab: null });
+
+// The full-screen view is a place (every repo, a repo, a ticket) and, for every place but a ticket,
+// a view of it: Queue, Timeline or By day. Tab, 1–3, w and a click on the tab line change the view
+// and keep the place; Enter, Esc and a click on the breadcrumb change the place and keep the view.
+// ↑↓ select, : takes a command, q quits. Rereads the queues every REFRESH_MS, keeping the selection
+// on the same repo or ticket.
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
@@ -818,87 +850,179 @@ export function interactive({
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
   // and how far past the selection it shows when it has.
+  // `tab`: the view, one of VIEWS, kept across every change of place.
   // `checkin`: tickets waiting on the user are dated as if answered at the next check-in (c).
   // `zoom`: the Timeline's scale, z cycling it; back to auto whenever the place changes.
-  let view = start, sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null, checkin = false, zoom = 'auto';
+  // `layout`: where the last draw put the breadcrumb, the tabs and the rows, for a click to find them.
+  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null, checkin = false, zoom = 'auto', layout = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
   const repoOf = (slug) => repos.find((r) => r.slug === slug);
-  // The parked note joins the crumbs while any ticket in view waits on the user, or c is on.
-  const noted = (crumbs, rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? `${crumbs}    ${parkedBadge(checkin)}` : crumbs);
+  const hasTabs = () => view.kind === 'overview' || view.kind === 'repo';
+  // The parked note is shown while any ticket in view waits on the user, or c is on.
+  const badge = (rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? parkedBadge(checkin) : '');
+
+  // The breadcrumb's parts, each with the place a click on it goes to; the last is where you are.
+  function crumbParts() {
+    const r = view.slug ? repoOf(view.slug) : null;
+    const parts = [{ label: 'desk-q', to: { kind: 'overview', all: false } }];
+    if (view.slug) parts.push({ label: r?.name ?? view.slug, to: { kind: 'repo', slug: view.slug } });
+    if (view.key) parts.push({ label: view.key, to: { kind: 'ticket', slug: view.slug, key: view.key } });
+    if (view.kind === 'log') parts.push({ label: 'log', to: null });
+    return spans(parts, ' › ');
+  }
+
+  // "1 Queue  2 Timeline  3 By day", the view shown in reverse video.
+  const tabParts = () => spans(VIEWS.map(([id, label], i) => ({ label: `${i + 1} ${label}`, id })), '  ');
 
   function build() {
     const now = clock();
     const w = width();
-    if (view.kind === 'overview') {
-      return { crumbs: noted('desk-q', repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
-        keys: `↑↓ select · enter open · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · : command · q quit` };
-    }
-    const r = repoOf(view.slug);
-    const back = ': command · esc back · q quit';
-    if (view.slug && !r) return { crumbs: 'desk-q', head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: back };
-    if (view.kind === 'timeline' || view.kind === 'days') {
-      const tl = view.kind === 'timeline';
-      const crumbs = noted(['desk-q', r?.name, tl ? 'Timeline' : 'By day'].filter(Boolean).join(' › '), r ? [r] : repos);
+    const r = view.slug ? repoOf(view.slug) : null;
+    const esc = view.kind === 'overview' ? '' : 'esc back · ';
+    const cmdKeys = `: command · ${esc}q quit`;
+    if (view.slug && !r) return { head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: cmdKeys };
+    if (tab !== 'queue' && hasTabs()) {
+      const tl = tab === 'timeline';
       const opts = { now, width: w, checkin, zoom };
-      return { crumbs, ...(tl ? timelineParts(repos, view.slug, opts) : daysParts(repos, view.slug, opts)),
-        keys: `↑↓ select · enter open · ${tl ? 'z scale · ' : ''}c parked dates · ${back}` };
+      return { badge: badge(r ? [r] : repos), ...(tl ? timelineParts(repos, view.slug ?? null, opts) : daysParts(repos, view.slug ?? null, opts)),
+        keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${tl ? 'z scale · ' : ''}c parked dates · ${cmdKeys}` };
     }
-    const crumbs = noted(['desk-q', r.name, view.key].filter(Boolean).join(' › '), [r]);
-    if (view.kind === 'repo') return { crumbs, ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${back}` };
-    if (!r.q?.tickets?.[view.key]) return { crumbs, head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: back };
+    if (view.kind === 'overview') {
+      return { badge: badge(repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
+        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · ${cmdKeys}` };
+    }
+    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    if (!r.q?.tickets?.[view.key]) return { head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
       const lines = readFileSync(p, 'utf8').split('\n');
       if (lines.at(-1) === '') lines.pop();
       const last = lines.slice(-LOG_LINES).map(printable);
-      return { crumbs: `${crumbs} › log`, head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
+      return { head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
     }
     const jira = jiraUrlFor(r.slug, view.key);
     const s = ticketParts(r, view.key, { width: w, jiraUrl: jira, now, checkin });
-    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}${MOVE_KEYS} · l log · ${jira ? 'o Jira · ' : ''}c parked dates · ${back}`;
-    return { crumbs, ...s, keys };
+    const keys = `${s.rows.length ? '↑↓ select a blocker · enter open it · ' : ''}${MOVE_KEYS} · l log · ${jira ? 'o Jira · ' : ''}c parked dates · ${cmdKeys}`;
+    return { badge: badge([r]), ...s, keys };
   }
 
   function draw() {
     if (done) return;
-    try { screen = build(); } catch (e) { screen = { crumbs: 'desk-q', head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
+    try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
     const { rows } = screen;
     if (selId != null) { const i = rows.findIndex((x) => x.id === selId); if (i >= 0) sel = i; }
     sel = Math.max(0, Math.min(sel, rows.length - 1));
     selId = rows[sel]?.id ?? null;
     const w = width(), h = height();
     const fit = (l) => cut(l, w);
-    const body = [fit(screen.crumbs), '', ...screen.head.map(fit),
+    // The breadcrumb and the tab line stay at the top while the rest scrolls. A ticket has no tab
+    // line, so its parked note follows the breadcrumb.
+    const crumbs = crumbParts().map((p) => p.label).join(' › ');
+    const pinned = [];
+    if (hasTabs()) {
+      const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : null]]);
+      if (screen.badge) segs.push([`    ${screen.badge}`, null]);
+      pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false));
+    } else pinned.push(fit(screen.badge ? `${crumbs}    ${screen.badge}` : crumbs));
+    const body = ['', ...screen.head.map(fit),
       ...rows.map((x, i) => (i === sel ? `${ESC}7m${paint(x, w, true)}${ESC}27m` : paint(x, w, false))), ...screen.foot.map(fit)];
     // A message can be longer than the line (a refused raise says what raising the cap takes).
-    const status = [...wrap(msg, w), cmd != null ? `:${cmd}` : screen.keys].filter(Boolean).map(fit);
-    const room = h - status.length;
+    const status = [...wrap(msg, w), ...(cmd != null ? [`:${cmd}`] : wrapKeys(screen.keys, w))].filter(Boolean).map(fit);
+    const room = Math.max(1, h - status.length - pinned.length);
+    const first = 1 + screen.head.length;
     let top = 0;
     if (body.length > room) {
       const max = body.length - room;
       const clamp = (n) => Math.max(0, Math.min(max, n));
       if (rows.length) {
         // Centred on the selection; `scroll` is how far ↓ on the last row has read on past it.
-        const base = clamp(2 + screen.head.length + sel - Math.floor(room / 2));
+        const base = clamp(first + sel - Math.floor(room / 2));
         top = clamp(base + (scroll ?? 0));
         scroll = top - base;
       } else top = scroll = clamp(scroll ?? (screen.bottom ? max : 0));
     } else if (rows.length) scroll = 0;
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
-    output.write(`${ESC}H${[...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
+    layout = { pinned: pinned.length, top, room, first, rows: rows.length };
+    output.write(`${ESC}H${[...pinned, ...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
   }
 
-  function go(v) { stack.push({ view, sel, selId }); view = v; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; }
-  function back() { const p = stack.pop(); if (p) ({ view, sel, selId } = p); scroll = null; msg = ''; zoom = 'auto'; }
+  // A new place pushes the one you were on, so Esc comes back to it with its selection; the view
+  // stays whatever it is. A Timeline or By day row opening a repo opens that repo's same view.
+  function go(v) {
+    const p = placeOf(v);
+    stack.push({ view, sel, selId, tab });
+    view = p.place; if (p.tab) tab = p.tab;
+    sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto';
+  }
+  // The selection comes back only to the view it was made on: another view's rows are other rows.
+  function back() {
+    const p = stack.pop();
+    if (p) { view = p.view; if (p.tab === tab) ({ sel, selId } = p); else { sel = 0; selId = null; } }
+    scroll = null; msg = ''; zoom = 'auto';
+  }
+  // A place reached directly (the command line, :, the breadcrumb) gets the places above it to Esc to.
+  function goPlace(v) {
+    const p = placeOf(v);
+    if (p.tab) tab = p.tab;
+    stack.length = 0;
+    const up = (u) => stack.push({ view: u, sel: 0, selId: null, tab });
+    if (p.place.kind !== 'overview') up({ kind: 'overview', all: false });
+    if (['ticket', 'log'].includes(p.place.kind)) up({ kind: 'repo', slug: p.place.slug });
+    if (p.place.kind === 'log') up({ kind: 'ticket', slug: p.place.slug, key: p.place.key });
+    view = p.place; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto';
+  }
+  function setTab(id) { tab = id; sel = 0; selId = null; scroll = null; msg = ''; }
+
+  // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
+  // selects and opens it. The wheel moves the selection as the arrows do.
+  function onMouse(b, x, y) {
+    if (done || !layout || cmd != null) return;
+    if (b === 64 || b === 65) return onKey(undefined, { name: b === 64 ? 'up' : 'down' });
+    if ((b & ~(4 | 8 | 16)) !== 0) return;
+    const col = x - 1, line = y - 1;
+    const hit = (parts) => parts.find((p) => col >= p.from && col < p.end);
+    if (line === 0) {
+      const parts = crumbParts(), p = hit(parts);
+      if (!p || p === parts.at(-1) || !p.to) return;
+      goPlace(p.to);
+    } else if (line === 1 && hasTabs()) {
+      const p = hit(tabParts());
+      if (!p) return;
+      setTab(p.id);
+    } else {
+      const i = line - layout.pinned + layout.top - layout.first;
+      if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows) return;
+      sel = i; selId = screen.rows[i]?.id ?? null;
+      const o = screen.rows[i]?.open;
+      if (o) go(o);
+    }
+    draw();
+  }
+
+  // Mouse reports are taken out of the input before readline reads it for keys, which would
+  // otherwise split one into stray keypresses. One cut across two reads waits for the rest.
+  const keys = new PassThrough();
+  let partial = '';
+  function onData(chunk) {
+    let s = partial + String(chunk);
+    const cutAt = s.search(/\x1b\[<[\d;]*$/);
+    partial = cutAt >= 0 ? s.slice(cutAt) : '';
+    if (cutAt >= 0) s = s.slice(0, cutAt);
+    const clicks = [];
+    s = s.replace(MOUSE, (_, b, x, y, m) => { if (m === 'M') clicks.push([Number(b), Number(x), Number(y)]); return ''; });
+    if (s) keys.write(s);
+    for (const c of clicks) onMouse(...c);
+  }
 
   function finish(code) {
     if (done) return;
     done = true;
     clearInterval(timer);
-    input.removeListener('keypress', onKey);
+    input.removeListener('data', onData);
+    keys.removeListener('keypress', onKey);
     output.removeListener?.('resize', draw);
     if (input.isTTY) input.setRawMode(false);
     input.pause?.();
@@ -918,11 +1042,11 @@ export function interactive({
       checkFlags(words);
       const v = target(repos, words);
       if (isWrite(v)) {
-        // A change typed anywhere lands on that repo's queue, with the moved ticket selected.
-        if (!(view.kind === 'repo' && view.slug === v.slug)) go({ kind: 'repo', slug: v.slug });
+        // A change typed anywhere lands on that repo's Queue, with the moved ticket selected.
+        if (!(view.kind === 'repo' && view.slug === v.slug && tab === 'queue')) { goPlace({ kind: 'repo', slug: v.slug }); tab = 'queue'; }
         if (v.key) selId = v.key;
         act(v);
-      } else if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else go(v);
+      } else if (v.kind === 'overview' && view.kind === 'overview') { view = { ...view, all: v.all }; msg = ''; } else goPlace(v);
     } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
   }
 
@@ -937,10 +1061,18 @@ export function interactive({
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
       return draw();
     }
-    // On a repo's queue the selected ticket moves; on a ticket's screen, that ticket.
-    const queueView = view.kind === 'repo' || view.kind === 'ticket';
+    // On a repo's Queue the selected ticket moves; on a ticket's screen, that ticket. On a Timeline
+    // or By day nothing moves: the order is set on the Queue, and the dates follow from it.
+    const queueView = (view.kind === 'repo' && tab === 'queue') || view.kind === 'ticket';
     const moveVerb = key.shift && key.name === 'up' ? 'up' : key.shift && key.name === 'down' ? 'down' : str === 't' ? 'top' : str === 'b' ? 'bottom' : null;
-    if (queueView && moveVerb) {
+    const viewNo = VIEWS.findIndex((_, i) => str === String(i + 1));
+    if (hasTabs() && key.name === 'tab') {
+      const i = VIEWS.findIndex(([id]) => id === tab);
+      setTab(VIEWS[(i + (key.shift ? -1 : 1) + VIEWS.length) % VIEWS.length][0]);
+    } else if (hasTabs() && viewNo >= 0) setTab(VIEWS[viewNo][0]);
+    else if (hasTabs() && str === 'w') setTab('timeline');
+    else if (hasTabs() && tab !== 'queue' && moveVerb) msg = REORDER_HERE;
+    else if (queueView && moveVerb) {
       const k = view.kind === 'ticket' ? view.key : rows[sel]?.id;
       if (k && repoOf(view.slug)?.q) act({ kind: 'move', slug: view.slug, key: k, verb: moveVerb });
     } else if (queueView && (str === '+' || str === '-')) {
@@ -956,8 +1088,8 @@ export function interactive({
     else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; }
-    else if (str === 'a' && view.kind === 'overview') view = { ...view, all: !view.all };
-    else if (str === 'z' && view.kind === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
+    else if (str === 'a' && view.kind === 'overview' && tab === 'queue') view = { ...view, all: !view.all };
+    else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;
       msg = checkin ? 'Parked tickets are now dated as if you answer at the next check-in (08:00 or 17:00).' : 'Parked tickets have no date until you answer them.';
@@ -974,9 +1106,11 @@ export function interactive({
     draw();
   }
 
-  emitKeypressEvents(input);
+  goPlace(start);
+  emitKeypressEvents(keys);
   if (input.isTTY) input.setRawMode(true);
-  input.on('keypress', onKey);
+  keys.on('keypress', onKey);
+  input.on('data', onData);
   input.resume?.();
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
