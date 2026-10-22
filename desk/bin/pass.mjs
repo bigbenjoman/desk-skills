@@ -23,6 +23,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
+import { usagePace } from './usage-pace.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -538,6 +539,12 @@ if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
 for (const s of HEALTH.stalls) personStall(s);
+// Weekly usage pacing (usage-pace.mjs): new spawns hold while 7-day usage is ahead of an even pace by
+// more than §3b "Usage pacing headroom (points)". That drains as the week goes on; a row that does not
+// read holds every spawn until it is fixed, as a malformed budget does.
+const PACE = usagePace();
+if (PACE.bad) personStall(`${PACE.bad} — not spawning until it is fixed`);
+else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on)`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -630,6 +637,8 @@ const MACHINE_CAP = machineCap();
 const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
+  : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
+  : PACE.hold ? '7-day usage ahead of pace holds every spawn'
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
 let borrowLock = null;
 let others = [];
@@ -1245,6 +1254,7 @@ push.push(...HEALTH.push);
 for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(HEALTH.line);
+lines.push(PACE.line);
 lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
 lines.push(CEILING.line);
 lines.push(CONC.line);

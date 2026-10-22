@@ -271,6 +271,7 @@ export const CONFIG_ROWS = Object.freeze({
   'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
   'resume-killed': { section: '3b', row: 'Resume a killed worker (times)' },
   'disk-floor': { section: '3b', row: 'Free disk floor (GB)' },
+  'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'env-files': { section: '4', row: 'Env files' },
   'local-db': { section: '4', row: 'Local database' },
