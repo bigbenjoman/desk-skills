@@ -189,6 +189,24 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "a marker only in a tool call or result does not block a respawn" '[ "$(field T-13 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning.*T-13"'
 check "a marker the worker printed still blocks a respawn, and says why" '[ "$(field T-14 state)" = "\"triaged\"" ] && echo "$out" | grep -q "not respawning (its worker already printed AUTOPILOT_DONE): T-14"'
 
+# A stage echoed at the start of a Bash command is read (S-1); DONE echoed the same way is not
+# (S-2); a stage in a tool result is not (S-3); a stage in the worker's text still is (S-4).
+bash_cmd(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: process.argv[1] } }] } }))' "$1"; }
+for k in S-1 S-2 S-3 S-4; do q add "$k"; q set "$k" state=running "branch=fix/$k" session_id=live-1 stage=0/9; done
+bash_cmd 'echo "AUTOPILOT_STAGE: 4/9 verify"; git status --porcelain' > "$T/state/logs/S-1.log"
+bash_cmd 'echo "AUTOPILOT_DONE: pr=12"' > "$T/state/logs/S-2.log"
+{ bash_cmd 'grep AUTOPILOT_STAGE notes.md'
+  node -e 'console.log(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "AUTOPILOT_STAGE: 9/9 cleanup" }] } }))'
+} > "$T/state/logs/S-3.log"
+say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state/logs/S-4.log"
+out=$(node "$B/pass.mjs" 2>&1)
+render=$(node "$B/queue.mjs" render 2>&1)
+check "DS-173 AC1 a stage echoed at the start of a Bash command is recorded" '[ "$(field S-1 stage)" = "\"4/9\"" ] && echo "$render" | grep -E "S-1\b" | grep -q "4/9"'
+check "DS-173 AC2 DONE echoed from Bash does not record the ticket done" '[ "$(field S-2 state)" = "\"running\"" ] && [ "$(field S-2 result)" = null ]'
+check "DS-173 AC3 a stage in a tool result does not change the stage" '[ "$(field S-3 stage)" = "\"0/9\"" ]'
+check "DS-173 AC4 a stage in the worker's text is recorded as before" '[ "$(field S-4 stage)" = "\"3/9\"" ]'
+for k in S-1 S-2 S-3 S-4; do q set "$k" state=done; done
+
 # T-15 and T-16 finish with real branches: T-15 changed a file outside its triaged scope, T-16 only its
 # scope, a test and a lockfile. Report only: both are recorded done, and the idle batch gives the total.
 git -C "$T/repo" update-ref refs/remotes/origin/main main; mkdir -p "$T/state/triage"

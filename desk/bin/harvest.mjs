@@ -10,23 +10,34 @@ import { fileURLToPath } from 'node:url';
 // about the marker itself.
 export const MARKER = /^[\s`>*#-]*(AUTOPILOT_[A-Z_]+):[ \t]*(.*?)[\s`]*$/gm;
 
-// Only what the worker itself said: its text blocks and its final result. Tool inputs and
-// tool results are never read, so a grep for a marker, or a file that quotes one, is not the
-// worker printing it.
+// A Bash command that opens by echoing a stage: `echo "AUTOPILOT_STAGE: 4/9 verify"; <command>`.
+// STAGE only, and only as the command's start: DONE, PARK and IMAGES must stay in the worker's text.
+const ECHO_STAGE = /^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*([^"'\n]*?)\s*\1/;
+
+// Only what the worker itself said: its text blocks and its final result (`texts`). Tool inputs
+// and tool results are never read, so a grep for a marker, or a file that quotes one, is not the
+// worker printing it. The one exception is a stage the worker echoed at the start of a Bash
+// command: `said` is `texts` with those stages interleaved in log order, for reading markers.
 export function readLog(logText) {
   const texts = [];
+  const said = [];
   let result = null;
   for (const line of logText.split('\n')) {
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     if (d.type === 'assistant') {
-      for (const c of d.message?.content ?? []) if (c.type === 'text') texts.push(c.text);
+      for (const c of d.message?.content ?? []) {
+        if (c.type === 'text') { texts.push(c.text); said.push(c.text); }
+        const m = c.type === 'tool_use' && c.name === 'Bash' && typeof c.input?.command === 'string'
+          && c.input.command.match(ECHO_STAGE);
+        if (m) said.push(`AUTOPILOT_STAGE: ${m[2]}`);
+      }
     } else if (d.type === 'result') {
       result = d;
-      if (typeof d.result === 'string') texts.push(d.result);
+      if (typeof d.result === 'string') { texts.push(d.result); said.push(d.result); }
     }
   }
-  return { texts, result };
+  return { texts, said, result };
 }
 
 // [name, value] for every marker the worker printed, in order. The one reading of markers:
@@ -37,7 +48,7 @@ export function markersIn(texts) {
   return markers;
 }
 
-export const workerMarkers = (logText) => markersIn(readLog(logText).texts);
+export const workerMarkers = (logText) => markersIn(readLog(logText).said);
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
@@ -49,7 +60,7 @@ if (isMain) {
   const wantBody = process.argv.includes('--pr-body');
   if (!log) { console.error('usage: harvest.mjs <worker.log> [--pr-body]'); process.exit(1); }
 
-  const { texts, result } = readLog(readFileSync(log, 'utf8'));
+  const { texts, said, result } = readLog(readFileSync(log, 'utf8'));
 
   // --pr-body prints only the last body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and
   // AUTOPILOT_PR_BODY_END:, verbatim, and exits 3 when there is none.
@@ -63,7 +74,7 @@ if (isMain) {
     process.exit(0);
   }
 
-  const markers = markersIn(texts);
+  const markers = markersIn(said);
 
   if (markers.length) {
     console.log('markers:');

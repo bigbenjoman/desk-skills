@@ -540,6 +540,13 @@ AUTOPILOT_DONE:  pr=<number> jira=<status, or "none" with no tracker>
 Emit `AUTOPILOT_STAGE` **as you reach each stage**, not batched into your final message: a worker
 that reports only at the end is indistinguishable from one that has wedged.
 
+**Put every marker in your reply text, never in a tool call.** The orchestrator reads only what you
+say: a marker inside a Bash command or its output is not read, so a grep or a file that quotes one
+is not taken as you printing it. The one fallback is a stage: a Bash command that *starts* with
+`echo "AUTOPILOT_STAGE: <n>/9 <name>"` is recorded as that stage. `AUTOPILOT_DONE`, `AUTOPILOT_PARK`,
+`AUTOPILOT_IMAGES` and the rest are read from your text only, so echoing one from Bash records
+nothing.
+
 `AUTOPILOT_NOTE` matters: you are isolated from the other tickets, so a helper you just found or
 wrote is invisible to them, and two workers adding the same helper is a duplicate a reviewer will
 reject.
