@@ -189,7 +189,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "a marker only in a tool call or result does not block a respawn" '[ "$(field T-13 state)" = "\"running\"" ] && ! echo "$out" | grep -q "not respawning.*T-13"'
 check "a marker the worker printed still blocks a respawn, and says why" '[ "$(field T-14 state)" = "\"triaged\"" ] && echo "$out" | grep -q "not respawning (its worker already printed AUTOPILOT_DONE): T-14"'
 
-# DS-173: a stage echoed at the start of a Bash command is read (S-1); DONE echoed the same way is not
+# A stage echoed at the start of a Bash command is read (S-1); DONE echoed the same way is not
 # (S-2); a stage in a tool result is not (S-3); a stage in the worker's text still is (S-4).
 bash_cmd(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: process.argv[1] } }] } }))' "$1"; }
 for k in S-1 S-2 S-3 S-4; do q add "$k"; q set "$k" state=running "branch=fix/$k" session_id=live-1 stage=0/9; done
