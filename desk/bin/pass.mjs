@@ -263,7 +263,8 @@ function logDecisions(t, log, pr) {
 
 // A worker killed before it finished (no result event, no marker, no open PR) is resumed in its own
 // session, worktree and branch by the spawn below, up to config §3b "Resume a killed worker (times)"
-// per ticket. Unset is 2; anything but a whole number is said and read as 0, which fails it as before.
+// per ticket. Unset is 2; anything but a whole number is said and read as 0, which marks a killed
+// worker failed.
 const RESUME_ROW = E.CONFIG_ROWS['resume-killed'].row;
 const RESUME = (() => {
   const raw = E.configValue('resume-killed');
@@ -278,7 +279,18 @@ const bootMs = (() => {
   if (v) return /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v);
   return Date.now() - uptime() * 1000;
 })();
-const killedBy = (log) => (statSync(log).mtimeMs < bootMs ? 'the computer restarted after its last log write' : 'its process died while the computer stayed up');
+const REBOOT = 'the computer restarted after its last log write';
+const killedBy = (log) => (statSync(log).mtimeMs < bootMs ? REBOOT : 'its process died while the computer stayed up');
+// Where a killed worker's resume stops: off, or this ticket has had as many as the row allows.
+const resumeRefusal = (t, why) => {
+  const n = t.resumes ?? 0;
+  if (RESUME.limit <= 0) return { fail: `Resuming is off (${RESUME.bad ?? `config §3b "${RESUME_ROW}" is 0`}), so it is marked failed` };
+  if (n >= RESUME.limit) {
+    return { park: `killed again (${why}) after ${n} resume(s), the most config §3b "${RESUME_ROW}" allows (${RESUME.limit}), so it is not resumed. ` +
+      `Session ${t.session_id}, worktree ${t.worktree}. Requeue it for a fresh worker with queue.mjs requeue ${t.key}` };
+  }
+  return null;
+};
 
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
@@ -450,20 +462,17 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     } else if (!wedged && !endedNormally(logText) && t.session_id) {
       // Killed mid-run: resumed in its own session by the spawn below, ahead of new tickets.
       const why = killedBy(log);
-      const n = t.resumes ?? 0;
-      // A log written in the last two minutes is a worker the registry has not caught up with, not a
-      // dead one: resuming it would put two processes on one session.
-      if (Date.now() - statSync(log).mtimeMs < 120_000) {
+      const stop = resumeRefusal(t, why);
+      // A log written in the last two minutes, since this computer started, is a worker the registry
+      // has not caught up with, not a dead one: resuming it would put two processes on one session.
+      if (why !== REBOOT && Date.now() - statSync(log).mtimeMs < 120_000) {
         report.quiet.push(`${t.key}: not in the session registry, but its log was written in the last 2 minutes — left running, checked again next pass`);
-      } else if (RESUME.limit <= 0) {
+      } else if (stop?.fail) {
         q('set', t.key, 'state=failed');
-        report.failed.push(`${t.key}: killed before it finished (${why}), with no marker and no open PR on ${t.branch}. ` +
-          `Resuming is off (${RESUME.bad ?? `config §3b "${RESUME_ROW}" is 0`}), so it is marked failed — check ${log}`);
-      } else if (n >= RESUME.limit) {
-        const reason = `killed again (${why}) after ${n} resume(s), the most config §3b "${RESUME_ROW}" allows (${RESUME.limit}), so it is not resumed. ` +
-          `Session ${t.session_id}, worktree ${t.worktree}. Requeue it for a fresh worker with queue.mjs requeue ${t.key}`;
-        q('park', t.key, reason);
-        report.parked.push(`${t.key}: ${reason}`);
+        report.failed.push(`${t.key}: killed before it finished (${why}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
+      } else if (stop?.park) {
+        q('park', t.key, stop.park);
+        report.parked.push(`${t.key}: ${stop.park}`);
       } else {
         q('set', t.key, 'state=triaged', 'resume=pending', `resume_why=${why}`);
         report.advanced.push(`${t.key} killed before it finished (${why}): queued to resume`);
@@ -793,22 +802,40 @@ async function freePort(own = null) {
   return port;
 }
 
+// Prove the generated permissions behave before committing a worker to a ticket: null on a pass,
+// else what failed.
+function preflightFailure(key, wt, workerEnv) {
+  const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
+    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
+  }).out;
+  return /\[preflight\] pass/.test(pre) ? null : pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300);
+}
+const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn refused — ${out.split('\n').slice(-3).join(' ')}`);
+
 // A killed worker resumes in its own session, worktree, branch and log, through spawn-worker.sh and
 // so inside the worker sandbox, with AUTOPILOT_RESUME as its next prompt. Its briefing is the one it
 // was spawned with.
 async function resumeKilled(t) {
   const n = (t.resumes ?? 0) + 1;
+  // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
-    q('set', t.key, 'state=failed', 'resume=null');
+    q('set', t.key, 'state=failed', 'resume=null', 'port=null', 'spawn_failed=true');
     report.failed.push(`${t.key}: killed before it finished, and could not be resumed: ${why}`);
   };
+  // The row may have changed while it waited for a slot.
+  const stop = resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  if (stop?.fail) return fail(stop.fail);
+  if (stop?.park) {
+    q('set', t.key, 'resume=null');
+    q('park', t.key, stop.park);
+    report.parked.push(`${t.key}: ${stop.park}`);
+    return undefined;
+  }
   if (!t.worktree || !existsSync(t.worktree)) return fail(`its worktree ${t.worktree ?? '(none recorded)'} is gone. Requeue it for a fresh worker with queue.mjs requeue ${t.key}`);
   const model = t.model && t.model !== 'default' ? t.model : '';
   const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
-  const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, 'preflight'], {
-    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
-  }).out;
-  if (!/\[preflight\] pass/.test(pre)) return fail(`preflight failed —\n${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}`);
+  const pre = preflightFailure(t.key, t.worktree, workerEnv);
+  if (pre) return fail(`preflight failed —\n${pre}`);
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const prompt = `Your previous run of this session was killed before it finished (${t.resume_why ?? 'reboot or crash'}). ` +
@@ -822,7 +849,8 @@ async function resumeKilled(t) {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
-  if (!/\[spawn\] ticket=/.test(spawned.out)) return fail(`spawn refused — ${spawned.out.split('\n').slice(-3).join(' ')}`);
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return fail(refused);
   report.spawned.push(`${t.key} resumed after it was killed (${n} of ${RESUME.limit}) — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}`);
   runningKeys.add(t.key);
 }
@@ -900,14 +928,11 @@ for (const t of eligible) {
     ? `${brief.slice(0, MAX_BRIEF)}\n\n[briefing truncated to stay under the argv limit]`
     : brief);
 
-  // Prove the generated permissions behave before committing a worker to this ticket.
-  const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, 'preflight'], {
-    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
-  }).out;
-  if (!/\[preflight\] pass/.test(pre)) {
+  const pre = preflightFailure(t.key, wt, workerEnv);
+  if (pre) {
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
     q('set', t.key, 'state=failed', 'spawn_failed=true');
-    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}`);
+    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre}`);
     continue;
   }
 
@@ -939,9 +964,10 @@ for (const t of eligible) {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
-  if (!/\[spawn\] ticket=/.test(spawned.out)) {
+  const refused = spawnRefusal(spawned.out);
+  if (refused) {
     q('set', t.key, 'state=failed', 'session_id=null', 'port=null', 'spawn_failed=true');
-    report.failed.push(`${t.key}: spawn refused — ${spawned.out.split('\n').slice(-3).join(' ')}`);
+    report.failed.push(`${t.key}: ${refused}`);
     continue;
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.

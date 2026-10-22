@@ -570,7 +570,7 @@ dangerous spelling.
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
 budget, worker models, worker location, stage reports; push notification, check-in times, killed-worker
 resumes (Recommended `2`: a pass resumes a worker a reboot or crash killed, in its own session, up to
-that many times; `0` marks it failed as before). For
+that many times; `0` marks it failed instead). For
 check-in times, Recommended is `08:00, 17:00`: questions and logged decisions from every repo arrive
 together then, as one page and one push. For worker location,
 Recommended is `local`; say that `cloud` is accepted but cloud workers are not available yet, so
