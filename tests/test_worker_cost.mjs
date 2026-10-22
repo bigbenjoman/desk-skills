@@ -1,8 +1,9 @@
 // suite: worker cost (tokens, cost and wall time per worker in the batch report)
 // worker-cost.mjs on stub stream-json logs in a scratch state directory: a finished worker, one woken
 // again after its turn ended, a requeued one whose rounds add up, one with no result event, a round
-// left by an earlier batch, and a ticket no worker ran. The idle pass that prints the table runs in
-// test_pass.sh.
+// left by an earlier batch, and a ticket no worker ran; and per-stage tokens (DS-152) from logs with
+// stage markers, tokens before the first marker, two rounds and no usage. The idle pass that prints
+// the table runs in test_pass.sh.
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,11 +49,12 @@ t('no result event is null, not zeros', logUsage(`${say('hi')}\nnot json\n`), nu
 t('several result events in one process: cost and tokens are the last running total, time adds up',
   JSON.stringify(ticketCost(S, tk('T-5')).usage), '{"input":200,"output":20,"cost":4,"ms":120000}');
 
-t('rounds add up', JSON.stringify(ticketCost(S, tk('T-2'))), '{"key":"T-2","runs":2,"unknown":0,"usage":{"input":15,"output":27,"cost":1,"ms":3660000}}');
-t('a log with no result event is unknown', JSON.stringify(ticketCost(S, tk('T-3'))), '{"key":"T-3","runs":1,"unknown":1,"usage":null}');
+const costOf = (k, since) => { const c = ticketCost(S, tk(k, since)); return c && JSON.stringify({ key: c.key, runs: c.runs, unknown: c.unknown, usage: c.usage }); };
+t('rounds add up', costOf('T-2'), '{"key":"T-2","runs":2,"unknown":0,"usage":{"input":15,"output":27,"cost":1,"ms":3660000}}');
+t('a log with no result event is unknown', costOf('T-3'), '{"key":"T-3","runs":1,"unknown":1,"usage":null}');
 t('a ticket no worker ran has no row', ticketCost(S, tk('T-9')), null);
 t('a ticket whose only log was moved aside still has its round', ticketCost(S, tk('T-4'))?.usage?.cost, 9);
-t('a round an earlier batch left is not counted', JSON.stringify(ticketCost(S, tk('T-6', joined))), '{"key":"T-6","runs":1,"unknown":0,"usage":{"input":1,"output":1,"cost":1,"ms":1000}}');
+t('a round an earlier batch left is not counted', costOf('T-6', joined), '{"key":"T-6","runs":1,"unknown":0,"usage":{"input":1,"output":1,"cost":1,"ms":1000}}');
 t('with no added_at every round counts', ticketCost(S, tk('T-6'))?.runs, 2);
 t('wall time under an hour', wallTime(125000), '2m 05s');
 t('wall time over an hour', wallTime(3660000), '1h 01m');
@@ -62,12 +64,59 @@ t('the batch rows are the workers that ran, in queue order', rows.map((r) => r.k
 const table = costTable(rows).split('\n');
 console.log(table.join('\n'));
 const cols = (line) => line.trim().split(/\s{2,}/);
-t('AC3 a header names each figure', cols(table[1]).join('|'), 'worker|runs|input tokens|output tokens|cost|wall time');
-t('AC3 a worker row', cols(table[2]).join('|'), 'T-1|1|41,300|2,000|$1.50|2m 05s');
-t('AC3 a requeued worker row sums its rounds', cols(table[3]).join('|'), 'T-2|2|15|27|$1.00|1h 01m');
-t('AC4 a worker with no result event reads unknown, not zero', cols(table[4]).join('|'), 'T-3|1|unknown|unknown|unknown|unknown|(1 of 1 run(s) with no result event in the log)');
-t('AC3 the total row adds the known workers and names what it left out', cols(table[5]).join('|'), 'total|4|41,315|2,027|$2.50|1h 03m|(1 unknown worker(s) not counted)');
+const row = (lines, key) => cols(lines.find((l) => l.startsWith(`  ${key} `)) ?? '').join('|');
+t('AC3 a header names each figure', cols(table[1]).join('|'), 'worker|runs|input tokens|output tokens|cost|wall time|first-turn input');
+t('AC3 a worker row', row(table, 'T-1'), 'T-1|1|41,300|2,000|$1.50|2m 05s|unknown');
+t('AC3 a requeued worker row sums its rounds', row(table, 'T-2'), 'T-2|2|15|27|$1.00|1h 01m|unknown');
+t('AC4 a worker with no result event reads unknown, not zero', row(table, 'T-3'), 'T-3|1|unknown|unknown|unknown|unknown|unknown|(1 of 1 run(s) with no result event in the log)');
+t('AC3 the total row adds the known workers and names what it left out', row(table, 'total'), 'total|4|41,315|2,027|$2.50|1h 03m|unknown|(first-turn input leaves out 3 worker(s) with no usage; 1 unknown worker(s) not counted)');
 t('a table of known workers has no left-out note', costTable(batchCost(S, [tk('T-1')])).split('\n').at(-1).includes('not counted'), false);
+
+// DS-152: tokens per stage, from the usage on each assistant event. claude -p writes one event per
+// content block, each repeating its message's id and usage, with output growing across the blocks.
+let seq = 0;
+const call = ({ id = `m${++seq}`, text, bash, think = false, input = 0, cacheW = 0, cacheR = 0, output = 0, parent = null, usage = true }) => JSON.stringify({
+  type: 'assistant', parent_tool_use_id: parent,
+  message: {
+    id, content: [think ? { type: 'thinking', thinking: '…' } : text != null ? { type: 'text', text } : { type: 'tool_use', name: 'Bash', input: { command: bash ?? 'ls' } }],
+    ...(usage ? { usage: { input_tokens: input, cache_creation_input_tokens: cacheW, cache_read_input_tokens: cacheR, output_tokens: output } } : {}),
+  },
+});
+const done = result({ cost: 1, ms: 1000, input: 1, output: 1 });
+// S-1: start-up work, then two stages, one printed and one echoed, and a subagent's call in the second.
+log('S-1.log',
+  call({ id: 'a', think: true, input: 2, cacheW: 30000, cacheR: 20000, output: 3 }),
+  call({ id: 'a', bash: 'desk-env where', input: 2, cacheW: 30000, cacheR: 20000, output: 40 }),
+  call({ text: 'AUTOPILOT_STAGE: 0/9 intake', input: 1, cacheR: 50000, output: 10 }),
+  call({ bash: 'git log', input: 1, cacheR: 51000, output: 5 }),
+  call({ bash: 'echo "AUTOPILOT_STAGE: 4/9 verify"; bash tests/run.sh', input: 1, cacheW: 1000, cacheR: 52000, output: 20 }),
+  call({ text: 'reading', parent: 'toolu_1', input: 7000, output: 300 }),
+  done);
+// S-2: two rounds. The earlier round stopped at 3/9; the current one picks up there and goes on.
+log('S-2.log.round1', call({ input: 100, output: 1 }), call({ text: '- `AUTOPILOT_STAGE: 3/9 implement`', input: 200, output: 2 }), done);
+log('S-2.log', call({ input: 400, output: 4 }), call({ text: 'AUTOPILOT_STAGE: 3/9 implement', input: 800, output: 8 }),
+  call({ text: 'AUTOPILOT_STAGE: 4/9 verify', input: 1600, output: 16 }), done);
+// S-3: a finished run whose assistant events carry no usage.
+log('S-3.log', call({ text: 'AUTOPILOT_STAGE: 0/9 intake', usage: false }), done);
+const stages = (k) => ticketCost(S, tk(k)).stages?.map((s) => `${s.name}=${s.input}/${s.output}`).join(' ');
+
+t('DS-152 AC1 the first turn is the first call\'s input: fresh, cache writes and cache reads', ticketCost(S, tk('S-1')).first, 50002);
+t('DS-152 AC2 each stage holds the tokens from its marker to the next, a message counted once at its last output',
+  stages('S-1'), 'start-up=50002/40 0/9 intake=101002/15 4/9 verify=60001/320');
+t('DS-152 AC3 tokens before the first marker are a start-up stage', ticketCost(S, tk('S-1')).stages[0].name, 'start-up');
+t('DS-152 AC4 two rounds add up, a stage both reached once, in the order the rounds ran',
+  stages('S-2'), 'start-up=500/5 3/9 implement=1000/10 4/9 verify=1600/16');
+t('DS-152 AC4 two rounds: first-turn input adds each round\'s start', ticketCost(S, tk('S-2')).first, 500);
+t('DS-152 AC5 a log with no usage figures is unknown, not zero', JSON.stringify([ticketCost(S, tk('S-3')).first, ticketCost(S, tk('S-3')).stages]), '[null,null]');
+
+const sTable = costTable(batchCost(S, ['S-1', 'S-2', 'S-3'].map((k) => tk(k)))).split('\n');
+console.log(sTable.join('\n'));
+const under = (key) => { const i = sTable.findIndex((l) => l.startsWith(`  ${key} `)); const out = []; for (let j = i + 1; sTable[j]?.startsWith('      '); j++) out.push(sTable[j].trim().replace(/\s+/g, ' ')); return out.join(' | '); };
+t('DS-152 AC1 a worker row shows its first-turn input', row(sTable, 'S-1').split('|').at(-1), '50,002');
+t('DS-152 AC2 a per-stage line for each stage, under the worker\'s row', under('S-1'), 'start-up 50,002 in 40 out | 0/9 intake 101,002 in 15 out | 4/9 verify 60,001 in 320 out');
+t('DS-152 AC4 a two-round worker says its rounds', row(sTable, 'S-2').split('|')[1], '2');
+t('DS-152 AC5 a worker with no usage reads unknown in its first-turn cell and its stages', `${row(sTable, 'S-3').split('|').at(-1)} / ${under('S-3')}`, 'unknown / stages: unknown (no usage in the log)');
+t('DS-152 the total first-turn input adds the known workers and names what it left out', row(sTable, 'total'), 'total|4|4|4|$4.00|0m 04s|50,502|(first-turn input leaves out 1 worker(s) with no usage)');
 
 const loc = (v) => { try { return parseWorkerLocation(v); } catch (e) { return `refused: ${/Worker location/.test(e.message) ? 'names the row' : e.message}`; } };
 t('local reads as local', loc('local'), 'local');

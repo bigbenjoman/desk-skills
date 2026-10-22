@@ -5,6 +5,55 @@
 // subscription), and input counts cache reads and writes as well as fresh input.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { ECHO_STAGE, markersIn } from './harvest.mjs';
+
+export const START_UP = 'start-up';
+
+// One log's tokens per stage, from the usage each assistant event carries, or null when no event
+// has any. claude -p writes one assistant event per content block, each repeating its message's
+// usage, so a message counts once (its highest output, since output grows across the blocks) and
+// goes to the stage it was in when it ended: a message that prints a stage marker opens that stage.
+// Subagents' messages count in the stage that called them. `first` is the first model call's input
+// (fresh, cache writes and cache reads), the prompt the worker starts on.
+export function stageUsage(logText) {
+  const msgs = new Map();
+  let stage = START_UP;
+  for (const line of logText.split('\n')) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type !== 'assistant') continue;
+    const content = d.message?.content ?? [];
+    for (const c of content) {
+      const echoed = c.type === 'tool_use' && c.name === 'Bash' && typeof c.input?.command === 'string'
+        && c.input.command.match(ECHO_STAGE);
+      if (echoed) stage = echoed[2].trim().replace(/\s+/g, ' ');
+      if (c.type === 'text' && typeof c.text === 'string') {
+        for (const [k, v] of markersIn([c.text])) if (k === 'AUTOPILOT_STAGE' && v.trim()) stage = v.trim().replace(/\s+/g, ' ');
+      }
+    }
+    const u = d.message?.usage;
+    if (!u) continue;
+    const n = (v) => Number(v) || 0;
+    const id = d.message?.id ?? `line-${msgs.size}`;
+    const prev = msgs.get(id);
+    msgs.set(id, {
+      stage,
+      input: n(u.input_tokens) + n(u.cache_creation_input_tokens) + n(u.cache_read_input_tokens),
+      output: Math.max(prev?.output ?? 0, n(u.output_tokens)),
+      main: !d.parent_tool_use_id,
+    });
+  }
+  if (!msgs.size) return null;
+  const stages = new Map();
+  for (const m of msgs.values()) {
+    const s = stages.get(m.stage) ?? { name: m.stage, input: 0, output: 0 };
+    s.input += m.input;
+    s.output += m.output;
+    stages.set(m.stage, s);
+  }
+  const first = [...msgs.values()].find((m) => m.main) ?? msgs.values().next().value;
+  return { first: first.input, stages: [...stages.values()] };
+}
 
 // One log (one worker process), or null when it has no result event. A process that is woken again
 // after its turn ends writes a result event per turn: cost and modelUsage in each are running totals
@@ -45,20 +94,41 @@ export function workerLogs(stateDir, key, since = null) {
     .filter((f) => { try { return Number.isNaN(from) || statSync(f).mtimeMs >= from; } catch { return false; } });
 }
 
-// -> { key, runs, unknown, usage } for a queue ticket with a log, or null for one no worker ran.
-// `unknown` counts the runs with no result event; any at all leaves `usage` null.
+// -> { key, runs, unknown, usage, first, stages } for a queue ticket with a log, or null for one no
+// worker ran. `unknown` counts the runs with no result event; any at all leaves `usage` null. `first`
+// and `stages` add every run's up, a stage seen in two runs once, and are null when any run's log
+// has no assistant usage at all.
 export function ticketCost(stateDir, ticket) {
-  const logs = workerLogs(stateDir, ticket.key, ticket.added_at);
+  const round = (f) => { const m = f.match(/\.log\.round(\d+)$/); return m ? Number(m[1]) : Infinity; };
+  const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => round(a) - round(b));
   if (!logs.length) return null;
   const total = { input: 0, output: 0, cost: 0, ms: 0 };
   let unknown = 0;
+  let first = 0;
+  let stagesKnown = true;
+  const stages = new Map();
   for (const f of logs) {
-    let u = null;
-    try { u = logUsage(readFileSync(f, 'utf8')); } catch { /* unreadable: unknown */ }
+    let text = '';
+    try { text = readFileSync(f, 'utf8'); } catch { /* unreadable: unknown */ }
+    const s = stageUsage(text);
+    if (!s) stagesKnown = false;
+    else {
+      first += s.first;
+      for (const st of s.stages) {
+        const into = stages.get(st.name) ?? { name: st.name, input: 0, output: 0 };
+        into.input += st.input;
+        into.output += st.output;
+        stages.set(st.name, into);
+      }
+    }
+    const u = logUsage(text);
     if (!u) { unknown += 1; continue; }
     for (const k of Object.keys(total)) total[k] += u[k];
   }
-  return { key: ticket.key, runs: logs.length, unknown, usage: unknown ? null : total };
+  return {
+    key: ticket.key, runs: logs.length, unknown, usage: unknown ? null : total,
+    first: stagesKnown ? first : null, stages: stagesKnown ? [...stages.values()] : null,
+  };
 }
 
 const tokens = (n) => n.toLocaleString('en-US');
@@ -76,20 +146,34 @@ export function costTable(rows) {
   const known = rows.filter((r) => r.usage);
   const sum = { input: 0, output: 0, cost: 0, ms: 0 };
   for (const r of known) for (const k of Object.keys(sum)) sum[k] += r.usage[k];
-  const cells = (r, u) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost), wallTime(u.ms)];
+  const firstOf = (r) => (r.first == null ? 'unknown' : tokens(r.first));
+  const cells = (r, u) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost), wallTime(u.ms), firstOf(r)];
   const table = rows.map((r) => (r.usage ? cells(r, r.usage)
-    : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', 'unknown']));
-  table.push(cells({ key: 'total', runs: rows.reduce((n, r) => n + r.runs, 0) }, sum));
-  const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'wall time'];
+    : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', 'unknown', firstOf(r)]));
+  const firstKnown = rows.filter((r) => r.first != null);
+  table.push(cells({ key: 'total', runs: rows.reduce((n, r) => n + r.runs, 0), first: firstKnown.length ? firstKnown.reduce((n, r) => n + r.first, 0) : null }, sum));
+  const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'wall time', 'first-turn input'];
   const width = head.map((h, i) => Math.max(h.length, ...table.map((row) => row[i].length)));
   const line = (row) => `  ${row.map((c, i) => (i < 2 ? c.padEnd(width[i]) : c.padStart(width[i]))).join('  ')}`.trimEnd();
-  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it, wall time is the time inside the worker's turns`, line(head)];
+  // Each worker's stages sit under its row, in the order its runs reached them.
+  const stageLines = (r) => {
+    if (!r.stages) return ['      stages: unknown (no usage in the log)'];
+    const w = Math.max(...r.stages.map((s) => s.name.length));
+    const wi = Math.max(...r.stages.map((s) => tokens(s.input).length));
+    return r.stages.map((s) => `      ${s.name.padEnd(w)}  ${tokens(s.input).padStart(wi)} in  ${tokens(s.output)} out`);
+  };
+  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it, wall time is the time inside the worker's turns, first-turn input is the prompt each run started on, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
     out.push(`${line(row)}${r && !r.usage ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
+    if (r) out.push(...stageLines(r));
   }
+  const notes = [];
+  const leftFirst = rows.length - firstKnown.length;
+  if (leftFirst) notes.push(`first-turn input leaves out ${leftFirst} worker(s) with no usage`);
   const left = rows.length - known.length;
-  if (left) out[out.length - 1] += `   (${left} unknown worker(s) not counted)`;
+  if (left) notes.push(`${left} unknown worker(s) not counted`);
+  if (notes.length) out[out.length - 1] += `   (${notes.join('; ')})`;
   return out.join('\n');
 }
 

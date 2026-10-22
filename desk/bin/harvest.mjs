@@ -12,7 +12,7 @@ export const MARKER = /^[\s`>*#-]*(AUTOPILOT_[A-Z_]+):[ \t]*(.*?)[\s`]*$/gm;
 
 // A Bash command that opens by echoing a stage: `echo "AUTOPILOT_STAGE: 4/9 verify"; <command>`.
 // STAGE only, and only as the command's start: DONE, PARK and IMAGES must stay in the worker's text.
-const ECHO_STAGE = /^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*([^"'\n]*?)\s*\1/;
+export const ECHO_STAGE =/^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*([^"'\n]*?)\s*\1/;
 
 // Only what the worker itself said: its text blocks and its final result (`texts`). Tool inputs
 // and tool results are never read, so a grep for a marker, or a file that quotes one, is not the
