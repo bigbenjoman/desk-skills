@@ -550,7 +550,7 @@ user's own §3 grants in this repo.
 | `autopilot-merge` is `no` | `merge-driver.sh` gets no harness rule |
 | `staging-write` | only `ask + backup + independent review` or `no` are offered; `no` when §4 Staging is `none` |
 | `db-per-ticket`, `db-clone-staging`, `tests-shared-db` with §4 Local database `none` | write `no`; say there is no local database to act on |
-| `local-reindex` with §4 Local services `none` | write `no`; say so |
+| `local-reindex` or `worker-local-services` with §4 Local services `none` | write `no`; say so |
 
 **State what is not on offer**, so the absence reads as a decision: sending or scheduling a Slack
 message; merging past required checks or plain `--force`; touching someone else's PR; deciding
@@ -726,7 +726,8 @@ git / PR  : commit <a> · push <a> · force-with-lease <a> · open <a> · edit <
             reply <a> · request-review <a> · ready <a> · auto-merge <a> · merge-green <a> · feedback-first <a> ·
             update-branch <a> · conflict-unreviewed <a> · conflict-reviewed <a> · ci-rerun <a> · codex <a> ·
             ci-protection <a>
-autopilot : workers <a> · mode <a> · merge <a> · base-push <a> · judgement <a> · reclaim <a>
+autopilot : workers <a> · mode <a> · merge <a> · base-push <a> · judgement <a> · reclaim <a> ·
+            dependency-install <a> · screenshots <a> · local-services <a>
 local     : db-per-ticket <a> · clone-staging <a> · staging-write <a> · reindex <a> · tests-shared-db <a> ·
             worktree-remove <a> · branch-delete <a> · server-stop <a> · skills-edit <a> · vercel-env <a> ·
             slack-draft <a>

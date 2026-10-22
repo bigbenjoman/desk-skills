@@ -36,7 +36,7 @@ settings(){
 | Field | Value |
 |---|---|
 | Tracker | \`none\` |
-| Package manager | \`none\` |
+| Package manager | ${PMROW:-\`none\`} |
 | Command prefix | \`none\` |
 | Install | \`none\` |
 | Unit tests | $1 |
@@ -207,5 +207,55 @@ check "jira-create yes: create and create-batch allowed"  'ok "desk-jira create 
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" \
   --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
 check "jira-create yes, dry run: create and create-batch refused" '[ $rc -eq 0 ] && no "desk-jira create Story s b.md" "desk-jira create-batch t.tsv"'
+
+# ---- DS-135: the §3 rows for dependency installs, screenshots and local services, and git reset ----
+# rows3 <key>=<value> ... -> a §3 table holding just those rows
+rows3(){ local kv; printf '\n## 3. Permissions\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
+  for kv in "$@"; do printf '| `%s` | x | `ask` | `%s` |\n' "${kv%%=*}" "${kv#*=}"; done; }
+SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) |'
+denied_line(){ [[ "$out" == *"CONFIG_DENIED: $1 ($2)"* ]]; }
+
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-dependency-install=yes worker-screenshots=yes worker-local-services=yes)"
+check "rows yes: settings written, none of the three denied" '[ $rc -eq 0 ] && [[ "$out" != *worker-dependency-install* && "$out" != *worker-screenshots* && "$out" != *worker-local-services* ]]'
+check "AC1 dependency-install yes: pnpm add and install with arguments" 'ok "pnpm add zod" "pnpm add -D vitest@3" "pnpm install --frozen-lockfile" "pnpm install"'
+check "AC1 never global, another directory or a .. path"   'no "pnpm add -g typescript" "pnpm add zod -g" "pnpm add --global x" "pnpm add --dir ../other x" "pnpm add -C ../other x" "pnpm add file:../x" "pnpm -C ../other add x"'
+check "AC1 remove and the one-off runners still refused"   'no "pnpm remove zod" "pnpm dlx cowsay" "pnpm exec tsc" "npx cowsay"'
+check "AC3 screenshots yes: Playwright from the worktree under the browser lock" \
+  'ok "$L browser node $W/node_modules/playwright/cli.js screenshot http://localhost:3551 a.png" "$L browser node ./shot.mjs" "$L browser node $W/shot.mjs" \
+      "$L browser ./node_modules/.bin/playwright screenshot http://localhost:3551 a.png" "$L browser $W/node_modules/.bin/playwright test"'
+check "AC3 Storybook and Python capture under the browser lock" \
+  'ok "$L browser ./node_modules/.bin/storybook build" "$L browser node_modules/.bin/test-storybook --url http://localhost:6006" \
+      "$L browser uv run python ./shot.py" "$L browser python3 $W/shot.py" "$L browser .venv/bin/python ./tools/shot.py"'
+check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
+      "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
+check "AC5 local-services yes: compose up -d for a §4 entry" 'ok "docker compose up -d typesense" "docker compose up -d --wait mailpit" "docker compose ps" "docker ps"'
+check "AC5 not another service, a foreground up or a volume renew" 'no "docker compose up -d postgres" "docker compose up typesense" "docker compose up -d typesense --renew-anon-volumes" "docker compose up -d typesense postgres"'
+check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'
+check "AC6 git reset --soft, mixed and on paths allowed"   'ok "git reset --soft HEAD~1" "git reset HEAD -- a.txt" "git reset a.txt" "git reset" "git reset --mixed HEAD~1"'
+check "AC6 git reset --hard and --merge refused, abbreviated too" 'no "git reset --hard" "git reset --hard origin/main" "git reset -q --hard HEAD" "git reset --har" "git reset --merge" "git reset --me HEAD" "git -C $W reset --hard"'
+triage
+check "AC6 triage: git reset refused"                      '[ $rc -eq 0 ] && no "git reset --soft HEAD~1" "git reset a.txt"'
+
+PMROW='`uv`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
+check "AC1 uv: add and sync allowed"                       'ok "uv add httpx" "uv add --dev pytest" "uv sync" "uv sync --frozen"'
+check "AC1 uv: not another project"                        'no "uv sync --directory ../other" "uv add --project ../other x" "uv pip install x"'
+
+for v in ask no; do
+  PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-dependency-install=$v worker-screenshots=$v worker-local-services=$v)"
+  check "AC2 dependency-install $v: refused, named"        'no "pnpm add zod" "pnpm install --frozen-lockfile" && denied_line worker-dependency-install $v'
+  check "AC2 dependency-install $v: bare install still allowed" 'ok "pnpm install"'
+  check "AC4 screenshots $v: capture refused, named"       'no "$L browser node $W/node_modules/playwright/cli.js screenshot" "$L browser node ./shot.mjs" "$L browser ./node_modules/.bin/storybook build" "$L browser uv run python ./shot.py" && denied_line worker-screenshots $v'
+  check "AC4 screenshots $v: desk-design render still allowed" 'ok "$L browser node $B/desk-design.mjs render docs/design/x"'
+  check "AC5 local-services $v: compose up refused, named" 'no "docker compose up -d typesense" && denied_line worker-local-services $v'
+done
+PMROW='`uv`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=no)"
+check "AC2 uv: sync refused when the row is not yes"       'no "uv sync" "uv add httpx" && denied_line worker-dependency-install no'
+
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
+check "AC8 none of the three rows: each treated as no"     '[ $rc -eq 0 ] && denied_line worker-dependency-install no && denied_line worker-screenshots no && denied_line worker-local-services no'
+check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$L browser node ./shot.mjs" "docker compose up -d typesense"'
+check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
+check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "docker compose up -d Typesense"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

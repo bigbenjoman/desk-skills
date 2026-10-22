@@ -189,6 +189,9 @@ approvals, the agent's own review verdict is otherwise the last check before the
 | `autopilot-judgement` | Take the recommendation on any call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) and log it, instead of parking; ask-category calls and other people's rulings still stop | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 | `autopilot-usage-resume` | Let a worker that reaches the 5-hour usage limit wait for the reset and carry on, spending the next usage window | `no` | `TODO` |
+| `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
+| `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
+| `worker-local-services` | Let a worker start a §4 Local services entry (`docker compose up -d <service>`); stopping or removing one stays refused | `ask` | `TODO` |
 
 `autopilot-worker-mode` values: `dontAsk + generated allow-list` (workers are launched with
 `--setting-sources ""`, so your own Claude Code settings, including any broad `Bash(*)` allow, never
@@ -200,6 +203,9 @@ worker's own worktree, every other worktree denied, toolchain allow-listed) or `
 `autopilot-usage-resume` is `yes` or `no`, and unset reads as `no`: `pass.mjs` stops a worker at the
 5-hour usage limit and parks it with the reset time. At `yes` the pass reports it as paused until the
 reset, and the batch notes record each resume.
+`worker-dependency-install`, `worker-screenshots` and `worker-local-services` are read by
+`worker-settings.mjs` when a worker spawns: anything short of `yes`, unset included, is refused to the
+worker, which parks naming the row.
 
 ### Local and shared state
 
@@ -346,7 +352,7 @@ such thing.
 | Database URL variable | `TODO` (every env var that holds a database URL or name, one span each, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` ``; or `none`. In a worker's worktree each one is repointed at its own per-ticket database or, when none was provisioned, blanked, so no worker can reach a shared, staging or production database) |
 | Database migrate | `TODO` (command that brings a fresh database up to schema, e.g. `pnpm db:migrate`; or `none`) |
 | Seed | `TODO` (command that loads local data into a fresh database, or `none`) |
-| Local services | `TODO` (search, mail catcher, queues, with ports; or `none`) |
+| Local services | `TODO` (search, mail catcher, queues, with ports, one span each starting with its docker compose service name, e.g. `` `typesense :8108` `mailpit :8025` ``; or `none`. §3 `worker-local-services` lets a worker start exactly these services) |
 | Staging | `TODO` (one span per app, `` `<app>: <url>` ``, and how access is protected; or `none`) |
 | Staging bypass token location | `TODO` (a file only you read, e.g. `~/.config/desk/repos/<slug>/vercel-staging-bypass`: the path, never the token) |
 | Production | `TODO` (URL and how it is deployed; skills never deploy it) |
