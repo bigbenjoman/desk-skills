@@ -247,6 +247,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Park an unanswered question after (minutes) | `15` | `TODO` |
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |
+| Check-in times | `08:00, 17:00` | `TODO` (local HH:MM times: questions and logged decisions from every repo reach you at each as one digest page and one push; only a park marked `PRODUCTION BROKEN` is pushed between them. Unset is `08:00, 17:00`) |
 
 Worker concurrency, the memory ceiling and the test worker cap are about the computer more than the
 repo. Left `TODO` or absent, each falls back to the machine profile, `~/.config/desk/machine.md`

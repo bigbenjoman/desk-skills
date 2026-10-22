@@ -93,6 +93,9 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
    directory. You may also write the question there as `{"question": "<one line>"}`, which the
    orchestrator's pass reports while you wait. Put the full payload (the exact Jira text, the
    PR body, the diff, whatever needs approving) in your normal output above that line.
+   A park waits for the next check-in digest. Only when a live service is broken now, and the
+   park is how you found it, start the question with `PRODUCTION BROKEN: `: that one is pushed to
+   the person at once. Never use it for anything else.
 2. `SendMessage` the orchestrator with `notify_when_idle: true`. Its name is in your briefing. If
    that name is unreachable, run `ListAgents` **once**: the orchestrator is named after its batch,
    so adding a ticket renames it, and exactly one row that is the same batch with tickets added or

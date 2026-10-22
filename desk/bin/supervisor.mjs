@@ -17,8 +17,8 @@
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
 //   - appends the report to <state>/supervisor.log;
-//   - sends one macOS notification naming the repo and every item when a pass needs the person for an
-//     item the last notification did not name (once per new set of items, not once per pass);
+//   - sends one macOS notification for the pass's `push` entries the last notification did not carry
+//     (the check-in digest, a production-broken park), or for a pass that refused or failed;
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`) while tickets
 //     are still to merge and no driver holds <state>/merge-driver.lock.d;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
@@ -163,10 +163,14 @@ function toMerge(q) {
 
 // What a pass's verdict says needs the person, one item per ticket or entry, as pass.mjs's NOTIFY
 // line names them. An idle batch can still carry parked and failed tickets, named before the finish.
-function needsYou(v) {
-  if (v.status === 'error') return [`the pass refused or failed: ${String(v.message ?? '').split('\n')[0].slice(0, 120)}`];
-  const keys = [...(v.parked ?? []).map((p) => p.key), ...(v.waiting ?? []).map((x) => String(x).split(':')[0])];
-  return [...new Set(keys), ...(v.status === 'idle' ? ['the batch is finished'] : [])];
+// What a pass says to push now: its `push` items (the check-in digest, a production-broken park), or
+// the pass itself failing. Everything else waits for the check-in.
+function toPush(v) {
+  if (v.status === 'error') {
+    const why = `the pass refused or failed: ${String(v.message ?? '').split('\n')[0].slice(0, 120)}`;
+    return [{ key: why, text: why }];
+  }
+  return (Array.isArray(v.push) ? v.push : []).filter((p) => p?.key && p.text);
 }
 
 function notify(title, body) {
@@ -266,13 +270,14 @@ function runPass(state, q, s, log, stamp) {
   }
 
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
-  const items = r.status === 11 || v.notify === true || v.status === 'error' ? needsYou(v) : [];
-  const fresh = items.filter((i) => !s.notified.includes(i));
+  const pushes = toPush(v);
+  const items = pushes.map((p) => p.key);
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key));
   let sent = true;
   if (fresh.length) {
-    const err = notify(`desk: ${slug}`, `${items.length} item(s) need you: ${items.join(', ')}`);
+    const err = notify(`desk: ${slug}`, fresh.map((p) => p.text).join(' · '));
     sent = !err;
-    out.push(err ? `notification: failed (${err}) for ${items.join(', ')}; the next pass tries again` : `notification: sent for ${items.join(', ')}`);
+    out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
   // A failed notification records nothing new, so the next pass sends it again.
   s.notified = sent ? items : s.notified.filter((i) => items.includes(i));

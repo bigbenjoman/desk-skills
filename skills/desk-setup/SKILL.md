@@ -563,9 +563,11 @@ reach in the Recommended option's description. For `git-push` say that Claude Co
 each push: no allow rule is written, because git's abbreviations mean no pattern can fence every
 dangerous spelling.
 
-**Then §3b** (three rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
+**Then §3b** (four rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
-budget, worker models, worker location, stage reports, push notification. For worker location,
+budget, worker models, worker location, stage reports; push notification, check-in times. For
+check-in times, Recommended is `08:00, 17:00`: questions and logged decisions from every repo arrive
+together then, as one page and one push. For worker location,
 Recommended is `local`; say that `cloud` is accepted but cloud workers are not available yet, so
 every worker still runs locally and the batch plan says so.
 
