@@ -266,14 +266,16 @@ const output = { buf: '', columns: 160, rows: 40, write(s) { this.buf += s; }, o
 const ui = Q.interactive({ input, output, start: { kind: 'repo', slug: 'acme__alpha' }, exit: () => {}, refreshMs: 600000, clock: () => FIXED });
 const frame = () => output.buf.split('\x1b[H').at(-1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\r\n');
 const a6 = () => frame().find((l) => /\sA-6\s/.test(l)) ?? '';
+// The note follows the tab line, under the breadcrumb.
+const note = () => frame()[1];
 await sleep(20);
-t('DS-161 AC12: before c, the header says parked tickets have no date', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
+t('DS-161 AC12: before c, the header says parked tickets have no date', note().endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
 input.write('c'); await sleep(20);
-t('DS-161 AC12: after c, the header says they are dated at the next check-in', frame()[0].endsWith('Parked: dated at the next check-in · c to undo'), true);
+t('DS-161 AC12: after c, the header says they are dated at the next check-in', note().endsWith('Parked: dated at the next check-in · c to undo'), true);
 t('DS-161 AC12: and the ticket waiting on the user has a date', a6().includes(`  ${when(Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].likely, FIXED)}  `) && !/no date/.test(a6()), true);
 t('DS-161 AC12: from no earlier than the next check-in, Tue 08:00', Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].start >= at(2026, 9, 20, 8, 0), true);
 input.write('c'); await sleep(20);
-t('DS-161 AC12: c again takes the dates away', frame()[0].endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
+t('DS-161 AC12: c again takes the dates away', note().endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
 ui.finish(0);
 
 // ==== DS-162: each ticket's first estimate, kept beside its merge, and how often it held.

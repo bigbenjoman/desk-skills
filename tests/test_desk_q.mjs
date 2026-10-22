@@ -245,6 +245,10 @@ function screen(start, columns = 80, clock = Date.now) {
     // The crumbs, less the parked note that follows them.
     crumbs: () => frame()[0].split('    ')[0],
     selected: () => frame().find((l) => l.startsWith('›')) ?? '',
+    // The tab drawn in reverse video on the tab line, the view shown.
+    tabOn: () => /\x1b\[7m([^\x1b]+)\x1b\[27m/.exec(output.buf.split('\x1b[H').at(-1).split('\r\n')[1] ?? '')?.[1] ?? null,
+    // A left click at a 1-based column and row: the SGR press and release a terminal sends.
+    click: async (x, y) => { input.write(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`); await sleep(20); },
   };
 }
 const DOWN = '\x1b[B';
@@ -458,7 +462,7 @@ await sleep(20);
 await Hc.press('z');
 for (let i = 0; i < 20 && !/tidy · 7 tickets/.test(Hc.selected()); i++) await Hc.press(DOWN);
 await Hc.press('\r');
-t('DS-163 AC6 Enter on the repo row opens its Timeline', Hc.crumbs(), 'desk-q › tidy › Timeline');
+t('DS-163 AC6 Enter on the repo row opens its Timeline', `${Hc.crumbs()} | ${Hc.tabOn()}`, 'desk-q › tidy | 2 Timeline');
 t('DS-163 AC3 and changing repo puts the scale back to auto', scaleLine(Hc), 'Scale: hours (auto) · z to change');
 Hc.ui.finish(0);
 
@@ -483,11 +487,10 @@ await sleep(20);
 const head1 = () => Ks.frame().find((l) => l.startsWith('tidy · forecast')) ?? '';
 const t7 = () => (Ks.frame().find((l) => /^[ ›] T-7 /.test(l)) ?? '').slice(1);
 const before7 = t7();
-for (const c of ':tidy') await Ks.press(c);
-await Ks.press('\r');
+await Ks.press('1');
 await Ks.press('-');
-await Ks.press('\x1b');
-t('DS-163 AC9 back on the Timeline after a workers change on the queue screen', `${Ks.crumbs()} | ${/ · 1 workers$/.test(head1())}`, 'desk-q › tidy › Timeline | true');
+await Ks.press('2');
+t('DS-163 AC9 back on the Timeline after a workers change on the queue screen', `${Ks.crumbs()} | ${Ks.tabOn()} | ${/ · 1 workers$/.test(head1())}`, 'desk-q › tidy | 2 Timeline | true');
 t('DS-163 AC9 the dates reflect it', t7() !== before7 && t7() !== '', true);
 Ks.ui.finish(0);
 
@@ -542,6 +545,148 @@ Rz.output.columns = 160;
 Rz.output.resize();
 t('DS-167 AC6 resized from 100 to 160 columns, the redraw fits titles to the new width', `${w1Before} ${w1().length} ${w1().endsWith('…')}`, '100 160 true');
 Rz.ui.finish(0);
+
+// ---- DS-164: a place (every repo, a repo, a ticket) and a view of it. The ACs' voicepa is tidy here,
+// the repo with a ship history, so its Timeline and By day have rows to tell apart.
+const TABS = '1 Queue  2 Timeline  3 By day';
+const tidyQ = { kind: 'repo', slug: 'acme__tidy' };
+const nav = (start) => screen(start, 120, () => FIXED);
+// Which view the body shows, from what only that view draws.
+const shows = (s) => {
+  const f = s.frame();
+  return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO /.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline' : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : 'none';
+};
+// Wide enough that every keys line is one line.
+const keysLine = (s) => s.frame().at(-1);
+const where = (s) => `${s.crumbs()} | ${s.tabOn()} | ${shows(s)}`;
+
+const N1 = nav(tidyQ);
+await sleep(20);
+t('DS-164 the Queue shows first, its tab line under the breadcrumb', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 1 Queue | queue | true');
+await N1.press('\t');
+t('DS-164 AC1 Tab on a repo\'s Queue shows its Timeline, Timeline highlighted', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 2 Timeline | timeline | true');
+await N1.press('\t'); await N1.press('\t');
+t('DS-164 Tab from By day wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
+await N1.press('\x1b[Z');
+t('DS-164 shift+Tab steps back', where(N1), 'desk-q › tidy | 3 By day | days');
+N1.ui.finish(0);
+
+const threes = [];
+for (const start of [{ kind: 'overview', all: false }, tidyQ, { kind: 'timeline', slug: 'acme__tidy' }]) {
+  const s = nav(start);
+  await sleep(20);
+  await s.press('3');
+  threes.push(where(s));
+  s.ui.finish(0);
+}
+t('DS-164 AC2 3 shows By day for that place', threes.join(' / '), 'desk-q | 3 By day | days / desk-q › tidy | 3 By day | days / desk-q › tidy | 3 By day | days');
+
+const N3 = nav({ kind: 'timeline', slug: 'acme__tidy' });
+await sleep(20);
+await N3.press('\x1b');
+t('DS-164 AC3 Esc on a repo\'s Timeline shows every repo\'s Timeline', where(N3), 'desk-q | 2 Timeline | timeline');
+N3.ui.finish(0);
+
+const N4 = nav({ kind: 'days', slug: 'acme__tidy' });
+await sleep(20);
+t('DS-164 AC4 the breadcrumb reads desk-q › tidy', N4.frame()[0], 'desk-q › tidy');
+await N4.click(3, 1);
+t('DS-164 AC4 a click on desk-q in the breadcrumb shows every repo\'s By day', where(N4), 'desk-q | 3 By day | days');
+N4.ui.finish(0);
+
+const N5 = nav(tidyQ);
+await sleep(20);
+await N5.click(N5.frame()[1].indexOf('2 Timeline') + 3, 2);
+t('DS-164 AC5 a click on "2 Timeline" in the tab line shows that repo\'s Timeline', where(N5), 'desk-q › tidy | 2 Timeline | timeline');
+await N5.click(N5.frame()[1].indexOf('1 Queue') + 1, 2);
+t('DS-164 AC5 and a click on "1 Queue" its Queue again', where(N5), 'desk-q › tidy | 1 Queue | queue');
+N5.ui.finish(0);
+
+const N6 = nav({ kind: 'timeline', slug: 'acme__tidy' });
+await sleep(20);
+await N6.press(DOWN); await N6.press(DOWN);
+const picked = N6.selected().slice(1).trim().split(/\s+/)[0];
+await N6.press('\r');
+const opened6 = N6.crumbs();
+await N6.press('\x1b');
+t('DS-164 AC6 a ticket opened from the Timeline, then Esc: the Timeline again, the same ticket selected',
+  `${opened6} | ${where(N6)} | ${N6.selected().slice(1).trim().split(/\s+/)[0]}`, `desk-q › tidy › ${picked} | desk-q › tidy | 2 Timeline | timeline | ${picked}`);
+N6.ui.finish(0);
+
+const tidyFile = join(I.env.DESK_HOME, 'repos', 'acme__tidy', 'queue.json');
+const N7 = nav({ kind: 'timeline', slug: 'acme__tidy' });
+await sleep(20);
+await N7.press(DOWN); await N7.press(DOWN);
+const sel7 = N7.selected(), file7 = readFileSync(tidyFile, 'utf8');
+await N7.press(SHIFT_UP);
+t('DS-164 AC7 shift+↑ on the Timeline moves nothing', `${readFileSync(tidyFile, 'utf8') === file7} ${N7.selected() === sel7}`, 'true true');
+t('DS-164 AC7 and the status line says where to reorder', N7.frame().at(-2), Q.REORDER_HERE);
+t('DS-164 AC7 in the words of the criterion', Q.REORDER_HERE, 'Reorder on the Queue view (press 1). The dates follow.');
+await N7.press('t');
+t('DS-164 AC7 t on the Timeline moves nothing either', readFileSync(tidyFile, 'utf8') === file7, true);
+N7.ui.finish(0);
+
+const ws = [];
+for (const start of [tidyQ, { kind: 'days', slug: 'acme__tidy' }, { kind: 'overview', all: false }]) {
+  const s = nav(start);
+  await sleep(20);
+  await s.press('w');
+  ws.push(`${s.tabOn()} ${shows(s)}`);
+  s.ui.finish(0);
+}
+t('DS-164 AC8 w shows the Timeline from a Queue, a By day and every repo\'s Queue', ws.join(', '), '2 Timeline timeline, 2 Timeline timeline, 2 Timeline timeline');
+
+const N9 = nav({ kind: 'ticket', slug: 'acme__tidy', key: 'T-3' });
+await sleep(20);
+const tabsShown = () => N9.frame().some((l) => l.includes(TABS));
+t('DS-164 AC9 a ticket screen has no tab line', `${N9.crumbs()} | ${N9.frame()[1]} | ${tabsShown()}`, 'desk-q › tidy › T-3 |  | false');
+await N9.press('\t'); await N9.press('2'); await N9.press('w');
+t('DS-164 AC9 and Tab, 2 and w leave it on the ticket', `${N9.crumbs()} | ${tabsShown()}`, 'desk-q › tidy › T-3 | false');
+await N9.click(4, 1);
+t('DS-164 a click on desk-q from a ticket goes to every repo', N9.crumbs(), 'desk-q');
+N9.ui.finish(0);
+
+// AC10: each view's keys, against what each view's handler takes.
+const views10 = {};
+const N10 = screen({ kind: 'overview', all: false }, 300, () => FIXED);
+await sleep(20);
+for (const [id] of Q.VIEWS) { await N10.press(String(Q.VIEWS.findIndex(([v]) => v === id) + 1)); views10[`every ${id}`] = keysLine(N10); }
+N10.ui.finish(0);
+const N10r = screen(tidyQ, 300, () => FIXED);
+await sleep(20);
+for (const [id] of Q.VIEWS) { await N10r.press(String(Q.VIEWS.findIndex(([v]) => v === id) + 1)); views10[`repo ${id}`] = keysLine(N10r); }
+await N10r.press('1'); await N10r.press(DOWN); await N10r.press('\r');
+views10.ticket = keysLine(N10r);
+N10r.ui.finish(0);
+const has = (line, k) => line.includes(k);
+const want10 = {
+  'every queue': { yes: ['tab or 1–3 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
+  'every timeline': { yes: ['tab or 1–3 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
+  'every days': { yes: ['tab or 1–3 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'repo queue': { yes: ['tab or 1–3 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
+  'repo timeline': { yes: ['tab or 1–3 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
+  'repo days': { yes: ['tab or 1–3 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['tab or 1–3 view', 'z scale', 'a all repos'] },
+};
+t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
+  ...yes.filter((k) => !has(views10[v] ?? '', k)).map((k) => `${v} lacks ${k}`), ...no.filter((k) => has(views10[v] ?? '', k)).map((k) => `${v} lists ${k}`)]).join(' | '), '');
+
+const N80 = screen(tidyQ, 80, () => FIXED);
+await sleep(20);
+t('DS-164 AC10 at 80 columns the Queue\'s keys wrap between keys, none lost', `${N80.frame().at(-1).endsWith('esc back · q quit')} ${N80.frame().slice(-2).every((l) => l.length <= 80)}`, 'true true');
+N80.ui.finish(0);
+
+// A row clicked is selected and opened; a click report cut across two reads is still one click.
+const Nc = nav({ kind: 'overview', all: false });
+await sleep(20);
+const tidyRow = Nc.frame().findIndex((l) => /^[ ›] {1,2}tidy /.test(l));
+Nc.input.write('\x1b['); await sleep(5);
+Nc.input.write(`<0;5;${tidyRow + 1}`); await sleep(5);
+Nc.input.write('M'); await sleep(20);
+t('DS-164 a click on a repo row opens it, even when the report comes in three reads', `${Nc.crumbs()} | ${Nc.tabOn()}`, 'desk-q › tidy | 1 Queue');
+t('DS-164 a click leaves no stray keys behind', Nc.frame().at(-1).startsWith(':'), false);
+Nc.ui.finish(0);
+t('DS-164 leaving the screen turns mouse reporting off', Q.LEAVE_SCREEN.includes('\x1b[?1000l') && Q.LEAVE_SCREEN.includes('\x1b[?1006l'), true);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
