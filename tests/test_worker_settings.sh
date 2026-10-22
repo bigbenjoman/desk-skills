@@ -10,7 +10,7 @@ S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
 export DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_STATE="$T/state" DESK_QUEUE="$T/queue.json"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
@@ -252,8 +252,9 @@ for v in ask no; do
 done
 PMROW='`npm`' INSTROW='`npm install` `web: npm install`' settings '`bash tests/run.sh`'
 check "AC2 a §4 Install row takes no package unless the row is yes" 'no "npm install lodash" "npm install --global typescript" "$L nolock --cwd web -- npm install lodash" && ok "npm install" "$L nolock --cwd web -- npm install"'
-PMROW='`npm`' INSTROW='`npm install`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
-check "AC1 a §4 Install row takes a package at yes, never global" 'ok "npm install lodash" && no "npm install --global typescript" "npm install -g typescript"'
+PMROW='`npm`' INSTROW='`npm install` `web: npm install`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
+check "AC1 a §4 Install row takes a package at yes, never global" 'ok "npm install lodash" "$L nolock --cwd web -- npm install" && no "npm install --global typescript" "npm install -g typescript" \
+      "$L nolock --cwd web -- npm install --global typescript" "$L nolock --cwd web -- npm install lodash"'
 PMROW='`uv`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=no)"
 check "AC2 uv: sync refused when the row is not yes"       'no "uv sync" "uv add httpx" && denied_line worker-dependency-install no'
 
@@ -263,7 +264,13 @@ check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$
 check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
 check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "$UP Typesense"'
-rm -f "$T/repo/compose.yaml"
+: > "$T/repo/compose.override.yaml"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: the main checkout's override file is merged in" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/compose.override.yaml up -d --no-recreate --no-deps typesense" && no "$UP typesense"'
+printf 'COMPOSE_FILE=compose.yaml:compose.dev.yaml\n' > "$T/repo/.env"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: a stack picked by COMPOSE_FILE warns, nothing allowed" '[[ "$out" == *"COMPOSE_FILE"* ]] && ! jq -e ".permissions.allow[] | select(test(\"compose\"))" "$T/ws.json" >/dev/null'
+rm -f "$T/repo/compose.yaml" "$T/repo/compose.override.yaml" "$T/repo/.env"
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
 check "local services: no compose file in the main checkout warns, nothing allowed" '[ $rc -eq 0 ] && [[ "$out" == *"has no compose file"* ]] && no "$UP typesense"'
 PMROW='`uv`' INSTROW='`uv sync --frozen`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=no)"

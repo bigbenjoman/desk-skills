@@ -58,7 +58,7 @@
 //   - Bash rules match the command string as written. A binary allowed by name AND by absolute
 //     path must be DENIED by both too, or `/usr/bin/git push` walks past a `git push` deny. So every
 //     rule for a binary, allow or deny, is built by `bash()` below; never write one by hand.
-import { writeFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { platform } from 'node:os';
@@ -356,16 +356,17 @@ if (mode === 'triage') {
   };
   const probeBins = new Set();
   // §4 Install takes no arguments of the worker's unless §3 worker-dependency-install is `yes`:
-  // `npm install <pkg>` is a new dependency, so the configured command is allowed exactly.
+  // `npm install <pkg>` is a new dependency, so the configured command is allowed exactly. Wrapped
+  // in with-lock.sh it is always exact, since the dependency denies below match only the bare forms.
   const depsOk = E.permission('worker-dependency-install') === 'yes';
   for (const it of items) {
-    const form = (c) => (it.id === 'install-cmd' && !depsOk ? `Bash(${c})` : rule(c, ''));
+    const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.') allow.push(...withPrefix(cmd).map(form));
+      if (it.dir === '.') allow.push(...withPrefix(cmd).map(form(false)));
       // A directory item has no bare form (the worker cannot `cd`), so it runs through with-lock.sh:
       // under its lock where it has one, else `nolock`, which only changes directory.
       const lock = E.lockFor(it.id);
-      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map(form));
+      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
   }
@@ -497,8 +498,17 @@ if (mode === 'triage') {
   // stays denied above: another session may be using it.
   let ROOT = null;
   try { ROOT = E.repoRoot(); } catch { /* §2 Primary repo root unset */ }
-  // Compose's own lookup order.
-  const composeFile = ROOT && ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'].map((f) => `${ROOT}/${f}`).find((f) => existsSync(f));
+  // Compose's own lookup order. A `-f` turns off the override file compose merges in by itself, so
+  // that goes in as a second `-f`; a stack chosen by COMPOSE_FILE in the checkout's .env cannot be
+  // reproduced by name, so it gets nothing.
+  const inRoot = (names) => (ROOT ? names.map((f) => `${ROOT}/${f}`).find((f) => existsSync(f)) : undefined);
+  let composeEnv = '';
+  try { composeEnv = ROOT ? readFileSync(`${ROOT}/.env`, 'utf8') : ''; } catch { /* no .env */ }
+  const stackByEnv = /^\s*(export\s+)?COMPOSE_FILE\s*=/m.test(composeEnv);
+  const base = inRoot(['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']);
+  const override = base && inRoot(base.includes('docker-compose') ? ['docker-compose.override.yaml', 'docker-compose.override.yml']
+    : ['compose.override.yaml', 'compose.override.yml']);
+  const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
     const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
@@ -509,6 +519,7 @@ if (mode === 'triage') {
     ...exact('docker-compose', ` -f ${composeFile} up -d --no-recreate --no-deps ${s}`)]);
   if (grant('worker-local-services', ups, [...bash('docker', ' compose up', ' compose -f'), ...bash('docker-compose', ' up', ' -f')])) {
     if (!services.length) warns.push('§3 worker-local-services is yes, but §4 Local services names no service — nothing to start');
+    else if (stackByEnv) warns.push(`§3 worker-local-services is yes, but the main checkout's .env picks its compose files with COMPOSE_FILE — nothing to start`);
     else if (!composeFile) warns.push(`§3 worker-local-services is yes, but the main checkout (${ROOT ?? '§2 Primary repo root unset'}) has no compose file — nothing to start`);
   }
 
