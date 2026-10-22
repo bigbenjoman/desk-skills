@@ -18,7 +18,8 @@
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
 //   - appends the report to <state>/supervisor.log;
 //   - sends one macOS notification for the pass's `push` entries the last notification did not carry
-//     (the check-in digest, a production-broken park), or for a pass that refused or failed;
+//     (the check-in digest, a production-broken park, a failing health check), or for a pass that
+//     refused or failed;
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`) while tickets
 //     are still to merge and no driver holds <state>/merge-driver.lock.d;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:

@@ -115,7 +115,7 @@ q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 qf(){ jq -r --arg k "$1" ".tickets[\$k]$2" "$DESK_QUEUE"; }
 loop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" 2>&1); rc=$?; }
 # One orchestrator pass, its verdict as JSON on stdout.
-pj(){ out=$(AUTOPILOT_MIN_AVAIL_GB=0 node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
+pj(){ out=$(AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
 js(){ printf '%s' "$out" | jq -r "$1" 2>/dev/null; }
 merged(){ cut -d' ' -f1 "$T/merges.log" 2>/dev/null | paste -sd' ' -; }
 SHA1=1111111111111111111111111111111111111111; SHA2=2222222222222222222222222222222222222222

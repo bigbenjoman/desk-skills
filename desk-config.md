@@ -254,6 +254,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Borrow idle workers | `off` | `TODO` (`on`, or `off`: at `on` a pass may start workers above the batch's own number, up to the cap, into machine slots other live batches are not using) |
 | Park an unanswered question after (minutes) | `15` | `TODO` |
 | Resume a killed worker (times) | `2` | `TODO` (a whole number: how often a pass resumes a ticket's worker in its own session after a reboot or crash killed it; `0` marks it failed instead. Unset is `2`) |
+| Free disk floor (GB) | `20` | `TODO` (a whole number: a pass holds new workers while the worktrees disk has less free than this, and says so; `none` turns it off. Unset is `20`) |
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |
 | Check-in times | `08:00, 17:00` | `TODO` (local HH:MM times: questions and logged decisions from every repo reach you at each as one digest page and one push; only a park marked `PRODUCTION BROKEN` is pushed between them. Unset is `08:00, 17:00`) |

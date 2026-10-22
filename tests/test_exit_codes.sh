@@ -62,7 +62,7 @@ printf '#!/bin/sh\necho OPEN\n' > "$T/stub/gh"
 chmod +x "$T/stub/claude" "$T/stub/gh"
 
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
-  DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test
+  DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
 cd "$T/repo" || exit 1
 q(){ out=$(node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
 pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
