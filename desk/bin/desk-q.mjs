@@ -141,8 +141,9 @@ const forecasts = new Map();
 // The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
 // 2-second reread runs the simulation again only when the queue, the history or the minute changes.
 // A batch that is not live (liveBeat: no pass for LIVE_MS, and no next pass recorded that is still to
-// come) is `paused`: its dates assume passes that are not happening, so
-// they are not shown and not saved. A live forecast saves each ticket's first estimate (eta.jsonl);
+// come) is `paused` while it still has a ticket autopilot could move: its dates assume passes that are
+// not happening, so they are not shown and not saved. With none left it is `idle`: nothing is late,
+// the rest is the user's. A live forecast saves each ticket's first estimate (eta.jsonl);
 // one dated at the next check-in (c) is a what-if, and saves nothing.
 export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   if (!r.q) return null;
@@ -157,26 +158,41 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes, paused: !r.live, epics: ep.epics, of: ep.of, noEpic: ep.noEpic };
+    const left = rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
+      paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
-    if (!F.none && !F.paused && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
+    if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
     forecasts.set(id, F);
   }
   return forecasts.get(id);
 }
 
 const SOON = MINUTE;
-const etaOf = (F, key) => (F && !F.none && !F.paused ? F.T[key] : null);
+// The shown states a pass can still move on: anything else waits on the user.
+const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+const undatable = (F) => !F || F.none || F.paused || F.idle;
+const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
 const startsCell = (F, x, now) => {
   if (F && !F.none && F.paused) return x.k === 'running' ? 'running' : '—';
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
-const shipsCell = (F, x, now) => (!F || F.none || F.paused ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
+const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 const pausedNote = (r, now) => `Dates paused: ${r.last == null ? 'no pass yet' : `no pass for ${ago(now - r.last).replace(' ago', '')}`}. `
   + 'The forecast assumes passes keep running, so dates show again at the next pass.';
+// A parked ticket only an interactive /desk-ticket session can take on: queue.mjs requeues only
+// lanes A, B and E to a headless worker.
+const needsSession = (t) => ['C', 'D'].includes(t.lane) || /^lane [CD]\b/.test(t.park?.question ?? '');
+function idleNote(r) {
+  const you = attention(r);
+  if (!you) return 'Nothing left for autopilot: every ticket is done.';
+  const session = r.rows.filter((x) => x.k === 'needs' && needsSession(x.t)).length;
+  return `Nothing left for autopilot: ${you} ticket${you === 1 ? ' needs' : 's need'} you`
+    + `${session ? ` (${session} need${session === 1 ? 's' : ''} an interactive session)` : ''}.`;
+}
 
 // How often the repo's saved first estimates held, for a ships view's header.
 function hitLine(r) {
@@ -193,6 +209,11 @@ const undatedBlockers = (r, F, t) => String(t.held_by ?? '').split('|').filter((
 // Why a ticket has no date, short enough for a row.
 function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
+  // Passes stopped: what each would be doing, without a date.
+  if (F.paused && x.k === 'running') return `stage ${x.t.stage ?? '?'} · dated again at the next pass`;
+  if (F.paused && x.k === 'ready') return readyWhy(r, x.t);
+  if (F.paused && x.k === 'waiting') return `behind ${listed(unmergedBlockers(r.q, x.t))}`;
+  if (F.paused && x.k === 'queued') return 'triaged at the next pass';
   if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return `stuck behind ${listed(unmergedBlockers(r.q, x.t))}`;
   if (x.k === 'failed') return 'failed: requeue it';
@@ -203,6 +224,7 @@ function undatedWhy(r, F, x) {
 // The ticket screen's Starts and Ships lines.
 function etaLines(r, F, x, now) {
   if (!F) return [];
+  if (F.idle) return [`Ships: ${idleNote(r)}`, ''];
   if (F.none) return [noHistory(r, F), ''];
   if (F.paused) return [`Ships: ${pausedNote(r, now)}`, ''];
   const key = x.t.key, e = F.T[key];
@@ -231,7 +253,7 @@ function etaLines(r, F, x, now) {
 // When the repo's last dated ticket ships.
 function queueDone(r, now, checkin) {
   const F = forecastOf(r, { now, checkin });
-  return !F ? '' : F.none ? 'no history' : F.paused ? 'paused' : F.clears ? when(F.clears, now) : 'no date yet';
+  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'paused' : F.clears ? when(F.clears, now) : 'no date yet';
 }
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
@@ -270,6 +292,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 
 // Why an epic has no date: its undated children, by what holds them.
 function epicWhy(r, F, e, checkin) {
+  if (F.paused) return 'No date while passes are stopped';
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
@@ -351,22 +374,29 @@ const segRow = (id, segs, open) => {
 
 // The repos a ships view dates: one repo, or every repo with a batch. `per` holds each in order with
 // its forecast, or a note saying why it has none; `items` is every unfinished ticket of the dated ones,
-// or with `epic`, of that epic only.
-function etaScope(repos, slug, { now, checkin, epic = null }) {
+// and undated of the paused ones, or with `epic`, of that epic only. A paused batch's note leads the
+// head, above its tickets; the rest are `notes`. With `width`, each note is wrapped to it.
+function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
   const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
   const per = list.map((r) => {
     if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
     if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
     const F = forecastOf(r, { now, checkin });
+    if (F.idle) return { r, note: `${r.name} · ${idleNote(r)}` };
     return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${pausedNote(r, now)}`, stopped: F } : { r, F };
   });
+  const fit = (s) => (width == null ? [s] : wrap(s, width));
   const dated = per.filter((p) => p.F);
-  const notes = per.filter((p) => p.note).map((p) => p.note);
-  const items = dated.flatMap(({ r, F }) => r.rows.filter((x) => !epic || F.of[x.t.key] === epic).map((x) => ({ r, F, x, e: etaOf(F, x.t.key) })));
+  const notes = per.filter((p) => p.note && !p.stopped).flatMap((p) => fit(p.note));
+  const items = per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => {
+    const G = F ?? stopped;
+    return r.rows.filter((x) => !epic || G.of[x.t.key] === epic).map((x) => ({ r, F: G, x, e: etaOf(G, x.t.key) }));
+  });
   // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const head = !dated.length ? [] : [forecastLine(slug ? list[0].name : 'Every repo', now, dated.reduce((a, d) => a + d.F.count, 0), slug ? list[0].workers : null, checkin)
     + (ep ? ` · ${ep.key}: ${ep.done} of ${ep.total} children done` : ''), ...(slug ? [hitLine(list[0])] : [])];
+  head.push(...per.filter((p) => p.stopped).flatMap((p) => fit(p.note)));
   return { list, per, notes, items, head };
 }
 
@@ -395,7 +425,7 @@ const EP_NAME = 27, EP_LEAD = 2 + EP_NAME + 5 + 1, EP_NOTE = '  provisional'.len
 // last child's ship, then the tickets in no epic under "Other work", each led by its title. `epic` keeps
 // to that epic's tickets.
 function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto', epic = null } = {}) {
-  const s = etaScope(repos, slug, { now, checkin, epic });
+  const s = etaScope(repos, slug, { now, checkin, epic, width });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
   const F0 = slug && !epic ? s.per[0]?.F : null;
@@ -496,7 +526,7 @@ export function shipDay(t, now) {
 // Tickets grouped by the day they ship, undated ones last under "No date yet", each with its STARTS,
 // SHIPS and title; an undated one says why in place of its dates.
 function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false, epic = null } = {}) {
-  const s = etaScope(repos, slug, { now, checkin, epic });
+  const s = etaScope(repos, slug, { now, checkin, epic, width });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: s.notes, rows: [], foot: [] };
   const all = !slug;
@@ -529,11 +559,12 @@ export const daysScreen = (repos, slug, opts) => joined(daysParts(repos, slug, o
 // The Epics view: each open epic, soonest first, with a bar of its children done, queued and not
 // queued yet, its SHIPS and the child that sets it. Enter opens the epic.
 const EP_BAR = 16;
-function epicsParts(repos, slug, { now = Date.now(), checkin = false } = {}) {
-  const s = etaScope(repos, slug, { now, checkin });
+function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null } = {}) {
+  const s = etaScope(repos, slug, { now, checkin, width });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
-  const list = s.per.filter((p) => p.F).flatMap(({ r, F }) => openEpics(F).map((e) => ({ r, F, e, d: F.E[e.key] })))
+  // A paused batch's epics are listed undated, under its note.
+  const list = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })))
     .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
   const head = [...s.head, ''];
   if (list.length) head.push(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`);
@@ -546,7 +577,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false } = {}) {
       [` ${rpad(`${e.done}/${e.total}`, 6)}  `, null], ...date], { kind: 'epic', slug: r.slug, epic: e.key });
   });
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
-  if (s.per.some((p) => p.F) && !list.length) foot.push('', 'No queued ticket here belongs to an epic.');
+  if (s.per.some((p) => p.F || p.stopped) && !list.length) foot.push('', 'No queued ticket here belongs to an epic.');
   if (list.length) foot.push('', '■ done  ■ in the queue  □ not queued yet (date is provisional). An epic ships when its last child merges.');
   return { head, rows, foot };
 }
@@ -736,7 +767,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   }
   if (t.park?.question) out.push(`Parked: ${t.park.question}`);
   if (k === 'needs') {
-    out.push(/^lane [CD]\b/.test(t.park?.question ?? '') ? `Lane C or D: open an interactive /desk-ticket ${key} session.`
+    out.push(needsSession(t) ? `Lane C or D: open an interactive /desk-ticket ${key} session.`
       : `Answer, in ${r.name}: node ~/.claude/desk/bin/answer.mjs ${key} "…", then the orchestrator decides whether to requeue it.`);
   }
   if (k === 'stuck') out.push('Unblock the blocker first, or have the orchestrator drop this hold (orchestrator-recovery.md).');
