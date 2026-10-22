@@ -207,7 +207,7 @@ check "--log takes no path: one is a usage error on the terminal, and nothing is
 sed -e 's/| `ci-rerun` | Rerun CI | `yes` | `no` |/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
   | awk '{ print } /^\| `pr-ready`/ { print "| `jira-create` | File tickets | `yes` | `yes` |" }' > "$T/config-flaky.md"
 cp "$T/config-flaky.md" "$T/config-bad.md"
-echo '| Known flaky checks | `e2e: e2e/** playwright.config.ts` `test: src/**` |' >> "$T/config-flaky.md"
+echo '| Known flaky checks | `e2e: e2e/** playwright.config.ts` `test: src/**` `smoke: smoke/**` |' >> "$T/config-flaky.md"
 echo '| Known flaky checks | `e2e: e2e/**` `lint` |' >> "$T/config-bad.md"
 cat > "$T/stub/desk-jira" <<EOF
 #!/usr/bin/env bash
@@ -217,6 +217,7 @@ chmod +x "$T/stub/desk-jira"
 SHA11=a111111111111111111111111111111111111111; SHA12=a222222222222222222222222222222222222222
 SHA13=a333333333333333333333333333333333333333; SHA14=a444444444444444444444444444444444444444
 SHA15=a555555555555555555555555555555555555555; SHA16=a666666666666666666666666666666666666666
+SHA17=a777777777777777777777777777777777777777
 cat > "$T/prs.json" <<EOF
 {
   "111": { "head": "fix/T-11", "base": "main", "sha": "$SHA11", "state": "open", "draft": false, "files": ["src/x.ts"],
@@ -230,10 +231,12 @@ cat > "$T/prs.json" <<EOF
   "115": { "head": "fix/T-15", "base": "main", "sha": "$SHA15", "state": "open", "draft": false, "files": ["src/w.ts"],
            "checks": [["test", "SUCCESS", 9005], ["e2e", "FAILURE", 9115]] },
   "116": { "head": "fix/T-16", "base": "main", "sha": "$SHA16", "state": "open", "draft": false, "files": ["src/v.ts"],
-           "checks": [["test", "SUCCESS", 9006], ["e2e", "FAILURE", 9116]] }
+           "checks": [["test", "SUCCESS", 9006], ["e2e", "FAILURE", 9116]] },
+  "117": { "head": "fix/T-17", "base": "main", "sha": "$SHA17", "state": "open", "draft": false, "files": ["src/u.ts"],
+           "checks": [["test", "SUCCESS", 9007], ["smoke", "FAILURE", 9117], ["e2e", "FAILURE", 9116]] }
 }
 EOF
-for k in T-11 T-12 T-13 T-14 T-15 T-16; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+for k in T-11 T-12 T-13 T-14 T-15 T-16 T-17; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
 SD="$T/state/merge-driver"; mkdir -p "$SD"
 # The driver's two reruns already spent and accepted at these heads (12 minutes apart for real).
 for f in reruns reruns-ok; do
@@ -244,7 +247,7 @@ done
 printf 'e2e\n' > "$SD/reruns-116-$SHA16"   # one rerun tried and refused: none accepted
 : > "$T/merges.log"
 DESK_CONFIG="$T/config-flaky.md" loop
-check "AC4: the driver starts with the flaky row read"                 '[ $rc -eq 0 ] && echo "$out" | grep -q "flaky=\[e2e,test\]"'
+check "AC4: the driver starts with the flaky row read"                 '[ $rc -eq 0 ] && echo "$out" | grep -q "flaky=\[e2e,test,smoke\]"'
 check "AC4: a waivable head is held a loop like a green one, not merged yet" '[ -z "$(merged)" ] && echo "$out" | grep -q "#111 green but for WAIVED \"e2e\" at a11111111 — confirming on the next loop"'
 check "AC6: a diff touching the check'\''s paths is not waived, and says so" 'echo "$out" | grep -q "#112 the waiver for \"e2e\" does not apply: the diff touches e2e/login.spec.ts (e2e/\*\*, for \"e2e\")"'
 check "AC7: a required check is never waived, and the PR is reported"   'echo "$out" | grep -q "#113 \"test\" is in §4 Known flaky checks but is a §4 Required check" && [ "$(qf T-13 .merge_blocked)" != null ]'
@@ -252,6 +255,7 @@ check "AC8: an unlisted red check waives nothing and reads red as today" 'echo "
 check "AC4: one rerun is not enough to waive"                          'echo "$out" | grep -q "#115 \"e2e\" is a known flaky check: waived only once still red after 2 accepted reruns at a55555555 (1 so far)"'
 check "AC4: a refused rerun counts toward the cap but never toward the waiver" 'echo "$out" | grep -q "#116 \"e2e\" is a known flaky check: waived only once still red after 2 accepted reruns at a66666666 (0 so far)" && echo "$out" | grep -q "#116 rerun of 9116 refused" && [ "$(wc -l < "$SD/reruns-116-$SHA16" | tr -d " ")" = 2 ] && [ ! -e "$SD/reruns-ok-116-$SHA16" ]'
 check "AC4: an accepted rerun counts toward the waiver"                '[ "$(wc -l < "$SD/reruns-ok-115-$SHA15" | tr -d " ")" = 2 ]'
+check "AC4: an accepted run credits only its own checks, not one whose run was refused" '[ "$(cat "$SD/reruns-ok-117-$SHA17")" = smoke ] && [ "$(wc -l < "$SD/reruns-117-$SHA17" | tr -d " ")" = 2 ]'
 DESK_CONFIG="$T/config-flaky.md" loop
 check "AC4: the waived PR merges pinned to its head and logs WAIVED"   '[ "$(merged)" = 111 ] && grep -qx "111 main $SHA11" "$T/merges.log" && echo "$out" | grep -q "#111 WAIVED \"e2e\" at a11111111"'
 check "AC5: a ticket is filed naming the check, PR, head SHA and failing run" 'grep -q "^create Bug Flaky check \"e2e\" waived to merge PR #111 " "$T/jira.log" && grep -q "\`e2e\`" "$T/jira-body.md" && grep -q "https://github.com/acme/widgets/pull/111" "$T/jira-body.md" && grep -q "$SHA11" "$T/jira-body.md" && grep -q "https://github.com/acme/widgets/actions/runs/9111" "$T/jira-body.md" && echo "$out" | grep -q "#111 WAIVED: filed DS-999"'

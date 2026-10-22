@@ -307,7 +307,7 @@ RERUNS_MAX=2; RERUN_COOLDOWN=720
 reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
 
 rerun(){ # rerun <n> <sha> <gate json>
-  local g="$3" pend ids names rid name cnt cd_file now last accepted=""
+  local g="$3" pend ids names rid name cnt cd_file now last all_ok=1 ok=""
   [ "$RERUN_PERM" = yes ] || { log "#$1 red at ${2:0:9} — config §3 ci-rerun is $RERUN_PERM, so not rerunning; report it"; return; }
   pend=$(printf '%s' "$g" | jq -r '.gate.pending | length')
   [ "$pend" = 0 ] || { log "#$1 red, but $pend check(s) still running — waiting for them before any rerun"; return; }
@@ -326,11 +326,17 @@ EOF_NAMES
   if [ $((now - last)) -lt "$RERUN_COOLDOWN" ]; then log "#$1 red, cooling down ($(( (RERUN_COOLDOWN - (now - last)) / 60 ))m left)"; return; fi
   for rid in $ids; do
     log "#$1 red + completed -> rerun --failed on run $rid"
-    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then echo "$now" > "$cd_file"; accepted=1
-    else log "#$1 rerun of $rid refused"; fi
+    # An accepted rerun credits only the checks of that run; one with no run id, only if every rerun was accepted.
+    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then
+      echo "$now" > "$cd_file"
+      ok="$ok$(printf '%s' "$g" | jq -r --arg r "$rid" '.gate.failing[] | select(.runId == $r) | .name')
+"
+    else log "#$1 rerun of $rid refused"; all_ok=""; fi
   done
+  [ -n "$all_ok" ] && ok="$ok$(printf '%s' "$g" | jq -r '.gate.failing[] | select(.runId == null) | .name')"
   printf '%s\n' "$names" >> "$SD/reruns-$1-$2"
-  [ -n "$accepted" ] && printf '%s\n' "$names" >> "$SD/reruns-ok-$1-$2"
+  ok=$(printf '%s\n' "$ok" | awk 'NF && !seen[$0]++')
+  if [ -n "$ok" ]; then printf '%s\n' "$ok" >> "$SD/reruns-ok-$1-$2"; fi
 }
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
