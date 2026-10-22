@@ -23,7 +23,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -51,6 +51,11 @@ const QUEUE_FILE = E.queueFile();
 const GH_REPO = E.ghRepo();
 const DEFAULT_BRANCH = E.defaultBranch();
 const DRY = !!process.env.AUTOPILOT_DRY_RUN;
+// --next <+seconds | ISO time>: when the caller plans the pass after this one. The heartbeat records
+// it, so desk-q counts the batch live through a wait longer than LIVE_MS.
+const NEXT_AT = process.argv.indexOf('--next');
+const NEXT = NEXT_AT < 0 ? null : parseNext(process.argv[NEXT_AT + 1]);
+if (NEXT_AT >= 0 && NEXT == null) refuse(`--next wants +<seconds> or an ISO time, not "${process.argv[NEXT_AT + 1] ?? ''}"`);
 
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
@@ -106,10 +111,11 @@ process.on('exit', () => { try { if (JSON.parse(readFileSync(LOCK, 'utf8')).pid 
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
 // A heartbeat per queue file closes that window; queue.mjs treats one fresher than 15 minutes as live.
 try {
-  const hb = join(STATE, 'orchestrators');
-  mkdirSync(hb, { recursive: true });
-  writeFileSync(join(hb, `${QUEUE_FILE.replace(/[^A-Za-z0-9]/g, '-')}.json`),
-    JSON.stringify({ queue: QUEUE_FILE, batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, pid: process.pid, at: new Date().toISOString() }));
+  mkdirSync(join(STATE, 'orchestrators'), { recursive: true });
+  writeFileSync(beatFile(STATE, QUEUE_FILE), JSON.stringify({
+    queue: QUEUE_FILE, batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, pid: process.pid, at: new Date().toISOString(),
+    ...(NEXT == null ? {} : { next: new Date(NEXT).toISOString() }),
+  }));
 } catch { /* advisory */ }
 
 const sh = (cmd, args, opts = {}) => {

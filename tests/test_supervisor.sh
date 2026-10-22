@@ -49,6 +49,7 @@ for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs; do ln -s "$B/$
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync, readFileSync } from 'node:fs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
+appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
 console.log(JSON.stringify(v));
 process.exitCode = v.code;
@@ -121,6 +122,7 @@ out=$(tick); rc=$?
 check "a tick exits 0" '[ $rc -eq 0 ]'
 check "AC1: a pass runs" '[ "$(count "$T/pass.calls")" = 1 ]'
 check "AC1: its report is appended to the supervisor log" 'grep -q "pass: exit 10 (nothing_yet)" "$LOG" && grep -q "^no change this pass$" "$LOG"'
+check "DS-185 AC6: the pass records the next tick, one interval away, as its next pass" 'grep -qx -- "--json --next +300" "$T/pass.args"'
 waitlines "$T/driver.calls" 1
 check "AC3: the merge driver starts for the batch's tickets" '[ "$(started)" = 1 ] && grep -qx -- "--tickets A B --log" "$T/driver.calls"'
 

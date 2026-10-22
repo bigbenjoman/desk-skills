@@ -13,7 +13,7 @@ import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, re
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { LIVE_MS } from './borrow.mjs';
+import { beatFile, parseNext, liveBeat } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
 
@@ -150,7 +150,8 @@ function coerce(v) {
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
 // The pass lock only covers the seconds a pass runs, so also read the heartbeats pass.mjs writes per
-// queue file: one for a different queue, fresher than 15 minutes (LIVE_MS), is a live batch between passes.
+// queue file: one for a different queue that is live (liveBeat: fresher than 15 minutes, or its recorded
+// next pass not long overdue) is a live batch between passes.
 function liveOrchestrator() {
   try {
     const { pid } = JSON.parse(readFileSync(join(stateDir(), 'orchestrator.lock'), 'utf8'));
@@ -160,7 +161,8 @@ function liveOrchestrator() {
     const dir = join(stateDir(), 'orchestrators');
     for (const f of existsSync(dir) ? readdirSync(dir) : []) {
       const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      if (hb.queue !== QUEUE && Date.now() - Date.parse(hb.at) < LIVE_MS) return `batch ${hb.batch ?? '?'} on ${hb.queue}, last pass ${hb.at}`;
+      const beat = { at: Date.parse(hb.at), next: hb.next == null ? null : Date.parse(hb.next) || null };
+      if (hb.queue !== QUEUE && Number.isFinite(beat.at) && liveBeat(beat)) return `batch ${hb.batch ?? '?'} on ${hb.queue}, last pass ${hb.at}`;
     }
   } catch { /* advisory */ }
   return null;
@@ -528,6 +530,19 @@ switch (cmd) {
     break;
   }
 
+  // The orchestrator, once it has scheduled its next pass: the last pass's heartbeat records when, so
+  // desk-q counts the batch live through a wait longer than LIVE_MS. Same as pass.mjs --next.
+  case 'next-pass': {
+    const at = parseNext(args[0]);
+    if (at == null) throw new Error('usage: queue.mjs next-pass <+seconds | ISO time>');
+    const file = beatFile(stateDir(), QUEUE);
+    if (!existsSync(file)) throw new Error('no pass has run on this queue yet: run pass.mjs --next instead');
+    const hb = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...hb, next: new Date(at).toISOString() }));
+    console.log(`next pass ${new Date(at).toISOString()}`);
+    break;
+  }
+
   case 'drop': {
     const key = args[0];
     ticket(q, key);
@@ -569,7 +584,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|get|list|render|watch [--interval s]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
