@@ -110,10 +110,23 @@ Zero means resend it by `SendMessage` to the new worker right after the `spawned
 the worker's log for the phrase to confirm it landed. When only mechanical steps remain, finish them
 yourself and give the worker only the part that needs an agent.
 
+## A worker killed by a reboot or a crash
+
+`pass.mjs` resumes it by itself. A running worker whose session is gone, whose log ends without a
+result event, and that printed no marker and has no open PR was killed mid-run. The pass queues it to
+resume (`resume=pending`, state `triaged`, its `session_id`, branch and worktree kept) and the spawn
+resumes it ahead of new tickets, through `spawn-worker.sh` with `AUTOPILOT_RESUME` on its own session,
+so inside the worker sandbox. The report says `resumed after it was killed (<n> of <limit>)` and
+whether the computer restarted. Config §3b "Resume a killed worker (times)" caps it per ticket (unset
+is 2); past it the ticket parks naming the limit and the session, and at `0` it is marked failed as
+before. A session that ended normally, and a worker the pass stopped as wedged, are never resumed.
+The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
+
 ## Resuming a dead worker's half-finished worktree
 
-`AUTOPILOT_RESUME` through `pass.mjs` does not work: `pass.mjs` always mints a fresh session id, so
-`--resume` points at a session that does not exist. Hand-launching
+For a worker the pass did not resume (failed, wedged, or over the limit), setting `AUTOPILOT_RESUME`
+on `pass.mjs` does not work: a fresh spawn always mints a new session id, so `--resume` points at a
+session that does not exist. Hand-launching
 `spawn-worker.sh` with the old id breaks "pass.mjs is the only spawner". Instead:
 
 1. Pause the pass loop.

@@ -50,6 +50,18 @@ export function markersIn(texts) {
 
 export const workerMarkers = (logText) => markersIn(readLog(logText).said);
 
+// A session that ended on its own writes a result event as its last event; one that was killed (a
+// reboot, a crash, a kill) stops wherever it was. Lines that are not JSON (stderr) are skipped.
+export function endedNormally(logText) {
+  const lines = logText.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let d;
+    try { d = JSON.parse(lines[i]); } catch { continue; }
+    return d?.type === 'result';
+  }
+  return false;
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
