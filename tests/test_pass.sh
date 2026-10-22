@@ -354,4 +354,28 @@ check "DS-121 a limit long past its reset falls back to the stall check" '[ "$(f
 check "DS-121 AC4 the config template has the row, recommended no" 'grep -qE "^\| \`autopilot-usage-resume\` \| .* \| \`no\` \| \`TODO\` \|$" "$SRC/desk-config.md"'
 check "DS-121 AC4 desk-setup asks it in the autopilot round, recommended no" 'awk "/^## Round 9/,/^## Round 10/" "$SRC/skills/desk-setup/references/permission-rows.md" | grep -qE "^\| \`autopilot-usage-resume\` \| no "'
 
+# DS-139: the decision log. D-1 finishes with a call it took, said in its text and again in its
+# result; D-2 with a line the log cannot hold. Both runs have exited.
+unset DESK_GH_REPO
+export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-d.json" DESK_AUTOPILOT_STATE="$T/state-d"; mkdir -p "$T/state-d/logs"
+q init d
+DEC='AUTOPILOT_DECISION: {"question":"Empty state copy?","options":["No items yet","Nothing here"],"chose":"No items yet","category":"wording"}'
+{ say "$DEC" "AUTOPILOT_DONE: pr=31 jira=none"
+  node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 3, total_cost_usd: 0.5, result: process.argv[1] }))' "$DEC"
+} > "$T/state-d/logs/D-1.log"
+say 'AUTOPILOT_DECISION: {"question":"Which helper?","options":["a"]' "AUTOPILOT_DONE: pr=32 jira=none" > "$T/state-d/logs/D-2.log"
+for k in D-1 D-2; do q add "$k"; q set "$k" state=running "branch=fix/$k" "session_id=run-$k"; done
+out=$(node "$B/pass.mjs" 2>&1)
+dlog="$T/state-d/decisions.jsonl"
+entry=$(head -n 1 "$dlog" 2>/dev/null)
+efield(){ node -e 'console.log(JSON.stringify(JSON.parse(process.argv[1])[process.argv[2]] ?? null))' "$entry" "$1"; }
+pass_out=$out; out=$entry
+check "DS-139 AC2 a finished run's call is logged once, with every field" '[ "$(wc -l < "$dlog" | tr -d " ")" = 1 ] && efield at | grep -qE "^\"20[0-9]{2}-" && [ "$(efield repo)" = "\"acme/widgets\"" ] && [ "$(efield ticket)" = "\"D-1\"" ] && [ "$(efield question)" = "\"Empty state copy?\"" ] && [ "$(efield options)" = "[\"No items yet\",\"Nothing here\"]" ] && [ "$(efield chose)" = "\"No items yet\"" ] && [ "$(efield category)" = "\"wording\"" ] && [ "$(efield pr)" = "\"https://github.com/acme/widgets/pull/31\"" ]'
+check "DS-139 AC1 the run is recorded done as usual"     '[ "$(field D-1 state)" = "\"done\"" ] && [ "$(field D-1 result.pr)" = 31 ]'
+out=$pass_out
+check "DS-139 AC7 an unreadable decision waits on the person with the raw line, and logs nothing" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -qF "D-2: unreadable decision (not JSON), nothing logged: {\"question\":\"Which helper?\",\"options\":[\"a\"]" && ! grep -q "\"D-2\"" "$dlog"'
+q set D-1 state=running
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-139 AC8 harvesting the same run again adds nothing" '[ "$(wc -l < "$dlog" | tr -d " ")" = 1 ] && [ "$(field D-1 state)" = "\"done\"" ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

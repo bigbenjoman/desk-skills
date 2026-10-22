@@ -208,8 +208,8 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
-| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a design, copy or product call is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
-| 3 | Ask once | Every unknown across every ticket, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base), and in feature mode the drafted spine and owner table for approval. Wait. This is the whole promise. See *Asking*. |
+| 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a call *Ask or take* keeps (a missing design, copy or product fact, or a call with no recommendation) is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
+| 3 | Ask once | Every unknown across every ticket that *Ask or take* keeps as a question, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base), and in feature mode the drafted spine and owner table for approval. Leave out what you take instead: a call outside the ask categories that has a recommendation, and any write §3 grants (a Jira comment, edit or transition under a `yes` row), which you make and then log. Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`. It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:`: serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
@@ -822,9 +822,55 @@ re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`an
 genuinely big, scope it in the briefing so what runs really is one sitting. That is a new lane, not
 a requeue of a C or D: a ticket that stays C or D is worked interactively, never by a worker.
 
+## Ask or take
+
+Most questions only add waiting: the recommended option is chosen nearly nine times in ten. So
+every would-be question, yours, a worker's or an interactive session's, is first sorted into **ask**
+or **take**.
+
+**Ask** only when it falls in one of the five ask categories (the id in brackets is the one
+`decisions.mjs` knows):
+
+| Ask category | For example |
+|---|---|
+| money (`money`) | approving a spend, a paid plan, anything billed |
+| legal or regulatory (`legal`) | legal or policy copy, privacy, compliance (`legal-content` is `stop`) |
+| production data or credentials (`production`) | a production database, a secret, a key, a live account |
+| customer copy where length means cost (`customer-copy`) | an SMS, a paid placement, any copy billed by length |
+| facts only the user holds (`user-fact`) | product or catalog data, a design URL, an asset, a name, who owns what |
+
+Ask too when the call has **no recommendation you can defend**: say so, as "no recommendation", in
+the question.
+
+**Take** everything else: a product, design, wording, review, engineering, scope or tracker call
+with a recommendation. Build or do the recommended option, carry on, and log the call so the
+check-in digest can list it. Taking it is not widening §3: a row that is not `yes` still parks or
+asks, so a take never makes a write the config did not grant. And `autopilot-judgement` decides it
+for workers: where that row is not `yes`, a worker parks as before.
+
+Each taken call is one entry in `<state>/decisions.jsonl` (time, repo, ticket, question, options,
+the option chosen, category, PR link):
+
+- **A worker** prints one line per call, at the start of a line in its own text, as
+  `AUTOPILOT_DECISION: {"question": "…", "options": ["…", "…"], "chose": "…", "category": "…"}`,
+  and lists it in its PR body under `Decisions taken` (`desk-pr`). `pass.mjs` appends it to the log
+  when it harvests the finished run, with the PR from its `AUTOPILOT_DONE`, once per run however
+  often it reads the log. A line it cannot read (not that JSON, a choice outside its options, or an
+  ask category) logs nothing and comes back under `WAITING ON YOU` as `unreadable decision`, with
+  the raw line: settle it with the user, and log it yourself if it stands.
+- **You and interactive sessions** log through the CLI, after doing it:
+
+```
+node ~/.claude/desk/bin/decisions.mjs log <TICKET> '{"question": "…", "options": ["…", "…"], "chose": "…", "category": "…"}' [--pr <n>]
+```
+
+A category is one of `product`, `design`, `wording`, `review`, `engineering`, `scope` or `tracker`;
+the CLI refuses an ask category with exit 11, because that call is asked, never taken. A Jira write
+that §3 grants is a `tracker` entry.
+
 ## Asking
 
-Every question (a Stage 3 unknown, a mid-run park, a lane C or D ticket, a §3 `ask`) goes to the user
+Every question *Ask or take* keeps (a Stage 3 unknown, a mid-run park, a lane C or D ticket, a §3 `ask`) goes to the user
 as an **`AskUserQuestion` carousel**, never as a numbered list in the report. One question per
 decision, up to four per call; run another call for more, or hold the rest for the next round.
 
@@ -835,8 +881,10 @@ follow-up ticket it spawns. Defaults that need no real judgement can share one "
 question.
 
 This does not soften *Never answer a parked question yourself*. The recommendation is a proposal the
-user accepts or overrides; a park stays parked until they have chosen. A question you would have felt
-able to answer alone should have been settled at triage, not asked here.
+user accepts or overrides; a park stays parked until they have chosen. A parked question is in an
+ask category or has no recommendation, which is why it parked: it stays the user's. A question you
+would have felt able to answer alone should have been settled at triage, or taken and logged, not
+asked here.
 
 Two have no recommendation to give: a value only the user holds (a design URL, an asset, a
 credential): offer the routes to it rather than inventing one; and a call that belongs to someone

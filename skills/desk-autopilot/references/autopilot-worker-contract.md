@@ -65,8 +65,27 @@ this file wins.
 ## 1. You cannot ask, so ask through the orchestrator
 
 You have no `AskUserQuestion`, and you cannot wait: every blocking primitive (`timeout … until`,
-`sleep`, `Monitor`, `inotifywait`) is refused under your permission mode. When `desk-ticket` says
-stop and wait:
+`sleep`, `Monitor`, `inotifywait`) is refused under your permission mode.
+
+**First sort the question: ask or take** (`desk-autopilot` *Ask or take*). Ask only in the five ask
+categories: money, legal or regulatory, production data or credentials, customer copy where length
+means cost, and facts only the user holds (missing product, catalog or copy data is one). Anything
+else (a product, design, wording, review, engineering, scope or tracker call) you take, where config
+§3 `autopilot-judgement` is `yes`: build the recommended option, carry on, open your draft PR as
+normal with the call under `Decisions taken` (`desk-pr`), and print one line per call, at the start
+of a line and never in a code fence:
+
+```
+AUTOPILOT_DECISION: {"question": "<one line>", "options": ["<chosen>", "<the other>"], "chose": "<chosen>", "category": "<product|design|wording|review|engineering|scope|tracker>"}
+```
+
+The pass logs it when it harvests your finished run. Never print one for an ask-category call: that
+parks and logs nothing. A call you have no recommendation for that you can defend parks too, with
+"no recommendation" in the question. Taking a call never widens §3: a step your config does not grant
+still parks (section 2). Where `autopilot-judgement` is not `yes`, product, design and wording calls
+park as before.
+
+When the call parks, or `desk-ticket` says stop and wait for anything else:
 
 1. **Print the question**, at the start of a line and never inside a code fence:
    `AUTOPILOT_PARK: <one-line question>`. This is the channel that always works: writes outside
@@ -102,9 +121,9 @@ Fail either → park with the stray SHAs or files. Use `git show --stat HEAD` fo
 list, never `git diff origin/<default>..HEAD`: the default branch moves, and that folds other
 people's commits into yours.
 
-**Kept, and they park rather than proceed:** anything `desk-ticket` gates that is a *decision*
-rather than a difficulty: missing product/catalog/copy data, any write to staging or a shared
-index. Plus, specific to running unattended:
+**Kept, and they park rather than proceed:** anything `desk-ticket` gates that is an ask-category
+call (section 1) or a shared-state write rather than a difficulty: missing product/catalog/copy
+data, any write to staging or a shared index. Plus, specific to running unattended:
 
 - **A merge conflict.** Any. Never resolve one.
 - **A lane demotion to C or D.** Both need a person before code: C an agreed plan or a product
@@ -146,8 +165,10 @@ the draft PR, the review post) still happens before you park, so only the Jira s
 A hard engineering problem is **not** a park. The test is "is this decision mine to make?", not
 "am I certain?". If the ticket's proposed approach does not survive contact with the code, build
 the one that works and say what you changed in the PR: that is the job. (Where config §3
-`autopilot-judgement` is `yes`, the same holds for an engineering or scope call you record in the PR;
-product calls and other people's rulings still park.)
+`autopilot-judgement` is `yes`, the same holds for any call outside the ask categories, product,
+design and wording included, that you take on its recommendation and log with `AUTOPILOT_DECISION`
+(section 1). An ask-category call, a call with no recommendation, and a ruling a person has already
+recorded on the ticket still park or bind.)
 
 That holds for **internal code**. A fix that depends on the shape of an external API's payload (a
 webhook body, a third-party response) is the `desk-ticket` demotion trigger of the same name, and
@@ -532,6 +553,7 @@ Nobody is reading live, so drop the running commentary. One line at each stage b
 ```
 AUTOPILOT_STAGE: 4/9 verify
 AUTOPILOT_NOTE:  <a discovery a sibling ticket in this batch would want>
+AUTOPILOT_DECISION: <one JSON object per call you took (section 1)>
 AUTOPILOT_IMAGES: <the absolute screenshot directory from your briefing>
 AUTOPILOT_PARK:  <question>
 AUTOPILOT_DONE:  pr=<number> jira=<status, or "none" with no tracker>
