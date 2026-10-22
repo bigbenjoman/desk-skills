@@ -176,7 +176,7 @@ mode claude ok
 check "a test pass can turn the checks off"                 'out=$(AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" 2>&1); grep -q "health: checks off" <<< "$out"'
 
 # ---- AC3 / AC4: the supervisor notifies once per newly failing check ---------------------------
-# The real supervisor, running the real pass: the notifier DS-137 added.
+# The real supervisor and its notifier, running the real pass.
 q set-batch supervised=true
 q add H-5; q set H-5 state=triaged branch=fix/H-5
 rm -f "$T/state/health.json" "$T/notify.calls"
