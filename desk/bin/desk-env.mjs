@@ -312,7 +312,9 @@ function parseConfig() {
 
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
 function parseConfigFile(path) {
-  const parsed = { path, exists: !!path && existsSync(path), sections: {} };
+  // `rows`: every row of a Key, Field or Role table, in order, for `drift`. The rule ledger (§3c) and
+  // the review asks (§4) hold the user's own rows, so they are not declared rows.
+  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [] };
   if (!parsed.exists) return parsed;
   let section = null;
   let header = null;
@@ -330,6 +332,8 @@ function parseConfigFile(path) {
     const keyCol = header.indexOf('key');
     const items = cellItems(cells[col] ?? '');
     const s = parsed.sections[section];
+    const label = (cells[0] ?? '').replace(/`/g, '').trim();
+    if (label && ['key', 'field', 'role'].includes(header[0])) parsed.rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
     // `value` is the first item (what every single-valued row means); `items` is every backtick span.
     const entry = { value: items[0], items };
     if (keyCol >= 0) { const k = norm(cells[keyCol] ?? ''); if (k) s.byKey[k] = entry; }
@@ -909,28 +913,6 @@ export function templatePath() {
   return existsSync(sibling) ? sibling : join(skillsDir(), 'desk-setup', 'references', 'desk-config.template.md');
 }
 
-// Every config row a file declares, in order: the tables whose first column is Key, Field or Role.
-// The rule ledger (§3c) and the review asks (§4) hold the user's own rows, so they are not compared.
-export function declaredRows(path) {
-  const rows = [];
-  let section = null;
-  let header = null;
-  for (const raw of readFileSync(path, 'utf8').split('\n')) {
-    const line = raw.trim();
-    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) { section = h[1].toLowerCase(); header = null; continue; }
-    if (/^#/.test(line) || !section) continue;
-    if (!line.startsWith('|')) { header = null; continue; }
-    const cells = splitRow(line);
-    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue;
-    if (!header) { header = cells.map(norm); continue; }
-    if (!['key', 'field', 'role'].includes(header[0])) continue;
-    const label = (cells[0] ?? '').replace(/`/g, '').trim();
-    if (label) rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
-  }
-  return rows;
-}
-
 // `ask` on these rows is a park in an unattended batch: there is nobody to ask.
 export const STALLING_ROWS = Object.freeze({
   'git-push': 'every worker parks before it pushes',
@@ -946,10 +928,10 @@ const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 // -> { missing: [{section, label}], stalls: [{key, reason}], dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
-  const have = new Set(declaredRows(config).map((r) => `${r.section}\t${r.id}`));
-  const missing = declaredRows(template).filter((r) => !have.has(`${r.section}\t${r.id}`))
-    .map(({ section, byKey, label }) => ({ section, label: byKey ? label : `"${label}"` }));
   const parsed = parseConfigFile(config);
+  const have = new Set(parsed.rows.map((r) => `${r.section}\t${r.id}`));
+  const missing = parseConfigFile(template).rows.filter((r) => !have.has(`${r.section}\t${r.id}`))
+    .map(({ section, byKey, label }) => ({ section, label: byKey ? label : `"${label}"` }));
   const perm = (key) => parsed.sections['3']?.byKey[key]?.value?.trim().toLowerCase() ?? '';
   const stalls = [];
   if (/^yes\b/.test(perm('autopilot-workers'))) {

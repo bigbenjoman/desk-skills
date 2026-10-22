@@ -67,7 +67,7 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
 | `/desk-setup permissions` | reads this repo's config, then straight to the interview |
 | `/desk-setup plugins` | reads this repo's config, then only §4b (which plugins this repo needs); changes nothing else. `/desk-update` offers it too |
 | `/desk-setup from <owner__name>` | as `/desk-setup`, starting from that repo's §1, §3 and §3b answers |
-| `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`, then `desk-env drift --all` (each repo's drift by slug); changes nothing |
+| `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`; changes nothing |
 | config already exists | re-run: current values are the starting point; ask what to change |
 
 ## 0. Which repo, and where to start from
