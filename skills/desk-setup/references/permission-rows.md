@@ -73,7 +73,7 @@ a row changes, say which of these applies.
 
 | Script | Rows it reads |
 |---|---|
-| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`: anything short of `yes` is denied to the worker |
+| `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`, `worker-dependency-install`, `worker-screenshots`, `worker-local-services`: anything short of `yes`, unset included, is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
 | `pass.mjs` | `autopilot-workers`, `pr-images`, `batch-base-push` (unset is `ask`), `autopilot-usage-resume` (unset is `no`) |
@@ -174,6 +174,17 @@ rows).
 | `batch-base-push` | ask | a batch on a base branch starts each worker on a current tree: before a pass spawns, the default branch is merged into the base and pushed. A feature-mode batch whose base has no commits beyond the default branch also pushes one empty commit there, so its draft promotion PR can open, and its base gate merges the default branch in once more before it checks the base | pushes to a shared branch while you are away; a merge commit or an empty commit only, never a rebase or a force | yes · no (the base is not synced; a feature-mode batch then spawns nothing, and opens no promotion PR on a base with nothing beyond the default branch) | — (the script reads the row; `ask` is one approval per batch, passed as `AUTOPILOT_BASE_PUSH_APPROVED=1`) |
 | `autopilot-judgement` | yes | every call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) taken on its recommendation and logged, instead of parking the batch | a call you might have made differently; you can overrule | no (park and ask) | — |
 | `autopilot-usage-resume` | no (a worker at the limit is stopped and parked with the reset time) | a worker that reaches the 5-hour usage limit waits for the reset and carries on, so an overnight batch keeps going | the next 5-hour window is spent while you are away, and it is account-wide: your own sessions share it | yes | — (the script reads the row; unset is `no`) |
+
+## Round 9b — what an autopilot worker may run (skip when `autopilot-workers` is `no`)
+
+These write no harness rule: `worker-settings.mjs` reads them when each worker spawns, and anything
+short of `yes`, unset included, is refused to the worker, which parks naming the row.
+
+| Key | Recommended | Unlocks | Exposes | Other options | Rules |
+|---|---|---|---|---|---|
+| `worker-dependency-install` | ask | a ticket that needs a new package, or a lockfile sync (`uv sync`), finishes instead of parking | the package's install scripts run on your machine with nobody watching, and the lockfile change ships in the PR. Never global, another directory or project, or a `..` path; `remove` and the one-off runners (`npx`, `dlx`) stay refused | yes · no | — (the script reads the row) |
+| `worker-screenshots` | ask | before/after evidence for UI tickets without a park: Playwright, Storybook or a Python script, from the worker's own worktree, under the browser lock | a script the worker wrote runs a headless browser against your local servers. Unset or not `yes` also refuses the Playwright capture workers used to be given, so a UI repo wants `yes` | yes · no (UI tickets park at Stage 5) | — (the script reads the row) |
+| `worker-local-services` | ask | a worker starts a §4 Local services entry it needs, by the name each item starts with, in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml [-f <its override>] up -d --no-recreate --no-deps <service>`; nothing where its `.env` sets `COMPOSE_FILE`) | a shared container started while you are away. Stopping, removing or recreating one stays refused, since another session may be using it, and so does starting it from a worktree, which would make a second stack (skip, writing `no`, when §4 Local services is `none`) | yes · no | — (the script reads the row) |
 
 ## Round 10 — shared state
 

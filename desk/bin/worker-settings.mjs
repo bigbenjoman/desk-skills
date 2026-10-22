@@ -58,7 +58,7 @@
 //   - Bash rules match the command string as written. A binary allowed by name AND by absolute
 //     path must be DENIED by both too, or `/usr/bin/git push` walks past a `git push` deny. So every
 //     rule for a binary, allow or deny, is built by `bash()` below; never write one by hand.
-import { writeFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { platform } from 'node:os';
@@ -222,8 +222,9 @@ const GIT_READ = [' status', ' diff', ' log', ' show', ' rev-parse', ' rev-list'
   ' worktree list', ' remote -v', ' remote get-url', ' check-ignore', ' range-diff'];
 const GIT_READ_EXACT = [' branch -a', ' branch -r'];
 // `rm` and `mv` touch only tracked paths of this worktree: git refuses a path outside the repository,
-// and `-C`, `--git-dir` and `--work-tree` are denied below.
-const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean', ' rm', ' mv'];
+// and `-C`, `--git-dir` and `--work-tree` are denied below. `reset` moves only this worktree's branch
+// and index (`--soft`, `--mixed`, paths); `--hard` and `--merge`, which discard work, are denied below.
+const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean', ' rm', ' mv', ' reset'];
 // `rebase` takes bundled short flags (`-qx cmd` runs cmd), so it is allowed only in these exact forms.
 const GIT_REBASE = [' rebase --continue', ' rebase --abort', ' rebase --skip', ` rebase origin/${E.defaultBranch()}`];
 // The ways a permitted git subcommand could reach outside it: another repo or config, an external
@@ -233,6 +234,8 @@ const GIT_DENY = [
   ' stash', ' worktree add', ' worktree remove', ' worktree move', ' submodule', ' filter-branch', ' update-ref',
   ' * --upload-pack*', ' * --receive-pack*', ' *--exec=*', ' rebase *--exec*', ...shortFlag(' rebase', '-x'),
   ' *--output*', ' grep *--open-files-in-pager*', ...shortFlag(' grep', '-O'),
+  // git takes any unique prefix of a long option, so `--har` is `--hard` and `--me` is `--merge`.
+  ' reset *--h*', ' reset *--me*',
 ];
 const GH_READ = [' pr view', ' pr list', ' pr checks', ' pr diff', ' run view', ' run list', ' issue view', ' repo view'];
 // Never a worker's, whatever config §3 says: the orchestrator merges and undrafts. `gh api` and
@@ -335,7 +338,10 @@ if (mode === 'triage') {
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/merge-driver.sh:*)`, `Bash(bash ${b}/merge-driver.sh:*)`, `Bash(${b}/pass.mjs:*)`, `Bash(node ${b}/pass.mjs:*)`,
       `Bash(${b}/answer.mjs:*)`, `Bash(node ${b}/answer.mjs:*)`, `Bash(${b}/queue.mjs:*)`, `Bash(node ${b}/queue.mjs:*)`,
       `Bash(${b}/decisions.mjs:*)`, `Bash(node ${b}/decisions.mjs:*)`]),
-    ...bash('docker', ' compose down', ' rm', ' run', ' system', ' volume'), 'Bash(docker-compose down:*)',
+    ...bash('docker', ' compose down', ' compose rm', ' compose run', ' rm', ' run', ' system', ' volume'),
+    ...bash('docker-compose', ' down', ' rm', ' run'),
+    // Nothing under the browser lock leaves the worktree, whatever §3 worker-screenshots says.
+    ...BIN_FORMS.map((b) => `Bash(${b}/with-lock.sh browser *..*)`),
   );
 
   // ---- the toolchain: exact configured commands only ------------------------------------------
@@ -349,13 +355,18 @@ if (mode === 'triage') {
     ]));
   };
   const probeBins = new Set();
+  // §4 Install takes no arguments of the worker's unless §3 worker-dependency-install is `yes`:
+  // `npm install <pkg>` is a new dependency, so the configured command is allowed exactly. Wrapped
+  // in with-lock.sh it is always exact, since the dependency denies below match only the bare forms.
+  const depsOk = E.permission('worker-dependency-install') === 'yes';
   for (const it of items) {
+    const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.') allow.push(...withPrefix(cmd).map((c) => rule(c, '')));
+      if (it.dir === '.') allow.push(...withPrefix(cmd).map(form(false)));
       // A directory item has no bare form (the worker cannot `cd`), so it runs through with-lock.sh:
       // under its lock where it has one, else `nolock`, which only changes directory.
       const lock = E.lockFor(it.id);
-      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map((c) => rule(c, '')));
+      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
   }
@@ -368,8 +379,6 @@ if (mode === 'triage') {
   for (const b of probeBins) allow.push(...withPrefix(`${b} --version`).map((c) => `Bash(${c})`));
   // desk-pr's run of the committed pre-push script on HEAD, exactly: the checks it runs are §4 rows.
   if (cfgList('pre-push-checks').length) allow.push('Bash(bash scripts/desk/pre-push.sh --head)');
-  // Screenshot capture under the browser lock, with an installed package runner from the worktree.
-  allow.push(...BIN_FORMS.flatMap((b) => withPrefix(`node ${WT}/node_modules/`).map((c) => `Bash(${b}/with-lock.sh browser ${c}:*)`)));
 
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
@@ -449,6 +458,69 @@ if (mode === 'triage') {
     allow.push(...bash('codex', ' exec --sandbox read-only'), ...exact('codex', ' --version'));
     deny.push(...bash('codex', ' *danger*', ' *--full-auto*', ' *--yolo*', ' *--config*', ' * -c *', ' *--sandbox=*', ' * -s *', ' *workspace-write*'));
   } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${codexPerm})`); }
+
+  // A new or synced dependency: the package manager's add and sync forms, with arguments. Never
+  // global, never another directory or project, never a `..` path. Bare `<pm> install` is allowed
+  // above whatever this row says, so it is never denied here.
+  const DEP_SUBS = { npm: [' install', ' i', ' add'], pnpm: [' add', ' install', ' i'], yarn: [' add', ' install'], bun: [' add', ' install', ' i'],
+    uv: [' add', ' sync'], poetry: [' add', ' install'], pdm: [' add', ' install', ' sync'], cargo: [' add'], bundle: [' add', ' install'], composer: [' require', ' install'] };
+  const depSubs = DEP_SUBS[PM] ?? [];
+  // Never called with no patterns: bash() would then return the package manager wholesale.
+  const pmRules = (pats) => (pats.length ? [...bash(PM, ...pats), ...(PREFIX ? pats.map((s) => rule(`${PREFIX} ${PM}`, s)) : [])] : []);
+  // Refused, only the forms that add a package are denied outright: bare `install` and a sync form
+  // §4 Install itself uses (`uv sync --frozen`) stay with the exact rules above.
+  const depBare = new Set([' install', ' i', ...depSubs.filter((s) => items.some((i) => i.id === 'install-cmd' && (i.cmd === `${PM}${s}` || i.cmd.startsWith(`${PM}${s} `))))]);
+  // Each manager's own way of pointing at another project, beside the common ones.
+  const DEP_ELSEWHERE = { composer: [' *--working-dir*', '-d'], pdm: ['-p'], bundle: [' *--gemfile*'] };
+  const elsewhere = (s) => (DEP_ELSEWHERE[PM] ?? []).flatMap((f) => (f.startsWith(' ') ? [`${s}${f}`] : shortFlag(s, f)));
+  if (grant('worker-dependency-install', pmRules(depSubs.map((s) => `${s} *`)), pmRules(depSubs.filter((s) => !depBare.has(s)).map((s) => `${s} *`)))) {
+    deny.push(...pmRules(depSubs.flatMap((s) => [`${s} *..*`, `${s} *--global*`, `${s} *--location*`, `${s} *--prefix*`, `${s} *--dir*`, `${s} *--cwd*`,
+      `${s} *--directory*`, `${s} *--project*`, `${s} *--manifest-path*`, ...shortFlag(s, '-g'), ...shortFlag(s, '-C'), ...elsewhere(s)])));
+    if (!depSubs.length) warns.push(`§3 worker-dependency-install is yes, but §4 Package manager "${PM || 'none'}" has no known add or sync command — nothing allowed`);
+  }
+
+  // Screenshot capture, only under the browser lock and only from this worktree: a script at its root
+  // or under node_modules (Playwright), a Storybook or Playwright binary, or a Python script.
+  const SHOT_TOOLS = ['playwright', 'storybook', 'test-storybook', 'storycap'];
+  const PYTHONS = ['python', 'python3', 'uv run python', 'uv run python3', '.venv/bin/python', `${WT}/.venv/bin/python`];
+  const shots = BIN_FORMS.flatMap((b) => [
+    ...withPrefix(`node ${WT}/`).map((c) => `Bash(${b}/with-lock.sh browser ${c}*)`),
+    ...withPrefix('node ./').map((c) => `Bash(${b}/with-lock.sh browser ${c}*)`),
+    ...NODE_BIN.flatMap((n) => SHOT_TOOLS.map((t) => rule(`${b}/with-lock.sh browser ${n}${t}`, ''))),
+    ...PYTHONS.flatMap(withPrefix).flatMap((py) => [`Bash(${b}/with-lock.sh browser ${py} ${WT}/*)`, `Bash(${b}/with-lock.sh browser ${py} ./*)`]),
+  ]);
+  grant('worker-screenshots', shots, []);
+
+  // Starting a §4 Local services entry, detached, by its compose service name (each item's first
+  // word). Compose names a project after its directory, so from a worktree a bare `up` would start a
+  // second stack: the one form allowed reads the main checkout's compose file, the shared project,
+  // and never recreates a running container or starts its dependencies. Stopping or removing one
+  // stays denied above: another session may be using it.
+  let ROOT = null;
+  try { ROOT = E.repoRoot(); } catch { /* §2 Primary repo root unset */ }
+  // Compose's own lookup order. A `-f` turns off the override file compose merges in by itself, so
+  // that goes in as a second `-f`; a stack chosen by COMPOSE_FILE in the checkout's .env cannot be
+  // reproduced by name, so it gets nothing.
+  const inRoot = (names) => (ROOT ? names.map((f) => `${ROOT}/${f}`).find((f) => existsSync(f)) : undefined);
+  let composeEnv = '';
+  try { composeEnv = ROOT ? readFileSync(`${ROOT}/.env`, 'utf8') : ''; } catch { /* no .env */ }
+  const stackByEnv = /^\s*(export\s+)?COMPOSE_FILE\s*=/m.test(composeEnv);
+  const base = inRoot(['compose.yaml', 'compose.yml', 'docker-compose.yml', 'docker-compose.yaml']);
+  const override = base && inRoot(['compose.override.yml', 'compose.override.yaml', 'docker-compose.override.yml', 'docker-compose.override.yaml']);
+  const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
+  const services = [];
+  for (const raw of cfgList('local-services')) {
+    const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
+    if (name) services.push(name);
+    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
+  }
+  const ups = !composeFile ? [] : services.flatMap((s) => [...exact('docker', ` compose -f ${composeFile} up -d --no-recreate --no-deps ${s}`),
+    ...exact('docker-compose', ` -f ${composeFile} up -d --no-recreate --no-deps ${s}`)]);
+  if (grant('worker-local-services', ups, [...bash('docker', ' compose up', ' compose -f'), ...bash('docker-compose', ' up', ' -f')])) {
+    if (!services.length) warns.push('§3 worker-local-services is yes, but §4 Local services names no service — nothing to start');
+    else if (stackByEnv) warns.push(`§3 worker-local-services is yes, but the main checkout's .env picks its compose files with COMPOSE_FILE — nothing to start`);
+    else if (!composeFile) warns.push(`§3 worker-local-services is yes, but the main checkout (${ROOT ?? '§2 Primary repo root unset'}) has no compose file — nothing to start`);
+  }
 
   // Figma: reads only, and only where the user granted reading linked Figma files.
   const figmaRead = ['get_design_context', 'get_screenshot', 'get_metadata', 'get_variable_defs',

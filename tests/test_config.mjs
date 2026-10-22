@@ -62,6 +62,15 @@ const plain = (...a) => execFileSync('node', [BIN, ...a], { encoding: 'utf8', en
 t('cmds prints nothing for a plain none', plain('cmds', 'lint-cmd'), '');
 t('list prints a plain none', plain('list', 'lint-cmd'), 'none');
 t('a backticked note in trailing parens is still one none', plain('cmds', 'test-cmd'), '');
+
+// The worker rows: known ids, `no` when the row is missing, read by key when it is there.
+const perms = join(T, 'perms.md');
+writeFileSync(perms, '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
+  + '| `worker-screenshots` | Capture | `ask` | `yes` |\n| `worker-local-services` | Start | `ask` | `ask` |\n');
+const perm = (id) => execFileSync('node', [BIN, 'perm', id], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: perms, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim();
+t('worker-dependency-install missing reads as no', perm('worker-dependency-install'), 'no');
+t('worker-screenshots reads its row', perm('worker-screenshots'), 'yes');
+t('worker-local-services reads its row', perm('worker-local-services'), 'ask');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');

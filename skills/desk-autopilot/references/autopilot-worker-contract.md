@@ -510,10 +510,26 @@ Your settings are an **allow-list**: anything not named here is refused.
   An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an argument in
   whatever form the §4 Dev server row gives (e.g. `-- --port 3008`).
 - **The package manager**: only `<§4 Package manager> install` with no arguments, `<bin> --version`,
-  and the configured rows. `add`/`remove`, the one-off runners (`npx`, `npm exec`/`x`,
-  `pnpm exec`/`dlx`, `yarn dlx`, `bunx`, `uvx`) and the §4 Command prefix run on its own
-  (`<prefix> <anything>`) are refused: a ticket that needs a new dependency parks. Run a TS script
+  and the configured rows. Its add and sync forms (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`)
+  only where §3 `worker-dependency-install` is `yes`, and never global, another directory or a `..`
+  path; otherwise a ticket that needs a new dependency parks naming the row. `remove`, the one-off
+  runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`, `bunx`, `uvx`) and the §4 Command
+  prefix run on its own (`<prefix> <anything>`) are refused. Run a TS script
   with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`.
+- **Screenshot capture**, only where §3 `worker-screenshots` is `yes`, and only under the browser
+  lock from your worktree: `~/.claude/desk/bin/with-lock.sh browser` then `node ./<script>` or
+  `node <worktree>/<script>` (a capture script at the root, or Playwright under `node_modules/`),
+  `./node_modules/.bin/<playwright|storybook|test-storybook|storycap> …`, or
+  `<python|python3|uv run python|.venv/bin/python> ./<script>.py`. Never a `..`. Otherwise parks
+  naming the row.
+- **Local services**: only where §3 `worker-local-services` is `yes`, and only
+  `docker compose -f <main checkout>/<its compose file> [-f <its override file>] up -d --no-recreate
+  --no-deps <service>` for a service §4 Local services names: the shared project, never one named
+  after your worktree (`docker-compose` takes the same form). Nothing is allowed where the main
+  checkout's `.env` sets `COMPOSE_FILE`. `docker compose down`, `rm`, `run`, `docker rm` and
+  `docker run` are refused.
+- **`git reset`**: `--soft`, `--mixed` and on paths are allowed in your worktree; `--hard` and
+  `--merge` are refused (`git restore` and `git checkout -- <path>` undo a file).
 - **`git push`: only these exact commands** for your own recorded branch: `git push origin <branch>`,
   `git push -u origin <branch>`, `git push --set-upstream origin <branch>`, and, only where §3
   `git-force-with-lease` is `yes`, `git push --force-with-lease origin <branch>`. Bare `git push`,

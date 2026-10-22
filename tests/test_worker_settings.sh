@@ -10,7 +10,7 @@ S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
 export DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_STATE="$T/state" DESK_QUEUE="$T/queue.json"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
@@ -36,9 +36,9 @@ settings(){
 | Field | Value |
 |---|---|
 | Tracker | \`none\` |
-| Package manager | \`none\` |
+| Package manager | ${PMROW:-\`none\`} |
 | Command prefix | \`none\` |
-| Install | \`none\` |
+| Install | ${INSTROW:-\`none\`} |
 | Unit tests | $1 |
 ${2:-}
 ${3:-}
@@ -207,5 +207,79 @@ check "jira-create yes: create and create-batch allowed"  'ok "desk-jira create 
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" \
   --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
 check "jira-create yes, dry run: create and create-batch refused" '[ $rc -eq 0 ] && no "desk-jira create Story s b.md" "desk-jira create-batch t.tsv"'
+
+# ---- the §3 rows for dependency installs, screenshots and local services, and git reset ----
+# rows3 <key>=<value> ... -> a §3 table holding just those rows
+rows3(){ local kv; printf '\n## 3. Permissions\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
+  for kv in "$@"; do printf '| `%s` | x | `ask` | `%s` |\n' "${kv%%=*}" "${kv#*=}"; done; }
+SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) |'
+: > "$T/repo/compose.yaml"; UP="docker compose -f $T/repo/compose.yaml up -d --no-recreate --no-deps"
+denied_line(){ [[ "$out" == *"CONFIG_DENIED: $1 ($2)"* ]]; }
+
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-dependency-install=yes worker-screenshots=yes worker-local-services=yes)"
+check "rows yes: settings written, none of the three denied" '[ $rc -eq 0 ] && [[ "$out" != *worker-dependency-install* && "$out" != *worker-screenshots* && "$out" != *worker-local-services* ]]'
+check "AC1 dependency-install yes: pnpm add and install with arguments" 'ok "pnpm add zod" "pnpm add -D vitest@3" "pnpm install --frozen-lockfile" "pnpm install"'
+check "AC1 never global, another directory or a .. path"   'no "pnpm add -g typescript" "pnpm add zod -g" "pnpm add --global x" "pnpm add --dir ../other x" "pnpm add -C ../other x" "pnpm add file:../x" "pnpm -C ../other add x"'
+check "AC1 remove and the one-off runners still refused"   'no "pnpm remove zod" "pnpm dlx cowsay" "pnpm exec tsc" "npx cowsay"'
+check "AC3 screenshots yes: Playwright from the worktree under the browser lock" \
+  'ok "$L browser node $W/node_modules/playwright/cli.js screenshot http://localhost:3551 a.png" "$L browser node ./shot.mjs" "$L browser node $W/shot.mjs" \
+      "$L browser ./node_modules/.bin/playwright screenshot http://localhost:3551 a.png" "$L browser $W/node_modules/.bin/playwright test"'
+check "AC3 Storybook and Python capture under the browser lock" \
+  'ok "$L browser ./node_modules/.bin/storybook build" "$L browser node_modules/.bin/test-storybook --url http://localhost:6006" \
+      "$L browser uv run python ./shot.py" "$L browser python3 $W/shot.py" "$L browser .venv/bin/python ./tools/shot.py"'
+check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
+      "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
+check "AC5 local-services yes: compose up for a §4 entry, in the main checkout's project" 'ok "$UP typesense" "$UP mailpit"'
+check "AC5 not the worktree's own project, another service or a recreate" 'no "docker compose up -d typesense" "docker compose up typesense" "$UP postgres" "$UP typesense postgres" \
+      "$UP typesense --force-recreate" "docker compose -f compose.yaml up -d --no-recreate --no-deps typesense" "docker compose -f $W/../x.yaml up -d typesense"'
+check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'
+check "AC6 git reset --soft, mixed and on paths allowed"   'ok "git reset --soft HEAD~1" "git reset HEAD -- a.txt" "git reset a.txt" "git reset" "git reset --mixed HEAD~1"'
+check "AC6 git reset --hard and --merge refused, abbreviated too" 'no "git reset --hard" "git reset --hard origin/main" "git reset -q --hard HEAD" "git reset --har" "git reset --merge" "git reset --me HEAD" "git -C $W reset --hard"'
+triage
+check "AC6 triage: git reset refused"                      '[ $rc -eq 0 ] && no "git reset --soft HEAD~1" "git reset a.txt"'
+
+PMROW='`uv`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
+check "AC1 uv: add and sync allowed"                       'ok "uv add httpx" "uv add --dev pytest" "uv sync" "uv sync --frozen"'
+check "AC1 uv: not another project"                        'no "uv sync --directory ../other" "uv add --project ../other x" "uv pip install x"'
+
+for v in ask no; do
+  PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-dependency-install=$v worker-screenshots=$v worker-local-services=$v)"
+  check "AC2 dependency-install $v: refused, named"        'no "pnpm add zod" "pnpm install --frozen-lockfile" && denied_line worker-dependency-install $v'
+  check "AC2 dependency-install $v: bare install still allowed" 'ok "pnpm install"'
+  check "AC4 screenshots $v: capture refused, named"       'no "$L browser node $W/node_modules/playwright/cli.js screenshot" "$L browser node ./shot.mjs" "$L browser ./node_modules/.bin/storybook build" "$L browser uv run python ./shot.py" && denied_line worker-screenshots $v'
+  check "AC4 screenshots $v: desk-design render still allowed" 'ok "$L browser node $B/desk-design.mjs render docs/design/x"'
+  check "AC5 local-services $v: compose up refused, named" 'no "$UP typesense" "docker compose up -d typesense" && denied_line worker-local-services $v'
+done
+PMROW='`npm`' INSTROW='`npm install` `web: npm install`' settings '`bash tests/run.sh`'
+check "AC2 a §4 Install row takes no package unless the row is yes" 'no "npm install lodash" "npm install --global typescript" "$L nolock --cwd web -- npm install lodash" && ok "npm install" "$L nolock --cwd web -- npm install"'
+PMROW='`npm`' INSTROW='`npm install` `web: npm install`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
+check "AC1 a §4 Install row takes a package at yes, never global" 'ok "npm install lodash" "$L nolock --cwd web -- npm install" && no "npm install --global typescript" "npm install -g typescript" \
+      "$L nolock --cwd web -- npm install --global typescript" "$L nolock --cwd web -- npm install lodash"'
+PMROW='`uv`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=no)"
+check "AC2 uv: sync refused when the row is not yes"       'no "uv sync" "uv add httpx" && denied_line worker-dependency-install no'
+
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
+check "AC8 none of the three rows: each treated as no"     '[ $rc -eq 0 ] && denied_line worker-dependency-install no && denied_line worker-screenshots no && denied_line worker-local-services no'
+check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$L browser node ./shot.mjs" "$UP typesense"'
+check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
+check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "$UP Typesense"'
+: > "$T/repo/compose.override.yaml"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: the main checkout's override file is merged in" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/compose.override.yaml up -d --no-recreate --no-deps typesense" && no "$UP typesense"'
+mv "$T/repo/compose.override.yaml" "$T/repo/docker-compose.override.yml"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: an override from the other name family is merged in too" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/docker-compose.override.yml up -d --no-recreate --no-deps typesense"'
+mv "$T/repo/docker-compose.override.yml" "$T/repo/compose.override.yaml"
+printf 'COMPOSE_FILE=compose.yaml:compose.dev.yaml\n' > "$T/repo/.env"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: a stack picked by COMPOSE_FILE warns, nothing allowed" '[[ "$out" == *"COMPOSE_FILE"* ]] && ! jq -e ".permissions.allow[] | select(test(\"compose\"))" "$T/ws.json" >/dev/null'
+rm -f "$T/repo/compose.yaml" "$T/repo/compose.override.yaml" "$T/repo/.env"
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
+check "local services: no compose file in the main checkout warns, nothing allowed" '[ $rc -eq 0 ] && [[ "$out" == *"has no compose file"* ]] && no "$UP typesense"'
+PMROW='`uv`' INSTROW='`uv sync --frozen`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=no)"
+check "AC2 a uv Install row still runs with the row refused" 'ok "uv sync --frozen" && no "uv add httpx" "uv sync --frozen x" && denied_line worker-dependency-install no'
+PMROW='`composer`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
+check "AC1 composer: require allowed, never another directory" 'ok "composer require monolog/monolog" && no "composer require x -d /abs/other" "composer require x --working-dir=/abs/other"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
