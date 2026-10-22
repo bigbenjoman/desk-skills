@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
-import { LIVE_MS, lastPass, machineCap } from './borrow.mjs';
+import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 
@@ -105,8 +105,10 @@ export function loadRepos(now = Date.now()) {
     if (existsSync(queuePath)) {
       try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
     }
-    r.last = lastPass(stateDir, queuePath);
-    r.live = r.last != null && now - r.last < LIVE_MS;
+    const beat = lastBeat(stateDir, queuePath);
+    r.last = beat?.at ?? null;
+    r.next = beat?.next ?? null;
+    r.live = liveBeat(beat, now);
     const rows = Object.values(r.q?.tickets ?? {});
     // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
     // keeps its slot and has no place.
@@ -138,7 +140,8 @@ const forecasts = new Map();
 
 // The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
 // 2-second reread runs the simulation again only when the queue, the history or the minute changes.
-// A batch with no pass for LIVE_MS is `paused`: its dates assume passes that are not happening, so
+// A batch that is not live (liveBeat: no pass for LIVE_MS, and no next pass recorded that is still to
+// come) is `paused`: its dates assume passes that are not happening, so
 // they are not shown and not saved. A live forecast saves each ticket's first estimate (eta.jsonl);
 // one dated at the next check-in (c) is a what-if, and saves nothing.
 export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
@@ -164,12 +167,13 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 const etaOf = (F, key) => (F && !F.none && !F.paused ? F.T[key] : null);
+// With passes stopped there are no dates, but a running worker carries on, so its row says so.
 const startsCell = (F, x, now) => {
-  if (F && !F.none && F.paused) return 'paused';
+  if (F && !F.none && F.paused) return x.k === 'running' ? 'running' : '—';
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
-const shipsCell = (F, x, now) => (!F || F.none ? '—' : F.paused ? 'paused' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
+const shipsCell = (F, x, now) => (!F || F.none || F.paused ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 const pausedNote = (r, now) => `Dates paused: ${r.last == null ? 'no pass yet' : `no pass for ${ago(now - r.last).replace(' ago', '')}`}. `
   + 'The forecast assumes passes keep running, so dates show again at the next pass.';
@@ -235,14 +239,25 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
   const s = etaScope(repos, slug, { now, checkin });
   if (!s.list.length) return nothingToDate;
   const out = [];
-  for (const { r, F, note } of s.per) {
-    if (out.length) out.push('');
-    if (note) { out.push(note); continue; }
-    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), hitLine(r), `  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
+  const table = (r, F) => {
+    out.push(`  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
       out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
     }
     if (!r.rows.length) out.push('  No unfinished tickets.');
+  };
+  for (const { r, F, note, stopped } of s.per) {
+    if (out.length) out.push('');
+    // Passes stopped: no dates, but the rows still say what is running.
+    if (stopped) {
+      const [pass, ...more] = passLines(r, now);
+      out.push(`${r.name} · ${pass}`, ...more);
+      table(r, stopped);
+      continue;
+    }
+    if (note) { out.push(note); continue; }
+    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), passLines(r, now)[0], hitLine(r));
+    table(r, F);
     out.push(`Queue done: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
     if (!epics.length) continue;
@@ -343,7 +358,7 @@ function etaScope(repos, slug, { now, checkin, epic = null }) {
     if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
     if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
     const F = forecastOf(r, { now, checkin });
-    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${pausedNote(r, now)}` } : { r, F };
+    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${pausedNote(r, now)}`, stopped: F } : { r, F };
   });
   const dated = per.filter((p) => p.F);
   const notes = per.filter((p) => p.note).map((p) => p.note);
@@ -573,7 +588,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   const allowed = liveAllowed(repos);
   const room = headroom({ running, cap, avail, gate, perWorker });
-  const at = new Date(now).toTimeString().slice(0, 5);
+  const at = clock(now);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
     `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
@@ -612,9 +627,39 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
+const clock = (t) => new Date(t).toTimeString().slice(0, 5);
+
+// When the batch's passes run, for a header: the next one while live, else that they have stopped,
+// what that means for its workers, and how to start them again.
+function passLines(r, now) {
+  if (r.live) {
+    const next = r.next == null ? '' : r.next > now ? ` · next pass ${clock(r.next)}` : ` · next pass due ${clock(r.next)}`;
+    return [`orchestrator live, last pass ${ago(now - r.last)}${next}`];
+  }
+  const resume = r.q?.supervised === true ? `check the supervisor: node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
+    : `run /desk-autopilot in ${r.name} and ask it to pick the batch back up`;
+  return [
+    r.last == null ? 'no pass yet' : `passes stopped: last pass ${clock(r.last)} (${ago(now - r.last)})${r.next != null ? `, next was due ${clock(r.next)}` : ''}`,
+    `Running workers carry on, but nothing new starts and stages are not updated. To resume passes, ${resume}.`,
+  ];
+}
+
+// Why a ready ticket has not started: its batch's worker slots, a running ticket it collides with,
+// or the pass that will start it.
+function readyWhy(r, t) {
+  if (r.workers === 0) return 'workers set to 0';
+  const busy = count(r, 'running');
+  if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
+  const clash = String(t.collides_with ?? '').split('|').filter((c) => r.q.tickets?.[c]?.state === 'running');
+  if (clash.length) return `waits for ${clash.join(', ')} to finish`;
+  return r.live ? 'starts at the next pass' : 'starts when passes resume';
+}
+
 function detail(r, x) {
   const { t, k } = x;
-  if (k === 'running') return `stage ${t.stage ?? '?'}`;
+  // A stage is the last pass's reading: the worker may be further on.
+  if (k === 'running') return `stage ${t.stage ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
+  if (k === 'ready') return readyWhy(r, t);
   if (k === 'waiting' || k === 'stuck') return `behind ${unmergedBlockers(r.q, t).join(', ') || 'PRs of done tickets'}`;
   if (k === 'needs') return t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`;
   if (k === 'failed') return t.park?.question ?? '';
@@ -622,8 +667,9 @@ function detail(r, x) {
   return '';
 }
 
-// The columns before TITLE on a ticket row.
-const ROW_LEAD = 82;
+// DETAIL's width, wide enough for "waits for a worker (12 of 12 busy)"; the columns before TITLE on a ticket row.
+const DETAIL_W = 36;
+const ROW_LEAD = 92;
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
 // to that epic's tickets, each keeping its place in the whole queue.
@@ -631,12 +677,13 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
-  const pass = r.live ? `orchestrator live, last pass ${ago(now - r.last)}` : r.last == null ? 'no pass yet' : `no pass for ${ago(now - r.last).replace(' ago', '')}`;
+  const [pass, ...stopped] = passLines(r, now);
   const head = [
     `${r.name} · batch ${r.q.batch ?? '-'} · ${pass}`,
+    ...stopped,
     `workers ${count(r, 'running')} running of ${r.workers} (cap ${r.cap}) · ${r.done} done, not shown`,
     '',
-    `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', 26)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`,
+    `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', DETAIL_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`,
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
   const F = forecastOf(r, { now, checkin });
@@ -647,7 +694,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const tt = titler(list.map(summary));
   const rows = list.map((x) => segRow(x.t.key, [
     [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], 11), STATE_SGR[x.k]],
-    [`${pad(cut(detail(r, x), 24), 26)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`, null],
+    [`${pad(cut(detail(r, x), DETAIL_W - 2), DETAIL_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) }));
   const foot = !list.length ? ['  No unfinished tickets.']
     : list.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];

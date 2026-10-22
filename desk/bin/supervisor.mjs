@@ -50,6 +50,9 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { 
 // ---- launchd ---------------------------------------------------------------------------------
 const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = (slug) => launchctl('print', `${domain()}/${label(slug)}`).status === 0;
+// The installed agent's interval in seconds: '?' for a plist without one, null when not installed.
+const installedInterval = (slug) => (existsSync(plistPath(slug))
+  ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null);
 
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 function plistValue(v, pad) {
@@ -252,7 +255,9 @@ function runPass(state, q, s, log, stamp) {
   const given = [];
   if (q.approved?.workers === true) { env.AUTOPILOT_USER_APPROVED = '1'; given.push('workers'); }
   if (q.approved?.base_push === true) { env.AUTOPILOT_BASE_PUSH_APPROVED = '1'; given.push('base push'); }
-  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json'], {
+  // The next tick is this agent's interval away, so the pass records it as its next.
+  const every = Number(installedInterval(slug));
+  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
   let v;
@@ -308,8 +313,7 @@ function runPass(state, q, s, log, stamp) {
 
 function status() {
   const slug = E.repoSlug();
-  const file = plistPath(slug);
-  const interval = existsSync(file) ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(file, 'utf8'))?.[1] ?? '?') : null;
+  const interval = installedInterval(slug);
   console.log(`agent: ${label(slug)} ${interval ? `installed (every ${interval}s), ${loaded(slug) ? 'loaded' : 'not loaded'}` : 'not installed (supervisor.mjs install)'}`);
   const state = E.stateDir();
   const qf = E.queueFile();

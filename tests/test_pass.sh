@@ -487,4 +487,18 @@ out=$(node "$B/queue.mjs" requeue K-1 2>&1)
 check "DS-145 a requeue clears a pending resume" '[ "$(field K-1 resume)" = null ] && [ "$(field K-1 resume_why)" = null ] && [ "$(field K-1 session_id)" = null ]'
 check "DS-145 the config template has the row, recommended 2" 'grep -qE "^\| Resume a killed worker \(times\) \| \`2\` \| \`TODO\`" "$SRC/desk-config.md"'
 
+# ---- DS-185 AC6: a pass records its next planned pass in its heartbeat, and queue.mjs next-pass sets it later
+# The heartbeat's next pass, in whole seconds after its last pass, or "none".
+nextin(){ node -e 'const fs = require("fs"), p = require("path"); const d = process.argv[1];
+  const h = fs.readdirSync(d).map((x) => JSON.parse(fs.readFileSync(p.join(d, x), "utf8"))).find((x) => x.queue === process.argv[2]);
+  console.log(h?.next ? Math.round((Date.parse(h.next) - Date.parse(h.at)) / 1000) : "none")' "$DESK_AUTOPILOT_STATE/orchestrators" "$DESK_QUEUE"; }
+out=$(node "$B/pass.mjs" --next +600 2>&1)
+check "DS-185 AC6 pass.mjs --next +600 records a next pass 600s after this one" '[ "$(nextin)" = 600 ]'
+out=$(node "$B/queue.mjs" next-pass +1200 2>&1); rc=$?
+check "DS-185 AC6 queue.mjs next-pass records the next pass the orchestrator scheduled" '[ $rc -eq 0 ] && [ "$(nextin)" -ge 1199 ] && [ "$(nextin)" -le 1260 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-185 AC6 a pass with no --next records none" '[ "$(nextin)" = none ]'
+out=$(node "$B/pass.mjs" --next soon 2>&1); rc=$?
+check "DS-185 AC6 a --next that is not a time is refused" '[ $rc -ne 0 ] && grep -q "\-\-next wants +<seconds> or an ISO time" <<< "$out"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

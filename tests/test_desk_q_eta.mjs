@@ -138,7 +138,7 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
 // (default `at`, so it is live then); null means no pass yet.
-function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at }) {
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
@@ -151,7 +151,8 @@ function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, histor
   for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size, ...(epics[k] ? { epic: epics[k] } : {}) }));
   if (pass != null) {
     mkdirSync(join(state, 'orchestrators'), { recursive: true });
-    writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: name, pid: 1, at: new Date(pass).toISOString() }));
+    writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: name, pid: 1, at: new Date(pass).toISOString(),
+      ...(next == null ? {} : { next: new Date(next).toISOString() }) }));
   }
   writeFileSync(join(state, 'eta-history.jsonl'), history.map(([size, hours], i) => {
     const merged = at - (i + 1) * HOUR;
@@ -213,8 +214,8 @@ t('DS-161 AC3: of two colliding tickets, the later starts no earlier than the ea
 // ---- forecast AC4: running and ready-now on the repo screen
 const alphaRows = Q.repoScreen(alpha, { now: FIXED }).split('\n');
 const rowFor = (rows, key) => rows.find((l) => new RegExp(`^\\s+\\*?\\d+\\s+${key}\\s`).test(l)) ?? '';
-t('DS-161 AC4: a running ticket starts "running"', /A-1\s+running\s+stage 6\/9\s+running\s+\S/.test(rowFor(alphaRows, 'A-1')), true);
-t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+ready\s+now\s+\S/.test(rowFor(alphaRows, 'A-2')), true);
+t('DS-161 AC4: a running ticket starts "running"', /A-1\s+running\s+stage 6\/9 as of \d\d:\d\d\s+running\s+\S/.test(rowFor(alphaRows, 'A-1')), true);
+t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+ready\s+starts at the next pass\s+now\s+\S/.test(rowFor(alphaRows, 'A-2')), true);
 
 // ---- forecast AC5 and AC6: no date while it waits on the user, or is stuck
 t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
@@ -329,11 +330,46 @@ t('DS-162 AC3: and so does --plain', Q.run(['ships', 'hits', '--plain'], { now: 
 repo('quiet', 3800, { tickets: { 'Q-1': { state: 'triaged' } }, sizes: { 'Q-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 20 * MIN });
 const quiet = repoAt('quiet');
 const PAUSED = 'Dates paused: no pass for 20m. The forecast assumes passes keep running, so dates show again at the next pass.';
-t('DS-162 AC4: ships says the dates are paused, and shows none', Q.run(['ships', 'quiet', '--plain'], { now: FIXED }), `quiet · ${PAUSED}`);
-t('DS-162 AC4: the queue screen marks STARTS and SHIPS paused', /\sQ-1\s+ready\s+paused\s+paused\s/.test(Q.repoScreen(quiet, { now: FIXED })), true);
+const STOPPED = ['quiet · passes stopped: last pass 18:31 (20m ago)',
+  'Running workers carry on, but nothing new starts and stages are not updated. To resume passes, run /desk-autopilot in quiet and ask it to pick the batch back up.'];
+t('DS-162 AC4 (DS-185 AC7): ships gives no dates, says passes stopped and how to resume them', Q.run(['ships', 'quiet', '--plain'], { now: FIXED }).split('\n').slice(0, 2), STOPPED);
+t('DS-162 AC4 (DS-185 AC3): the queue screen dates nothing, and no cell reads paused', /\sQ-1\s+ready\s+starts when passes resume\s+—\s+—\s/.test(Q.repoScreen(quiet, { now: FIXED })), true);
 t('DS-162 AC4: the ticket screen says so in place of its dates', Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n').includes(`Ships: ${PAUSED}`), true);
 t('DS-162 AC4: the overview\'s QUEUE DONE reads paused', /\spaused\s/.test(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? ''), true);
 t('DS-162 AC4: and a paused forecast saves no estimate', readEstimates(stateOf('quiet')).size, 0);
+
+// ---- DS-185: a batch between passes more than 15 minutes apart is live until its next pass is overdue
+const between = { tickets: { 'B-1': { state: 'running', stage: '3/9' }, 'B-2': { state: 'running', stage: '0/9' }, 'B-3': { state: 'triaged' }, 'B-4': { state: 'triaged' } },
+  sizes: { 'B-1': 'M', 'B-2': 'M', 'B-3': 'M', 'B-4': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) };
+repo('waiting', 4600, { ...between, pass: FIXED - 22 * MIN, next: FIXED + 5 * MIN });
+repo('gone', 4610, { ...between, pass: FIXED - 22 * MIN });
+repo('overdue', 4620, { ...between, pass: FIXED - 40 * MIN, next: FIXED - 15 * MIN });
+const bRow = (out, key) => out.split('\n').find((l) => new RegExp(`\\s${key}\\s`).test(l)) ?? '';
+const waiting = Q.repoScreen(repoAt('waiting'), { now: FIXED, width: 200 });
+t('DS-185 AC1: a recorded next pass in the future keeps a batch live 22m after its last pass', repoAt('waiting').live, true);
+t('DS-185 AC1: its rows are dated, the running one reads running, and no cell reads paused',
+  [/\sB-1\s+running\s+.*\srunning\s+\S/.test(bRow(waiting, 'B-1')), /\spaused\s/.test(waiting), /\sB-3\s+ready\s+.*\s(now|\S+ \d\d:\d\d|\d\d:\d\d)\s/.test(bRow(waiting, 'B-3'))], [true, false, true]);
+t('DS-185 AC2: the header gives the next pass\'s time', waiting.split('\n')[0], 'waiting · batch waiting · orchestrator live, last pass 22m ago · next pass 18:56');
+const gone = Q.repoScreen(repoAt('gone'), { now: FIXED, width: 200 });
+const overdue = Q.repoScreen(repoAt('overdue'), { now: FIXED, width: 200 });
+t('DS-185 AC3: with no next pass recorded, 22m without a pass is stopped', repoAt('gone').live, false);
+t('DS-185 AC3: and with its next pass more than the grace period overdue', repoAt('overdue').live, false);
+t('DS-185 AC3: no STARTS or SHIPS cell reads paused, and running rows start "running"',
+  [gone, overdue].map((s) => [/paused/.test(s), /\sB-1\s+running\s+stage 3\/9 as of \d\d:\d\d\s+running\s+—\s/.test(bRow(s, 'B-1'))]), [[false, true], [false, true]]);
+t('DS-185 AC3: the header says passes stopped, when, what carries on, and how to resume', gone.split('\n').slice(0, 2),
+  ['gone · batch gone · passes stopped: last pass 18:29 (22m ago)',
+    'Running workers carry on, but nothing new starts and stages are not updated. To resume passes, run /desk-autopilot in gone and ask it to pick the batch back up.']);
+t('DS-185 AC3: an overdue next pass is named', overdue.split('\n')[0], 'overdue · batch overdue · passes stopped: last pass 18:11 (40m ago), next was due 18:36');
+t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+running\s+stage 0\/9 as of 18:29\s/.test(bRow(waiting, 'B-2')), true);
+t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
+repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
+t('DS-185 AC5: with a free slot, a ready row starts at the next pass', /\sB-3\s+ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('roomy'), { now: FIXED, width: 200 }), 'B-3')), true);
+const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
+const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
+t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);
+t('DS-185 AC7: and prints the next pass, or that passes stopped and how to resume',
+  [shipsW.split('\n').includes('orchestrator live, last pass 22m ago · next pass 18:56'), shipsG.split('\n').slice(0, 2).join('\n') === gone.split('\n').slice(0, 2).join('\n').replace('gone · batch gone · ', 'gone · ')], [true, true]);
+t('DS-185 AC7: a stopped batch\'s running row still reads running in ships', /^ {2}B-1\s+running\s+running\s+—$/m.test(shipsG), true);
 
 // ---- AC5: under 10 merged estimates, no percentage
 repo('few', 3900, { tickets: { 'F-1': { state: 'triaged' } }, sizes: { 'F-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) });

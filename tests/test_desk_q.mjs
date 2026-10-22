@@ -109,7 +109,7 @@ const pre = W.run('--plain', 'vo');
 t('AC8 a prefix resolves', pre.code === 0 && pre.out === repo.out, true);
 const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
-t('AC8 state, detail and triage title', /running\s+stage 4\/9\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
+t('AC8 state, detail and triage title', /running\s+stage 4\/9 as of \d\d:\d\d\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
 t('AC8 done count', /3 done, not shown/.test(pre.out), true);
 // ---- AC9: an ambiguous prefix refuses, naming both, with no table
 const amb = W.run('--plain', 'pr');
@@ -520,9 +520,10 @@ t('DS-167 AC3 a tag on one title alone stays', Q.titler(['desk-q: a'])('desk-q: 
 t('DS-167 AC4 the ticket screen shows the full title with its tag', lines(Q.ticketScreen(repoOf('skills8'), 'A-1', { width: 160 }))[2], 'autopilot: one');
 
 const head8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /^ +# /.test(l));
-t('DS-167 AC7 the DETAIL column is 26 columns wide', head8.indexOf('STARTS') - head8.indexOf('DETAIL'), 26);
+// Wide enough for "waits for a worker (2 of 2 busy)".
+t('DS-167 AC7 the DETAIL column is 36 columns wide', head8.indexOf('STARTS') - head8.indexOf('DETAIL'), 36);
 const a8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /A-8 /.test(l));
-t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('DETAIL'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 23)}…  `);
+t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('DETAIL'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 33)}…  `);
 t('DS-167 AC7 the ticket screen still shows the detail in full', lines(Q.ticketScreen(repoOf('skills8'), 'A-8', { width: 160 })).includes(`Parked: ${LONG_Q}`), true);
 
 // A dated repo whose W-1 title is longer than any row has room for, and W-2's is short.

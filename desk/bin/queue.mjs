@@ -13,7 +13,7 @@ import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, re
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { LIVE_MS } from './borrow.mjs';
+import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
 
@@ -528,6 +528,19 @@ switch (cmd) {
     break;
   }
 
+  // The orchestrator, once it has scheduled its next pass: the last pass's heartbeat records when, so
+  // desk-q counts the batch live through a wait longer than LIVE_MS. Same as pass.mjs --next.
+  case 'next-pass': {
+    const at = parseNext(args[0]);
+    if (at == null) throw new Error('usage: queue.mjs next-pass <+seconds | ISO time>');
+    const file = beatFile(stateDir(), QUEUE);
+    if (!existsSync(file)) throw new Error('no pass has run on this queue yet: run pass.mjs --next instead');
+    const hb = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...hb, next: new Date(at).toISOString() }));
+    console.log(`next pass ${new Date(at).toISOString()}`);
+    break;
+  }
+
   case 'drop': {
     const key = args[0];
     ticket(q, key);
@@ -569,7 +582,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|get|list|render|watch [--interval s]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

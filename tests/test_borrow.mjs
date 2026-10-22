@@ -107,6 +107,14 @@ p = plan('acme__a', { share: 2, running: 2, wanted: 3, cap: 10 }, { machine: B.m
 t('AC6 the quiet batch\'s 2 count as running and it has no claim: 6 less 4 is 2 to borrow', p.slots, 2);
 const q6 = B.otherBatches({ self: queuePath('acme__a'), now: NOW }).find((o) => o.slug === 'acme__quiet');
 t('AC6 a heartbeat 16 minutes old is not live', q6.live, false);
+// DS-185: a recorded next pass keeps a batch live through a long wait, until it is PASS_GRACE_MS overdue.
+const beat = (ago, next) => ({ at: NOW - ago * 60000, next: next == null ? null : NOW + next * 60000 });
+t('DS-185 a 22-minute-old pass whose next is in 5 minutes is live', B.liveBeat(beat(22, 5), NOW), true);
+t('DS-185 nor is it stopped 9 minutes after that next pass was due', B.liveBeat(beat(22, -9), NOW), true);
+t('DS-185 but 11 minutes after it, it is', B.liveBeat(beat(22, -11), NOW), false);
+t('DS-185 with no next recorded, 15 minutes is still the line', [B.liveBeat(beat(14), NOW), B.liveBeat(beat(16), NOW)].join(), 'true,false');
+t('DS-185 --next reads +seconds and ISO times, and nothing else', [B.parseNext('+600', NOW) - NOW, B.parseNext('2026-10-22T14:56:00Z'), B.parseNext('soon')].join(),
+  `600000,${Date.parse('2026-10-22T14:56:00Z')},`);
 
 // AC7: another repo's queue that cannot be parsed.
 fresh();

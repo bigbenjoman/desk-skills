@@ -16,7 +16,8 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
 
-// A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it.
+// A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
+// desk-q through liveBeat, which also counts a recorded next pass still to come.
 export const LIVE_MS = 15 * 60 * 1000;
 
 // Config §3b "Borrow idle workers": `on` or `off`, unset meaning off. Anything else is said and read
@@ -34,20 +35,43 @@ export function machineCap(value = E.machineValue('autopilot-concurrency')) {
   return value ? E.concurrencyLimits(value).cap : null;
 }
 
+// How long past its recorded next pass a batch still counts as live: a wake-up runs late, and a pass
+// takes time to write its heartbeat.
+export const PASS_GRACE_MS = 10 * 60 * 1000;
+
+// The heartbeat file pass.mjs writes for one queue file.
+export const beatFile = (stateDir, queuePath) => join(stateDir, 'orchestrators', `${queuePath.replace(/[^A-Za-z0-9]/g, '-')}.json`);
+
+// A next-pass time as given on a command line: `+<seconds>` or `<seconds>` from now, or an ISO time.
+//   -> epoch ms, or null for anything else
+export function parseNext(word, now = Date.now()) {
+  const s = String(word ?? '').trim();
+  if (/^\+?\d+$/.test(s)) return now + Number(s.replace('+', '')) * 1000;
+  const t = /^\d{4}-\d\d-\d\dT/.test(s) ? Date.parse(s) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
 // The newest pass on `queuePath`: pass.mjs writes one heartbeat per queue file into the state
-// directory, so only that queue's count. -> epoch ms, or null
-export function lastPass(stateDir, queuePath) {
+// directory, so only that queue's count. `next` is the pass it planned after, where one was recorded.
+//   -> { at, next } in epoch ms (next null when none), or null with no heartbeat
+export function lastBeat(stateDir, queuePath) {
   const dir = join(stateDir, 'orchestrators');
   let last = null;
   for (const f of existsSync(dir) ? readdirSync(dir) : []) {
     try {
       const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
       const at = Date.parse(hb.at);
-      if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last)) last = at;
+      const next = hb.next == null ? NaN : Date.parse(hb.next);
+      if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last.at)) last = { at, next: Number.isFinite(next) ? next : null };
     } catch { /* a torn heartbeat is no heartbeat */ }
   }
   return last;
 }
+
+// A batch is live while its last pass is fresher than LIVE_MS, or while the next pass it recorded is
+// not yet PASS_GRACE_MS overdue: an orchestrator waiting longer than LIVE_MS between passes has not gone.
+export const liveBeat = (beat, now = Date.now()) => beat != null
+  && (now - beat.at < LIVE_MS || (beat.next != null && now < beat.next + PASS_GRACE_MS));
 
 // Every other repo's queue under $DESK_HOME/repos, read and never written, in slug order: each is
 // { slug, path, q } or { slug, path, error } for one that cannot be read or is not a queue.
@@ -104,7 +128,7 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
   return queues.map(({ slug, path, q, error }) => {
     if (error) return { slug, error };
     const tickets = Object.values(q.tickets ?? {});
-    const last = lastPass(join(stateRoot, slug), path);
+    const last = lastBeat(join(stateRoot, slug), path)?.at ?? null;
     return {
       slug,
       live: last != null && now - last < LIVE_MS,
