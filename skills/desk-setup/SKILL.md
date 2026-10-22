@@ -713,9 +713,11 @@ evidence; everything-claude-code is always `off`; codex (desk-review's refutatio
 suggested off.
 
 1. Show each row as `keep`/`off`/`unjudged`, its skill count and the evidence in one line, then
-   **one** `AskUserQuestion` (multiSelect): "Switch these plugins off in this repo?", every suggested
-   `off` pre-listed first and marked (Recommended), then the `unjudged` ones unmarked, the evidence
-   as each description. The suggestion is a
+   **one** `AskUserQuestion` call: "Switch these plugins off in this repo?", multiSelect, the
+   evidence as each option's description. A question holds at most four options, so split the rows
+   over up to four questions in that call: every suggested `off` first, marked (Recommended), then
+   the `unjudged` ones unmarked. Any rows still left over are named in the last question's text, for
+   the user to give in its free-text answer. The suggestion is a
    starting point: the user knows what the repo touches outside its files (a Stripe dashboard, a
    contract they review here).
 2. Apply what they pick, and only that, to this repo:
