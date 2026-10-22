@@ -30,9 +30,10 @@ and token. Outside a git repo `desk-env where` exits 3: stop and ask which repo 
 conversation, for this repo. Nothing is assumed, inherited, or inferred from a default or from
 another repo.**
 
-Each §3 row carries a **Recommended** value: a proven starting point. Undrafting and merging are
-recommended at `ask`, so a person is involved before the default branch. Setup offers it as the
-first option, and the user still answers every row. A row the user has not answered is a `no`.
+Each §3 row carries a **Recommended** value: a proven starting point. Undrafting, merging on green
+and cleanup are recommended at `yes`, because the clean review at head and the required checks are
+the gate and an unattended batch cannot ask; on a repo with no branch protection, merging stays at
+`ask`. Setup offers it as the first option, and the user still answers every row. A row the user has not answered is a `no`.
 
 ## Never do these
 
@@ -66,7 +67,7 @@ first option, and the user still answers every row. A row the user has not answe
 | `/desk-setup permissions` | reads this repo's config, then straight to the interview |
 | `/desk-setup plugins` | reads this repo's config, then only §4b (which plugins this repo needs); changes nothing else. `/desk-update` offers it too |
 | `/desk-setup from <owner__name>` | as `/desk-setup`, starting from that repo's §1, §3 and §3b answers |
-| `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`; changes nothing |
+| `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`, then `desk-env drift --all` (each repo's drift by slug); changes nothing |
 | config already exists | re-run: current values are the starting point; ask what to change |
 
 ## 0. Which repo, and where to start from
@@ -528,7 +529,9 @@ it unlocks and what it exposes, the alternatives, and the harness rules it maps 
 - **First option = the Recommended value, labelled `(Recommended)`.** If the start-point repo
   answered differently, say so in the question ("in voicepa you chose `yes`") and keep both as
   options; the user picks. Its description says what it unlocks *and* what it exposes, **in this
-  repo** (an unprotected repo makes `pr-merge-green` riskier; say so).
+  repo**. Where §4 Branch protection is `none`, `pr-merge-green` and `autopilot-merge` are
+  Recommended at `ask`, not `yes`, and that option's description says the repo is unprotected:
+  nothing on GitHub stops a red merge, so the agent's own check is the only one.
 - After each round, echo the four answers in one line before the next round.
 
 **Before the autopilot round, say this plainly:** autopilot runs detached `claude -p` workers, one
@@ -775,8 +778,14 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 ## Re-running and revoking
 
 - **Read this repo's config first**; show current values as the starting point.
-- Ask what they want to change instead of re-interviewing. Diff the row keys and names of the
-  template against the file: rows the template has that the file lacks are asked; nothing else is.
+- **Then run `desk-env drift` and show its report before asking anything.** It names each row the
+  template has that the file lacks (`MISSING`, with its section), each `ask` row an unattended batch
+  can only park on while `autopilot-workers` is `yes` (`STALLS`), and a settings file that starts
+  sessions in `dontAsk` (`DONTASK`). Exit 0 prints `no drift`. It changes nothing: the report is
+  what the user decides from.
+- Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
+  `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
+  asked unless the user names it.
 - Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.

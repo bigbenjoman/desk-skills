@@ -44,6 +44,9 @@
 //                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
+//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
+//                                             an unattended batch parks on (STALLS), a dontAsk settings file
+//                                             (DONTASK); "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose [--runner]  print the sizes the rules propose, with the arithmetic;
 //                                             the runner is off by default; --runner sizes it on
@@ -895,6 +898,80 @@ export function defaultModeIn(root, home = HOME) {
 
 export const sessionDefaultMode = () => defaultModeIn(git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null);
 
+// ---- config drift --------------------------------------------------------------------------
+// What a repo's config has fallen behind on: rows the template has that the file lacks, rows set to
+// `ask` that a batch with nobody watching can only park on, and a settings file that starts sessions
+// in dontAsk. /desk-setup shows it on a re-run; `desk-env drift --all` checks every repo.
+// The checkout's own template wins, so a run from the checkout reads the template it ships with.
+export function templatePath() {
+  if (process.env.DESK_CONFIG_TEMPLATE) return expandHome(process.env.DESK_CONFIG_TEMPLATE);
+  const sibling = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'desk-config.md');
+  return existsSync(sibling) ? sibling : join(skillsDir(), 'desk-setup', 'references', 'desk-config.template.md');
+}
+
+// Every config row a file declares, in order: the tables whose first column is Key, Field or Role.
+// The rule ledger (§3c) and the review asks (§4) hold the user's own rows, so they are not compared.
+export function declaredRows(path) {
+  const rows = [];
+  let section = null;
+  let header = null;
+  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+    const line = raw.trim();
+    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
+    if (h) { section = h[1].toLowerCase(); header = null; continue; }
+    if (/^#/.test(line) || !section) continue;
+    if (!line.startsWith('|')) { header = null; continue; }
+    const cells = splitRow(line);
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue;
+    if (!header) { header = cells.map(norm); continue; }
+    if (!['key', 'field', 'role'].includes(header[0])) continue;
+    const label = (cells[0] ?? '').replace(/`/g, '').trim();
+    if (label) rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
+  }
+  return rows;
+}
+
+// `ask` on these rows is a park in an unattended batch: there is nobody to ask.
+export const STALLING_ROWS = Object.freeze({
+  'git-push': 'every worker parks before it pushes',
+  'pr-open': 'every worker parks before it opens its PR',
+  'pr-self-review-comment': 'every worker parks before it posts its review',
+  'pr-ready': 'worker PRs stay drafts, so nothing merges without you',
+  'pr-merge-green': 'green PRs wait for you to merge them',
+  'autopilot-merge': 'the merge driver does not merge green PRs, so they wait for you',
+});
+// Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
+const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
+
+// -> { missing: [{section, label}], stalls: [{key, reason}], dontAsk: file | null }
+export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
+  if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
+  const have = new Set(declaredRows(config).map((r) => `${r.section}\t${r.id}`));
+  const missing = declaredRows(template).filter((r) => !have.has(`${r.section}\t${r.id}`))
+    .map(({ section, byKey, label }) => ({ section, label: byKey ? label : `"${label}"` }));
+  const parsed = parseConfigFile(config);
+  const perm = (key) => parsed.sections['3']?.byKey[key]?.value?.trim().toLowerCase() ?? '';
+  const stalls = [];
+  if (/^yes\b/.test(perm('autopilot-workers'))) {
+    const unprotected = isNone(configValueIn(parsed, 'branch-protection') ?? '');
+    for (const [key, reason] of Object.entries(STALLING_ROWS)) {
+      if (unprotected && MERGE_ROWS.has(key)) continue;
+      if (/^ask\b/.test(perm(key))) stalls.push({ key, reason });
+    }
+  }
+  const { mode, file } = defaultModeIn(root, home);
+  return { missing, stalls, dontAsk: mode === 'dontAsk' ? file : null };
+}
+
+export function driftLines({ missing, stalls, dontAsk }) {
+  const lines = [
+    ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
+    ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
+    ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
+  ];
+  return lines.length ? lines : ['no drift'];
+}
+
 // ---- CLI -----------------------------------------------------------------------------------
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
@@ -1077,6 +1154,28 @@ if (isMain) {
         if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
         break;
       }
+      case 'drift': {
+        // One repo's config (the cwd's), or with --all every config under ~/.config/desk/repos/.
+        const repos = args.includes('--all')
+          ? (() => { try { return readdirSync(join(deskConfigRoot(), 'repos')).sort(); } catch { return []; } })()
+            .map((slug) => ({ slug, config: join(deskConfigRoot(), 'repos', slug, 'config.md') }))
+            .filter((r) => existsSync(r.config))
+          : [{ slug: null, config: configPathOrNull() }];
+        if (!repos.length) { console.log(`no repo configs under ${join(deskConfigRoot(), 'repos')}`); break; }
+        let drift = false;
+        for (const { slug, config } of repos) {
+          if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
+          // A repo's settings live in its main checkout (§2 Primary repo root); this repo's, failing that, in the cwd's.
+          const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
+          const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
+          const lines = driftLines(configDrift({ config, root }));
+          if (lines[0] !== 'no drift') drift = true;
+          if (slug) console.log(`== ${slug}`);
+          for (const l of lines) console.log(slug ? `  ${l}` : l);
+        }
+        process.exitCode = drift ? 1 : 0;
+        break;
+      }
       case 'port-in-use':
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
@@ -1145,7 +1244,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|machine');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|machine');
         process.exit(2);
     }
   } catch (e) {
