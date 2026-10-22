@@ -36,8 +36,8 @@
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
-# files touch none of the paths the row gives for it, each is still red after the driver's two reruns
-# at this head, and the rest of the gate passes. It is logged `WAIVED <check>`, confirmed across two
+# files touch none of the paths the row gives for it, each is still red after two reruns the driver
+# had accepted at this head (the last given its cooldown to report), and the rest of the gate passes. It is logged `WAIVED <check>`, confirmed across two
 # loops like a green head, and once merged a ticket naming the check, the PR, the head SHA and the
 # failing run is filed with `desk-jira create` where §3 jira-create is yes (otherwise the log names
 # its body file). A row that does not parse stops the driver at start.
@@ -301,8 +301,13 @@ behind(){ # behind <n> <sha> <key>
   fi
 }
 
+# Reruns per check per head: at most RERUNS_MAX tried, RERUN_COOLDOWN seconds apart. reruns-<n>-<sha>
+# lists every check a rerun was tried for, reruns-ok-<n>-<sha> only those GitHub accepted.
+RERUNS_MAX=2; RERUN_COOLDOWN=720
+reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
+
 rerun(){ # rerun <n> <sha> <gate json>
-  local g="$3" pend ids names rid name cnt cd_file now last
+  local g="$3" pend ids names rid name cnt cd_file now last accepted=""
   [ "$RERUN_PERM" = yes ] || { log "#$1 red at ${2:0:9} — config §3 ci-rerun is $RERUN_PERM, so not rerunning; report it"; return; }
   pend=$(printf '%s' "$g" | jq -r '.gate.pending | length')
   [ "$pend" = 0 ] || { log "#$1 red, but $pend check(s) still running — waiting for them before any rerun"; return; }
@@ -312,26 +317,28 @@ rerun(){ # rerun <n> <sha> <gate json>
   # At most twice per check per head: a check red after two reruns is red, not flaky.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    cnt=$(grep -cxF "$name" "$SD/reruns-$1-$2" 2>/dev/null || true)
-    if [ "${cnt:-0}" -ge 2 ]; then log "#$1 \"$name\" still red after 2 reruns at ${2:0:9} — not rerunning again; report it"; return; fi
+    cnt=$(reruns_at "$1" "$2" "$name")
+    if [ "${cnt:-0}" -ge "$RERUNS_MAX" ]; then log "#$1 \"$name\" still red after $RERUNS_MAX reruns at ${2:0:9} — not rerunning again; report it"; return; fi
   done <<EOF_NAMES
 $names
 EOF_NAMES
   cd_file="$SD/cooldown-$1"; now=$(date +%s); last=$(cat "$cd_file" 2>/dev/null || echo 0)
-  if [ $((now - last)) -lt 720 ]; then log "#$1 red, cooling down ($(( (720 - (now - last)) / 60 ))m left)"; return; fi
+  if [ $((now - last)) -lt "$RERUN_COOLDOWN" ]; then log "#$1 red, cooling down ($(( (RERUN_COOLDOWN - (now - last)) / 60 ))m left)"; return; fi
   for rid in $ids; do
     log "#$1 red + completed -> rerun --failed on run $rid"
-    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then echo "$now" > "$cd_file"
+    if gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1; then echo "$now" > "$cd_file"; accepted=1
     else log "#$1 rerun of $rid refused"; fi
   done
   printf '%s\n' "$names" >> "$SD/reruns-$1-$2"
+  [ -n "$accepted" ] && printf '%s\n' "$names" >> "$SD/reruns-ok-$1-$2"
 }
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
-# with WAIVED set to its check names, one per line. Otherwise says why, once per loop, and returns 1.
+# with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
+# Only reruns GitHub accepted count, and the last must have had its cooldown to report.
 WAIVED=""
 waivable(){
-  local w reason checks name cnt short
+  local w reason checks name cnt short last
   WAIVED=""
   w=$(printf '%s' "$3" | jq -c '.waiver // empty'); [ -n "$w" ] || return 1
   reason=$(printf '%s' "$w" | jq -r '.reason // ""')
@@ -352,20 +359,22 @@ waivable(){
   [ "$RERUN_PERM" = yes ] || { log "#$1 $short is a known flaky check, but it is waived only after the driver's two reruns and §3 ci-rerun is $RERUN_PERM — report it"; return 1; }
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    cnt=$(grep -cxF "$name" "$SD/reruns-$1-$2" 2>/dev/null || true)
-    if [ "${cnt:-0}" -lt 2 ]; then log "#$1 \"$name\" is a known flaky check: waived only once still red after 2 reruns at ${2:0:9} (${cnt:-0} so far)"; return 1; fi
+    cnt=$(reruns_at "$1" "$2" "$name" ok)
+    if [ "${cnt:-0}" -lt "$RERUNS_MAX" ]; then log "#$1 \"$name\" is a known flaky check: waived only once still red after $RERUNS_MAX accepted reruns at ${2:0:9} (${cnt:-0} so far)"; return 1; fi
   done <<EOF_WAIVE
 $checks
 EOF_WAIVE
-  WAIVED="$checks"
+  last=$(cat "$SD/cooldown-$1" 2>/dev/null || echo 0)
+  if [ $(( $(date +%s) - last )) -lt "$RERUN_COOLDOWN" ]; then log "#$1 $short is a known flaky check: waiting out the last rerun's cooldown before reading it as still red"; return 1; fi
+  WAIVED="$short"
 }
 
-# flaky_ticket <n> <sha> <gate json> <key>: once a waived PR has merged, the ticket that gets the flake
-# fixed. Filed once per PR and head; the body stays in <state>/merge-driver for whoever files it by hand.
+# flaky_ticket <n> <sha> <gate json> <key> <waived checks>: once a waived PR has merged, the ticket that
+# gets the flake fixed. Filed once per PR and head; the body stays in <state>/merge-driver for whoever
+# files it by hand.
 flaky_ticket(){
-  local body="$SD/flaky-$1-$2.md" summary out size=() sizeline=""
+  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline=""
   [ -f "$SD/flaky-filed-$1-$2" ] && return 0
-  summary="Flaky check $(printf '%s' "$3" | jq -r '[.waiver.checks[] | "\"\(.)\""] | join(", ")') waived to merge PR #$1"
   # desk-jira's lint wants a size: the §4 Size field where there is one, else the body's first line.
   if [ -n "$SIZE_FIELD" ] && [ "$SIZE_FIELD" != none ]; then size=("$SIZE_FIELD=S"); else sizeline="Size: S"; fi
   printf '%s' "$3" | jq -r --arg repo "$REPO" --arg n "$1" --arg sha "$2" --arg key "$4" --arg size "$sizeline" '
@@ -440,7 +449,7 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
     pass) ;;
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
-      if waivable "$n" "$sha" "$g" "$key"; then waived=$(printf '%s' "$WAIVED" | awk 'NF { printf "%s\"%s\"", (n++ ? ", " : ""), $0 }')
+      if waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
       else rerun "$n" "$sha" "$g"; return 1; fi ;;
     *) log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
@@ -456,7 +465,7 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
-    [ -n "$waived" ] && flaky_ticket "$n" "$sha" "$g" "$key"
+    [ -n "$waived" ] && flaky_ticket "$n" "$sha" "$g" "$key" "$waived"
     # The merge time on the ticket, and its line in the eta history. A failure here never undoes the merge.
     if rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
