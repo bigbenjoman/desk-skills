@@ -5,52 +5,57 @@
 // subscription), and input counts cache reads and writes as well as fresh input.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { ECHO_STAGE, markersIn } from './harvest.mjs';
+import { markersIn, saidIn } from './harvest.mjs';
 
 export const START_UP = 'start-up';
 
-// One log's tokens per stage, from the usage each assistant event carries, or null when no event
-// has any. claude -p writes one assistant event per content block, each repeating its message's
-// usage, so a message counts once (its highest output, since output grows across the blocks) and
-// goes to the stage it was in when it ended: a message that prints a stage marker opens that stage.
-// Subagents' messages count in the stage that called them. `first` is the first model call's input
-// (fresh, cache writes and cache reads), the prompt the worker starts on.
+// Adds one stage's tokens into a Map of stages by name, keeping the order they were first reached.
+const addStage = (stages, name, input, output) => {
+  const s = stages.get(name) ?? { name, input: 0, output: 0 };
+  s.input += input;
+  s.output += output;
+  stages.set(name, s);
+};
+
+// One log's tokens per stage, or null when no assistant event carries usage. claude -p writes one
+// assistant event per content block, each repeating its message's usage, so a message counts once,
+// in the stage it was in when it ended: a message that prints a stage marker opens that stage. The
+// usage on those events has the full input but only an early snapshot of the output; the final
+// output is on the message's message_delta stream event (workers run with partial messages on), and
+// the snapshot stands in only where there is none, as for subagents' messages, which count in the
+// stage that called them. `first` is the first model call's input (fresh, cache writes and cache
+// reads), the prompt the worker starts on.
 export function stageUsage(logText) {
+  const n = (v) => Number(v) || 0;
   const msgs = new Map();
+  const finalOut = new Map();
   let stage = START_UP;
   for (const line of logText.split('\n')) {
     let d;
     try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type === 'stream_event' && d.event?.type === 'message_delta' && d.api_message_id && d.event.usage) {
+      finalOut.set(d.api_message_id, n(d.event.usage.output_tokens));
+      continue;
+    }
     if (d?.type !== 'assistant') continue;
-    const content = d.message?.content ?? [];
-    for (const c of content) {
-      const echoed = c.type === 'tool_use' && c.name === 'Bash' && typeof c.input?.command === 'string'
-        && c.input.command.match(ECHO_STAGE);
-      if (echoed) stage = echoed[2].trim().replace(/\s+/g, ' ');
-      if (c.type === 'text' && typeof c.text === 'string') {
-        for (const [k, v] of markersIn([c.text])) if (k === 'AUTOPILOT_STAGE' && v.trim()) stage = v.trim().replace(/\s+/g, ' ');
-      }
+    for (const c of d.message?.content ?? []) {
+      const said = saidIn(c);
+      if (said == null) continue;
+      for (const [k, v] of markersIn([said])) if (k === 'AUTOPILOT_STAGE' && v.trim()) stage = v.trim().replace(/\s+/g, ' ');
     }
     const u = d.message?.usage;
     if (!u) continue;
-    const n = (v) => Number(v) || 0;
     const id = d.message?.id ?? `line-${msgs.size}`;
-    const prev = msgs.get(id);
     msgs.set(id, {
       stage,
       input: n(u.input_tokens) + n(u.cache_creation_input_tokens) + n(u.cache_read_input_tokens),
-      output: Math.max(prev?.output ?? 0, n(u.output_tokens)),
+      output: Math.max(msgs.get(id)?.output ?? 0, n(u.output_tokens)),
       main: !d.parent_tool_use_id,
     });
   }
   if (!msgs.size) return null;
   const stages = new Map();
-  for (const m of msgs.values()) {
-    const s = stages.get(m.stage) ?? { name: m.stage, input: 0, output: 0 };
-    s.input += m.input;
-    s.output += m.output;
-    stages.set(m.stage, s);
-  }
+  for (const [id, m] of msgs) addStage(stages, m.stage, m.input, finalOut.get(id) ?? m.output);
   const first = [...msgs.values()].find((m) => m.main) ?? msgs.values().next().value;
   return { first: first.input, stages: [...stages.values()] };
 }
@@ -114,12 +119,7 @@ export function ticketCost(stateDir, ticket) {
     if (!s) stagesKnown = false;
     else {
       first += s.first;
-      for (const st of s.stages) {
-        const into = stages.get(st.name) ?? { name: st.name, input: 0, output: 0 };
-        into.input += st.input;
-        into.output += st.output;
-        stages.set(st.name, into);
-      }
+      for (const st of s.stages) addStage(stages, st.name, st.input, st.output);
     }
     const u = logUsage(text);
     if (!u) { unknown += 1; continue; }
