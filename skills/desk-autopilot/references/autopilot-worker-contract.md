@@ -522,8 +522,9 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **Local services**: only where §3 `worker-local-services` is `yes`, and only
   `docker compose -f <main checkout>/<its compose file> [-f <its override file>] up -d --no-recreate
   --no-deps <service>` for a service §4 Local services names: the shared project, never one named
-  after your worktree. Nothing is allowed where the main checkout's `.env` sets `COMPOSE_FILE`.
-  `docker compose down`, `rm`, `run` and every other docker form are refused.
+  after your worktree (`docker-compose` takes the same form). Nothing is allowed where the main
+  checkout's `.env` sets `COMPOSE_FILE`. `docker compose down`, `rm`, `run`, `docker rm` and
+  `docker run` are refused.
 - **`git reset`**: `--soft`, `--mixed` and on paths are allowed in your worktree; `--hard` and
   `--merge` are refused (`git restore` and `git checkout -- <path>` undo a file).
 - **`git push`: only these exact commands** for your own recorded branch: `git push origin <branch>`,
