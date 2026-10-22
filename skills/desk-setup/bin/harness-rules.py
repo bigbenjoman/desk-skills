@@ -17,9 +17,13 @@
   harness-rules.py list [--markdown]        the ledger (--markdown: rows for config §3c)
   harness-rules.py unset-default-mode       drop permissions.defaultMode from --settings when it is
                                             dontAsk (backed up first); the ledger is not touched
+  harness-rules.py automode <plan.json>     write this repo's auto-mode classifier entries to
+                                            --user-settings (autoMode.allow), and scope the named
+                                            autoMode.environment entries to this repo
 
-Options (before the command): --settings PATH (default ~/.claude/settings.json)
-                              --ledger PATH   (default ~/.claude/desk/harness-rules.json)
+Options (before the command): --settings PATH      (default ~/.claude/settings.json)
+                              --ledger PATH        (default ~/.claude/desk/harness-rules.json)
+                              --user-settings PATH (default ~/.claude/settings.json; autoMode only)
 
 Where rules may go. A plan that WIDENS access (any `allow` entry, or any `remove_guards`) is written
 only to a settings file inside a repo's own `.claude/` directory (<repo root>/.claude/<file>), and
@@ -51,6 +55,22 @@ same file in every other worktree `git worktree list` shows is checked: a copy t
 file byte for byte before the revoke is backed up and replaced with the new file (removed, if the
 file was); a copy that differs is left alone and named, for revoking there by hand. A copy that
 cannot be read or written is named FAILED, the rest are still done, and `remove` exits 1.
+
+Auto mode. Claude Code reads `autoMode` only from user or managed settings, so a repo's
+classifier entries go in ~/.claude/settings.json, each naming its repo ("In owner/name only: …").
+`automode` takes a plan of facts, never prose:
+  {"repo": "owner/name", "granted": ["pr-merge-green", …], "merge": "--merge",
+   "migrate": "<§4 Database migrate>" or null, "scope_environment": ["<exact entry>", …]}
+and writes at most two `autoMode.allow` entries from the templates below: pinned merges (owner
+pr-merge-green) and migrations through the repo's runner against a local or per-ticket database
+(owner db-migrate, present while §4 Database migrate is set). No template covers a deploy, and
+`permissions` is never touched. Each entry is recorded in --ledger (the repo's own), so `remove
+<row>` with that ledger drops it from --user-settings and leaves other repos' entries alone; an
+entry the ledger did not record is never changed. Re-running it with a changed plan swaps an entry
+whose text changed and drops one whose condition no longer holds. A `scope_environment` entry
+found verbatim in autoMode.environment is prefixed "In <repo> only: ". Creating autoMode.allow
+starts it with "$defaults", so the built-in rules stay. An unreadable --user-settings stops it
+with nothing written (exit 2).
 """
 
 import datetime
@@ -241,6 +261,8 @@ class State:
         self.ledger.setdefault("rules", [])          # [{list, rule, rows, added}]
         self.ledger.setdefault("removed_guards", [])  # [{list, rule, rows, guard_rows, removed}]
         self.ledger.setdefault("created", [])         # keys setup created: "file", "permissions", "permissions.allow"
+        self.ledger.setdefault("automode", [])        # [{repo, kind, list, text, rows, added}] in --user-settings
+        self.ledger.setdefault("automode_created", [])  # "autoMode", "autoMode.allow" setup created there
         self.log = []
         self.before_ledger = json.dumps(self.ledger, sort_keys=True)
         if not need_settings:
@@ -500,7 +522,8 @@ def cmd_baseline(st, plan_path, prefixes, check):
     return None
 
 
-def cmd_remove(st, rows, everything):
+def cmd_remove(st, rows, everything, user_settings):
+    us = revoke_automode(st, user_settings, rows, everything)
     revoked = set(rows)
     hit = (lambda owners: True) if everything else (lambda owners: bool(revoked & set(owners)))
     missing = not st.settings_existed
@@ -540,12 +563,14 @@ def cmd_remove(st, rows, everything):
         where = f"{st.settings_path} does not exist and the" if missing else "the"
         st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
     before = read_bytes(st.settings_path)
+    if us:
+        us.save(st, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     st.save()
     return sync_copies(st, before)
 
 
 def cmd_list(st, markdown):
-    rules, guards = st.ledger["rules"], st.ledger["removed_guards"]
+    rules, guards, auto = st.ledger["rules"], st.ledger["removed_guards"], st.ledger["automode"]
     if markdown:
         print("| Rule | List | Owning rows (revoking any removes it) | Added |")
         print("|---|---|---|---|")
@@ -554,20 +579,25 @@ def cmd_list(st, markdown):
         for g in guards:
             print(f"| `{g['rule']}` | {g['list']}, **guard removed** | {', '.join(f'`{x}`' for x in g['rows'])}"
                   f" (restored on revoke) | {g['removed']} |")
-        if not rules and not guards:
+        for a in auto:
+            print(f"| {a['kind']} entry for `{a['repo']}` | autoMode.allow (user settings) | "
+                  f"{', '.join(f'`{x}`' for x in a['rows'])} | {a['added']} |")
+        if not rules and not guards and not auto:
             print("| — | — | none yet | — |")
         return
     for r in rules:
         print(f"{r['list']:5} {r['rule']}  <- {', '.join(r['rows'])}")
     for g in guards:
         print(f"unguarded {g['list']} {g['rule']}  <- removed for {', '.join(g['rows'])}")
-    if not rules and not guards:
+    for a in auto:
+        print(f"autoMode.allow [{a['repo']}] {a['kind']}  <- {', '.join(a['rows'])}")
+    if not rules and not guards and not auto:
         print("no rules recorded")
 
 
-USAGE = ("usage: harness-rules.py [--settings P] [--ledger P] add <plan.json> | "
+USAGE = ("usage: harness-rules.py [--settings P] [--ledger P] [--user-settings P] add <plan.json> | "
          "baseline [--check] [--slack-prefix P]... [<plan.json>] | retire | remove <row>...|--all | list [--markdown] | "
-         "unset-default-mode")
+         "unset-default-mode | automode <plan.json>")
 
 
 def cmd_unset_default_mode(settings_path):
@@ -586,16 +616,196 @@ def cmd_unset_default_mode(settings_path):
     return 0
 
 
+MERGE_FLAGS = ("--squash", "--merge", "--rebase")
+
+
+def scope(repo):
+    return f"In {repo} only: "
+
+
+def automode_entries(plan):
+    """{kind: (text, rows)} for the entries this plan grants. The only texts setup ever writes."""
+    repo, out = plan["repo"], {}
+    if "pr-merge-green" in plan.get("granted", []) and plan.get("merge") in MERGE_FLAGS:
+        out["merge"] = (
+            f"{scope(repo)}merging a pull request once its required checks are green is sanctioned by "
+            f"the user (desk-setup row pr-merge-green): the desk merge driver "
+            f"(~/.claude/desk/bin/merge-driver.sh) merging it, or `gh pr ready <n>` followed by "
+            f"`gh pr merge <n> {plan['merge']} --match-head-commit <sha>`. An unpinned merge, --admin, "
+            f"or a merge in any other repo is not covered.", ["pr-merge-green"])
+    if plan.get("migrate"):
+        out["migrate"] = (
+            f"{scope(repo)}running this repo's database migrations with `{plan['migrate']}` against a "
+            f"local database or a per-ticket database is sanctioned by the user (desk-setup, §4 Database "
+            f"migrate). Migrating a shared, staging or production database, and any production deploy, "
+            f"is not covered.", ["db-migrate"])
+    return out
+
+
+class UserSettings:
+    """--user-settings, read only when an autoMode entry is written or revoked."""
+
+    def __init__(self, path):
+        self.path, self.existed = path, os.path.exists(path)
+        self.data = {}
+        if self.existed:
+            try:
+                with open(path) as f:
+                    raw = f.read()
+                self.data = json.loads(raw) if raw.strip() else {}
+            except Exception as e:  # noqa: BLE001
+                die(f"{path} could not be read ({e}); no auto-mode entry was written or removed")
+        am = self.data.get("autoMode") if isinstance(self.data, dict) else None
+        if not isinstance(self.data, dict) or (am is not None and (
+                not isinstance(am, dict) or any(not isinstance(am.get(k, []), list)
+                                                for k in ("allow", "environment")))):
+            die(f"{path} could not be read: its autoMode block is malformed; nothing changed")
+        self.before = json.dumps(self.data, sort_keys=True)
+
+    def allow(self, st, create):
+        am = self.data.get("autoMode")
+        if am is None:
+            if not create:
+                return None
+            am = self.data["autoMode"] = {}
+            if "autoMode" not in st.ledger["automode_created"]:
+                st.ledger["automode_created"].append("autoMode")
+        if "allow" not in am:
+            if not create:
+                return None
+            am["allow"] = ["$defaults"]  # leaving it out would replace the built-in rules
+            if "autoMode.allow" not in st.ledger["automode_created"]:
+                st.ledger["automode_created"].append("autoMode.allow")
+        return am["allow"]
+
+    def save(self, st, stamp):
+        """Drop containers setup created that hold nothing of the user's, then write if changed."""
+        am = self.data.get("autoMode")
+        created = st.ledger["automode_created"]
+        if isinstance(am, dict) and "autoMode.allow" in created and am.get("allow") in (["$defaults"], []):
+            del am["allow"]
+            created.remove("autoMode.allow")
+        if isinstance(am, dict) and "autoMode" in created and am == {}:
+            del self.data["autoMode"]
+            created.remove("autoMode")
+        if json.dumps(self.data, sort_keys=True) == self.before:
+            return
+        b = backup(self.path, stamp)
+        if b:
+            st.log.append(f"backup   {b}")
+        write_json(self.path, self.data)
+
+
+def save_ledger(st, stamp):
+    if json.dumps(st.ledger, sort_keys=True) == st.before_ledger:
+        return
+    b = backup(st.ledger_path, stamp)
+    if b:
+        st.log.append(f"backup   {b}")
+    write_json(st.ledger_path, st.ledger)
+
+
+def read_automode_plan(plan_path):
+    plan, ok = load_json(plan_path, None)
+    if not ok or not isinstance(plan, dict):
+        die(f"cannot read plan {plan_path}")
+    repo = plan.get("repo")
+    if not isinstance(repo, str) or repo.count("/") != 1 or any(c.isspace() for c in repo) or "" in repo.split("/"):
+        die(f"bad repo in {plan_path}: want owner/name")
+    if not isinstance(plan.get("granted", []), list) or not isinstance(plan.get("scope_environment", []), list):
+        die(f"bad granted or scope_environment in {plan_path}")
+    if plan.get("merge") is not None and plan["merge"] not in MERGE_FLAGS:
+        die(f"bad merge in {plan_path}: want one of {', '.join(MERGE_FLAGS)}")
+    m = plan.get("migrate")
+    if m is not None and (not isinstance(m, str) or "\n" in m or "`" in m):
+        die(f"bad migrate in {plan_path}: want the §4 Database migrate command on one line")
+    return plan
+
+
+def drop_automode(st, us, rec):
+    """Remove one recorded entry from --user-settings and the ledger."""
+    st.ledger["automode"].remove(rec)
+    cur = us.allow(st, create=False) or []
+    if rec["text"] in cur:
+        cur.remove(rec["text"])
+        st.log.append(f"REMOVED  autoMode.allow [{rec['repo']}] {rec['kind']}  ({', '.join(rec['rows'])})")
+    else:
+        st.log.append(f"absent   autoMode.allow [{rec['repo']}] {rec['kind']}  (not in {us.path}; "
+                      "ledger record dropped)")
+
+
+def cmd_automode(st, user_settings, plan_path):
+    plan = read_automode_plan(plan_path)
+    repo, want = plan["repo"], automode_entries(plan)
+    us = UserSettings(user_settings)
+    today = datetime.date.today().isoformat()
+    for kind in ("merge", "migrate"):
+        rec = next((r for r in st.ledger["automode"] if r["repo"] == repo and r["kind"] == kind), None)
+        text, rows = want.get(kind, (None, None))
+        if rec and rec["text"] != text:
+            drop_automode(st, us, rec)
+            rec = None
+        if text is None:
+            continue
+        cur = us.allow(st, create=False)
+        if rec:
+            if text in (cur or []):
+                st.log.append(f"present  autoMode.allow [{repo}] {kind}  (recorded for {', '.join(rows)})")
+            else:
+                us.allow(st, create=True).append(text)
+                st.log.append(f"RESTORED autoMode.allow [{repo}] {kind}  ({', '.join(rows)})")
+        elif text in (cur or []):
+            st.log.append(f"present  autoMode.allow [{repo}] {kind}  (yours: already there; not recorded, "
+                          "never removed)")
+        else:
+            us.allow(st, create=True).append(text)
+            st.ledger["automode"].append({"repo": repo, "kind": kind, "list": "allow", "text": text,
+                                          "rows": rows, "added": today})
+            st.log.append(f"NEW      autoMode.allow [{repo}] {kind}  ({', '.join(rows)}): {text}")
+    env = (us.data.get("autoMode") or {}).get("environment") or []
+    for text in plan.get("scope_environment", []):
+        if not isinstance(text, str):
+            continue
+        if text.startswith(scope(repo)) and text in env or scope(repo) + text in env:
+            st.log.append(f"scoped   autoMode.environment  (already names {repo}): {text[:60]}")
+        elif text in env:
+            env[env.index(text)] = scope(repo) + text
+            st.log.append(f"SCOPED   autoMode.environment  now applies only to {repo}: {text[:60]}")
+        else:
+            st.log.append(f"missing  autoMode.environment  (no entry reads exactly this; nothing changed): {text[:60]}")
+    for text in env:
+        if isinstance(text, str) and repo in text and not text.startswith("In "):
+            st.log.append(f"unscoped autoMode.environment  names {repo} but applies in every repo: {text[:60]}")
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    us.save(st, stamp)
+    save_ledger(st, stamp)
+
+
+def revoke_automode(st, user_settings, rows, everything):
+    """`remove`'s part for autoMode entries this ledger recorded."""
+    revoked = set(rows)
+    hits = [r for r in st.ledger["automode"] if everything or revoked & set(r["rows"])]
+    if not hits:
+        return None
+    us = UserSettings(user_settings)
+    for rec in hits:
+        drop_automode(st, us, rec)
+    return us
+
+
 def main(argv):
     home = os.path.expanduser("~")
     settings = os.path.join(home, ".claude", "settings.json")
+    user_settings = settings
     ledger = os.path.join(home, ".claude", "desk", "harness-rules.json")
     args = list(argv)
-    while args and args[0] in ("--settings", "--ledger"):
+    while args and args[0] in ("--settings", "--ledger", "--user-settings"):
         if len(args) < 2:
             die("missing value for " + args[0])
         if args[0] == "--settings":
             settings = args[1]
+        elif args[0] == "--user-settings":
+            user_settings = args[1]
         else:
             ledger = args[1]
         args = args[2:]
@@ -608,6 +818,11 @@ def main(argv):
         return 0
     if cmd == "unset-default-mode" and not rest:
         return cmd_unset_default_mode(settings)
+    if cmd == "automode" and len(rest) == 1:
+        st = State(settings, ledger, need_settings=False)
+        cmd_automode(st, user_settings, rest[0])
+        print("\n".join(st.log) if st.log else "nothing to change")
+        return 0
     st = State(settings, ledger)
     code = 0
     if cmd == "add" and len(rest) == 1:
@@ -631,9 +846,9 @@ def main(argv):
     elif cmd == "retire" and not rest:
         code = 1 if cmd_retire(st) else 0
     elif cmd == "remove" and rest == ["--all"]:
-        code = 1 if cmd_remove(st, [], True) else 0
+        code = 1 if cmd_remove(st, [], True, user_settings) else 0
     elif cmd == "remove" and rest and "--all" not in rest:
-        code = 1 if cmd_remove(st, rest, False) else 0
+        code = 1 if cmd_remove(st, rest, False, user_settings) else 0
     else:
         die(USAGE)
     print("\n".join(st.log) if st.log else "nothing to change")
