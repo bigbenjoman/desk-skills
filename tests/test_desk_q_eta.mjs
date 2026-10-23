@@ -138,17 +138,18 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
 // (default `at`, so it is live then); null means no pass yet.
-function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null }) {
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
-    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`);
+    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`
+    + (tracker ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n` : ''));
   const qp = join(zenv.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(qp), { recursive: true });
   writeFileSync(qp, JSON.stringify({ version: 1, batch: name, concurrency: workers, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
   const state = join(zenv.HOME, '.desk-autopilot', slug);
   mkdirSync(join(state, 'triage'), { recursive: true });
-  for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size, ...(epics[k] ? { epic: epics[k] } : {}) }));
+  for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size, epic: epics[k] ?? null }));
   if (pass != null) {
     mkdirSync(join(state, 'orchestrators'), { recursive: true });
     writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: name, pid: 1, at: new Date(pass).toISOString(),
@@ -542,6 +543,25 @@ const t0 = performance.now();
 const bigStages = range(5, (i) => Q.logStage(logOf('logged', `BIG-${i}`))?.stage);
 const tookMs = performance.now() - t0;
 t('DS-190 AC4: five 4 MB logs each give their last marker, in under 100 ms', [bigStages.join(' '), tookMs < 100], ['5/9 5/9 5/9 5/9 5/9', true]);
+
+// ---- DS-191: a record written before epics were recorded is "not read yet", never "no epic"
+repo('predates', 4760, { tickets: { 'R-1': { state: 'triaged' }, 'R-2': { state: 'triaged' } }, sizes: { 'R-1': 'M', 'R-2': 'M' }, history: hist12, tracker: 'jira' });
+repo('nojira', 4770, { tickets: { 'J-1': { state: 'triaged' } }, sizes: { 'J-1': 'M' }, history: hist12 });
+writeFileSync(join(stateOf('nojira'), 'triage', 'J-1.json'), JSON.stringify({ ticket: 'J-1', summary: 'J-1 title', size: 'M' }));
+t('DS-191: where the Tracker is not jira no pass reads epics, so a record with no epic key has none, not "not read yet"',
+  [Q.forecastOf(repoAt('nojira'), { now: FIXED }).unread, Q.forecastOf(repoAt('nojira'), { now: FIXED }).noEpic], [0, 1]);
+writeFileSync(join(stateOf('predates'), 'triage', 'R-1.json'), JSON.stringify({ ticket: 'R-1', summary: 'R-1 title', size: 'M' }));
+const preF = Q.forecastOf(repoAt('predates'), { now: FIXED });
+const preView = await epicsView('acme__predates');
+t('DS-191: a record with no epic key counts as not read, apart from one with epic null', [preF.unread, preF.noEpic], [1, 1]);
+t('DS-191: and the Epics view says the epics are not read yet, not that none belongs to an epic',
+  [preView.includes('Epics not read yet for 1 ticket: the next pass reads them from Jira.'), preView.includes('No queued ticket here belongs to an epic.')], [true, false]);
+t('DS-191: so does ships --plain', Q.run(['ships', 'predates', '--plain'], { now: FIXED }).split('\n').includes('Epics not read yet for 1 ticket: the next pass reads them from Jira.'), true);
+writeFileSync(join(stateOf('predates'), 'triage', 'R-1.json'), JSON.stringify({ ticket: 'R-1', summary: 'R-1 title', size: 'M', links: 'n/a' }));
+t('DS-191: a non-tracker key, which never records an epic, is not counted as unread', Q.forecastOf(repoAt('predates'), { now: FIXED + MIN }).unread, 0);
+writeFileSync(join(stateOf('predates'), 'triage', 'R-1.json'), JSON.stringify({ ticket: 'R-1', summary: 'R-1 title', size: 'M', epic: null }));
+const postView = await epicsView('acme__predates');
+t('DS-191: once read with no epic, the view says none belongs to an epic again', [postView.includes('No queued ticket here belongs to an epic.'), postView.includes('not read yet')], [true, false]);
 
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
