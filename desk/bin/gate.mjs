@@ -33,7 +33,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
+export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 const lc = (s) => String(s ?? '').toLowerCase();
 
 // One check or status context, whatever API it came from, to { name, status, conclusion, runId }.
@@ -59,7 +59,7 @@ export function normaliseCheck(c) {
   return { name, status: 'completed', conclusion: lc(c.conclusion) || null, runId };
 }
 export const normaliseRollup = (nodes) => (nodes || []).filter((n) => n && (n.name || n.context)).map((n) => ({
-  ...normaliseCheck(n), workflow: n.workflowName ?? null, startedAt: n.startedAt ?? null,
+  ...normaliseCheck(n), workflow: n.workflowName ?? null, startedAt: n.startedAt ?? null, completedAt: n.completedAt ?? null,
 }));
 
 // The latest run of each check, as GitHub's own `gh pr checks` and branch protection read it.

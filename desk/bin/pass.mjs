@@ -26,6 +26,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
+import { normaliseRollup, latestPerCheck } from './gate.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
@@ -1246,6 +1247,30 @@ if (concurrency <= 0 && eligible.length) {
 const qNow = queue();
 const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
+// Each done ticket's PR is read once a pass, state and checks in one call, and kept on the ticket as
+// pr_status for desk-q, which makes no network call of its own. A PR recorded merged or closed is not
+// read again.
+const PR_FINAL = ['MERGED', 'CLOSED'];
+function readPrStatus(n) {
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  let v;
+  try { v = JSON.parse(raw); } catch { return null; }
+  if (!v?.state) return null;
+  // gh writes a time GitHub has not set as the zero time, 0001-01-01.
+  const time = (s) => (s && !s.startsWith('0001-') ? s : null);
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued' }));
+  return { pr: n, state: v.state, url: v.url ?? null, checks, at: new Date().toISOString() };
+}
+for (const t of Object.values(qNow.tickets)) {
+  const n = t.state === 'done' ? t.result?.pr : null;
+  if (n == null) continue;
+  if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state)) { prStates[n] = t.pr_status.state; continue; }
+  if (n in prStates) continue;
+  const s = readPrStatus(n);
+  if (!s) continue;
+  prStates[n] = s.state;
+  q('set', t.key, `pr_status=${JSON.stringify(s)}`);
+}
 const readPr = (n) => {
   if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
   return prStates[n];

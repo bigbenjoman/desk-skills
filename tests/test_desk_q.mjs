@@ -111,7 +111,8 @@ t('AC8 a prefix resolves', pre.code === 0 && pre.out === repo.out, true);
 const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
 t('AC8 state, detail and triage title', /running\s+stage 4\/9 as of \d\d:\d\d\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
-t('AC8 done count', /3 done, not shown/.test(pre.out), true);
+t('AC8 done count', /3 merged, not shown/.test(pre.out), true);
+t('DS-194 AC5 with no PR landing, the workers line leaves the landing part out', lines(pre.out).find((l) => l.startsWith('workers ')), 'workers 2 running of 3 (cap 5) · 3 merged, not shown');
 // ---- AC9: an ambiguous prefix refuses, naming both, with no table
 const amb = W.run('--plain', 'pr');
 t('AC9 ambiguous prefix exits non-zero', amb.code !== 0, true);
@@ -1035,6 +1036,89 @@ const hsHead = hsFrame.slice(2, hsFrame.findIndex((l) => /^ +# {2}TICKET/.test(l
 t('DS-187 AC5 on a narrow terminal the stopped batch\'s resume instruction wraps, never cut with …',
   `${hsHead.some((l) => l.endsWith('…'))} ${hsHead.every((l) => l.length <= 60)} ${hsHead.includes('To resume: run /desk-autopilot in halted.')}`, 'false true true');
 Hs.ui.finish(0);
+
+// ---- DS-194: a done ticket whose PR is still in CI shows as landing, from the pass's pr_status.
+const ago194 = (m) => new Date(NOW - m * 60000).toISOString();
+const ubuntu = { name: 'tests (ubuntu-latest)', status: 'completed', conclusion: 'success', started: ago194(30), completed: new Date(NOW - 30 * 60000 + 455000).toISOString(), runner: true };
+const macos = { name: 'tests (macos-latest)', status: 'queued', conclusion: null, started: ago194(14), completed: null, runner: false };
+const prOpen = (checks) => ({ pr: 164, state: 'OPEN', url: 'https://github.com/acme/land/pull/164', checks, at: ago194(1) });
+const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+// LD-1 landing; LD-2 held by it alone; LD-3 by it and the running LD-4; LD-0 merged, LD-9 done unread.
+function landRepo(checks, { beat = 1, ps = prOpen(checks) } = {}) {
+  put(I.T, I.env, 'land', { port: 4900, conc: '2 / 3', beat, queue: { batch: 'land', concurrency: 2, tickets: {
+    'LD-1': { state: 'done', result: { pr: 164 }, pr_status: ps },
+    'LD-2': heldBy('LD-1'), 'LD-3': heldBy('LD-1|LD-4'), 'LD-4': { state: 'running', stage: '3/9' },
+    'LD-0': { state: 'done', result: { pr: 160 }, pr_status: { pr: 160, state: 'MERGED', url: null, checks: [], at: ago194(30) } },
+    'LD-9': { state: 'done', result: { pr: 161 } },
+  } }, triage: { 'LD-1': { summary: 'resume from the last round' }, 'LD-2': { summary: 'separate models' } } });
+  return Q.loadRepos(NOW).find((r) => r.name === 'land');
+}
+const landQueue = (r) => lines(Q.repoScreen(r, { now: NOW }));
+const landRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\d+) {2}${key} `).test(l)) ?? '';
+const lq = landQueue(landRepo([ubuntu, macos]));
+t('DS-194 AC3 the landing ticket is in a Landing group above Waiting', lq.indexOf('  Landing · 1') >= 0 && lq.indexOf('  Landing · 1') < lq.indexOf('  Waiting · 2'), true);
+t('DS-194 AC3 its state reads ◐ landing, and WHAT IT NEEDS its PR, how many checks passed and the one holding it', landRow(lq, 'LD-1'),
+  `     -  LD-1      ◐ landing    ${'#164 · 1 of 2 checks passed · macOS: no runner, 14m'.padEnd(52)}${'started'.padEnd(13)}${'—'.padEnd(14)}resume from the last round`);
+// AC4 and the colours, on the screen.
+async function landingRaw(checks, key = 'LD-1', opts) {
+  landRepo(checks, opts);
+  const s = screen({ kind: 'repo', slug: 'acme__land' }, 140, () => NOW);
+  await sleep(20);
+  const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
+  const head = lastFrame(s).find((x) => x.replace(ANSI, '').startsWith('workers ')) ?? '';
+  s.ui.finish(0);
+  return { l, head };
+}
+const build = { name: 'build', status: 'completed', conclusion: 'success', started: ago194(20), completed: ago194(12), runner: true };
+const raw194 = await landingRaw([ubuntu, macos]);
+t('DS-194 AC3 the state is cyan, and AC4 a check queued 10 minutes with no runner is yellow', coloured(raw194.l).filter((c) => /landing|#164|runner/.test(c)).join(), '36:◐ landing,36:#164,33:macOS: no runner, 14m');
+const e2eRunning = { name: 'e2e', status: 'in_progress', conclusion: null, started: ago194(5), runner: true };
+t('DS-194 AC4 a running check reads its name and age', landRow(landQueue(landRepo([build, e2eRunning])), 'LD-1').includes('#164 · 1 of 2 checks passed · e2e running, 5m '), true);
+t('DS-194 AC4 a failed check reads failed, in red', coloured((await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }])).l).includes('31:e2e failed'), true);
+t('DS-194 AC4 every check passed reads merging, in green', coloured((await landingRaw([build])).l).includes('32:all checks passed · merging'), true);
+// AC5: the header counts the landing PR, in cyan.
+t('DS-194 AC5 the workers line counts the PRs landing and the merged tickets', lq.find((l) => l.startsWith('workers ')), 'workers 1 running of 2 (cap 3) · 1 PR landing · 2 merged, not shown');
+t('DS-194 AC5 the landing count is cyan', coloured(raw194.head).join(), '36:1 PR landing');
+// AC6: a held ticket names its landing blocker by its PR.
+t('DS-194 AC6 the only blocker left is landing: behind its PR, in CI, starting after it', /· waiting {4}behind #164 \(LD-1\), in CI +after #164 /.test(landRow(lq, 'LD-2')), true);
+t('DS-194 AC6 with another blocker left, both are listed and STARTS is not after the PR', `${/· waiting {4}behind #164, LD-4 /.test(landRow(lq, 'LD-3'))} ${/after #/.test(landRow(lq, 'LD-3'))}`, 'true false');
+t('DS-194 AC6 the PR is cyan in the row', coloured((await landingRaw([ubuntu, macos], 'LD-2')).l).includes('36:#164'), true);
+// AC7: the held ticket's page lists the landing blocker's checks, then when they were read.
+const p2 = lines(Q.ticketScreen(landRepo([ubuntu, macos]), 'LD-2', { now: NOW }));
+const i7 = p2.indexOf('Starts when the last of these merges:');
+const lead194 = ' '.repeat(14);
+t('DS-194 AC7 the landing blocker, one line per check, then when the last pass read them', p2.slice(i7 + 1, i7 + 5).join('\n'), [
+  '  LD-1      ◐ landing    #164 · 1 of 2 checks passed · macOS: no runner, 14m',
+  `${lead194}✓  ${'tests (ubuntu-latest)'.padEnd(26)}passed in 7m 35s`,
+  `${lead194}◌  ${'tests (macos-latest)'.padEnd(26)}queued 14m, no runner yet`,
+  `${lead194}checked by the last pass, 1m ago · https://github.com/acme/land/pull/164`].join('\n'));
+const p2f = lines(Q.ticketScreen(landRepo([build, e2eRunning, { name: 'lint', status: 'completed', conclusion: 'failure', started: ago194(9), completed: ago194(8), runner: true }]), 'LD-2', { now: NOW }));
+t('DS-194 AC7 a running check with its age, and a failed one', [`${'e2e'.padEnd(26)}running 5m`, `${'lint'.padEnd(26)}failed`].every((s) => p2f.some((l) => l.endsWith(s))), true);
+landRepo([ubuntu, macos]);
+const G7 = screen({ kind: 'ticket', slug: 'acme__land', key: 'LD-2' }, 140, () => NOW);
+await sleep(20);
+const g7line = G7.frame().find((l) => l.includes('checked by the last pass')) ?? '';
+await G7.press('g');
+t('DS-194 AC7 on the screen the line offers g, and g opens the PR', `${g7line.trim()} | ${G7.opened.join()}`, 'checked by the last pass, 1m ago · g open #164 on GitHub | https://github.com/acme/land/pull/164');
+G7.ui.finish(0);
+// AC8: with passes stopped, the landing row says when its checks were read, dimmed.
+const stoppedRow = landRow(landQueue(landRepo([ubuntu, macos], { beat: 300 })), 'LD-1');
+const hhmm = new Date(NOW - 60000).toTimeString().slice(0, 5);
+t('DS-194 AC8 passes stopped: as of the last read, n of m checks passed', new RegExp(`◐ landing {4}as of ${hhmm}: 1 of 2 checks passed +started`).test(stoppedRow), true);
+t('DS-194 AC8 and it is dim', coloured((await landingRaw([ubuntu, macos], 'LD-1', { beat: 300 })).l, true).includes(`2:as of ${hhmm}: 1 of 2 checks passed`), true);
+// AC9: once the pass records the PR merged, the ticket leaves Landing and counts as merged.
+const mergedQ = landQueue(landRepo([ubuntu], { ps: { ...prOpen([ubuntu]), state: 'MERGED' } }));
+t('DS-194 AC9 a merged PR leaves Landing and is counted merged', `${mergedQ.some((l) => /Landing|LD-1 /.test(l))} ${mergedQ.find((l) => l.startsWith('workers '))}`, 'false workers 1 running of 2 (cap 3) · 3 merged, not shown');
+// AC10: desk-q reads only what the pass recorded: a gh on its PATH is never called.
+landRepo([ubuntu, macos]);
+mkdirSync(join(I.T, 'stub-gh'), { recursive: true });
+writeFileSync(join(I.T, 'stub-gh', 'gh'), `#!/bin/sh\necho "$@" >> "${join(I.T, 'gh-calls')}"\n`, { mode: 0o755 });
+const ghEnv = { ...I.env, PATH: `${join(I.T, 'stub-gh')}:${process.env.PATH}` };
+// Each run must render its landing data, or "no gh call" would also pass on a crash.
+const runs194 = [[['--plain', 'land'], '◐ landing'], [['--plain', 'land', 'show', 'LD-2'], 'checked by the last pass'], [['--plain', 'land', 'show', 'LD-1'], 'Checks on #164:'], [['--plain'], 'land']]
+  .map(([args, want]) => { const p = spawnSync('node', [BIN, ...args], { encoding: 'utf8', env: ghEnv }); return p.status === 0 && p.stdout.includes(want); });
+t('DS-194 AC10 every run renders the landing data', runs194.join(), 'true,true,true,true');
+t('DS-194 AC10 desk-q makes no gh call', readdirSync(I.T).includes('gh-calls'), false);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
