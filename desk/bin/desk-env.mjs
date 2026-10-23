@@ -25,7 +25,7 @@
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, exit 3 if
-//                                             unset (the worker's own model), exit 4 if the row is malformed
+//                                             unset (no override), exit 4 if the row is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
@@ -536,7 +536,7 @@ export const batchBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BATCH_BUD
 // Config §3b "Worker models": `default` (no --model, the session default) or
 // `standard=<model> high=<model>`, each a `claude --model` alias or full name. Either may be followed
 // by `finder=<model>` (self-review finders) and `text=<model>` (the Stage 7 handoff session); unset,
-// those run on the worker's own model. The finder model goes to the Agent tool's model override, which
+// nothing overrides those. The finder model goes to the Agent tool's model override, which
 // takes an alias (`sonnet`, `haiku`), not a full model name. Anything else is refused rather than read
 // as default, so a typo never silently runs every worker on one model.
 //   -> { off: true } | { standard, high }, plus finder and text where set, or throws DeskConfigError
@@ -1069,7 +1069,7 @@ if (isMain) {
         console.log(PERMISSION_KEYS[args[0]]);
         break;
       case 'model': {
-        // §3b Worker models' finder or text model; exit 3 when it is unset (the worker's own model).
+        // §3b Worker models' finder or text model; exit 3 when it is unset (no override).
         if (!EXTRA_MODELS.includes(args[0])) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')}`);
         const m = workerModels()[args[0]];
         if (!m) process.exit(3);

@@ -249,7 +249,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Test worker cap under the test lock | `4`, `2` while the spawn gate says hold | `TODO` |
 | Autopilot per-worker budget (USD) | `25` (a runaway guard) | `TODO` (`none` turns it off) |
 | Autopilot batch budget (USD) | `none` | `TODO` |
-| Worker models | `default` | `TODO` (`default`, or `standard=<model> high=<model>`: lane A or E sized XS or S runs on standard, the rest on high; either may add `finder=<alias>` (`sonnet`, `haiku`: the Agent tool takes no full name) for self-review finders and `text=<model>` for the Stage 7 PR and Jira session, both unset by default so they run on the worker's own model until a run of the eval harness (`desk/bin/skill-eval.mjs`) on each model shows finding quality holds) |
+| Worker models | `default` | `TODO` (`default`, or `standard=<model> high=<model>`: lane A or E sized XS or S runs on standard, the rest on high; either may add `finder=<alias>` (`sonnet`, `haiku`: the Agent tool takes no full name) for self-review finders and `text=<model>` for the Stage 7 PR and Jira session, both unset by default, so both run as they do today until a run of the eval harness (`desk/bin/skill-eval.mjs`) on each model shows finding quality holds) |
 | Worker location | `local` | `TODO` (`local`, or `cloud`: cloud workers are not available yet, so `cloud` still runs every worker locally and the batch plan says so) |
 | Borrow idle workers | `off` | `TODO` (`on`, or `off`: at `on` a pass may start workers above the batch's own number, up to the cap, into machine slots other live batches are not using) |
 | Park an unanswered question after (minutes) | `15` | `TODO` |

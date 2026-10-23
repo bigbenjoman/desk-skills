@@ -285,8 +285,8 @@ parallel; cap ~12 in flight on a sweep.
 `desk-env model finder` before dispatching. It prints a model: launch every Claude finder (the
 routed finders and the simplicity finder) with that model as the Agent tool's model override, and
 the report header's first line ends `· finders on <model>`. It exits 3: there is none, so pass no
-override and every finder runs on your own model, as it always has. Bea, the refuters and codex keep
-their own models either way. Outside a worker the row does not apply.
+override and each finder runs on the model it always has (its agent file's `model:`, else yours).
+Bea, the refuters and codex keep their own models either way. Outside a worker the row does not apply.
 
 Each Claude prompt carries, in order:
 

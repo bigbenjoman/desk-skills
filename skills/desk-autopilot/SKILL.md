@@ -1044,7 +1044,8 @@ Either form may add `finder=<alias>` (an alias such as `haiku`: the Agent tool t
 name) and `text=<model>`, both unset by default. A worker launches
 every self-review finder on the finder model (`desk-env model finder`; desk-review names it in its
 header), and a Stage 7 session spawned from a handoff runs on the text model, which the queue's
-`model` and the report's `spawned` line show. Unset, each runs on the worker's own model. Every
+`model` and the report's `spawned` line show. Unset, finders run on the model they do today and the
+Stage 7 session on the ticket's tier. Every
 preflight also asks each one set for one word on its own, so a value the CLI rejects fails the
 preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
 is set until the eval harness shows finding quality holds on the cheaper model.
