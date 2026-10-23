@@ -528,6 +528,26 @@ out=$(node "$B/queue.mjs" requeue K-1 2>&1)
 check "DS-145 a requeue clears a pending resume" '[ "$(field K-1 resume)" = null ] && [ "$(field K-1 resume_why)" = null ] && [ "$(field K-1 session_id)" = null ]'
 check "DS-145 the config template has the row, recommended 2" 'grep -qE "^\| Resume a killed worker \(times\) \| \`2\` \| \`TODO\`" "$SRC/desk-config.md"'
 
+# DS-197: a headless worker exits at the 5-hour limit rather than waiting for the reset. Its log ends
+# as VPL-443's did: the rate_limit_event at the limit, then a result with api_error_status 429.
+usage_exit(){ say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-k/logs/$1.log"; limit_event "$2" >> "$T/state-k/logs/$1.log"
+  node -e 'console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", api_error_status: 429, api_error: "usage_limit_reached", num_turns: 40, total_cost_usd: 3.1, result: "usage limit reached" }))' >> "$T/state-k/logs/$1.log"; }
+q set K-1 state=done
+killed Y-1 sess-y1; q set Y-1 model_tier=standard model=sonnet; usage_exit Y-1 $(( $(date +%s) + 3600 ))
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-197 AC1 a worker that exited at the limit before the reset is not failed, and is reported paused until it" '[ "$(field Y-1 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: Y-1 until .* UTC" && ! echo "$out" | grep -q "Y-1: exited with no marker" && ! spawned_for Y-1'
+usage_exit Y-1 $(( $(date +%s) - 60 ))
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-197 AC2 after the reset it is queued and resumed in its own session, on the same model tier" 'echo "$out" | grep -q "Y-1 exited at the 5-hour usage limit, which reset .* UTC: queued to resume in its own session" && echo "$out" | grep -q "Y-1 resumed after the usage limit reset" && spawned_for Y-1 | grep -q "^Y-1 sess-y1 .*resume=yes$" && [ "$(field Y-1 model_tier)" = "\"standard\"" ] && [ "$(field Y-1 model)" = "\"sonnet\"" ] && [ "$(field Y-1 resumes)" = null ] && ! echo "$out" | grep -q "paused on the usage limit: .*Y-1"'
+q set Y-1 state=done
+killed Y-3 sess-y3; usage_exit Y-3 $(( $(date +%s) + 3600 ))
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-197 AC3 without the grant the same log is parked as before" '[ "$(field Y-3 state)" = "\"parked\"" ] && field Y-3 park.question | grep -q "paused on the 5-hour usage limit, which resets .* UTC. Config §3 autopilot-usage-resume is ..no.., so it does not resume into the next usage window: its session had already ended" && ! spawned_for Y-3'
+q set Y-3 state=done
+killed Y-4 sess-y4; result_event >> "$T/state-k/logs/Y-4.log"
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-197 AC4 with the grant, an exit with no marker and no limit is marked failed as before" '[ "$(field Y-4 state)" = "\"failed\"" ] && echo "$out" | grep -q "Y-4: exited with no marker and no open PR on fix/Y-4 — check" && ! spawned_for Y-4'
+
 # ---- DS-185 AC6: a pass records its next planned pass in its heartbeat, and queue.mjs next-pass sets it later
 # The heartbeat's next pass, in whole seconds after its last pass, or "none".
 nextin(){ node -e 'const fs = require("fs"), p = require("path"); const d = process.argv[1];
