@@ -406,6 +406,16 @@ nlog a2; q set N-1 state=running
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-143 AC7 with changed inputs it is asked, saying what changed" 'echo "$out" | grep -q "^NOTIFY: .*N-1" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-1: $NQ — Changed since it was put off on" && echo "$out" | grep -qF "pr-head a1 → a2."'
 q set N-1 state=done
+# N-2's question turns on a config row. Put off, it comes back on the first pass after the row changes.
+N2Q='Is the release branch still main?'
+{ say "AUTOPILOT_PARK: $N2Q" 'AUTOPILOT_PARK_INPUTS: {"config:default-branch":"main"}'; result_event; } > "$T/state-d/logs/N-2.log"
+q add N-2; q set N-2 state=running branch=fix/N-2 session_id=run-N-2
+out=$(node "$B/pass.mjs" 2>&1); node "$B/answer.mjs" N-2 "not now" >/dev/null 2>&1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC6 a put-off park whose config row is unchanged stays put off" '! echo "$out" | grep -q "^NOTIFY: .*N-2"'
+sed 's/| Default branch | `main` |/| Default branch | `develop` |/' "$T/config.md" > "$T/config-n2.md"
+out=$(DESK_CONFIG="$T/config-n2.md" node "$B/pass.mjs" 2>&1)
+check "DS-143 AC7 a changed config row asks the put-off question again, saying what changed" 'echo "$out" | grep -q "^NOTIFY: .*N-2" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-2: $N2Q — Changed since it was put off on" && echo "$out" | grep -qF "config:default-branch main → develop."'
+q set N-2 state=done
 
 # The check-in digest. C-1 parks on a broken live service, C-2 on an ordinary question; a last digest
 # dated in the future keeps the check-in itself out of the way until it is removed.

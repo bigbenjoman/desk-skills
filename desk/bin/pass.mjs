@@ -16,7 +16,7 @@ import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, 
   roundStage, resumeCheck, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
-import { readRegister, lookup, parseInputs } from './not-now.mjs';
+import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
@@ -1427,6 +1427,18 @@ const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ??
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r));
 if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
+// A put-off park whose `pr-head` or `config:<id>` input has changed since is asked again, saying what
+// changed: the refreshed inputs go on the park, where the verdict below and the digest read them.
+for (const t of Object.values(queue().tickets)) {
+  if (!putOff(t)) continue;
+  const now = refreshInputs(t.park.inputs ?? {}, {
+    prHead: () => (t.branch ? sh('git', ['ls-remote', 'origin', `refs/heads/${t.branch}`], { tolerant: true }).split(/\s/)[0] || null : null),
+    config: (id) => { try { return E.configValue(id); } catch { return null; } },
+  });
+  if (inputsHash(now) === inputsHash(t.park.inputs ?? {})) continue;
+  q('set', t.key, `park.inputs=${JSON.stringify(now)}`);
+  report.parked.push(`${t.key}: ${t.park.question} — ${lookup(REGISTER, { question: t.park.question, inputs: now }).line}`);
+}
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);

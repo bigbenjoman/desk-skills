@@ -895,7 +895,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
 - **A worker** names a park's inputs on the line after it, as
   `AUTOPILOT_PARK_INPUTS: {"ticket": "ABC-1", "pr-head": "3f2a…"}` (a flat object of plain values;
   none is `{}`, which matches on the question's text alone). `pass.mjs` stores them on the park and
-  checks the register when it harvests the run.
+  checks the register when it harvests the run. While the park stays put off, each pass reads its
+  `pr-head` (the branch's head on origin) and `config:<row id>` inputs again, and asks the question
+  as soon as one has changed; any other input is compared only when a session asks again.
 - **You and interactive sessions** check before asking, and record a "not now" the user gives in
   the conversation (an answer through `answer.mjs` or the digest is recorded for you):
 

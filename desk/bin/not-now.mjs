@@ -9,7 +9,9 @@
 //   not-now.mjs list
 //
 // <json> is a flat object naming what the question depends on, e.g. {"ticket": "ABC-1", "pr-head":
-// "3f2a…"}. A question is matched by its text, with case, spacing and closing punctuation ignored.
+// "3f2a…", "config:default-branch": "main"}. A question is matched by its text, with case, spacing
+// and closing punctuation ignored. Each pass re-reads a put-off park's `pr-head` and `config:<id>`
+// inputs (refreshInputs), so those bring the question back when they change.
 // An unreadable register reads as empty, so the question is asked as it would be without one.
 import { readFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -84,6 +86,18 @@ export function lookup(register, { question, inputs = {} }) {
   if (entry.hash === inputsHash(inputs)) return { status: 'put_off', entry };
   const what = changes(entry.inputs, inputs);
   return { status: 'changed', entry, line: `Changed since ${entry.by ?? 'it was'} put ${entry.by ? 'it ' : ''}off on ${day(entry.at)}: ${what.join('; ') || 'its inputs'}.` };
+}
+
+// The inputs a pass can read again for itself: `config:<row id>` through read.config(id), and
+// `pr-head` through read.prHead(). A reader that answers null leaves the input as it was; any other
+// input is compared only when a session asks the question again.
+export function refreshInputs(inputs = {}, read) {
+  const out = { ...inputs };
+  for (const k of Object.keys(out)) {
+    const v = k === 'pr-head' ? read.prHead() : k.startsWith('config:') ? read.config(k.slice(7)) : null;
+    if (v != null && v !== '') out[k] = String(v);
+  }
+  return out;
 }
 
 export function addPutOff(entry, dir = stateDir()) {

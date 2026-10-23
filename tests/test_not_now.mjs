@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readRegister, lookup, putOffEntry, addPutOff, clearPutOff, parseInputs, notNowPath, questionKey, NOT_NOW } from '../desk/bin/not-now.mjs';
+import { readRegister, lookup, putOffEntry, addPutOff, clearPutOff, parseInputs, refreshInputs, notNowPath, questionKey, NOT_NOW } from '../desk/bin/not-now.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -39,6 +39,11 @@ addPutOff(putOffEntry({ question: Q, ticket: 'V-7', inputs: { ticket: 'V-7', 'pr
 t('the latest entry for a question wins', lookup(readRegister(dir), { question: Q, inputs: { ticket: 'V-7', 'pr-head': 'c3d4' } }).status, 'put_off');
 t('a cleared question is asked again', `${clearPutOff(Q, dir).ok} ${lookup(readRegister(dir), { question: Q, inputs: { ticket: 'V-7', 'pr-head': 'c3d4' } }).status}`, 'true ask');
 t('clearing what is not there is refused', clearPutOff('Never asked?', dir).ok, false);
+
+// A pass re-reads the inputs it can: pr-head and config rows. Others, and a reader with no answer, stay.
+const read = { prHead: () => 'f00d', config: (id) => (id === 'default-branch' ? 'develop' : null) };
+t('pr-head and a config row are read again, the rest kept', JSON.stringify(refreshInputs({ ticket: 'V-7', 'pr-head': 'a1b2', 'config:default-branch': 'main', 'config:gone': 'x' }, read)),
+  '{"ticket":"V-7","pr-head":"f00d","config:default-branch":"develop","config:gone":"x"}');
 
 // Inputs are a flat object of plain values.
 t('no inputs are {}', JSON.stringify(parseInputs(null).inputs), '{}');
