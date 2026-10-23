@@ -149,7 +149,8 @@ $CHECKS" \
     printf '%s\n' "$RAW" | node -e '
       let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
         let r = null;
-        for (const l of s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
+        try { const d = JSON.parse(s); if (d?.type === "result") r = d; } catch {}
+        for (const l of r ? [] : s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
         const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
         if (process.argv[1] === "cost") console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
         else process.stdout.write(r && typeof r.result === "string" ? r.result : s);

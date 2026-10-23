@@ -903,7 +903,8 @@ function preflight(key, wt, workerEnv) {
 }
 const preflightNote = ({ usd, turns }) =>
   `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`;
-// Into the log the worker is about to write, so the batch report counts it with that run.
+// Into the log the worker is about to write, so the batch report counts it with that run; a failed
+// one goes into the log as it stands, and the next spawn moves it aside with that round.
 const logPreflight = (key, cost) => {
   mkdirSync(join(STATE, 'logs'), { recursive: true });
   appendFileSync(join(STATE, 'logs', `${key}.log`), preflightLine(cost));
@@ -933,7 +934,7 @@ async function resumeKilled(t) {
   const model = t.model && t.model !== 'default' ? t.model : '';
   const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.failure) return fail(`preflight failed —\n${pre.failure}`);
+  if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const prompt = `Your previous run of this session was killed before it finished (${t.resume_why ?? 'reboot or crash'}). ` +
@@ -1040,7 +1041,7 @@ async function spawnHandoff(t) {
     report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.failure) return fail(`preflight failed —\n${pre.failure}`);
+  if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
@@ -1105,6 +1106,7 @@ for (const t of eligible) {
 
   const pre = preflight(t.key, wt, workerEnv);
   if (pre.failure) {
+    logPreflight(t.key, pre.cost);
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
     q('set', t.key, 'state=failed', 'spawn_failed=true');
     report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.failure}`);

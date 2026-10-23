@@ -11,13 +11,14 @@ export const START_UP = 'start-up';
 
 // pass.mjs writes one of these into the ticket's log before each spawn: the permissions preflight is
 // a claude -p call of its own, outside the worker's session, so its result event is not in the log.
-// A null figure is one the preflight did not report.
-export const PREFLIGHT_EVENT = 'desk_preflight';
+// A null figure is one the preflight did not report. Its time is `at`, not `timestamp`, which
+// firstSpawnFromLogs (desk-q-eta.mjs) reads as a worker's start.
+const PREFLIGHT_EVENT = 'desk_preflight';
 export const preflightLine = ({ usd, turns }, at = new Date()) =>
-  `${JSON.stringify({ type: PREFLIGHT_EVENT, total_cost_usd: usd, num_turns: turns, timestamp: at.toISOString() })}\n`;
+  `${JSON.stringify({ type: PREFLIGHT_EVENT, total_cost_usd: usd, num_turns: turns, at: at.toISOString() })}\n`;
 
 // The preflights in one log: how many, the cost of those that reported one, and how many did not.
-export function preflightUsage(logText) {
+function preflightUsage(logText) {
   const p = { n: 0, cost: 0, unknown: 0 };
   for (const line of logText.split('\n')) {
     if (!line.includes(PREFLIGHT_EVENT)) continue;
@@ -110,7 +111,7 @@ export function logUsage(logText) {
 }
 
 // A ticket's logs in this batch: the current `<KEY>.log` and every round a respawn or requeue moved
-// aside (`<KEY>.log.round<n>.gz`, or `<KEY>.log.round<n>` from before rounds were compressed), less
+// aside (`<KEY>.log.round<n>`, gzipped or not), less
 // any last written before the ticket joined this queue (`added_at`): the logs directory outlives a
 // batch, so an earlier batch's rounds of the same ticket are still there.
 export function workerLogs(stateDir, key, since = null) {
@@ -123,9 +124,11 @@ export function workerLogs(stateDir, key, since = null) {
     .filter((f) => { try { return Number.isNaN(from) || statSync(f).mtimeMs >= from; } catch { return false; } });
 }
 
-// A log holding nothing but preflights: the spawn after them was refused, so no worker ran in it.
+// A log holding nothing but preflights: the spawn after them was refused, so no worker ran in it. A
+// line of stderr is a worker that ran and died, so it is a run.
 const preflightOnly = (text) => text.split('\n').every((l) => {
-  try { return JSON.parse(l)?.type === PREFLIGHT_EVENT; } catch { return true; }
+  if (!l.trim()) return true;
+  try { return JSON.parse(l)?.type === PREFLIGHT_EVENT; } catch { return false; }
 });
 
 // -> { key, runs, unknown, usage, preflight, first, stages } for a queue ticket with a log, or null for

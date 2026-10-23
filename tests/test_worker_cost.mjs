@@ -80,9 +80,12 @@ log('P-1.log', preflightLine({ usd: 0.3, turns: 5 }).trim(), say('AUTOPILOT_DONE
 writeFileSync(join(S, 'logs', 'P-1.log.round1.gz'), gzipSync(`${preflightLine({ usd: null, turns: null })}${result({ cost: 2, ms: 2000, input: 20, output: 2 })}\n`));
 log('P-2.log.round1', preflightLine({ usd: 0.1, turns: 2 }).trim());
 log('P-2.log', preflightLine({ usd: 0.2, turns: 4 }).trim(), result({ cost: 1, ms: 1000, input: 1, output: 1 }));
+// P-3's worker died with a line of stderr after its preflight: a run with no result, so unknown.
+log('P-3.log', preflightLine({ usd: 0.1, turns: 2 }).trim(), 'Error: Credit balance is too low');
 const preOf = (k) => { const c = ticketCost(S, tk(k)); return JSON.stringify({ runs: c.runs, unknown: c.unknown, cost: c.usage?.cost, preflight: c.preflight }); };
 t('DS-158 AC6 a compressed round is read like any other', preOf('P-1'), '{"runs":2,"unknown":0,"cost":3,"preflight":{"n":2,"cost":0.3,"unknown":1}}');
 t('DS-158 a round holding only a preflight is not a run, but its cost counts', preOf('P-2'), '{"runs":1,"unknown":0,"cost":1,"preflight":{"n":2,"cost":0.30000000000000004,"unknown":0}}');
+t('DS-158 a worker that wrote only stderr after its preflight is a run with no result, not a preflight-only log', preOf('P-3'), '{"runs":1,"unknown":1,"preflight":{"n":1,"cost":0.1,"unknown":0}}');
 const pTable = costTable(batchCost(S, [tk('P-1'), tk('P-2')])).split('\n');
 console.log(pTable.join('\n'));
 t('DS-158 AC2 a worker\'s cost includes its preflights, shown apart, an unknown one named', row(pTable, 'P-1'), 'P-1|2|30|3|$3.30|$0.30 + 1 unknown|0m 03s|unknown');

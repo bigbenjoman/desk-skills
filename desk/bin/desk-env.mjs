@@ -618,7 +618,7 @@ export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHom
 // next park instantly). All take one suffix, the first `.round<n>` free for every one of them, so a
 // round's files stay together. The log is gzipped as it moves (`.round<n>.gz`, its time kept, since a
 // batch's cost and spawn history read a round's time); one that fails to compress stays as it was,
-// and every reader takes both. An empty log is left in place. Returns the files moved.
+// and every reader of round logs takes both. An empty log is left in place. Returns the files moved.
 export function rotateRound(key, { answers = false } = {}) {
   const state = stateDir();
   const files = [join(state, 'logs', `${key}.log`), join(state, 'parks', `${key}.json`)];

@@ -5,6 +5,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -79,6 +80,8 @@ t('a long log whose tail has no reading is read whole', P.newestUsage({ dirs: P.
 log(A, 'A-1', [event(0.4, resetIn(real, 2 * DAY))], 7 * HOUR);
 log(B, 'B-1', ['{"type":"assistant"}'], 0);
 t('AC3 unit: a log last written over 6 hours ago does not count', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real }), null);
+writeFileSync(join(B, 'logs', 'B-2.log.round1.gz'), gzipSync(`${event(0.5, resetIn(real, 2 * DAY))}\n`));
+t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.5);
 rmSync(root, { recursive: true, force: true });
 
 // ---- the real pass.mjs ---------------------------------------------------------------------
