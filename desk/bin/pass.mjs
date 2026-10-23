@@ -904,10 +904,13 @@ function preflight(key, wt, workerEnv) {
 const preflightNote = ({ usd, turns }) =>
   `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`;
 // Into the log the worker is about to write, so the batch report counts it with that run; a failed
-// one goes into the log as it stands, and the next spawn moves it aside with that round.
+// one goes into the log as it stands, and the next spawn moves it aside with that round. Returns the
+// log's size, the stall check's starting point: the line is not the worker's output.
 const logPreflight = (key, cost) => {
+  const log = join(STATE, 'logs', `${key}.log`);
   mkdirSync(join(STATE, 'logs'), { recursive: true });
-  appendFileSync(join(STATE, 'logs', `${key}.log`), preflightLine(cost));
+  appendFileSync(log, preflightLine(cost));
+  return statSync(log).size;
 };
 const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn refused — ${out.split('\n').slice(-3).join(' ')}`);
 
@@ -1045,8 +1048,8 @@ async function spawnHandoff(t) {
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
-  logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, 'log_bytes=0', 'idle_passes=0',
+  const logBytes = logPreflight(t.key, pre.cost);
+  q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
@@ -1125,11 +1128,11 @@ for (const t of eligible) {
   // Every spawn is a fresh session, so the last round's log and park record move aside first:
   // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
   E.rotateRound(t.key);
-  logPreflight(t.key, pre.cost);
+  const logBytes = logPreflight(t.key, pre.cost);
   // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
-    `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
+    `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
