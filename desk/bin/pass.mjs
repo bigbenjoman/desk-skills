@@ -274,6 +274,8 @@ function logDecisions(t, log, pr) {
 // session, ahead of new tickets, in the same worktree and on the same branch (spawnHandoff below). A
 // stage no session starts at, a worktree or branch that is gone, or a handoff briefing that cannot be
 // read parks it, naming which, and spawns nothing.
+// In stage order: Object.keys lists an integer-like key (7) before '4b'.
+const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
 const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;
 function handoffRefusal(t, stage) {
   const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
@@ -285,7 +287,7 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   logDecisions(t, log, null);
   const stage = handoffStage(said);
   const parkIt = (why) => { q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
-  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${Object.keys(HANDOFF_STAGES).join(' or ')}), so no session was spawned. ${FROM_ZERO(t)}`);
+  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${HANDOFF_ORDER.join(' or ')}), so no session was spawned. ${FROM_ZERO(t)}`);
   const refused = handoffRefusal(t, stage);
   if (refused) return parkIt(refused);
   // The session's cost so far, added to the ticket's when its last session finishes.
