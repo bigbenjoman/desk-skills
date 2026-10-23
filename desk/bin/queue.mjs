@@ -262,7 +262,7 @@ switch (cmd) {
     // batch to the supervisor in the same write, so a session's own init is never replaced or handed over.
     const standing = args.includes('--standing');
     const ifAt = args.indexOf('--if-batch');
-    const name = args.find((a, i) => !a.startsWith('--') && i !== ifAt + 1);
+    const name = args.find((a, i) => !a.startsWith('--') && (ifAt < 0 || i !== ifAt + 1));
     if (standing) {
       if (ifAt < 0) throw new Error('init --standing wants --if-batch <the batch it replaces, or none>');
       let cur = null;

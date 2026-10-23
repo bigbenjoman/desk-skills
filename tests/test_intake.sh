@@ -221,6 +221,9 @@ check "nothing joins or replaces a batch on a base" '[ "$(qget batch)" = feat ] 
 # queue.mjs checks again under its lock: a batch that is no longer the finished one is left alone.
 printf '{"version":1,"batch":"p3","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
 out=$(cd "$T/repo" && node "$T/bin/queue.mjs" init standing-x --standing --if-batch old 2>&1); rc=$?
+out=$(cd "$T/repo" && node "$T/bin/queue.mjs" init named-batch 2>&1)
+check "a plain init keeps the batch name it is given" '[ "$(qget batch)" = named-batch ]'
+printf '{"version":1,"batch":"p3","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
 check "init --standing refuses a queue that is not the batch intake found finished" '[ $rc -ne 0 ] && [ "$(qget batch)" = p3 ] && grep -q "left as it is" <<< "$out"'
 
 # ---- with no batch at all, what intake hands on still reaches the check-in ----------------------
