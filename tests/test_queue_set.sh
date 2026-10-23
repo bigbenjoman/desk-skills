@@ -102,7 +102,7 @@ check "AC11 a ticket not placed still moves to the front"                 '[ $rc
 q requeue A-3; order
 check "a requeue of a ticket not placed still fronts it"                  '[ "${out%% *}" = A-3 ]'
 
-# DS-189: a triaged ticket with a triage question open never spawns, so the table and front say so.
+# A triaged ticket with a triage question open never spawns, so the table and front say so.
 q render
 check "DS-189 AC5: a triaged ticket with no question open has a bare row" '[ $rc -eq 0 ] && echo "$out" | grep -Eq "^  TRIAGED +A-5 +$"'
 q set A-5 open_questions=1; q render

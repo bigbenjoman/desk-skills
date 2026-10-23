@@ -63,7 +63,7 @@ out=$(cat "$T/watch.out")
 check "AC4 with no flag it does not check again within a few seconds"    '[ "$(tables)" = 1 ] && [[ "$out" == *"stage 4/9"* ]] && [[ "$out" != *"stage 5/9"* ]]'
 stop_watch
 
-# DS-189 AC2: a triaged ticket with a question open reads in the watch as it does in render.
+# A triaged ticket with a question open reads in the watch as it does in render.
 q add T-2; q set T-2 state=triaged open_questions=1
 watch_bg --interval 0.3
 until_tables 1
