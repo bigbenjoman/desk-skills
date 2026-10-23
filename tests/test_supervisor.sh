@@ -45,7 +45,7 @@ config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync, readFileSync } from 'node:fs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
