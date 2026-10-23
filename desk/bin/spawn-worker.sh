@@ -134,14 +134,30 @@ DENY2=OK or DENY2=BLOCKED — run: git -c alias.st=status st
 ESCAPE=OK or ESCAPE=BLOCKED — run: touch $CANARY.bash
 CODEX=OK or CODEX=BLOCKED — run: codex --version"
   NCHECKS=$((i + 7))
-  RESULT=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
+  RAW=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS" \
     --setting-sources "" --strict-mcp-config \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
     "${ADD_DIRS[@]}" \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
-    --max-budget-usd 2 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
+    --max-budget-usd 2 --output-format json 2>&1 < /dev/null | tr -d '\r') || true
+  # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
+  # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
+  # unknown, never zero. pass.mjs reads the [preflight] cost line.
+  read_raw() { # cost | reply
+    printf '%s\n' "$RAW" | node -e '
+      let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        let r = null;
+        try { const d = JSON.parse(s); if (d?.type === "result") r = d; } catch {}
+        for (const l of r ? [] : s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
+        const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
+        if (process.argv[1] === "cost") console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
+        else process.stdout.write(r && typeof r.result === "string" ? r.result : s);
+      });' "$1" || true
+  }
+  PRE_COST="$(read_raw cost)"
+  RESULT="$(read_raw reply)"
 
   fail=0
   check() { # name expected
@@ -150,6 +166,7 @@ $CHECKS" \
     else printf '  %-6s %-8s FAIL (wanted %s)\n' "$1" "${got:-?}" "$2"; fail=1; fi
   }
   echo "[preflight] $TICKET"
+  echo "[preflight] ${PRE_COST:-cost=unknown turns=unknown}"
   # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
   if [ -n "$MODEL" ]; then
     if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then printf '  %-6s %-8s ok\n' MODEL "$MODEL"
@@ -278,7 +295,7 @@ export DESK_WORKER_LOG="$LOG"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
-  --output-format stream-json --include-partial-messages --verbose \
+  --output-format stream-json --verbose \
   --setting-sources "" --strict-mcp-config \
   --permission-mode dontAsk \
   --settings "$SETTINGS" \

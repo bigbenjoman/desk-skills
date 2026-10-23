@@ -11,6 +11,7 @@ import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, cl
 import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { resetText } from './usage-limit.mjs';
+import { readLogFile } from './harvest.mjs';
 
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 // Only a log written to in this long counts: an older event says little about usage now.
@@ -77,11 +78,13 @@ export function newestUsage({ dirs = stateDirs(), now = Date.now() } = {}) {
 
 // A log's last TAIL_BYTES, from its first whole line, or the whole log when that holds no event: a
 // worker writes one after most API calls, so the tail almost always has the newest, and a pass reads
-// every repo's recent logs. '' when it cannot be read.
+// every repo's recent logs. A round moved aside is gzipped, so it is read whole. '' when it cannot be
+// read.
 const TAIL_BYTES = 1024 * 1024;
 function tail(path, size) {
   let fd;
   try {
+    if (path.endsWith('.gz')) return readLogFile(path);
     if (size > TAIL_BYTES) {
       fd = openSync(path, 'r');
       const buf = Buffer.alloc(TAIL_BYTES);

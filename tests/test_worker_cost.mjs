@@ -2,12 +2,13 @@
 // worker-cost.mjs on stub stream-json logs in a scratch state directory: a finished worker, one woken
 // again after its turn ended, a requeued one whose rounds add up, one with no result event, a round
 // left by an earlier batch, and a ticket no worker ran; and per-stage tokens from logs with
-// stage markers, tokens before the first marker, two rounds and no usage. The idle pass that prints
-// the table runs in test_pass.sh.
+// stage markers, tokens before the first marker, two rounds and no usage; and preflights beside the
+// runs, with a round moved aside compressed. The idle pass that prints the table runs in test_pass.sh.
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { logUsage, ticketCost, batchCost, costTable, wallTime } from '../desk/bin/worker-cost.mjs';
+import { gzipSync } from 'node:zlib';
+import { logUsage, ticketCost, batchCost, costTable, wallTime, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { parseWorkerLocation } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -65,12 +66,32 @@ const table = costTable(rows).split('\n');
 console.log(table.join('\n'));
 const cols = (line) => line.trim().split(/\s{2,}/);
 const row = (lines, key) => cols(lines.find((l) => l.startsWith(`  ${key} `)) ?? '').join('|');
-t('AC3 a header names each figure', cols(table[1]).join('|'), 'worker|runs|input tokens|output tokens|cost|wall time|first-turn input');
-t('AC3 a worker row', row(table, 'T-1'), 'T-1|1|41,300|2,000|$1.50|2m 05s|unknown');
-t('AC3 a requeued worker row sums its rounds', row(table, 'T-2'), 'T-2|2|15|27|$1.00|1h 01m|unknown');
-t('AC4 a worker with no result event reads unknown, not zero', row(table, 'T-3'), 'T-3|1|unknown|unknown|unknown|unknown|unknown|(1 of 1 run(s) with no result event in the log)');
-t('AC3 the total row adds the known workers and names what it left out', row(table, 'total'), 'total|4|41,315|2,027|$2.50|1h 03m|unknown|(first-turn input leaves out 3 worker(s) with no usage; 1 unknown worker(s) not counted)');
+t('AC3 a header names each figure', cols(table[1]).join('|'), 'worker|runs|input tokens|output tokens|cost|preflight|wall time|first-turn input');
+t('AC3 a worker row', row(table, 'T-1'), 'T-1|1|41,300|2,000|$1.50|none|2m 05s|unknown');
+t('AC3 a requeued worker row sums its rounds', row(table, 'T-2'), 'T-2|2|15|27|$1.00|none|1h 01m|unknown');
+t('AC4 a worker with no result event reads unknown, not zero', row(table, 'T-3'), 'T-3|1|unknown|unknown|unknown|none|unknown|unknown|(1 of 1 run(s) with no result event in the log)');
+t('AC3 the total row adds the known workers and names what it left out', row(table, 'total'), 'total|4|41,315|2,027|$2.50|none|1h 03m|unknown|(first-turn input leaves out 3 worker(s) with no usage; 1 unknown worker(s) not counted)');
 t('a table of known workers has no left-out note', costTable(batchCost(S, [tk('T-1')])).split('\n').at(-1).includes('not counted'), false);
+
+// DS-158: preflights, written into the log of the run they came before, and rounds moved aside
+// gzipped. P-1's earlier round is compressed and its preflight reported no result; P-2's earlier
+// round holds only a preflight, whose spawn was refused, so no worker ran in it.
+log('P-1.log', preflightLine({ usd: 0.3, turns: 5 }).trim(), say('AUTOPILOT_DONE: pr=3 jira=none'), result({ cost: 1, ms: 1000, input: 10, output: 1 }));
+writeFileSync(join(S, 'logs', 'P-1.log.round1.gz'), gzipSync(`${preflightLine({ usd: null, turns: null })}${result({ cost: 2, ms: 2000, input: 20, output: 2 })}\n`));
+log('P-2.log.round1', preflightLine({ usd: 0.1, turns: 2 }).trim());
+log('P-2.log', preflightLine({ usd: 0.2, turns: 4 }).trim(), result({ cost: 1, ms: 1000, input: 1, output: 1 }));
+// P-3's worker died with a line of stderr after its preflight: a run with no result, so unknown.
+log('P-3.log', preflightLine({ usd: 0.1, turns: 2 }).trim(), 'Error: Credit balance is too low');
+const preOf = (k) => { const c = ticketCost(S, tk(k)); return JSON.stringify({ runs: c.runs, unknown: c.unknown, cost: c.usage?.cost, preflight: c.preflight }); };
+t('DS-158 AC6 a compressed round is read like any other', preOf('P-1'), '{"runs":2,"unknown":0,"cost":3,"preflight":{"n":2,"cost":0.3,"unknown":1}}');
+t('DS-158 a round holding only a preflight is not a run, but its cost counts', preOf('P-2'), '{"runs":1,"unknown":0,"cost":1,"preflight":{"n":2,"cost":0.30000000000000004,"unknown":0}}');
+t('DS-158 a worker that wrote only stderr after its preflight is a run with no result, not a preflight-only log', preOf('P-3'), '{"runs":1,"unknown":1,"preflight":{"n":1,"cost":0.1,"unknown":0}}');
+const pTable = costTable(batchCost(S, [tk('P-1'), tk('P-2')])).split('\n');
+console.log(pTable.join('\n'));
+t('DS-158 AC2 a worker\'s cost includes its preflights, shown apart, an unknown one named', row(pTable, 'P-1'), 'P-1|2|30|3|$3.30|$0.30 + 1 unknown|0m 03s|unknown');
+t('DS-158 AC2 a worker whose preflights all reported', row(pTable, 'P-2'), 'P-2|1|1|1|$1.30|$0.30|0m 01s|unknown');
+t('DS-158 AC2 the total adds them', row(pTable, 'total').split('|').slice(0, 6).join('|'), 'total|3|31|4|$4.60|$0.60 + 1 unknown');
+t('DS-158 AC3 a preflight with no result is unknown, not zero', costTable([{ key: 'X', runs: 1, unknown: 0, usage: { input: 0, output: 0, cost: 0, ms: 0 }, preflight: { n: 1, cost: 0, unknown: 1 }, first: null, stages: null }]).split('\n').find((l) => l.startsWith('  X ')).includes(' unknown '), true);
 
 // Tokens per stage. One model call as a worker's log holds it: an assistant event per content
 // block, each repeating the message's id and usage, whose output_tokens is an early snapshot; then,
@@ -123,7 +144,7 @@ t('DS-152 AC1 a worker row shows its first-turn input', row(sTable, 'S-1').split
 t('DS-152 AC2 a per-stage line for each stage, under the worker\'s row', under('S-1'), 'start-up 50,002 in 127 out | 0/9 intake 101,002 in 15 out | 4/9 verify 60,001 in 320 out');
 t('DS-152 AC4 a two-round worker says its rounds', row(sTable, 'S-2').split('|')[1], '2');
 t('DS-152 AC5 a worker with no usage reads unknown in its first-turn cell and its stages', `${row(sTable, 'S-3').split('|').at(-1)} / ${under('S-3')}`, 'unknown / stages: unknown (no usage in the log)');
-t('DS-152 the total first-turn input adds the known workers and names what it left out', row(sTable, 'total'), 'total|4|4|4|$4.00|0m 04s|50,502|(first-turn input leaves out 1 worker(s) with no usage)');
+t('DS-152 the total first-turn input adds the known workers and names what it left out', row(sTable, 'total'), 'total|4|4|4|$4.00|none|0m 04s|50,502|(first-turn input leaves out 1 worker(s) with no usage)');
 
 const loc = (v) => { try { return parseWorkerLocation(v); } catch (e) { return `refused: ${/Worker location/.test(e.message) ? 'names the row' : e.message}`; } };
 t('local reads as local', loc('local'), 'local');

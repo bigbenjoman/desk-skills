@@ -88,7 +88,8 @@ check "the requeued ticket spawns"                      '[ "$(field T-3 state)" 
 check "spawn clears result"                             '[ "$(field T-3 result)" = null ]'
 check "spawn clears images_uploaded"                    '[ "$(field T-3 images_uploaded)" = null ]'
 check "spawn clears images_reported"                    '[ "$(field T-3 images_reported)" = null ]'
-check "spawn moves the log to the next free round"      '[ ! -e "$T/state/logs/T-3.log" ] && grep -q "pr=1" "$T/state/logs/T-3.log.round2" && grep -qx older "$T/state/logs/T-3.log.round1"'
+check "spawn moves the log to the next free round, compressed" '! grep -q "pr=1" "$T/state/logs/T-3.log" && gzip -dc "$T/state/logs/T-3.log.round2.gz" | grep -q "pr=1" && [ ! -e "$T/state/logs/T-3.log.round2" ] && grep -qx older "$T/state/logs/T-3.log.round1"'
+check "DS-158 AC3 a preflight that reports no cost leaves it unknown in the spawn line and the new log" 'echo "$out" | grep -q "T-3 port=.*; preflight cost unknown, turns unknown" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":null,\"num_turns\":null" "$T/state/logs/T-3.log"'
 
 # The respawned worker (live, as far as the stub registry says) opens PR 2: its screenshots go there.
 q set T-3 session_id=live-1
@@ -109,8 +110,8 @@ echo "yesterday's answer" > "$T/state/answers/T-4.txt"
 # An even older round left a park record only: the log's own next free round would be .round1.
 echo '{"question": "older"}' > "$T/state/parks/T-4.json.round1"
 out=$(node "$B/queue.mjs" requeue T-4 2>&1)
-check "requeue moves the finished log aside"            '[ ! -e "$T/state/logs/T-4.log" ] && grep -q "pr=4" "$T/state/logs/T-4.log.round2"'
-check "requeue moves log, park and answer to one round" '[ ! -e "$T/state/logs/T-4.log.round1" ] && [ ! -e "$T/state/parks/T-4.json" ] && grep -q yesterday "$T/state/parks/T-4.json.round2" && grep -q older "$T/state/parks/T-4.json.round1" && [ ! -e "$T/state/answers/T-4.txt" ] && [ -e "$T/state/answers/T-4.txt.round2" ]'
+check "requeue moves the finished log aside"            '[ ! -e "$T/state/logs/T-4.log" ] && gzip -dc "$T/state/logs/T-4.log.round2.gz" | grep -q "pr=4"'
+check "requeue moves log, park and answer to one round" '[ ! -e "$T/state/logs/T-4.log.round1" ] && [ ! -e "$T/state/logs/T-4.log.round1.gz" ] && [ ! -e "$T/state/parks/T-4.json" ] && grep -q yesterday "$T/state/parks/T-4.json.round2" && grep -q older "$T/state/parks/T-4.json.round1" && [ ! -e "$T/state/answers/T-4.txt" ] && [ -e "$T/state/answers/T-4.txt.round2" ]'
 check "requeue resets the ticket"                       '[ "$(field T-4 state)" = "\"triaged\"" ] && [ "$(field T-4 park)" = null ] && [ "$(field T-4 session_id)" = null ] && [ "$(field T-4 idle_passes)" = 0 ] && [ "$(field T-4 log_bytes)" = 0 ] && [ "$(field T-4 branch)" = "\"fix/T-4\"" ]'
 check "requeue fronts the ticket"                       '[ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets)[0])" "$DESK_QUEUE")" = T-4 ]'
 out=$(node "$B/pass.mjs" 2>&1)
@@ -226,7 +227,7 @@ check "AC1 scope, a test and a lockfile report nothing"  '[ "$(field T-16 out_of
 node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
 out=$(node "$B/pass.mjs" 2>&1)
 check "AC3 an idle batch gives the scope total"         'echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "scope: 1 of 2 checked ticket(s) changed files outside their triaged scope, 2 file(s) in all"'
-check "DS-122 an idle batch gives each worker's cost, unknown where its log has no result event" 'echo "$out" | grep -q "^WORKER COST" && echo "$out" | grep -qE "^  T-15 +1 +unknown +unknown +unknown +unknown" && echo "$out" | grep -qE "^  total .*not counted\)$"'
+check "DS-122 an idle batch gives each worker's cost, unknown where its log has no result event" 'echo "$out" | grep -q "^WORKER COST" && echo "$out" | grep -qE "^  T-15 +1 +unknown +unknown +unknown +none +unknown" && echo "$out" | grep -qE "^  total .*not counted\)$"'
 
 # T-17 advances a stage while a live process holds the queue lock past its wait: the refused write is
 # in the report, naming the ticket and the change, not dropped.
@@ -431,8 +432,9 @@ killed K-2 sess-k2
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
 q set K-2 state=done
-# K-1's resumed worker is killed again, once it has had both resumes the row allows.
-q set K-1 session_id=sess-k1 resumes=2
+# K-1's resumed worker is killed again, once it has had both resumes the row allows. Its log was last
+# written by the resume's preflight line: set it back, or it reads as a worker the registry has not listed yet.
+q set K-1 session_id=sess-k1 resumes=2; touch -t 202601010000 "$T/state-k/logs/K-1.log"
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-145 AC3 a ticket resumed as often as the row allows is parked, naming the limit and the session" '[ "$(field K-1 state)" = "\"parked\"" ] && field K-1 park.question | grep -q "after 2 resume(s), the most config §3b ..Resume a killed worker (times).. allows (2), so it is not resumed. Session sess-k1" && [ "$(spawned_for K-1 | wc -l | tr -d " ")" = 1 ]'
 # K-4 ended normally: its log's last event is the result.
@@ -523,7 +525,9 @@ hlog H-1 "$(printf 'AUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC1 a session that prints AUTOPILOT_HANDOFF: 4b is not done, parked or failed, and the report says it handed off" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 4: queued for a fresh session from Stage 4b"'
 check "DS-155 AC2 the pass spawns a new session for the ticket, on its branch, starting at Stage 4b" 'spawned_for H-1 | grep -q "^H-1 [0-9a-f-]* stage=4b branch=fix/H-1 brief=$T/state-h/briefings/H-1.md$" && [ "$(field H-1 state)" = "\"running\"" ] && [ "$(field H-1 stage)" = "\"4b\"" ] && echo "$out" | grep -q "spawned: H-1 fresh session from Stage 4b (handed off)"'
-check "DS-155 AC2 with a new session id, the same worktree, and the handed-off session's log kept as its own round" '[ "$(field H-1 session_id)" != "\"old-H-1\"" ] && [ "$(field H-1 worktree)" = "\"$T/wt/H-1\"" ] && grep -q "AUTOPILOT_HANDOFF: 4b" "$T/state-h/logs/H-1.log.round1" && [ ! -e "$T/state-h/logs/H-1.log" ]'
+check "DS-155 AC2 with a new session id, the same worktree, and the handed-off session's log kept as its own round" '[ "$(field H-1 session_id)" != "\"old-H-1\"" ] && [ "$(field H-1 worktree)" = "\"$T/wt/H-1\"" ] && gzip -dc "$T/state-h/logs/H-1.log.round1.gz" | grep -q "AUTOPILOT_HANDOFF: 4b" && ! grep -q "AUTOPILOT_HANDOFF" "$T/state-h/logs/H-1.log"'
+h1=$(node "$B/harvest.mjs" "$T/state-h/logs/H-1.log.round1.gz" 2>&1)
+check "DS-158 AC6 harvest reads a compressed round's markers and result" 'grep -q "AUTOPILOT_HANDOFF: 4b" <<< "$h1" && grep -qF "result: error=false turns=3 notional=\$0.50" <<< "$h1"'
 check "DS-155 AC4 the briefing holds the key, criteria, branch, lane, verification, findings so far and evidence" 'b=$(brief H-1); for s in "## Handoff: this session starts at Stage 4b" "### Ticket" "AC1: the widget saves" "\`fix/H-1\` in $T/wt/H-1" "### Lane" "typecheck: pass" "### Self-review findings so far" "### Evidence captured"; do grep -qF -- "$s" <<< "$b" || exit 1; done'
 check "DS-155 AC4 and nothing else: no field the briefing does not hold, and no sibling notes" '! brief H-1 | grep -q "SCRATCH-FIELD" && ! brief H-1 | grep -q "SIBLING-NOTE"'
 check "DS-155 the handoff session's briefing still carries the binding answer" 'brief H-1 | grep -q "use the blue widget"'
@@ -649,5 +653,35 @@ check "DS-191 a read that fails leaves the record unread and the pass says so" \
   '[ "$(jq -c "has(\"epic\")" "$TR/T-53.json")" = false ] && grep -q "^epics: read for 2 of 3 triage record(s) written before epics were recorded — not read, tried again next pass: T-53  epic NOT READ: desk-jira: 404 for T-53" <<< "$out"'
 : > "$JIRA_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-191 the next pass reads only the record still unread" '[ "$(cut -d" " -f1-2 "$JIRA_CALLS")" = "get T-53" ]'
+
+# ---- DS-158: each spawn's preflight cost is logged and shown; a log that grows only when a message ends
+export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-p.json" DESK_AUTOPILOT_STATE="$T/state-p"
+mkdir -p "$T/state-p/logs"
+cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
+if [ "$3" = preflight ] && [ "$1" = P-2 ]; then printf '[preflight] %s\n[preflight] cost=0.05 turns=2\n  W_IN   BLOCKED  FAIL (wanted OK)\n' "$1"; exit 1; fi
+if [ "$3" = preflight ]; then printf '[preflight] %s\n[preflight] cost=0.4321 turns=9\n[preflight] pass\n' "$1"; exit 0; fi
+echo "[spawn] ticket=$1"
+EOF
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
+q init p
+q add P-1; q set P-1 state=triaged lane=A branch=fix/P-1
+q add P-2; q set P-2 state=triaged lane=A branch=fix/P-2
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-158 AC1 the spawn line shows the preflight's cost and turns" 'echo "$out" | grep -q "^spawned: P-1 port=.*; preflight \$0.43, 9 turn(s)"'
+check "DS-158 AC1 and the ticket's log holds them" 'grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9" "$T/state-p/logs/P-1.log"'
+check "DS-158 a failed preflight's cost is in the failure and the ticket's log too" '[ "$(field P-2 state)" = "\"failed\"" ] && echo "$out" | grep -q "preflight \$0.05, 2 turn(s)" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.05,\"num_turns\":2" "$T/state-p/logs/P-2.log"'
+# P-1's worker is in long model turns: with no partial messages its log grows only when a message
+# ends, here once every five passes. Today's threshold, six quiet passes, still applies.
+q set P-1 session_id=live-1 idle_passes=0 "log_bytes=$(wc -c < "$T/state-p/logs/P-1.log" | tr -d ' ')"
+for _ in 1 2; do
+  for _ in 1 2 3 4 5; do out=$(node "$B/pass.mjs" 2>&1); done
+  say "AUTOPILOT_STAGE: 3/9 implement" >> "$T/state-p/logs/P-1.log"
+done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-158 AC5 a log that grows once a message, five passes apart, is never parked as wedged" '[ "$(field P-1 state)" = "\"running\"" ] && [ "$(field P-1 idle_passes)" = 0 ]'
+for _ in 1 2 3 4 5; do out=$(node "$B/pass.mjs" 2>&1); done
+check "DS-158 AC5 five quiet passes are not yet a stall" '[ "$(field P-1 state)" = "\"running\"" ] && [ "$(field P-1 idle_passes)" = 5 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-158 AC5 the sixth parks it as wedged, as before" '[ "$(field P-1 state)" = "\"parked\"" ] && field P-1 park | grep -q wedged'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

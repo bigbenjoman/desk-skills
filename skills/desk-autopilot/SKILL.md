@@ -811,7 +811,10 @@ offer `desk-ci measure` rather than reporting the rate as normal.
 **The batch report also carries what each worker cost.** The idle pass prints a `WORKER COST` table:
 each worker's input and output tokens, cost in USD and wall time, summed over every round of it in
 this batch, and a total row. Put the table in the report as printed. A worker whose log has no result event reads `unknown`, and
-the total says how many it left out: report those as unknown, never as zero. Each row also gives
+the total says how many it left out: report those as unknown, never as zero. The cost includes the
+permissions preflight before each spawn, and the `preflight` column gives that part on its own; a
+preflight that produced no result is named `unknown` there, never counted as zero. Each spawn line
+of a pass says what its preflight cost too. Each row also gives
 the worker's first-turn input (the prompt each run started on), and under it one line per stage
 with the input and output tokens from that stage marker to the next; tokens before the first marker
 are `start-up`. A worker whose log has no usage figures reads `unknown` there too.
