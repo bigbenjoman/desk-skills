@@ -71,7 +71,7 @@ function put(T, env, name, r) {
   }
   for (const [k, v] of Object.entries(r.triage ?? {})) {
     mkdirSync(join(state, 'triage'), { recursive: true });
-    writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, ...v }));
+    writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, epic: null, ...v }));
   }
 }
 
