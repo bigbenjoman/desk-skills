@@ -1066,6 +1066,15 @@ parked or failed starts again at the stage that handoff named (`queue.mjs set <T
 handoff_stage=null` first starts it from Stage 0); one that finished, and is sent back for rework,
 starts from Stage 0.
 
+**A requeue after a park at Stage 3 or later resumes that round.** When a worker parks, the pass
+records the stage it reached and its question on the ticket (`last_round`). The fresh spawn after a
+requeue starts at that stage, with a summary of the round in its briefing: the stage, the park
+question and the answers recorded since, and the branch and its commits (`spawned: … resumed at
+Stage 4, where its last round parked`). A park before Stage 3, a worktree removed for a fresh branch,
+and a stalled or failed worker start at Stage 0 as before. So does a worktree on another branch, or
+a resume file there that records another branch: the briefing says why, and the worker's first stage
+line repeats it.
+
 ## Concurrency and memory
 
 Default **2**, cap **3** (config §3b "Autopilot worker concurrency" can change either), and it is

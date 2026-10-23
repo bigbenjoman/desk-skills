@@ -576,6 +576,39 @@ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f,
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC7 the batch report's row for a ticket whose sessions handed off counts every session's run and cost" 'echo "$out" | grep -qE "^  H-1 +4 .* \\\$2\.00 "'
 
+# ---- DS-156: a requeue after a park at Stage 3 or later resumes that round ------------------------
+# Each ticket parks in a real worktree on its branch; the requeue's spawn is read one ticket at a time.
+git -C "$T/repo" update-ref refs/remotes/origin/main main
+parking(){ handing "$1"; q set "$1" stage=0/9; hlog "$1" "$(printf 'AUTOPILOT_STAGE: %s\nAUTOPILOT_PARK: %s' "$2" "$3")"; }
+resumefile(){ mkdir -p "$T/wt/$1/.claude"; printf '{"ticket":"%s","branch":"%s"}' "$1" "$2" > "$T/wt/$1/.claude/desk-ticket-$1.json"; }
+respawn(){ q requeue "$1"; out=$(node "$B/pass.mjs" 2>&1); }
+parking R-1 "4/9 verify" "which colour does the badge take?"
+git -C "$T/wt/R-1" commit -q --allow-empty -m "feat: R-1 the badge"; resumefile R-1 fix/R-1
+parking R-2 "2/9 understand" "is the badge in scope?"
+parking R-3 "5/9 evidence" "which page shows it?"; resumefile R-3 fix/R-3-old
+parking R-4 "4/9 verify" "which size?"
+parking R-5 "6/9 hygiene" "which reviewer?"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-156 a worker's park records the stage its round reached and its question" '[ "$(field R-1 state)" = "\"parked\"" ] && [ "$(field R-1 last_round.stage)" = "\"4/9\"" ] && [ "$(field R-1 last_round.question)" = "\"which colour does the badge take?\"" ]'
+node "$B/answer.mjs" R-1 "green, as on the cards" >/dev/null 2>&1
+respawn R-1
+check "DS-156 AC1 the respawn's briefing holds the last round: the stage, the park question and its answer, the branch and its commits" 'b=$(brief R-1); for s in "## Last round: this session resumes at Stage 4" "which colour does the badge take?" "- green, as on the cards" "\`fix/R-1\` in $T/wt/R-1" "feat: R-1 the badge"; do grep -qF -- "$s" <<< "$b" || exit 1; done'
+check "DS-156 AC2 with a resume file on its branch, the worker starts at the stage the summary names" 'spawned_for R-1 | grep -q "^R-1 [0-9a-f-]* stage=4 branch=fix/R-1 " && [ "$(field R-1 stage)" = 4 ] && [ "$(field R-1 last_round)" = null ] && echo "$out" | grep -q "R-1 .*resumed at Stage 4, where its last round parked"'
+check "DS-156 a resumed round keeps the sibling notes" 'brief R-1 | grep -q "SIBLING-NOTE"'
+q set R-1 state=done
+respawn R-5
+check "DS-156 AC2 a worktree on its branch with no resume file resumes too" 'spawned_for R-5 | grep -q "stage=6 " && brief R-5 | grep -qF "## Last round: this session resumes at Stage 6"'
+q set R-5 state=done
+respawn R-2
+check "DS-156 AC3 a round that parked before Stage 3 starts at Stage 0 with no last-round summary" 'spawned_for R-2 | grep -q "stage= " && [ "$(field R-2 stage)" = "\"0/9\"" ] && ! brief R-2 | grep -q "## Last round"'
+q set R-2 state=done
+respawn R-3
+check "DS-156 AC4 a resume file on another branch starts at Stage 0, and the first stage line it is given says why" 'spawned_for R-3 | grep -q "stage= " && brief R-3 | grep -qF "AUTOPILOT_STAGE: 0/9 triage (not resumed from Stage 5: its resume file is for branch fix/R-3-old, not the queue'"'"'s fix/R-3)" && echo "$out" | grep -q "R-3 .*from Stage 0 (not resumed from Stage 5"'
+q set R-3 state=done
+git -C "$T/repo" worktree remove --force "$T/wt/R-4"
+respawn R-4
+check "DS-156 AC5 a requeue that removed the worktree has no last-round summary, and starts at Stage 0" 'spawned_for R-4 | grep -q "stage= " && ! brief R-4 | grep -q "## Last round"'
+
 # ---- DS-191: a triage record from before epics were recorded gets its epic read by the next pass
 cat >> "$T/config.md" <<'EOF'
 

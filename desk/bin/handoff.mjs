@@ -6,6 +6,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -52,6 +53,86 @@ export function branchCommits(worktree, base) {
     return execFileSync('git', ['-C', worktree, 'log', '--reverse', '--format=%h %s', `${base}..HEAD`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .split('\n').filter(Boolean);
   } catch { return []; }
+}
+
+// A respawn after the worker's own park resumes at the stage that round reached, from Stage 3 on: the
+// stages before it only read the ticket and the code again. pass.mjs records `last_round` on the queue
+// when a worker parks and reads it at the next fresh spawn. A stage before 3, or a stage it cannot
+// read, starts at Stage 0.
+export const RESUME_STAGES = ['3', '4', '4b', '5', '6', '7', '8', '9'];
+
+// "4/9" or "4b" as the stage a session starts at, or null for one before Stage 3 or none.
+export function roundStage(v) {
+  const s = /^\s*(4b|\d)(?:\/9)?\b/i.exec(String(v ?? ''))?.[1]?.toLowerCase();
+  return RESUME_STAGES.includes(s) ? s : null;
+}
+
+export const resumeFilePath = (worktree, key) => join(worktree, '.claude', `desk-ticket-${key}.json`);
+
+// Whether the round can be resumed in this worktree: { ok: true } or { ok: false, why }. The worktree
+// must be on the queue's branch, and desk-ticket's resume file, where there is one, must record it. A
+// worker's `.claude/` is write-protected, so most worktrees have no resume file.
+export function resumeCheck({ worktree, key, branch }) {
+  const missing = handoffTarget({ worktree, branch });
+  if (missing) return { ok: false, why: missing };
+  const path = resumeFilePath(worktree, key);
+  if (!existsSync(path)) return { ok: true };
+  let d;
+  try { d = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, why: `its resume file ${path} is not JSON (${e.message})` }; }
+  if (!d?.branch) return { ok: false, why: `its resume file ${path} records no branch` };
+  if (String(d.branch) !== branch) return { ok: false, why: `its resume file is for branch ${d.branch}, not the queue's ${branch}` };
+  return { ok: true };
+}
+
+// The answers recorded in a briefing since `since` (ISO), oldest first: each answer.mjs section's
+// text, its heading being `## Answer from the user (<ISO time>)`.
+export function answersSince(brief, since) {
+  const t0 = Date.parse(since ?? '');
+  return collectAnswers(brief).split(ANSWER_HEAD).slice(1)
+    .map((s) => /^ \(([^)]+)\)\n([\s\S]*)$/.exec(s))
+    .filter((m) => m && Date.parse(m[1]) >= t0)
+    .map((m) => m[2].trim())
+    .filter(Boolean);
+}
+
+// The last round's summary: the stage it reached, the park question and its answer, and the branch
+// and its commits.
+export function renderLastRound({ key, round, answers, branch, worktree, base, commits }) {
+  const items = (xs, none) => (xs.length ? xs.map((x) => `- ${x}`) : [`- ${none}`]);
+  return [
+    `## Last round: this session resumes at Stage ${round.stage}`,
+    '',
+    `The last round of ${key} reached Stage ${round.stage} and parked. This session starts at Stage ${round.stage} rather than Stage 0: ` +
+      `do not redo the stages before it. Check git status and git log in your worktree, and read your resume file ${resumeFilePath(worktree, key)} where there is one.`,
+    '',
+    '### Park question',
+    '',
+    round.question || 'not recorded',
+    '',
+    '### Its answer',
+    '',
+    ...items(answers, 'none recorded since it parked'),
+    '',
+    '### Branch and its commits',
+    '',
+    `\`${branch}\` in ${worktree}. Its commits since \`${base}\`:`,
+    '',
+    ...items(commits, 'none'),
+    '',
+  ].join('\n');
+}
+
+// A respawn that could have resumed but does not: it starts at Stage 0 and says why in its first line.
+export function renderNoResume({ round, why }) {
+  return [
+    '## Last round: not resumed, this session starts at Stage 0',
+    '',
+    `The last round reached Stage ${round.stage} and parked, but it is not resumed: ${why}. Start at Stage 0, and do not resume from a resume file in the worktree. ` +
+      'Your first stage line says why, as:',
+    '',
+    `AUTOPILOT_STAGE: 0/9 triage (not resumed from Stage ${round.stage}: ${why})`,
+    '',
+  ].join('\n');
 }
 
 // The briefing: the ticket key, its acceptance criteria, the branch and its commits, the lane, the
