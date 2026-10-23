@@ -485,8 +485,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   if (park) {
     q('park', t.key, park.trim());
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
-    // one: a stalled or failed worker starts again at Stage 0.
-    q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: new Date().toISOString() })}`);
+    // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
+    // answer given before this pass saw the park still counts as its answer.
+    q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
     report.parked.push(`${t.key}: ${park.trim()}`);
     logDecisions(t, log, null);
   }

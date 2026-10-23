@@ -6,6 +6,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -57,7 +58,7 @@ export function branchCommits(worktree, base) {
 // A respawn after the worker's own park resumes at the stage that round reached, from Stage 3 on: the
 // stages before it only read the ticket and the code again. pass.mjs records `last_round` on the queue
 // when a worker parks and reads it at the next fresh spawn. A stage before 3, or a stage it cannot
-// read, starts at Stage 0 as every spawn did before.
+// read, starts at Stage 0.
 export const RESUME_STAGES = ['3', '4', '4b', '5', '6', '7', '8', '9'];
 
 // "4/9" or "4b" as the stage a session starts at, or null for one before Stage 3 or none.
@@ -83,16 +84,15 @@ export function resumeCheck({ worktree, key, branch }) {
   return { ok: true };
 }
 
-// The answers recorded in a briefing since `since` (ISO), oldest first: each answer.mjs section's text.
+// The answers recorded in a briefing since `since` (ISO), oldest first: each answer.mjs section's
+// text, its heading being `## Answer from the user (<ISO time>)`.
 export function answersSince(brief, since) {
-  const out = [];
   const t0 = Date.parse(since ?? '');
-  for (const m of String(brief ?? '').matchAll(/^## Answer from the user \(([^)]+)\)\n\n([\s\S]*?)(?=\n## |$(?![\s\S]))/gm)) {
-    if (!(Date.parse(m[1]) >= t0)) continue;
-    const text = m[2].trim();
-    if (text) out.push(text);
-  }
-  return out;
+  return collectAnswers(brief).split(ANSWER_HEAD).slice(1)
+    .map((s) => /^ \(([^)]+)\)\n([\s\S]*)$/.exec(s))
+    .filter((m) => m && Date.parse(m[1]) >= t0)
+    .map((m) => m[2].trim())
+    .filter(Boolean);
 }
 
 // The last round's summary: the stage it reached, the park question and its answer, and the branch
