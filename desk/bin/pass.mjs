@@ -26,7 +26,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
-import { normaliseCheck, latestPerCheck } from './gate.mjs';
+import { normaliseRollup, latestPerCheck } from './gate.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
@@ -1256,9 +1256,7 @@ function readPrStatus(n) {
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
-  const checks = latestPerCheck((v.statusCheckRollup ?? []).filter((c) => c && (c.name || c.context)).map((c) => ({
-    ...normaliseCheck(c), workflow: c.workflowName ?? null, startedAt: c.startedAt ?? null, completedAt: c.completedAt ?? null,
-  }))).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: c.startedAt, completed: c.completedAt, runner: c.status !== 'queued' }));
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: c.startedAt, completed: c.completedAt, runner: c.status !== 'queued' }));
   return { pr: n, state: v.state, url: v.url ?? null, checks, at: new Date().toISOString() };
 }
 for (const t of Object.values(qNow.tickets)) {

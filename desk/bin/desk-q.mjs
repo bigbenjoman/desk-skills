@@ -32,6 +32,7 @@ import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurren
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
+import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 
@@ -790,9 +791,8 @@ function runningStage(r, x) {
 // A landing ticket's checks, as the last pass read them (pr_status). A check queued this long with
 // no runner reads as stalled for want of one.
 const NO_RUNNER_MS = 10 * MINUTE;
-const FAILED_CHECK = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
-const checkFailed = (c) => c.status === 'completed' && FAILED_CHECK.has(c.conclusion);
-const checkPassed = (c) => c.status === 'completed' && !FAILED_CHECK.has(c.conclusion);
+const checkFailed = (c) => c.status === 'completed' && FAILED.has(c.conclusion);
+const checkPassed = (c) => c.status === 'completed' && !FAILED.has(c.conclusion);
 const startedMs = (c) => Date.parse(c.started ?? '') || null;
 // "tests (macos-latest)" waits for a macOS runner; a check with no runner label is named itself.
 const OS_NAMES = [[/macos/i, 'macOS'], [/windows/i, 'Windows'], [/ubuntu|linux/i, 'Linux']];
