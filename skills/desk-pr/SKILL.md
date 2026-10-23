@@ -162,7 +162,7 @@ taken` when they apply). No title in the body, and no headings §5 does not list
 can overrule one in review rather than finding it in the diff.
 
 **Carried review findings** are the P2s a third self-review round carried rather than fixed
-(`desk-ticket` "Three rounds, then stop"). Print the section with `node <desk-review>/bin/verdict.mjs
+(`desk-ticket` Stage 4b, "Three rounds, then stop"). Print the section with `node <desk-review>/bin/verdict.mjs
 --carried <results>` and paste it as printed, so every finding keeps its `file:line`. **More than
 five**, with §3 `jira-create` `yes` and §4 Tracker `jira`: create **one** follow-up ticket via
 `desk-jira create` whose body is that list, and in place of the list the section holds one line,
@@ -279,7 +279,7 @@ size:
   default `390` `768` `1024` `1280` `1440`, and `none` leaves only the drawn widths), plus each
   board's own drawn width where it is not a breakpoint. If `source.json` has no `screens` record (a re-save of a new
   version drops it) or `source.screens.breakpoints` differs from the row, run `desk-design render`
-  (desk-ticket, "A Claude Design canvas is saved into the repo") before capturing.
+  (desk-ticket `design-canvas.md`, "A Claude Design canvas is saved into the repo") before capturing.
 - **Canvas cell**: the board's image at that width, `screens/<board>@<width>.png` from
   `source.screens.images` (its `drawn` flag says whether the designer drew that width or the browser
   reflowed the board to it). Copy each into `<§2 Handoff directory>/<TICKET>/` as
@@ -503,7 +503,7 @@ with success, skipped not counting; nothing else failed, errored, timed out or s
 `--match-head-commit`. A PR touching a glob in §4 Merge holds is never armed or merged by a skill:
 report it with the hold's reason and the user merges. Never `--admin`, never past a failing check
 (`merge-bypass` is `never`). A draft cannot merge, so a PR left drafted is a merge silently deferred; if a row says
-`no`, say plainly it waits on the user. `desk-ticket`'s "Merging" section owns shepherding,
+`no`, say plainly it waits on the user. `desk-ticket`'s Stage 7 "Merging" section owns shepherding,
 including disarming auto-merge when review feedback lands under §3 `merge-feedback-first`. If `gh`
 fails, fall back to handing over the raw markdown to paste.
 

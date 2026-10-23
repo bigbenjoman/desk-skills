@@ -583,7 +583,7 @@ node ~/.claude/desk/bin/desk-design.mjs write <state>/designs/<TICKET> --url <ar
   --version <its version> --epic <EPIC, or the first ticket> --key <KEY> [--boards '<a>,<b>'] --key <KEY2> …
 ```
 
-Each worker runs `desk-design.mjs save` on its snapshot (desk-ticket, "A Claude Design canvas is saved
+Each worker runs `desk-design.mjs save` on its snapshot (desk-ticket `design-canvas.md`, "A Claude Design canvas is saved
 into the repo"), which commits it under `<§2 Design canvases directory>/<EPIC or KEY>/` on the
 ticket's branch, once per artifact. `canvas.json` names each board and its width; each board holds
 the exact copy, colours and sizes. For a ticket whose canvas is already saved (`check` prints `ok`

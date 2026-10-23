@@ -73,7 +73,7 @@ the user can say yes to, not in code:
 
 - **A feature too big for one sitting, or one spanning more than one app or package:** a plan naming
   the files each part touches, the order, and where it splits into independently mergeable stages,
-  each its own PR. Get each area's design from its expert (SKILL.md, Stage 3) and put it in the
+  each its own PR. Get each area's design from its expert (`stage-3-implement.md`, Stage 3) and put it in the
   plan. Look for prior art first: an existing pattern on `origin/<default>` usually shrinks the work
   to lane A.
 - **An intermittent bug:** `superpowers:systematic-debugging` until the cause is evidenced, then the
@@ -94,7 +94,7 @@ When a design is the specification:
    scope from Stage 2, and an instruction to follow the repo's design-to-code skill: its tokens and
    components, its copy keys, any story or preview it keeps, and the screenshot diff against the
    frame. The brief also names `ux-designer`, `ui-designer` and `ux-copywriter` and §5 Design system,
-   for the states, token mapping and wording the design leaves open (SKILL.md, Stage 3). It commits
+   for the states, token mapping and wording the design leaves open (`stage-3-implement.md`, Stage 3). It commits
    nothing; ask for the changed files and the diff result. **A repo with no such agent** builds it
    here in this session, following the same skills and the same frame diff; D still stops for
    agreement first.
@@ -103,7 +103,7 @@ When a design is the specification:
 4. Reading the frame needs §3 `read-figma` (or the equivalent read for the design tool); without it,
    ask the user for the frame's content rather than guessing it.
 5. **A Claude Design artifact** is read from its saved copy in the repo, `<§2 Design canvases
-   directory>/<EPIC or KEY>/` (SKILL.md, "A Claude Design canvas is saved into the repo"), which the
+   directory>/<EPIC or KEY>/` (`design-canvas.md`, "A Claude Design canvas is saved into the repo"), which the
    Artifact tool fills (`action:list scope:files`, then the files under `project/`) and, in an
    autopilot batch, the worker copies from the orchestrator's snapshot in
    `$DESK_STATE/designs/<TICKET>/`. `canvas.json` names each board and its width; each
