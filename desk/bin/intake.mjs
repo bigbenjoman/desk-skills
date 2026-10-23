@@ -15,9 +15,10 @@
 //     or XL, or a blocker that is not done and not in the batch;
 //   - otherwise admitted (queue.mjs admit --by intake), held behind every blocker in the batch in the
 //     same write.
-// With no queue, or one whose tickets have all finished, a batch is started for it (`standing-<time>`,
-// handed to the supervisor at once). A batch not handed over, an empty one included (a session between
-// `queue.mjs init` and its plan), is a session's and gets nothing until it is handed over.
+// With no queue, or one whose tickets are all done with no PR open, a batch is started for it
+// (`standing-<time>`, handed to the supervisor at once). A batch not handed over, an empty one included
+// (a session between `queue.mjs init` and its plan), is a session's and gets nothing until it is
+// handed over; so does a batch on a base, whose tickets merge there.
 // At most MAX_TRIAGE tickets are triaged a run, and the search reads one page of SEARCH_MAX; the
 // report says when either leaves tickets for later.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
@@ -76,21 +77,27 @@ export function intakeReasons(r) {
 const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key);
 
 // ---- the batch ---------------------------------------------------------------------------------
-// A batch is live while any ticket is still to finish, or done with a PR still open. A PR whose state
-// cannot be read counts as open.
+// A PR whose state cannot be read counts as open.
 export function prOpen(n) {
   let repo;
   try { repo = E.ghRepo(); } catch { return true; }
   const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
   return !(r.status === 0 && ['MERGED', 'CLOSED'].includes(r.stdout.trim()));
 }
-export function batchLive(q) {
-  const rows = Object.values(q?.tickets ?? {});
-  return rows.some((t) => !['done', 'failed'].includes(t.state)) || rows.some((t) => t.state === 'done' && t.result?.pr != null && prOpen(t.result.pr));
-}
-// Free for a standing batch: no queue, or one whose tickets have all finished. A queue with no tickets
-// is a session's between `queue.mjs init` and its plan, never free.
-const free = (q) => !q || (Object.keys(q.tickets ?? {}).length > 0 && !batchLive(q));
+// Free for a standing batch: no queue, or one whose every ticket is done with no PR still open. A failed
+// ticket waits on the person, a queue with no tickets is a session's between `queue.mjs init` and its
+// plan, and a batch on a base still has its gate and promotion to come: none of those is free.
+// queue.mjs init --standing checks the same under its lock.
+const free = (q) => {
+  if (!q) return true;
+  const rows = Object.values(q.tickets ?? {});
+  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
+};
+// Why intake admits nothing into this batch now, or null.
+const waitFor = (b) => (!b || free(b) ? null
+  : b.base ? `intake: admits nothing while batch ${b.batch ?? '?'} runs on base ${b.base}: its tickets merge there, and intake's go to the default branch`
+    : b.supervised !== true ? `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`
+      : null);
 
 const queueCmd = (...args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env: process.env });
 
@@ -131,9 +138,7 @@ function intake({ state, query, reg, now }) {
   let q;
   try { q = readQ(); } catch (e) { lines.push(`intake: admits nothing: the queue at ${qf} cannot be read (${e.message})`); return done(); }
   // A batch a session is still planning is the session's: intake joins it once it is handed over.
-  const sessions = (b) => b && b.supervised !== true && !free(b);
-  const notHanded = (b) => `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`;
-  if (sessions(q)) { lines.push(notHanded(q)); return done(); }
+  if (waitFor(q)) { lines.push(waitFor(q)); return done(); }
 
   const r = spawnSync('desk-jira', ['search', query, String(SEARCH_MAX), '--json'], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
   let found;
@@ -189,29 +194,30 @@ function intake({ state, query, reg, now }) {
     order.push(...take);
     rest = rest.filter((k) => !take.includes(k));
   }
-  const inQueue = () => { try { return JSON.parse(readFileSync(qf, 'utf8')).tickets ?? {}; } catch { return {}; } };
-
   let started = null;
   for (const key of order) {
     const rec = recs[key];
     const reasons = intakeReasons(rec);
-    // A blocker this batch will not merge leaves nothing to release it.
-    const tickets = inQueue();
+    // Read again, whole: triage took minutes, and a session may have started its own batch meanwhile.
+    let cur;
+    try { cur = readQ(); } catch (e) { lines.push(`intake: admits nothing more: the queue at ${qf} cannot be read (${e.message})`); return done({ started }); }
+    if (waitFor(cur)) { lines.push(waitFor(cur)); return done({ started }); }
+    // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it. A
+    // blocker the batch will not merge leaves nothing to release the ticket.
+    const startNew = !started && free(cur);
+    const tickets = startNew ? {} : cur?.tickets ?? {};
     const blockers = openBlockers(rec);
     const outside = blockers.filter((b) => !tickets[b] || tickets[b].state === 'failed');
     for (const b of outside) reasons.push(`blocked by ${b}, which is not done and not in the batch: add it to the batch, or settle the link`);
     if (reasons.length) { hand(key, reasons.join('; ')); continue; }
 
-    // Read again, whole: triage took minutes, and a session may have started its own batch meanwhile.
-    let cur;
-    try { cur = readQ(); } catch (e) { lines.push(`intake: admits nothing more: the queue at ${qf} cannot be read (${e.message})`); return done({ started }); }
-    if (sessions(cur)) { lines.push(notHanded(cur)); return done({ started }); }
-    if (free(cur)) {
+    if (startNew) {
+      // queue.mjs re-checks under its lock that the queue is still the one found free, and hands the
+      // new batch to the supervisor in the same write.
       const name = `standing-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}`;
-      const init = queueCmd('init', name, '--standing');
-      const set = init.status === 0 ? queueCmd('set-batch', 'supervised=true') : init;
-      if (set.status !== 0) {
-        lines.push(`intake: admits nothing: a standing batch could not be started (${lastLine(set)}); the next intake tries again`);
+      const init = queueCmd('init', name, '--standing', '--if-batch', cur ? String(cur.batch) : 'none');
+      if (init.status !== 0) {
+        lines.push(`intake: admits nothing: a standing batch could not be started (${lastLine(init)}); the next intake tries again`);
         reg.last_run = null;
         writeIntake(state, reg);
         return done({ started });
@@ -220,10 +226,8 @@ function intake({ state, query, reg, now }) {
       cur = { batch: name };
       lines.push(`intake: started standing batch ${name}, handed to the supervisor`);
     }
-    // Held in the same write as the admit, so no pass sees it runnable first. A standing batch started
-    // above holds none of the finished batch's tickets.
-    const inBatch = inQueue();
-    const held = blockers.filter((b) => inBatch[b]);
+    // Held in the same write as the admit, so no pass sees it runnable first.
+    const held = blockers.filter((b) => tickets[b]);
     const a = queueCmd('admit', key, '--by', 'intake', ...(held.length ? ['--hold', held.join(',')] : []));
     if (a.status !== 0) { lines.push(`intake: ${key} not admitted: ${lastLine(a)}; the next intake tries again`); continue; }
     const hold = held.length ? `, held behind ${held.join(', ')}` : '';

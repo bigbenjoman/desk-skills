@@ -84,7 +84,8 @@ export function repos({ home = E.deskHome(), root = stateRoot(), self = null } =
     if (existsSync(join(qdir, slug, 'queue.json'))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
   }
   for (const slug of existsSync(root) ? readdirSync(root) : []) {
-    if (existsSync(join(root, slug, 'decisions.jsonl'))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
+    // A repo whose only news is what standing intake handed on has no queue or decision log yet.
+    if (['decisions.jsonl', 'intake.json'].some((f) => existsSync(join(root, slug, f)))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
   }
   return [...found.values()].sort((a, b) => a.slug.localeCompare(b.slug));
 }

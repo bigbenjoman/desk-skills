@@ -257,13 +257,27 @@ switch (cmd) {
   case 'init': {
     // Stage 0 is the last point before triage: an orchestrator that cannot ask or run its monitors
     // would triage, then stall at Stage 3. A standing batch (intake.mjs) has no orchestrator to stall.
+    // --standing --if-batch <name|none>, for intake: replace only the batch intake found finished, still
+    // named so with every ticket done (or no queue for `none`), checked under this lock, and hand the new
+    // batch to the supervisor in the same write, so a session's own init is never replaced or handed over.
     const standing = args.includes('--standing');
+    const ifAt = args.indexOf('--if-batch');
+    const name = args.find((a, i) => !a.startsWith('--') && i !== ifAt + 1);
+    if (standing) {
+      if (ifAt < 0) throw new Error('init --standing wants --if-batch <the batch it replaces, or none>');
+      let cur = null;
+      try { cur = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { cur = { batch: null, tickets: {} }; }
+      const rows = Object.values(cur?.tickets ?? {});
+      const same = cur ? String(cur.batch) === args[ifAt + 1] && rows.length > 0 && rows.every((t) => t.state === 'done') && !cur.base : args[ifAt + 1] === 'none';
+      if (!same) throw new Error(`init --standing: the queue is batch ${cur?.batch ?? 'none'} now, not the finished ${args[ifAt + 1]}: left as it is`);
+    }
     const dm = standing ? {} : sessionDefaultMode();
     if (dm.mode === 'dontAsk') {
       throw new Error(`${DONTASK_WARNING}. Set in ${dm.file}; remove it (run /desk-setup, which backs the file up first), restart the session, then init again`);
     }
     const fresh = empty();
-    fresh.batch = args.find((a) => a !== '--standing') ?? new Date().toISOString().slice(0, 16);
+    fresh.batch = name ?? new Date().toISOString().slice(0, 16);
+    if (standing) fresh.supervised = true;
     save(fresh);
     // Batch notes record what workers learnt about *this* configuration. Carrying them
     // across batches propagates claims that a config change has since made false.

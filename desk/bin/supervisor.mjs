@@ -39,7 +39,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
-import { intakeQuery, prOpen } from './intake.mjs';
+import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -211,7 +211,12 @@ function interval() {
   const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   // Standing intake first: it may start the batch this tick then passes.
   const intake = runIntake();
-  if (!existsSync(E.queueFile())) { if (intake.length) log([`== ${stamp()} intake`, ...intake]); return; }
+  if (!existsSync(E.queueFile())) {
+    if (intake.length) log([`== ${stamp()} intake`, ...intake]);
+    // With no batch there is no pass, but what intake handed on still goes out at each check-in.
+    if (handedByIntake(state).length) idleCheckin(state, readState(state), log, stamp, { maintenance: false });
+    return;
+  }
   let q;
   try { q = readQueue(E.queueFile()); } catch (e) { log([`== ${stamp()} queue unreadable, no pass run: ${describeCrash(e)}`, ...intake]); return; }
   const s = readState(state);
@@ -261,8 +266,8 @@ function runIntake() {
 
 // An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
 // the check-in alone and pushes what it returns, once per key, as a pass's push would be.
-function idleCheckin(state, s, log, stamp) {
-  idleMaintenance(log, stamp);
+function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
+  if (maintenance) idleMaintenance(log, stamp);
   const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
   let d;
   try { d = JSON.parse(String(r.stdout ?? '').trim()); } catch {
