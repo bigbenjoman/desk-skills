@@ -188,7 +188,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
   const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])));
-  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st?.stage ?? t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, history.map((l) => [l.key, l.size, l.hours])]);
@@ -448,7 +448,7 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
 // With passes stopped, a running row has no STARTS column here to say so, so its stage stands in.
-const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.st?.label ?? i.x.t.stage ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
+const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.st.label ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
@@ -751,7 +751,7 @@ function readyWhy(r, t) {
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from.
 function runningStage(r, x) {
-  const st = x.st ?? { stage: x.t.stage ?? null, label: x.t.stage ?? null, at: r.last, log: false };
+  const { st } = x;
   if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}`;
   return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
 }
@@ -823,7 +823,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     '',
   ];
   const rows = [], out = [];
-  if (k === 'running') head.push(`A worker is on it, at ${row ? runningStage(r, row) : `stage ${t.stage ?? '?'}`}.`, '');
+  if (k === 'running') head.push(`A worker is on it, at ${runningStage(r, row)}.`, '');
   if (row) head.push(...etaLines(r, forecastOf(r, { now, checkin }), row, now));
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
