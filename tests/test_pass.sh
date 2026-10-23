@@ -723,4 +723,29 @@ check "DS-158 AC5 five quiet passes are not yet a stall" '[ "$(field P-1 state)"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-158 AC5 the sixth parks it as wedged, as before" '[ "$(field P-1 state)" = "\"parked\"" ] && field P-1 park | grep -q wedged'
 
+# ---- DS-194: each done ticket's PR state and checks are recorded as pr_status, until it merges or closes
+export DESK_QUEUE="$T/queue-g.json" DESK_AUTOPILOT_STATE="$T/state-g"
+mkdir -p "$T/state-g/logs"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 300 "*) echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/300","statusCheckRollup":[{"__typename":"CheckRun","name":"tests (ubuntu-latest)","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","completedAt":"2026-10-23T10:07:35Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/1/job/2"},{"__typename":"CheckRun","name":"tests (macos-latest)","workflowName":"ci","status":"QUEUED","conclusion":"","startedAt":"2026-10-23T10:00:00Z","completedAt":"0001-01-01T00:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/1/job/3"}]}' ;;
+  "pr view 301 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/301","statusCheckRollup":[]}' ;;
+  *) exit 1 ;;
+esac
+EOF
+q init g
+q add G-1; q set G-1 state=done result.pr=300
+q add G-2; q set G-2 state=done result.pr=301
+q add G-3; q set G-3 state=done
+: > "$T/gh-calls"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-194 AC1 an open PR's state, and each check's name, status, conclusion, start and runner, are recorded with the read time" \
+  '[ "$(field G-1 pr_status | jq -c "[.pr, .state, .url, [.checks[] | [.name, .status, .conclusion, .started, .runner]], (.at | test(\"^[0-9]{4}-\"))]")" = "[300,\"OPEN\",\"https://github.com/acme/widgets/pull/300\",[[\"tests (ubuntu-latest)\",\"completed\",\"success\",\"2026-10-23T10:00:00Z\",true],[\"tests (macos-latest)\",\"queued\",null,\"2026-10-23T10:00:00Z\",false]],true]" ]'
+check "DS-194 AC2 a merged PR is recorded merged" '[ "$(field G-2 pr_status.state)" = "\"MERGED\"" ]'
+check "DS-194 one gh call per done ticket with a PR, none for one without" '[ "$(grep -c "^pr view" "$T/gh-calls")" = 2 ] && [ "$(field G-3 pr_status)" = null ]'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-194 AC2 the next pass reads the open PR again and makes no call for the merged one" '[ "$(cut -d" " -f1-3 "$T/gh-calls")" = "pr view 300" ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
