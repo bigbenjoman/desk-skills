@@ -74,7 +74,8 @@ node ~/.claude/desk/bin/queue.mjs requeue <TICKET>
 ```
 
 It moves `<state>/logs/<TICKET>.log`, `<state>/parks/<TICKET>.json` and
-`<state>/answers/<TICKET>.txt` aside to one next free `.round<n>` (a kept `AUTOPILOT_DONE` makes
+`<state>/answers/<TICKET>.txt` aside to one next free `.round<n>`, the log gzipped as
+`.round<n>.gz`, which `harvest.mjs` reads as it is (a kept `AUTOPILOT_DONE` makes
 `alreadyFinished()` refuse the respawn, a kept park file shows the last round's question as "needs
 you", and a kept mailbox answers the next park instantly), sets `state=triaged open_questions=0
 park=null session_id=null pid=null idle_passes=0 log_bytes=0`, and moves the ticket to the front of

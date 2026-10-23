@@ -124,16 +124,20 @@ if (prompt.startsWith('Reply with exactly one word: MODEL_OK')) {
   console.log('MODEL_OK');
   process.exit(0);
 }
+// The preflight's reply, as one json result carrying its cost and turns with --output-format json, as
+// the real CLI writes it. While T/preflight-text exists it replies in plain text: a result with no cost.
 if (prompt.startsWith('Perform these')) {
   fs.appendFileSync(T + '/calls.log', 'claude preflight model=' + model + '\n');
-  for (const m of prompt.matchAll(/^(\w+)=OK or \1=BLOCKED/gm)) console.log(m[1] + '=' + (/^(W_IN|TOOL\d+|JIRA)\$/.test(m[1]) ? 'OK' : 'BLOCKED'));
+  const reply = [...prompt.matchAll(/^(\w+)=OK or \1=BLOCKED/gm)].map((m) => m[1] + '=' + (/^(W_IN|TOOL\d+|JIRA)\$/.test(m[1]) ? 'OK' : 'BLOCKED')).join('\n');
+  if (at('--output-format') === 'json' && !fs.existsSync(T + '/preflight-text')) console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 9, total_cost_usd: 0.4321, result: reply }));
+  else console.log(reply);
   process.exit(0);
 }
 const ticket = /Your ticket is (\S+?)\./.exec(prompt)?.[1];
 const sid = at('--session-id');
 fs.appendFileSync(T + '/calls.log', 'claude worker ' + ticket + '\n');
 const round = fs.readdirSync(T + '/runs').filter((f) => f.startsWith(ticket + '.')).length + 1;
-fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model }));
+fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages') }));
 const reg = T + '/live/' + sid + '.json';
 fs.writeFileSync(reg, JSON.stringify({ sessionId: sid, pid: process.pid }));
 const script = fs.readFileSync(T + '/scripts/' + ticket + '.' + round, 'utf8').split('\n').filter(Boolean);
@@ -232,6 +236,9 @@ check "the first pass spawns both independent tickets, and exits 0" '[ $rc -eq 0
 check "the colliding ticket does not spawn beside its blocker" '[ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ] && echo "$out" | grep -q "held back by a collision: T-3"'
 check "each worker runs in its own worktree on its own branch"  'grep -q "\"cwd\":\"$T/wt/T-1\"" "$T/runs/T-1.1" && [ "$(git -C "$T/wt/T-1" branch --show-current)" = fix/T-1 ]'
 check "each worker passed a real preflight first"               '[ "$(grep -c "^claude preflight" "$T/calls.log")" = 2 ]'
+check "DS-158 AC1 each spawn line shows its preflight's cost and turns" '[ "$(echo "$out" | grep "^spawned: " | grep -o "preflight \$0.43, 9 turn(s)" | wc -l | tr -d " ")" = 2 ]'
+check "DS-158 AC1 and the ticket's log holds them, ahead of the worker" 'head -1 "$T/state/logs/T-1.log" | grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9"'
+check "DS-158 AC4 a worker is started with no partial messages" 'grep -q "\"partial\":false" "$T/runs/T-1.1" && grep -q "\"partial\":false" "$T/runs/T-2.1"'
 REFS="$SRC/skills/desk-autopilot/references"
 check "a ticket worker's system prompt holds the core contract and its briefing" 'grep -q "Stage sections: read each one when you reach it" "$T/runs/T-1.1" && grep -q "# Briefing for this ticket" "$T/runs/T-1.1"'
 check "and no stage section: verification, command forms, the orchestrator's part, Jira, the task" '! grep -qE "## 3\. Verification|### Self-review|## 6\. Command forms|## 5\. What the orchestrator|### Jira comments|## 0\. If you were given a task|## Review-sweep" "$T/runs/T-1.1"'
@@ -242,7 +249,10 @@ pass
 check "a pass while both run spawns nothing more, and exits 10" '[ $rc -eq 10 ] && [ "$(state T-3)" = triaged ] && [ ! -e "$T/runs/T-3.1" ]'
 
 finish T-1; finish T-2
+touch "$T/preflight-text"
 pass
+rm -f "$T/preflight-text"
+check "DS-158 AC3 a preflight that gives no result says its cost is unknown, not zero" 'echo "$out" | grep "^spawned: " | grep -q "T-3 .*; preflight cost unknown, turns unknown"'
 check "both tickets reach done with the PRs their workers printed" '[ "$(state T-1)" = done ] && [ "$(field T-1 result.pr)" = 101 ] && [ "$(state T-2)" = done ] && [ "$(field T-2 result.pr)" = 102 ]'
 check "the stage a worker printed is recorded"                  '[ "$(field T-1 stage)" = "\"4/9\"" ]'
 check "the held ticket spawns once its blocker has finished"    '[ $rc -eq 0 ] && [ "$(state T-3)" = running ] && live T-3'

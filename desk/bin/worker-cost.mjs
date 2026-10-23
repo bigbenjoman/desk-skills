@@ -3,11 +3,33 @@
 // has no result event is unknown, never zero: a killed or still-running worker spent something
 // nobody recorded. The figures are what `claude -p` reports (total_cost_usd is notional on a
 // subscription), and input counts cache reads and writes as well as fresh input.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { markersIn, saidIn } from './harvest.mjs';
+import { markersIn, saidIn, readLogFile } from './harvest.mjs';
 
 export const START_UP = 'start-up';
+
+// pass.mjs writes one of these into the ticket's log before each spawn: the permissions preflight is
+// a claude -p call of its own, outside the worker's session, so its result event is not in the log.
+// A null figure is one the preflight did not report.
+export const PREFLIGHT_EVENT = 'desk_preflight';
+export const preflightLine = ({ usd, turns }, at = new Date()) =>
+  `${JSON.stringify({ type: PREFLIGHT_EVENT, total_cost_usd: usd, num_turns: turns, timestamp: at.toISOString() })}\n`;
+
+// The preflights in one log: how many, the cost of those that reported one, and how many did not.
+export function preflightUsage(logText) {
+  const p = { n: 0, cost: 0, unknown: 0 };
+  for (const line of logText.split('\n')) {
+    if (!line.includes(PREFLIGHT_EVENT)) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type !== PREFLIGHT_EVENT) continue;
+    p.n += 1;
+    if (typeof d.total_cost_usd === 'number') p.cost += d.total_cost_usd;
+    else p.unknown += 1;
+  }
+  return p;
+}
 
 // Adds one stage's tokens into a Map of stages by name, keeping the order they were first reached.
 const addStage = (stages, name, input, output) => {
@@ -21,9 +43,10 @@ const addStage = (stages, name, input, output) => {
 // assistant event per content block, each repeating its message's usage, so a message counts once,
 // in the stage it was in when it ended: a message that prints a stage marker opens that stage. The
 // usage on those events has the full input but only an early snapshot of the output; the final
-// output is on the message's message_delta stream event (workers run with partial messages on), and
-// the snapshot stands in only where there is none, as for subagents' messages, which count in the
-// stage that called them. `first` is the first model call's input (fresh, cache writes and cache
+// output is on the message's message_delta stream event, which only a log written with partial
+// messages on has. Workers now run without them, so the snapshot stands in there, as it always has
+// for subagents' messages, which count in the stage that called them. The run's total output comes
+// from its result event (logUsage), which is exact either way. `first` is the first model call's input (fresh, cache writes and cache
 // reads), the prompt the worker starts on.
 export function stageUsage(logText) {
   const n = (v) => Number(v) || 0;
@@ -86,35 +109,48 @@ export function logUsage(logText) {
   return { input, output, cost: n(last.total_cost_usd), ms };
 }
 
-// A ticket's logs in this batch: the current `<KEY>.log` and every `<KEY>.log.round<n>` requeue moved
-// aside, less any last written before the ticket joined this queue (`added_at`): the logs directory
-// outlives a batch, so an earlier batch's rounds of the same ticket are still there.
+// A ticket's logs in this batch: the current `<KEY>.log` and every round a respawn or requeue moved
+// aside (`<KEY>.log.round<n>.gz`, or `<KEY>.log.round<n>` from before rounds were compressed), less
+// any last written before the ticket joined this queue (`added_at`): the logs directory outlives a
+// batch, so an earlier batch's rounds of the same ticket are still there.
 export function workerLogs(stateDir, key, since = null) {
   const dir = join(stateDir, 'logs');
   let names = [];
   try { names = readdirSync(dir); } catch { return []; }
   const from = since ? Date.parse(since) : NaN;
-  return names.filter((n) => n === `${key}.log` || (n.startsWith(`${key}.log.round`) && /^\d+$/.test(n.slice(`${key}.log.round`.length))))
+  return names.filter((n) => n === `${key}.log` || (n.startsWith(`${key}.log.round`) && /^\d+(\.gz)?$/.test(n.slice(`${key}.log.round`.length))))
     .map((n) => join(dir, n))
     .filter((f) => { try { return Number.isNaN(from) || statSync(f).mtimeMs >= from; } catch { return false; } });
 }
 
-// -> { key, runs, unknown, usage, first, stages } for a queue ticket with a log, or null for one no
-// worker ran. `unknown` counts the runs with no result event; any at all leaves `usage` null. `first`
-// and `stages` add every run's up, a stage seen in two runs once, and are null when any run's log
-// has no assistant usage at all.
+// A log holding nothing but preflights: the spawn after them was refused, so no worker ran in it.
+const preflightOnly = (text) => text.split('\n').every((l) => {
+  try { return JSON.parse(l)?.type === PREFLIGHT_EVENT; } catch { return true; }
+});
+
+// -> { key, runs, unknown, usage, preflight, first, stages } for a queue ticket with a log, or null for
+// one no worker ran. `unknown` counts the runs with no result event; any at all leaves `usage` null.
+// `preflight` is every preflight's `{ n, cost, unknown }`, apart from `usage`. `first` and `stages`
+// add every run's up, a stage seen in two runs once, and are null when any run's log has no
+// assistant usage at all.
 export function ticketCost(stateDir, ticket) {
-  const round = (f) => { const m = f.match(/\.log\.round(\d+)$/); return m ? Number(m[1]) : Infinity; };
+  const round = (f) => { const m = f.match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
   const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => round(a) - round(b));
   if (!logs.length) return null;
   const total = { input: 0, output: 0, cost: 0, ms: 0 };
+  const preflight = { n: 0, cost: 0, unknown: 0 };
+  let runs = 0;
   let unknown = 0;
   let first = 0;
   let stagesKnown = true;
   const stages = new Map();
   for (const f of logs) {
     let text = '';
-    try { text = readFileSync(f, 'utf8'); } catch { /* unreadable: unknown */ }
+    try { text = readLogFile(f); } catch { /* unreadable: unknown */ }
+    const p = preflightUsage(text);
+    for (const k of Object.keys(preflight)) preflight[k] += p[k];
+    if (p.n && preflightOnly(text)) continue;
+    runs += 1;
     const s = stageUsage(text);
     if (!s) stagesKnown = false;
     else {
@@ -126,7 +162,7 @@ export function ticketCost(stateDir, ticket) {
     for (const k of Object.keys(total)) total[k] += u[k];
   }
   return {
-    key: ticket.key, runs: logs.length, unknown, usage: unknown ? null : total,
+    key: ticket.key, runs, unknown, usage: unknown ? null : total, preflight,
     first: stagesKnown ? first : null, stages: stagesKnown ? [...stages.values()] : null,
   };
 }
@@ -146,13 +182,19 @@ export function costTable(rows) {
   const known = rows.filter((r) => r.usage);
   const sum = { input: 0, output: 0, cost: 0, ms: 0 };
   for (const r of known) for (const k of Object.keys(sum)) sum[k] += r.usage[k];
+  const noPre = { n: 0, cost: 0, unknown: 0 };
+  const pre = { ...noPre };
+  for (const r of known) for (const k of Object.keys(pre)) pre[k] += (r.preflight ?? noPre)[k];
   const firstOf = (r) => (r.first == null ? 'unknown' : tokens(r.first));
-  const cells = (r, u) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost), wallTime(u.ms), firstOf(r)];
+  // A preflight with no result is unknown, never a zero: it is named beside the known ones' cost.
+  const preOf = (p = noPre) => (!p.n ? 'none' : p.unknown === p.n ? 'unknown'
+    : `${usd(p.cost)}${p.unknown ? ` + ${p.unknown} unknown` : ''}`);
+  const cells = (r, u, p = r.preflight ?? noPre) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost + p.cost), preOf(p), wallTime(u.ms), firstOf(r)];
   const table = rows.map((r) => (r.usage ? cells(r, r.usage)
-    : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', 'unknown', firstOf(r)]));
+    : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
   const firstKnown = rows.filter((r) => r.first != null);
-  table.push(cells({ key: 'total', runs: rows.reduce((n, r) => n + r.runs, 0), first: firstKnown.length ? firstKnown.reduce((n, r) => n + r.first, 0) : null }, sum));
-  const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'wall time', 'first-turn input'];
+  table.push(cells({ key: 'total', runs: rows.reduce((n, r) => n + r.runs, 0), first: firstKnown.length ? firstKnown.reduce((n, r) => n + r.first, 0) : null }, sum, pre));
+  const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'preflight', 'wall time', 'first-turn input'];
   const width = head.map((h, i) => Math.max(h.length, ...table.map((row) => row[i].length)));
   const line = (row) => `  ${row.map((c, i) => (i < 2 ? c.padEnd(width[i]) : c.padStart(width[i]))).join('  ')}`.trimEnd();
   // Each worker's stages sit under its row, in the order its runs reached them.
@@ -162,7 +204,7 @@ export function costTable(rows) {
     const wi = Math.max(...r.stages.map((s) => tokens(s.input).length));
     return r.stages.map((s) => `      ${s.name.padEnd(w)}  ${tokens(s.input).padStart(wi)} in  ${tokens(s.output)} out`);
   };
-  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it, wall time is the time inside the worker's turns, first-turn input is the prompt each run started on, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
+  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns, first-turn input is the prompt each run started on, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
     out.push(`${line(row)}${r && !r.usage ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);

@@ -18,7 +18,7 @@ import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
-import { batchCost, costTable } from './worker-cost.mjs';
+import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -396,6 +396,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
   // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
+  // Workers log no partial messages, so a long model turn writes nothing until its message ends, as a
+  // long suite behind the test lock never did: six quiet passes is the margin for both.
   const bytes = statSync(log).size;
   let wedged = false;
   if (bytes > (t.log_bytes ?? 0)) {
@@ -884,16 +886,28 @@ async function freePort(own = null) {
   return port;
 }
 
-// Prove the generated permissions behave before committing a worker to a ticket: null on a pass,
-// else what failed. §3b Worker models' finder and text models are proved too, on every preflight,
-// so a value the CLI rejects stops the ticket before any worker of it runs.
-function preflightFailure(key, wt, workerEnv) {
+// Prove the generated permissions behave before committing a worker to a ticket: `failure` is null on
+// a pass, else what failed. §3b Worker models' finder and text models are proved too, on every
+// preflight, so a value the CLI rejects stops the ticket before any worker of it runs. `cost` is the
+// preflight call's { usd, turns }, each null when it reported none.
+function preflight(key, wt, workerEnv) {
   const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_FINDER_MODEL: models.finder ?? '', AUTOPILOT_TEXT_MODEL: models.text ?? '', AUTOPILOT_PREFLIGHT: '1' },
   }).out;
-  return /\[preflight\] pass/.test(pre) ? null : pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300);
+  const m = /\[preflight\] cost=(\S+) turns=(\S+)/.exec(pre);
+  const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+  const cost = { usd: num(m?.[1]), turns: num(m?.[2]) };
+  const failure = /\[preflight\] pass/.test(pre) ? null : `${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}\n${preflightNote(cost)}`;
+  return { failure, cost };
 }
+const preflightNote = ({ usd, turns }) =>
+  `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`;
+// Into the log the worker is about to write, so the batch report counts it with that run.
+const logPreflight = (key, cost) => {
+  mkdirSync(join(STATE, 'logs'), { recursive: true });
+  appendFileSync(join(STATE, 'logs', `${key}.log`), preflightLine(cost));
+};
 const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn refused — ${out.split('\n').slice(-3).join(' ')}`);
 
 // A killed worker resumes in its own session, worktree, branch and log, through spawn-worker.sh and
@@ -918,8 +932,8 @@ async function resumeKilled(t) {
   if (!t.worktree || !existsSync(t.worktree)) return fail(`its worktree ${t.worktree ?? '(none recorded)'} is gone. Requeue it for a fresh worker with queue.mjs requeue ${t.key}`);
   const model = t.model && t.model !== 'default' ? t.model : '';
   const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
-  const pre = preflightFailure(t.key, t.worktree, workerEnv);
-  if (pre) return fail(`preflight failed —\n${pre}`);
+  const pre = preflight(t.key, t.worktree, workerEnv);
+  if (pre.failure) return fail(`preflight failed —\n${pre.failure}`);
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const prompt = `Your previous run of this session was killed before it finished (${t.resume_why ?? 'reboot or crash'}). ` +
@@ -927,6 +941,7 @@ async function resumeKilled(t) {
     'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.`;
   const log = join(STATE, 'logs', `${t.key}.log`);
+  logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0',
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
@@ -935,7 +950,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed after it was killed (${n} of ${RESUME.limit}) — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}`);
+  report.spawned.push(`${t.key} resumed after it was killed (${n} of ${RESUME.limit}) — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 
@@ -1024,11 +1039,12 @@ async function spawnHandoff(t) {
     q('set', t.key, 'state=failed', 'handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true');
     report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
   };
-  const pre = preflightFailure(t.key, t.worktree, workerEnv);
-  if (pre) return fail(`preflight failed —\n${pre}`);
+  const pre = preflight(t.key, t.worktree, workerEnv);
+  if (pre.failure) return fail(`preflight failed —\n${pre.failure}`);
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
+  logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, 'log_bytes=0', 'idle_passes=0',
     'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
@@ -1037,7 +1053,7 @@ async function spawnHandoff(t) {
   });
   const spawnRefused = spawnRefusal(spawned.out);
   if (spawnRefused) return fail(spawnRefused);
-  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}`);
+  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   return undefined;
 }
@@ -1087,11 +1103,11 @@ for (const t of eligible) {
   const resumed = resumeRound(t, { wt, kept, branch });
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true });
 
-  const pre = preflightFailure(t.key, wt, workerEnv);
-  if (pre) {
+  const pre = preflight(t.key, wt, workerEnv);
+  if (pre.failure) {
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
     q('set', t.key, 'state=failed', 'spawn_failed=true');
-    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre}`);
+    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.failure}`);
     continue;
   }
 
@@ -1107,6 +1123,7 @@ for (const t of eligible) {
   // Every spawn is a fresh session, so the last round's log and park record move aside first:
   // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
   E.rotateRound(t.key);
+  logPreflight(t.key, pre.cost);
   // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
@@ -1135,7 +1152,7 @@ for (const t of eligible) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.

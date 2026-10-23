@@ -14,6 +14,7 @@ import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, openS
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readLogFile } from './harvest.mjs';
 
 export const HISTORY_FILE = 'eta-history.jsonl';
 export const WINDOW_DAYS = 30;
@@ -43,6 +44,10 @@ export function readHistory(state) {
 // The first stamp in a log, read a chunk at a time: the first one sits a few seconds after the
 // spawn, near the top of a log that can run to megabytes.
 function firstStamp(path) {
+  if (path.endsWith('.gz')) {
+    const m = SPAWN_STAMP.exec(readLogFile(path));
+    return m && !Number.isNaN(Date.parse(m[1])) ? m[1] : null;
+  }
   const fd = openSync(path, 'r');
   try {
     const buf = Buffer.alloc(64 * 1024);
@@ -59,11 +64,11 @@ function firstStamp(path) {
 }
 
 // The ticket's first worker spawn: the earliest first stamp across every round's log
-// (`<key>.log` and the `<key>.log.round<n>` that requeues moved aside). Null with no stamp anywhere.
+// (`<key>.log` and the `<key>.log.round<n>[.gz]` that requeues moved aside). Null with no stamp anywhere.
 export function firstSpawnFromLogs(state, key) {
   const dir = join(state, 'logs');
   if (!existsSync(dir)) return null;
-  const mine = readdirSync(dir).filter((f) => f === `${key}.log` || new RegExp(`^${key.replace(/[.]/g, '\\.')}\\.log\\.round\\d+$`).test(f));
+  const mine = readdirSync(dir).filter((f) => f === `${key}.log` || new RegExp(`^${key.replace(/[.]/g, '\\.')}\\.log\\.round\\d+(\\.gz)?$`).test(f));
   const stamps = mine.map((f) => { try { return firstStamp(join(dir, f)); } catch { return null; } }).filter(Boolean);
   return stamps.length ? stamps.reduce((a, b) => (Date.parse(a) <= Date.parse(b) ? a : b)) : null;
 }

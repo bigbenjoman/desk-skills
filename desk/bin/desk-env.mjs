@@ -54,8 +54,9 @@
 //                                             the runner is off by default; --runner sizes it on
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
-import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, platform, totalmem, freemem, release } from 'node:os';
@@ -615,7 +616,9 @@ export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHom
 // blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
 // question reads as the new worker's) and, with `answers`, its mailbox (a stale answer satisfies the
 // next park instantly). All take one suffix, the first `.round<n>` free for every one of them, so a
-// round's files stay together. An empty log is left in place. Returns the files moved.
+// round's files stay together. The log is gzipped as it moves (`.round<n>.gz`, its time kept, since a
+// batch's cost and spawn history read a round's time); one that fails to compress stays as it was,
+// and every reader takes both. An empty log is left in place. Returns the files moved.
 export function rotateRound(key, { answers = false } = {}) {
   const state = stateDir();
   const files = [join(state, 'logs', `${key}.log`), join(state, 'parks', `${key}.json`)];
@@ -623,9 +626,27 @@ export function rotateRound(key, { answers = false } = {}) {
   const present = files.filter((f) => existsSync(f) && (!f.endsWith('.log') || statSync(f).size > 0));
   if (!present.length) return [];
   let n = 1;
-  while (files.some((f) => existsSync(`${f}.round${n}`))) n += 1;
-  for (const f of present) renameSync(f, `${f}.round${n}`);
-  return present.map((f) => `${f}.round${n}`);
+  while (files.some((f) => existsSync(`${f}.round${n}`) || existsSync(`${f}.round${n}.gz`))) n += 1;
+  return present.map((f) => {
+    const to = `${f}.round${n}`;
+    renameSync(f, to);
+    return f.endsWith('.log') ? gzipRound(to) : to;
+  });
+}
+
+function gzipRound(path) {
+  const gz = `${path}.gz`;
+  try {
+    const { atime, mtime } = statSync(path);
+    writeFileSync(`${gz}.tmp`, gzipSync(readFileSync(path)));
+    utimesSync(`${gz}.tmp`, atime, mtime);
+    renameSync(`${gz}.tmp`, gz);
+    unlinkSync(path);
+    return gz;
+  } catch {
+    try { unlinkSync(`${gz}.tmp`); } catch { /* never written */ }
+    return path;
+  }
 }
 
 // A batch may target a branch other than §0 Default branch: a feature branch that ships as one merge.

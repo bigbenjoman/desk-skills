@@ -3,7 +3,11 @@
 // AUTOPILOT_* markers and the final result. Never print the whole log — that is
 // how the orchestrator's context stops being O(1).
 import { readFileSync, realpathSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+
+// A worker log's text: a finished round is moved aside gzipped (`<KEY>.log.round<n>.gz`).
+export const readLogFile = (path) => (path.endsWith('.gz') ? gunzipSync(readFileSync(path)) : readFileSync(path)).toString('utf8');
 
 // Workers wrap markers in backticks, bullets or headings often enough that a strict
 // line-start grep silently finds nothing. Be tolerant about the decoration, strict
@@ -104,7 +108,7 @@ if (isMain) {
   const wantBody = process.argv.includes('--pr-body');
   if (!log) { console.error('usage: harvest.mjs <worker.log> [--pr-body]'); process.exit(1); }
 
-  const { texts, said, result } = readLog(readFileSync(log, 'utf8'));
+  const { texts, said, result } = readLog(readLogFile(log));
 
   // --pr-body prints only the last body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and
   // AUTOPILOT_PR_BODY_END:, verbatim, and exits 3 when there is none.
