@@ -102,6 +102,16 @@ check "AC11 a ticket not placed still moves to the front"                 '[ $rc
 q requeue A-3; order
 check "a requeue of a ticket not placed still fronts it"                  '[ "${out%% *}" = A-3 ]'
 
+# A triaged ticket with a triage question open never spawns, so the table and front say so.
+q render
+check "DS-189 AC5: a triaged ticket with no question open has a bare row" '[ $rc -eq 0 ] && echo "$out" | grep -Eq "^  TRIAGED +A-5 +$"'
+q set A-5 open_questions=1; q render
+check "DS-189 AC1: its row says 1 question is open and names answer.mjs"  '[ $rc -eq 0 ] && echo "$out" | grep -q "^  TRIAGED  A-5       blocked: 1 question(s) open, answer with answer.mjs A-5 \"<answer>\"$"'
+q front A-5
+check "DS-189 AC4: front says it will not spawn until answered"           '[ $rc -eq 0 ] && [[ "$out" == "A-5 moved to the front of the spawn order; it still has 1 question(s) open and will not spawn until they are answered: answer with answer.mjs A-5 \"<answer>\"" ]]'
+q set A-5 open_questions=0; q front A-5
+check "front with no question open says nothing more"                     '[ $rc -eq 0 ] && [ "$out" = "A-5 moved to the front of the spawn order" ]'
+
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
