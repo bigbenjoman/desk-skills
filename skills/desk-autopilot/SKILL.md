@@ -978,21 +978,23 @@ line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent
 or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
 `off` holds every spawn, naming the row, as a malformed budget does.
 
-**The weekly maintenance window.** With §3b "Maintenance window" set (e.g. `Mon 06:30 UTC`, just
-after the weekly usage reset; unset is `none`), the first pass at or after it starts no new worker,
-resumes included, and reports `maintenance: draining` (`maintenance.mjs`). Once this repo's workers
-have finished, or after §3b "Maintenance drain limit (minutes)" (unset: 60), when each one still
-running is stopped with its session kept and queued to resume (`resume=maintenance`, not counted
-against "Resume a killed worker"), the window pulls the desk-skills checkout fast-forward on a clean
-`main` and runs `install.sh`, then runs `reboot-check.mjs`. Where §3 `machine-reboot` is `yes` and the
-check found no blocker (anything heavy running, or a worker running in another repo), it runs
-`desk-runner down` if the runner was up and restarts the computer; the supervisor brings passes back
-at login, the first pass runs `desk-runner up` again, and the stopped workers resume. At `ask` (unset)
-it does not restart and puts "ready to reboot" in the next check-in; at `no` it stops there. A failed
-update goes in the check-in too, and does not restart. Every step, with the old and new commit and
-the check's summary, goes in `<state>/maintenance.log`. A window runs once a week; one no pass
-reaches within 6 hours is missed that week. An idle batch's supervisor tick runs it too
-(`maintenance.mjs step`); `maintenance.mjs status` shows where it stands.
+**The weekly maintenance window.** One per computer (`maintenance.mjs`). With §3b "Maintenance
+window" set in a repo (e.g. `Mon 06:30 UTC`, just after the weekly usage reset; unset is `none`), the
+first pass at or after it opens the window, and from then every repo's pass, with a row or without,
+starts no new worker, resumes included, and reports `maintenance: draining`. Each repo's workers
+finish, or after its §3b "Maintenance drain limit (minutes)" (unset: 60) each one still running is
+stopped with its session kept and queued to resume (`resume=maintenance`, not counted against "Resume
+a killed worker"); workers in a repo whose passes are not running are waited on for 30 minutes more.
+Then one pass pulls the desk-skills checkout fast-forward on a clean `main` and runs `install.sh`,
+and runs `reboot-check.mjs`. Where §3 `machine-reboot` is `yes` and the check found no blocker
+(anything heavy running, or a worker still running in any repo), it runs `desk-runner down` if the
+runner was up and restarts the computer; the supervisor brings passes back at login, the first pass
+runs `desk-runner up` again (as does a restart that fails or never happens), and the stopped workers
+resume. At `ask` (unset) it does not restart and puts "ready to reboot" in the next check-in; at `no`
+it stops there. A failed update goes in the check-in too, and does not restart. Every step, with the
+old and new commit and the check's summary, goes in `~/.desk-autopilot/maintenance/maintenance.log`.
+A window runs once a week; one no pass reaches within 6 hours is missed that week. An idle batch's
+supervisor tick moves it on too (`maintenance.mjs step`).
 
 - **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
   sent make the first pass on the machine, in any repo, the only one to build it, and only that

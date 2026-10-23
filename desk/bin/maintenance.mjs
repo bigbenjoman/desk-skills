@@ -1,21 +1,23 @@
 #!/usr/bin/env node
-// The weekly maintenance window: at config §3b "Maintenance window" (e.g. `Mon 06:30 UTC`) a pass stops
-// spawning and lets this repo's workers finish, stops any still running after §3b "Maintenance drain
-// limit (minutes)" with their sessions kept, then pulls desk-skills fast-forward and installs it, runs
+// The weekly maintenance window, one per computer: at config §3b "Maintenance window" (e.g.
+// `Mon 06:30 UTC`) the first pass opens it, and from then every repo's pass starts no new worker and
+// lets its own workers finish, stopping any still running after §3b "Maintenance drain limit
+// (minutes)" with their sessions kept. Once nothing runs (or other repos' workers have been waited on
+// for DRAIN_OTHERS_MIN past the limit), one pass pulls desk-skills fast-forward and installs it, runs
 // the reboot check, and restarts the computer where config §3 machine-reboot is `yes` and the check
 // found no blocker. At `ask` (unset) it hands "ready to reboot" to the check-in digest; at `no` it
 // stops there. Spawning resumes once the window is done, or after the restart at login.
 //
 // Every repo's pass calls maintenance() once a pass, and the supervisor's idle tick runs the CLI, so an
-// idle batch still gets its window. One step at a time moves on; the state is <state>/maintenance.json
-// and the record is <state>/maintenance.log. A window runs at most once a week, and one not started
-// within START_WITHIN_H hours of its time is missed for that week, so a computer that was off on
-// Monday does not drain in the middle of Thursday.
+// idle batch still gets its window. A repo with no window row follows a window another repo opened.
+// The state, the record and the lock are machine-wide, in ~/.desk-autopilot/maintenance/
+// (DESK_MAINT_DIR overrides): maintenance.json and maintenance.log. A window runs at most once a week,
+// and one not opened within START_WITHIN_H hours of its time is missed for that week, so a computer
+// that was off on Monday does not drain in the middle of Thursday.
 //   node maintenance.mjs step     one step now, outside a pass (the supervisor's idle tick); prints JSON
-//   node maintenance.mjs status   the row, the state and the log's tail
 //
-// Tests stand in for the clock and the commands: DESK_MAINT_NOW (ISO), DESK_BOOT_TIME (as pass.mjs),
-// DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD, DESK_RUNNER_CMD and
+// Tests stand in for the clock and the commands: DESK_MAINT_NOW (ISO), DESK_BOOT_TIME (ISO or epoch
+// seconds), DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD, DESK_RUNNER_CMD and
 // DESK_RESTART_CMD (each run with sh -c, the runner command with its subcommand appended).
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -29,6 +31,9 @@ export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
 export const DEFAULT_DRAIN_MIN = 60;
 export const START_WITHIN_H = 6;
+// How long past the drain limit the window waits on workers in other repos, whose own passes stop
+// them; a repo with no orchestrator running stops nothing, and the reboot check then names them.
+export const DRAIN_OTHERS_MIN = 30;
 // A restart that has not happened this long after it was asked for did not happen.
 const RESTART_GRACE_MS = 15 * 60 * 1000;
 const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -36,6 +41,7 @@ const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 
 // Phases that hold every new spawn, resumes included.
 const HOLDING = ['draining', 'updating', 'checking', 'reboot', 'rebooting'];
 
+export const maintDir = () => E.expandHome(process.env.DESK_MAINT_DIR ?? join(E.HOME, '.desk-autopilot', 'maintenance'));
 const now = () => (process.env.DESK_MAINT_NOW ? new Date(process.env.DESK_MAINT_NOW) : new Date());
 const bootMs = () => {
   const v = process.env.DESK_BOOT_TIME;
@@ -75,16 +81,40 @@ export function windowStart(w, at) {
 }
 
 // ---- state and record --------------------------------------------------------------------------
-export const stateFile = (state) => join(state, 'maintenance.json');
-export const logFile = (state) => join(state, 'maintenance.log');
-export function readState(state) {
-  try { return JSON.parse(readFileSync(stateFile(state), 'utf8')); } catch { return null; }
+export const stateFile = (dir) => join(dir, 'maintenance.json');
+export const logFile = (dir) => join(dir, 'maintenance.log');
+export function readState(dir) {
+  try { return JSON.parse(readFileSync(stateFile(dir), 'utf8')); } catch { return null; }
 }
-const writeState = (state, s) => { mkdirSync(state, { recursive: true }); writeFileSync(stateFile(state), `${JSON.stringify(s, null, 2)}\n`); };
-const record = (state, at, text) => { mkdirSync(state, { recursive: true }); appendFileSync(logFile(state), `== ${stamp(at)} ${text}\n`); };
+const writeState = (dir, s) => { mkdirSync(dir, { recursive: true }); writeFileSync(stateFile(dir), `${JSON.stringify(s, null, 2)}\n`); };
+const record = (dir, at, text) => { mkdirSync(dir, { recursive: true }); appendFileSync(logFile(dir), `== ${stamp(at)} ${text}\n`); };
+// Notes the check-in digest has not necessarily read yet survive into the next window.
+const keptNotes = (s) => (s?.notes ?? []).slice(-20);
 
-// What the window hands the check-in digest: {at, text}, newest last.
-export const digestNotes = (state) => (readState(state)?.notes ?? []).filter((n) => n?.at && n.text);
+// What the window hands the check-in digest: {at, text}, oldest first.
+export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).filter((n) => n?.at && n.text);
+
+// Running tickets in every other repo's queue, and the queues that cannot be read.
+function othersRunning(selfQueue) {
+  const running = []; const unreadable = [];
+  for (const { slug, q, error } of otherQueues({ self: selfQueue })) {
+    if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
+    for (const t of Object.values(q?.tickets ?? {})) if (t?.state === 'running') running.push(`${slug} ${t.key}`);
+  }
+  return { running, unreadable };
+}
+
+// Stops one of this repo's workers by its registry pid, with its session kept, and queues it to
+// resume after the window (pass.mjs resumes `resume=maintenance` without counting it as a kill).
+// `live` is the session registry (null when it could not be read), `setQueue(key, fields)` -> {ok, why}.
+export function stopForWindow(t, { live, kill, setQueue }) {
+  if (!Array.isArray(live)) return { ok: false, why: 'the session registry could not be read' };
+  const a = live.find((x) => x.sessionId === t.session_id);
+  if (a && !a.pid) return { ok: false, why: `no pid for session ${t.session_id}` };
+  if (a?.pid) kill(a.pid);
+  const r = setQueue(t.key, ['state=triaged', 'resume=maintenance', 'resume_why=stopped for the maintenance window']);
+  return r.ok ? { ok: true, pid: a?.pid } : { ok: false, why: `queue write refused: ${r.why}` };
+}
 
 // ---- the steps' commands -----------------------------------------------------------------------
 const run = (cmd, args, opts = {}) => {
@@ -93,6 +123,7 @@ const run = (cmd, args, opts = {}) => {
 };
 const shell = (cmd, opts) => run('sh', ['-c', cmd], opts);
 const lastLine = (s) => String(s ?? '').split('\n').filter(Boolean).pop() ?? '';
+const said = (r) => lastLine(r.out) || r.error || `exit ${r.status}`;
 
 export function sourceCheckout() {
   if (process.env.DESK_SOURCE_CHECKOUT) return E.expandHome(process.env.DESK_SOURCE_CHECKOUT);
@@ -109,12 +140,12 @@ export function updateDesk(dir = sourceCheckout()) {
   if (branch !== 'main') return { ok: false, old, why: `${dir} is on ${branch || 'a detached HEAD'}, not main, so nothing was pulled or installed` };
   if (git('status', '--porcelain').out) return { ok: false, old, why: `${dir} has uncommitted changes, so nothing was pulled or installed` };
   const pull = git('pull', '--ff-only', '-q', 'origin', 'main');
-  if (!pull.ok) return { ok: false, old, why: `git pull --ff-only failed in ${dir}: ${lastLine(pull.out) || pull.error || `exit ${pull.status}`}` };
-  const now2 = git('rev-parse', 'HEAD').out;
-  const commits = old === now2 ? 0 : Number(git('rev-list', '--count', `${old}..${now2}`).out) || 0;
+  if (!pull.ok) return { ok: false, old, why: `git pull --ff-only failed in ${dir}: ${said(pull)}` };
+  const head = git('rev-parse', 'HEAD').out;
+  const commits = old === head ? 0 : Number(git('rev-list', '--count', `${old}..${head}`).out) || 0;
   const inst = run(join(dir, 'install.sh'), [], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
-  if (!inst.ok) return { ok: false, old, new: now2, why: `install.sh failed in ${dir} (${inst.error ?? `exit ${inst.status}`}): ${lastLine(inst.out)}` };
-  return { ok: true, old, new: now2, commits };
+  if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
+  return { ok: true, old, new: head, commits };
 }
 
 // The reboot check's summary, and what stops an unattended restart: anything heavy still running (a
@@ -125,15 +156,12 @@ export function rebootCheck({ selfQueue = null } = {}) {
   const summary = r.out.split('\n').find((l) => l.startsWith('summary: ')) ?? null;
   const field = (k) => new RegExp(`\\b${k}=(\\S+)`).exec(summary ?? '')?.[1] ?? null;
   const blockers = [];
-  if (!summary) blockers.push(`the reboot check gave no summary (${r.error ?? `exit ${r.status}`}: ${lastLine(r.out)})`);
+  if (!summary) blockers.push(`the reboot check gave no summary (${said(r)})`);
   const heavy = Number(field('heavy') ?? 0);
   if (heavy > 0) blockers.push(`${heavy} heavy process(es) running (test suites, typechecks, dev servers)`);
-  const others = [];
-  for (const { slug, q, error } of otherQueues({ self: selfQueue })) {
-    if (error) blockers.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of Object.values(q?.tickets ?? {})) if (t?.state === 'running') others.push(`${slug} ${t.key}`);
-  }
-  if (others.length) blockers.push(`${others.length} worker(s) running in another repo (${others.join(', ')})`);
+  const o = othersRunning(selfQueue);
+  if (o.running.length) blockers.push(`${o.running.length} worker(s) running in another repo (${o.running.join(', ')})`);
+  blockers.push(...o.unreadable);
   return { summary, runner: field('runner'), keep: field('keep'), blockers };
 }
 
@@ -146,43 +174,59 @@ const restart = () => (process.env.DESK_RESTART_CMD
 // Moves the window on as far as it can this pass. `running` is this repo's running tickets; `stop(t)`
 // stops one with its session kept and queues it to resume ({ok, pid} | {ok: false, why}).
 // -> {hold, lines}: hold is true while the window holds every new spawn.
-export async function maintenance({ state = E.stateDir(), running = [], stop = () => ({ ok: false, why: 'no way to stop a worker here' }), selfQueue = null, at = now() } = {}) {
+export async function maintenance({ dir = maintDir(), running = [], stop = () => ({ ok: false, why: 'no way to stop a worker here' }), selfQueue = null, at = now() } = {}) {
   const w = parseWindow(E.configValue('maintenance-window'));
-  if (w.off) return { hold: false, lines: [] };
-  if (w.bad) return { hold: false, lines: [`maintenance: ${w.bad}; no window runs until it is fixed`] };
-  const start = windowStart(w, at);
-  const week = start.toISOString();
-  let s = readState(state);
-  if (s?.week !== week) {
+  const isOpen = (x) => !!x && HOLDING.includes(x.phase);
+  let s = readState(dir);
+  let week = null;
+  if (!isOpen(s)) {
+    if (w.off) return { hold: false, lines: [] };
+    if (w.bad) return { hold: false, lines: [`maintenance: ${w.bad}; no window runs until it is fixed`] };
+    const start = windowStart(w, at);
+    week = start.toISOString();
+    if (s?.week === week) return { hold: false, lines: [] };
     if (at - start > START_WITHIN_H * 3600 * 1000) {
-      writeState(state, { week, phase: 'missed', notes: [] });
-      record(state, at, `window ${w.text} at ${stamp(start)} missed: no pass ran within ${START_WITHIN_H} hours of it; next week's runs as usual`);
+      writeState(dir, { week, phase: 'missed', notes: keptNotes(s) });
+      record(dir, at, `window ${w.text} at ${stamp(start)} missed: no pass ran within ${START_WITHIN_H} hours of it; next week's runs as usual`);
       return { hold: false, lines: [`maintenance: this week's window (${w.text}) was missed, no pass ran within ${START_WITHIN_H} hours of it`] };
     }
-  } else if (!HOLDING.includes(s.phase)) return { hold: false, lines: [] };
-
-  const lock = await takeBorrowLock({ dir: state, name: 'maintenance.lock.d', waitMs: 0 });
-  if (!lock.ok) {
-    const busy = readState(state);
-    return { hold: busy?.week === week && HOLDING.includes(busy.phase), lines: [`maintenance: another pass is moving the window on (${lock.why})`] };
   }
+
+  const lock = await takeBorrowLock({ dir, name: 'maintenance.lock.d', waitMs: 0 });
+  if (!lock.ok) return { hold: isOpen(readState(dir)) || week != null, lines: [`maintenance: another pass is moving the window on (${lock.why})`] };
   try {
-    s = readState(state);
-    if (s?.week !== week) {
-      s = { week, phase: 'draining', since: at.toISOString(), notes: [] };
-      writeState(state, s);
-      record(state, at, `window ${w.text} started: draining, no new workers`);
+    s = readState(dir);
+    if (!isOpen(s)) {
+      if (week == null || s?.week === week) return { hold: false, lines: [] };
+      // The pass that opens the window only drains: nothing new starts on it.
+      s = { week, phase: 'draining', since: at.toISOString(), window: w.text, notes: keptNotes(s) };
+      writeState(dir, s);
+      record(dir, at, `window ${w.text} opened: draining, no new workers in any repo`);
+      return { hold: true, lines: [drainLine(s, running, drainLimit(E.configValue('maintenance-drain')).minutes, at)] };
     }
-    return step(s, { state, w, at, running, stop, selfQueue });
+    return step(s, { dir, at, running, stop, selfQueue });
   } finally { lock.release(); }
 }
 
-function step(s, { state, w, at, running, stop, selfQueue }) {
+function drainLine(s, running, limit, at) {
+  const left = Math.max(0, limit - Math.floor((at - new Date(s.since)) / 60000));
+  return `maintenance: draining since ${stamp(new Date(s.since))} (window ${s.window}): no new workers; ` +
+    (running.length ? `${running.length} running (${running.map((t) => t.key).join(', ')}), stopped at the ${limit} min limit, ${left} min from now` : 'none running here');
+}
+
+function step(s, { dir, at, running, stop, selfQueue }) {
   const lines = [];
-  const save = (patch) => { Object.assign(s, patch); writeState(state, s); };
-  const log = (text) => record(state, at, text);
+  const save = (patch) => { Object.assign(s, patch); writeState(dir, s); };
+  const log = (text) => record(dir, at, text);
   const note = (text) => save({ notes: [...(s.notes ?? []), { at: at.toISOString(), text }] });
   const finish = (line) => { save({ phase: 'done', done_at: at.toISOString() }); log(`window done: ${line}`); lines.push(`maintenance: ${line}; spawning resumes`); return { hold: false, lines }; };
+  // The runner the window stopped is started again on every way out of a restart.
+  const runnerBack = (why) => {
+    if (!s.runner_was_up) return;
+    const up = runner('up');
+    log(`desk-runner up: ${up.ok ? lastLine(up.out) || 'ok' : said(up)}`);
+    if (!up.ok) note(`${why}, desk-runner up failed: ${said(up)}. Run desk-runner up`);
+  };
 
   if (s.phase === 'draining') {
     const limit = drainLimit(E.configValue('maintenance-drain'));
@@ -197,7 +241,6 @@ function step(s, { state, w, at, running, stop, selfQueue }) {
         else left.push(`${t.key} (${r.why})`);
       }
       if (stopped.length) {
-        save({ stopped: [...(s.stopped ?? []), ...stopped] });
         log(`drained for ${mins} min, the ${limit.minutes} min limit: stopped ${stopped.join(', ')}, sessions kept; each resumes after the window`);
         lines.push(`maintenance: drained for ${mins} min, the ${limit.minutes} min limit: stopped ${stopped.join(', ')}, each with its session kept, to resume after the window`);
       }
@@ -206,10 +249,16 @@ function step(s, { state, w, at, running, stop, selfQueue }) {
         return { hold: true, lines };
       }
     } else if (running.length) {
-      lines.push(`maintenance: draining since ${stamp(since)} (window ${w.text}): no new workers; ${running.length} running (${running.map((t) => t.key).join(', ')}), stopped at the ${limit.minutes} min limit, ${Math.max(0, limit.minutes - mins)} min from now`);
+      lines.push(drainLine(s, running, limit.minutes, at));
       return { hold: true, lines };
     }
-    log('drained: no worker running');
+    const others = othersRunning(selfQueue).running;
+    const until = new Date(since.getTime() + (limit.minutes + DRAIN_OTHERS_MIN) * 60000);
+    if (others.length && at < until) {
+      lines.push(`maintenance: draining since ${stamp(since)} (window ${s.window}): none running here; waiting on ${others.length} worker(s) in other repos (${others.join(', ')}) until ${stamp(until)}`);
+      return { hold: true, lines };
+    }
+    log(others.length ? `drained here; still running in other repos after ${mins} min: ${others.join(', ')}` : 'drained: no worker running');
     save({ phase: 'updating' });
   }
 
@@ -236,20 +285,22 @@ function step(s, { state, w, at, running, stop, selfQueue }) {
     const key = E.permissionKey('machine-reboot');
     const c = s.check ?? { blockers: [] };
     if (perm === 'yes' && !c.blockers.length) {
-      const was = c.runner === 'running' || c.keep === 'loaded';
-      if (was) {
+      if (c.runner === 'running' || c.keep === 'loaded') {
+        save({ runner_was_up: true });
         const down = runner('down');
-        log(`desk-runner down: ${lastLine(down.out) || (down.ok ? 'ok' : `exit ${down.status}`)}`);
+        log(`desk-runner down: ${down.ok ? lastLine(down.out) || 'ok' : said(down)}`);
         if (!down.ok) {
-          note(`not restarted: desk-runner down failed in the maintenance window (${lastLine(down.out) || `exit ${down.status}`})`);
+          note(`not restarted: desk-runner down failed in the maintenance window (${said(down)})`);
+          runnerBack('after desk-runner down failed');
           return finish('desk-runner down failed, so no restart');
         }
       }
-      save({ phase: 'rebooting', restart_at: at.toISOString(), runner_was_up: was });
+      save({ phase: 'rebooting', restart_at: at.toISOString() });
       const r = restart();
       if (!r.ok) {
-        log(`restart failed: ${lastLine(r.out) || r.error || `exit ${r.status}`}`);
-        note(`not restarted: the restart command failed in the maintenance window (${lastLine(r.out) || r.error || `exit ${r.status}`})`);
+        log(`restart failed: ${said(r)}`);
+        note(`not restarted: the restart command failed in the maintenance window (${said(r)})`);
+        runnerBack('after the restart failed');
         return finish('the restart command failed');
       }
       log('restarting the computer');
@@ -272,15 +323,12 @@ function step(s, { state, w, at, running, stop, selfQueue }) {
   if (s.phase === 'rebooting') {
     const asked = Date.parse(s.restart_at);
     if (bootMs() > asked) {
-      if (s.runner_was_up) {
-        const up = runner('up');
-        log(`desk-runner up: ${lastLine(up.out) || (up.ok ? 'ok' : `exit ${up.status}`)}`);
-        if (!up.ok) note(`after the maintenance restart, desk-runner up failed: ${lastLine(up.out) || `exit ${up.status}`}. Run desk-runner up`);
-      }
-      return finish(`restarted at ${new Date(bootMs()).toISOString().replace(/\.\d+Z$/, 'Z')}`);
+      runnerBack('after the maintenance restart');
+      return finish(`restarted at ${stamp(new Date(bootMs()))}`);
     }
     if (at - asked > RESTART_GRACE_MS) {
       note(`the maintenance window asked the computer to restart at ${s.restart_at}, and it did not`);
+      runnerBack('after a restart that did not happen');
       return finish('the computer did not restart');
     }
     lines.push(`maintenance: restarting the computer, asked at ${s.restart_at}`);
@@ -296,32 +344,24 @@ const isMain = (() => {
 })();
 
 if (isMain) {
-  const [cmd] = process.argv.slice(2);
-  const state = E.stateDir();
-  if (cmd === 'step') {
-    // Outside a pass (an idle batch): this repo's running tickets are stopped through the session
-    // registry and queued to resume, as a pass does.
-    const qf = E.queueFile();
-    let q = null;
-    try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch { /* no queue: nothing running */ }
-    const running = Object.values(q?.tickets ?? {}).filter((t) => t.state === 'running');
-    let live = null;
-    const stop = (t) => {
-      if (!live) { try { live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' })); } catch { return { ok: false, why: 'the session registry could not be read' }; } }
-      const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
-      if (live.some((a) => a.sessionId === t.session_id) && !pid) return { ok: false, why: `no pid for session ${t.session_id}` };
-      if (pid) spawnSync('kill', [String(pid)]);
-      const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set', t.key, 'state=triaged', 'resume=maintenance', 'resume_why=stopped for the maintenance window']);
-      return r.ok ? { ok: true, pid } : { ok: false, why: `queue write refused: ${lastLine(r.out)}` };
-    };
-    console.log(JSON.stringify(await maintenance({ state, running, stop, selfQueue: qf })));
-  } else if (cmd === 'status') {
-    const w = parseWindow(E.configValue('maintenance-window'));
-    console.log(`window: ${w.off ? 'none' : w.bad ?? `${w.text}, drain limit ${drainLimit(E.configValue('maintenance-drain')).minutes} min, restart ${E.permissionOrUnset('machine-reboot') ?? 'ask'}`}`);
-    console.log(`state: ${JSON.stringify(readState(state))}`);
-    if (existsSync(logFile(state))) for (const l of readFileSync(logFile(state), 'utf8').trimEnd().split('\n').slice(-10)) console.log(`  ${l}`);
-  } else {
-    console.error('usage: maintenance.mjs step | status');
+  if (process.argv[2] !== 'step') {
+    console.error('usage: maintenance.mjs step');
     process.exit(2);
   }
+  // Outside a pass (an idle batch): this repo's running tickets are stopped through the session
+  // registry and queued to resume, as a pass does.
+  const qf = E.queueFile();
+  let q = null;
+  try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch { /* no queue: nothing running */ }
+  const running = Object.values(q?.tickets ?? {}).filter((t) => t.state === 'running');
+  let live;
+  const stop = (t) => {
+    if (live === undefined) { try { live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' })); } catch { live = null; } }
+    return stopForWindow(t, {
+      live,
+      kill: (pid) => spawnSync('kill', [String(pid)]),
+      setQueue: (key, fields) => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
+    });
+  };
+  console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));
 }

@@ -26,7 +26,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
-import { maintenance } from './maintenance.mjs';
+import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck } from './gate.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
@@ -603,21 +603,21 @@ if (notes.length) {
 }
 
 // ---- maintenance window ------------------------------------------------------
-// The weekly window (maintenance.mjs) holds every spawn, resumes included, while it drains, updates
-// and restarts. A worker still running at its drain limit is stopped with its session kept, and queued
-// to resume once the window is done.
+// The weekly window (maintenance.mjs), one per computer, holds every spawn, resumes included, while it
+// drains, updates and restarts. A worker still running at its drain limit is stopped with its session
+// kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
-  state: STATE,
   selfQueue: QUEUE_FILE,
   running: Object.values(queue().tickets).filter((t) => t.state === 'running'),
-  stop: (t) => {
-    if (!registryOk) return { ok: false, why: 'the session registry could not be read' };
-    const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
-    if (liveSids.has(t.session_id) && !pid) return { ok: false, why: `no pid for session ${t.session_id}` };
-    if (pid) sh('kill', [String(pid)], { tolerant: true });
-    q('set', t.key, 'state=triaged', 'resume=maintenance', 'resume_why=stopped for the maintenance window');
-    return { ok: true, pid };
-  },
+  stop: (t) => stopForWindow(t, {
+    live: registryOk ? live : null,
+    kill: (pid) => sh('kill', [String(pid)], { tolerant: true }),
+    setQueue: (key, fields) => {
+      const before = report.failed.length;
+      q('set', key, ...fields);
+      return report.failed.length === before ? { ok: true } : { ok: false, why: report.failed.at(-1) };
+    },
+  }),
 });
 
 // ---- spawn ---------------------------------------------------------------

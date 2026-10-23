@@ -141,12 +141,13 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
 }
 
 // The page: every repo with something to answer or something taken, questions first.
-export function renderPage({ slot, since, groups, bin = E.binDir() }) {
+// The weekly maintenance window's notes are the computer's, not a repo's, so they head the page.
+export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance = [] }) {
   const nq = groups.reduce((n, g) => n + g.questions.length, 0);
   const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
   const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
-  const nm = groups.reduce((n, g) => n + (g.maintenance?.length ?? 0), 0);
+  const nm = maintenance.length;
   const cmd = join(bin, 'digest.mjs');
   const lines = [`# Check-in ${slot.replace('T', ' ')}`, ''];
   if (!nq && !nd && !nc && !np && !nm) {
@@ -154,13 +155,13 @@ export function renderPage({ slot, since, groups, bin = E.binDir() }) {
     return lines.join('\n');
   }
   lines.push(`${nq} question(s) to answer, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.maintenance?.length)) {
+  if (nm) {
+    lines.push('## Maintenance', '');
+    for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
+    lines.push('');
+  }
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length)) {
     lines.push(`## ${g.slug}`, '');
-    if (g.maintenance?.length) {
-      lines.push('### Maintenance', '');
-      for (const m of g.maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
-      lines.push('');
-    }
     if (g.questions.length) {
       lines.push('### Questions', '');
       for (const q of g.questions) {
@@ -226,18 +227,18 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
         checks: checks.filter(inWindow),
         putOff: putOffQuestions(r, register),
-        maintenance: digestNotes(r.state).filter(inWindow),
       };
     });
+    const maintenance = digestNotes().filter(inWindow);
     const page = join(dir, `${slot.id.replace(':', '')}.md`);
-    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin }));
+    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
-    const nm = groups.reduce((n, g) => n + g.maintenance.length, 0);
+    const nm = maintenance.length;
     const listed = groups.flatMap((g) => g.questions.map((q) => q.key));
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.maintenance.length).length;
+    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length).length;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const push = nd || nm || fresh.length
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }

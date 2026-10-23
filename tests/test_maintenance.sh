@@ -86,14 +86,15 @@ printf '#!/bin/sh\necho "$1" >> "%s/runner.calls"; echo "desk-runner: $1 done"\n
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test AUTOPILOT_HEALTH_CHECKS=off \
   DESK_DIGEST_DIR="$T/digest-pass" DESK_SOURCE_CHECKOUT="$T/desk-src" DESK_REBOOT_CHECK_CMD="cat $T/check.out" \
-  DESK_RUNNER_CMD="sh $T/runner.sh" DESK_RESTART_CMD="echo restart >> $T/restart.calls" DESK_BOOT_TIME=2026-09-01T00:00:00Z
+  DESK_RUNNER_CMD="sh $T/runner.sh" DESK_RESTART_CMD="echo restart >> $T/restart.calls" DESK_BOOT_TIME=2026-09-01T00:00:00Z \
+  DESK_MAINT_DIR="$T/maint"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; const v = process.argv[3].split(".").reduce((o, k) => o?.[k], t); console.log(v ?? null)' "$DESK_QUEUE" "$1" "$2"; }
 # One pass at the given time: $out is its report.
 pj(){ out=$(DESK_MAINT_NOW="$1" node "$B/pass.mjs" --json 2>/dev/null | node -e 'let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log(JSON.parse(s).message))'); }
 calls(){ if [ -f "$T/$1.calls" ]; then wc -l < "$T/$1.calls" | tr -d ' '; else echo 0; fi; }
-mlog(){ cat "$T/state/maintenance.log" 2>/dev/null; }
+mlog(){ cat "$T/maint/maintenance.log" 2>/dev/null; }
 # A check-in built now into a fresh digest directory: the page it writes.
 digest(){ d="$T/digest-$1"; DESK_DIGEST_DIR="$d" node "$B/digest.mjs" checkin >/dev/null 2>&1; cat "$d"/*.md 2>/dev/null; }
 
@@ -105,7 +106,7 @@ q add M-9; q set M-9 state=triaged branch=fix/M-9
 pj 2026-09-07T06:31:00Z
 check "AC10 an unset window row runs no window: the ticket spawns" '[ "$(field M-9 state)" = running ]'
 check "AC10 the report has no maintenance line"             '! grep -q "maintenance:" <<< "$out"'
-check "AC10 nothing is recorded"                            '[ ! -f "$T/state/maintenance.json" ] && [ "$(calls install)" = 0 ]'
+check "AC10 nothing is recorded"                            '[ ! -f "$T/maint/maintenance.json" ] && [ "$(calls install)" = 0 ]'
 q set M-9 state=done
 
 # ---- AC1: Monday 06:31, a pass drains ----------------------------------------------------------
@@ -135,7 +136,7 @@ check "AC7 ask: no restart"                                 '[ "$(calls restart)
 check "AC7 ask: spawning resumes in the same pass"          '[ "$(field M-1 state)" = running ] && grep -q "M-0 resumed after the maintenance window" <<< "$out"'
 check "AC7 the report says so"                              'grep -q "maintenance: config §3 machine-reboot is \"ask\", so no restart: \"ready to reboot\" is in the next check-in; spawning resumes" <<< "$out"'
 page=$(digest 1)
-check "AC7 \"ready to reboot\" is in the check-in digest"   'grep -q "^### Maintenance" <<< "$page" && grep -q "ready to reboot: the maintenance window drained, updated desk-skills and found no blocker" <<< "$page"'
+check "AC7 \"ready to reboot\" is in the check-in digest"   'grep -q "^## Maintenance" <<< "$page" && grep -q "ready to reboot: the maintenance window drained, updated desk-skills and found no blocker" <<< "$page"'
 check "AC7 a resumed worker does not count as a killed one" '[ "$(field M-0 resumes)" = 0 ]'
 q set M-0 state=done; q set M-1 state=done
 
@@ -152,10 +153,15 @@ check "a window first seen 27 hours late is missed, not run" '[ "$(field M-3 sta
 q set M-3 state=done
 
 # ---- AC4: the update fails ---------------------------------------------------------------------
+# Under machine-reboot yes with no blocker, so only the failed update can stop the restart.
+config "Mon 06:30 UTC" yes
 echo dirty > "$T/desk-src/local.txt"
 q add M-4; q set M-4 state=triaged branch=fix/M-4
 pj 2026-09-21T06:31:00Z
+check "AC1 with nothing running the opening pass still drains" 'grep -q "^maintenance: draining since 2026-09-21T06:31:00Z (window Mon 06:30 UTC): no new workers; none running here" <<< "$out" && [ "$(field M-4 state)" = triaged ]'
+pj 2026-09-21T06:32:00Z
 check "AC4 a failed update: no restart"                     '[ "$(calls restart)" = 0 ] && [ "$(calls install)" = 1 ]'
+check "AC4 nor a reboot check"                              '! mlog | grep -q "^== 2026-09-21.* reboot check:"'
 check "AC4 the installed version stays as it was"           '[ "$(srchead)" = "$new" ] && mlog | grep -q "update failed: .*uncommitted changes.*(installed version stays at ${new:0:12})"'
 check "AC4 spawning resumes"                                '[ "$(field M-4 state)" = running ]'
 page=$(digest 2)
@@ -163,10 +169,9 @@ check "AC4 the failure is in the check-in digest"           'grep -q "desk-skill
 git -C "$T/desk-src" clean -fq; q set M-4 state=done
 
 # ---- AC6: machine-reboot yes and no blocker ----------------------------------------------------
-config "Mon 06:30 UTC" yes
 checkout_says running 0
 q add M-5; q set M-5 state=triaged branch=fix/M-5
-pj 2026-09-28T06:31:00Z
+pj 2026-09-28T06:31:00Z; pj 2026-09-28T06:32:00Z
 check "AC6 the runner is stopped first"                     'grep -qx down "$T/runner.calls"'
 check "AC6 the computer is restarted"                       '[ "$(calls restart)" = 1 ]'
 check "AC6 nothing spawns while it restarts"                '[ "$(field M-5 state)" = triaged ] && grep -q "maintenance: restarting the computer" <<< "$out"'
@@ -178,7 +183,7 @@ q set M-5 state=done
 # ---- machine-reboot yes, but the check found a blocker ------------------------------------------
 checkout_says stopped 2
 q add M-6; q set M-6 state=triaged branch=fix/M-6
-pj 2026-10-05T06:31:00Z
+pj 2026-10-05T06:31:00Z; pj 2026-10-05T06:32:00Z
 check "a blocker stops the restart, and spawning resumes"    '[ "$(calls restart)" = 1 ] && [ "$(field M-6 state)" = running ]'
 check "the blocker is named in the check-in digest"         'grep -q "not restarted: config §3 machine-reboot is \"yes\", but the reboot check found 2 heavy process(es) running" <<< "$(digest 3)"'
 q set M-6 state=done
@@ -187,14 +192,28 @@ q set M-6 state=done
 config "Mon 06:30 UTC" no
 checkout_says stopped 0
 q add M-7; q set M-7 state=triaged branch=fix/M-7
-pj 2026-10-12T06:31:00Z
+pj 2026-10-12T06:31:00Z; pj 2026-10-12T06:32:00Z
 check "AC8 no: no restart"                                  '[ "$(calls restart)" = 1 ]'
 check "AC8 no: spawning resumes"                            '[ "$(field M-7 state)" = running ] && grep -q "maintenance: config §3 machine-reboot is \"no\", so no restart; spawning resumes" <<< "$out"'
+q set M-7 state=done
+
+# ---- one window per computer: another repo's running worker -------------------------------------
+# Its own passes would stop it; with none running, the window waits the limit plus 30 minutes, then
+# moves on, and the reboot check names it.
+config "Mon 06:30 UTC" ask
+mkdir -p "$T/desk/repos/other"
+printf '{"version":1,"batch":"o","tickets":{"O-1":{"key":"O-1","state":"running"}}}\n' > "$T/desk/repos/other/queue.json"
+q add M-8; q set M-8 state=triaged branch=fix/M-8
+pj 2026-10-19T06:31:00Z; pj 2026-10-19T06:50:00Z
+check "a worker in another repo keeps the window draining"  'grep -q "none running here; waiting on 1 worker(s) in other repos (other O-1) until 2026-10-19T07:31:00Z" <<< "$out" && [ "$(field M-8 state)" = triaged ]'
+pj 2026-10-19T07:31:00Z
+check "then the window moves on and the check names it"     'mlog | grep -q "blockers: 1 worker(s) running in another repo (other O-1)" && grep -q "\"not ready to reboot\" is in the next check-in" <<< "$out" && [ "$(field M-8 state)" = running ]'
+rm -r "$T/desk/repos"
 
 # ---- the row ------------------------------------------------------------------------------------
 config "Someday 25:00" ask
-out=$(DESK_MAINT_NOW=2026-10-19T06:31:00Z node "$B/maintenance.mjs" status 2>&1)
-check "a window row that does not read is named"            'grep -q "config §3b \"Maintenance window\" is \"Someday 25:00\"" <<< "$out"'
+pj 2026-10-26T06:31:00Z
+check "a window row that does not read is named"            'grep -q "^maintenance: config §3b \"Maintenance window\" is \"Someday 25:00\"" <<< "$out"'
 check "the template has both rows and the §3 key"           'grep -q "^| Maintenance window | \`none\` |" "$SRC/desk-config.md" && grep -q "^| Maintenance drain limit (minutes) | \`60\` |" "$SRC/desk-config.md" && grep -qE "^\| \`machine-reboot\` \| .* \| \`ask\` \| \`TODO\` \|$" "$SRC/desk-config.md"'
 
 echo "$PASS checks passed, $FAIL failed"
