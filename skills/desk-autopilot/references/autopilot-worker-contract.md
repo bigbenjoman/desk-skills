@@ -65,38 +65,10 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 `AUTOPILOT_PARK: worker contract stage section missing: <its absolute path>`, name every step you
 did not reach, and end your turn. Never carry on from what you remember of an earlier contract.
 
-## Handing off: Stages 4b and 7 start in a fresh session
-
-Self-review and the PR stage each start in a new session, so neither pays to re-read the context
-the build grew. Hand off at two points, and only at the end of a stage that passed (a stage that
-parks parks as before):
-
-- **At the end of Stage 4**, before Stage 4b, unless your session started at Stage 4b or later.
-- **At the end of Stage 6**, before Stage 7, unless your session started at Stage 7.
-
-To hand off:
-
-1. **Commit everything** and leave `git status --porcelain` clean: the next session starts from your
-   branch in this worktree, not from anything you hold. Do not push.
-2. **Write `$DESK_STATE/handoffs/<TICKET>.json`** with the Write tool, holding these fields and no
-   others (the orchestrator adds the branch and its commits, and drops anything else):
-
-   ```json
-   {"ticket": "<TICKET>", "stage": "<4b or 7>", "criteria": ["<each acceptance criterion, verbatim>"],
-    "lane": "<lane>", "verification": ["<each check you ran: command, scope and reason, result>"],
-    "review": ["<each self-review finding so far: severity, file:line, outcome and commit; the round and SHA it ran at>"],
-    "evidence": ["<the absolute path of each screenshot or log captured>"]}
-   ```
-
-   `review` and `evidence` are `[]` when there is nothing yet.
-3. **Update your resume file**, print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in your
-   reply text, and end your turn. Print no `AUTOPILOT_DONE`: the ticket is not done.
-
-The orchestrator then spawns a new session for the same ticket, worktree and branch, with the
-handoff in its briefing. **When your prompt says your session starts at a stage**, every stage before
-it is done: do not redo them. Read that stage's file, check `git status` and `git log` in your
-worktree, and carry on; an `AUTOPILOT_IMAGES` an earlier session printed is kept. A task worker
-(`AUTOPILOT_TASK`) never hands off.
+**Stages 4b and 7 start in a fresh session.** At the end of Stage 4, and again at the end of
+Stage 6, you hand off and end your session (`AUTOPILOT_HANDOFF`): the Stage 4 file's "Handing off"
+says how. When your prompt says your session starts at a stage, every stage before it is done: do
+not redo them.
 
 ## 1. You cannot ask, so ask through the orchestrator
 
@@ -214,7 +186,6 @@ AUTOPILOT_NOTE:  <a discovery a sibling ticket in this batch would want>
 AUTOPILOT_DECISION: <one JSON object per call you took (section 1)>
 AUTOPILOT_IMAGES: <the absolute screenshot directory from your briefing>
 AUTOPILOT_PARK:  <question>
-AUTOPILOT_HANDOFF: <4b or 7: the stage the next session starts at (Handing off, above)>
 AUTOPILOT_DONE:  pr=<number> jira=<status, or "none" with no tracker>
 ```
 

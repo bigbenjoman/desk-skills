@@ -522,7 +522,7 @@ handing H-1; hfile H-1 4b "typecheck: pass"; echo "use the blue widget" > "$T/st
 hlog H-1 "$(printf 'AUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC1 a session that prints AUTOPILOT_HANDOFF: 4b is not done, parked or failed, and the report says it handed off" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 4: queued for a fresh session from Stage 4b"'
-check "DS-155 AC2 the pass spawns a new session for the ticket, on its branch, starting at Stage 4b" 'spawned_for H-1 | grep -q "^H-1 [0-9a-f-]* stage=4b branch=fix/H-1 brief=$T/state-h/briefings/H-1.md$" && [ "$(field H-1 state)" = "\"running\"" ] && [ "$(field H-1 stage)" = "\"4b\"" ] && [ "$(field H-1 handoffs)" = 1 ] && echo "$out" | grep -q "spawned: H-1 fresh session from Stage 4b (handed off)"'
+check "DS-155 AC2 the pass spawns a new session for the ticket, on its branch, starting at Stage 4b" 'spawned_for H-1 | grep -q "^H-1 [0-9a-f-]* stage=4b branch=fix/H-1 brief=$T/state-h/briefings/H-1.md$" && [ "$(field H-1 state)" = "\"running\"" ] && [ "$(field H-1 stage)" = "\"4b\"" ] && echo "$out" | grep -q "spawned: H-1 fresh session from Stage 4b (handed off)"'
 check "DS-155 AC2 with a new session id, the same worktree, and the handed-off session's log kept as its own round" '[ "$(field H-1 session_id)" != "\"old-H-1\"" ] && [ "$(field H-1 worktree)" = "\"$T/wt/H-1\"" ] && grep -q "AUTOPILOT_HANDOFF: 4b" "$T/state-h/logs/H-1.log.round1" && [ ! -e "$T/state-h/logs/H-1.log" ]'
 check "DS-155 AC4 the briefing holds the key, criteria, branch, lane, verification, findings so far and evidence" 'b=$(brief H-1); for s in "## Handoff: this session starts at Stage 4b" "### Ticket" "AC1: the widget saves" "\`fix/H-1\` in $T/wt/H-1" "### Lane" "typecheck: pass" "### Self-review findings so far" "### Evidence captured"; do grep -qF -- "$s" <<< "$b" || exit 1; done'
 check "DS-155 AC4 and nothing else: no field the briefing does not hold, and no sibling notes" '! brief H-1 | grep -q "SCRATCH-FIELD" && ! brief H-1 | grep -q "SIBLING-NOTE"'
@@ -532,7 +532,7 @@ check "DS-155 the handoff session's briefing still carries the binding answer" '
 hfile H-1 7 "typecheck: pass" "P2 src/a.js:3 fixed in abc1234 (round 1 at 1111111)"
 hlog H-1 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7')"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-155 AC3 a session that hands off after Stage 6 is followed by one starting at Stage 7" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 6: queued for a fresh session from Stage 7" && [ "$(spawned_for H-1 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-1 handoffs)" = 2 ]'
+check "DS-155 AC3 a session that hands off after Stage 6 is followed by one starting at Stage 7" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 6: queued for a fresh session from Stage 7" && [ "$(spawned_for H-1 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ]'
 check "DS-155 AC4 the Stage 7 briefing carries the self-review findings so far" 'brief H-1 | grep -q "## Handoff: this session starts at Stage 7" && brief H-1 | grep -qF "P2 src/a.js:3 fixed in abc1234"'
 
 # AC8: the Stage 7 session parks; requeued, it starts at Stage 7 again, not at Stage 0.

@@ -1054,13 +1054,15 @@ in `references/orchestrator-recovery.md`.
 
 **Stages 4b and 7 run in a fresh session.** A worker ends its session after Stage 4 and after
 Stage 6 with `AUTOPILOT_HANDOFF: 4b` (or `7`) and a handoff briefing in
-`$DESK_STATE/handoffs/<TICKET>.json` (worker contract "Handing off"). The next pass spawns a new
+`$DESK_STATE/handoffs/<TICKET>.json` (the Stage 4 contract file's "Handing off"). The next pass spawns a new
 session for the same ticket, worktree and branch, ahead of new tickets, starting at that stage with
 the handoff briefing in its system prompt in place of the sibling notes (`spawned: … fresh session
 from Stage 4b (handed off)`). A worktree or branch that has gone, or a briefing that cannot be read,
 parks the ticket naming it and spawns nothing. Each session's log is a round of its own, so the
-batch report's row adds every session's tokens and cost. A requeue starts again at the stage the last
-handoff named; `queue.mjs set <TICKET> handoff_stage=null` first starts it from Stage 0.
+batch report's row adds every session's tokens and cost. A requeue of a ticket whose handoff session
+parked or failed starts again at the stage that handoff named (`queue.mjs set <TICKET>
+handoff_stage=null` first starts it from Stage 0); one that finished, and is sent back for rework,
+starts from Stage 0.
 
 ## Concurrency and memory
 

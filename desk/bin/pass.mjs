@@ -487,7 +487,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     if (cost) q('set', t.key, `cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`);
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
     logDecisions(t, log, pr);
-    q('set', t.key, 'state=done', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
+    // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
+    // the stage its last handoff named.
+    q('set', t.key, 'state=done', 'handoff_stage=null', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
     report.done.push(`${t.key}: ${done.trim()}${stopped}`);
     recordScope(t);
     if (isSpine(t)) parkSpine(t, pr);
@@ -500,7 +502,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
     logDecisions(t, log, /^\d+$/.test(pr) ? pr : null);
     if (/^\d+$/.test(pr)) {
-      q('set', t.key, 'state=done', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
+      q('set', t.key, 'state=done', 'handoff_stage=null', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
       report.done.push(`${t.key}: PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`);
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
@@ -980,7 +982,9 @@ async function spawnHandoff(t) {
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
   const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
-  const model = t.model && t.model !== 'default' ? t.model : '';
+  // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
+  const tier = tierFor(t);
+  const model = models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
   const fail = (why) => {
     q('set', t.key, 'state=failed', 'handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true');
@@ -992,7 +996,7 @@ async function spawnHandoff(t) {
   const port = await freePort(t);
   E.rotateRound(t.key);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, 'log_bytes=0', 'idle_passes=0',
-    'handoff=null', `handoffs=${(t.handoffs ?? 0) + 1}`, 'resume=null', 'resume_why=null', 'resumes=null');
+    'handoff=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1074,7 +1078,7 @@ for (const t of eligible) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoffs=null', 'images_dir=null');
+    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();

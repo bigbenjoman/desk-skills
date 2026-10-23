@@ -277,20 +277,35 @@ pass
 check "the requeued ticket reaches done with the second worker's PR" '[ "$(state T-6)" = done ] && [ "$(field T-6 result.pr)" = 106 ]'
 
 # ---- DS-155: a worker hands off at the end of Stage 4, and a fresh session takes Stage 4b ---------
-record T-8 src/h.txt
-printf 'WAIT\nAUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b\n' > "$T/scripts/T-8.1"
-printf 'WAIT\nAUTOPILOT_DONE: pr=108 jira=none\n' > "$T/scripts/T-8.2"
-q admit T-8
+# Its 4b session fails, the requeue raises it to the high model, and the next 4b session hands off to 7.
+config "standard=sonnet high=opus"
+record T-80 src/h.txt
+printf 'WAIT\nAUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b\n' > "$T/scripts/T-80.1"
+printf 'WAIT\nAUTOPILOT_STAGE: 4b/9 self-review\n' > "$T/scripts/T-80.2"
+printf 'WAIT\nAUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7\n' > "$T/scripts/T-80.3"
+printf 'WAIT\nAUTOPILOT_DONE: pr=180 jira=none\n' > "$T/scripts/T-80.4"
+q admit T-80
 pass
 mkdir -p "$T/state/handoffs"
-printf '{"ticket": "T-8", "stage": "4b", "criteria": ["AC1: h saves"], "lane": "A", "verification": ["bash tests/run.sh: pass"], "review": [], "evidence": []}\n' > "$T/state/handoffs/T-8.json"
-finish T-8
+printf '{"ticket": "T-80", "stage": "4b", "criteria": ["AC1: h saves"], "lane": "A", "verification": ["bash tests/run.sh: pass"], "review": [], "evidence": []}\n' > "$T/state/handoffs/T-80.json"
+finish T-80
 pass
-check "DS-155 AC2 after a handoff the real spawn-worker starts a new session in the same worktree, told to start at Stage 4b" '[ "$(state T-8)" = running ] && [ -e "$T/runs/T-8.2" ] && grep -q "This session starts at Stage 4b" "$T/runs/T-8.2" && grep -q "\"cwd\":\"$T/wt/T-8\"" "$T/runs/T-8.2" && [ "$(node -e "const r = (n) => JSON.parse(require(\"fs\").readFileSync(process.argv[1] + n, \"utf8\")).sid; console.log(r(1) !== r(2))" "$T/runs/T-8.")" = true ]'
-check "DS-155 AC2 with the handoff briefing in its system prompt" 'grep -q "# Briefing for this ticket" "$T/runs/T-8.2" && grep -q "## Handoff: this session starts at Stage 4b" "$T/runs/T-8.2" && grep -q "AC1: h saves" "$T/runs/T-8.2" && grep -q "fix/T-8" "$T/runs/T-8.2"'
-finish T-8
+check "DS-155 AC2 after a handoff the real spawn-worker starts a new session in the same worktree, told to start at Stage 4b" '[ "$(state T-80)" = running ] && [ -e "$T/runs/T-80.2" ] && grep -q "This session starts at Stage 4b" "$T/runs/T-80.2" && grep -q "\"cwd\":\"$T/wt/T-80\"" "$T/runs/T-80.2" && [ "$(node -e "const r = (n) => JSON.parse(require(\"fs\").readFileSync(process.argv[1] + n, \"utf8\")).sid; console.log(r(1) !== r(2))" "$T/runs/T-80.")" = true ]'
+check "DS-155 AC2 with the handoff briefing in its system prompt" 'grep -q "# Briefing for this ticket" "$T/runs/T-80.2" && grep -q "## Handoff: this session starts at Stage 4b" "$T/runs/T-80.2" && grep -q "AC1: h saves" "$T/runs/T-80.2" && grep -q "fix/T-80" "$T/runs/T-80.2" && [ "$(ran_on T-80 2)" = sonnet ]'
+finish T-80
 pass
-check "DS-155 the handoff session's DONE finishes the ticket" '[ "$(state T-8)" = done ] && [ "$(field T-8 result.pr)" = 108 ]'
+out=$(node "$B/queue.mjs" requeue T-80 2>&1)
+pass
+check "DS-155 AC8 a failed handoff session, requeued, starts at Stage 4b again, on the model the requeue raised it to" '[ "$(state T-80)" = running ] && grep -q "This session starts at Stage 4b" "$T/runs/T-80.3" && [ "$(ran_on T-80 3)" = opus ] && [ "$(field T-80 model)" = "\"opus\"" ]'
+printf '{"ticket": "T-80", "stage": "7", "criteria": ["AC1: h saves"], "lane": "A", "verification": ["bash tests/run.sh: pass"], "review": ["P2 src/h.txt:1 fixed in abc1234"], "evidence": []}\n' > "$T/state/handoffs/T-80.json"
+finish T-80
+pass
+check "DS-155 AC3 a handoff at the end of Stage 6 starts a new session at Stage 7 through the real spawn-worker" '[ "$(state T-80)" = running ] && grep -q "This session starts at Stage 7" "$T/runs/T-80.4" && grep -q "## Handoff: this session starts at Stage 7" "$T/runs/T-80.4" && grep -q "P2 src/h.txt:1 fixed in abc1234" "$T/runs/T-80.4"'
+finish T-80
+pass
+check "DS-155 the handoff session's DONE finishes the ticket, and a later rework requeue starts from Stage 0" '[ "$(state T-80)" = done ] && [ "$(field T-80 result.pr)" = 180 ] && [ "$(field T-80 handoff_stage)" = null ] && node "$B/queue.mjs" requeue T-80 >/dev/null 2>&1 && [ "$(field T-80 handoff)" = null ]'
+q drop T-80
+config
 
 # ---- AC4: a worker that exits with no done marker is not done ------------------------------------
 record T-7 src/f.txt
