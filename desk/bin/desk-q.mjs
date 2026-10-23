@@ -187,7 +187,8 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const at = Math.floor(now / MINUTE) * MINUTE;
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
-  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])));
+  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])),
+    { jira: /^jira\b/i.test(String(repoConfigValue(r.slug, 'tracker') ?? '').trim()) });
   const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));

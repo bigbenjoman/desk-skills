@@ -111,7 +111,7 @@ if (kind.kind !== 'tracker') {
     Object.assign(rec, epicOf(issue));
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint
     // that did not run.
-    try { rec.lint = JSON.parse(execFileSync('desk-jira', ['lint', key, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 })); }
+    try { rec.lint = jira(['lint', key]); }
     catch (e) {
       try { if (e.status !== 1) throw e; rec.lint = JSON.parse(e.stdout); }
       catch { rec.lint_error = lastLine(e) || 'desk-jira lint failed'; }

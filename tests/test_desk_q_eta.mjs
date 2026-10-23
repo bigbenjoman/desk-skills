@@ -138,11 +138,12 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
 // (default `at`, so it is live then); null means no pass yet.
-function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null }) {
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
-    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`);
+    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`
+    + (tracker ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n` : ''));
   const qp = join(zenv.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(qp), { recursive: true });
   writeFileSync(qp, JSON.stringify({ version: 1, batch: name, concurrency: workers, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
@@ -544,7 +545,11 @@ const tookMs = performance.now() - t0;
 t('DS-190 AC4: five 4 MB logs each give their last marker, in under 100 ms', [bigStages.join(' '), tookMs < 100], ['5/9 5/9 5/9 5/9 5/9', true]);
 
 // ---- DS-191: a record written before epics were recorded is "not read yet", never "no epic"
-repo('predates', 4760, { tickets: { 'R-1': { state: 'triaged' }, 'R-2': { state: 'triaged' } }, sizes: { 'R-1': 'M', 'R-2': 'M' }, history: hist12 });
+repo('predates', 4760, { tickets: { 'R-1': { state: 'triaged' }, 'R-2': { state: 'triaged' } }, sizes: { 'R-1': 'M', 'R-2': 'M' }, history: hist12, tracker: 'jira' });
+repo('nojira', 4770, { tickets: { 'J-1': { state: 'triaged' } }, sizes: { 'J-1': 'M' }, history: hist12 });
+writeFileSync(join(stateOf('nojira'), 'triage', 'J-1.json'), JSON.stringify({ ticket: 'J-1', summary: 'J-1 title', size: 'M' }));
+t('DS-191: where the Tracker is not jira no pass reads epics, so a record with no epic key has none, not "not read yet"',
+  [Q.forecastOf(repoAt('nojira'), { now: FIXED }).unread, Q.forecastOf(repoAt('nojira'), { now: FIXED }).noEpic], [0, 1]);
 writeFileSync(join(stateOf('predates'), 'triage', 'R-1.json'), JSON.stringify({ ticket: 'R-1', summary: 'R-1 title', size: 'M' }));
 const preF = Q.forecastOf(repoAt('predates'), { now: FIXED });
 const preView = await epicsView('acme__predates');

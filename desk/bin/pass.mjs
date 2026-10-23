@@ -21,7 +21,7 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
-import { firstSpawnFromLogs } from './desk-q-eta.mjs';
+import { firstSpawnFromLogs, epicUnread } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
@@ -1018,7 +1018,7 @@ const unreadEpics = Object.values(queue().tickets).filter((t) => {
   if (!onJira || t.state === 'done') return false;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return false;
-  try { return !('epic' in JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8'))); } catch { return false; }
+  try { return epicUnread(JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8'))); } catch { return false; }
 }).map((t) => t.key);
 if (unreadEpics.length) {
   const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--epic', ...unreadEpics], { timeout: 120_000 });
