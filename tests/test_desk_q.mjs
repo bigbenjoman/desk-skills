@@ -529,7 +529,7 @@ t('DS-167 AC3 a tag on one title alone stays', Q.titler(['desk-q: a'])('desk-q: 
 t('DS-167 AC4 the ticket screen shows the full title with its tag', lines(Q.ticketScreen(repoOf('skills8'), 'A-1', { width: 160 }))[1], 'autopilot: one');
 
 const head8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /^ +# /.test(l));
-// DS-187: WHAT IT NEEDS takes 52 columns where the terminal has them.
+// WHAT IT NEEDS takes 52 columns where the terminal has them.
 t('DS-167 AC7 (DS-187) the WHAT IT NEEDS column is 52 columns wide', head8.indexOf('STARTS') - head8.indexOf('WHAT IT NEEDS'), 52);
 const a8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /A-8 /.test(l));
 t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('WHAT IT NEEDS'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 49)}…  `);
@@ -862,6 +862,8 @@ Fe.ui.finish(0);
 t('DS-186 AC5 Timeline, By day and Epics: a coloured selected row, no reverse video', tintSeen.join(', '), 'true false, true false, true false');
 
 const Hn = screen({ kind: 'repo', slug: 'acme__hue' }, 24, () => FIXED);
+// Tall enough for every row and its group heading.
+Hn.output.rows = 80; Hn.output.resize();
 await sleep(20);
 const narrow = lastFrame(Hn).filter((l) => /H-\d/.test(l));
 t('DS-181 AC4 a truncated row ends in … at the width, every colour closed before it', `${narrow.length} ${JSON.stringify(narrow.filter((l) => {
@@ -918,7 +920,7 @@ await sleep(20);
 const passCell = (name) => coloured(ovRow(Lp, name))[0] ?? '';
 t('DS-186 AC3 LAST PASS: live in green, stopped under a day in yellow, over a day in red',
   `${/^32:● live · \d+m ago$/.test(passCell('ontime'))} ${/^33:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^31:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
-// AC8: each ports overlap line starts ▲ and is yellow; "N tickets need you" is magenta (DS-187).
+// AC8: each ports overlap line starts ▲ and is yellow; "N tickets need you" is magenta.
 const lpRaw = lastFrame(Lp);
 const overlaps = lpRaw.filter((l) => l.replace(ANSI, '').includes('ports overlap:'));
 t('DS-186 AC8 each ports overlap line starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.startsWith('\x1b[33m▲ ports overlap: '))}`, 'true true');
@@ -961,14 +963,14 @@ const slOut = SL.run('--plain', 'voicepa').out;
 t('DS-190 AC1 the CLI shows the worker\'s stage since its marker', (lines(slOut).find((l) => /VPL-1/.test(l)) ?? '').includes(`stage 4/9 verify since ${saidAt.toTimeString().slice(0, 5)}`), true);
 t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2\s+● running\s+stage 0\/9 as of \d\d:\d\d\s/.test(lines(slOut).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
-// ---- DS-187: lead with what needs you, a repo's Queue grouped by state, a ticket's status first.
+// ---- Lead with what needs you, a repo's Queue grouped by state, a ticket's status first.
 // AC1: voicepa has two tickets parked on the user and one blocked behind them; pr-ninja has one.
 const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
   'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' } } } } } });
 t('DS-187 AC1 the overview opens with how many need you, each repo\'s count, most first, then the blocked count',
   lines(NY.run('--plain').out)[0], '● 3 tickets need you  2 in voicepa · 1 in pr-ninja   1 blocked');
-const NYs = screen({ kind: 'overview', all: false }, 160);
+const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
 t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('● ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
 NYs.ui.finish(0);

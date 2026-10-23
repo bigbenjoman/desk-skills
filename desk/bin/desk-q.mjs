@@ -849,10 +849,10 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     '',
   ];
   // The status block: each field's label dim in a column of its own. One too long for the line wraps
-  // under its value, in its first run's colour.
-  const field = (label, segs) => {
+  // under its value, in its first run's colour; a branch or a path is kept whole.
+  const field = (label, segs, whole = false) => {
     const text = segs.map((s) => s[0]).join('');
-    if (FIELD_W + text.length <= ww) return head.push(segLine([[pad(label, FIELD_W), DIM], ...segs]));
+    if (whole || FIELD_W + text.length <= ww) return head.push(segLine([[pad(label, FIELD_W), DIM], ...segs]));
     wrap(text, ww - FIELD_W).forEach((l, i) => head.push(segLine([[pad(i ? '' : label, FIELD_W), DIM], [l, segs[0][1]]])));
   };
   field('Now', nowSegs(r, row, k, t));
@@ -860,9 +860,9 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const holds = r.rows.filter((x) => x.t.key !== key && String(x.t.held_by ?? '').split('|').includes(key)).map((x) => x.t.key);
   if (holds.length) field('Holds up', [[holds.join(', '), WARN], [` ${holds.length === 1 ? 'waits' : 'wait'} for this to merge`, DIM]]);
   const branch = t.branch ?? tr.branch;
-  if (branch) field('Branch', [[branch, DIM]]);
+  if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]
-    : [['l', BOLD], [' log', null], ...(jiraUrl ? [['  ·  ', null], ['o', BOLD], [' Jira  ', null], [jiraUrl.replace(/^https?:\/\//, ''), DIM]] : [])]);
+    : [['l', BOLD], [' log', null], ...(jiraUrl ? [['  ·  ', null], ['o', BOLD], [' Jira  ', null], [jiraUrl.replace(/^https?:\/\//, ''), DIM]] : [])], true);
   head.push('');
   const rows = [], out = [];
   if (k === 'waiting' || k === 'stuck') {
