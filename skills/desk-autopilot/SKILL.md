@@ -308,6 +308,20 @@ Handing over does not hand over the person's side: answers (Stage 5), relaying a
 recovery the decider handed on, and the close-out are still yours, read from `<state>/supervisor.log` and `queue.mjs render`
 rather than a loop. A pass you run by hand while the supervisor's holds the lock refuses; run it again.
 
+**Standing intake** keeps the supervisor fed between sessions. Where config §3b "Intake query" names
+a Jira query and §3 `autopilot-workers` is `yes`, each tick runs `intake.mjs` first, which searches
+at most every 15 minutes. Each new ticket the query finds is triaged once (`triage.sh`, three a
+run, the rest the next) and admitted (`queue.mjs admit <KEY> --by intake`) with no Stage 3 plan
+approval. The ticket is held behind any blocker in the batch, and the tick's report in
+`<state>/supervisor.log` says `admitted <KEY> by intake`. With no live batch it starts one
+(`standing-<time>`), already handed over. A lane C or D ticket goes to the check-in digest instead,
+as does a blocking lint finding, open triage questions, size L or XL, or a blocker that is not done
+and not in the batch: each is listed with the reason, never asked. Once the ticket is fixed,
+`intake.mjs forget <KEY>` lets the next intake try it again. A batch still being planned in a
+session gets nothing until it is handed over. With the row unset or `none`, no intake runs. The
+register is `<state>/intake.json`. Feature-mode epics are never taken in this way: they keep their
+spine and owner-table approval.
+
 ## Order the batch by blast radius
 
 `plan-batch` sets the merge order: triage records each ticket's `change_kind` (`relocate`, `schema`,
@@ -1353,6 +1367,8 @@ node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a r
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
+node ~/.claude/desk/bin/intake.mjs run --force                        # standing intake now (§3b Intake query); the supervisor runs it every 15 minutes
+node ~/.claude/desk/bin/intake.mjs forget ABC-127                     # a ticket intake handed to the digest, once fixed: the next intake tries it again
 node ~/.claude/desk/bin/spine-review.mjs brief ABC-126                # the read-only reviewer's prompt for a spine awaiting approval
 node ~/.claude/desk/bin/spine-review.mjs questions ABC-126 <reply>    # one approval question per spec, with the review's findings
 node ~/.claude/desk/bin/queue.mjs approve ABC-126                     # the person approved a feature spine's specs: done, undrafted, merges

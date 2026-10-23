@@ -26,6 +26,9 @@
 //     digest and starts one headless decider session (decider.mjs) for the rest, unless one is still
 //     running; each tick stops a decider past its time, and records what an ended one cost, settled
 //     and handed on, in the log and the batch notes;
+//   - first, where config §3b "Intake query" names a query, runs standing intake (intake.mjs) at most
+//     every 15 minutes: it admits the new tickets a worker can take, starting a batch handed over at
+//     once if none is live, and its lines go into the tick's report;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
 //     a new batch, or a ticket admitted or requeued into this one. Each idle tick still runs the
 //     check-in and moves the weekly maintenance window on (maintenance.mjs step).
@@ -36,6 +39,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
+import { intakeQuery } from './intake.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -211,11 +215,16 @@ function interval() {
   const logFile = join(state, 'supervisor.log');
   const log = (lines) => appendFileSync(logFile, `${lines.join('\n')}\n`);
   const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  if (!existsSync(E.queueFile())) return;
+  // Standing intake first: it may start the batch this tick then passes.
+  const intake = runIntake();
+  if (!existsSync(E.queueFile())) { if (intake.length) log([`== ${stamp()} intake`, ...intake]); return; }
   let q;
-  try { q = readQueue(E.queueFile()); } catch (e) { log([`== ${stamp()} queue unreadable, no pass run: ${describeCrash(e)}`]); return; }
+  try { q = readQueue(E.queueFile()); } catch (e) { log([`== ${stamp()} queue unreadable, no pass run: ${describeCrash(e)}`, ...intake]); return; }
   const s = readState(state);
+  // What intake did goes in the pass's report; a tick that runs no pass logs it alone.
+  const intakeAlone = () => { if (intake.length) log([`== ${stamp()} intake`, ...intake]); };
   if (q.supervised !== true) {
+    intakeAlone();
     // Said once per batch, so a batch never handed over is not mistaken for a supervisor that stopped.
     if (s.unsupervised !== (q.batch ?? null)) {
       log([`== ${stamp()} batch ${q.batch ?? '?'} is not handed over: no pass until Stage 4 runs queue.mjs set-batch supervised=true`]);
@@ -227,21 +236,33 @@ function interval() {
   // it ends idle by itself, so a pass lists it and a decider can act on the answer.
   const answeredNow = Object.values(readHanded(state)).some((e) => answered(state, e));
   if (s.idle && s.idle === fingerprint(q) && !answeredNow) {
+    intakeAlone();
     const reaped = reapDecider(state, s);
     if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
     idleCheckin(state, s, log, stamp);
     return;
   }
   const holder = orchestratorHolder(state) ?? supervisorHolder(state);
-  if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`]); return; }
+  if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
   try { writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), { flag: 'wx' }); }
   catch {
     // A dead holder's lock is taken over; a live one started in the moment since the check above.
-    if (supervisorHolder(state)) { log([`== ${stamp()} skipped: a pass is still running (pid ${supervisorHolder(state)})`]); return; }
+    if (supervisorHolder(state)) { log([`== ${stamp()} skipped: a pass is still running (pid ${supervisorHolder(state)})`, ...intake]); return; }
     writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
   }
-  try { runPass(state, q, s, log, stamp); }
+  try { runPass(state, q, s, log, stamp, intake); }
   finally { try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ } }
+}
+
+// Standing intake (intake.mjs), where config §3b "Intake query" names a query: the lines for the
+// report, empty when it was not due. Triage runs a model per ticket, so it gets the longest wait.
+const INTAKE_TIMEOUT_MS = 30 * 60 * 1000;
+function runIntake() {
+  if (!intakeQuery()) return [];
+  const r =spawnSync(process.execPath, [join(HERE, 'intake.mjs'), 'run', '--json'], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: INTAKE_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+  try { return JSON.parse(String(r.stdout ?? '').trim()).lines ?? []; } catch {
+    return [`intake: failed (${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-2).join(' / ') || `exited ${r.status ?? r.signal}`}); the next tick tries again`];
+  }
 }
 
 // An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
@@ -271,7 +292,7 @@ function idleMaintenance(log, stamp) {
   if (m.lines?.length) log([`== ${stamp()} idle maintenance:`, ...m.lines]);
 }
 
-function runPass(state, q, s, log, stamp) {
+function runPass(state, q, s, log, stamp, intake = []) {
   const slug = E.repoSlug();
   const qf = E.queueFile();
 
@@ -295,7 +316,7 @@ function runPass(state, q, s, log, stamp) {
     const why = r.error?.code === 'ETIMEDOUT' ? `timed out after ${PASS_TIMEOUT_MS / 60000} minutes` : `exited ${r.status ?? r.signal} without a verdict`;
     v = { status: 'error', code: r.status, message: `pass.mjs ${why}: ${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-5).join(' / ')}` };
   }
-  const out = [`== ${stamp()} pass: exit ${r.status ?? r.signal} (${v.status}); approvals passed on: ${given.join(', ') || 'none'}`, String(v.message ?? '').trimEnd()];
+  const out = [`== ${stamp()} pass: exit ${r.status ?? r.signal} (${v.status}); approvals passed on: ${given.join(', ') || 'none'}`, ...intake, String(v.message ?? '').trimEnd()];
 
   let qAfter = q;
   try { qAfter = readQueue(qf); } catch { /* the pass reported it */ }

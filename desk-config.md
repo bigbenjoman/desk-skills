@@ -264,6 +264,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |
 | Check-in times | `08:00, 17:00` | `TODO` (local HH:MM times: questions and logged decisions from every repo reach you at each as one digest page and one push; only a park marked `PRODUCTION BROKEN` is pushed between them. Unset is `08:00, 17:00`) |
+| Intake query | `none` | `TODO` (a Jira query, e.g. `project = ABC AND labels = autopilot AND statusCategory = "To Do"`, or `none`: every 15 minutes the supervisor triages the new tickets it finds and admits each one a worker can take straight into the running batch, starting one if none is live, with no plan approval; only where §3 `autopilot-workers` is `yes`. Lane C or D, a blocking lint finding, open questions, size L or XL, and a blocker outside the batch go to the check-in digest instead. Unset is `none`) |
 
 Worker concurrency, the memory ceiling and the test worker cap are about the computer more than the
 repo. Left `TODO` or absent, each falls back to the machine profile, `~/.config/desk/machine.md`

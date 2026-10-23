@@ -254,13 +254,14 @@ const q = cmd === 'init' ? empty() : load(); // init must be able to repair a co
 switch (cmd) {
   case 'init': {
     // Stage 0 is the last point before triage: an orchestrator that cannot ask or run its monitors
-    // would triage, then stall at Stage 3.
-    const dm = sessionDefaultMode();
+    // would triage, then stall at Stage 3. A standing batch (intake.mjs) has no orchestrator to stall.
+    const standing = args.includes('--standing');
+    const dm = standing ? {} : sessionDefaultMode();
     if (dm.mode === 'dontAsk') {
       throw new Error(`${DONTASK_WARNING}. Set in ${dm.file}; remove it (run /desk-setup, which backs the file up first), restart the session, then init again`);
     }
     const fresh = empty();
-    fresh.batch = args[0] ?? new Date().toISOString().slice(0, 16);
+    fresh.batch = args.find((a) => a !== '--standing') ?? new Date().toISOString().slice(0, 16);
     save(fresh);
     // Batch notes record what workers learnt about *this* configuration. Carrying them
     // across batches propagates claims that a config change has since made false.
@@ -340,8 +341,10 @@ switch (cmd) {
   // the user asked to add, a split-off child. Never re-run plan-batch with AUTOPILOT_WRITE_QUEUE for
   // this: it resets every ticket's state.
   case 'admit': {
+    // --by names who admitted it, where that is not the orchestrator: `intake` for standing intake.
     const [key] = args;
-    if (!key || !SAFE_ID.test(key) || key.includes('..')) throw new Error('usage: queue.mjs admit <TICKET>   (after triage.sh <TICKET>)');
+    const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>]   (after triage.sh <TICKET>)');
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
@@ -369,10 +372,11 @@ switch (cmd) {
       session_id: null, pid: null, base_sha: null, stage: null,
       park: park ? { question: park, since: new Date().toISOString() } : null, log: null, result: null,
       collides_with: collides.join('|') || null, open_questions: unknowns, held_by: null,
+      ...(by ? { admitted_by: by } : {}),
       added_at: new Date().toISOString(),
     };
     save(q);
-    console.log(`admitted ${key}: ${park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${r.blockers?.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    console.log(`admitted ${key}${by ? ` by ${by}` : ''}:${park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${r.blockers?.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;
   }
 
