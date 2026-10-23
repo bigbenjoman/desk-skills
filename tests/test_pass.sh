@@ -561,7 +561,7 @@ check "DS-155 AC6 a handoff whose branch is gone parks naming the branch, and sp
 handing H-5; hlog H-5 "AUTOPILOT_HANDOFF: 5"
 handing H-6; hlog H-6 "AUTOPILOT_HANDOFF: 4b"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qF "handed off to \"5\", which no session starts at" && ! spawned_for H-5'
+check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qF "5\\\", which no session starts at (only Stage 4b or 7), so no session was spawned" && ! spawned_for H-5'
 check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(field H-6 state)" = "\"parked\"" ] && field H-6 park.question | grep -qF "its handoff briefing $T/state-h/handoffs/H-6.json does not exist" && ! spawned_for H-6'
 
 # AC5: a handoff briefing over the cap is cut to it with the note, and the answer after it survives.
