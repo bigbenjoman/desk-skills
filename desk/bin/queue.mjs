@@ -187,6 +187,12 @@ function toFront(q, key) {
   return 'moved to the front of the spawn order';
 }
 
+// A triaged ticket with triage questions open is never spawned (pass.mjs and borrow.mjs skip it), so
+// every place that shows it as ready says why it is not: the table's row, front, and through front the
+// merge driver's release line. The wording matches the pass report's BLOCKED ON ANSWERS.
+const questionsOpen = (t) => t.open_questions ?? 0;
+const answerWith = (t) => `answer with answer.mjs ${t.key} "<answer>"`;
+
 // Send a ticket back for another worker: every field a requeue needs, not one of them left to a hand
 // edit that fails silently. The last round's log, park record and mailbox move aside to one
 // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
@@ -485,7 +491,9 @@ switch (cmd) {
     ticket(q, key);
     const msg = toFront(q, key);
     save(q);
-    console.log(`${key} ${msg}`);
+    const t = q.tickets[key];
+    const open = questionsOpen(t);
+    console.log(`${key} ${msg}${open > 0 ? `; it still has ${open} question(s) open and will not spawn until they are answered: ${answerWith(t)}` : ''}`);
     break;
   }
 
@@ -607,6 +615,7 @@ function render(q) {
       : t.state === 'parked' ? t.park?.question ?? ''
       : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}` : '')
+      : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
