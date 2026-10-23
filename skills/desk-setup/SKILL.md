@@ -268,10 +268,16 @@ How to turn what you find into rows:
 - **Toolchain.** From the lockfile and `packageManager` (`pnpm-lock.yaml` → pnpm; `mise.toml` or
   `.tool-versions` → Command prefix `mise exec --`, else `none`), and the `scripts` in
   `package.json` / `turbo.json` / `pyproject.toml` / `Makefile` for the command rows. A Python
-  project under `apps/*` (a `pyproject.toml`, `uv.lock` or `requirements*.txt` there) gets its own
-  command items in its directory, e.g. `` `apps/api: uv run pytest` ``, and its `alembic.ini` a
-  §4 Database migrate candidate. Propose, then confirm; a guessed test command that does not exist
-  wastes a worker's whole run.
+  project in any directory other than the root (a `pyproject.toml`, `uv.lock` or
+  `requirements*.txt` there: `apps/api/`, but also `backend/`, `services/` or `api/` at the top
+  level) gets its own command items in its directory, e.g. `` `backend: uv run pytest` ``, and its
+  `alembic.ini` a §4 Database migrate candidate. **It also gets its own §4 Install item**, beside
+  the JS one, or a worker's worktree has no virtualenv and every backend ticket parks: with a
+  committed `uv.lock` (`git ls-files <dir>/uv.lock`, not just on disk) propose
+  `` `<dir>: uv sync --frozen` ``. With no committed `uv.lock`, ask how dependencies are installed
+  there rather than proposing a command: a plain `uv sync` writes a new lockfile into every
+  worktree, and `git status` is then never clean. Propose, then
+  confirm; a guessed test command that does not exist wastes a worker's whole run.
 - **Related tests.** For each Unit tests item, the same runner in its related form, in the same
   directory: Vitest `vitest related --run --passWithNoTests`, Jest `jest --findRelatedTests
   --passWithNoTests` (through the package manager as the Unit tests item runs it, e.g.
