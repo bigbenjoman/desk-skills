@@ -12,7 +12,8 @@ import * as E from './desk-env.mjs';
 import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
-import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff } from './handoff.mjs';
+import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
+  roundStage, resumeCheck, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
@@ -481,7 +482,14 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
-  if (park) { q('park', t.key, park.trim()); report.parked.push(`${t.key}: ${park.trim()}`); logDecisions(t, log, null); }
+  if (park) {
+    q('park', t.key, park.trim());
+    // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
+    // one: a stalled or failed worker starts again at Stage 0.
+    q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: new Date().toISOString() })}`);
+    report.parked.push(`${t.key}: ${park.trim()}`);
+    logDecisions(t, log, null);
+  }
   else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
   else if (done) {
     // A ticket whose sessions handed off spent what each of them did.
@@ -933,8 +941,8 @@ async function resumeKilled(t) {
 // answers: answer.mjs writes into this file, and clobbering it silently sends the worker in without the
 // answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
 // sibling notes: what it needs is what the session before it did, and paying for the notes again is
-// what the handoff saves.
-function writeBrief(t, wt, handoff = '') {
+// what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
+function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const answerFile = join(STATE, 'answers', `${t.key}.txt`);
   mkdirSync(join(STATE, 'briefings'), { recursive: true });
@@ -961,13 +969,32 @@ function writeBrief(t, wt, handoff = '') {
     ownedBrief(t, wt),
     baselineBrief(),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
-    !handoff && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
+    notes && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
   ].filter(Boolean).join('\n');
   // An oversized handoff briefing is cut, with the note, before the answers that follow it, so a cut
   // never drops a binding answer. The whole briefing is capped either way (capBriefing).
   const room = Math.max(0, MAX_BRIEF - parts('').length - BRIEF_CUT.length - 4);
   writeFileSync(briefPath, capBriefing(parts(handoff.length > room ? capBriefing(handoff, room) : handoff)));
   return briefPath;
+}
+
+// A requeued ticket whose worker parked at Stage 3 or later resumes at the stage that round reached,
+// with its summary in the briefing, when its worktree was kept, is on the queue's branch, and has no
+// resume file that records another (resumeCheck). A round that cannot be resumed is said in the
+// briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
+function resumeRound(t, { wt, kept, branch }) {
+  const round = t.last_round;
+  const stage = roundStage(round?.stage);
+  if (!stage || !kept) return { stage: null, brief: '', line: '' };
+  const r = resumeCheck({ worktree: wt, key: t.key, branch });
+  if (!r.ok) {
+    return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why }), line: ` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
+  }
+  const briefPath = join(STATE, 'briefings', `${t.key}.md`);
+  const answers = answersSince(existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '', round.at);
+  const base = `origin/${DEFAULT_BRANCH}`;
+  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base) });
+  return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
@@ -998,7 +1025,7 @@ async function spawnHandoff(t) {
   const port = await freePort(t);
   E.rotateRound(t.key);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, 'log_bytes=0', 'idle_passes=0',
-    'handoff=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
+    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1026,6 +1053,9 @@ for (const t of eligible) {
     continue;
   }
   const wt = join(WORKTREES, t.key);
+  // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
+  // requeue removed for a fresh branch is not resumed.
+  const kept = existsSync(wt);
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
   // worktree it could not finish, and a half-built one must not get a worker.
@@ -1049,7 +1079,8 @@ for (const t of eligible) {
   const model = models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
 
-  const briefPath = writeBrief(t, wt);
+  const resumed = resumeRound(t, { wt, kept, branch });
+  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true });
 
   const pre = preflightFailure(t.key, wt, workerEnv);
   if (pre) {
@@ -1073,7 +1104,7 @@ for (const t of eligible) {
   E.rotateRound(t.key);
   // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
+  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
@@ -1088,7 +1119,8 @@ for (const t of eligible) {
   const spawnedAt = earlier && Date.parse(earlier) < Date.parse(now) ? earlier : now;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(resumed.stage ? { AUTOPILOT_START_STAGE: resumed.stage } : {}),
+      ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) {
@@ -1098,7 +1130,7 @@ for (const t of eligible) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}`);
   runningKeys.add(t.key);
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.

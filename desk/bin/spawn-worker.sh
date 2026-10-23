@@ -18,7 +18,8 @@
 # From pass.mjs: AUTOPILOT_BRANCH (the branch setup-worktree.sh made, the only one the worker may
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
-# AUTOPILOT_START_STAGE (4b or 7) starts a fresh session at that stage after a handoff.
+# AUTOPILOT_START_STAGE starts a fresh session at that stage: 4b or 7 after a handoff, or Stage 3 on
+# when a requeue resumes the round its worker parked in.
 set -euo pipefail
 
 TICKET="${1:?usage: spawn-worker.sh <TICKET> <worktree> <session-uuid|preflight> [briefing-file]}"
@@ -209,11 +210,11 @@ elif [ -n "${AUTOPILOT_TASK:-}" ]; then
   PROMPT="${PROMPT//\$\{PORT\}/$PORT}";     PROMPT="${PROMPT//\$PORT/$PORT}"
   PROMPT="${PROMPT}${DRY_NOTE}${CONFIG_NOTE}"
 elif [ -n "${AUTOPILOT_START_STAGE:-}" ]; then
-  # A fresh session after a handoff (pass.mjs spawnHandoff): it starts at the stage named, from the
-  # handoff briefing in its system prompt, not at Stage 0.
-  case "$AUTOPILOT_START_STAGE" in 4b|7) ;; *) echo "FAIL: AUTOPILOT_START_STAGE is \"$AUTOPILOT_START_STAGE\" — want 4b or 7" >&2; exit 1 ;; esac
+  # A fresh session after a handoff (pass.mjs spawnHandoff) or a park (pass.mjs resumeRound): it starts
+  # at the stage named, from the briefing in its system prompt, not at Stage 0.
+  case "$AUTOPILOT_START_STAGE" in 3|4|4b|5|6|7|8|9) ;; *) echo "FAIL: AUTOPILOT_START_STAGE is \"$AUTOPILOT_START_STAGE\" — want a stage from 3 to 9, or 4b" >&2; exit 1 ;; esac
   RESUME_ARGS=(--session-id "$SID")
-  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it and handed off, and the handoff briefing in your system prompt is what it handed on. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE, check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
+  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it, and the briefing in your system prompt is what it left for you. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE, check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
 else
   RESUME_ARGS=(--session-id "$SID")
   PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT — never use $DESK_DEV_PORT. Work the ticket with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
