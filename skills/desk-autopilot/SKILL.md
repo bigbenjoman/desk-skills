@@ -907,8 +907,8 @@ node ~/.claude/desk/bin/not-now.mjs add <TICKET> "<question>" --inputs '{"ticket
 ```
 
   `check` exits 3 for a question put off with the same inputs (do not ask it), and 0 to ask, printing
-  the what-changed line to put in the question when there is one. An entry goes when its inputs change
-  or the user clears it (`not-now.mjs clear "<question>"`, or `ask-again` from the digest); it never
+  the what-changed line to put in the question when there is one. An entry stops holding the question back once its
+  inputs change, and goes when the user answers the question or clears it (`not-now.mjs clear "<question>"`, or `ask-again` from the digest); it never
   expires by age. A register that cannot be read puts nothing off: every question is asked as it
   would be without one, and each pass reports it under `WAITING ON YOU`.
 

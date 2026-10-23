@@ -415,6 +415,8 @@ check "DS-143 AC6 a put-off park whose config row is unchanged stays put off" '!
 sed 's/| Default branch | `main` |/| Default branch | `develop` |/' "$T/config.md" > "$T/config-n2.md"
 out=$(DESK_CONFIG="$T/config-n2.md" node "$B/pass.mjs" 2>&1)
 check "DS-143 AC7 a changed config row asks the put-off question again, saying what changed" 'echo "$out" | grep -q "^NOTIFY: .*N-2" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-2: $N2Q — Changed since it was put off on" && echo "$out" | grep -qF "config:default-branch main → develop."'
+out=$(node "$B/answer.mjs" N-2 "develop is right" 2>&1)
+check "DS-143 a real answer to a put-off question ends the deferral" 'echo "$out" | grep -q "N-2: answered, so its question is no longer put off" && tail -n 1 "$reg" | grep -q "\"cleared\""'
 q set N-2 state=done
 
 # The check-in digest. C-1 parks on a broken live service, C-2 on an ordinary question; a last digest
