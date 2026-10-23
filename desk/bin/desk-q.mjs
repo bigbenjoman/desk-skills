@@ -820,7 +820,9 @@ function holdingCheck(ps, now) {
 function landingSegs(r, t, now) {
   const ps = prStatusOf(t);
   if (!r.live) return [[`as of ${clock(Date.parse(ps.at))}: ${passedOf(ps)}`, DIM]];
-  return [[`#${ps.pr}`, LANDING], [` · ${passedOf(ps)} · `, null], holdingCheck(ps, now)];
+  const hold = holdingCheck(ps, now);
+  // With every check passed the count adds nothing, and the row would not fit the column.
+  return [[`#${ps.pr}`, LANDING], [hold[1] === GOOD ? ' · ' : ` · ${passedOf(ps)} · `, null], hold];
 }
 
 const prOf = (r, key) => (landing(r.q.tickets?.[key]) ? `#${r.q.tickets[key].result.pr}` : null);
