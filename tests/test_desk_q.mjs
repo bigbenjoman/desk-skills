@@ -1114,7 +1114,10 @@ landRepo([ubuntu, macos]);
 mkdirSync(join(I.T, 'stub-gh'), { recursive: true });
 writeFileSync(join(I.T, 'stub-gh', 'gh'), `#!/bin/sh\necho "$@" >> "${join(I.T, 'gh-calls')}"\n`, { mode: 0o755 });
 const ghEnv = { ...I.env, PATH: `${join(I.T, 'stub-gh')}:${process.env.PATH}` };
-for (const args of [['--plain', 'land'], ['--plain', 'land', 'show', 'LD-2'], ['--plain', 'land', 'show', 'LD-1'], ['--plain']]) spawnSync('node', [BIN, ...args], { encoding: 'utf8', env: ghEnv });
+// Each run must render its landing data, or "no gh call" would also pass on a crash.
+const runs194 = [[['--plain', 'land'], '◐ landing'], [['--plain', 'land', 'show', 'LD-2'], 'checked by the last pass'], [['--plain', 'land', 'show', 'LD-1'], 'Checks on #164:'], [['--plain'], 'land']]
+  .map(([args, want]) => { const p = spawnSync('node', [BIN, ...args], { encoding: 'utf8', env: ghEnv }); return p.status === 0 && p.stdout.includes(want); });
+t('DS-194 AC10 every run renders the landing data', runs194.join(), 'true,true,true,true');
 t('DS-194 AC10 desk-q makes no gh call', readdirSync(I.T).includes('gh-calls'), false);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');

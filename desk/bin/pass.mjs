@@ -1256,7 +1256,9 @@ function readPrStatus(n) {
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
-  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: c.startedAt, completed: c.completedAt, runner: c.status !== 'queued' }));
+  // gh writes a time GitHub has not set as the zero time, 0001-01-01.
+  const time = (s) => (s && !s.startsWith('0001-') ? s : null);
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued' }));
   return { pr: n, state: v.state, url: v.url ?? null, checks, at: new Date().toISOString() };
 }
 for (const t of Object.values(qNow.tickets)) {
