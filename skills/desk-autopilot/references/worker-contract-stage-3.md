@@ -78,5 +78,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   record, `{"question": "<one line>"}`) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
   Everything else in the state directory (answers, briefings, the queue, locks, other workers'
   files, your own settings) is read-only to you
+- **And your handoff briefing**, `$DESK_STATE/handoffs/<TICKET>.json`, written when you hand off
+  (the Stage 4 file's "Handing off")
 
 If something is refused, try the plain form once before concluding you lack the capability.

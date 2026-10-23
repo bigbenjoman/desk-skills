@@ -65,6 +65,11 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 `AUTOPILOT_PARK: worker contract stage section missing: <its absolute path>`, name every step you
 did not reach, and end your turn. Never carry on from what you remember of an earlier contract.
 
+**Stages 4b and 7 start in a fresh session.** At the end of Stage 4, and again at the end of
+Stage 6, you hand off and end your session (`AUTOPILOT_HANDOFF`): the Stage 4 file's "Handing off"
+says how. When your prompt says your session starts at a stage, every stage before it is done: do
+not redo them.
+
 ## 1. You cannot ask, so ask through the orchestrator
 
 You have no `AskUserQuestion`, and you cannot wait: every blocking primitive (`timeout … until`,

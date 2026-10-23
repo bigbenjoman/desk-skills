@@ -4,6 +4,13 @@
 export const ANSWER_HEAD = '## Answer from the user';
 export const SIBLING_HEAD = '## What sibling workers';
 
+// Hard cap regardless of cause: the system prompt is contract + briefing and must stay well under
+// MAX_ARG_STRLEN (128KB). Truncating costs a worker some context; exceeding the cap costs it its
+// entire existence. A handoff session's briefing is cut the same way.
+export const MAX_BRIEF = 60000;
+export const BRIEF_CUT = '[briefing truncated to stay under the argv limit]';
+export const capBriefing = (brief, max = MAX_BRIEF) => (brief.length > max ? `${brief.slice(0, max)}\n\n${BRIEF_CUT}` : brief);
+
 // Every "## Answer from the user" section in a briefing, wherever it sits, joined in order.
 //
 // answer.mjs APPENDS each answer to the end of the briefing, and after a spawn the briefing ends with

@@ -4,14 +4,15 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
-import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
+import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
+import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
@@ -269,6 +270,34 @@ function logDecisions(t, log, pr) {
   if (entries.length) appendDecisions(entries, STATE);
 }
 
+// A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
+// session, ahead of new tickets, in the same worktree and on the same branch (spawnHandoff below). A
+// stage no session starts at, a worktree or branch that is gone, or a handoff briefing that cannot be
+// read parks it, naming which, and spawns nothing.
+// In stage order: Object.keys lists an integer-like key (7) before '4b'.
+const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
+const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;
+function handoffRefusal(t, stage) {
+  const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  if (missing) return `handoff to Stage ${stage}: ${missing}, so no session was spawned. ${FROM_ZERO(t)}`;
+  const r = readHandoff(STATE, t.key);
+  return r.ok ? null : `handoff to Stage ${stage}: ${r.why}, so no session was spawned. ${FROM_ZERO(t)}`;
+}
+function handedOff(t, said, { log, h, imgs, stopped }) {
+  logDecisions(t, log, null);
+  const stage = handoffStage(said);
+  const parkIt = (why) => { q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
+  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${HANDOFF_ORDER.join(' or ')}), so no session was spawned. ${FROM_ZERO(t)}`);
+  const refused = handoffRefusal(t, stage);
+  if (refused) return parkIt(refused);
+  // The session's cost so far, added to the ticket's when its last session finishes.
+  const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
+  q('set', t.key, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`,
+    ...(cost ? [`handoff_cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`] : []), ...(imgs ? [`images_dir=${imgs}`] : []));
+  report.advanced.push(`${t.key} handed off at the end of Stage ${HANDOFF_STAGES[stage]}: queued for a fresh session from Stage ${stage}${stopped}`);
+  return undefined;
+}
+
 // A worker killed before it finished (no result event, no marker, no open PR) is resumed in its own
 // session, worktree and branch by the spawn below, up to config §3b "Resume a killed worker (times)"
 // per ticket. Unset is 2; anything but a whole number is said and read as 0, which marks a killed
@@ -317,17 +346,22 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   const lastPark = [...h.matchAll(/AUTOPILOT_PARK:\s*(.+)/g)].pop();
   const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
   const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
-  const park = parkSupersededByDone ? undefined : lastPark?.[1];
+  // A handoff (AUTOPILOT_HANDOFF: 4b or 7) ends this session so the next stage starts in a fresh one.
+  // It counts only as the last of the three: a session that hands off has neither parked nor finished.
+  const lastHandoff = [...h.matchAll(/AUTOPILOT_HANDOFF:\s*(.+)/g)].pop();
+  const handoffLast = !!lastHandoff && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
+  const handoff = handoffLast ? lastHandoff[1].trim() : undefined;
+  const park = handoff || parkSupersededByDone ? undefined : lastPark?.[1];
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
   // hangs after printing it must be recorded done, never left running and then parked as wedged.
-  const done = park ? undefined : lastDone?.[1];
+  const done = park || handoff ? undefined : lastDone?.[1];
   for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
 
   // A worker at the 5-hour usage limit (usage-limit.mjs decides; nothing here reads the event). Only
   // a worker that has neither parked nor finished is acted on.
   const logText = readFileSync(log, 'utf8');
   const usage = usageLimit(logText);
-  const limit = !park && !done && usage.last?.kind === 'limit' ? usage.last : null;
+  const limit = !park && !done && !handoff && usage.last?.kind === 'limit' ? usage.last : null;
   if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
     q('set', t.key, `usage_unrecognised=${usage.unrecognised.length}`);
     report.unrecognised.push(`${t.key}: ${usage.unrecognised.at(-1)}`);
@@ -371,7 +405,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= 6 && !done) {
+    if (idle >= 6 && !done && !handoff) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
@@ -388,7 +422,10 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // grants driving the signed-in browser. Otherwise surface it for the user once.
   // The worker prints an absolute path, but a `~/...` one must still work: node does not expand ~,
   // and an unexpanded path made the uploader exit on every pass.
-  const imgDir = E.expandHome([...h.matchAll(/AUTOPILOT_IMAGES:\s*(\S+)/g)].pop()?.[1]);
+  // A session started from a handoff may open the PR for screenshots an earlier session captured: the
+  // directory that session printed is kept on the ticket (images_dir) when it hands off.
+  const logImgDir = [...h.matchAll(/AUTOPILOT_IMAGES:\s*(\S+)/g)].pop()?.[1];
+  const imgDir = E.expandHome(logImgDir ?? t.images_dir ?? undefined);
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
   const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? t.result?.pr;
   if (imgDir && prNo && !t.images_uploaded) {
@@ -424,11 +461,12 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   const stillLive = registryOk && t.session_id && liveSids.has(t.session_id);
   let stopped = '';
-  if (stillLive && done) {
-    // Finished but hung: stop the session (it has nothing left to do) and record it below.
+  if (stillLive && (done || handoff)) {
+    // Finished (or handed off) but hung: stop the session (it has nothing left to do) and record it below.
     const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
     if (pid) sh('kill', [String(pid)], { tolerant: true });
-    stopped = pid ? ` (session still live after DONE — stopped pid ${pid})` : ` (session still live after DONE, no pid to stop: session ${t.session_id})`;
+    const said = done ? 'DONE' : 'HANDOFF';
+    stopped = pid ? ` (session still live after ${said} — stopped pid ${pid})` : ` (session still live after ${said}, no pid to stop: session ${t.session_id})`;
   } else if (stillLive) {
     // A worker sitting on an unanswered question is waiting, not working.
     const parkFile = join(STATE, 'parks', `${t.key}.json`);
@@ -444,12 +482,16 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
   if (park) { q('park', t.key, park.trim()); report.parked.push(`${t.key}: ${park.trim()}`); logDecisions(t, log, null); }
+  else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
   else if (done) {
+    // A ticket whose sessions handed off spent what each of them did.
     const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
-    if (cost) q('set', t.key, `cost=${cost}`);
+    if (cost) q('set', t.key, `cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`);
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
     logDecisions(t, log, pr);
-    q('set', t.key, 'state=done', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
+    // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
+    // the stage its last handoff named.
+    q('set', t.key, 'state=done', 'handoff_stage=null', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
     report.done.push(`${t.key}: ${done.trim()}${stopped}`);
     recordScope(t);
     if (isSpine(t)) parkSpine(t, pr);
@@ -462,7 +504,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
     logDecisions(t, log, /^\d+$/.test(pr) ? pr : null);
     if (/^\d+$/.test(pr)) {
-      q('set', t.key, 'state=done', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
+      q('set', t.key, 'state=done', 'handoff_stage=null', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
       report.done.push(`${t.key}: PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`);
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
@@ -612,9 +654,12 @@ const eligibleBase = all.filter((r) =>
   (r.open_questions ?? 0) === 0 &&
   !collidesWithRunning(r));
 const blockedByDone = eligibleBase.filter(alreadyFinished);
-// A killed worker waiting to resume goes ahead of every new ticket.
+// A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
+// new ticket.
 const toResume = (r) => r.resume === 'pending';
-const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => toResume(b) - toResume(a));
+const toHandoff = (r) => r.handoff === 'pending';
+const goesFirst = (r) => toResume(r) || toHandoff(r);
+const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
 if (!maySpawn && eligible.length) {
   personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
     (headlessPerm === 'ask' ? ' — confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1' : ' — run /desk-setup to grant it'));
@@ -883,6 +928,88 @@ async function resumeKilled(t) {
   runningKeys.add(t.key);
 }
 
+// The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling tickets have
+// learnt, and — critically — the answers the user has already given. Compose it, never overwrite the
+// answers: answer.mjs writes into this file, and clobbering it silently sends the worker in without the
+// answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
+// sibling notes: what it needs is what the session before it did, and paying for the notes again is
+// what the handoff saves.
+function writeBrief(t, wt, handoff = '') {
+  const notesFile = join(STATE, 'batch-notes.md');
+  const answerFile = join(STATE, 'answers', `${t.key}.txt`);
+  mkdirSync(join(STATE, 'briefings'), { recursive: true });
+  const briefPath = join(STATE, 'briefings', `${t.key}.md`);
+  const prior = existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '';
+  // Keep ONLY the answers, not the rest of the file, but keep EVERY answer section: answer.mjs
+  // appends after the sibling-notes block, so a requeue's answer sits below it (collectAnswers).
+  // Running to end-of-file swallowed the notes, so every respawn folded another copy in; one briefing
+  // reached 194KB and, riding in --append-system-prompt, blew Linux's 128KB single-argument cap
+  // (MAX_ARG_STRLEN): "Argument list too long", and every new worker died instantly.
+  const priorAnswers = prior.includes(ANSWER_HEAD)
+    ? collectAnswers(prior)
+    : existsSync(answerFile)
+      ? `${ANSWER_HEAD}\n\n${readFileSync(answerFile, 'utf8')}`
+      : '';
+  const parts = (h) => [
+    `Orchestrator session name: ${orchestratorName()}`,
+    `Answer file to wait on: ${answerFile}`,
+    `Screenshot directory (print it as AUTOPILOT_IMAGES): ${join(STATE, 'images', t.key)}/`,
+    '',
+    // Before the answers: collectAnswers keeps everything from an answer heading to the sibling
+    // notes, or to the end of the file, so nothing but answers may follow one.
+    h,
+    ownedBrief(t, wt),
+    baselineBrief(),
+    priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
+    !handoff && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
+  ].filter(Boolean).join('\n');
+  // An oversized handoff briefing is cut, with the note, before the answers that follow it, so a cut
+  // never drops a binding answer. The whole briefing is capped either way (capBriefing).
+  const room = Math.max(0, MAX_BRIEF - parts('').length - BRIEF_CUT.length - 4);
+  writeFileSync(briefPath, capBriefing(parts(handoff.length > room ? capBriefing(handoff, room) : handoff)));
+  return briefPath;
+}
+
+// A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
+// on the same branch, starting at the stage it named with the handoff briefing in its system prompt.
+// Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
+async function spawnHandoff(t) {
+  // queue.mjs stores a stage of 7 as a number.
+  const stage = t.handoff_stage == null ? '' : String(t.handoff_stage);
+  const parkIt = (why) => { q('set', t.key, 'handoff=null'); q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
+  if (!HANDOFF_STAGES[stage]) return parkIt(`handed off to "${stage}", which no session starts at, so no session was spawned. ${FROM_ZERO(t)}`);
+  // The worktree may have gone while it waited for a slot.
+  const refused = handoffRefusal(t, stage);
+  if (refused) return parkIt(refused);
+  const { data } = readHandoff(STATE, t.key);
+  const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
+  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
+  // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
+  const tier = tierFor(t);
+  const model = models.off ? '' : models[tier];
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
+  const fail = (why) => {
+    q('set', t.key, 'state=failed', 'handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true');
+    report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
+  };
+  const pre = preflightFailure(t.key, t.worktree, workerEnv);
+  if (pre) return fail(`preflight failed —\n${pre}`);
+  const sid = E.uuid();
+  const port = await freePort(t);
+  E.rotateRound(t.key);
+  q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, 'log_bytes=0', 'idle_passes=0',
+    'handoff=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+  });
+  const spawnRefused = spawnRefusal(spawned.out);
+  if (spawnRefused) return fail(spawnRefused);
+  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}`);
+  runningKeys.add(t.key);
+  return undefined;
+}
+
 for (const t of eligible) {
   if (baseHold || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
@@ -891,6 +1018,11 @@ for (const t of eligible) {
   if (toResume(t)) {
     // eslint-disable-next-line no-await-in-loop
     await resumeKilled(t);
+    continue;
+  }
+  if (toHandoff(t)) {
+    // eslint-disable-next-line no-await-in-loop
+    await spawnHandoff(t);
     continue;
   }
   const wt = join(WORKTREES, t.key);
@@ -917,44 +1049,7 @@ for (const t of eligible) {
   const model = models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
 
-  // The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling
-  // tickets have learnt, and — critically — the answers the user has already given.
-  // Compose it, never overwrite the answers: answer.mjs writes into this file, and clobbering it
-  // silently sends the worker in without the answer it was blocked on.
-  const notesFile = join(STATE, 'batch-notes.md');
-  const answerFile = join(STATE, 'answers', `${t.key}.txt`);
-  mkdirSync(join(STATE, 'briefings'), { recursive: true });
-  const briefPath = join(STATE, 'briefings', `${t.key}.md`);
-  const prior = existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '';
-  // Keep ONLY the answers, not the rest of the file, but keep EVERY answer section: answer.mjs
-  // appends after the sibling-notes block, so a requeue's answer sits below it (collectAnswers).
-  // Running to end-of-file swallowed the notes, so every respawn folded another copy in; one briefing
-  // reached 194KB and, riding in --append-system-prompt, blew Linux's 128KB single-argument cap
-  // (MAX_ARG_STRLEN): "Argument list too long", and every new worker died instantly.
-  const priorAnswers = prior.includes(ANSWER_HEAD)
-    ? collectAnswers(prior)
-    : existsSync(answerFile)
-      ? `${ANSWER_HEAD}\n\n${readFileSync(answerFile, 'utf8')}`
-      : '';
-
-  const brief = [
-    `Orchestrator session name: ${orchestratorName()}`,
-    `Answer file to wait on: ${answerFile}`,
-    `Screenshot directory (print it as AUTOPILOT_IMAGES): ${join(STATE, 'images', t.key)}/`,
-    '',
-    // Before the answers: collectAnswers keeps everything from an answer heading to the sibling notes.
-    ownedBrief(t, wt),
-    baselineBrief(),
-    priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
-    existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
-  ].filter(Boolean).join('\n');
-  // Hard cap regardless of cause: the system prompt is contract + briefing and must stay well
-  // under MAX_ARG_STRLEN (128KB). Truncating costs a worker some context; exceeding the cap costs
-  // it its entire existence.
-  const MAX_BRIEF = 60000;
-  writeFileSync(briefPath, brief.length > MAX_BRIEF
-    ? `${brief.slice(0, MAX_BRIEF)}\n\n[briefing truncated to stay under the argv limit]`
-    : brief);
+  const briefPath = writeBrief(t, wt);
 
   const pre = preflightFailure(t.key, wt, workerEnv);
   if (pre) {
@@ -976,13 +1071,16 @@ for (const t of eligible) {
   // Every spawn is a fresh session, so the last round's log and park record move aside first:
   // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
   E.rotateRound(t.key);
+  // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
+  if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, 'stage=0/9',
     `port=${port}`, `database=${database}`, 'log_bytes=0', 'idle_passes=0',
     'result=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
-    // A fresh session has not been resumed.
-    'resume=null', 'resume_why=null', 'resumes=null');
+    // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
+    'resume=null', 'resume_why=null', 'resumes=null',
+    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();

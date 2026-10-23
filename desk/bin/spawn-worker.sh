@@ -18,6 +18,7 @@
 # From pass.mjs: AUTOPILOT_BRANCH (the branch setup-worktree.sh made, the only one the worker may
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
+# AUTOPILOT_START_STAGE (4b or 7) starts a fresh session at that stage after a handoff.
 set -euo pipefail
 
 TICKET="${1:?usage: spawn-worker.sh <TICKET> <worktree> <session-uuid|preflight> [briefing-file]}"
@@ -46,7 +47,7 @@ SETTINGS="$STATE/workers/$TICKET.settings.json"
 
 [ -d "$WT" ] || { echo "FAIL: worktree $WT does not exist — run setup-worktree.sh first" >&2; exit 1; }
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
-mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images"
+mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs"
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
@@ -207,6 +208,12 @@ elif [ -n "${AUTOPILOT_TASK:-}" ]; then
   PROMPT="${PROMPT//\$\{WT\}/$WT}";         PROMPT="${PROMPT//\$WT/$WT}"
   PROMPT="${PROMPT//\$\{PORT\}/$PORT}";     PROMPT="${PROMPT//\$PORT/$PORT}"
   PROMPT="${PROMPT}${DRY_NOTE}${CONFIG_NOTE}"
+elif [ -n "${AUTOPILOT_START_STAGE:-}" ]; then
+  # A fresh session after a handoff (pass.mjs spawnHandoff): it starts at the stage named, from the
+  # handoff briefing in its system prompt, not at Stage 0.
+  case "$AUTOPILOT_START_STAGE" in 4b|7) ;; *) echo "FAIL: AUTOPILOT_START_STAGE is \"$AUTOPILOT_START_STAGE\" — want 4b or 7" >&2; exit 1 ;; esac
+  RESUME_ARGS=(--session-id "$SID")
+  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it and handed off, and the handoff briefing in your system prompt is what it handed on. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE, check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
 else
   RESUME_ARGS=(--session-id "$SID")
   PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT — never use $DESK_DEV_PORT. Work the ticket with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"

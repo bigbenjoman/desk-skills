@@ -259,3 +259,37 @@ exists at your head.
 **If the local review command does not resolve**, your worktree predates it. Do §4's rebase check
 now, and review afterwards. Either way, say in `AUTOPILOT_DONE` whether the review ran; silence reads
 as reviewed.
+
+### Handing off: Stages 4b and 7 start in a fresh session
+
+Self-review and the PR stage each start in a new session, so neither pays to re-read the context
+the build grew. Hand off at two points, and only at the end of a stage that passed (a stage that
+parks parks as before):
+
+- **At the end of Stage 4**, before Stage 4b, unless your session started at Stage 4b or later.
+- **At the end of Stage 6**, before Stage 7, unless your session started at Stage 7.
+
+To hand off:
+
+1. **Commit everything** and leave `git status --porcelain` clean: the next session starts from your
+   branch in this worktree, not from anything you hold. Do not push.
+2. **Write `$DESK_STATE/handoffs/<TICKET>.json`** with the Write tool, holding these fields and no
+   others (the orchestrator adds the branch and its commits, and drops anything else):
+
+   ```json
+   {"ticket": "<TICKET>", "stage": "<4b or 7>", "criteria": ["<each acceptance criterion, verbatim>"],
+    "lane": "<lane>", "verification": ["<each check you ran: command, scope and reason, result>"],
+    "review": ["<each self-review finding so far: severity, file:line, outcome and commit; the round and SHA it ran at>"],
+    "evidence": ["<the absolute path of each screenshot or log captured>"]}
+   ```
+
+   `review` and `evidence` are `[]` when there is nothing yet.
+3. **Update your resume file**, then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
+   your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
+   is not done.
+
+The orchestrator then spawns a new session for the same ticket, worktree and branch, with the
+handoff in its briefing. **When your prompt says your session starts at a stage**, read that stage's
+file, check `git status` and `git log` in your worktree, and carry on from there; an
+`AUTOPILOT_IMAGES` an earlier session printed is kept. A task worker (`AUTOPILOT_TASK`) never hands
+off.
