@@ -550,6 +550,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
       else if (ownsSpecs(t)) checkOwned(t, Number(pr));
+    } else if (limit && !limit.resumed && !wedged && t.session_id && t.resume_reset !== limit.resetsAt) {
+      // Exited at the 5-hour usage limit under a grant to resume across it (any other setting parked it
+      // above): a headless worker ends its session at the limit rather than waiting for the reset. It
+      // stays running, reported paused, until the reset, then is resumed in its own session, never failed.
+      // Once per limit: a resume that ends before the model answers leaves the same limit last in the
+      // log, and is then handled as any other exit below rather than resumed on every pass.
+      if (Date.now() >= limit.resetsAt * 1000) {
+        // Queued now, so not paused: the paused line was this ticket's, pushed above.
+        if (pausedOnLimit) report.paused.pop();
+        const why = `exited at the 5-hour usage limit, which reset ${resetText(limit.resetsAt)}`;
+        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`, `resume_reset=${limit.resetsAt}`);
+        report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
+      }
     } else if (!wedged && !endedNormally(logText) && t.session_id) {
       // Killed mid-run: resumed in its own session by the spawn below, ahead of new tickets.
       const why = killedBy(log);
@@ -697,7 +710,7 @@ const eligibleBase = all.filter((r) =>
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
 // new ticket.
-const toResume = (r) => r.resume === 'pending';
+const toResume = (r) => r.resume === 'pending' || r.resume === 'usage';
 const toHandoff = (r) => r.handoff === 'pending';
 const goesFirst = (r) => toResume(r) || toHandoff(r);
 const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
@@ -946,16 +959,19 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 
 // A killed worker resumes in its own session, worktree, branch and log, through spawn-worker.sh and
 // so inside the worker sandbox, with AUTOPILOT_RESUME as its next prompt. Its briefing is the one it
-// was spawned with.
+// was spawned with. A worker that exited at the usage limit (resume=usage) resumes the same way, but
+// was not killed: it is not counted against config §3b "Resume a killed worker (times)".
 async function resumeKilled(t) {
-  const n = (t.resumes ?? 0) + 1;
+  const usage = t.resume === 'usage';
+  const n = (t.resumes ?? 0) + (usage ? 0 : 1);
+  const ended = usage ? 'exited at the usage limit' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     q('set', t.key, 'state=failed', 'resume=null', 'port=null', 'spawn_failed=true');
-    report.failed.push(`${t.key}: killed before it finished, and could not be resumed: ${why}`);
+    report.failed.push(`${t.key}: ${ended}, and could not be resumed: ${why}`);
   };
   // The row may have changed while it waited for a slot.
-  const stop = resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  const stop = usage ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
   if (stop?.fail) return fail(stop.fail);
   if (stop?.park) {
     q('set', t.key, 'resume=null');
@@ -970,7 +986,7 @@ async function resumeKilled(t) {
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
-  const prompt = `Your previous run of this session was killed before it finished (${t.resume_why ?? 'reboot or crash'}). ` +
+  const prompt = `Your previous run of this session ${usage ? 'ended' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
     'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.`;
@@ -984,7 +1000,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed after it was killed (${n} of ${RESUME.limit}) — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit reset' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 
@@ -1080,7 +1096,7 @@ async function spawnHandoff(t) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
+    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1167,7 +1183,7 @@ for (const t of eligible) {
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
-    'resume=null', 'resume_why=null', 'resumes=null',
+    'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
