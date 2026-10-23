@@ -510,6 +510,37 @@ const freshNarrow = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__fresh', { now: F
 t('DS-184 AC7: and so does the no-history note', [freshNarrow.length > 1, freshNarrow.every((l) => l.length <= 40), freshNarrow.join(' ')], [true, true, freshNote]);
 t('DS-184 AC8: --plain prints each note on one line, as before', [stl.split('\n')[0], freshNote.startsWith('fresh · No ship estimate: fresh has 2 merged')], [stalledNote, true]);
 
+// ---- DS-190: a running ticket's stage is its worker's last marker, read from the end of its log
+const said = (text, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { content: [{ type: 'text', text }] } });
+const echoed = (command, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } });
+const filler = (bytes) => `${JSON.stringify({ type: 'stream_event', event: { pad: 'x'.repeat(200) } })}\n`.repeat(Math.ceil(bytes / 240));
+const logOf = (name, key) => join(stateOf(name), 'logs', `${key}.log`);
+const writeLog = (name, key, text) => { mkdirSync(dirname(logOf(name, key)), { recursive: true }); writeFileSync(logOf(name, key), text); };
+repo('logged', 4750, { workers: 3, pass: FIXED - 6 * MIN,
+  tickets: { 'L-1': { state: 'running', stage: '0/9' }, 'L-2': { state: 'running', stage: '0/9' }, 'L-3': { state: 'running', stage: '0/9' }, 'L-4': { state: 'triaged' } },
+  sizes: { 'L-1': 'M', 'L-2': 'M', 'L-3': 'M', 'L-4': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) });
+const shipsBefore = Q.forecastOf(repoAt('logged'), { now: FIXED }).T['L-1'].likely;
+writeLog('logged', 'L-1', [said('AUTOPILOT_STAGE: 0/9 triage', FIXED - 5 * MIN), said('Reading the code.\nAUTOPILOT_STAGE: 4/9 verify', FIXED - 2 * MIN), said('Running the suite.', FIXED - MIN)].join('\n') + '\n');
+writeLog('logged', 'L-3', `${said('Reading the ticket.', FIXED - 3 * MIN)}\n`);
+const logged = Q.repoScreen(repoAt('logged'), { now: FIXED, width: 200 });
+t('DS-190 AC1: a log past the queue\'s stage shows the worker\'s stage and when it said it', /\sL-1\s+● running\s+stage 4\/9 verify since 18:49\s/.test(bRow(logged, 'L-1')), true);
+t('DS-190 AC1: and so does its ticket page', Q.ticketScreen(repoAt('logged'), 'L-1', { now: FIXED }).includes('A worker is on it, at stage 4/9 verify since 18:49.'), true);
+t('DS-190 AC2: the forecast runs from stage 4/9, so it ships earlier than from 0/9', Q.forecastOf(repoAt('logged'), { now: FIXED }).T['L-1'].likely < shipsBefore, true);
+t('DS-190 AC3: no log, or a log with no stage marker, falls back to the last pass\'s reading',
+  ['L-2', 'L-3'].map((k) => /stage 0\/9 as of 18:45\s/.test(bRow(logged, k))), [true, true]);
+writeLog('logged', 'L-2', `${said('AUTOPILOT_STAGE: 2/9 understand', FIXED - 4 * MIN)}\n${echoed('echo "AUTOPILOT_STAGE: 4b/9 self-review"; git status', FIXED - MIN)}\n`);
+t('DS-190: a stage echoed at the start of a Bash command counts, as it does for pass.mjs', Q.logStage(logOf('logged', 'L-2')), { stage: '4b/9', label: '4b/9 self-review', at: FIXED - MIN });
+
+// AC4: only the log's last STAGE_TAIL bytes are read: a marker before them is not seen, one inside is,
+// and five fresh 4 MB logs read in well under 100 ms.
+writeLog('logged', 'L-5', `${said('AUTOPILOT_STAGE: 3/9 implement', FIXED - 9 * MIN)}\n${filler(Q.STAGE_TAIL + 4096)}`);
+t('DS-190 AC4: a marker further back than the tail is not read', Q.logStage(logOf('logged', 'L-5')), null);
+for (let i = 0; i < 5; i++) writeLog('logged', `BIG-${i}`, `${filler(4 * 1024 * 1024)}${said('AUTOPILOT_STAGE: 5/9 evidence', FIXED)}\n`);
+const t0 = performance.now();
+const bigStages = range(5, (i) => Q.logStage(logOf('logged', `BIG-${i}`))?.stage);
+const tookMs = performance.now() - t0;
+t('DS-190 AC4: five 4 MB logs each give their last marker, in under 100 ms', [bigStages.join(' '), tookMs < 100], ['5/9 5/9 5/9 5/9 5/9', true]);
+
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');

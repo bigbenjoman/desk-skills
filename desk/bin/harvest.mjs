@@ -58,6 +58,25 @@ export function markersIn(texts) {
 
 export const workerMarkers = (logText) => markersIn(readLog(logText).said);
 
+// The last stage the worker said, read the way readLog and markersIn read it, so desk-q and
+// pass.mjs never disagree: `stage` is the marker's first word, as pass.mjs stores it ("4/9"),
+// `label` the whole marker ("4/9 verify"), `at` the time of the event that said it (or null).
+// Only lines naming a stage are parsed, so a log's tail reads in a few milliseconds.
+export function lastStage(logText) {
+  let last = null;
+  for (const line of logText.split('\n')) {
+    if (!line.includes('AUTOPILOT_STAGE')) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    const said = d.type === 'assistant' ? (d.message?.content ?? []).map(saidIn)
+      : d.type === 'result' && typeof d.result === 'string' ? [d.result] : [];
+    for (const [k, v] of markersIn(said.filter((s) => s != null))) {
+      if (k === 'AUTOPILOT_STAGE' && v) last = { label: v, at: Date.parse(d.timestamp ?? '') || null };
+    }
+  }
+  return last && { stage: last.label.split(/\s+/)[0], ...last };
+}
+
 // A session that ended on its own closes its last turn with a result event; one that was killed (a
 // reboot, a crash, a kill) stops mid-turn. Bookkeeping the CLI writes after a result (a
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.

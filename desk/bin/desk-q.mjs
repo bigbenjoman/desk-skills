@@ -21,7 +21,7 @@
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. The one other write is a repo's <state>/eta.jsonl, which gains a ticket's first
 // ship estimate the first time a live batch's forecast dates it.
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
@@ -31,6 +31,7 @@ import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfig
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
+import { lastStage } from './harvest.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 
@@ -95,6 +96,38 @@ function triageOf(stateDir, key) {
   try { return readJsonOrRefuse(p, `re-run triage.sh ${key}`); } catch { return { summary: '(triage record unreadable)' }; }
 }
 
+// How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
+// further back than this is one the last pass has already put on the queue.
+export const STAGE_TAIL = 256 * 1024;
+const logStages = new Map();
+
+// A worker log's last stage marker (harvest.mjs lastStage), from its last STAGE_TAIL bytes only,
+// or null with no log or no marker there. Kept until the log grows, so a refresh rereads nothing.
+export function logStage(path) {
+  let st;
+  try { st = statSync(path); } catch { return null; }
+  const hit = logStages.get(path);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.s;
+  const n = Math.min(STAGE_TAIL, st.size);
+  const buf = Buffer.alloc(n);
+  let fd;
+  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, st.size - n); } catch { return null; } finally { if (fd != null) closeSync(fd); }
+  let text = buf.toString('utf8');
+  // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
+  if (st.size > n) text = text.slice(text.indexOf('\n') + 1);
+  const s = lastStage(text);
+  if (logStages.size > 256) logStages.clear();
+  logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
+  return s;
+}
+
+// A running ticket's stage: its worker's last marker, so it is never behind the worker, else the last
+// pass's reading of the queue. `log` says which; `at` is when the worker said it, or the last pass.
+function rowStage(stateDir, t, last) {
+  const s = t.state === 'running' ? logStage(join(stateDir, 'logs', `${t.key}.log`)) : null;
+  return s ? { ...s, log: true } : { stage: t.stage ?? null, label: t.stage ?? null, at: last, log: false };
+}
+
 // Every set-up repo, with its batch where it has one. A queue that will not parse is reported on
 // its repo rather than stopping the rest.
 export function loadRepos(now = Date.now()) {
@@ -117,7 +150,7 @@ export function loadRepos(now = Date.now()) {
     // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
     // keeps its slot and has no place.
     let place = 0;
-    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t), pos: t.state === 'failed' ? null : ++place }));
+    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t), pos: t.state === 'failed' ? null : ++place, st: rowStage(stateDir, t, r.last) }));
     r.places = place;
     r.done = rows.length - r.rows.length;
     r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
@@ -155,7 +188,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
   const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])));
-  const rows = r.rows.map(({ t, k }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st?.stage ?? t.stage ?? null, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, history.map((l) => [l.key, l.size, l.hours])]);
@@ -415,7 +448,7 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
 // With passes stopped, a running row has no STARTS column here to say so, so its stage stands in.
-const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.t.stage ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
+const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.st?.label ?? i.x.t.stage ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
@@ -715,10 +748,17 @@ function readyWhy(r, t) {
   return r.live ? 'starts at the next pass' : 'starts when passes resume';
 }
 
+// A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
+// there, the last pass's reading, which the worker may be further on from.
+function runningStage(r, x) {
+  const st = x.st ?? { stage: x.t.stage ?? null, label: x.t.stage ?? null, at: r.last, log: false };
+  if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}`;
+  return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
+}
+
 function detail(r, x) {
   const { t, k } = x;
-  // A stage is the last pass's reading: the worker may be further on.
-  if (k === 'running') return `stage ${t.stage ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
+  if (k === 'running') return runningStage(r, x);
   if (k === 'ready') return readyWhy(r, t);
   if (k === 'waiting' || k === 'stuck') return `behind ${unmergedBlockers(r.q, t).join(', ') || 'PRs of done tickets'}`;
   if (k === 'needs') return t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`;
@@ -783,7 +823,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     '',
   ];
   const rows = [], out = [];
-  if (k === 'running') head.push(`A worker is on it, at stage ${t.stage ?? '?'}.`, '');
+  if (k === 'running') head.push(`A worker is on it, at ${row ? runningStage(r, row) : `stage ${t.stage ?? '?'}`}.`, '');
   if (row) head.push(...etaLines(r, forecastOf(r, { now, checkin }), row, now));
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
