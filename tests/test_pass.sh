@@ -533,12 +533,15 @@ check "DS-145 the config template has the row, recommended 2" 'grep -qE "^\| Res
 usage_exit(){ say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-k/logs/$1.log"; limit_event "$2" >> "$T/state-k/logs/$1.log"
   node -e 'console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", api_error_status: 429, api_error: "usage_limit_reached", num_turns: 40, total_cost_usd: 3.1, result: "usage limit reached" }))' >> "$T/state-k/logs/$1.log"; }
 q set K-1 state=done
-killed Y-1 sess-y1; q set Y-1 model_tier=standard model=sonnet; usage_exit Y-1 $(( $(date +%s) + 3600 ))
+killed Y-1 sess-y1; q set Y-1 model_tier=standard model=sonnet resumes=1; usage_exit Y-1 $(( $(date +%s) + 3600 ))
 out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
 check "DS-197 AC1 a worker that exited at the limit before the reset is not failed, and is reported paused until it" '[ "$(field Y-1 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: Y-1 until .* UTC" && ! echo "$out" | grep -q "Y-1: exited with no marker" && ! spawned_for Y-1'
 usage_exit Y-1 $(( $(date +%s) - 60 ))
 out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
-check "DS-197 AC2 after the reset it is queued and resumed in its own session, on the same model tier" 'echo "$out" | grep -q "Y-1 exited at the 5-hour usage limit, which reset .* UTC: queued to resume in its own session" && echo "$out" | grep -q "Y-1 resumed after the usage limit reset" && spawned_for Y-1 | grep -q "^Y-1 sess-y1 .*resume=yes$" && [ "$(field Y-1 model_tier)" = "\"standard\"" ] && [ "$(field Y-1 model)" = "\"sonnet\"" ] && [ "$(field Y-1 resumes)" = null ] && ! echo "$out" | grep -q "paused on the usage limit: .*Y-1"'
+check "DS-197 AC2 after the reset it is queued and resumed in its own session, on the same model tier" 'echo "$out" | grep -q "Y-1 exited at the 5-hour usage limit, which reset .* UTC: queued to resume in its own session" && echo "$out" | grep -q "Y-1 resumed after the usage limit reset" && spawned_for Y-1 | grep -q "^Y-1 sess-y1 .*resume=yes$" && [ "$(field Y-1 model_tier)" = "\"standard\"" ] && [ "$(field Y-1 model)" = "\"sonnet\"" ] && [ "$(field Y-1 resumes)" = 1 ] && ! echo "$out" | grep -q "paused on the usage limit: .*Y-1"'
+# The resumed session ends before the model answers, so the same limit is still last in its log.
+out=$(DESK_CONFIG="$T/config-resume.md" node "$B/pass.mjs" 2>&1)
+check "DS-197 a resume that ends at the same limit is not resumed again" '[ "$(spawned_for Y-1 | wc -l | tr -d " ")" = 1 ] && [ "$(field Y-1 state)" = "\"failed\"" ] && echo "$out" | grep -q "Y-1: exited with no marker and no open PR on fix/Y-1, last seen at the 5-hour usage limit"'
 q set Y-1 state=done
 killed Y-3 sess-y3; usage_exit Y-3 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)

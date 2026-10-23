@@ -550,15 +550,17 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
       else if (ownsSpecs(t)) checkOwned(t, Number(pr));
-    } else if (limit && !limit.resumed && !wedged && t.session_id) {
+    } else if (limit && !limit.resumed && !wedged && t.session_id && t.resume_reset !== limit.resetsAt) {
       // Exited at the 5-hour usage limit under a grant to resume across it (any other setting parked it
       // above): a headless worker ends its session at the limit rather than waiting for the reset. It
       // stays running, reported paused, until the reset, then is resumed in its own session, never failed.
+      // Once per limit: a resume that ends before the model answers leaves the same limit last in the
+      // log, and is then handled as any other exit below rather than resumed on every pass.
       if (Date.now() >= limit.resetsAt * 1000) {
         // Queued now, so not paused: the paused line was this ticket's, pushed above.
         if (pausedOnLimit) report.paused.pop();
         const why = `exited at the 5-hour usage limit, which reset ${resetText(limit.resetsAt)}`;
-        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`);
+        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`, `resume_reset=${limit.resetsAt}`);
         report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
       }
     } else if (!wedged && !endedNormally(logText) && t.session_id) {
@@ -1094,7 +1096,7 @@ async function spawnHandoff(t) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null');
+    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1181,7 +1183,7 @@ for (const t of eligible) {
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
-    'resume=null', 'resume_why=null', 'resumes=null',
+    'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
