@@ -281,10 +281,10 @@ function runPass(state, q, s, log, stamp) {
   const given = [];
   if (q.approved?.workers === true) { env.AUTOPILOT_USER_APPROVED = '1'; given.push('workers'); }
   if (q.approved?.base_push === true) { env.AUTOPILOT_BASE_PUSH_APPROVED = '1'; given.push('base push'); }
-  // The next tick is this agent's interval away, so the pass records it as its next.
   // Reaped before the pass, so the pass sees what an ended session did and a long pass does not
   // stretch a session's time.
   const reaped = reapDecider(state, s);
+  // The next tick is this agent's interval away, so the pass records it as its next.
   const every = Number(installedInterval(slug));
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
