@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
 import { takeBorrowLock } from './borrow.mjs';
-import { readRegister, lookup, clearPutOff } from './not-now.mjs';
+import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
@@ -229,8 +229,8 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const listed = groups.flatMap((g) => g.questions.map((q) => q.key));
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length).length;
-    // A put-off question is listed, never pushed: nothing about it is new until its inputs change.
-    const push = nd || nc || fresh.length
+    // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
+    const push = nd || fresh.length
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
@@ -271,7 +271,8 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
       encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
-  if (question) {
+  // A "not now" is not settled: the register hides it, and ask-again must be able to bring it back.
+  if (question && !NOT_NOW.test(text)) {
     const answered = readJson(answeredFile(dir), {});
     answered[question.key] = now.toISOString();
     mkdirSync(dir, { recursive: true });

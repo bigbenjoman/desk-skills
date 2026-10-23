@@ -34,6 +34,7 @@ mkdirSync(join(STATE, 'answers'), { recursive: true });
 mkdirSync(join(STATE, 'briefings'), { recursive: true });
 
 const stamp = new Date().toISOString();
+const putOffAnswer = NOT_NOW.test(text);
 // Is a worker actually live for this ticket right now? Only then does the mailbox make sense.
 let waiting = false;
 let sessionId = null;
@@ -69,7 +70,8 @@ if (waiting) {
       ? `(worker for ${ticket} has EXITED — nothing received this answer)`
       : `(no worker running for ${ticket} — recorded in the briefing, not the mailbox)`,
   );
-  if (parkedReason && !parkedReason.startsWith(HELD_PREFIX)) {   // a held ticket releases by itself
+  // A held ticket releases by itself, and a put-off one waits for its inputs to change.
+  if (parkedReason && !parkedReason.startsWith(HELD_PREFIX) && !putOffAnswer) {
     console.log(
       `\n!! ${ticket} is parked and no worker will act on this answer.\n` +
         '   THE ORCHESTRATOR MUST COMPLETE THE PARKED STEP ITSELF, or requeue the ticket\n' +
@@ -88,12 +90,12 @@ else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 
 // A "not now" answer puts the question off: it goes in the register with the inputs it depends on,
 // and is not asked again until they change (not-now.mjs). The question is the ticket's park, else
-// its triage unknowns.
-if (NOT_NOW.test(text)) {
+// its triage unknowns while they are still open; a running worker's question is not in the queue yet.
+if (putOffAnswer) {
   try {
     const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
-    let question = t?.park?.question && !isHeld(t) ? t.park.question : null;
-    if (!question) {
+    let question = t?.state === 'parked' && t.park?.question && !isHeld(t) ? t.park.question : null;
+    if (!question && (t?.open_questions ?? 0) > 0 && ['triaged', 'queued'].includes(t?.state)) {
       try { question = JSON.parse(readFileSync(join(STATE, 'triage', `${ticket}.json`), 'utf8')).unknowns?.join(' · ') || null; } catch { /* no triage record */ }
     }
     if (question) {
@@ -128,9 +130,14 @@ try {
       // The count is not the park: a parked ticket stays parked, but its questions are answered, so
       // a re-laned ticket can be requeued (queue.mjs requeue refuses open questions).
       execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
-      console.log(`${ticket}: answer recorded in its briefing. It is STILL PARKED — the orchestrator decides whether it ` +
-        'resumes, is requeued (`queue.mjs requeue <TICKET>`), or is finished by hand. A lane C or D ' +
-        'park is never requeued for a headless worker.');
+      if (putOffAnswer) {
+        console.log(`${ticket}: put off. It stays parked and is not asked again until its inputs change ` +
+          '(or `digest.mjs ask-again` clears it): do not requeue it or do the parked step.');
+      } else {
+        console.log(`${ticket}: answer recorded in its briefing. It is STILL PARKED — the orchestrator decides whether it ` +
+          'resumes, is requeued (`queue.mjs requeue <TICKET>`), or is finished by hand. A lane C or D ' +
+          'park is never requeued for a headless worker.');
+      }
     } else {
       console.log(`${ticket}: answer recorded (state ${st}).`);
     }

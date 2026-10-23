@@ -379,7 +379,7 @@ q set D-1 state=running
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-139 AC8 harvesting the same run again adds nothing" '[ "$(wc -l < "$dlog" | tr -d " ")" = 1 ] && [ "$(field D-1 state)" = "\"done\"" ]'
 
-# DS-143: N-1 settles one question by checking, then parks on another, naming its inputs. The person
+# N-1 settles one question by checking, then parks on another, naming its inputs. The person
 # answers "not now"; the same park again is not asked, and one whose inputs changed is, saying what.
 NQ='Rotate the production database password?'
 nlog(){ { say 'AUTOPILOT_CHECKED: {"question":"Is the DNS record in?","checked":"dig +short api.acme.dev","showed":"203.0.113.7"}' \
@@ -398,12 +398,13 @@ check "DS-143 AC6 a parked question put off is no longer waiting on the person" 
 nlog a1; q set N-1 state=running
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-143 AC6 the same question with unchanged inputs is not asked again" '[ "$(field N-1 state)" = "\"parked\"" ] && ! echo "$out" | grep -q "^NOTIFY: .*N-1" && echo "$out" | grep -q "^  N-1: $NQ (put off on 20"'
+cp "$reg" "$reg.ok"; printf '{"key": "torn\n' >> "$reg"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC8 an unreadable register is reported, and the put-off question asked as usual" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -q "not-now register: unreadable" && echo "$out" | grep -q "^NOTIFY: .*N-1"'
+mv "$reg.ok" "$reg"
 nlog a2; q set N-1 state=running
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-143 AC7 with changed inputs it is asked, saying what changed" 'echo "$out" | grep -q "^NOTIFY: .*N-1" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-1: $NQ — Changed since it was put off on" && echo "$out" | grep -qF "pr-head a1 → a2."'
-printf '{"key": "torn\n' >> "$reg"
-out=$(node "$B/pass.mjs" 2>&1)
-check "DS-143 AC8 an unreadable register is reported, and the question asked as usual" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -q "not-now register: unreadable" && echo "$out" | grep -q "^NOTIFY: .*N-1"'
 q set N-1 state=done
 
 # The check-in digest. C-1 parks on a broken live service, C-2 on an ordinary question; a last digest

@@ -110,7 +110,7 @@ t('AC6 with nothing open at all, the page says there is nothing to answer', `${r
 const urgent = urgentParks([{ key: 'X-1', question: 'PRODUCTION BROKEN: checkout 500s' }, { key: 'X-2', question: 'which copy?' }], 'acme__x');
 t('AC9 a production-broken park is pushed alone', urgent.map((u) => u.key).join(' '), 'urgent:acme__x:X-1');
 
-// DS-143: a question put off with the same inputs is listed once under "Put off", not as a question;
+// A question put off with the same inputs is listed once under "Put off", not as a question;
 // one whose inputs changed is a question saying what changed; a check made instead of asking is listed.
 const P = repo('acme__p', {
   'P-1': { key: 'P-1', state: 'parked', park: { question: 'Rotate the prod DB password?', inputs: { env: 'prod' } } },
@@ -126,10 +126,19 @@ t('DS-143 AC6 it is listed once under Put off, with the date', page6.split('\n')
 t('DS-143 AC7 changed inputs are asked, saying what changed', page6.includes('`P-3` (parked): Which plan tier? (Changed since Ben put it off on 2026-10-21: pr 1 → 2.)'), true);
 t('DS-143 AC2 a check made instead of asking is listed with what it showed', page6.includes('### Checked instead of asking') && page6.includes('`P-4`: Is the DNS record in? Checked dig +short api.acme.dev: 203.0.113.7'), true);
 t('DS-143 the push counts the questions and checks, not the put-off ones', r6.push?.text.includes('1 question(s), 0 decision(s), 1 check(s)'), true);
+const regFile = join(P.state, 'not-now.jsonl');
+const regOk = readFileSync(regFile, 'utf8');
+appendFileSync(regFile, '{"key": "torn');
+t('DS-143 AC8 an unreadable register asks the put-off question as today', openQuestions(P).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
+writeFileSync(regFile, regOk);
 t('DS-143 ask-again takes it out of the register', askAgain({ slug: 'acme__p', ticket: 'P-1', list: [P] }).ok, true);
 t('DS-143 and it is a question again', openQuestions(P).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
-writeFileSync(join(P.state, 'not-now.jsonl'), '{"key": "torn');
-t('DS-143 AC8 an unreadable register asks as today', openQuestions(P).length, 3);
+// Answered "not now" from the digest, it is put off, and ask-again still brings it back.
+process.env.DESK_CONFIG = join(root, 'none.md');
+t('DS-143 AC5 a not-now answer from the digest is recorded', answer({ slug: 'acme__p', ticket: 'P-1', text: 'not now', dir, list: [P], bin: BIN }).ok, true);
+t('DS-143 AC6 and puts it off', openQuestions(P).map((q) => q.ticket).join(' '), 'P-3');
+askAgain({ slug: 'acme__p', ticket: 'P-1', list: [P] });
+t('DS-143 ask-again after a not-now answer from the digest asks it again', openQuestions(P, JSON.parse(readFileSync(join(dir, 'answered.json'), 'utf8'))).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
 
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);
