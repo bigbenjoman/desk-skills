@@ -84,7 +84,7 @@ const ov = W.run('--plain');
 const order = lines(ov.out).filter((l) => /^ {2}[a-z]/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
 t('AC1 live batches, then the quiet batch that needs you', order.join(), 'desk-skills,voicepa,pr-ninja');
 t('AC1 one line names the three repos with no batch', lines(ov.out).some((l) => l.startsWith('3 more set up with no batch: forewatt, gygg-platform, yield-index')), true);
-t('a fresh heartbeat for another queue file leaves a quiet batch quiet', /^\s+pr-ninja\s+2h 0m ago/.test(rowOf(ov.out, 'pr-ninja') ?? ''), true);
+t('a fresh heartbeat for another queue file leaves a quiet batch quiet', /^\s+pr-ninja\s+■ stopped · 2h 0m /.test(rowOf(ov.out, 'pr-ninja') ?? ''), true);
 // ---- AC2: a quiet batch whose unfinished tickets all wait is not listed
 t('AC2 quiet batch with only waiting tickets is hidden', rowOf(ov.out, 'pranicuk'), undefined);
 // ---- AC3: --all lists every set-up repo, no-batch ones marked
@@ -95,10 +95,10 @@ t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? '')
 const head = lines(ov.out)[0];
 t('AC4 header', /workers 2 running · 5 allowed by live batches · machine 10 · \d+\.\d GiB free · room for \d+$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
-t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('ports overlap: desk-skills + pranicuk share 3502–3503')), true);
+t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('▲ ports overlap: desk-skills + pranicuk share 3502–3503')), true);
 // ---- AC15: voicepa's counts, last pass and workers (and QUEUE DONE, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
-t('AC15 voicepa row: live 4m, run 2, ready 0, wait 1, stuck 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 13).join(' '), 'live 4m 2 0 1 0 0 0 3 no history 3');
+t('AC15 voicepa row: live 4m ago, run 2, ready 0, wait 1, blocked 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 16).join(' '), '● live · 4m ago 2 0 1 0 0 0 3 no history 3');
 
 // ---- AC7: a held ticket whose only unmerged blocker runs is waiting, behind that blocker only
 const repo = W.run('--plain', 'voicepa');
@@ -120,7 +120,7 @@ const zz = W.run('--plain', 'zz');
 t('AC10 no match exits non-zero listing the repos', zz.code !== 0 && /forewatt/.test(zz.err) && /voicepa/.test(zz.err), true);
 // ---- AC11: show on a held ticket
 const show = W.run('--plain', 'voicepa', 'show', 'VPL-3');
-const want = ['Long gaps between bookings', 'waiting', 'Starts when the last of these merges:\n  VPL-1     running', 'Parked: held by orchestrator', 'lane A', 'Why lane A:', 'mechanical once the gap rule is read', 'Files in scope (2):', 'src/gaps.ts', 'Branch: feat/VPL-3-gaps', `Log: ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
+const want = ['Long gaps between bookings', 'waiting', 'Starts when the last of these merges:\n  VPL-1     ● running', 'Parked: held by orchestrator', 'lane A', 'Why lane A:', 'mechanical once the gap rule is read', 'Files in scope (2):', 'src/gaps.ts', 'Branch: feat/VPL-3-gaps', `Log: ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
 t('AC11 show prints every field', want.filter((w) => !show.out.includes(w)).join(' | '), '');
 t('AC11 show leaves out the merged blocker', lines(show.out).some((l) => /^\s+VPL-0\b/.test(l)), false);
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);
@@ -133,7 +133,7 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-5': { state: 'parked', park: { question: 'out of scope' } },
   'VPL-6': { state: 'parked', held_by: 'VPL-5', park: { question: 'held by orchestrator: blocked by VPL-5' } },
 } } } });
-t('AC6 held behind a ticket parked for its own reason reads stuck', /VPL-6\s+stuck\s+behind VPL-5/.test(S.run('--plain', 'voicepa').out), true);
+t('AC6 held behind a ticket parked for its own reason reads blocked', /VPL-6\s+◌ blocked\s+behind VPL-5/.test(S.run('--plain', 'voicepa').out), true);
 
 // ---- AC13: nothing set up
 const E = mkdtempSync(join(tmpdir(), 'desk-q-empty-'));
@@ -173,7 +173,7 @@ const F = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-1': { state: 'triaged', open_questions: 0 }, 'VPL-2': { state: 'failed' }, 'VPL-3': { state: 'triaged', open_questions: 0 } } } } });
 const past = F.run('voicepa', 'up', 'VPL-3');
 t('up past a failed ticket reaches the place above it', `${lines(past.out)[0]} | ${unfinishedKeys(readQ(qPath(F, 'voicepa'))).join()}`, 'VPL-3 → position 1 of 2, placed by you. | VPL-3,VPL-1');
-t('a failed ticket shows no position', /^\s+-\s+VPL-2\s+failed/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
+t('a failed ticket shows no position', /^\s+-\s+VPL-2\s+✕ failed/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
@@ -252,6 +252,10 @@ function screen(start, columns = 80, clock = Date.now) {
   };
 }
 const DOWN = '\x1b[B';
+// The last frame's lines as drawn, less the erase-to-end-of-line each ends in.
+const lastFrame = (s) => s.output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => l.replace(/\x1b\[K$/, ''));
+// Each coloured run, as "<SGR>:<text>"; `dim` takes dim runs too.
+const coloured = (l, dim = false) => [...l.matchAll(dim ? /\x1b\[(3\d|2)m([^\x1b]*)\x1b\[(?:39|22)m/g : /\x1b\[(3\d)m([^\x1b]*)\x1b\[39m/g)].map((m) => `${m[1]}:${m[2].trim()}`);
 
 const A = screen();
 await sleep(20);
@@ -263,7 +267,7 @@ t('AC12 no row on an 80-column repo screen is wider than 80', A.frame().filter((
 t('AC13 a title that does not fit ends in an ellipsis', /VPL-4 .*…$/.test(A.frame().find((l) => /VPL-4/.test(l)) ?? ''), true);
 await A.press(DOWN); await A.press(DOWN); await A.press('\r');
 t('AC3 down twice and Enter opens the third ticket', A.crumbs(), 'desk-q › voicepa › VPL-3');
-t('AC4 the blocker is a selectable row', /^›\s+VPL-1\s+running/.test(A.selected()), true);
+t('AC4 the blocker is a selectable row', /^›\s+VPL-1\s+● running/.test(A.selected()), true);
 await A.press('\r');
 t('AC4 Enter on the blocker opens its ticket screen', A.crumbs(), 'desk-q › voicepa › VPL-1');
 await A.press('\x1b'); await A.press('\x1b');
@@ -421,7 +425,7 @@ t('DS-163 AC1 one bar row per dated ticket, sorted by ship time', shownDated.joi
 const { when: whenAt } = await import('../desk/bin/desk-q-eta.mjs');
 const t3 = barRow(tidyTl, 'T-3');
 t('DS-163 AC1 a row is its key, its state, a solid bar shaded on, then STARTS, SHIPS and its title (DS-167)',
-  /^ {2}T-3 {7}ready {5} [ ┆]*█+░*[ ┆]*[ ▸] \S/.test(t3) && t3.endsWith(`${whenAt(tidyF.T['T-3'].likely, FIXED)}`.padEnd(12) + '  T-3 title'), true);
+  /^ {2}T-3 {7}○ ready {6} [ ┆]*█+░*[ ┆]*[ ▸] \S/.test(t3) && t3.endsWith(`${whenAt(tidyF.T['T-3'].likely, FIXED)}`.padEnd(12) + '  T-3 title'), true);
 t('DS-163 AC1 the header ends in STARTS and SHIPS, then TITLE (DS-167)', tidyTl.some((l) => /^ +now .*  STARTS {7}SHIPS {9}TITLE$/.test(l)), true);
 
 t('DS-163 AC2 under 2 days the scale is hours', Q.scaleFor(1.9 * DAY, FIXED).id, 'hours');
@@ -432,7 +436,7 @@ const Gs = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
 await sleep(20);
 const scaleLine = (s) => s.frame().find((l) => l.startsWith('Scale: ')) ?? '';
 t('DS-163 AC2 the header says the scale, that it is auto, and z', scaleLine(Gs), 'Scale: hours (auto) · z to change');
-t('DS-163 AC1 the state shows in colour', /\x1b\[32mrunning/.test(Gs.output.buf) && /\x1b\[34mready/.test(Gs.output.buf), true);
+t('DS-163 AC1 the state shows in colour', /\x1b\[32m● running/.test(Gs.output.buf) && /\x1b\[34m○ ready/.test(Gs.output.buf), true);
 const zs = [];
 for (let i = 0; i < 4; i++) { await Gs.press('z'); zs.push(scaleLine(Gs).split(' · ')[0]); }
 t('DS-163 AC3 z cycles hours, days, weeks, auto', zs.join(', '), 'Scale: hours, Scale: days, Scale: weeks, Scale: hours (auto)');
@@ -470,7 +474,7 @@ const days = lines(Q.daysScreen(Q.loadRepos(FIXED), 'acme__tidy', { now: FIXED }
 const groupsOf = (ls) => ls.filter((l) => /^ {2}\S/.test(l)).map((l) => l.trim().replace(/ · \d+ tickets?$/, ''));
 const tidyGroups = groupsOf(days);
 t('DS-163 AC7 By day opens with Today, then Tomorrow, undated last', `${tidyGroups[0]} | ${tidyGroups.includes('Tomorrow · Tue 20 Oct')} | ${tidyGroups.at(-1)}`, 'Today · Mon 19 Oct | true | No date yet');
-t('DS-163 AC7 each dated row has STARTS, SHIPS and its title', days.some((l) => new RegExp(`^ {4}T-3 +ready +\\S.* {2}T-3 title$`).test(l) && l.includes(whenAt(tidyF.T['T-3'].likely, FIXED))), true);
+t('DS-163 AC7 each dated row has STARTS, SHIPS and its title', days.some((l) => new RegExp(`^ {4}T-3 +○ ready +\\S.* {2}T-3 title$`).test(l) && l.includes(whenAt(tidyF.T['T-3'].likely, FIXED))), true);
 const at = (...a) => new Date(...a).getTime();
 t('DS-163 AC7 then each day to 6 days out, then the week by its Monday', [at(2026, 9, 21, 10), at(2026, 9, 25, 23), at(2026, 9, 26, 9), at(2026, 10, 4, 9)].map((x) => Q.shipDay(x, FIXED)).join(' | '),
   'Wed 21 Oct | Sun 25 Oct | Week of Mon 26 Oct | Week of Mon 2 Nov');
@@ -479,7 +483,7 @@ t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { 
 // The median of tidy's 12 size M durations, 4 to 10 h: the 7th of them sorted.
 const typicalM = '7.0';
 t('DS-163 AC8 a ticket waiting on you says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Waiting on you · ~${typicalM} h once answered`)), true);
-t('DS-163 AC8 a stuck ticket names what it is stuck behind', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Stuck behind T-4')), true);
+t('DS-163 AC8 a blocked ticket names what it is blocked behind', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Blocked behind T-4')), true);
 t('DS-163 AC8 workers set to 0 says nothing starts', /Workers set to 0: nothing starts +Z-1 title$/.test(barRow(tl('acme__zero'), 'Z-1')), true);
 
 const Ks = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
@@ -712,7 +716,13 @@ t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10)
 
 const N80 = screen(tidyQ, 80, () => FIXED);
 await sleep(20);
-t('DS-164 AC10 at 80 columns the Queue\'s keys wrap between keys, none lost', `${N80.frame().at(-1).endsWith('esc back · q quit')} ${N80.frame().slice(-2).every((l) => l.length <= 80)}`, 'true true');
+// DS-186 AC10: a keys line too wide goes on two, "move" then "act", each key bold.
+// The act line is itself wider than 80, so it carries on, indented, under its label.
+const k80 = N80.frame().slice(N80.frame().findIndex((l) => l.startsWith('move  ')));
+t('DS-164 AC10 (DS-186 AC10) at 80 columns the Queue\'s keys go on a move line and an act line, none lost',
+  `${k80[0] === 'move  ↑↓ select · enter open · ←→ or 1–4 view · esc back'} ${k80[1].startsWith('act   shift+↑↓ move · ')} ${k80.slice(2).every((l) => l.startsWith('      '))} ${k80.at(-1).endsWith('q quit')} ${k80.every((l) => l.length <= 80)}`,
+  'true true true true true');
+t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–4', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
 N80.ui.finish(0);
 
 // A row clicked is selected and opened; a click report cut across two reads is still one click.
@@ -753,7 +763,7 @@ t('DS-166 AC3 a provisional epic\'s row ends "provisional"', /^ {2}Beats +0\/2 .
 t('DS-166 AC4 an epic with no date gives the reason instead of a bar', `${e3.includes('No date: 1 waiting on you')} ${e3.includes('█')}`, 'true false');
 const other = featTl.findIndex((l) => l === '  Other work · 2 tickets with no epic');
 t('DS-166 AC5 the tickets in no epic follow under "Other work", each by title and state with its own bar',
-  other > featTl.indexOf(e3) && featTl.slice(other + 1, other + 3).map((l) => /^ {4}(F-\d) title +ready +[ ┆]*█/.exec(l)?.[1]).sort().join(), 'F-6,F-7');
+  other > featTl.indexOf(e3) && featTl.slice(other + 1, other + 3).map((l) => /^ {4}(F-\d) title +○ ready +[ ┆]*█/.exec(l)?.[1]).sort().join(), 'F-6,F-7');
 t('DS-166 AC5 none of an epic\'s tickets is a row of its own', featTl.some((l) => /F-[1-5]/.test(l)), false);
 
 const Fa = nav({ kind: 'timeline', slug: 'acme__feat' });
@@ -795,34 +805,56 @@ t('DS-166 AC10 every repo\'s Timeline stays one bar per ticket, grouped by repo'
   'true true false');
 
 // ---- DS-181: the Queue views' state counts and state cells in their state's colour
-dated('hue', 4100, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: {
+const HUE = {
   'H-1': { state: 'running', stage: '4/9' }, 'H-2': ready, 'H-3': { state: 'parked', held_by: 'H-1', park: { question: 'held by orchestrator: blocked by H-1' } },
   'H-4': { state: 'parked', park: { question: 'which copy?' } }, 'H-5': { state: 'parked', held_by: 'H-4', park: { question: 'held by orchestrator: blocked by H-4' } },
-  'H-6': { state: 'failed', park: { question: 'tests red' } } } });
-// The last frame's lines as drawn, less the erase-to-end-of-line each ends in.
-const lastFrame = (s) => s.output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => l.replace(/\x1b\[K$/, ''));
-const coloured = (l) => [...l.matchAll(/\x1b\[(3\d)m([^\x1b]*)\x1b\[39m/g)].map((m) => `${m[1]}:${m[2].trim()}`);
+  'H-6': { state: 'failed', park: { question: 'tests red' } } };
+dated('hue', 4100, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: HUE });
 const ovRow = (s, name) => lastFrame(s).find((l) => l.replace(ANSI, '').replace(/^›/, ' ').startsWith(`  ${name} `)) ?? '';
 const Ov = nav({ kind: 'overview', all: false });
 await sleep(20);
-t('DS-181 AC1 each non-zero count in its state\'s colour: running, ready, waiting, stuck, needs you, failed', coloured(ovRow(Ov, 'hue')).join(' '), '32:1 34:1 33:1 31:1 35:1 31:1');
-t('DS-181 AC1 zero counts and the other columns stay plain', coloured(ovRow(Ov, 'slow')).join(' '), '34:4');
+// After LAST PASS, each count; a blocked count is dim (DS-186), so red is failed only.
+t('DS-181 AC1 each non-zero count in its state\'s colour: running, ready, waiting, needs you, failed', coloured(ovRow(Ov, 'hue')).slice(1).join(' '), '32:1 34:1 33:1 35:1 31:1');
+t('DS-181 AC1 (DS-186 AC4) zero counts are dim, the one non-zero count coloured',
+  coloured(ovRow(Ov, 'slow'), true).slice(1, 7).join(' '), '2:0 34:4 2:0 2:0 2:0 2:0');
 Ov.ui.finish(0);
 
 const Hq = nav({ kind: 'repo', slug: 'acme__hue' });
 await sleep(20);
-const stateCell = (s, key) => coloured(lastFrame(s).find((l) => l.replace(ANSI, '').slice(1).includes(` ${key} `)) ?? '')[0] ?? '';
-const keys = ['H-1', 'H-2', 'H-3', 'H-4', 'H-5'];
+const stateCell = (s, key) => coloured(lastFrame(s).find((l) => l.replace(ANSI, '').slice(1).includes(` ${key} `)) ?? '', true)[0] ?? '';
+const keys = ['H-1', 'H-2', 'H-3', 'H-4', 'H-5', 'H-6'];
 const queueCells = keys.map((k) => stateCell(Hq, k));
-t('DS-181 AC2 one repo\'s Queue shows each state cell in its colour', queueCells.join(' '), '32:running 34:ready 33:waiting 35:needs you 31:stuck');
+// DS-186 AC2: each state with its glyph, in its colour; blocked dim, failed red.
+t('DS-181 AC2 (DS-186 AC2) one repo\'s Queue shows each state cell with its glyph in its colour', queueCells.join(' '),
+  '32:● running 34:○ ready 33:· waiting 35:◆ needs you 2:◌ blocked 31:✕ failed');
 await Hq.press('2');
-t('DS-181 AC2 the same colours as the ticket\'s state cell on the Timeline', keys.map((k) => stateCell(Hq, k)).join(' '), queueCells.join(' '));
+t('DS-181 AC2 (DS-186 AC2) the same on the Timeline', keys.slice(0, 5).map((k) => stateCell(Hq, k)).join(' '), queueCells.slice(0, 5).join(' '));
+await Hq.press('3');
+t('DS-186 AC2 and on By day', keys.slice(0, 5).map((k) => stateCell(Hq, k)).join(' '), queueCells.slice(0, 5).join(' '));
 await Hq.press('1');
 await Hq.press(DOWN);
 const selRaw = lastFrame(Hq).find((l) => l.replace(ANSI, '').startsWith('›')) ?? '';
-t('DS-181 AC3 the selected row\'s reverse video opens before its first cell and closes only after its last',
-  `${selRaw.startsWith('\x1b[7m')} ${selRaw.endsWith('\x1b[27m')} ${selRaw.slice(4, -5).includes('\x1b[27m') || selRaw.includes('\x1b[0m')} ${coloured(selRaw).length}`, 'true true false 1');
+// DS-186 AC5: a 256-colour 238 background opens before the first cell and closes after an erase to
+// the end of the line, which the terminal fills with it; no reverse video, and the state keeps its colour.
+t('DS-186 AC5 the selected row is tinted across its full width, keeping each cell\'s colour',
+  `${selRaw.startsWith('\x1b[48;5;238m›')} ${selRaw.endsWith('\x1b[K\x1b[49m')} ${/\x1b\[(7|27|0)m/.test(selRaw)} ${coloured(selRaw).join()}`, 'true true false 34:○ ready');
+t('DS-186 AC5 the tint is not erased again after it', Hq.output.buf.split('\x1b[H').at(-1).includes('\x1b[K\x1b[49m\x1b[K'), false);
 Hq.ui.finish(0);
+
+// DS-186 AC5 on the other views: Timeline, By day and Epics keep each cell's colour under the tint.
+const Ht = nav({ kind: 'timeline', slug: 'acme__hue' });
+await sleep(20);
+const tintedRow = (s) => lastFrame(s).find((l) => l.startsWith('\x1b[48;5;238m')) ?? '';
+const tintSeen = [];
+// By day's first row is its day heading, so the selection steps down onto a ticket.
+for (const v of ['2', '3']) { await Ht.press(v); if (v === '3') await Ht.press(DOWN); tintSeen.push(`${coloured(tintedRow(Ht)).length > 0} ${/\x1b\[7m/.test(tintedRow(Ht))}`); }
+Ht.ui.finish(0);
+const Fe = nav({ kind: 'repo', slug: 'acme__feat' });
+await sleep(20);
+await Fe.press('4');
+tintSeen.push(`${coloured(tintedRow(Fe)).length > 0} ${/\x1b\[7m/.test(tintedRow(Fe))}`);
+Fe.ui.finish(0);
+t('DS-186 AC5 Timeline, By day and Epics: a coloured selected row, no reverse video', tintSeen.join(', '), 'true false, true false, true false');
 
 const Hn = screen({ kind: 'repo', slug: 'acme__hue' }, 24, () => FIXED);
 await sleep(20);
@@ -837,13 +869,79 @@ process.env.NO_COLOR = '1';
 const Hp = nav({ kind: 'repo', slug: 'acme__hue' });
 await sleep(20);
 const hpFrame = lastFrame(Hp).join('\n');
-t('DS-181 AC5 with NO_COLOR, no colour codes, and the selected row still in reverse video', `${/\x1b\[3\dm/.test(hpFrame)} ${/\x1b\[7m›/.test(hpFrame)}`, 'false true');
+t('DS-181 AC5 (DS-186 AC6) with NO_COLOR, no colour codes, no tint, and the selected row still in reverse video', `${/\x1b\[(3\d|4\d|48;5;\d+)m/.test(hpFrame)} ${/\x1b\[7m›/.test(hpFrame)}`, 'false true');
 await Hp.press('\x1b');
 t('DS-181 AC5 nor on every repo\'s Queue', `${Hp.crumbs()} ${/\x1b\[3\dm/.test(lastFrame(Hp).join('\n'))}`, 'desk-q false');
 await Hp.press('2');
 t('DS-181 AC5 nor on the Timeline, which is coloured without NO_COLOR', `${Hp.tabOn()} ${/\x1b\[3\dm/.test(lastFrame(Hp).join('\n'))}`, '2 Timeline false');
 Hp.ui.finish(0);
 delete process.env.NO_COLOR;
+
+// ---- DS-186: one colour and weight system on every screen.
+// AC1 and AC7: hue's H-2, dated, with a lane reason, files, a branch and a Jira site.
+put(I.T, I.env, 'hue', { port: 4100, conc: '2 / 3', beat: 1, jira: 'acme.atlassian.net', queue: { batch: 'hue', concurrency: 2, tickets: HUE },
+  triage: { ...Object.fromEntries(Object.keys(HUE).map((k) => [k, { summary: `${k} title`, size: 'M' }])),
+    'H-2': { summary: 'H-2 title', size: 'M', lane: 'A', lane_reason: 'mechanical once read', files_in_scope: ['src/a.ts'], branch: 'feat/H-2-x' } } });
+const Tp = nav({ kind: 'ticket', slug: 'acme__hue', key: 'H-2' });
+await sleep(20);
+const tp = lastFrame(Tp);
+const tpLine = (text) => tp.find((l) => l.replace(ANSI, '').startsWith(text)) ?? '';
+t('DS-186 AC1 on a ticket\'s page the state after the key is in its colour, with its glyph', tpLine('H-2  ').includes('\x1b[34m○ ready\x1b[39m'), true);
+t('DS-186 AC1 the Ships date is bold', /Ships: \x1b\[1m[^\x1b]+\x1b\[22m {3}Could run to/.test(tpLine('Starts: ')), true);
+t('DS-186 AC1 the Branch, Log, Jira and file path lines are dim', ['Branch: ', 'Log: ', 'Jira: ', '  src/a.ts'].map((p) => tpLine(p).startsWith('\x1b[2m')).join(), 'true,true,true,true');
+t('DS-186 AC7 the ticket page\'s headings are bold', ['Why lane A:', 'Files in scope (1):'].map((p) => tpLine(p).startsWith('\x1b[1m')).join(), 'true,true');
+t('DS-186 AC7 the breadcrumb\'s last part is bold, the parts before it dim',
+  tp[0].startsWith('\x1b[2mdesk-q\x1b[22m\x1b[2m › \x1b[22m\x1b[2mhue\x1b[22m\x1b[2m › \x1b[22m\x1b[1mH-2\x1b[22m'), true);
+Tp.ui.finish(0);
+const Hb = nav({ kind: 'repo', slug: 'acme__hue' });
+await sleep(20);
+t('DS-186 AC7 the Queue\'s column header row is bold', lastFrame(Hb).some((l) => /^\x1b\[1m +# {2}TICKET/.test(l)), true);
+Hb.ui.finish(0);
+
+// AC3: a batch passing on time, one stopped for under a day and one for over a day, each with a
+// ticket that needs the user so the overview lists it. The one stopped for hours has a history and a
+// ready ticket, so its QUEUE DONE reads paused.
+const needsOne = (b) => ({ batch: b, concurrency: 1, tickets: { [`${b.toUpperCase()}-1`]: { state: 'parked', park: { question: 'which copy?' } } } });
+put(I.T, I.env, 'ontime', { port: 4800, conc: '1 / 2', beat: 1, queue: needsOne('ontime') });
+dated('hours', 4810, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } });
+put(I.T, I.env, 'hours', { port: 4810, conc: '1 / 2', beat: 200, queue: { batch: 'hours', concurrency: 1, tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } } });
+put(I.T, I.env, 'longgone', { port: 4820, conc: '1 / 2', beat: 3000, queue: needsOne('longgone') });
+const Lp = screen({ kind: 'overview', all: false }, 200);
+Lp.output.rows = 80; Lp.output.resize();
+await sleep(20);
+const passCell = (name) => coloured(ovRow(Lp, name))[0] ?? '';
+t('DS-186 AC3 LAST PASS: live in green, stopped under a day in yellow, over a day in red',
+  `${/^32:● live · \d+m ago$/.test(passCell('ontime'))} ${/^33:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^31:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
+// AC8: each ports overlap line starts ▲ and is yellow; "N need you" is magenta.
+const lpRaw = lastFrame(Lp);
+const overlaps = lpRaw.filter((l) => l.replace(ANSI, '').includes('ports overlap:'));
+t('DS-186 AC8 each ports overlap line starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.startsWith('\x1b[33m▲ ports overlap: '))}`, 'true true');
+t('DS-186 AC8 "N need you" is magenta', lpRaw.some((l) => /^\x1b\[35m\d+ need you\x1b\[39m, \d+ blocked\.$/.test(l)), true);
+// AC4: the QUEUE DONE notes "paused" and "no history" are dim.
+t('DS-186 AC4 the QUEUE DONE notes paused and no history are dim', `${ovRow(Lp, 'hours').includes('\x1b[2mpaused')} ${ovRow(Lp, 'ontime').includes('\x1b[2mno history')}`, 'true true');
+Lp.ui.finish(0);
+
+// AC9: the Timeline's legend names a swatch per state shown, each in its colour; Epics' swatches too.
+const Lg = screen({ kind: 'timeline', slug: 'acme__tidy' }, 160, () => FIXED);
+Lg.output.rows = 80; Lg.output.resize();
+await sleep(20);
+const legendRaw = lastFrame(Lg).find((l) => l.replace(ANSI, '').startsWith('█ running')) ?? '';
+t('DS-186 AC9 the Timeline legend: one named swatch per state shown', legendRaw.replace(ANSI, '').trim(), '█ running   █ ready   █ blocked   █ needs you');
+t('DS-186 AC9 each swatch in its state\'s colour, and no "colour shows state"',
+  `${['\x1b[32m█\x1b[39m running', '\x1b[34m█\x1b[39m ready', '\x1b[2m█\x1b[22m blocked', '\x1b[35m█\x1b[39m needs you'].every((s) => legendRaw.includes(s))} ${Lg.output.buf.includes('colour shows state')}`, 'true false');
+Lg.ui.finish(0);
+const Le = screen({ kind: 'repo', slug: 'acme__feat' }, 160, () => FIXED);
+Le.output.rows = 80; Le.output.resize();
+await sleep(20);
+await Le.press('4');
+t('DS-186 AC9 the Epics legend\'s swatches are coloured as the bars are', lastFrame(Le).some((l) => l.startsWith('\x1b[32m■\x1b[39m done  \x1b[33m■\x1b[39m in the queue  \x1b[2m□\x1b[22m not queued yet')), true);
+Le.ui.finish(0);
+
+// AC11: --plain and piped output carry no escape codes, and the glyphs still show.
+const plainOuts = [W.run('--plain'), W.run('--plain', 'voicepa'), W.run('--plain', 'voicepa', 'show', 'VPL-3'), I.run('ships', 'piped'), I.run('piped', 'days'), W.run()];
+t('DS-186 AC11 --plain and piped output: no escape codes', plainOuts.filter((o) => o.out.includes('\x1b')).length, 0);
+t('DS-186 AC11 and the glyphs still show', `${plainOuts[0].out.includes('● live · ')} ${plainOuts[1].out.includes('● running')} ${plainOuts[2].out.includes('· waiting')} ${plainOuts[3].out.includes('○ ready')} ${plainOuts[4].out.includes('◆ needs you')}`,
+  'true true true true true');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

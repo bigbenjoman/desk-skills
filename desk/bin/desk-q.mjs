@@ -35,16 +35,20 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 
 export { LIVE_MS };
-const LABEL = { running: 'running', ready: 'ready', queued: 'queued', waiting: 'waiting', stuck: 'stuck', needs: 'needs you', failed: 'failed', done: 'done' };
+// Each state reads as a glyph and a word, so it holds without colour; "stuck" shows as blocked.
+const LABEL = { running: '● running', ready: '○ ready', queued: '○ queued', waiting: '· waiting', stuck: '◌ blocked', needs: '◆ needs you', failed: '✕ failed', done: '✓ done' };
+// A state column: the longest label, "◆ needs you", and two spaces before the next column.
+const STATE_W = 13;
 
 const pad = (s, n) => { s = String(s ?? ''); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
 const rpad = (s, n) => { s = String(s ?? ''); return ' '.repeat(Math.max(0, n - s.length)) + s; };
 const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
-const ago = (ms) => {
-  if (ms == null) return 'never';
+// A span as "4m", "3h 24m" or, from a day, "3d 4h".
+const since = (ms) => {
   const m = Math.floor(ms / 60000);
-  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ${m % 60}m ago`;
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor(m / 60) % 24}h`;
 };
+const ago = (ms) => (ms == null ? 'never' : ms < 60000 ? 'just now' : `${since(ms)} ago`);
 function wrap(s, w) {
   const out = []; let line = '';
   for (const word of String(s ?? '').split(/\s+/).filter(Boolean)) {
@@ -212,7 +216,7 @@ function undatedWhy(r, F, x) {
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
   if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
-  if (x.k === 'stuck') return `stuck behind ${listed(unmergedBlockers(r.q, x.t))}`;
+  if (x.k === 'stuck') return `blocked behind ${listed(unmergedBlockers(r.q, x.t))}`;
   if (x.k === 'failed') return 'failed: requeue it';
   const b = undatedBlockers(r, F, x.t);
   return b.length ? `after ${listed(b)}, which ${b.length > 1 ? 'have' : 'has'} no date` : '';
@@ -229,7 +233,7 @@ function etaLines(r, F, x, now) {
     const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
     const why = r.workers === 0 ? 'No date: workers are set to 0, so nothing starts.'
       : x.k === 'needs' ? 'No date until you answer it. Press c to date it at the next check-in.'
-        : x.k === 'stuck' ? `No date while it is stuck behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
+        : x.k === 'stuck' ? `No date while it is blocked behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
           : x.k === 'failed' ? 'No date: it failed. Requeue it to date it.'
             : `No date until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.`;
     return [`Ships: ${why}`, ''];
@@ -241,8 +245,8 @@ function etaLines(r, F, x, now) {
   const n = F.d.bySize[size]?.length ?? 0;
   const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
   return [
-    `Starts: ${start}   Ships: ${when(e.likely, now)}   Could run to ${when(e.late, now)} (1 run in 5 is later)`,
-    `From ${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of}: typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h.`,
+    segLine([[`Starts: ${start}   Ships: `, null], [when(e.likely, now), BOLD], [`   Could run to ${when(e.late, now)} (1 run in 5 is later)`, null]]),
+    dim(`From ${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of}: typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h.`),
     '',
   ];
 }
@@ -259,9 +263,9 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
   if (!s.list.length) return nothingToDate;
   const out = [];
   const table = (r, F) => {
-    out.push(`  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('STARTS', 13)}SHIPS`);
+    out.push(`  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
-      out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], 11)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
+      out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], STATE_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
     }
     if (!r.rows.length) out.push('  No unfinished tickets.');
   };
@@ -293,7 +297,7 @@ function epicWhy(r, F, e, checkin) {
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
-  const why = [['needs', 'waiting on you'], ['stuck', 'stuck'], ['failed', 'failed']].filter(([k]) => c(k)).map(([k, w]) => `${c(k)} ${w}`);
+  const why = [['needs', 'waiting on you'], ['stuck', 'blocked'], ['failed', 'failed']].filter(([k]) => c(k)).map(([k, w]) => `${c(k)} ${w}`);
   const rest = undated.length - c('needs') - c('stuck') - c('failed');
   if (rest) why.push(`${rest} behind those`);
   return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c to date them at check-ins' : ''}`;
@@ -329,9 +333,16 @@ const epicIn = (r, F, key) => !!F?.epics?.[key] && r.rows.some((x) => F.of[x.t.k
 
 // What z cycles through on the Timeline, auto first.
 export const ZOOMS = ['auto', 'hours', 'days', 'weeks'];
-// A row's colour, as an SGR code, by its shown state; DIM and BOLD for the rails and group rows.
-const STATE_SGR = { running: '32', ready: '34', queued: null, waiting: '33', stuck: '31', needs: '35', failed: '31' };
+// A row's colour, as an SGR code, by its shown state; DIM and BOLD for the rails, group rows,
+// headings and secondary detail. Red is for failed only: a blocked ticket is dim.
 const DIM = '2', BOLD = '1';
+const STATE_SGR = { running: '32', ready: '34', queued: null, waiting: '33', stuck: DIM, needs: '35', failed: '31' };
+// The Notices colours: a warning yellow, what needs the user magenta.
+const WARN = '33', YOU = '35';
+// A line of coloured runs that is not a row: a heading, a ticket page's line, a legend.
+const segLine = (segs) => segRow(null, segs, null);
+const bold = (s) => segLine([[s, BOLD]]);
+const dim = (s) => segLine([[s, DIM]]);
 const dmy = (t) => dayAndTime(t).slice(0, -6);
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -402,7 +413,7 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
   + `${workers == null ? '' : ` · ${workers} workers`}${checkin ? ' · parked dated at the next check-in' : ''}`;
 
 // A ticket row's key and state, the state in its colour.
-const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]];
+const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
 // With passes stopped, a running row has no STARTS column here to say so, so its stage stands in.
 const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.t.stage ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
@@ -412,7 +423,7 @@ const nothingToDate = 'No repo here has an autopilot batch, so there is nothing 
 
 // The label columns before a Timeline bar, the STARTS and SHIPS after it (behind its end mark), and
 // the gap before TITLE.
-const TL_LEAD = 2 + 20 + 1, TL_TAIL = 2 + 13 + 12, TL_GAP = 2, TL_BAR = 64;
+const TL_LEAD = 2 + 10 + STATE_W + 1, TL_TAIL = 2 + 13 + 12, TL_GAP = 2, TL_BAR = 64;
 // By epic, the name and children-done columns before the bar, and the note after SHIPS.
 const EP_NAME = 27, EP_LEAD = 2 + EP_NAME + 5 + 1, EP_NOTE = '  provisional'.length;
 
@@ -455,7 +466,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   [...'now'].forEach((ch, j) => { lab[j] = ch; });
   const ind = ' '.repeat(lead);
   const head = [...s.head, `Scale: ${sc.id}${zoom === 'auto' ? ' (auto)' : ''}${width == null ? '' : ' · z to change'}`, ''];
-  if (s.items.length) head.push(`${ind}${lab.join('')}  ${pad('STARTS', 13)}${byEpic ? 'SHIPS' : `${pad('SHIPS', 12 + TL_GAP)}TITLE`}`, `${ind}${tick.join('')}`);
+  if (s.items.length) head.push(segLine([[`${ind}${lab.join('')}  `, null], [`${pad('STARTS', 13)}${byEpic ? 'SHIPS' : `${pad('SHIPS', 12 + TL_GAP)}TITLE`}`, BOLD]]), `${ind}${tick.join('')}`);
   // Each run of bar glyphs is one segment, so it is coloured once and cut as a whole.
   const bar = (e, sgr) => {
     const a = Math.max(0, col(e.start)), b = Math.max(a, col(e.likely)), c = Math.max(b, col(e.late));
@@ -481,7 +492,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     if (items.length) rows.push(segRow(`${r.slug} other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
   // By epic, a ticket is led by its title and has no TITLE column.
-  const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 19), 20)}`, null], [pad(LABEL[i.x.k], 10), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
+  const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
   const tail = (i) => (byEpic ? [] : [title(i)]);
   for (const r of slug ? s.list : [...new Set(s.items.map((i) => i.r))]) {
     const mine = (list) => list.filter((i) => i.r === r);
@@ -499,13 +510,18 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
+  // On screen, a swatch in each shown state's colour, named.
+  const shown = Object.keys(LABEL).filter((k) => items.some((i) => i.x.k === k));
+  const legend = (extra = []) => segLine([...extra, ...shown.flatMap((k) => [['█', STATE_SGR[k]], [` ${LABEL[k].slice(2)}   `, null]])]);
   if (!s.items.length) foot.push('', 'Nothing unfinished here.');
   else if (byEpic) {
-    foot.push('', `One bar per epic: █ first child starts to last child ships   ░ could run to   n/m children done${width == null ? '' : '   amber: provisional'}`,
+    foot.push('', 'One bar per epic: █ first child starts to last child ships   ░ could run to   n/m children done',
       'Enter on an epic shows its tickets. ┆ check-ins at 08:00 and 17:00. Within a week: day and time; beyond, the date.');
+    if (width != null) foot.push(legend([['█', STATE_SGR.waiting], [' provisional epic   ', null]]));
   } else {
-    foot.push('', `█ starts to ships   ░ could run to (1 run in 5 is later)   ┆ check-ins at 08:00 and 17:00${width == null ? '' : '   colour shows state'}`,
+    foot.push('', '█ starts to ships   ░ could run to (1 run in 5 is later)   ┆ check-ins at 08:00 and 17:00',
       'Within a week: day and time. Beyond a week: the date.');
+    if (width != null && shown.length) foot.push(legend());
   }
   return { head, rows, foot };
 }
@@ -532,11 +548,11 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
   const add = (g, i) => { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); };
   for (const i of s.items.filter((y) => y.e).sort((a, b) => a.e.likely - b.e.likely)) add(shipDay(i.e.likely, now), i);
   for (const i of s.items.filter((y) => !y.e)) add('No date yet', i);
-  const lead = 4 + (all ? 12 : 0) + 20 + 27;
+  const lead = 4 + (all ? 12 : 0) + 10 + STATE_W + 27;
   const tw = width == null ? 60 : Math.max(1, width - lead);
   const tt = titler(s.items.map(summaryOf));
   const head = [...s.head, ''];
-  if (s.items.length) head.push(`    ${all ? pad('', 12) : ''}${pad('TICKET', 10)}${pad('STATE', 10)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`);
+  if (s.items.length) head.push(bold(`    ${all ? pad('', 12) : ''}${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
   const rows = [];
   for (const [g, list] of groups) {
     rows.push(segRow(`day ${g}`, [[`  ${g}`, BOLD], [` · ${list.length} ticket${list.length === 1 ? '' : 's'}`, DIM]], null));
@@ -565,7 +581,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   const list = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })))
     .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
   const head = [...s.head, ''];
-  if (list.length) head.push(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`);
+  if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   const rows = list.map(({ r, F, e, d }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
@@ -576,7 +592,9 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   });
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
   if (s.per.some((p) => p.F || p.stopped) && !list.length) foot.push('', 'No queued ticket here belongs to an epic.');
-  if (list.length) foot.push('', '■ done  ■ in the queue  □ not queued yet (date is provisional). An epic ships when its last child merges.');
+  // Each swatch in the colour its bar uses.
+  if (list.length) foot.push('', segLine([['■', STATE_SGR.running], [' done  ', null], ['■', STATE_SGR.waiting], [' in the queue  ', null], ['□', DIM],
+    [' not queued yet (date is provisional). An epic ships when its last child merges.', null]]));
   return { head, rows, foot };
 }
 
@@ -595,6 +613,15 @@ function workerGB() {
 // Each pass gates on its own repo's §3b "Spawn gate", so the machine's is the highest of them.
 const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValue(r.slug, 'spawn-gate')).start), spawnGate(null).start);
 
+// LAST PASS: "● live · 4m ago" in green while passes run on time; stopped, how long since the last
+// one, yellow under a day and red beyond.
+const LAST_W = 21;
+function lastPass(r, now) {
+  if (r.live) return [`● live · ${ago(r.last == null ? null : now - r.last)}`, STATE_SGR.running];
+  if (r.last == null) return ['■ never', WARN];
+  return [`■ stopped · ${since(now - r.last)}`, now - r.last >= DAY ? STATE_SGR.failed : WARN];
+}
+
 const allowedBy = (r) => Math.min(r.workers, r.cap);
 const liveAllowed = (repos) => repos.filter((r) => r.live && r.q).reduce((a, r) => a + allowedBy(r), 0);
 
@@ -610,7 +637,9 @@ const unslotted = (r) => count(r, 'ready') - Math.max(0, r.workers - count(r, 'r
 
 // Each screen is built as head lines, selectable rows and foot lines. The plain output joins them;
 // the interactive screen draws the rows with a selection and opens a row's `open` view on Enter.
-const joined = (s) => [...s.head, ...s.rows.map((x) => x.line), ...s.foot].join('\n');
+// A head or foot line is a string, or a line of coloured runs (segLine) printed as its plain text.
+const textOf = (l) => (typeof l === 'string' ? l : l.line);
+const joined = (s) => [...s.head, ...s.rows, ...s.foot].map(textOf).join('\n');
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
   const list = shownRepos(repos, all);
@@ -622,7 +651,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const head = [
     `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
     '',
-    `  ${pad('REPO', w)}${pad('LAST PASS', 15)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('STUCK', 7)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', 12)}  WORKERS`,
+    bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', 12)}  WORKERS`),
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
@@ -630,17 +659,19 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     you += count(r, 'needs'); stuck += count(r, 'stuck');
-    const last = r.live ? `live ${ago(now - r.last).replace(' ago', '')}` : ago(r.last == null ? null : now - r.last);
-    // Each state count in its state's colour, a zero plain.
-    const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : null]; };
-    rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}${pad(last, 15)}`, null], n('running', 4), n(['ready', 'queued'], 7, STATE_SGR.ready), n('waiting', 6), n('stuck', 7), n('needs', 11), n('failed', 8),
-      [`${rpad(r.done, 6)}  ${pad(queueDone(r, now, checkin), 12)}  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`, null]], { kind: 'repo', slug: r.slug }));
+    const [last, lastSgr] = lastPass(r, now);
+    // Each state count in its state's colour, a zero dim.
+    const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : DIM]; };
+    const qd = queueDone(r, now, checkin);
+    rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}`, null], [pad(last, LAST_W), lastSgr], n('running', 4), n(['ready', 'queued'], 7, STATE_SGR.ready), n('waiting', 6), n('stuck', 9), n('needs', 11), n('failed', 8),
+      [rpad(r.done, 6), r.done ? null : DIM], ['  ', null], [pad(qd, 12), ['paused', 'no history'].includes(qd) ? DIM : null],
+      [`  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`, null]], { kind: 'repo', slug: r.slug }));
   }
   const none = repos.filter((r) => !hasBatch(r));
-  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', 78)}  cap ${r.cap}`);
+  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 65)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
-  foot.push('', `${you} need you, ${stuck} stuck.`);
-  if (!all && none.length) foot.push(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`);
+  foot.push('', segLine([[`${you} need you`, you ? YOU : DIM], [`, ${stuck} blocked.`, null]]));
+  if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
   const seen = new Set();
   for (const r of repos) {
     for (const c of portClashes(r.claim, repos.map((x) => x.claim))) {
@@ -648,7 +679,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
-      foot.push(`ports overlap: ${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`);
+      foot.push(segLine([[`▲ ports overlap: ${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, WARN]]));
     }
   }
   return { head, rows, foot };
@@ -698,7 +729,7 @@ function detail(r, x) {
 
 // DETAIL's width, wide enough for "waits for a worker (12 of 12 busy)"; the columns before TITLE on a ticket row.
 const DETAIL_W = 36;
-const ROW_LEAD = 92;
+const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + DETAIL_W + 13 + 14;
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
 // to that epic's tickets, each keeping its place in the whole queue.
@@ -712,7 +743,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...stopped,
     `workers ${count(r, 'running')} running of ${r.workers} (cap ${r.cap}) · ${r.done} done, not shown`,
     '',
-    `  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', 11)}${pad('DETAIL', DETAIL_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`,
+    bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('DETAIL', DETAIL_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`),
   ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
   const F = forecastOf(r, { now, checkin });
@@ -722,7 +753,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const summary = (x) => summaryOf({ r, x });
   const tt = titler(list.map(summary));
   const rows = list.map((x) => segRow(x.t.key, [
-    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], 11), STATE_SGR[x.k]],
+    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], STATE_W), STATE_SGR[x.k]],
     [`${pad(cut(detail(r, x), DETAIL_W - 2), DETAIL_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) }));
   const foot = !list.length ? ['  No unfinished tickets.']
@@ -743,10 +774,12 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const pos = r.rows.find((x) => x.t.key === key)?.pos;
   const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
+  // The key bold, the state in its colour, the facts after it dim.
   const head = [
-    `${key}  ${LABEL[k]}  ${[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, pos != null ? `position ${pos} of ${r.places}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · ')}`,
+    segLine([[key, BOLD], ['  ', null], [LABEL[k], STATE_SGR[k] ?? null], ['  ', null],
+      [[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, pos != null ? `position ${pos} of ${r.places}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · '), DIM]]),
     '',
-    ...(tr.summary ? wrap(tr.summary, ww) : ['(no triage record: title unknown)']),
+    ...(tr.summary ? wrap(tr.summary, ww).map(bold) : ['(no triage record: title unknown)']),
     '',
   ];
   const rows = [], out = [];
@@ -755,11 +788,12 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
     head.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
-      : k === 'waiting' ? 'Starts when the last of these merges:' : 'Stuck. At least one of these will never merge by itself:');
+      : bold(k === 'waiting' ? 'Starts when the last of these merges:' : 'Blocked. At least one of these will never merge by itself:'));
     for (const b of open) {
       const bt = r.q.tickets[b];
-      const line = `  ${pad(b, 10)}${bt ? `${pad(LABEL[shownState(r.q, bt)], 11)}${cut(triageOf(r.stateDir, b)?.summary ?? '', 70)}` : 'not in this queue'}`.trimEnd();
-      rows.push({ id: b, line, open: bt ? { kind: 'ticket', slug: r.slug, key: b } : null });
+      const bk = bt ? shownState(r.q, bt) : null;
+      rows.push(segRow(b, [[`  ${pad(b, 10)}`, null], ...(bt ? [[pad(LABEL[bk], STATE_W), STATE_SGR[bk] ?? null], [cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]]
+        : [['not in this queue', null]])], bt ? { kind: 'ticket', slug: r.slug, key: b } : null));
     }
     out.push('');
   }
@@ -770,14 +804,15 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   }
   if (k === 'stuck') out.push('Unblock the blocker first, or have the orchestrator drop this hold (orchestrator-recovery.md).');
   if (t.park?.question || ['needs', 'stuck'].includes(k)) out.push('');
-  if (tr.lane_reason) { out.push(`Why lane ${lane}:`); for (const l of wrap(tr.lane_reason, ww)) out.push(`  ${l}`); out.push(''); }
+  // Headings bold; the reason, the paths, the branch, log and Jira lines are secondary, so dim.
+  if (tr.lane_reason) { out.push(bold(`Why lane ${lane}:`)); for (const l of wrap(tr.lane_reason, ww)) out.push(dim(`  ${l}`)); out.push(''); }
   const files = tr.files_in_scope ?? [];
-  if (files.length) { out.push(`Files in scope (${files.length}):`); for (const f of files) out.push(`  ${f}`); out.push(''); }
+  if (files.length) { out.push(bold(`Files in scope (${files.length}):`)); for (const f of files) out.push(dim(`  ${f}`)); out.push(''); }
   if (t.collides_with) out.push(`Never runs at the same time as: ${String(t.collides_with).split('|').join(', ')}`);
   const branch = t.branch ?? tr.branch;
-  if (branch) out.push(`Branch: ${branch}`);
-  out.push(`Log: ${logPath(r, key)}${width == null ? '' : '  (l shows the last 40 lines)'}`);
-  if (jiraUrl) out.push(`Jira: ${jiraUrl}  (o opens it)`);
+  if (branch) out.push(dim(`Branch: ${branch}`));
+  out.push(dim(`Log: ${logPath(r, key)}${width == null ? '' : '  (l shows the last 40 lines)'}`));
+  if (jiraUrl) out.push(dim(`Jira: ${jiraUrl}  (o opens it)`));
   return { head, rows, foot: out };
 }
 
@@ -868,7 +903,7 @@ function moveTicket(r, key, verb, to) {
   if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
   const why = x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
-    : x.k === 'stuck' ? ` Still stuck behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
+    : x.k === 'stuck' ? ` Still blocked behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
   return `${key} → position ${n} of ${last}, placed by you.${why}`;
 }
@@ -968,9 +1003,14 @@ function systemOpener(url) {
 // Log text can carry a worker's own escape codes; only printable text reaches the screen.
 const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
 
+// The selected row's background: 256-colour 238, a tint that leaves each run's own colour readable.
+const SELECT_BG = '48;5;238';
+
 // A row cut to `w` columns as `cut` would, `›` in its first column when selected, then each coloured
 // run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
-// reverse video holds across the runs. NO_COLOR drops the colours and keeps bold, dim and reverse.
+// background holds across the runs, and its erase to the end of the line (ESC [K, which the
+// terminal fills with the current background) carries the tint across the full width.
+// NO_COLOR drops the colours and keeps bold, dim and reverse, and selects in reverse video.
 function paint(x, w, selected) {
   const plain = !!process.env.NO_COLOR;
   let segs = (x.segs ?? [[x.line, null]]).map(([s, k]) => [s, k]);
@@ -981,7 +1021,33 @@ function paint(x, w, selected) {
     for (const [s, k] of segs) { if (room <= 0) break; kept.push([s.slice(0, room), k]); room -= s.length; }
     segs = [...kept, ['…', null]];
   }
-  return segs.map(([s, k]) => (k && s && !(plain && ![BOLD, DIM, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : k === REVERSE ? '27' : '39'}m` : s)).join('');
+  const out = segs.map(([s, k]) => (k && s && !(plain && ![BOLD, DIM, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : k === REVERSE ? '27' : '39'}m` : s)).join('');
+  if (!selected) return out;
+  return plain ? `${ESC}7m${out}${ESC}27m` : `${ESC}${SELECT_BG}m${out}${ESC}K${ESC}49m`;
+}
+// A line already erased to its end in the selection's tint; another erase would clear the tint.
+const tinted = (l) => l.endsWith(`${ESC}K${ESC}49m`);
+
+// A keys line, each key bold: "↑↓ select · enter open · q quit". One wider than the terminal goes on
+// two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
+// rather than losing the last ones.
+const KEY = /^(←→ or 1–4|\+ −|\S+) (.+)$/;
+const MOVES_ON = /^(select|open|view|back|scroll)\b/;
+function keyLines(s, w) {
+  const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
+  const text = (list) => list.map(([k, d]) => (d ? `${k} ${d}` : k)).join(' · ');
+  const line = (lead, list) => segLine([[lead, DIM], ...list.flatMap(([k, d], i) => [...(i ? [[' · ', null]] : []), [k, BOLD], [d ? ` ${d}` : '', null]])]);
+  if (text(items).length <= w) return [line('', items)];
+  return [['move  ', items.filter(([, d]) => MOVES_ON.test(d))], ['act   ', items.filter(([, d]) => !MOVES_ON.test(d))]].flatMap(([lead, list]) => {
+    const out = [];
+    let cur = [];
+    for (const it of list) {
+      if (cur.length && lead.length + text([...cur, it]).length > w) { out.push(line(out.length ? ' '.repeat(lead.length) : lead, cur)); cur = []; }
+      cur.push(it);
+    }
+    if (cur.length) out.push(line(out.length ? ' '.repeat(lead.length) : lead, cur));
+    return out;
+  });
 }
 
 // Labels joined by `sep`, each with the columns it covers (from, up to end), so a click's column
@@ -989,13 +1055,6 @@ function paint(x, w, selected) {
 function spans(parts, sep) {
   let at = 0;
   return parts.map((p, i) => { const from = at + (i ? sep.length : 0); at = from + p.label.length; return { ...p, from, end: at }; });
-}
-
-// A keys line too long for the terminal breaks between keys rather than losing the last ones.
-function wrapKeys(s, w) {
-  const out = [];
-  for (const k of s.split(' · ')) { if (out.length && `${out.at(-1)} · ${k}`.length <= w) out[out.length - 1] += ` · ${k}`; else out.push(k); }
-  return out;
 }
 
 // A Timeline or By day view names its place by repo, or every repo, as the screen does.
@@ -1073,7 +1132,8 @@ export function interactive({
       const lines = readFileSync(p, 'utf8').split('\n');
       if (lines.at(-1) === '') lines.pop();
       const last = lines.slice(-LOG_LINES).map(printable);
-      return { head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
+      const k = shownState(r.q, r.q.tickets[view.key]);
+      return { head: [segLine([[view.key, BOLD], ['  ', null], [LABEL[k], STATE_SGR[k] ?? null]]), dim(`Last ${last.length} lines of ${p}`), ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
     }
     const jira = jiraUrlFor(r.slug, view.key);
     const s = ticketParts(r, view.key, { width: w, jiraUrl: jira, now, checkin });
@@ -1089,20 +1149,21 @@ export function interactive({
     sel = Math.max(0, Math.min(sel, rows.length - 1));
     selId = rows[sel]?.id ?? null;
     const w = width(), h = height();
-    const fit = (l) => cut(l, w);
+    const fit = (l) => (typeof l === 'string' ? cut(l, w) : paint(l, w, false));
     // The breadcrumb and the tab line stay at the top while the rest scrolls. A ticket has no tab
-    // line, so its parked note follows the breadcrumb.
-    const crumbs = crumbParts().map((p) => p.label).join(' › ');
+    // line, so its parked note follows the breadcrumb. The breadcrumb's last part, where you are, is
+    // bold and the parts above it dim.
+    const cp = crumbParts();
+    const crumbs = segLine(cp.flatMap((p, i) => [...(i ? [[' › ', DIM]] : []), [p.label, i === cp.length - 1 ? BOLD : DIM]]));
     const pinned = [];
     if (hasTabs()) {
       const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : tabOk(p.id) ? null : DIM]]);
       if (screen.badge) segs.push([`    ${screen.badge}`, null]);
       pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false));
-    } else pinned.push(fit(screen.badge ? `${crumbs}    ${screen.badge}` : crumbs));
-    const body = ['', ...screen.head.map(fit),
-      ...rows.map((x, i) => (i === sel ? `${ESC}7m${paint(x, w, true)}${ESC}27m` : paint(x, w, false))), ...screen.foot.map(fit)];
+    } else pinned.push(fit(screen.badge ? segLine([...crumbs.segs, [`    ${screen.badge}`, null]]) : crumbs));
+    const body = ['', ...screen.head.map(fit), ...rows.map((x, i) => paint(x, w, i === sel)), ...screen.foot.map(fit)];
     // A message can be longer than the line (a refused raise says what raising the cap takes).
-    const status = [...wrap(msg, w), ...(cmd != null ? [`:${cmd}`] : wrapKeys(screen.keys, w))].filter(Boolean).map(fit);
+    const status = [...wrap(msg, w), ...(cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit);
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + screen.head.length;
     let top = 0;
@@ -1119,7 +1180,7 @@ export function interactive({
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
     layout = { pinned: pinned.length, top, room, first, rows: rows.length };
-    output.write(`${ESC}H${[...pinned, ...shown, ...status].map((l) => `${l}${ESC}K`).join('\r\n')}${ESC}J`);
+    output.write(`${ESC}H${[...pinned, ...shown, ...status].map((l) => (tinted(l) ? l : `${l}${ESC}K`)).join('\r\n')}${ESC}J`);
   }
 
   // A new place pushes the one you were on, so Esc comes back to it with its selection; the view
