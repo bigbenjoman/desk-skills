@@ -221,7 +221,7 @@ t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+○ read
 t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
 t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships: No date until you answer it. Press c to date it at the next check-in.'), true);
 t('DS-161 AC6: a stuck ticket has no date', F.T['A-7'], null);
-t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships: No date while it is stuck behind A-6. Unblock it to date it.'), true);
+t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships: No date while it is blocked behind A-6. Unblock it to date it.'), true);
 
 // ---- forecast AC7: too little history gives no dates
 const nine = Q.run(['ships', 'nine', '--plain'], { now: FIXED });

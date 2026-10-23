@@ -483,7 +483,7 @@ t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { 
 // The median of tidy's 12 size M durations, 4 to 10 h: the 7th of them sorted.
 const typicalM = '7.0';
 t('DS-163 AC8 a ticket waiting on you says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Waiting on you · ~${typicalM} h once answered`)), true);
-t('DS-163 AC8 a stuck ticket names what it is stuck behind', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Stuck behind T-4')), true);
+t('DS-163 AC8 a blocked ticket names what it is blocked behind', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Blocked behind T-4')), true);
 t('DS-163 AC8 workers set to 0 says nothing starts', /Workers set to 0: nothing starts +Z-1 title$/.test(barRow(tl('acme__zero'), 'Z-1')), true);
 
 const Ks = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);

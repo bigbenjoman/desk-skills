@@ -216,7 +216,7 @@ function undatedWhy(r, F, x) {
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
   if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
-  if (x.k === 'stuck') return `stuck behind ${listed(unmergedBlockers(r.q, x.t))}`;
+  if (x.k === 'stuck') return `blocked behind ${listed(unmergedBlockers(r.q, x.t))}`;
   if (x.k === 'failed') return 'failed: requeue it';
   const b = undatedBlockers(r, F, x.t);
   return b.length ? `after ${listed(b)}, which ${b.length > 1 ? 'have' : 'has'} no date` : '';
@@ -233,7 +233,7 @@ function etaLines(r, F, x, now) {
     const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
     const why = r.workers === 0 ? 'No date: workers are set to 0, so nothing starts.'
       : x.k === 'needs' ? 'No date until you answer it. Press c to date it at the next check-in.'
-        : x.k === 'stuck' ? `No date while it is stuck behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
+        : x.k === 'stuck' ? `No date while it is blocked behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
           : x.k === 'failed' ? 'No date: it failed. Requeue it to date it.'
             : `No date until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.`;
     return [`Ships: ${why}`, ''];
@@ -297,7 +297,7 @@ function epicWhy(r, F, e, checkin) {
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
-  const why = [['needs', 'waiting on you'], ['stuck', 'stuck'], ['failed', 'failed']].filter(([k]) => c(k)).map(([k, w]) => `${c(k)} ${w}`);
+  const why = [['needs', 'waiting on you'], ['stuck', 'blocked'], ['failed', 'failed']].filter(([k]) => c(k)).map(([k, w]) => `${c(k)} ${w}`);
   const rest = undated.length - c('needs') - c('stuck') - c('failed');
   if (rest) why.push(`${rest} behind those`);
   return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c to date them at check-ins' : ''}`;
@@ -618,7 +618,7 @@ const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValu
 const LAST_W = 21;
 function lastPass(r, now) {
   if (r.live) return [`● live · ${ago(r.last == null ? null : now - r.last)}`, STATE_SGR.running];
-  if (r.last == null) return ['■ no pass yet', WARN];
+  if (r.last == null) return ['■ never', WARN];
   return [`■ stopped · ${since(now - r.last)}`, now - r.last >= DAY ? STATE_SGR.failed : WARN];
 }
 
@@ -664,7 +664,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : DIM]; };
     const qd = queueDone(r, now, checkin);
     rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}`, null], [pad(last, LAST_W), lastSgr], n('running', 4), n(['ready', 'queued'], 7, STATE_SGR.ready), n('waiting', 6), n('stuck', 9), n('needs', 11), n('failed', 8),
-      [`${rpad(r.done, 6)}  `, null], [pad(qd, 12), ['paused', 'no history'].includes(qd) ? DIM : null],
+      [rpad(r.done, 6), r.done ? null : DIM], ['  ', null], [pad(qd, 12), ['paused', 'no history'].includes(qd) ? DIM : null],
       [`  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`, null]], { kind: 'repo', slug: r.slug }));
   }
   const none = repos.filter((r) => !hasBatch(r));
@@ -788,7 +788,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
     head.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
-      : k === 'waiting' ? 'Starts when the last of these merges:' : 'Stuck. At least one of these will never merge by itself:');
+      : bold(k === 'waiting' ? 'Starts when the last of these merges:' : 'Blocked. At least one of these will never merge by itself:'));
     for (const b of open) {
       const bt = r.q.tickets[b];
       const bk = bt ? shownState(r.q, bt) : null;
@@ -903,7 +903,7 @@ function moveTicket(r, key, verb, to) {
   if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
   const why = x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
-    : x.k === 'stuck' ? ` Still stuck behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
+    : x.k === 'stuck' ? ` Still blocked behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
   return `${key} → position ${n} of ${last}, placed by you.${why}`;
 }
@@ -1132,7 +1132,8 @@ export function interactive({
       const lines = readFileSync(p, 'utf8').split('\n');
       if (lines.at(-1) === '') lines.pop();
       const last = lines.slice(-LOG_LINES).map(printable);
-      return { head: [`Last ${last.length} lines of ${p}`, ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
+      const k = shownState(r.q, r.q.tickets[view.key]);
+      return { head: [segLine([[view.key, BOLD], ['  ', null], [LABEL[k], STATE_SGR[k] ?? null]]), dim(`Last ${last.length} lines of ${p}`), ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
     }
     const jira = jiraUrlFor(r.slug, view.key);
     const s = ticketParts(r, view.key, { width: w, jiraUrl: jira, now, checkin });
