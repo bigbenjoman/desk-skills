@@ -220,9 +220,9 @@ t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+○ read
 
 // ---- forecast AC5 and AC6: no date while it waits on the user, or is stuck
 t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
-t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships: No date until you answer it. Press c to date it at the next check-in.'), true);
+t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships     No date until you answer it. Press c to date it at the next check-in.'), true);
 t('DS-161 AC6: a stuck ticket has no date', F.T['A-7'], null);
-t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships: No date while it is blocked behind A-6. Unblock it to date it.'), true);
+t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships     No date while it is blocked behind A-6. Unblock it to date it.'), true);
 
 // ---- forecast AC7: too little history gives no dates
 const nine = Q.run(['ships', 'nine', '--plain'], { now: FIXED });
@@ -234,22 +234,29 @@ t('DS-161 AC8: today, the next 6 days, a week out, and another year', [at(2026, 
   ['today 21:30', 'Thu 14:30', '26 Oct', '4 Jan 2027']);
 
 // ---- forecast AC9: STARTS and SHIPS on the queue, QUEUE DONE on the overview
-t('DS-161 AC9: the queue screen has STARTS and SHIPS columns', alphaRows.some((l) => /^\s+#\s+TICKET\s+STATE\s+DETAIL\s+STARTS\s+SHIPS\s+TITLE$/.test(l)), true);
+t('DS-161 AC9: the queue screen has STARTS and SHIPS columns', alphaRows.some((l) => /^\s+#\s+TICKET\s+STATE\s+WHAT IT NEEDS\s+STARTS\s+SHIPS\s+TITLE$/.test(l)), true);
 const ov = Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n');
 t('DS-161 AC9: the overview has a QUEUE DONE column', ov.some((l) => /DONE\s+QUEUE DONE\s+WORKERS$/.test(l)), true);
 t('DS-161 AC9: giving when the repo\'s last dated ticket ships', (ov.find((l) => /^ {2}alpha /.test(l)) ?? '').includes(`  ${when(F.clears, FIXED)}`), true);
 
 // ---- forecast AC10: the ticket screen's dates and the history behind them
+// A ticket page field's text: its line and the lines it wraps onto, indented under its value.
+const field = (ls, label) => {
+  const i = ls.findIndex((l) => l.startsWith(`${label.padEnd(10)}`));
+  if (i < 0) return '';
+  const out = [ls[i]];
+  for (let j = i + 1; j < ls.length && /^ {10}\S/.test(ls[j]); j++) out.push(ls[j].trim());
+  return out.join(' ');
+};
 const a3 = show('A-3');
-const i3 = a3.findIndex((l) => l.startsWith('Starts: '));
-t('DS-161 AC10: starts, ships and could run to', /^Starts: \S.*? {3}Ships: \S.*? {3}Could run to \S.*? \(1 run in 5 is later\)$/.test(a3[i3] ?? ''), true);
+t('DS-161 AC10: ships, could run to and starts', /^Ships {5}\S.*? {2}could run to \S.*? \(1 run in 5 is later\) · starts \S/.test(field(a3, 'Ships')), true);
 t('DS-161 AC10: could run to is no earlier than ships', F.T['A-3'].late >= F.T['A-3'].likely, true);
-t('DS-161 AC10: then how many merged tickets of its size the history holds', (a3[i3 + 1] ?? '').startsWith('From 6 merged size M tickets in alpha: typical '), true);
+t('DS-161 AC10: then how many merged tickets of its size the history holds', field(a3, 'Based on').startsWith('Based on  6 merged size M tickets in alpha · typical '), true);
 const beta = Q.loadRepos(FIXED).find((r) => r.name === 'beta');
-const histLine = (key) => { const l = Q.ticketScreen(beta, key, { now: FIXED }).split('\n'); return l[l.findIndex((x) => x.startsWith('Starts: ')) + 1] ?? ''; };
-t('DS-161 AC10: a size the history has none of still names its count, 0', histLine('B-1').startsWith('From 13 merged tickets in beta (0 of size L): typical '), true);
-t('DS-161 AC10: a ticket triage gave no size says so', histLine('B-2').startsWith('From 13 merged tickets in beta (triage recorded no size): typical '), true);
-t('DS-161 AC10: a size with too few to use alone names its count', histLine('B-3').startsWith('From 13 merged tickets in beta (3 of size M, too few to use alone): typical '), true);
+const histLine = (key) => field(Q.ticketScreen(beta, key, { now: FIXED }).split('\n'), 'Based on');
+t('DS-161 AC10: a size the history has none of still names its count, 0', histLine('B-1').startsWith('Based on  13 merged tickets in beta (0 of size L) · typical '), true);
+t('DS-161 AC10: a ticket triage gave no size says so', histLine('B-2').startsWith('Based on  13 merged tickets in beta (triage recorded no size) · typical '), true);
+t('DS-161 AC10: a size with too few to use alone names its count', histLine('B-3').startsWith('Based on  13 merged tickets in beta (3 of size M, too few to use alone) · typical '), true);
 
 // ---- forecast AC11: the same files and clock give the same dates
 const rows = alpha.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: String(tk.collides_with ?? '').split('|').filter(Boolean) }));
@@ -335,7 +342,7 @@ const STOPPED = ['quiet · passes stopped: last pass 18:31 (20m ago)',
   'Running workers carry on, but nothing new starts and stages are not updated. To resume passes, run /desk-autopilot in quiet and ask it to pick the batch back up.'];
 t('DS-162 AC4 (DS-185 AC7): ships gives no dates, says passes stopped and how to resume them', Q.run(['ships', 'quiet', '--plain'], { now: FIXED }).split('\n').slice(0, 2), STOPPED);
 t('DS-162 AC4 (DS-185 AC3): the queue screen dates nothing, and no cell reads paused', /\sQ-1\s+○ ready\s+starts when passes resume\s+—\s+—\s/.test(Q.repoScreen(quiet, { now: FIXED })), true);
-t('DS-162 AC4: the ticket screen says so in place of its dates', Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n').includes(`Ships: ${PAUSED}`), true);
+t('DS-162 AC4: the ticket screen says so in place of its dates', field(Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n'), 'Ships'), `Ships     ${PAUSED}`);
 t('DS-162 AC4: the overview\'s QUEUE DONE reads paused', /\spaused\s/.test(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? ''), true);
 t('DS-162 AC4: and a paused forecast saves no estimate', readEstimates(stateOf('quiet')).size, 0);
 
@@ -525,7 +532,7 @@ writeLog('logged', 'L-1', [said('AUTOPILOT_STAGE: 0/9 triage', FIXED - 5 * MIN),
 writeLog('logged', 'L-3', `${said('Reading the ticket.', FIXED - 3 * MIN)}\n`);
 const logged = Q.repoScreen(repoAt('logged'), { now: FIXED, width: 200 });
 t('DS-190 AC1: a log past the queue\'s stage shows the worker\'s stage and when it said it', /\sL-1\s+● running\s+stage 4\/9 verify since 18:49\s/.test(bRow(logged, 'L-1')), true);
-t('DS-190 AC1: and so does its ticket page', Q.ticketScreen(repoAt('logged'), 'L-1', { now: FIXED }).includes('A worker is on it, at stage 4/9 verify since 18:49.'), true);
+t('DS-190 AC1: and so does its ticket page', Q.ticketScreen(repoAt('logged'), 'L-1', { now: FIXED }).includes('A worker is on it · stage 4/9 verify since 18:49'), true);
 t('DS-190 AC2: the forecast runs from stage 4/9, so it ships earlier than from 0/9', Q.forecastOf(repoAt('logged'), { now: FIXED }).T['L-1'].likely < shipsBefore, true);
 t('DS-190 AC3: no log, or a log with no stage marker, falls back to the last pass\'s reading',
   ['L-2', 'L-3'].map((k) => /stage 0\/9 as of 18:45\s/.test(bRow(logged, k))), [true, true]);

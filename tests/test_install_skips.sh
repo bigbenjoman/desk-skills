@@ -96,6 +96,6 @@ check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.jso
 # shellcheck disable=SC2034  # q_out is read inside check's eval string
 q_out="$(cd / && unset DESK_HOME DESK_MACHINE && PATH="$HOME/.local/bin:$PATH" desk-q --plain --all 2>&1)"
 check "desk-q is on PATH and runs from any directory" \
-  '[ -x "$HOME/.local/bin/desk-q" ] && [[ "$q_out" == "desk-q · "* ]] && [[ "$q_out" == *"  r  "*"no batch"* ]]'
+  '[ -x "$HOME/.local/bin/desk-q" ] && [[ "$q_out" == "● "* ]] && [[ "$q_out" == *"desk-q · "* ]] && [[ "$q_out" == *"  r  "*"no batch"* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

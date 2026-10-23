@@ -4,7 +4,7 @@
 // disk every run, so a newly set-up repo appears with no change here.
 //
 //   desk-q [--plain] [--all]             one line per batch: live first, then quiet ones that need you
-//   desk-q [--plain] <repo>              that repo's unfinished tickets in spawn order
+//   desk-q [--plain] <repo>              that repo's unfinished tickets grouped by state, each group in spawn order
 //   desk-q [--plain] <repo> show <KEY>   one ticket in full
 //   desk-q ships [<repo>]                the Timeline: a bar per unfinished ticket from when it starts
 //                                        to when it ships (`when` too), and in one repo with an epic, a bar
@@ -256,12 +256,12 @@ function undatedWhy(r, F, x) {
   return b.length ? `after ${listed(b)}, which ${b.length > 1 ? 'have' : 'has'} no date` : '';
 }
 
-// The ticket screen's Starts and Ships lines.
-function etaLines(r, F, x, now) {
+// The ticket screen's Ships and Based on fields, each [label, coloured runs].
+function etaFields(r, F, x, now) {
   if (!F) return [];
-  if (F.idle) return [`Ships: ${idleNote(r)}`, ''];
-  if (F.none) return [noHistory(r, F), ''];
-  if (F.paused) return [`Ships: ${pausedNote(r, now)}`, ''];
+  if (F.idle) return [['Ships', [[idleNote(r), null]]]];
+  if (F.none) return [['Ships', [[noHistory(r, F), null]]]];
+  if (F.paused) return [['Ships', [[pausedNote(r, now), null]]]];
   const key = x.t.key, e = F.T[key];
   if (!e) {
     const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
@@ -270,7 +270,7 @@ function etaLines(r, F, x, now) {
         : x.k === 'stuck' ? `No date while it is blocked behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
           : x.k === 'failed' ? 'No date: it failed. Requeue it to date it.'
             : `No date until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.`;
-    return [`Ships: ${why}`, ''];
+    return [['Ships', [[why, null]]]];
   }
   const start = e.start <= now + SOON ? (x.k === 'running' ? 'running now' : 'now') : when(e.start, now);
   const size = F.sizes[key];
@@ -279,9 +279,8 @@ function etaLines(r, F, x, now) {
   const n = F.d.bySize[size]?.length ?? 0;
   const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
   return [
-    segLine([[`Starts: ${start}   Ships: `, null], [when(e.likely, now), BOLD], [`   Could run to ${when(e.late, now)} (1 run in 5 is later)`, null]]),
-    dim(`From ${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of}: typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h.`),
-    '',
+    ['Ships', [[when(e.likely, now), BOLD], [`  could run to ${when(e.late, now)} (1 run in 5 is later) · starts ${start}`, DIM]]],
+    ['Based on', [[`${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of} · typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h`, DIM]]],
   ];
 }
 
@@ -682,6 +681,17 @@ const unslotted = (r) => count(r, 'ready') - Math.max(0, r.workers - count(r, 'r
 const textOf = (l) => (typeof l === 'string' ? l : l.line);
 const joined = (s) => [...s.head, ...s.rows, ...s.foot].map(textOf).join('\n');
 
+// The overview's first line: how many tickets wait on the user, then each repo's share, most first,
+// then how many are blocked.
+function needsLine(list) {
+  const ok = list.filter((r) => !r.error);
+  const you = ok.reduce((a, r) => a + count(r, 'needs'), 0), stuck = ok.reduce((a, r) => a + count(r, 'stuck'), 0);
+  const per = ok.filter((r) => count(r, 'needs')).sort((a, c) => count(c, 'needs') - count(a, 'needs')).map((r) => `${count(r, 'needs')} in ${r.name}`);
+  const segs = you ? [[`● ${you} ticket${you === 1 ? ' needs' : 's need'} you`, YOU], [`  ${per.join(' · ')}`, YOU]] : [['● Nothing needs you', DIM]];
+  if (stuck) segs.push([`   ${stuck} blocked`, DIM]);
+  return segLine(segs);
+}
+
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
@@ -690,16 +700,15 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const at = clock(now);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
+    needsLine(list),
     `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
     '',
     bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', 12)}  WORKERS`),
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
-  let you = 0, stuck = 0;
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
-    you += count(r, 'needs'); stuck += count(r, 'stuck');
     const [last, lastSgr] = lastPass(r, now);
     // Each state count in its state's colour, a zero dim.
     const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : DIM]; };
@@ -711,7 +720,6 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const none = repos.filter((r) => !hasBatch(r));
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 65)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
-  foot.push('', segLine([[`${you} need you`, you ? YOU : DIM], [`, ${stuck} blocked.`, null]]));
   if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
   const seen = new Set();
   for (const r of repos) {
@@ -775,38 +783,49 @@ function detail(r, x) {
   return '';
 }
 
-// DETAIL's width, wide enough for "waits for a worker (12 of 12 busy)"; the columns before TITLE on a ticket row.
-const DETAIL_W = 36;
-const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + DETAIL_W + 13 + 14;
+// WHAT IT NEEDS takes NEED_W while the title keeps TITLE_MIN; narrower than that, the title is cut
+// first, then the reason, down to NEED_MIN ("waits for a worker (12 of 12 busy)").
+const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
+// The columns before TITLE on a ticket row, less WHAT IT NEEDS.
+const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
+// A repo's Queue in groups, each in queue order: what autopilot is moving first, then what waits on the user.
+const GROUPS = [['Running', ['running']], ['Ready', ['ready', 'queued']], ['Waiting', ['waiting']], ['Needs you', ['needs']], ['Blocked', ['stuck']], ['Failed', ['failed']]];
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
-// to that epic's tickets, each keeping its place in the whole queue.
+// to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
+// no id, which the selection steps over.
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
   const [pass, ...stopped] = passLines(r, now);
+  const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
   const head = [
     `${r.name} · batch ${r.q.batch ?? '-'} · ${pass}`,
     ...stopped,
     `workers ${count(r, 'running')} running of ${r.workers} (cap ${r.cap}) · ${r.done} done, not shown`,
-    '',
-    bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('DETAIL', DETAIL_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`),
   ];
-  const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD);
+  const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
   const F = forecastOf(r, { now, checkin });
   const ep = epic ? F.epics[epic] : null;
   if (ep) head.splice(1, 0, `${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`);
+  // Wrapped to the terminal, so how to resume passes is never cut.
+  const fit = head.flatMap((s) => (width == null ? [s] : wrap(s, width)));
+  fit.push('', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
   const list = epic ? r.rows.filter((x) => F.of[x.t.key] === epic) : r.rows;
   const summary = (x) => summaryOf({ r, x });
   const tt = titler(list.map(summary));
-  const rows = list.map((x) => segRow(x.t.key, [
+  const row = (x) => segRow(x.t.key, [
     [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], STATE_W), STATE_SGR[x.k]],
-    [`${pad(cut(detail(r, x), DETAIL_W - 2), DETAIL_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`, null],
-  ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) }));
+    [`${pad(cut(detail(r, x), nw - 2), nw)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${cut(tt(summary(x)), tw)}`, null],
+  ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) });
+  const rows = GROUPS.flatMap(([name, ks]) => {
+    const g = list.filter((x) => ks.includes(x.k));
+    return g.length ? [segRow(null, [[`  ${name}`, BOLD], [` · ${g.length}`, DIM]], null), ...g.map(row)] : [];
+  });
   const foot = !list.length ? ['  No unfinished tickets.']
     : list.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];
-  return { head, rows, foot };
+  return { head: fit, rows, foot };
 }
 
 export const repoScreen = (r, opts) => joined(repoParts(r, opts));
@@ -826,13 +845,26 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const head = [
     segLine([[key, BOLD], ['  ', null], [LABEL[k], STATE_SGR[k] ?? null], ['  ', null],
       [[t.type ?? tr.type, `size ${tr.size ?? '?'}`, `lane ${lane}`, pos != null ? `position ${pos} of ${r.places}${t.placed ? ' (placed by you)' : ''}` : null].filter(Boolean).join(' · '), DIM]]),
-    '',
     ...(tr.summary ? wrap(tr.summary, ww).map(bold) : ['(no triage record: title unknown)']),
     '',
   ];
+  // The status block: each field's label dim in a column of its own. One too long for the line wraps
+  // under its value, in its first run's colour; a branch or a path is kept whole.
+  const field = (label, segs, whole = false) => {
+    const text = segs.map((s) => s[0]).join('');
+    if (whole || FIELD_W + text.length <= ww) return head.push(segLine([[pad(label, FIELD_W), DIM], ...segs]));
+    wrap(text, ww - FIELD_W).forEach((l, i) => head.push(segLine([[pad(i ? '' : label, FIELD_W), DIM], [l, segs[0][1]]])));
+  };
+  field('Now', nowSegs(r, row, k, t));
+  if (row) for (const [label, segs] of etaFields(r, forecastOf(r, { now, checkin }), row, now)) field(label, segs);
+  const holds = r.rows.filter((x) => x.t.key !== key && String(x.t.held_by ?? '').split('|').includes(key)).map((x) => x.t.key);
+  if (holds.length) field('Holds up', [[holds.join(', '), WARN], [` ${holds.length === 1 ? 'waits' : 'wait'} for this to merge`, DIM]]);
+  const branch = t.branch ?? tr.branch;
+  if (branch) field('Branch', [[branch, DIM]], true);
+  field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]
+    : [['l', BOLD], [' log', null], ...(jiraUrl ? [['  ·  ', null], ['o', BOLD], [' Jira  ', null], [jiraUrl.replace(/^https?:\/\//, ''), DIM]] : [])], true);
+  head.push('');
   const rows = [], out = [];
-  if (k === 'running') head.push(`A worker is on it, at ${runningStage(r, row)}.`, '');
-  if (row) head.push(...etaLines(r, forecastOf(r, { now, checkin }), row, now));
   if (k === 'waiting' || k === 'stuck') {
     const open = unmergedBlockers(r.q, t);
     head.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
@@ -852,16 +884,24 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   }
   if (k === 'stuck') out.push('Unblock the blocker first, or have the orchestrator drop this hold (orchestrator-recovery.md).');
   if (t.park?.question || ['needs', 'stuck'].includes(k)) out.push('');
-  // Headings bold; the reason, the paths, the branch, log and Jira lines are secondary, so dim.
-  if (tr.lane_reason) { out.push(bold(`Why lane ${lane}:`)); for (const l of wrap(tr.lane_reason, ww)) out.push(dim(`  ${l}`)); out.push(''); }
+  // Headings bold; the reason and the paths are secondary, so dim.
+  if (tr.lane_reason) { out.push(bold(`Why lane ${lane}`)); for (const l of wrap(tr.lane_reason, ww)) out.push(dim(l)); out.push(''); }
   const files = tr.files_in_scope ?? [];
-  if (files.length) { out.push(bold(`Files in scope (${files.length}):`)); for (const f of files) out.push(dim(`  ${f}`)); out.push(''); }
-  if (t.collides_with) out.push(`Never runs at the same time as: ${String(t.collides_with).split('|').join(', ')}`);
-  const branch = t.branch ?? tr.branch;
-  if (branch) out.push(dim(`Branch: ${branch}`));
-  out.push(dim(`Log: ${logPath(r, key)}${width == null ? '' : '  (l shows the last 40 lines)'}`));
-  if (jiraUrl) out.push(dim(`Jira: ${jiraUrl}  (o opens it)`));
+  if (files.length) { out.push(segLine([['Files in scope', BOLD], [` · ${files.length}`, DIM]])); for (const f of files) out.push(dim(`  ${f}`)); out.push(''); }
+  if (t.collides_with) out.push(segLine([['Never runs with ', BOLD], [String(t.collides_with).split('|').join(', '), DIM]]));
+  while (out.at(-1) === '') out.pop();
   return { head, rows, foot: out };
+}
+
+// The ticket page's label column.
+const FIELD_W = 10;
+
+// The ticket page's Now: what is happening to it, in its state's colour.
+function nowSegs(r, row, k, t) {
+  if (!row) return [[capital(k), null]];
+  if (k === 'running') return [['A worker is on it', STATE_SGR.running], [` · ${runningStage(r, row)}`, null]];
+  const why = k === 'needs' && t.state === 'parked' ? 'waits for your answer' : k === 'stuck' ? `blocked ${detail(r, row)}` : k === 'failed' ? 'failed: requeue it' : detail(r, row);
+  return [[capital(why), STATE_SGR[k] ?? null]];
 }
 
 export const ticketScreen = (r, key, opts) => joined(ticketParts(r, key, opts));
@@ -1076,6 +1116,14 @@ function paint(x, w, selected) {
 // A line already erased to its end in the selection's tint; another erase would clear the tint.
 const tinted = (l) => l.endsWith(`${ESC}K${ESC}49m`);
 
+// A row the selection can land on: a heading row has no id.
+const pickable = (x) => x?.id != null;
+// The next selectable row from `i` in direction `d` (1 or -1), or null with none that way.
+function step(rows, i, d) {
+  for (let j = i + d; j >= 0 && j < rows.length; j += d) if (pickable(rows[j])) return j;
+  return null;
+}
+
 // A keys line, each key bold: "↑↓ select · enter open · q quit". One wider than the terminal goes on
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
@@ -1195,6 +1243,8 @@ export function interactive({
     const { rows } = screen;
     if (selId != null) { const i = rows.findIndex((x) => x.id === selId); if (i >= 0) sel = i; }
     sel = Math.max(0, Math.min(sel, rows.length - 1));
+    // A heading is never selected: the selection goes on to the row below it, else the one above.
+    if (rows[sel] && !pickable(rows[sel])) sel = step(rows, sel, 1) ?? step(rows, sel, -1) ?? sel;
     selId = rows[sel]?.id ?? null;
     const w = width(), h = height();
     const fit = (l) => (typeof l === 'string' ? cut(l, w) : paint(l, w, false));
@@ -1285,7 +1335,7 @@ export function interactive({
       setTab(p.id);
     } else {
       const i = line - layout.pinned + layout.top - layout.first;
-      if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows) return;
+      if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows || !pickable(screen.rows[i])) return;
       sel = i; selId = screen.rows[i]?.id ?? null;
       const o = screen.rows[i]?.open;
       if (o) go(o);
@@ -1384,9 +1434,8 @@ export function interactive({
       else msg = `${r?.name ?? view.slug} has no batch yet.`;
     } else if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
     else if (key.name === 'up' && scroll > 0) scroll -= 1;
-    else if (key.name === 'down' && sel === rows.length - 1) scroll = (scroll ?? 0) + 1;
-    else if (key.name === 'up') { sel = Math.max(0, sel - 1); selId = rows[sel]?.id ?? null; }
-    else if (key.name === 'down') { sel = Math.min(rows.length - 1, sel + 1); selId = rows[sel]?.id ?? null; }
+    else if (key.name === 'down' && step(rows, sel, 1) == null) scroll = (scroll ?? 0) + 1;
+    else if (key.name === 'up' || key.name === 'down') { sel = step(rows, sel, key.name === 'up' ? -1 : 1) ?? sel; selId = rows[sel]?.id ?? null; }
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
     else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
