@@ -885,10 +885,12 @@ async function freePort(own = null) {
 }
 
 // Prove the generated permissions behave before committing a worker to a ticket: null on a pass,
-// else what failed.
+// else what failed. §3b Worker models' finder and text models are proved too, on every preflight,
+// so a value the CLI rejects stops the ticket before any worker of it runs.
 function preflightFailure(key, wt, workerEnv) {
   const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
-    cwd: MAIN, env: { ...process.env, ...workerEnv, AUTOPILOT_PREFLIGHT: '1' },
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_FINDER_MODEL: models.finder ?? '', AUTOPILOT_TEXT_MODEL: models.text ?? '', AUTOPILOT_PREFLIGHT: '1' },
   }).out;
   return /\[preflight\] pass/.test(pre) ? null : pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300);
 }
@@ -1013,8 +1015,10 @@ async function spawnHandoff(t) {
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
   const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
+  // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
+  // requeue raises the same tier it would have.
   const tier = tierFor(t);
-  const model = models.off ? '' : models[tier];
+  const model = stage === '7' && models.text ? models.text : models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
   const fail = (why) => {
     q('set', t.key, 'state=failed', 'handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true');

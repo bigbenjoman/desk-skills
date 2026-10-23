@@ -115,9 +115,14 @@ if (a[0] === 'agents') {
 const prompt = at('-p') ?? '';
 // --model, as the real CLI takes it: a model it does not know fails the call before any turn.
 const model = a.includes('--model') ? at('--model') : 'none';
-if (model === 'no-such-model') {
+if (model === 'no-such-model' || model === 'nosuchalias') {
   console.error("There's an issue with the selected model (" + model + "). It may not exist or you may not have access to it.");
   process.exit(1);
+}
+if (prompt.startsWith('Reply with exactly one word: MODEL_OK')) {
+  fs.appendFileSync(T + '/calls.log', 'claude model-check model=' + model + '\n');
+  console.log('MODEL_OK');
+  process.exit(0);
 }
 if (prompt.startsWith('Perform these')) {
   fs.appendFileSync(T + '/calls.log', 'claude preflight model=' + model + '\n');
@@ -278,7 +283,8 @@ check "the requeued ticket reaches done with the second worker's PR" '[ "$(state
 
 # ---- DS-155: a worker hands off at the end of Stage 4, and a fresh session takes Stage 4b ---------
 # Its 4b session fails, the requeue raises it to the high model, and the next 4b session hands off to 7.
-config "standard=sonnet high=opus"
+# The row names a text model, which only the Stage 7 session runs on.
+config "standard=sonnet high=opus text=haiku"
 record T-80 src/h.txt
 printf 'WAIT\nAUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b\n' > "$T/scripts/T-80.1"
 printf 'WAIT\nAUTOPILOT_STAGE: 4b/9 self-review\n' > "$T/scripts/T-80.2"
@@ -301,6 +307,8 @@ printf '{"ticket": "T-80", "stage": "7", "criteria": ["AC1: h saves"], "lane": "
 finish T-80
 pass
 check "DS-155 AC3 a handoff at the end of Stage 6 starts a new session at Stage 7 through the real spawn-worker" '[ "$(state T-80)" = running ] && grep -q "This session starts at Stage 7" "$T/runs/T-80.4" && grep -q "## Handoff: this session starts at Stage 7" "$T/runs/T-80.4" && grep -q "P2 src/h.txt:1 fixed in abc1234" "$T/runs/T-80.4"'
+check "DS-157 AC3 the Stage 7 session runs on the text model, and the batch report shows it" '[ "$(ran_on T-80 4)" = haiku ] && [ "$(field T-80 model)" = "\"haiku\"" ] && echo "$out" | grep -q "T-80 fresh session from Stage 7 (handed off) .*model=haiku"'
+check "DS-157 every preflight proved the text model on its own" '[ "$(grep -c "^claude model-check model=haiku$" "$T/calls.log")" = 4 ]'
 finish T-80
 pass
 check "DS-155 the handoff session's DONE finishes the ticket, and a later rework requeue starts from Stage 0" '[ "$(state T-80)" = done ] && [ "$(field T-80 result.pr)" = 180 ] && [ "$(field T-80 handoff_stage)" = null ] && node "$B/queue.mjs" requeue T-80 >/dev/null 2>&1 && [ "$(field T-80 handoff)" = null ]'
@@ -398,6 +406,19 @@ check "a rejected model fails the preflight with a message naming the value" '[ 
 out=$(node "$B/queue.mjs" requeue T-14 2>&1)
 check "a requeue after a failed preflight keeps the model"      '[ "$(field T-14 model_tier)" = "\"standard\"" ] && [ "$(field T-14 model_note)" = null ]'
 q drop T-14
+
+# DS-157 AC4: a finder or text model the CLI rejects fails the preflight too, though the worker's
+# own model is fine, naming the row and the value, and no worker spawns.
+config "standard=sonnet high=opus finder=nosuchalias"
+record T-16 src/o.txt A S; q admit T-16
+pass
+check "DS-157 AC4 a rejected finder model fails the preflight, naming the row and the value" '[ "$(state T-16)" = failed ] && [ ! -e "$T/runs/T-16.1" ] && echo "$out" | grep -q "T-16: preflight failed" && echo "$out" | grep -q "FINDER  FAIL .*Worker models names finder=\"nosuchalias\""'
+q drop T-16
+config "default text=no-such-model"
+record T-17 src/p.txt A S; q admit T-17
+pass
+check "DS-157 AC4 a rejected text model fails it too"            '[ "$(state T-17)" = failed ] && [ ! -e "$T/runs/T-17.1" ] && echo "$out" | grep -q "TEXT  FAIL .*Worker models names text=\"no-such-model\""'
+q drop T-17
 
 # A malformed row holds every spawn rather than reading as default.
 config "standard=sonnet"

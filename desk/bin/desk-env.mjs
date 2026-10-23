@@ -24,6 +24,8 @@
 //   node desk-env.mjs ticket-kind <id>        print tracker|work-id|issue|slug, exit 2 if the id is not accepted
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
+//   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, exit 3 if
+//                                             unset (the worker's own model), exit 4 if the row is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
@@ -532,18 +534,31 @@ export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_U
 export const batchBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' }), 'the batch budget');
 
 // Config §3b "Worker models": `default` (no --model, the session default) or
-// `standard=<model> high=<model>`, each a `claude --model` alias or full name. Anything else is
-// refused rather than read as default, so a typo never silently runs every worker on one model.
-//   -> { off: true } | { standard, high }, or throws DeskConfigError
+// `standard=<model> high=<model>`, each a `claude --model` alias or full name. Either may be followed
+// by `finder=<model>` (self-review finders) and `text=<model>` (the Stage 7 handoff session); unset,
+// those run on the worker's own model. The finder model goes to the Agent tool's model override, which
+// takes an alias (`sonnet`, `haiku`), not a full model name. Anything else is refused rather than read
+// as default, so a typo never silently runs every worker on one model.
+//   -> { off: true } | { standard, high }, plus finder and text where set, or throws DeskConfigError
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]*$/;
+const ALIAS = /^[a-z]+$/;
+export const EXTRA_MODELS = ['finder', 'text'];
 export function parseWorkerModels(raw) {
-  const v = String(raw ?? '').trim();
-  if (/^default$/i.test(v)) return { off: true };
-  const pairs = Object.fromEntries(v.split(/\s+/).map((p) => p.split('=')).filter((p) => p.length === 2));
-  const ok = v.split(/\s+/).length === 2 && Object.keys(pairs).sort().join() === 'high,standard'
-    && MODEL_NAME.test(pairs.standard) && MODEL_NAME.test(pairs.high);
-  if (!ok) throw new DeskConfigError(`desk: config §3b "Worker models" is "${raw}" — want \`default\`, or \`standard=<model> high=<model>\`. Refusing to guess.`);
-  return { standard: pairs.standard, high: pairs.high };
+  const words = String(raw ?? '').trim().split(/\s+/);
+  const off = /^default$/i.test(words[0]);
+  const pairs = words.slice(off ? 1 : 0).map((p) => p.split('='));
+  const keys = pairs.map((p) => p[0]);
+  const want = off ? [] : ['high', 'standard'];
+  const bad = (why) => new DeskConfigError(`desk: config §3b "Worker models" is "${raw}" — ${why}want \`default\`, or \`standard=<model> high=<model>\`, either followed by \`finder=<alias>\` and \`text=<model>\` if set. Refusing to guess.`);
+  const unknown = keys.filter((k, i) => pairs[i].length === 2 && !['high', 'standard', ...EXTRA_MODELS].includes(k));
+  if (unknown.length) throw bad(`unknown key ${unknown.map((k) => `\`${k}\``).join(', ')}; `);
+  const ok = pairs.every((p) => p.length === 2 && MODEL_NAME.test(p[1])) && new Set(keys).size === keys.length
+    && keys.filter((k) => !EXTRA_MODELS.includes(k)).sort().join() === want.join();
+  if (!ok) throw bad('');
+  const m = Object.fromEntries(pairs);
+  if (m.finder && !ALIAS.test(m.finder)) throw bad(`the finder model \`${m.finder}\` is not an alias the Agent tool takes (\`sonnet\`, \`haiku\`); `);
+  return { ...(off ? { off: true } : { standard: m.standard, high: m.high }),
+    ...Object.fromEntries(EXTRA_MODELS.filter((k) => m[k]).map((k) => [k, m[k]])) };
 }
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
 
@@ -1053,6 +1068,14 @@ if (isMain) {
         if (!PERMISSION_KEYS[args[0]]) throw new Error(`desk-env: unknown permission id "${args[0]}"`);
         console.log(PERMISSION_KEYS[args[0]]);
         break;
+      case 'model': {
+        // §3b Worker models' finder or text model; exit 3 when it is unset (the worker's own model).
+        if (!EXTRA_MODELS.includes(args[0])) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')}`);
+        const m = workerModels()[args[0]];
+        if (!m) process.exit(3);
+        console.log(m);
+        break;
+      }
       case 'budget': {
         const b = args[0] === 'batch' ? batchBudget() : args[0] === 'worker' ? workerBudget() : null;
         if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
@@ -1259,7 +1282,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|machine');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|machine');
         process.exit(2);
     }
   } catch (e) {

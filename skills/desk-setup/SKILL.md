@@ -576,7 +576,11 @@ budget, worker models, worker location, stage reports; push notification, check-
 resumes (Recommended `2`: a pass resumes a worker a reboot or crash killed, in its own session, up to
 that many times; `0` marks it failed instead). For
 check-in times, Recommended is `08:00, 17:00`: questions and logged decisions from every repo arrive
-together then, as one page and one push. For worker location,
+together then, as one page and one push. For worker models, say that the row can also name a
+`finder=<alias>` (`sonnet`, `haiku`) for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
+and that both are unset by default, so finders and that session run on the worker's own model: a
+cheaper model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
+set on each model and the findings held. Never set either on the user's behalf. For worker location,
 Recommended is `local`; say that `cloud` is accepted but cloud workers are not available yet, so
 every worker still runs locally and the batch plan says so.
 

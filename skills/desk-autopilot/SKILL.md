@@ -1037,8 +1037,17 @@ runs on the same model, so a value the CLI rejects fails that ticket's preflight
 naming it. The queue records `model_tier` and `model`, and the status table shows the model of each
 running worker. `queue.mjs requeue` raises a `standard` ticket to `high` when its worker failed or was
 stopped as stalled, and says so in the table; a requeue after a park with a question, or after a
-failed preflight or spawn (no worker ran), keeps the model. A malformed row holds spawns under
-`STALLED`.
+failed preflight or spawn (no worker ran), keeps the model. A malformed row, an unknown key
+included, holds spawns under `STALLED`.
+
+Either form may add `finder=<alias>` (an alias such as `haiku`: the Agent tool takes no full model
+name) and `text=<model>`, both unset by default. A worker launches
+every self-review finder on the finder model (`desk-env model finder`; desk-review names it in its
+header), and a Stage 7 session spawned from a handoff runs on the text model, which the queue's
+`model` and the report's `spawned` line show. Unset, each runs on the worker's own model. Every
+preflight also asks each one set for one word on its own, so a value the CLI rejects fails the
+preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
+is set until the eval harness shows finding quality holds on the cheaper model.
 
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
 `cloud`. Cloud workers are not available yet, so every worker runs locally either way, and at
