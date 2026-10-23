@@ -159,8 +159,8 @@ a worker cannot:
   `codex exec --sandbox read-only …` / `codex --version`; `psql` other than
   `docker exec <container> psql [-U postgres] -d <its database>`;
 - run migrations or seeds (§4 Database migrate, Seed) unless it was given its own per-ticket database;
-- write outside its worktree, except `$DESK_STATE/parks/<TICKET>.json` and
-  `$DESK_STATE/images/<TICKET>/**`. It cannot write or delete `answers/`: you clear a ticket's
+- write outside its worktree, except `$DESK_STATE/parks/<TICKET>.json`,
+  `$DESK_STATE/handoffs/<TICKET>.json` and `$DESK_STATE/images/<TICKET>/**`. It cannot write or delete `answers/`: you clear a ticket's
   answer file once it has been read.
 
 It may run `desk-env …` and the §4 toolchain rows, a directory item as
@@ -1051,6 +1051,16 @@ paused until the reset and lets it resume, and otherwise it stops and parks it w
 alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.
+
+**Stages 4b and 7 run in a fresh session.** A worker ends its session after Stage 4 and after
+Stage 6 with `AUTOPILOT_HANDOFF: 4b` (or `7`) and a handoff briefing in
+`$DESK_STATE/handoffs/<TICKET>.json` (worker contract "Handing off"). The next pass spawns a new
+session for the same ticket, worktree and branch, ahead of new tickets, starting at that stage with
+the handoff briefing in its system prompt in place of the sibling notes (`spawned: … fresh session
+from Stage 4b (handed off)`). A worktree or branch that has gone, or a briefing that cannot be read,
+parks the ticket naming it and spawns nothing. Each session's log is a round of its own, so the
+batch report's row adds every session's tokens and cost. A requeue starts again at the stage the last
+handoff named; `queue.mjs set <TICKET> handoff_stage=null` first starts it from Stage 0.
 
 ## Concurrency and memory
 

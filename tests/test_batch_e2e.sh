@@ -276,6 +276,22 @@ finish T-6
 pass
 check "the requeued ticket reaches done with the second worker's PR" '[ "$(state T-6)" = done ] && [ "$(field T-6 result.pr)" = 106 ]'
 
+# ---- DS-155: a worker hands off at the end of Stage 4, and a fresh session takes Stage 4b ---------
+record T-8 src/h.txt
+printf 'WAIT\nAUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b\n' > "$T/scripts/T-8.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=108 jira=none\n' > "$T/scripts/T-8.2"
+q admit T-8
+pass
+mkdir -p "$T/state/handoffs"
+printf '{"ticket": "T-8", "stage": "4b", "criteria": ["AC1: h saves"], "lane": "A", "verification": ["bash tests/run.sh: pass"], "review": [], "evidence": []}\n' > "$T/state/handoffs/T-8.json"
+finish T-8
+pass
+check "DS-155 AC2 after a handoff the real spawn-worker starts a new session in the same worktree, told to start at Stage 4b" '[ "$(state T-8)" = running ] && [ -e "$T/runs/T-8.2" ] && grep -q "This session starts at Stage 4b" "$T/runs/T-8.2" && grep -q "\"cwd\":\"$T/wt/T-8\"" "$T/runs/T-8.2" && [ "$(node -e "const r = (n) => JSON.parse(require(\"fs\").readFileSync(process.argv[1] + n, \"utf8\")).sid; console.log(r(1) !== r(2))" "$T/runs/T-8.")" = true ]'
+check "DS-155 AC2 with the handoff briefing in its system prompt" 'grep -q "# Briefing for this ticket" "$T/runs/T-8.2" && grep -q "## Handoff: this session starts at Stage 4b" "$T/runs/T-8.2" && grep -q "AC1: h saves" "$T/runs/T-8.2" && grep -q "fix/T-8" "$T/runs/T-8.2"'
+finish T-8
+pass
+check "DS-155 the handoff session's DONE finishes the ticket" '[ "$(state T-8)" = done ] && [ "$(field T-8 result.pr)" = 108 ]'
+
 # ---- AC4: a worker that exits with no done marker is not done ------------------------------------
 record T-7 src/f.txt
 printf 'WAIT\nAUTOPILOT_STAGE: 3/9 implement\n' > "$T/scripts/T-7.1"

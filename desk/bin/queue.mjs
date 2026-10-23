@@ -226,12 +226,16 @@ function requeue(q, key) {
     ? `; PR #${t.result.pr} left draft when it was approved: put it back (gh pr ready ${t.result.pr} --repo ${ghRepo()} --undo) before the merge driver merges it`
     : '';
   const moved = rotateRound(key, { answers: true });
+  // A ticket whose sessions handed off starts again at the stage the last handoff named, in its
+  // worktree, rather than at Stage 0 (pass.mjs spawnHandoff). `handoff_stage=null` first starts it over.
+  const fromStage = t.handoff_stage ?? null;
   // A fresh session, so a killed worker waiting to resume no longer does.
   Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null,
+    handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   save(q);
-  return `${key} requeued: ${placed}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  return `${key} requeued: ${placed}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 const [, , cmd, ...args] = process.argv;

@@ -501,4 +501,79 @@ check "DS-185 AC6 a pass with no --next records none" '[ "$(nextin)" = none ]'
 out=$(node "$B/pass.mjs" --next soon 2>&1); rc=$?
 check "DS-185 AC6 a --next that is not a time is refused" '[ $rc -ne 0 ] && grep -q "\-\-next wants +<seconds> or an ISO time" <<< "$out"'
 
+# ---- DS-155: a session that hands off at the end of Stage 4 or 6 is followed by a fresh one --------
+# Real git worktrees, since the pass checks the worktree and branch. The stub spawn-worker records the
+# stage each spawn starts at and the briefing it was given.
+export DESK_QUEUE="$T/queue-h.json" DESK_AUTOPILOT_STATE="$T/state-h"
+mkdir -p "$T/state-h/logs" "$T/state-h/answers" "$T/state-h/handoffs"; : > "$T/spawns"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 \$3 stage=\${AUTOPILOT_START_STAGE:-} branch=\${AUTOPILOT_BRANCH:-} brief=\${4:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
+EOF
+hlog(){ say "$2" > "$T/state-h/logs/$1.log"; result_event >> "$T/state-h/logs/$1.log"; }
+# hfile <TICKET> <stage> <verification line> [review line]: the handoff briefing a worker writes, with
+# one field no briefing holds.
+hfile(){ node -e 'const [k, s, v, r] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: s, criteria: ["AC1: the widget saves"], lane: "A", verification: [v], review: r ? [r] : [], evidence: [], scratch: "SCRATCH-FIELD" }))' "$@"; }
+handing(){ git -C "$T/repo" worktree add -q -b "fix/$1" "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=old-$1" stage=4/9; }
+brief(){ cat "$T/state-h/briefings/$1.md"; }
+q init h
+printf '# Batch notes\n\nSIBLING-NOTE about a helper\n' > "$T/state-h/batch-notes.md"
+handing H-1; hfile H-1 4b "typecheck: pass"; echo "use the blue widget" > "$T/state-h/answers/H-1.txt"
+hlog H-1 "$(printf 'AUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC1 a session that prints AUTOPILOT_HANDOFF: 4b is not done, parked or failed, and the report says it handed off" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 4: queued for a fresh session from Stage 4b"'
+check "DS-155 AC2 the pass spawns a new session for the ticket, on its branch, starting at Stage 4b" 'spawned_for H-1 | grep -q "^H-1 [0-9a-f-]* stage=4b branch=fix/H-1 brief=$T/state-h/briefings/H-1.md$" && [ "$(field H-1 state)" = "\"running\"" ] && [ "$(field H-1 stage)" = "\"4b\"" ] && [ "$(field H-1 handoffs)" = 1 ] && echo "$out" | grep -q "spawned: H-1 fresh session from Stage 4b (handed off)"'
+check "DS-155 AC2 with a new session id, the same worktree, and the handed-off session's log kept as its own round" '[ "$(field H-1 session_id)" != "\"old-H-1\"" ] && [ "$(field H-1 worktree)" = "\"$T/wt/H-1\"" ] && grep -q "AUTOPILOT_HANDOFF: 4b" "$T/state-h/logs/H-1.log.round1" && [ ! -e "$T/state-h/logs/H-1.log" ]'
+check "DS-155 AC4 the briefing holds the key, criteria, branch, lane, verification, findings so far and evidence" 'b=$(brief H-1); for s in "## Handoff: this session starts at Stage 4b" "### Ticket" "AC1: the widget saves" "\`fix/H-1\` in $T/wt/H-1" "### Lane" "typecheck: pass" "### Self-review findings so far" "### Evidence captured"; do grep -qF -- "$s" <<< "$b" || exit 1; done'
+check "DS-155 AC4 and nothing else: no field the briefing does not hold, and no sibling notes" '! brief H-1 | grep -q "SCRATCH-FIELD" && ! brief H-1 | grep -q "SIBLING-NOTE"'
+check "DS-155 the handoff session's briefing still carries the binding answer" 'brief H-1 | grep -q "use the blue widget"'
+
+# AC3: the Stage 4b session finishes Stage 6 and hands off to Stage 7.
+hfile H-1 7 "typecheck: pass" "P2 src/a.js:3 fixed in abc1234 (round 1 at 1111111)"
+hlog H-1 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC3 a session that hands off after Stage 6 is followed by one starting at Stage 7" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 6: queued for a fresh session from Stage 7" && [ "$(spawned_for H-1 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-1 handoffs)" = 2 ]'
+check "DS-155 AC4 the Stage 7 briefing carries the self-review findings so far" 'brief H-1 | grep -q "## Handoff: this session starts at Stage 7" && brief H-1 | grep -qF "P2 src/a.js:3 fixed in abc1234"'
+
+# AC8: the Stage 7 session parks; requeued, it starts at Stage 7 again, not at Stage 0.
+hlog H-1 "AUTOPILOT_PARK: which reviewer handle goes in the PR body?"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC8 a handoff session that parks is parked" '[ "$(field H-1 state)" = "\"parked\"" ]'
+out=$(node "$B/queue.mjs" requeue H-1 2>&1)
+check "DS-155 AC8 a requeue says it starts again where the handoff named" 'echo "$out" | grep -q "it starts again at Stage 7, where its last session was handed off" && [ "$(field H-1 handoff)" = "\"pending\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC8 and the respawn starts at Stage 7 in its worktree, not at Stage 0" '[ "$(spawned_for H-1 | wc -l | tr -d " ")" = 3 ] && [ "$(spawned_for H-1 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-1 stage)" = 7 ]'
+
+# AC7: the last session finishes. Each of the four sessions' result events says $0.50.
+hlog H-1 "AUTOPILOT_DONE: pr=55 jira=none"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC7 the ticket's cost adds the sessions that handed off to the one that finished" '[ "$(field H-1 state)" = "\"done\"" ] && [ "$(field H-1 cost)" = "\"1.50\"" ]'
+
+# AC6: the worktree, or the branch, is gone by the time the pass reads the handoff.
+q add H-2; q set H-2 state=running lane=A branch=fix/H-2 "worktree=$T/wt/H-2-gone" session_id=old-H-2; hfile H-2 4b x
+hlog H-2 "AUTOPILOT_HANDOFF: 4b"
+git -C "$T/repo" worktree add -q -b fix/H-3 "$T/wt/H-3"; q add H-3; q set H-3 state=running lane=A branch=fix/H-3-gone "worktree=$T/wt/H-3" session_id=old-H-3; hfile H-3 4b x
+hlog H-3 "AUTOPILOT_HANDOFF: 4b"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC6 a handoff whose worktree is gone parks naming the worktree, and spawns nothing" '[ "$(field H-2 state)" = "\"parked\"" ] && field H-2 park.question | grep -qF "handoff to Stage 4b: its worktree $T/wt/H-2-gone no longer exists, so no session was spawned" && ! spawned_for H-2'
+check "DS-155 AC6 a handoff whose branch is gone parks naming the branch, and spawns nothing" '[ "$(field H-3 state)" = "\"parked\"" ] && field H-3 park.question | grep -qF "its branch fix/H-3-gone no longer exists" && ! spawned_for H-3'
+# A stage no session starts at, and a handoff with no briefing written.
+handing H-5; hlog H-5 "AUTOPILOT_HANDOFF: 5"
+handing H-6; hlog H-6 "AUTOPILOT_HANDOFF: 4b"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qF "handed off to \"5\", which no session starts at" && ! spawned_for H-5'
+check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(field H-6 state)" = "\"parked\"" ] && field H-6 park.question | grep -qF "its handoff briefing $T/state-h/handoffs/H-6.json does not exist" && ! spawned_for H-6'
+
+# AC5: a handoff briefing over the cap is cut to it with the note, and the answer after it survives.
+handing H-4; hfile H-4 4b "$(node -e 'process.stdout.write("v".repeat(70000))')"; echo "keep the H-4 answer" > "$T/state-h/answers/H-4.txt"
+hlog H-4 "AUTOPILOT_HANDOFF: 4b"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC5 an oversized handoff briefing is cut to the cap with a note saying so" 'spawned_for H-4 | grep -q "stage=4b" && [ "$(brief H-4 | wc -c | tr -d " ")" -le 60100 ] && brief H-4 | grep -qF "[briefing truncated to stay under the argv limit]"'
+check "DS-155 AC5 and the cut never drops the binding answer" 'brief H-4 | grep -q "keep the H-4 answer"'
+
+# AC7: the batch report's row adds every session's tokens and cost.
+node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-155 AC7 the batch report's row for a ticket whose sessions handed off counts every session's run and cost" 'echo "$out" | grep -qE "^  H-1 +4 .* \\\$2\.00 "'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
