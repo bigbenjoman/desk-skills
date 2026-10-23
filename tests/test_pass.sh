@@ -501,4 +501,45 @@ check "DS-185 AC6 a pass with no --next records none" '[ "$(nextin)" = none ]'
 out=$(node "$B/pass.mjs" --next soon 2>&1); rc=$?
 check "DS-185 AC6 a --next that is not a time is refused" '[ $rc -ne 0 ] && grep -q "\-\-next wants +<seconds> or an ISO time" <<< "$out"'
 
+# ---- DS-191: a triage record from before epics were recorded gets its epic read by the next pass
+cat >> "$T/config.md" <<'EOF'
+
+## 4. Tracker
+| Field | Value |
+|---|---|
+| Tracker | `jira` |
+| Ticket key pattern | `T-[0-9]+` |
+EOF
+ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
+cat > "$T/stub/desk-jira" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$JIRA_CALLS"
+case "$1 $2" in
+  "get T-50") echo '{"key":"T-50","fields":{"parent":{"key":"T-9","fields":{"summary":"The epic","issuetype":{"name":"Epic","hierarchyLevel":1}}}}}' ;;
+  "children T-9") echo '[{"key":"T-50","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"T-49","fields":{"status":{"statusCategory":{"key":"done"}}}}]' ;;
+  "get T-51") echo '{"key":"T-51","fields":{}}' ;;
+  *) echo "desk-jira: 404 for $2" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+export JIRA_CALLS="$T/jira-calls"; : > "$JIRA_CALLS"
+for k in T-50 T-51 T-52 T-53 T-54; do q add $k; done
+q set T-52 state=done; q set T-50 state=triaged; q set T-51 state=triaged; q set T-53 state=triaged; q set T-54 state=triaged
+TR="$DESK_AUTOPILOT_STATE/triage"; mkdir -p "$TR"
+printf '{"ticket":"T-50","lane":"A","size":"S"}' > "$TR/T-50.json"
+printf '{"ticket":"T-51","lane":"A"}' > "$TR/T-51.json"
+printf '{"ticket":"T-52","lane":"A"}' > "$TR/T-52.json"
+printf '{"ticket":"T-53","lane":"A"}' > "$TR/T-53.json"
+printf '{"ticket":"T-54","lane":"A","epic":null}' > "$TR/T-54.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-191 a record with no epic key gets its epic and children from Jira, the rest kept" \
+  '[ "$(jq -c "[.epic.key, .epic.summary, [.epic.children[] | [.key, .done]], .lane, .size]" "$TR/T-50.json")" = "[\"T-9\",\"The epic\",[[\"T-50\",false],[\"T-49\",true]],\"A\",\"S\"]" ]'
+check "DS-191 a ticket Jira shows with no epic parent records epic null" '[ "$(jq -c "[has(\"epic\"), .epic]" "$TR/T-51.json")" = "[true,null]" ]'
+check "DS-191 a record already read (epic null) and a done ticket are not looked up" \
+  '! grep -q "T-54\|T-52" "$JIRA_CALLS" && [ "$(jq -c . "$TR/T-54.json")" = "{\"ticket\":\"T-54\",\"lane\":\"A\",\"epic\":null}" ]'
+check "DS-191 a read that fails leaves the record unread and the pass says so" \
+  '[ "$(jq -c "has(\"epic\")" "$TR/T-53.json")" = false ] && grep -q "^epics: read for 2 of 3 triage record(s) written before epics were recorded — not read, tried again next pass: T-53  epic NOT READ: desk-jira: 404 for T-53" <<< "$out"'
+: > "$JIRA_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-191 the next pass reads only the record still unread" '[ "$(cut -d" " -f1-2 "$JIRA_CALLS")" = "get T-53" ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

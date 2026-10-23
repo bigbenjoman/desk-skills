@@ -191,13 +191,13 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
-  const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, history.map((l) => [l.key, l.size, l.hours])]);
+  const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
     const left = rows.some((x) => AUTOPILOT_STATES.includes(x.k));
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
-      paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic };
+      paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
     forecasts.set(id, F);
@@ -316,10 +316,12 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     table(r, F);
     out.push(`Queue done: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
-    if (!epics.length) continue;
-    out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
-    for (const e of epics) out.push(epicLine(r, F, e, now, checkin));
-    if (F.noEpic) out.push(`Other work: ${F.noEpic} ticket${F.noEpic === 1 ? '' : 's'} with no epic.`);
+    if (epics.length) {
+      out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
+      for (const e of epics) out.push(epicLine(r, F, e, now, checkin));
+      if (F.noEpic) out.push(`Other work: ${F.noEpic} ticket${F.noEpic === 1 ? '' : 's'} with no epic.`);
+    }
+    if (F.unread) out.push(unreadLine(F.unread));
   }
   return out.join('\n');
 }
@@ -353,7 +355,9 @@ const epicNote = (e, d) => (e.missing == null ? 'provisional: children not read'
 // An epic's name as people say it: its summary up to the first colon or dash, else its key.
 const epicShort = (e) => String(e?.summary ?? '').split(/:| — | - /)[0].trim() || e?.summary?.trim() || e?.key || '';
 // The epics the forecast runs forward: a child unfinished, or one not queued yet.
-const openEpics = (F) => Object.values(F?.epics ?? {}).filter((e) => F.E && e.key in F.E);
+// Tickets whose triage record predates epics (epicsOf `unread`): pass.mjs reads them from Jira.
+const unreadLine = (n) => `Epics not read yet for ${n} ticket${n === 1 ? '' : 's'}: the next pass reads them from Jira.`;
+const openEpics = (F) =>Object.values(F?.epics ?? {}).filter((e) => F.E && e.key in F.E);
 // Provisional while some children are not queued, or the list of them could not be read.
 const provisional = (e) => e.missing !== 0;
 // "started" once a child is done or running.
@@ -624,7 +628,10 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
       [` ${rpad(`${e.done}/${e.total}`, 6)}  `, null], ...date], { kind: 'epic', slug: r.slug, epic: e.key });
   });
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
-  if (s.per.some((p) => p.F || p.stopped) && !list.length) foot.push('', 'No queued ticket here belongs to an epic.');
+  // A record from before epics were recorded is not "no epic": until a pass reads it, say so instead.
+  const unread = s.per.reduce((n, p) => n + ((p.F ?? p.stopped)?.unread ?? 0), 0);
+  if (unread) foot.push('', unreadLine(unread));
+  else if (s.per.some((p) => p.F || p.stopped) && !list.length) foot.push('', 'No queued ticket here belongs to an epic.');
   // Each swatch in the colour its bar uses.
   if (list.length) foot.push('', segLine([['■', STATE_SGR.running], [' done  ', null], ['■', STATE_SGR.waiting], [' in the queue  ', null], ['□', DIM],
     [' not queued yet (date is provisional). An epic ships when its last child merges.', null]]));

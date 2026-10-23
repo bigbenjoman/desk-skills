@@ -1007,6 +1007,26 @@ for (const t of eligible) {
 borrowLock?.release();
 const borrowLine = borrowedLine(plan, { share: concurrency, running: running.length, spawned: report.spawned.length });
 
+// ---- epics ---------------------------------------------------------------
+// A triage record written before ticket-facts.mjs recorded `epic` has no such key, and a ticket
+// already triaged is not triaged again, so desk-q would read it as having no epic for good. Read the
+// epic alone for each unfinished one (ticket-facts.mjs --epic); a record whose `epic` is null was
+// looked up and has none, and is left alone. A read that fails is tried again next pass.
+const epicLines = [];
+const onJira = /^jira\b/i.test(String(E.configValue('tracker') ?? '').trim());
+const unreadEpics = Object.values(queue().tickets).filter((t) => {
+  if (!onJira || t.state === 'done') return false;
+  const k = E.ticketKind(t.key);
+  if (!k.ok || k.kind !== 'tracker') return false;
+  try { return !('epic' in JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8'))); } catch { return false; }
+}).map((t) => t.key);
+if (unreadEpics.length) {
+  const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--epic', ...unreadEpics], { timeout: 120_000 });
+  const missed = r.out.split('\n').filter((l) => / epic NOT READ: /.test(l));
+  epicLines.push(`epics: read for ${unreadEpics.length - missed.length} of ${unreadEpics.length} triage record(s) written before epics were recorded`
+    + (missed.length ? ` — not read, tried again next pass: ${missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ')}` : r.ok ? '' : ` — ${r.out.split('\n').pop()}`));
+}
+
 // ---- base drift ----------------------------------------------------------
 const drift = [];
 for (const t of Object.values(queue().tickets)) {
@@ -1025,6 +1045,7 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
+out.push(...epicLines);
 if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);
 for (const u of report.unrecognised) out.push(`unrecognised usage-limit event: ${u} — not read as a pause, so the stall check applies as before`);
 if (report.stalled.length) out.push(`STALLED:\n  ${report.stalled.join('\n  ')}`);

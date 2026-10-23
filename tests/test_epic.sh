@@ -318,6 +318,20 @@ rec P1-1 '{"ticket":"P1-1","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" P1-1 >/dev/null 2>&1
 check "facts: a non-tracker key records links n/a" '[ "$(jq -r .links "$T/state/triage/P1-1.json")" = n/a ]'
 check "facts: a non-tracker key with no ticket file records why it was not linted" '[ "$(jq -r ".lint_error" "$T/state/triage/P1-1.json")" != null ]'
+# --epic: a record written before epics were recorded gets its epic and nothing else
+rec KAN-56 '{"ticket":"KAN-56","lane":"A","size":"S","blockers":[]}'
+rec KAN-53 '{"ticket":"KAN-53","lane":"A"}'
+out=$(node "$B/ticket-facts.mjs" --epic KAN-56 KAN-53 2>&1); rc=$?
+check "facts --epic: a record with no epic key gets its epic and children" \
+  '[ $rc -eq 0 ] && [ "$(jq -c "[.epic.key, (.epic.children | length)]" "$T/state/triage/KAN-56.json")" = "[\"KAN-10\",6]" ]'
+check "facts --epic: the rest of the record is left as it was" \
+  '[ "$(jq -c "[.lane, .size, .blockers, .lint, .other_links]" "$T/state/triage/KAN-56.json")" = "[\"A\",\"S\",[],null,null]" ]'
+check "facts --epic: a ticket with no epic parent records epic null" '[ "$(jq -c "has(\"epic\"), .epic" "$T/state/triage/KAN-53.json" | tr -d "\n")" = truenull ]'
+rec KAN-404 '{"ticket":"KAN-404","lane":"A"}'
+out=$(node "$B/ticket-facts.mjs" --epic KAN-404 2>&1); rc=$?
+check "facts --epic: a failed read leaves the record without epic, names it and exits 1" \
+  '[ $rc -eq 1 ] && [ "$(jq -c "has(\"epic\")" "$T/state/triage/KAN-404.json")" = false ] && printf "%s" "$out" | grep -q "KAN-404  epic NOT READ: "'
+
 mkdir -p "$T/state/tickets"
 printf '# P1-2\n\n## Acceptance criteria\n1. AC1: Given x, when y, then z.\n\n## Verification\n* Unit: none.\n\n## Design\nNo UI.\n\n## Out of scope\n* None.\n' > "$T/state/tickets/P1-2.md"
 rec P1-2 '{"ticket":"P1-2","lane":"A","branch":"b"}'

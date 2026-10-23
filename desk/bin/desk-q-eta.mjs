@@ -302,7 +302,9 @@ export function epicFact(issue, children) {
 // Each epic with a child in the queue, from the queue's tickets and their triage records (`triage`,
 // key -> record or null). A child is a ticket whose record names the epic, or one an epic's recorded
 // children list names. -> {epics: {KEY: {key, summary, total, done, queued, missing, shipped}}, of: {key:
-// epic} for the unfinished tickets, noEpic: how many unfinished tickets have none}. `missing` is how
+// epic} for the unfinished tickets, noEpic: how many unfinished tickets have none, unread: how many
+// unfinished tickets' records were written before `epic` was recorded and not read since (no `epic`
+// key, and not a non-tracker key's `links: 'n/a'`), counted apart from noEpic}. `missing` is how
 // many children are not in the queue and not done, null when no record holds the epic's children;
 // `shipped` is the last merge among its done children in the queue.
 export function epicsOf(tickets, triage) {
@@ -336,7 +338,8 @@ export function epicsOf(tickets, triage) {
     Object.assign(e, { total: keys.size, done, queued, missing: listed[ep] ? missing : null, shipped });
   }
   const unfinished = Object.entries(tickets).filter(([, t]) => t.state !== 'done').map(([k]) => k);
-  return { epics, of, noEpic: unfinished.filter((k) => !of[k]).length };
+  const isUnread = (k) => !of[k] && triage[k] != null && !('epic' in triage[k]) && triage[k].links !== 'n/a';
+  return { epics, of, noEpic: unfinished.filter((k) => !of[k] && !isUnread(k)).length, unread: unfinished.filter(isUnread).length };
 }
 
 // `rows` are the queue's unfinished tickets in spawn order, each {key, k, size, stage, held, collides,
