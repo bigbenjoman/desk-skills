@@ -137,8 +137,10 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
 t('AC6 held behind a ticket parked for its own reason reads blocked', /VPL-6\s+◌ blocked\s+behind VPL-5/.test(S.run('--plain', 'voicepa').out), true);
 const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-6').out };
 t('DS-188 AC2 every screen calls the held ticket blocked, never stuck, and the overview heads its column BLOCKED',
-  JSON.stringify([...Object.values(blockedViews).map((s) => [/blocked/i.test(s), /stuck/i.test(s)]), lines(blockedViews.overview).some((l) => /^ +REPO .* BLOCKED /.test(l))]),
-  '[[true,false],[true,false],[true,false],true]');
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck/i.test(s)), lines(blockedViews.overview)[0].endsWith('   1 blocked'),
+    lines(blockedViews.overview).some((l) => /^ +REPO .* BLOCKED /.test(l)), /VPL-6\s+◌ blocked\s/.test(blockedViews.queue),
+    lines(blockedViews.ticket)[0].startsWith('VPL-6  ◌ blocked'), lines(blockedViews.ticket).some((l) => /^Now +Blocked behind VPL-5$/.test(l))]),
+  '[false,false,false,true,true,true,true,true]');
 
 // ---- AC13: nothing set up
 const E = mkdtempSync(join(tmpdir(), 'desk-q-empty-'));
