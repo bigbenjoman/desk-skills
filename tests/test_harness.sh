@@ -209,7 +209,7 @@ check "AC7: rules the user already holds are reported present, with no backup an
 # state folder, Read on the config files only, Edit on the config on ask, owner orchestrator-tools
 OTS="$T/ot/.claude/settings.local.json"
 ot_dirs(){ jq -e --argjson dd "$DESK_DIRS" '.permissions.additionalDirectories as $a | all($dd[]; . as $d | $a | index($d))' "$1" >/dev/null; }
-ot_rules(){ jq -e --argjson da "$DESK_ALLOW" '(.permissions.allow as $a | all($da[]; . as $r | $a | index($r))) and (.permissions.ask | index("Edit(~/.config/desk/**)"))' "$1" >/dev/null; }
+ot_rules(){ jq -e --argjson da "$DESK_ALLOW" '(.permissions.allow as $a | all($da[]; . as $r | $a | index($r))) and (.permissions.ask | index("Edit(~/.config/desk/**)")) and (.permissions.ask | index("Edit(~/.claude/desk/**)"))' "$1" >/dev/null; }
 # the credentials beside a config (any name) are reachable through no allow and no directory
 ot_creds(){ jq -e '[.permissions.allow[], .permissions.additionalDirectories[]] | all(test("config/desk(/\\*\\*)?\\)?$") | not)' "$1" >/dev/null; }
 ot_ledger(){ jq -e --argjson dd "$DESK_DIRS" '[.rules[] | select(.rows == ["orchestrator-tools"]) | .list + " " + .rule] as $r | ($r | index("ask Edit(~/.config/desk/**)")) and ($r | index("allow Edit(~/.desk-autopilot/**)")) and all($dd[]; ("additionalDirectories " + .) as $d | $r | index($d))' "$1" >/dev/null; }

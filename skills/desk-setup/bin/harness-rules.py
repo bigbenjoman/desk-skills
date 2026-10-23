@@ -437,17 +437,19 @@ REOWNED = [("ask", ROUTE_ASK, "jira-assign-self", "jira-create")]
 ORCHESTRATOR = "orchestrator-tools"
 ORCHESTRATOR_TOOLS = ["Monitor", "mcp__claude-in-chrome__*", "ArtifactComments", "ArtifactData"]
 # The batch state and the installed desk scripts are additional directories with Read on each, and
-# Edit under the state folder (design snapshots land there). The desk config folder is not a
-# directory of the session: the credentials kept beside each config (the Jira token, a staging
-# bypass secret under a name the user picks) would then be readable without a prompt. So Read covers
-# the config files by name, and an edit to them stays the user's call, since it can widen what
-# workers may do.
-STATE_FOLDER, CONFIG_FOLDER = "~/.desk-autopilot", "~/.config/desk"
-DESK_FOLDERS = [STATE_FOLDER, "~/.claude/desk"]
+# Edit under the state folder (design snapshots land there). Edit on the install asks, so a mode that
+# approves edits inside the session's directories cannot change what workers run. The desk config
+# folder is not a directory of the session: the credentials kept beside each config (the Jira token,
+# a staging bypass secret under a name the user picks) would then be readable without a prompt. So
+# Read covers the config files by name, and an edit to them stays the user's call, since it can
+# widen what workers may do.
+STATE_FOLDER, CONFIG_FOLDER, INSTALL_FOLDER = "~/.desk-autopilot", "~/.config/desk", "~/.claude/desk"
+DESK_FOLDERS = [STATE_FOLDER, INSTALL_FOLDER]
 DESK_FOLDER_RULES = ([("allow", f"Read({d}/**)") for d in DESK_FOLDERS] +
                      [("allow", f"Read({CONFIG_FOLDER}/repos/*/config.md)"),
                       ("allow", f"Read({CONFIG_FOLDER}/machine.md)"),
-                      ("allow", f"Edit({STATE_FOLDER}/**)"), ("ask", f"Edit({CONFIG_FOLDER}/**)")])
+                      ("allow", f"Edit({STATE_FOLDER}/**)"), ("ask", f"Edit({CONFIG_FOLDER}/**)"),
+                      ("ask", f"Edit({INSTALL_FOLDER}/**)")])
 
 
 def memory_dir_rule(root):
