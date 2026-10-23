@@ -13,10 +13,13 @@
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
 //     or XL, or a blocker that is not done and not in the batch;
-//   - otherwise admitted (queue.mjs admit --by intake), and held behind every blocker in the batch.
-// With no live batch, one is started for it (`standing-<time>`, handed to the supervisor at once).
-// A batch still being planned in a session (not handed over) gets nothing until it is handed over.
-// At most MAX_TRIAGE tickets are triaged a run; the rest wait for the next one, and the report says so.
+//   - otherwise admitted (queue.mjs admit --by intake), held behind every blocker in the batch in the
+//     same write.
+// With no queue, or one whose tickets have all finished, a batch is started for it (`standing-<time>`,
+// handed to the supervisor at once). A batch not handed over, an empty one included (a session between
+// `queue.mjs init` and its plan), is a session's and gets nothing until it is handed over.
+// At most MAX_TRIAGE tickets are triaged a run, and the search reads one page of SEARCH_MAX; the
+// report says when either leaves tickets for later.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -27,6 +30,8 @@ import { isEpic } from './desk-q-eta.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
 export const MAX_TRIAGE = 3;
+// Jira's largest page for a search returning fields; desk-jira search reads one page.
+export const SEARCH_MAX = 100;
 // A triage that fails this many runs in a row is handed on rather than paid for again.
 export const TRIAGE_TRIES = 3;
 
@@ -71,8 +76,9 @@ export function intakeReasons(r) {
 const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key);
 
 // ---- the batch ---------------------------------------------------------------------------------
-// A batch is live while any ticket is still to finish, or done with a PR still open.
-function prOpen(n) {
+// A batch is live while any ticket is still to finish, or done with a PR still open. A PR whose state
+// cannot be read counts as open.
+export function prOpen(n) {
   let repo;
   try { repo = E.ghRepo(); } catch { return true; }
   const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
@@ -82,6 +88,9 @@ export function batchLive(q) {
   const rows = Object.values(q?.tickets ?? {});
   return rows.some((t) => !['done', 'failed'].includes(t.state)) || rows.some((t) => t.state === 'done' && t.result?.pr != null && prOpen(t.result.pr));
 }
+// Free for a standing batch: no queue, or one whose tickets have all finished. A queue with no tickets
+// is a session's between `queue.mjs init` and its plan, never free.
+const free = (q) => !q || (Object.keys(q.tickets ?? {}).length > 0 && !batchLive(q));
 
 const queueCmd = (...args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env: process.env });
 
@@ -118,18 +127,15 @@ function intake({ state, query, reg, now }) {
   }
 
   const qf = E.queueFile();
-  let q = null;
-  if (existsSync(qf)) {
-    try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch (e) { lines.push(`intake: admits nothing: the queue at ${qf} cannot be read (${e.message})`); return done(); }
-  }
+  const readQ = () => (existsSync(qf) ? JSON.parse(readFileSync(qf, 'utf8')) : null);
+  let q;
+  try { q = readQ(); } catch (e) { lines.push(`intake: admits nothing: the queue at ${qf} cannot be read (${e.message})`); return done(); }
   // A batch a session is still planning is the session's: intake joins it once it is handed over.
-  const live = q && batchLive(q);
-  if (live && q.supervised !== true) {
-    lines.push(`intake: admits nothing while batch ${q.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`);
-    return done();
-  }
+  const sessions = (b) => b && b.supervised !== true && !free(b);
+  const notHanded = (b) => `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`;
+  if (sessions(q)) { lines.push(notHanded(q)); return done(); }
 
-  const r = spawnSync('desk-jira', ['search', query, '50', '--json'], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
+  const r = spawnSync('desk-jira', ['search', query, String(SEARCH_MAX), '--json'], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
   let found;
   try {
     if (r.status !== 0) throw new Error(lastLine(r));
@@ -141,6 +147,8 @@ function intake({ state, query, reg, now }) {
     writeIntake(state, reg);
     return done();
   }
+  // One page: a full one may hide matches past it, so every report says so rather than none.
+  if (found.length >= SEARCH_MAX) lines.push(`intake: the search returned its limit of ${SEARCH_MAX} tickets: matches past them are not seen while these still match, so narrow the query`);
   const hand = (key, text) => {
     reg.tickets[key] = { at: now.toISOString(), outcome: 'handed', text };
     writeIntake(state, reg);
@@ -194,33 +202,35 @@ function intake({ state, query, reg, now }) {
     for (const b of outside) reasons.push(`blocked by ${b}, which is not done and not in the batch: add it to the batch, or settle the link`);
     if (reasons.length) { hand(key, reasons.join('; ')); continue; }
 
-    if (!started && !(Object.keys(tickets).length && batchLive({ tickets }))) {
+    // Read again, whole: triage took minutes, and a session may have started its own batch meanwhile.
+    let cur;
+    try { cur = readQ(); } catch (e) { lines.push(`intake: admits nothing more: the queue at ${qf} cannot be read (${e.message})`); return done({ started }); }
+    if (sessions(cur)) { lines.push(notHanded(cur)); return done({ started }); }
+    if (free(cur)) {
       const name = `standing-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}`;
       const init = queueCmd('init', name, '--standing');
-      const set = init.status === 0 ? queueCmd('set-batch', 'supervised=true', 'standing=true') : init;
+      const set = init.status === 0 ? queueCmd('set-batch', 'supervised=true') : init;
       if (set.status !== 0) {
         lines.push(`intake: admits nothing: a standing batch could not be started (${lastLine(set)}); the next intake tries again`);
         reg.last_run = null;
         writeIntake(state, reg);
-        return done();
+        return done({ started });
       }
       started = name;
+      cur = { batch: name };
       lines.push(`intake: started standing batch ${name}, handed to the supervisor`);
     }
-    const a = queueCmd('admit', key, '--by', 'intake');
-    if (a.status !== 0) { lines.push(`intake: ${key} not admitted: ${lastLine(a)}; the next intake tries again`); continue; }
-    // Read again: a standing batch started above holds none of the finished batch's tickets.
+    // Held in the same write as the admit, so no pass sees it runnable first. A standing batch started
+    // above holds none of the finished batch's tickets.
     const inBatch = inQueue();
     const held = blockers.filter((b) => inBatch[b]);
-    let hold = '';
-    if (held.length) {
-      const h = queueCmd('hold', key, ...held);
-      hold = h.status === 0 ? `, held behind ${held.join(', ')}` : `; holding it behind ${held.join(', ')} failed (${lastLine(h)})`;
-    }
+    const a = queueCmd('admit', key, '--by', 'intake', ...(held.length ? ['--hold', held.join(',')] : []));
+    if (a.status !== 0) { lines.push(`intake: ${key} not admitted: ${lastLine(a)}; the next intake tries again`); continue; }
+    const hold = held.length ? `, held behind ${held.join(', ')}` : '';
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}${hold}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`intake: admitted ${key} by intake into batch ${started ?? q?.batch ?? '?'} (lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''})${hold}`);
+    lines.push(`intake: admitted ${key} by intake into batch ${cur.batch ?? '?'} (lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''})${hold}`);
   }
   return done({ started });
 }

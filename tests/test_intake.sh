@@ -119,12 +119,14 @@ check "AC1: the ticket is triaged" 'grep -qx A-1 "$T/triage.calls"'
 check "AC1: it is admitted into the running batch" '[ "$(qget tickets.A-1.state)" = triaged ] && [ "$(qget batch)" = b1 ]'
 check "AC1: the queue records it as admitted by intake" '[ "$(qget tickets.A-1.admitted_by)" = intake ]'
 check "AC1: the pass report lists it as admitted by intake" 'grep -q "intake: admitted A-1 by intake into batch b1 (lane A, size S)" "$T/state/supervisor.log" && grep -A1 "intake: admitted A-1" "$T/state/supervisor.log" | grep -q "^no change this pass$"'
-check "AC1: the search used the configured query" 'tail -1 "$T/jira.calls" | grep -q "^search project = ACME AND labels = autopilot 50 --json$"'
+check "AC1: the search used the configured query" 'tail -1 "$T/jira.calls" | grep -q "^search project = ACME AND labels = autopilot 100 --json$"'
 
 # ---- AC8: once only ------------------------------------------------------------------------------
 n=$(count "$T/triage.calls")
 out=$(intake)
 check "AC8: an admitted ticket is not triaged or admitted again" '[ "$(count "$T/triage.calls")" = "$n" ] && ! grep -q "A-1" <<< "$out"'
+search $(i=0; while [ $i -lt 100 ]; do echo A-1; i=$((i + 1)); done); out=$(intake)
+check "a full page of search results is reported, never silent" 'grep -q "the search returned its limit of 100 tickets" <<< "$out"'
 check "the interval holds intake back: a tick soon after searches nothing" 'j=$(count "$T/jira.calls"); tick >/dev/null; [ "$(count "$T/jira.calls")" = "$j" ]'
 
 # ---- AC3 to AC6: what goes to the digest --------------------------------------------------------
@@ -188,12 +190,18 @@ rec A-9 A; search A-9; out=$(intake)
 check "nothing joins a batch a session has not handed over" '[ "$(qget tickets.A-9)" = undefined ] && grep -q "admits nothing while batch p1 is not handed over" <<< "$out"'
 
 # ---- AC2: no live batch ------------------------------------------------------------------------
+# A session's batch between `queue.mjs init` and its plan has no tickets yet: still the session's.
+printf '{"version":1,"batch":"p2","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
+out=$(intake)
+check "nothing joins, or replaces, a session's batch that has no tickets yet" '[ "$(qget batch)" = p2 ] && [ "$(qget tickets.A-9)" = undefined ] && grep -q "admits nothing while batch p2 is not handed over" <<< "$out"'
+
 # The register goes too, so the tick finds intake due.
 rm -f "$DESK_QUEUE" "$T/state/supervisor.json" "$T/state/intake.json"
+p=$(count "$T/pass.calls")
 out=$(tick)
 check "AC2: with no batch, intake starts a standing one for the ticket" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-9.state)" = triaged ]'
-check "AC2: the standing batch is handed over to the supervisor" '[ "$(qget supervised)" = true ] && [ "$(qget standing)" = true ]'
-check "AC2: the same tick runs a pass for it" 'grep -q "intake: started standing batch standing-" "$T/state/supervisor.log" && [ "$(count "$T/pass.calls")" -ge 2 ]'
+check "AC2: the standing batch is handed over to the supervisor" '[ "$(qget supervised)" = true ]'
+check "AC2: the same tick runs a pass for it, reporting the start" '[ "$(count "$T/pass.calls")" = $((p + 1)) ] && grep -B1 "intake: started standing batch standing-" "$T/state/supervisor.log" | grep -q "pass: exit 10"'
 i=0; while ! grep -q -- "--tickets A-9 --log" "$T/driver.calls" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 check "AC2: the merge driver picks it up" 'grep -q -- "--tickets A-9 --log" "$T/driver.calls"'
 # A finished batch is not live either: the next ticket starts a new one.

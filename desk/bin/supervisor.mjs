@@ -39,7 +39,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
-import { intakeQuery } from './intake.mjs';
+import { intakeQuery, prOpen } from './intake.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -166,13 +166,7 @@ function toMerge(q) {
   const rows = Object.values(q.tickets ?? {});
   const pending = rows.filter((t) => ['queued', 'triaged', 'running'].includes(t.state) || isHeld(t) || spinePark(t));
   if (pending.length) return pending.map((t) => t.key);
-  let repo = null;
-  try { repo = E.ghRepo(); } catch { /* unknown: every PR counts as open */ }
-  return rows.filter((t) => t.state === 'done' && t.result?.pr != null).filter((t) => {
-    if (!repo) return true;
-    const r = spawnSync('gh', ['pr', 'view', String(t.result.pr), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
-    return !(r.status === 0 && ['MERGED', 'CLOSED'].includes(r.stdout.trim()));
-  }).map((t) => t.key);
+  return rows.filter((t) => t.state === 'done' && t.result?.pr != null && prOpen(t.result.pr)).map((t) => t.key);
 }
 
 // What a pass's verdict says needs the person, one item per ticket or entry, as pass.mjs's NOTIFY

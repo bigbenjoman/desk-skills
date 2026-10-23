@@ -36,6 +36,8 @@ function setBase(q, v) {
 }
 
 const QUEUE = queueFile();
+// The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
+const heldPark = (blockers) => ({ question: `held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`, since: new Date().toISOString() });
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
@@ -330,7 +332,7 @@ switch (cmd) {
     const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
     t.held_by = all.join('|');
     t.state = 'parked';
-    t.park = { question: `held by orchestrator: blocked by ${all.join(', ')} — starts once their PRs merge`, since: new Date().toISOString() };
+    t.park = heldPark(all);
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} held behind ${all.join(', ')}`);
@@ -342,9 +344,13 @@ switch (cmd) {
   // this: it resets every ticket's state.
   case 'admit': {
     // --by names who admitted it, where that is not the orchestrator: `intake` for standing intake.
+    // --hold holds it behind blockers in this batch in the same write, so no pass sees it runnable first.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>]   (after triage.sh <TICKET>)');
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]]   (after triage.sh <TICKET>)');
+    const holds = args.includes('--hold') ? String(args[args.indexOf('--hold') + 1] ?? '').split(/[,|]/).filter(Boolean) : [];
+    if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
+    for (const p of holds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
@@ -366,17 +372,20 @@ switch (cmd) {
         other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
       }
     }
+    // A hold would let a release send a ticket parked for its own reason to a worker (hold, above).
+    if (park && holds.length) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
     q.tickets[key] = {
-      key, type: r.type ?? 'Bug', lane: r.lane, state: park ? 'parked' : 'triaged',
+      key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
       worktree: null, branch: r.branch ?? null, database: null, port: null,
       session_id: null, pid: null, base_sha: null, stage: null,
-      park: park ? { question: park, since: new Date().toISOString() } : null, log: null, result: null,
-      collides_with: collides.join('|') || null, open_questions: unknowns, held_by: null,
+      park: park ? { question: park, since: new Date().toISOString() } : holds.length ? heldPark(holds) : null, log: null, result: null,
+      collides_with: collides.join('|') || null, open_questions: unknowns, held_by: holds.join('|') || null,
       ...(by ? { admitted_by: by } : {}),
       added_at: new Date().toISOString(),
     };
     save(q);
-    console.log(`admitted ${key}${by ? ` by ${by}` : ''}:${park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${r.blockers?.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    const said = holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`;
+    console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !holds.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;
   }
 

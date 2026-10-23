@@ -313,12 +313,13 @@ a Jira query and §3 `autopilot-workers` is `yes`, each tick runs `intake.mjs` f
 at most every 15 minutes. Each new ticket the query finds is triaged once (`triage.sh`, three a
 run, the rest the next) and admitted (`queue.mjs admit <KEY> --by intake`) with no Stage 3 plan
 approval. The ticket is held behind any blocker in the batch, and the tick's report in
-`<state>/supervisor.log` says `admitted <KEY> by intake`. With no live batch it starts one
-(`standing-<time>`), already handed over. A lane C or D ticket goes to the check-in digest instead,
+`<state>/supervisor.log` says `admitted <KEY> by intake`. With no batch, or one whose tickets have
+all finished, it starts one (`standing-<time>`), already handed over. The search reads one page of
+100, and a full page is reported every time. A lane C or D ticket goes to the check-in digest instead,
 as does a blocking lint finding, open triage questions, size L or XL, or a blocker that is not done
 and not in the batch: each is listed with the reason, never asked. Once the ticket is fixed,
 `intake.mjs forget <KEY>` lets the next intake try it again. A batch still being planned in a
-session gets nothing until it is handed over. With the row unset or `none`, no intake runs. The
+session, an empty one just made by `queue.mjs init` included, gets nothing until it is handed over. With the row unset or `none`, no intake runs. The
 register is `<state>/intake.json`. Feature-mode epics are never taken in this way: they keep their
 spine and owner-table approval.
 
