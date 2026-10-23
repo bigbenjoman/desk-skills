@@ -94,7 +94,7 @@ t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? '')
 // ---- AC4: header gives running workers, live batches' allowance against the machine cap, free memory
 // The line under what needs you.
 const head = lines(ov.out)[1];
-t('AC4 header', /workers 2 running · 5 allowed by live batches · machine 10 · \d+\.\d GiB free · room for \d+$/.test(head), true);
+t('AC4 (DS-188 AC5) header', /^desk-q · \d\d:\d\d · 2 workers running · machine cap 10 workers, \d+ free · \d+\.\d GiB free$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('▲ ports overlap: desk-skills + pranicuk share 3502–3503')), true);
 // ---- AC15: voicepa's counts, last pass and workers (and QUEUE DONE, with no history)
@@ -135,6 +135,12 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-6': { state: 'parked', held_by: 'VPL-5', park: { question: 'held by orchestrator: blocked by VPL-5' } },
 } } } });
 t('AC6 held behind a ticket parked for its own reason reads blocked', /VPL-6\s+◌ blocked\s+behind VPL-5/.test(S.run('--plain', 'voicepa').out), true);
+const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-6').out };
+t('DS-188 AC2 every screen calls the held ticket blocked, never stuck, and the overview heads its column BLOCKED',
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck/i.test(s)), lines(blockedViews.overview)[0].endsWith('   1 blocked'),
+    lines(blockedViews.overview).some((l) => /^ +REPO .* BLOCKED /.test(l)), /VPL-6\s+◌ blocked\s/.test(blockedViews.queue),
+    lines(blockedViews.ticket)[0].startsWith('VPL-6  ◌ blocked'), lines(blockedViews.ticket).some((l) => /^Now +Blocked behind VPL-5$/.test(l))]),
+  '[false,false,false,true,true,true,true,true]');
 
 // ---- AC13: nothing set up
 const E = mkdtempSync(join(tmpdir(), 'desk-q-empty-'));
@@ -393,8 +399,8 @@ put(I.T, I.env, 'desk-skills', { port: 3500, conc: '2 / 3', beat: 1, queue: { ba
 put(I.T, I.env, 'pr-ninja', { port: 3200, conc: '2 / 4', beat: 1, queue: { batch: 'pn', concurrency: 2, tickets: {
   'PN-1': { state: 'running', stage: '4/9' }, 'PN-2': { state: 'running', stage: '2/9' }, 'PN-3': { state: 'triaged', open_questions: 0 } } } });
 const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
-t('DS-116 AC11 the header gives running, allowed, machine, free memory and the room left',
-  lines(room)[1].endsWith(' · workers 4 running · 9 allowed by live batches · machine 10 · 36.6 GiB free · room for 6'), true);
+t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
+  lines(room)[1].endsWith(' · 4 workers running · machine cap 10 workers, 6 free · 36.6 GiB free'), true);
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
 t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 (cap 4) · 1 ready with no free slot'), true);
 t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('5 (cap 5)'), true);
@@ -908,7 +914,7 @@ Hb.ui.finish(0);
 
 // AC3: a batch passing on time, one stopped for under a day and one for over a day, each with a
 // ticket that needs the user so the overview lists it. The one stopped for hours has a history and a
-// ready ticket, so its QUEUE DONE reads paused.
+// ready ticket, so its QUEUE DONE reads passes stopped.
 const needsOne = (b) => ({ batch: b, concurrency: 1, tickets: { [`${b.toUpperCase()}-1`]: { state: 'parked', park: { question: 'which copy?' } } } });
 put(I.T, I.env, 'ontime', { port: 4800, conc: '1 / 2', beat: 1, queue: needsOne('ontime') });
 dated('hours', 4810, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } });
@@ -925,8 +931,8 @@ const lpRaw = lastFrame(Lp);
 const overlaps = lpRaw.filter((l) => l.replace(ANSI, '').includes('ports overlap:'));
 t('DS-186 AC8 each ports overlap line starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.startsWith('\x1b[33m▲ ports overlap: '))}`, 'true true');
 t('DS-186 AC8 "N tickets need you" is magenta', lpRaw.some((l) => /^\x1b\[35m● \d+ tickets need you\x1b\[39m/.test(l)), true);
-// AC4: the QUEUE DONE notes "paused" and "no history" are dim.
-t('DS-186 AC4 the QUEUE DONE notes paused and no history are dim', `${ovRow(Lp, 'hours').includes('\x1b[2mpaused')} ${ovRow(Lp, 'ontime').includes('\x1b[2mno history')}`, 'true true');
+// AC4: the QUEUE DONE notes "passes stopped" and "no history" are dim.
+t('DS-186 AC4 the QUEUE DONE notes passes stopped and no history are dim', `${ovRow(Lp, 'hours').includes('\x1b[2mpasses stopped')} ${ovRow(Lp, 'ontime').includes('\x1b[2mno history')}`, 'true true');
 Lp.ui.finish(0);
 
 // AC9: the Timeline's legend names a swatch per state shown, each in its colour; Epics' swatches too.
@@ -1027,7 +1033,7 @@ await sleep(20);
 const hsFrame = Hs.frame();
 const hsHead = hsFrame.slice(2, hsFrame.findIndex((l) => /^ +# {2}TICKET/.test(l)));
 t('DS-187 AC5 on a narrow terminal the stopped batch\'s resume instruction wraps, never cut with …',
-  `${hsHead.some((l) => l.endsWith('…'))} ${hsHead.every((l) => l.length <= 60)} ${hsHead.join(' ').includes('To resume passes, run /desk-autopilot in halted and ask it to pick the batch back up.')}`, 'false true true');
+  `${hsHead.some((l) => l.endsWith('…'))} ${hsHead.every((l) => l.length <= 60)} ${hsHead.includes('To resume: run /desk-autopilot in halted.')}`, 'false true true');
 Hs.ui.finish(0);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
