@@ -283,6 +283,7 @@ export const CONFIG_ROWS = Object.freeze({
   'local-db': { section: '4', row: 'Local database' },
   'local-services': { section: '4', row: 'Local services' },
   staging: { section: '4', row: 'Staging' },
+  'promotion-ref': { section: '4', row: 'Promotion ref' },
   'checkout-destination': { section: '4', row: 'Check-out destination' },
   'ai-attribution': { section: '5', row: 'AI attribution' },
   'branch-names': { section: '5', row: 'Branch names' },
@@ -738,6 +739,12 @@ export function repoPortClaims(root = deskConfigRoot()) {
 // A row from another repo's config, by slug: desk-q reads every repo's cap. Unset is null.
 export const repoConfigValue = (slug, id, root = deskConfigRoot()) =>
   configValueIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+// Every item of another repo's row, as configValues reads this repo's. Unset is null.
+export function repoConfigValues(slug, id, root = deskConfigRoot()) {
+  const { section, row } = rowFor(id);
+  const e = parseConfigFile(join(root, 'repos', slug, 'config.md')).sections[section]?.byName[norm(row)];
+  return !e || unset(e.value) ? null : e.items.filter((x) => !unset(x)).map(expandSlug);
+}
 
 const blocksMeet = (a, b) => a.port <= b.last && b.port <= a.last;
 export const portClashes = (self, claims) => claims.filter((c) => c.slug !== self.slug && blocksMeet(self, c));

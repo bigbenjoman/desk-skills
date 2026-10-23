@@ -247,7 +247,7 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 | `waiting` | one line per thing waiting on the person: everything under `WAITING ON YOU`, a stall only they can clear (a budget, a config row, a grant, a deliberate re-run), unanswered triage questions, and every failed ticket |
 | `parked` | `{key, question}` for every ticket parked for its own reason (a hold is not one) |
 | `notify` | true exactly when the exit is 11 |
-| `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`), and each failing health check (`health:<slug>:<check>`, below). Empty otherwise, on any exit |
+| `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`), the promotion question for a newly merged production-broken fix (`promotion:<slug>:<sha>:urgent`), and each failing health check (`health:<slug>:<check>`, below). Empty otherwise, on any exit |
 | `release_due` | held tickets whose every blocker's PR has merged (under `waiting` too when no merge driver is running) |
 | `stuck` | held tickets whose blocker can no longer merge on its own (under `waiting` too) |
 
@@ -1023,6 +1023,23 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   choice, or put it back to the person if it cannot be.
 - **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
   and on its own (the worker contract says when a worker may use it).
+- **Promotion, once a day.** Going to production is asked only in the day's last slot (`promotion.mjs`).
+  Per repo with config §4 "Promotion ref" set, it lists one question covering every PR merged to
+  §0 Default branch since that ref, with a staging-check page beside the digest
+  (`<date>T<HHMM>-<slug>-staging.md`): each PR's title, link and the unchecked `- [ ]` items its
+  Testing section leaves to a person (`desk-pr`), a PR with none under "Nothing to look at", and the
+  §4 Staging URLs. Nothing merged: no question and no page. A Promotion ref that is unset or `none`
+  asks nothing, and the digest says why. A "go" is recorded in that repo's batch notes with the
+  approved commit range; the repo's own promotion steps are then the person's, since skills never
+  deploy production:
+
+```
+node ~/.claude/desk/bin/digest.mjs promote <slug> <from>..<to> go
+```
+
+  A pass that sees a batch PR newly merged whose title or intro starts `PRODUCTION BROKEN` pushes
+  that repo's promotion question at once (`promotion:<slug>:<sha>:urgent`), not held for the
+  last slot.
 
 ## Asking
 

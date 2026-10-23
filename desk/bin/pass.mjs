@@ -17,7 +17,8 @@ import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, 
 import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
-import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
+import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
+import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
@@ -1528,6 +1529,18 @@ else if (idle) lines.push('NOTIFY: the batch is finished — nothing left to run
 // pass on the machine builds it), and a park reading production broken. Nothing else interrupts.
 const SLUG = E.repoSlug();
 const push = urgentParks(parked, SLUG);
+// A merged fix for a production breakage asks to promote at once, not at the day's last check-in.
+const PROMOTION_REF = promotionRef(E.configValue('promotion-ref')).ref;
+if (!DRY && PROMOTION_REF) {
+  const merged = Object.values(qEnd.tickets).map((t) => (t.state === 'done' ? t.result?.pr : null)).filter((n) => n != null && prState(n) === 'MERGED');
+  try {
+    const u = urgentPromotion({
+      inputs: { slug: SLUG, root: E.repoRoot(), ghRepo: GH_REPO, def: E.configValue('default-branch') ?? 'main', ref: PROMOTION_REF, staging: E.configValues('staging') },
+      state: STATE, dir: digestDir(), merged,
+    });
+    if (u) push.push(u.push);
+  } catch (e) { lines.push(`promotion: the production-broken check could not run: ${e.message}`); }
+}
 if (CHECKIN.ok && !DRY) {
   const d = await checkin({ times: CHECKIN.times, self: SLUG, list: digestRepos({ self: { slug: SLUG, state: STATE, queue: QUEUE_FILE } }) });
   if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
