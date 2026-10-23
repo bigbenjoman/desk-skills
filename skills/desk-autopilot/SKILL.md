@@ -52,7 +52,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)", "Usage pacing headroom (points)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), whether a batch may borrow idle machine slots, how often a worker a reboot or crash killed is resumed in its own session, and how far 7-day usage may run ahead of an even weekly pace before new spawns hold |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)", "Usage pacing headroom (points)", "Maintenance window", "Maintenance drain limit (minutes)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), whether a batch may borrow idle machine slots, how often a worker a reboot or crash killed is resumed in its own session, how far 7-day usage may run ahead of an even weekly pace before new spawns hold, and when the weekly maintenance window drains, updates and restarts (with §3 `machine-reboot`) |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -977,6 +977,24 @@ workers carry on; it releases by itself as the week goes on. The report always c
 line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent data` (no reading,
 or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
 `off` holds every spawn, naming the row, as a malformed budget does.
+
+**The weekly maintenance window.** One per computer (`maintenance.mjs`). With §3b "Maintenance
+window" set in a repo (e.g. `Mon 06:30 UTC`, just after the weekly usage reset; unset is `none`), the
+first pass at or after it opens the window, and from then every repo's pass, with a row or without,
+starts no new worker, resumes included, and reports `maintenance: draining`. Each repo's workers
+finish, or after its §3b "Maintenance drain limit (minutes)" (unset: 60) each one still running is
+stopped with its session kept and queued to resume (`resume=maintenance`, not counted against "Resume
+a killed worker"); workers in a repo whose passes are not running are waited on for 30 minutes more.
+Then one pass pulls the desk-skills checkout fast-forward on a clean `main` and runs `install.sh`,
+and runs `reboot-check.mjs`. Where §3 `machine-reboot` is `yes` and the check found no blocker
+(anything heavy running, or a worker still running in any repo), it runs `desk-runner down` if the
+runner was up and restarts the computer; the supervisor brings passes back at login, the first pass
+runs `desk-runner up` again (as does a restart that fails or never happens), and the stopped workers
+resume. At `ask` (unset) it does not restart and puts "ready to reboot" in the next check-in; at `no`
+it stops there. A failed update goes in the check-in too, and does not restart. Every step, with the
+old and new commit and the check's summary, goes in `~/.desk-autopilot/maintenance/maintenance.log`.
+A window runs once a week; one no pass reaches within 6 hours is missed that week. An idle batch's
+supervisor tick moves it on too (`maintenance.mjs step`).
 
 - **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
   sent make the first pass on the machine, in any repo, the only one to build it, and only that

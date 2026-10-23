@@ -191,6 +191,7 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `autopilot-judgement` | Take the recommendation on any call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) and log it, instead of parking; ask-category calls and other people's rulings still stop | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 | `autopilot-usage-resume` | Let a worker that reaches the 5-hour usage limit wait for the reset and carry on, spending the next usage window | `no` | `TODO` |
+| `machine-reboot` | Restart this computer at the end of the §3b Maintenance window, once it has drained, updated desk-skills and the reboot check found no blocker | `ask` | `TODO` |
 | `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
 | `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
 | `worker-local-services` | Let a worker start a §4 Local services entry in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml up -d --no-recreate --no-deps <service>`); stopping, removing or recreating one stays refused | `ask` | `TODO` |
@@ -205,6 +206,8 @@ worker's own worktree, every other worktree denied, toolchain allow-listed) or `
 `autopilot-usage-resume` is `yes` or `no`, and unset reads as `no`: `pass.mjs` stops a worker at the
 5-hour usage limit and parks it with the reset time. At `yes` the pass reports it as paused until the
 reset, and the batch notes record each resume.
+`machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
+puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither.
 `worker-dependency-install`, `worker-screenshots` and `worker-local-services` are read by
 `worker-settings.mjs` when a worker spawns: anything short of `yes`, unset included, is refused to the
 worker, which parks naming the row.
@@ -256,6 +259,8 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Resume a killed worker (times) | `2` | `TODO` (a whole number: how often a pass resumes a ticket's worker in its own session after a reboot or crash killed it; `0` marks it failed instead. Unset is `2`) |
 | Free disk floor (GB) | `20` | `TODO` (a whole number: a pass holds new workers while the worktrees disk has less free than this, and says so; `none` turns it off. Unset is `20`) |
 | Usage pacing headroom (points) | `5` | `TODO` (a number of percentage points, or `off`: a pass holds new workers while 7-day usage, read from the workers' logs in every repo, is more than this many points ahead of an even pace through the week, and says where usage stands each pass. Unset is `5`) |
+| Maintenance window | `none` | `TODO` (a day and a time, local or with `UTC`, e.g. `Mon 06:30 UTC` just after the weekly usage reset, or `none`: once a week every repo's pass on this computer starts no new worker and lets its workers finish, then one pulls and installs desk-skills, runs the reboot check, and restarts the computer as §3 `machine-reboot` allows; a window no pass reaches within 6 hours is missed that week. Set it in one repo, or the same in each. Unset is `none`) |
+| Maintenance drain limit (minutes) | `60` | `TODO` (a whole number: how long the maintenance window waits for running workers before it stops them, each with its session kept so it resumes after the window. Unset is `60`) |
 | Report every stage transition on long runs | `yes` | `TODO` |
 | Push notification when a batch needs you | `yes` | `TODO` |
 | Check-in times | `08:00, 17:00` | `TODO` (local HH:MM times: questions and logged decisions from every repo reach you at each as one digest page and one push; only a park marked `PRODUCTION BROKEN` is pushed between them. Unset is `08:00, 17:00`) |
