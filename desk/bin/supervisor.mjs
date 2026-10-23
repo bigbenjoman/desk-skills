@@ -23,7 +23,8 @@
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`) while tickets
 //     are still to merge and no driver holds <state>/merge-driver.lock.d;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
-//     a new batch, or a ticket admitted or requeued into this one.
+//     a new batch, or a ticket admitted or requeued into this one. Each idle tick still runs the
+//     check-in and moves the weekly maintenance window on (maintenance.mjs step).
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -233,6 +234,7 @@ function interval() {
 // An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
 // the check-in alone and pushes what it returns, once per key, as a pass's push would be.
 function idleCheckin(state, s, log, stamp) {
+  idleMaintenance(log, stamp);
   const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
   let d;
   try { d = JSON.parse(String(r.stdout ?? '').trim()); } catch {
@@ -243,6 +245,17 @@ function idleCheckin(state, s, log, stamp) {
   const err = notify(`desk: ${E.repoSlug()}`, d.push.text);
   log([`== ${stamp()} idle check-in: ${err ? `notification failed (${err}) for ${d.push.key}; the next tick tries again` : `notification sent for ${d.push.key}`}`]);
   if (!err) writeState(state, { ...s, notified: [...s.notified, d.push.key] });
+}
+
+// An idle batch runs no pass, so the weekly maintenance window is moved on here; its log says the rest.
+function idleMaintenance(log, stamp) {
+  const r = spawnSync(process.execPath, [join(HERE, 'maintenance.mjs'), 'step'], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS });
+  let m;
+  try { m = JSON.parse(String(r.stdout ?? '').trim()); } catch {
+    log([`== ${stamp()} idle maintenance: failed (${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-2).join(' / ')})`]);
+    return;
+  }
+  if (m.lines?.length) log([`== ${stamp()} idle maintenance:`, ...m.lines]);
 }
 
 function runPass(state, q, s, log, stamp) {

@@ -61,6 +61,8 @@ let d = { status: 'not_due', push: null };
 try { d = JSON.parse(readFileSync('$T/checkin.json', 'utf8')); } catch {}
 console.log(JSON.stringify(d));
 EOF
+# The maintenance step an idle tick runs: no window.
+echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
 cat > "$T/fakes/launchctl" <<EOF
 #!/bin/sh

@@ -26,6 +26,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
+import { maintenance } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck } from './gate.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
@@ -601,6 +602,24 @@ if (notes.length) {
   if (freshNotes.length) appendFileSync(path, `${freshNotes.join('\n')}\n`);
 }
 
+// ---- maintenance window ------------------------------------------------------
+// The weekly window (maintenance.mjs) holds every spawn, resumes included, while it drains, updates
+// and restarts. A worker still running at its drain limit is stopped with its session kept, and queued
+// to resume once the window is done.
+const MAINT = await maintenance({
+  state: STATE,
+  selfQueue: QUEUE_FILE,
+  running: Object.values(queue().tickets).filter((t) => t.state === 'running'),
+  stop: (t) => {
+    if (!registryOk) return { ok: false, why: 'the session registry could not be read' };
+    const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
+    if (liveSids.has(t.session_id) && !pid) return { ok: false, why: `no pid for session ${t.session_id}` };
+    if (pid) sh('kill', [String(pid)], { tolerant: true });
+    q('set', t.key, 'state=triaged', 'resume=maintenance', 'resume_why=stopped for the maintenance window');
+    return { ok: true, pid };
+  },
+});
+
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
 const all = Object.values(fresh.tickets);
@@ -710,7 +729,7 @@ const eligibleBase = all.filter((r) =>
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
 // new ticket.
-const toResume = (r) => r.resume === 'pending' || r.resume === 'usage';
+const toResume = (r) => ['pending', 'usage', 'maintenance'].includes(r.resume);
 const toHandoff = (r) => r.handoff === 'pending';
 const goesFirst = (r) => toResume(r) || toHandoff(r);
 const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
@@ -733,7 +752,7 @@ if (blockedByDone.length) {
 // repo (machineBudget), counted under the same lock when it can be taken.
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
-const held = overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
+const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
   : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
@@ -757,7 +776,7 @@ const plan = borrowPlan({
   others, machine: MACHINE_CAP, memory: { avail: gateGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
 });
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, eligible.length), machine: MACHINE_CAP, queues: otherRepos });
-const slots = Math.min(plan.slots, MACHINE.room);
+const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
 const CEILING = E.memoryCeiling();
 
@@ -960,18 +979,20 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 // A killed worker resumes in its own session, worktree, branch and log, through spawn-worker.sh and
 // so inside the worker sandbox, with AUTOPILOT_RESUME as its next prompt. Its briefing is the one it
 // was spawned with. A worker that exited at the usage limit (resume=usage) resumes the same way, but
-// was not killed: it is not counted against config §3b "Resume a killed worker (times)".
+// was not killed: it is not counted against config §3b "Resume a killed worker (times)". Nor is one the
+// maintenance window stopped at its drain limit (resume=maintenance).
 async function resumeKilled(t) {
   const usage = t.resume === 'usage';
-  const n = (t.resumes ?? 0) + (usage ? 0 : 1);
-  const ended = usage ? 'exited at the usage limit' : 'killed before it finished';
+  const maint = t.resume === 'maintenance';
+  const n = (t.resumes ?? 0) + (usage || maint ? 0 : 1);
+  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     q('set', t.key, 'state=failed', 'resume=null', 'port=null', 'spawn_failed=true');
     report.failed.push(`${t.key}: ${ended}, and could not be resumed: ${why}`);
   };
   // The row may have changed while it waited for a slot.
-  const stop = usage ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  const stop = usage || maint ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
   if (stop?.fail) return fail(stop.fail);
   if (stop?.park) {
     q('set', t.key, 'resume=null');
@@ -986,7 +1007,7 @@ async function resumeKilled(t) {
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
-  const prompt = `Your previous run of this session ${usage ? 'ended' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
+  const prompt = `Your previous run of this session ${usage ? 'ended' : maint ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
     'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.`;
@@ -1000,7 +1021,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit reset' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit reset' : maint ? 'after the maintenance window' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 
@@ -1242,6 +1263,7 @@ for (const t of Object.values(queue().tickets)) {
 const out = [];
 if (!registryOk) out.push('! could not read the session registry — no ticket was advanced this pass');
 out.push(...baseLines);
+out.push(...MAINT.lines);
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {
   if (items.length) out.push(`${label}: ${items.join(' | ')}`);
 }

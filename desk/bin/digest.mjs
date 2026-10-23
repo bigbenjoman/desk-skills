@@ -22,6 +22,7 @@ import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
+import { digestNotes } from './maintenance.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
@@ -145,15 +146,21 @@ export function renderPage({ slot, since, groups, bin = E.binDir() }) {
   const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
   const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
+  const nm = groups.reduce((n, g) => n + (g.maintenance?.length ?? 0), 0);
   const cmd = join(bin, 'digest.mjs');
   const lines = [`# Check-in ${slot.replace('T', ' ')}`, ''];
-  if (!nq && !nd && !nc && !np) {
+  if (!nq && !nd && !nc && !np && !nm) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return lines.join('\n');
   }
-  lines.push(`${nq} question(s) to answer, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}.`, '');
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length)) {
+  lines.push(`${nq} question(s) to answer, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.maintenance?.length)) {
     lines.push(`## ${g.slug}`, '');
+    if (g.maintenance?.length) {
+      lines.push('### Maintenance', '');
+      for (const m of g.maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
+      lines.push('');
+    }
     if (g.questions.length) {
       lines.push('### Questions', '');
       for (const q of g.questions) {
@@ -219,6 +226,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
         checks: checks.filter(inWindow),
         putOff: putOffQuestions(r, register),
+        maintenance: digestNotes(r.state).filter(inWindow),
       };
     });
     const page = join(dir, `${slot.id.replace(':', '')}.md`);
@@ -226,12 +234,13 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
+    const nm = groups.reduce((n, g) => n + g.maintenance.length, 0);
     const listed = groups.flatMap((g) => g.questions.map((q) => q.key));
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length).length;
+    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.maintenance.length).length;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
-    const push = nd || fresh.length
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''} across ${repoCount} repo(s). ${page}` }
+    const push = nd || nm || fresh.length
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, decisions: nd, push };
