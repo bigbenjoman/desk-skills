@@ -943,5 +943,17 @@ t('DS-186 AC11 --plain and piped output: no escape codes', plainOuts.filter((o) 
 t('DS-186 AC11 and the glyphs still show', `${plainOuts[0].out.includes('● live · ')} ${plainOuts[1].out.includes('● running')} ${plainOuts[2].out.includes('· waiting')} ${plainOuts[3].out.includes('○ ready')} ${plainOuts[4].out.includes('◆ needs you')}`,
   'true true true true true');
 
+// DS-190 AC1 and AC3: from the shell, a running ticket reads its worker's last stage marker; one with
+// no log keeps the queue's stage as of the last pass.
+const SL = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
+  'VPL-1': { state: 'running', stage: '0/9' }, 'VPL-2': { state: 'running', stage: '0/9' } } } } });
+const slLogs = join(SL.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs');
+mkdirSync(slLogs, { recursive: true });
+const saidAt = new Date(NOW - 2 * 60000);
+writeFileSync(join(slLogs, 'VPL-1.log'), `${JSON.stringify({ type: 'assistant', timestamp: saidAt.toISOString(), message: { content: [{ type: 'text', text: 'AUTOPILOT_STAGE: 4/9 verify' }] } })}\n`);
+const slOut = SL.run('--plain', 'voicepa').out;
+t('DS-190 AC1 the CLI shows the worker\'s stage since its marker', (lines(slOut).find((l) => /VPL-1/.test(l)) ?? '').includes(`stage 4/9 verify since ${saidAt.toTimeString().slice(0, 5)}`), true);
+t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2\s+● running\s+stage 0\/9 as of \d\d:\d\d\s/.test(lines(slOut).find((l) => /VPL-2/.test(l)) ?? ''), true);
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
