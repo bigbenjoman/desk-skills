@@ -200,7 +200,7 @@ check "AC7: every rule already there is reported present, with no backup and no 
 mkrepo oty; printf '.claude/settings.local.json\n' > "$T/oty/.gitignore"
 DESK_ALLOW='["Read(~/.desk-autopilot/**)","Read(~/.claude/desk/**)","Read(~/.config/desk/repos/*/config.md)","Read(~/.config/desk/machine.md)","Edit(~/.desk-autopilot/**)"]'
 DESK_DIRS="[\"$HOME/.desk-autopilot\",\"$HOME/.claude/desk\"]"
-jq -n --arg m "${MEM//-ot\//-oty/}" --argjson da "$DESK_ALLOW" --argjson dd "$DESK_DIRS" '{permissions:{allow:(["Bash(gh pr ready *)","Monitor","mcp__claude-in-chrome__*","ArtifactComments","ArtifactData",$m] + $da),ask:["Bash(gh pr merge *)","Edit(~/.config/desk/**)"],additionalDirectories:$dd}}' > "$T/oty/.claude/settings.local.json"
+jq -n --arg m "${MEM//-ot\//-oty/}" --argjson da "$DESK_ALLOW" --argjson dd "$DESK_DIRS" '{permissions:{allow:(["Bash(gh pr ready *)","Monitor","mcp__claude-in-chrome__*","ArtifactComments","ArtifactData",$m] + $da),ask:["Bash(gh pr merge *)","Edit(~/.config/desk/**)","Edit(~/.claude/desk/**)"],additionalDirectories:$dd}}' > "$T/oty/.claude/settings.local.json"
 cp "$T/oty/.claude/settings.local.json" "$T/oty-before.json"
 run --ledger "$T/oty.json" --settings "$T/oty/.claude/settings.local.json" add "$T/allow.json"
 check "AC7: rules the user already holds are reported present, with no backup and no change" '[ $rc -eq 0 ] && [[ "$out" == *"present  allow Monitor  (yours"* ]] && [[ "$out" == *"present  allow ${MEM//-ot\//-oty/}  (yours"* ]] && [[ "$out" != *NEW* ]] && [[ "$out" != *backup* ]] && cmp -s "$T/oty/.claude/settings.local.json" "$T/oty-before.json" && [ "$(ls "$T"/oty/.claude/ | grep -c bak-desk)" = 0 ]'
