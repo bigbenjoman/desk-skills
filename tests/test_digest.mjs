@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { addPutOff, putOffEntry } from '../desk/bin/not-now.mjs';
 import { takeBorrowLock } from '../desk/bin/borrow.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -108,6 +109,36 @@ t('AC6 with nothing open at all, the page says there is nothing to answer', `${r
 // AC9 and AC10: only a production-broken park is pushed between check-ins.
 const urgent = urgentParks([{ key: 'X-1', question: 'PRODUCTION BROKEN: checkout 500s' }, { key: 'X-2', question: 'which copy?' }], 'acme__x');
 t('AC9 a production-broken park is pushed alone', urgent.map((u) => u.key).join(' '), 'urgent:acme__x:X-1');
+
+// A question put off with the same inputs is listed once under "Put off", not as a question;
+// one whose inputs changed is a question saying what changed; a check made instead of asking is listed.
+const P = repo('acme__p', {
+  'P-1': { key: 'P-1', state: 'parked', park: { question: 'Rotate the prod DB password?', inputs: { env: 'prod' } } },
+  'P-2': { key: 'P-2', state: 'parked', park: { question: 'rotate the prod db password', inputs: { env: 'prod' } } },
+  'P-3': { key: 'P-3', state: 'parked', park: { question: 'Which plan tier?', inputs: { pr: '2' } } },
+}, [{ id: 'c1', kind: 'check', at: at('2026-10-25', '09:00').toISOString(), ticket: 'P-4', question: 'Is the DNS record in?', checked: 'dig +short api.acme.dev', showed: '203.0.113.7' }]);
+addPutOff(putOffEntry({ question: 'Rotate the prod DB password?', ticket: 'P-1', inputs: { env: 'prod' }, by: 'Ben', at: '2026-10-21T09:00:00.000Z' }), P.state);
+addPutOff(putOffEntry({ question: 'Which plan tier?', ticket: 'P-3', inputs: { pr: '1' }, by: 'Ben', at: '2026-10-21T09:00:00.000Z' }), P.state);
+const r6 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-25', '17:01'), dir, list: [P], bin: BIN, self: 'acme__p' });
+const page6 = readFileSync(r6.page, 'utf8');
+t('DS-143 AC6 a put-off question is not asked', page6.includes('`P-1` (parked)') || page6.includes('`P-2` (parked)'), false);
+t('DS-143 AC6 it is listed once under Put off, with the date', page6.split('\n').filter((l) => l.includes('Put off on 2026-10-21 by Ben')).length === 1 && page6.includes('### Put off') && page6.includes('- `P-1`, `P-2`: Rotate the prod DB password?'), true);
+t('DS-143 AC7 changed inputs are asked, saying what changed', page6.includes('`P-3` (parked): Which plan tier? (Changed since Ben put it off on 2026-10-21: pr 1 → 2.)'), true);
+t('DS-143 AC2 a check made instead of asking is listed with what it showed', page6.includes('### Checked instead of asking') && page6.includes('`P-4`: Is the DNS record in? Checked dig +short api.acme.dev: 203.0.113.7'), true);
+t('DS-143 the push counts the questions and checks, not the put-off ones', r6.push?.text.includes('1 question(s), 0 decision(s), 1 check(s)'), true);
+const regFile = join(P.state, 'not-now.jsonl');
+const regOk = readFileSync(regFile, 'utf8');
+appendFileSync(regFile, '{"key": "torn');
+t('DS-143 AC8 an unreadable register asks the put-off question as today', openQuestions(P).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
+writeFileSync(regFile, regOk);
+t('DS-143 ask-again takes it out of the register', askAgain({ slug: 'acme__p', ticket: 'P-1', list: [P] }).ok, true);
+t('DS-143 and it is a question again', openQuestions(P).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
+// Answered "not now" from the digest, it is put off, and ask-again still brings it back.
+process.env.DESK_CONFIG = join(root, 'none.md');
+t('DS-143 AC5 a not-now answer from the digest is recorded', answer({ slug: 'acme__p', ticket: 'P-1', text: 'not now', dir, list: [P], bin: BIN }).ok, true);
+t('DS-143 AC6 and puts it off', openQuestions(P).map((q) => q.ticket).join(' '), 'P-3');
+askAgain({ slug: 'acme__p', ticket: 'P-1', list: [P] });
+t('DS-143 ask-again after a not-now answer from the digest asks it again', openQuestions(P, JSON.parse(readFileSync(join(dir, 'answered.json'), 'utf8'))).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
 
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);

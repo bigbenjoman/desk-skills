@@ -5,7 +5,10 @@
 // session appends through this file's CLI:
 //
 //   decisions.mjs log <TICKET> '<json>' [--pr <number or URL>]
+//   decisions.mjs check <TICKET> '{"question", "checked", "showed"}' [--pr <number or URL>]
 //
+// A check is a question the session settled by checking instead of asking (`AUTOPILOT_CHECKED:` from a
+// worker), logged with what it checked and what that showed.
 // <json> is {"question", "options": [...], "chose", "category"}. Exits 0 once the entry is in the
 // log (or already was), 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
 import { readFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
@@ -40,15 +43,26 @@ export function parseDecision(raw) {
   return { ok: true, decision: { question: d.question.trim(), options: d.options.map((o) => o.trim()), chose: d.chose.trim(), category: d.category } };
 }
 
+// A question a session settled by checking rather than asking: {"question", "checked", "showed"}.
+// {ok: true, check} or {ok: false, why}.
+export function parseCheck(raw) {
+  let d;
+  try { d = JSON.parse(String(raw ?? '').trim()); } catch { return { ok: false, why: 'not JSON' }; }
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return { ok: false, why: 'not a JSON object' };
+  for (const k of ['question', 'checked', 'showed']) if (!text(d[k])) return { ok: false, why: `no ${k}` };
+  return { ok: true, check: { kind: 'check', question: d.question.trim(), checked: d.checked.trim(), showed: d.showed.trim() } };
+}
+
 export const prLink = (pr, repo) => {
   if (pr == null || pr === '') return null;
   if (/^https?:\/\//.test(String(pr))) return String(pr);
   return /^\d+$/.test(String(pr)) && repo ? `https://github.com/${repo}/pull/${pr}` : null;
 };
 
-// One run taking one call is one entry, however often its log is read.
+// One run taking one call, or making one check, is one entry, however often its log is read.
 export function decisionEntry({ decision, ticket, run, repo, pr, at = new Date().toISOString(), source }) {
-  const id = createHash('sha256').update([ticket, run ?? '', decision.question, decision.chose].join('\0')).digest('hex').slice(0, 16);
+  const said = decision.kind === 'check' ? `check\0${decision.checked}` : decision.chose;
+  const id = createHash('sha256').update([ticket, run ?? '', decision.question, said].join('\0')).digest('hex').slice(0, 16);
   return { id, at, repo, ticket, ...decision, pr: prLink(pr, repo), source, run: run ?? null };
 }
 
@@ -87,14 +101,17 @@ if (isMain) {
   const pr = prAt >= 0 ? args[prAt + 1] : null;
   const [cmd, ticket, raw] = prAt >= 0 ? [...args.slice(0, prAt), ...args.slice(prAt + 2)] : args;
   const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
-  if (cmd !== 'log' || !ticket || !raw) refuse('usage: decisions.mjs log <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]');
+  if (!['log', 'check'].includes(cmd) || !ticket || !raw) {
+    refuse('usage: decisions.mjs log <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]\n' +
+      '       decisions.mjs check <TICKET> \'{"question","checked","showed"}\' [--pr <number or URL>]');
+  }
   if (!SAFE_ID.test(ticket) || ticket.includes('..')) refuse(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
   const repo = ghRepo();
   if (prAt >= 0 && !prLink(pr, repo)) refuse(`--pr takes a PR number or URL, not '${pr ?? ''}'`);
-  const parsed = parseDecision(raw);
+  const parsed = cmd === 'check' ? parseCheck(raw) : parseDecision(raw);
   if (!parsed.ok) refuse(`not logged: ${parsed.why}`);
   const entry = decisionEntry({
-    decision: parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? 'session', repo, pr, source: 'session',
+    decision: parsed.check ?? parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? 'session', repo, pr, source: 'session',
   });
   const added = appendDecisions([entry]);
   console.log(`${added.length ? 'logged' : 'already logged'}: ${entry.id} in ${decisionsPath()}`);

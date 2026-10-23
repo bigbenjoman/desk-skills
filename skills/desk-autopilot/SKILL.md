@@ -866,6 +866,52 @@ Most questions only add waiting: the recommended option is chosen nearly nine ti
 every would-be question, yours, a worker's or an interactive session's, is first sorted into **ask**
 or **take**.
 
+**Try before asking.** A question whether the user has done a step ("is the secret set?", "has the
+DNS record gone in?", "did the migration run?") is not a question when you can check it through an
+API, CLI or browser read config §3 already grants. Check first, and ask only if the check cannot
+settle it:
+
+- **It settles it:** ask nothing, carry on, and log what you checked and what it showed. A worker
+  prints `AUTOPILOT_CHECKED: {"question": "…", "checked": "…", "showed": "…"}` at the start of a line
+  in its own text; you and interactive sessions run
+  `node ~/.claude/desk/bin/decisions.mjs check <TICKET> '{"question": "…", "checked": "…", "showed": "…"}'`.
+  The digest lists it under `Checked instead of asking`.
+- **It fails** (refused, an error, an answer that settles nothing): ask, and say in the question what
+  you tried and the error it got, word for word.
+- **Never attempt** a step whose attempt would spend money, write to a shared or live system, or
+  need a credential you do not hold. Ask it as an ask-category question (`money` or `production`),
+  without trying. Trying never widens §3: an attempt uses only what the config already grants.
+
+A value only the user holds stays a question, with its routes offered (*Asking*); a step you can
+check is not one of them.
+
+**Do not re-ask what the user put off.** An answer of "not now" puts the question in the repo's
+register, `<state>/not-now.jsonl` (`not-now.mjs`), with the date and the inputs it depends on: the
+ticket, a PR head SHA, config rows, an external value it read, whatever the question names. A
+question in the register whose inputs are unchanged is not asked again: the digest lists it once
+under `Put off`, with the date, and its ticket stays parked without counting as waiting on the
+user. One whose inputs changed is asked, with a line saying what changed since it was put off.
+
+- **A worker** names a park's inputs on the line after it, as
+  `AUTOPILOT_PARK_INPUTS: {"ticket": "ABC-1", "pr-head": "3f2a…"}` (a flat object of plain values;
+  none is `{}`, which matches on the question's text alone). `pass.mjs` stores them on the park and
+  checks the register when it harvests the run. While the park stays put off, each pass reads its
+  `pr-head` (the branch's head on origin) and `config:<row id>` inputs again, and asks the question
+  as soon as one has changed; any other input is compared only when a session asks again.
+- **You and interactive sessions** check before asking, and record a "not now" the user gives in
+  the conversation (an answer through `answer.mjs` or the digest is recorded for you):
+
+```
+node ~/.claude/desk/bin/not-now.mjs check "<question>" --inputs '{"ticket": "ABC-1"}'
+node ~/.claude/desk/bin/not-now.mjs add <TICKET> "<question>" --inputs '{"ticket": "ABC-1"}'
+```
+
+  `check` exits 3 for a question put off with the same inputs (do not ask it), and 0 to ask, printing
+  the what-changed line to put in the question when there is one. An entry stops holding the question back once its
+  inputs change, and goes when the user answers the question or clears it (`not-now.mjs clear "<question>"`, or `ask-again` from the digest); it never
+  expires by age. A register that cannot be read puts nothing off: every question is asked as it
+  would be without one, and each pass reports it under `WAITING ON YOU`.
+
 **Ask** only when it falls in one of the five ask categories (the id in brackets is the one
 `decisions.mjs` knows):
 
@@ -938,7 +984,9 @@ or the newest one's window has reset), or `pacing off`. A row that reads as neit
   pass after it, back to the last digest sent. An idle batch runs no pass, so the supervisor's tick,
   or the loop (`digest.mjs checkin`), runs the check-in on its own while its tickets stay parked.
 - **What it lists.** Per repo: every open question (each parked ticket's question, a hold is not
-  one, and each triaged ticket's unknowns) and every call taken since the last digest. A question
+  one, and each triaged ticket's unknowns), every call taken and every question settled by checking
+  since the last digest, and, under `Put off`, each question the user put off whose inputs have not
+  changed, once, with the date and an `ask-again` command; a put-off question is never pushed. A question
   still open at the next check-in is listed again, and the batch carries on meanwhile with every
   ticket it does not block. It is pushed only when something is new (a question the last page did
   not list, or a call taken since); otherwise the page is written and nothing is pushed.
@@ -949,6 +997,7 @@ or the newest one's window has reset), or `pacing off`. A row that reads as neit
 ```
 node ~/.claude/desk/bin/digest.mjs answer <slug> <TICKET> "<answer>"
 node ~/.claude/desk/bin/digest.mjs override <slug> <decision-id> "<choice>"
+node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
 ```
 
   An override is recorded in that repo's decision log with who and when, and the next pass there
@@ -976,7 +1025,8 @@ would have felt able to answer alone should have been settled at triage, or take
 asked here.
 
 Two have no recommendation to give: a value only the user holds (a design URL, an asset, a
-credential): offer the routes to it rather than inventing one; and a call that belongs to someone
+credential), once a check you could make has not settled it (*Try before asking*): offer the routes
+to it rather than inventing one; and a call that belongs to someone
 else: name whose it is from config §4 People (product decisions: the product owner; design: the
 designer, or the product owner where Designer is `none`; engineering and review: the code reviewer;
 infra and security: that owner). Where a role is `you`, it is the user's own call and gets a

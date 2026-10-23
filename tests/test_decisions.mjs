@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDecision, decisionEntry, appendDecisions, decisionsPath, ASK_CATEGORIES, prLink } from '../desk/bin/decisions.mjs';
+import { parseDecision, parseCheck, decisionEntry, appendDecisions, decisionsPath, ASK_CATEGORIES, prLink } from '../desk/bin/decisions.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -45,6 +45,14 @@ const refused = run(['log', 'S-1', raw({ category: 'money' })]);
 t('an ask-category call is refused with exit 11', refused.code, 11);
 t('a bad ticket id is refused with exit 11', run(['log', '../x', call]).code, 11);
 t('nothing else reached the log', readFileSync(decisionsPath(sdir), 'utf8').trim().split('\n').length, 1);
+
+// A question settled by checking instead of asking: what was checked and what it showed.
+const chk = JSON.stringify({ question: 'Is STRIPE_KEY set on production?', checked: 'vercel env ls production', showed: 'STRIPE_KEY is set' });
+t('a check parses', parseCheck(chk).ok, true);
+t('a check with nothing shown is refused', parseCheck(JSON.stringify({ question: 'q', checked: 'c' })).why, 'no showed');
+t('AC2 a session check is logged', /^logged: /.test(run(['check', 'S-1', chk]).out), true);
+const checked = JSON.parse(readFileSync(decisionsPath(sdir), 'utf8').trim().split('\n')[1]);
+t('AC2 with what was checked and what it showed', `${checked.kind} | ${checked.checked} | ${checked.showed}`, 'check | vercel env ls production | STRIPE_KEY is set');
 
 rmSync(dir, { recursive: true, force: true });
 t('cleaned up', existsSync(dir), false);

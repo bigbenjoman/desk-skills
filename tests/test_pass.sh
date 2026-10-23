@@ -379,6 +379,46 @@ q set D-1 state=running
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-139 AC8 harvesting the same run again adds nothing" '[ "$(wc -l < "$dlog" | tr -d " ")" = 1 ] && [ "$(field D-1 state)" = "\"done\"" ]'
 
+# N-1 settles one question by checking, then parks on another, naming its inputs. The person
+# answers "not now"; the same park again is not asked, and one whose inputs changed is, saying what.
+NQ='Rotate the production database password?'
+nlog(){ { say 'AUTOPILOT_CHECKED: {"question":"Is the DNS record in?","checked":"dig +short api.acme.dev","showed":"203.0.113.7"}' \
+  "AUTOPILOT_PARK: $NQ" "AUTOPILOT_PARK_INPUTS: {\"ticket\":\"N-1\",\"pr-head\":\"$1\"}"; result_event; } > "$T/state-d/logs/N-1.log"; }
+result_event(){ node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 3, total_cost_usd: 0.5, result: "ended" }))'; }
+nlog a1; q add N-1; q set N-1 state=running branch=fix/N-1 session_id=run-N-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC2 a question settled by checking is logged with what was checked and what it showed" 'grep -F "\"N-1\"" "$dlog" | grep -F "\"kind\":\"check\"" | grep -qF "\"showed\":\"203.0.113.7\""'
+check "DS-143 a park stores the inputs it named" '[ "$(field N-1 state)" = "\"parked\"" ] && [ "$(field N-1 park.inputs)" = "{\"ticket\":\"N-1\",\"pr-head\":\"a1\"}" ]'
+check "DS-143 and is asked" 'echo "$out" | grep -q "^NOTIFY: .*N-1"'
+out=$(node "$B/answer.mjs" N-1 "not now" 2>&1)
+reg="$T/state-d/not-now.jsonl"
+check "DS-143 AC5 a not-now answer lands in the register with the question, date and inputs" 'echo "$out" | grep -q "N-1: put off in" && node -e "const e = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\").trim()); process.exit(e.question === process.argv[2] && /^20/.test(e.at) && e.inputs[\"pr-head\"] === \"a1\" && e.ticket === \"N-1\" ? 0 : 1)" "$reg" "$NQ"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC6 a parked question put off is no longer waiting on the person" '! echo "$out" | grep -q "^NOTIFY: .*N-1"'
+nlog a1; q set N-1 state=running
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC6 the same question with unchanged inputs is not asked again" '[ "$(field N-1 state)" = "\"parked\"" ] && ! echo "$out" | grep -q "^NOTIFY: .*N-1" && echo "$out" | grep -q "^  N-1: $NQ (put off on 20"'
+cp "$reg" "$reg.ok"; printf '{"key": "torn\n' >> "$reg"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC8 an unreadable register is reported, and the put-off question asked as usual" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -q "not-now register: unreadable" && echo "$out" | grep -q "^NOTIFY: .*N-1"'
+mv "$reg.ok" "$reg"
+nlog a2; q set N-1 state=running
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC7 with changed inputs it is asked, saying what changed" 'echo "$out" | grep -q "^NOTIFY: .*N-1" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-1: $NQ — Changed since it was put off on" && echo "$out" | grep -qF "pr-head a1 → a2."'
+q set N-1 state=done
+# N-2's question turns on a config row. Put off, it comes back on the first pass after the row changes.
+N2Q='Is the release branch still main?'
+{ say "AUTOPILOT_PARK: $N2Q" 'AUTOPILOT_PARK_INPUTS: {"config:default-branch":"main"}'; result_event; } > "$T/state-d/logs/N-2.log"
+q add N-2; q set N-2 state=running branch=fix/N-2 session_id=run-N-2
+out=$(node "$B/pass.mjs" 2>&1); node "$B/answer.mjs" N-2 "not now" >/dev/null 2>&1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-143 AC6 a put-off park whose config row is unchanged stays put off" '! echo "$out" | grep -q "^NOTIFY: .*N-2"'
+sed 's/| Default branch | `main` |/| Default branch | `develop` |/' "$T/config.md" > "$T/config-n2.md"
+out=$(DESK_CONFIG="$T/config-n2.md" node "$B/pass.mjs" 2>&1)
+check "DS-143 AC7 a changed config row asks the put-off question again, saying what changed" 'echo "$out" | grep -q "^NOTIFY: .*N-2" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-2: $N2Q — Changed since it was put off on" && echo "$out" | grep -qF "config:default-branch main → develop."'
+out=$(node "$B/answer.mjs" N-2 "develop is right" 2>&1)
+check "DS-143 a real answer to a put-off question ends the deferral" 'echo "$out" | grep -q "N-2: answered, so its question is no longer put off" && tail -n 1 "$reg" | grep -q "\"cleared\""'
+q set N-2 state=done
+
 # The check-in digest. C-1 parks on a broken live service, C-2 on an ordinary question; a last digest
 # dated in the future keeps the check-in itself out of the way until it is removed.
 export DESK_QUEUE="$T/queue-c.json" DESK_AUTOPILOT_STATE="$T/state-c" DESK_DIGEST_DIR="$T/digest"; mkdir -p "$T/state-c/logs" "$T/digest"
@@ -417,7 +457,6 @@ if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
 echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
 EOF
 printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
-result_event(){ node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 3, total_cost_usd: 0.5, result: "ended" }))'; }
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
   say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-k/logs/$1.log"; touch -t 202601010000 "$T/state-k/logs/$1.log"; }
 spawned_for(){ grep "^$1 " "$T/spawns"; }

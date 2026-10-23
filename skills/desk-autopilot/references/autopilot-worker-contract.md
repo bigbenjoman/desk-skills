@@ -93,6 +93,9 @@ parks and logs nothing. A call you have no recommendation for that you can defen
 still parks (section 2). Where `autopilot-judgement` is not `yes`, product, design and wording calls
 park as before.
 
+**Check a step before asking if it was done**, and after a park print
+`AUTOPILOT_PARK_INPUTS: {…}`: `desk-autopilot` *Ask or take* says how.
+
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
 1. **Print the question**, at the start of a line and never inside a code fence:

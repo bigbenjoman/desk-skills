@@ -8,6 +8,7 @@
 //   digest.mjs checkin                                    this repo's check-in now, as JSON (the supervisor's idle ticks)
 //   digest.mjs answer <slug> <TICKET> "<answer>"          record it through that repo's answer.mjs
 //   digest.mjs override <slug> <decision-id> "<choice>"   record an override in that repo's decision log
+//   digest.mjs ask-again <slug> <TICKET>                  take its put-off question out of the not-now register
 //
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
 // recorded, 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
@@ -20,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
 import { takeBorrowLock } from './borrow.mjs';
+import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
@@ -83,21 +85,47 @@ export function repos({ home = E.deskHome(), root = stateRoot(), self = null } =
   return [...found.values()].sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
-// The decision log split into taken calls and the overrides recorded against them.
+// The decision log split into taken calls, checks made instead of asking, and the overrides recorded
+// against taken calls.
 export function readDecisions(state) {
   const all = readLines(join(state, 'decisions.jsonl'));
   const overrides = all.filter((e) => e.override_of);
-  return { taken: all.filter((e) => !e.override_of && e.id), overrides };
+  const entries = all.filter((e) => !e.override_of && e.id);
+  return { taken: entries.filter((e) => e.kind !== 'check'), checks: entries.filter((e) => e.kind === 'check'), overrides };
 }
 
-// One repo's open questions: each parked ticket's question (a hold is not one) and each triaged
-// ticket's unanswered triage unknowns. Questions already answered from a digest are left out.
-export function openQuestions(r, answered = {}) {
+// Is this ticket's park a question the person put off, with the same inputs? An unreadable register
+// puts nothing off.
+const parkPutOff = (register, t) => (t.park?.question
+  ? lookup(register, { question: t.park.question, inputs: t.park.inputs ?? {} })
+  : { status: 'ask' });
+
+// One repo's put-off questions, each once however many parked tickets ask it: {question, at, by, tickets}.
+export function putOffQuestions(r, register = readRegister(r.state)) {
+  const q = readJson(r.queue, null);
+  const out = new Map();
+  for (const t of Object.values(q?.tickets ?? {})) {
+    if (t.state !== 'parked' || isHeld(t)) continue;
+    const l = parkPutOff(register, t);
+    if (l.status !== 'put_off') continue;
+    const o = out.get(l.entry.key) ?? { question: l.entry.question, at: l.entry.at, by: l.entry.by ?? null, tickets: [] };
+    o.tickets.push(t.key);
+    out.set(l.entry.key, o);
+  }
+  return [...out.values()].map((o) => ({ ...o, tickets: o.tickets.sort() })).sort((a, b) => a.tickets[0].localeCompare(b.tickets[0]));
+}
+
+// One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
+// person put off with the same inputs) and each triaged ticket's unanswered triage unknowns. Questions
+// already answered from a digest are left out. A put-off question whose inputs changed says what changed.
+export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = [];
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
-      const text = String(t.park?.question ?? 'parked, with no question recorded');
+      const l = parkPutOff(register, t);
+      if (l.status === 'put_off') continue;
+      const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;
       // Keyed to this park, so the same question parked again after a requeue is a new one.
       const key = questionKey(r.slug, t.key, `${text}\0${t.park?.since ?? ''}`);
       if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text, key });
@@ -115,14 +143,16 @@ export function openQuestions(r, answered = {}) {
 export function renderPage({ slot, since, groups, bin = E.binDir() }) {
   const nq = groups.reduce((n, g) => n + g.questions.length, 0);
   const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
+  const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
+  const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const cmd = join(bin, 'digest.mjs');
   const lines = [`# Check-in ${slot.replace('T', ' ')}`, ''];
-  if (!nq && !nd) {
+  if (!nq && !nd && !nc && !np) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return lines.join('\n');
   }
-  lines.push(`${nq} question(s) to answer, ${nd} decision(s) taken${since ? ` since ${since}` : ''}.`, '');
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length)) {
+  lines.push(`${nq} question(s) to answer, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}.`, '');
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length)) {
     lines.push(`## ${g.slug}`, '');
     if (g.questions.length) {
       lines.push('### Questions', '');
@@ -137,6 +167,19 @@ export function renderPage({ slot, since, groups, bin = E.binDir() }) {
       for (const d of g.decisions) {
         lines.push(`- [ ] \`${d.ticket}\` ${d.category}: ${d.question} Chose **${d.chose}** (options: ${d.options.join(' · ')})${d.pr ? ` [PR](${d.pr})` : ''} · id \`${d.id}\``);
         lines.push(`  override: \`node ${cmd} override ${g.slug} ${d.id} "<choice>"\``);
+      }
+      lines.push('');
+    }
+    if (g.checks?.length) {
+      lines.push('### Checked instead of asking', '');
+      for (const c of g.checks) lines.push(`- \`${c.ticket}\`: ${c.question} Checked ${c.checked}: ${c.showed}${c.pr ? ` [PR](${c.pr})` : ''}`);
+      lines.push('');
+    }
+    if (g.putOff?.length) {
+      lines.push('### Put off', '');
+      for (const p of g.putOff) {
+        lines.push(`- ${p.tickets.map((k) => `\`${k}\``).join(', ')}: ${p.question} Put off on ${p.at.slice(0, 10)}${p.by ? ` by ${p.by}` : ''}; asked again when its inputs change.`);
+        lines.push(`  ask it now: \`node ${cmd} ask-again ${g.slug} ${p.tickets[0]}\``);
       }
       lines.push('');
     }
@@ -165,21 +208,30 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     }
     const answered = readJson(answeredFile(dir), {});
     const since = last?.through ?? null;
+    const inWindow = (d) => (!since || d.at > since) && d.at <= now.toISOString();
     const groups = list.map((r) => {
-      const { taken, overrides } = readDecisions(r.state);
+      const { taken, checks, overrides } = readDecisions(r.state);
       const overridden = new Set(overrides.map((o) => o.override_of));
-      const decisions = taken.filter((d) => (!since || d.at > since) && d.at <= now.toISOString() && !overridden.has(d.id));
-      return { slug: r.slug, questions: openQuestions(r, answered), decisions };
+      const register = readRegister(r.state);
+      return {
+        slug: r.slug,
+        questions: openQuestions(r, answered, register),
+        decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
+        checks: checks.filter(inWindow),
+        putOff: putOffQuestions(r, register),
+      };
     });
     const page = join(dir, `${slot.id.replace(':', '')}.md`);
     writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
+    const nc = groups.reduce((n, g) => n + g.checks.length, 0);
     const listed = groups.flatMap((g) => g.questions.map((q) => q.key));
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length).length;
+    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length).length;
+    // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const push = nd || fresh.length
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s) across ${repoCount} repo(s). ${page}` }
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, decisions: nd, push };
@@ -219,7 +271,8 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
       encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
-  if (question) {
+  // A "not now" is not settled: the register hides it, and ask-again must be able to bring it back.
+  if (question && !NOT_NOW.test(text)) {
     const answered = readJson(answeredFile(dir), {});
     answered[question.key] = now.toISOString();
     mkdirSync(dir, { recursive: true });
@@ -256,6 +309,15 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   return { ok: true, entry, marked };
 }
 
+// Takes a parked ticket's put-off question out of its repo's register, so it is asked again.
+export function askAgain({ slug, ticket, list = repos() }) {
+  const r = list.find((x) => x.slug === slug);
+  if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
+  const question = readJson(r.queue, null)?.tickets?.[ticket]?.park?.question;
+  if (!question) return { ok: false, why: `${ticket} has no parked question in ${slug}` };
+  return clearPutOff(question, r.state);
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -274,8 +336,15 @@ if (isMain) {
     console.log(JSON.stringify(await checkin({ times: times.times, self, list: repos({ self: { slug: self, state: E.stateDir(), queue: E.queueFile() } }) })));
     process.exit(0);
   }
+  if (cmd === 'ask-again' && slug && target) {
+    if (!E.SAFE_ID.test(slug) || slug.includes('..')) refuse(`'${slug}' is not a repo slug`);
+    const r = askAgain({ slug, ticket: target });
+    if (!r.ok) refuse(`not cleared: ${r.why}`);
+    console.log(`digest: ${target}'s question is out of ${slug}'s not-now register; the next check-in lists it to answer`);
+    process.exit(0);
+  }
   if (!['answer', 'override'].includes(cmd) || !slug || !target || !text) {
-    refuse('usage: digest.mjs answer <slug> <TICKET> "<answer>" | digest.mjs override <slug> <decision-id> "<choice>"');
+    refuse('usage: digest.mjs answer <slug> <TICKET> "<answer>" | digest.mjs override <slug> <decision-id> "<choice>" | digest.mjs ask-again <slug> <TICKET>');
   }
   if (!E.SAFE_ID.test(slug) || slug.includes('..')) refuse(`'${slug}' is not a repo slug`);
   if (cmd === 'answer') {
