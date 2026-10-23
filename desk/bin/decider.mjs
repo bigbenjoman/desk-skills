@@ -22,15 +22,17 @@ export const RESULT_MARK = 'DECIDER_RESULT:';
 const h = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 12);
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 
-// One item per parked ticket and per WAITING ON YOU line, as the pass's verdict names them.
+// One item per parked ticket and per WAITING ON YOU line, as the pass's verdict names them. A line
+// whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
 export function deciderItems(v, q = {}) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => ({
     id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
   }));
-  const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => ({
-    id: `wait-${h(line)}`, ticket: String(line).split(':')[0], kind: 'waiting', text: String(line), lane: tickets[String(line).split(':')[0]]?.lane ?? null,
-  }));
+  const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
+    const label = String(line).split(':')[0];
+    return { id: `wait-${h(line)}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null };
+  });
   return [...parked, ...waiting];
 }
 
@@ -162,10 +164,10 @@ export function startDecider({ state, slug, bin, report, items, rules, cwd, env 
 // {cost, error} when there is no result line to read.
 export function readResult(out) {
   let text = '';
-  try { text = readFileSync(out, 'utf8'); } catch { return { cost: 0, error: 'no output' }; }
+  try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
   let d = null;
   for (const line of text.split('\n').reverse()) { try { const x = JSON.parse(line); if (x?.type === 'result') { d = x; break; } } catch { /* not JSON */ } }
-  if (!d) return { cost: 0, error: `no result (${text.trim().split('\n').slice(-1)[0]?.slice(0, 120) || 'empty output'})` };
+  if (!d) return { cost: null, error: `no result (${text.trim().split('\n').slice(-1)[0]?.slice(0, 120) || 'empty output'})` };
   const cost = Number(d.total_cost_usd) || 0;
   const line = String(d.result ?? '').split('\n').reverse().find((l) => l.trimStart().startsWith(RESULT_MARK));
   if (!line) return { cost, error: `no ${RESULT_MARK} line` };
@@ -188,20 +190,24 @@ export function outcome(rec, result, q = {}) {
     else if (did != null) handed.push({ item, why: `the decider said "${did}", but ${item.ticket} is still parked` });
     else handed.push({ item, why: result.error ? `decider ${result.error}` : result.handed?.[item.id] || 'the decider handed it on' });
   }
-  return { settled, handed, cost: result.cost ?? 0 };
+  return { settled, handed, cost: result.cost ?? null };
 }
+
+// The cost as the report gives it: unknown when the session left no result, never zero.
+const costText = (cost) => (cost == null ? 'cost unknown' : `$${cost.toFixed(2)}`);
 
 // One line for the batch report: the session's cost and what it settled or handed on.
 export function reportLine(rec, o) {
   const s = o.settled.map((x) => `${x.item.ticket} (${x.did})`).join(', ') || 'nothing';
   const hd = o.handed.map((x) => `${x.item.ticket} (${x.why})`).join(', ') || 'nothing';
-  return `decider ${rec.id}: $${o.cost.toFixed(2)}; settled ${s}; handed to the digest ${hd}`;
+  return `decider ${rec.id}: ${costText(o.cost)}; settled ${s}; handed to the digest ${hd}`;
 }
 
-// What it did, for the workers and the orchestrator who read the batch notes.
+// What it did and cost, for the workers and the orchestrator who read the batch notes.
 export function noteOutcome(state, o, now = new Date()) {
   const at = now.toISOString();
   const lines = [
+    `- [decider] ${at} a session ran: ${costText(o.cost)}\n`,
     ...o.settled.map((x) => `- [decider] ${at} ${x.item.ticket}: ${x.did}\n`),
     ...o.handed.map((x) => `- [decider] ${at} ${x.item.ticket}: handed to the check-in digest (${x.why})\n`),
   ];

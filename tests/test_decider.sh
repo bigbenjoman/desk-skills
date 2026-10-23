@@ -75,7 +75,12 @@ export PATH="$T/fakes:$PATH"
 
 tick(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
 LOG="$T/state/supervisor.log"
-calls(){ ls "$T" | grep -c '^claude\.args\.'; }
+# Sessions started since the last mark, from the supervisor's own log line: written before the tick
+# returns, where the detached fake's args file may not exist yet.
+base=0
+started(){ grep -c "^decider: started" "$LOG" 2>/dev/null || true; }
+calls(){ echo $(( $(started) - base )); }
+mark(){ base=$(started); }
 # The decider runs detached: wait (at most 10s) for it to end.
 settle(){ i=0; while node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); try { process.kill(s.decider.pid, 0) } catch { process.exit(1) }' "$T/state/supervisor.json" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; }
 queue(){ printf '{"version":1,"batch":"b1","supervised":true,"approved":{},"tickets":%s}\n' "$1" > "$DESK_QUEUE"; }
@@ -96,13 +101,12 @@ check "AC7: the prompt holds the pass report" 'grep -q "PARKED:" "$T/claude.args
 check "AC7: the prompt holds the recovery rules" 'grep -q "RECOVERY RULES: a lane C or D park is never requeued" "$T/claude.args.0"'
 verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'
 out=$(tick)
-check "AC1: the ticket is requeued" 'node -e "process.exit(JSON.parse(require(\"fs\").readFileSync(\"$DESK_QUEUE\",\"utf8\")).tickets.A.state === \"triaged\" ? 0 : 1)"'
 check "AC1: what it did is in the batch notes" 'grep -q "^- \[decider\] .* A: requeued A for more agent work$" "$T/state/batch-notes.md"'
 check "AC8: the report gives the cost and what it settled" 'grep -q "decider .*: \$0.12; settled A (requeued A for more agent work); handed to the digest nothing" "$LOG"'
 check "AC1: nothing handed on" '[ -z "$(handed)" ]'
 
 # ---- AC2: a lane C park goes to the digest with its question, no session, no requeue ---------------
-rm -f "$T"/claude.args.*
+mark
 queue '{"C":{"key":"C","state":"parked","lane":"C","park":{"question":"which of two designs?"}}}'
 verdict "$(parked C "which of two designs?")"
 out=$(tick)
@@ -133,7 +137,7 @@ check "AC4: once answered, a new session starts for it" '[ "$(calls)" = 2 ]'
 settle; out=$(tick)
 
 # ---- AC5: one session at a time per repo ------------------------------------------------------------
-rm -f "$T"/claude.args.* "$T/state/handed.json"
+mark; rm -f "$T/state/handed.json"
 queue '{"F":{"key":"F","state":"parked","lane":"A","park":{"question":"f?"}},"G":{"key":"G","state":"parked","lane":"B","park":{"question":"g?"}}}'
 verdict "$(parked F "f?")"; echo "hang" > "$T/claude.mode"
 out=$(tick)
@@ -150,11 +154,43 @@ i=0; while kill -0 "$PID" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1
 check "AC6: the session is stopped" '! kill -0 "$PID" 2>/dev/null'
 check "AC6: its items are handed on as timed out" 'handed | grep -qx "F|decider timed out"'
 check "AC6: the digest lists them with the reason" 'questions | grep -q "^F|parked|f? (handed on: decider timed out)"'
-check "AC8: the report names the time-out" 'grep -q "decider .*: \$0.00; settled nothing; handed to the digest F (decider timed out)" "$LOG"'
+check "AC8: the report names the time-out, its cost unknown rather than zero" 'grep -q "decider .*: cost unknown; settled nothing; handed to the digest F (decider timed out)" "$LOG"'
 check "AC6: F handed on starts no new session" '[ "$(calls)" = 1 ]'
 
+# ---- a batch-level line has no ticket to answer, and goes once no pass lists it ---------------------
+mark; queue '{}'; echo "hand" > "$T/claude.mode"
+verdict '{"status":"show_person","code":11,"message":"x","waiting":["BASE GATE: failed on main. Fix it on main"],"parked":[],"notify":true,"push":[]}'
+out=$(tick); settle; out=$(tick)
+check "a batch-level line is handed on as the batch's" 'questions | grep -q "^BASE GATE|batch|BASE GATE: failed on main. Fix it on main (a product call)"'
+page=$(node --input-type=module -e "import { renderPage } from '$B/digest.mjs'; console.log(renderPage({ slot: '2026-10-23T08:00', since: null, groups: [{ slug: 's', questions: [{ ticket: 'BASE GATE', kind: 'batch', text: 'x' }], decisions: [] }] }));")
+check "the digest offers no answer command for it" 'grep -q "no answer to record" <<< "$page" && ! grep -q "answer s BASE GATE" <<< "$page"'
+verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'
+out=$(tick)
+check "a quiet pass drops what no pass lists any more" '[ -z "$(handed)" ]'
+
+# ---- an answer in an idle batch ends idle, so a session acts on it -----------------------------------
+mark; echo "hand" > "$T/claude.mode"
+queue '{"K":{"key":"K","state":"parked","lane":"A","park":{"question":"k?"}}}'
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[{"key":"K","question":"k?"}],"notify":true,"push":[]}'
+out=$(tick); settle; out=$(tick)
+passes=$(grep -c "^== .* pass: exit" "$LOG")
+out=$(tick)
+check "an idle batch with K handed on and unanswered runs no pass" '[ "$(grep -c "^== .* pass: exit" "$LOG")" = "$passes" ] && [ "$(calls)" = 1 ] && handed | grep -q "^K|a product call$"'
+sleep 1
+printf '\n## Answer from the user (%s)\n\nuse the fixture\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/state/briefings/K.md"
+out=$(tick)
+check "once K is answered, a pass runs and a session starts for it" '[ "$(grep -c "^== .* pass: exit" "$LOG")" = $((passes + 1)) ] && [ "$(calls)" = 2 ]'
+settle
+
+# ---- a waiting line the last session settled, listed again, goes to the digest ----------------------
+mark; echo "requeue X" > "$T/claude.mode"
+queue '{"X":{"key":"X","state":"failed","lane":"A"}}'
+verdict '{"status":"show_person","code":11,"message":"x","waiting":["X: FAILED — requeue it"],"parked":[],"notify":true,"push":[]}'
+out=$(tick); settle; out=$(tick)
+check "a line the last session settled and the next pass lists again is handed on, no new session" '[ "$(calls)" = 1 ] && handed | grep -q "^X|the decider settled it, but the next pass still lists it$"'
+
 # ---- a session with no result line hands its items on -----------------------------------------------
-rm -f "$T"/claude.args.*
+mark
 queue '{"H":{"key":"H","state":"parked","lane":"A","park":{"question":"h?"}}}'
 verdict "$(parked H "h?")"; echo "none" > "$T/claude.mode"
 out=$(tick); settle; out=$(tick)

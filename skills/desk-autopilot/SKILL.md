@@ -295,7 +295,8 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   It settles what those rules let you do without asking (a requeue of a lane A, B or E park that needs
   more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
   A lane C or D park and anything needing a §3 row that is not `yes` go to the digest without a
-  session; an item handed on and not answered since starts none. A decider still running after 15
+  session; an item handed on and not answered since starts none, and an answer to one (`answer.mjs`,
+  the digest's included) runs a pass again even in an idle batch. A decider still running after 15
   minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
   and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,

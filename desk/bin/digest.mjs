@@ -23,6 +23,7 @@ import { isHeld } from './batch-state.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
+import { readHanded } from './decider.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
@@ -124,10 +125,10 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   const q = readJson(r.queue, null);
   const out = [];
   // What the decider handed on: a park says why beside its question, anything else is its own line.
-  const handed = Object.values(readJson(join(r.state, 'handed.json'), {}) ?? {});
-  for (const h of handed.filter((x) => x.kind === 'waiting')) {
+  const handed = Object.values(readHanded(r.state));
+  for (const h of handed.filter((x) => x.kind !== 'parked')) {
     const key = questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`);
-    if (!answered[key]) out.push({ ticket: h.ticket, kind: 'handed on', text: `${h.text} (${h.why})`, key });
+    if (!answered[key]) out.push({ ticket: h.ticket, kind: h.kind === 'batch' ? 'batch' : 'handed on', text: `${h.text} (${h.why})`, key });
   }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
@@ -184,7 +185,8 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       lines.push('### Questions', '');
       for (const q of g.questions) {
         lines.push(`- [ ] \`${q.ticket}\` (${q.kind}): ${q.text}`);
-        lines.push(`  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
+        // The batch's own items have no ticket to answer: they go once a pass no longer lists them.
+        lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it' : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
       }
       lines.push('');
     }
