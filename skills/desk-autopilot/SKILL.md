@@ -290,13 +290,22 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   refused or failed. This replaces Stage 6b while the supervisor runs;
 - starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
   are still to merge and no driver holds `<state>/merge-driver.lock.d`;
+- when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
+  repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
+  It settles what those rules let you do without asking (a requeue of a lane A, B or E park that needs
+  more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
+  A lane C or D park and anything needing a §3 row that is not `yes` go to the digest without a
+  session; an item handed on and not answered since starts none, and an answer to one (`answer.mjs`,
+  the digest's included) runs a pass again even in an idle batch. A decider still running after 15
+  minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
+  and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
   or a ticket admitted or requeued into this one).
 
 A batch not handed over gets no pass, so the supervisor never runs one before Stage 3 has asked; the
 log says so once per batch.
 Handing over does not hand over the person's side: answers (Stage 5), relaying a gate (Stage 6c),
-recovery and the close-out are still yours, read from `<state>/supervisor.log` and `queue.mjs render`
+recovery the decider handed on, and the close-out are still yours, read from `<state>/supervisor.log` and `queue.mjs render`
 rather than a loop. A pass you run by hand while the supervisor's holds the lock refuses; run it again.
 
 ## Order the batch by blast radius

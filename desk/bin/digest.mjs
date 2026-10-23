@@ -23,6 +23,7 @@ import { isHeld } from './batch-state.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
+import { readHanded } from './decider.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
@@ -123,6 +124,12 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
 export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = [];
+  // What the decider handed on: a park says why beside its question, anything else is its own line.
+  const handed = Object.values(readHanded(r.state));
+  for (const h of handed.filter((x) => x.kind !== 'parked')) {
+    const key = questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`);
+    if (!answered[key]) out.push({ ticket: h.ticket, kind: h.kind === 'batch' ? 'batch' : 'handed on', text: `${h.text} (${h.why})`, key });
+  }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       const l = parkPutOff(register, t);
@@ -130,7 +137,8 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;
       // Keyed to this park, so the same question parked again after a requeue is a new one.
       const key = questionKey(r.slug, t.key, `${text}\0${t.park?.since ?? ''}`);
-      if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text, key });
+      const why = handed.find((x) => x.kind === 'parked' && x.ticket === t.key && x.text === String(t.park?.question ?? ''))?.why;
+      if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text: why ? `${text} (handed on: ${why})` : text, key });
     } else if (t.state === 'triaged' && (t.open_questions ?? 0) > 0) {
       const unknowns = readJson(join(r.state, 'triage', `${t.key}.json`), {})?.unknowns;
       const text = Array.isArray(unknowns) && unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
@@ -177,7 +185,8 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       lines.push('### Questions', '');
       for (const q of g.questions) {
         lines.push(`- [ ] \`${q.ticket}\` (${q.kind}): ${q.text}`);
-        lines.push(`  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
+        // The batch's own items have no ticket to answer: they go once a pass no longer lists them.
+        lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it' : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
       }
       lines.push('');
     }

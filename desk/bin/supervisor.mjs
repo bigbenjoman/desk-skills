@@ -22,6 +22,10 @@
 //     refused or failed;
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`) while tickets
 //     are still to merge and no driver holds <state>/merge-driver.lock.d;
+//   - when a pass exits needing the person, hands what the recovery rules never settle to the check-in
+//     digest and starts one headless decider session (decider.mjs) for the rest, unless one is still
+//     running; each tick stops a decider past its time, and records what an ended one cost, settled
+//     and handed on, in the log and the batch notes;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
 //     a new batch, or a ticket admitted or requeued into this one. Each idle tick still runs the
 //     check-in and moves the weekly maintenance window on (maintenance.mjs step).
@@ -32,6 +36,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
+import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
@@ -218,7 +223,15 @@ function interval() {
     }
     return;
   }
-  if (s.idle && s.idle === fingerprint(q)) { idleCheckin(state, s, log, stamp); return; }
+  // An answer to an item handed on leaves its ticket parked, so it does not change the fingerprint:
+  // it ends idle by itself, so a pass lists it and a decider can act on the answer.
+  const answeredNow = Object.values(readHanded(state)).some((e) => answered(state, e));
+  if (s.idle && s.idle === fingerprint(q) && !answeredNow) {
+    const reaped = reapDecider(state, s);
+    if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
+    idleCheckin(state, s, log, stamp);
+    return;
+  }
   const holder = orchestratorHolder(state) ?? supervisorHolder(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`]); return; }
   try { writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), { flag: 'wx' }); }
@@ -268,6 +281,9 @@ function runPass(state, q, s, log, stamp) {
   const given = [];
   if (q.approved?.workers === true) { env.AUTOPILOT_USER_APPROVED = '1'; given.push('workers'); }
   if (q.approved?.base_push === true) { env.AUTOPILOT_BASE_PUSH_APPROVED = '1'; given.push('base push'); }
+  // Reaped before the pass, so the pass sees what an ended session did and a long pass does not
+  // stretch a session's time.
+  const reaped = reapDecider(state, s);
   // The next tick is this agent's interval away, so the pass records it as its next.
   const every = Number(installedInterval(slug));
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', ...(every > 0 ? ['--next', `+${every}`] : [])], {
@@ -283,6 +299,7 @@ function runPass(state, q, s, log, stamp) {
 
   let qAfter = q;
   try { qAfter = readQueue(qf); } catch { /* the pass reported it */ }
+  out.push(...reaped, ...decide(state, s, v, qAfter));
   s.idle = null;
   if (v.status !== 'idle') {
     const keys = toMerge(qAfter);
@@ -322,6 +339,62 @@ function runPass(state, q, s, log, stamp) {
   }
   writeState(state, s);
   log(out);
+}
+
+// ---- the decider -----------------------------------------------------------------------------
+// s.decider is the running session's record ({id, pid, started, out, items}), or null.
+const recoveryRules = () => join(E.skillsDir(), 'desk-autopilot', 'references', 'orchestrator-recovery.md');
+
+// Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
+// lines for the batch report.
+function reapDecider(state, s, now = new Date()) {
+  const rec = s.decider;
+  if (!rec) return [];
+  // A written result means the session ended, whatever now holds its pid.
+  let result = readResult(rec.out);
+  if (result.error && rec.pid && alive(rec.pid)) {
+    if (now - Date.parse(rec.started) < DECIDER_TIMEOUT_MS) return [];
+    // The session leads its own process group (spawned detached); a pid no longer leading one is not it.
+    try { process.kill(-rec.pid, 'SIGTERM'); } catch { /* gone */ }
+    result = { cost: result.cost, error: 'timed out' };
+  }
+  let q = {};
+  try { q = readQueue(E.queueFile()); } catch { /* every park reads as still parked */ }
+  const o = outcome(rec, result, q);
+  handItems(state, o.handed, now);
+  noteOutcome(state, o, now);
+  s.decider = null;
+  s.settled = o.settled.map((x) => x.item.id);
+  return [reportLine(rec, o)];
+}
+
+// After a pass that needs the person: hands on what no session may settle, and starts a decider for
+// the rest that is neither handed on and unanswered nor waiting on a decider already running.
+function decide(state, s, v, q, now = new Date()) {
+  if (v.status === 'error') return [];
+  const items = deciderItems(v, q);
+  pruneHanded(state, items);
+  // What the last session settled, checked against this pass only.
+  const settled = s.settled ?? [];
+  s.settled = [];
+  if (!['show_person', 'idle'].includes(v.status)) return [];
+  const { hand, ask } = presort(items);
+  const lines = [];
+  // One the last session settled that a pass still lists was not settled: another session would only
+  // settle it again.
+  const again = ask.filter((i) => settled.includes(i.id));
+  const added = handItems(state, [...hand, ...again.map((item) => ({ item, why: 'the decider settled it, but the next pass still lists it' }))], now);
+  if (added.length) lines.push(`decider: handed to the digest without a session: ${added.map((x) => `${x.item.ticket} (${x.why})`).join(', ')}`);
+  const fresh = freshItems(state, ask.filter((i) => !again.includes(i)));
+  if (!fresh.length) return lines;
+  if (s.decider) return [...lines, `decider: one is still running (pid ${s.decider.pid}, since ${s.decider.started}), so none starts for ${fresh.map((i) => i.ticket).join(', ')}`];
+  const rules = recoveryRules();
+  if (!existsSync(rules)) {
+    handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
+    return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`];
+  }
+  s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'), cwd: process.cwd(), now });
+  return [...lines, `decider: started (pid ${s.decider.pid}) for ${fresh.map((i) => i.ticket).join(', ')}; its output is ${s.decider.out}`];
 }
 
 function status() {
