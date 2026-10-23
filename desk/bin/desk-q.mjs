@@ -43,11 +43,12 @@ const STATE_W = 13;
 const pad = (s, n) => { s = String(s ?? ''); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
 const rpad = (s, n) => { s = String(s ?? ''); return ' '.repeat(Math.max(0, n - s.length)) + s; };
 const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
-const ago = (ms) => {
-  if (ms == null) return 'never';
+// A span as "4m", "3h 24m" or, from a day, "3d 4h".
+const since = (ms) => {
   const m = Math.floor(ms / 60000);
-  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ${m % 60}m ago`;
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor(m / 60) % 24}h`;
 };
+const ago = (ms) => (ms == null ? 'never' : ms < 60000 ? 'just now' : `${since(ms)} ago`);
 function wrap(s, w) {
   const out = []; let line = '';
   for (const word of String(s ?? '').split(/\s+/).filter(Boolean)) {
@@ -615,10 +616,6 @@ const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValu
 // LAST PASS: "● live · 4m ago" in green while passes run on time; stopped, how long since the last
 // one, yellow under a day and red beyond.
 const LAST_W = 21;
-const since = (ms) => {
-  const m = Math.floor(ms / MINUTE);
-  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor(m / 60) % 24}h`;
-};
 function lastPass(r, now) {
   if (r.live) return [`● live · ${ago(r.last == null ? null : now - r.last)}`, STATE_SGR.running];
   if (r.last == null) return ['■ no pass yet', WARN];
