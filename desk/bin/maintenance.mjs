@@ -192,6 +192,7 @@ export async function maintenance({ dir = maintDir(), running = [], stop = () =>
     }
   }
 
+  mkdirSync(dir, { recursive: true });
   const lock = await takeBorrowLock({ dir, name: 'maintenance.lock.d', waitMs: 0 });
   if (!lock.ok) return { hold: isOpen(readState(dir)) || week != null, lines: [`maintenance: another pass is moving the window on (${lock.why})`] };
   try {
