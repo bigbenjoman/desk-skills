@@ -717,10 +717,12 @@ t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10)
 const N80 = screen(tidyQ, 80, () => FIXED);
 await sleep(20);
 // DS-186 AC10: a keys line too wide goes on two, "move" then "act", each key bold.
-const k80 = N80.frame().slice(-2);
+// The act line is itself wider than 80, so it carries on, indented, under its label.
+const k80 = N80.frame().slice(N80.frame().findIndex((l) => l.startsWith('move  ')));
 t('DS-164 AC10 (DS-186 AC10) at 80 columns the Queue\'s keys go on a move line and an act line, none lost',
-  `${k80[0].startsWith('move  ↑↓ select · enter open · ←→ or 1–4 view · esc back')} ${/^act {3}shift\+↑↓ move .* q quit$/.test(k80[1])} ${k80.every((l) => l.length <= 80)}`, 'true true true');
-t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–4', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).slice(-2).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
+  `${k80[0] === 'move  ↑↓ select · enter open · ←→ or 1–4 view · esc back'} ${k80[1].startsWith('act   shift+↑↓ move · ')} ${k80.slice(2).every((l) => l.startsWith('      '))} ${k80.at(-1).endsWith('q quit')} ${k80.every((l) => l.length <= 80)}`,
+  'true true true true true');
+t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–4', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
 N80.ui.finish(0);
 
 // A row clicked is selected and opened; a click report cut across two reads is still one click.
