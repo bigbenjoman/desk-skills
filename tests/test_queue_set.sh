@@ -44,7 +44,7 @@ r lane;                     check "plain string unchanged"                '[ "$o
 r open_questions;           check "integer unchanged"                     '[ "$out" = 0 ]'
 r park;                     check "null unchanged"                        '[ "$out" = null ]'
 
-# DS-196: a top-level pr is read by nothing (release and STUCK read result.pr), so set refuses it.
+# A top-level pr is read by nothing (release and STUCK read result.pr), so set refuses it.
 before=$(cksum < "$DESK_QUEUE"); q set T-1 state=done pr=12
 check "DS-196 AC1: pr=12 is refused, names result.pr=12, writes nothing"  '[ $rc -ne 0 ] && [[ "$out" == *"result.pr=12"* ]] && [ "$(cksum < "$DESK_QUEUE")" = "$before" ]'
 q set T-1 result.pr=12; r result.pr
