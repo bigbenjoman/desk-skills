@@ -129,6 +129,11 @@ function ticket(q, key) {
   return t;
 }
 
+// Keys a ticket carries under `result`, never at the top: `set <KEY> pr=12` would write a top-level pr
+// that release and STUCK never read (they read result.pr), so set refuses it and names the right one.
+// A refusal list rather than a list of allowed keys, because pass.mjs writes many fields through set.
+const RESULT_KEYS = ['pr'];
+
 function setPath(obj, path, value) {
   const parts = path.split('.');
   let node = obj;
@@ -380,6 +385,7 @@ switch (cmd) {
       const k = p.slice(0, i);
       const v = coerce(p.slice(i + 1));
       if (k === 'state' && !STATES.includes(v)) throw new Error(`bad state "${v}" (want: ${STATES.join('|')})`);
+      if (RESULT_KEYS.includes(k.split('.')[0])) throw new Error(`no ticket carries a top-level "${k}", so nothing would read it: did you mean result.${p}? Nothing written.`);
       setPath(t, k, v);
     }
     t.updated_at = new Date().toISOString();

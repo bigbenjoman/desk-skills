@@ -44,6 +44,15 @@ r lane;                     check "plain string unchanged"                '[ "$o
 r open_questions;           check "integer unchanged"                     '[ "$out" = 0 ]'
 r park;                     check "null unchanged"                        '[ "$out" = null ]'
 
+# A top-level pr is read by nothing (release and STUCK read result.pr), so set refuses it.
+before=$(cksum < "$DESK_QUEUE"); q set T-1 state=done pr=12
+check "DS-196 AC1: pr=12 is refused, names result.pr=12, writes nothing"  '[ $rc -ne 0 ] && [[ "$out" == *"result.pr=12"* ]] && [ "$(cksum < "$DESK_QUEUE")" = "$before" ]'
+q set T-1 result.pr=12; r result.pr
+check "DS-196 AC2: result.pr=12 is written as today"                      '[ "$out" = 12 ]'
+q set T-1 state=parked held_by=T-2 'park={"question":"q"}' lane=B; s=$rc
+r state; o1=$out; r held_by; o2=$out; r park.question; o3=$out; r lane
+check "DS-196 AC3: state, held_by, park and lane are written as today"    '[ $s -eq 0 ] && [ "$o1" = "\"parked\"" ] && [ "$o2" = "\"T-2\"" ] && [ "$o3" = "\"q\"" ] && [ "$out" = "\"B\"" ]'
+
 q set-batch 'meta={"a":1}'
 out=$(node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).meta))' "$DESK_QUEUE")
 check "set-batch takes JSON too"                                          '[ "$out" = "{\"a\":1}" ]'
