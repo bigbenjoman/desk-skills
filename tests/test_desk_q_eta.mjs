@@ -530,6 +530,8 @@ t('DS-190 AC3: no log, or a log with no stage marker, falls back to the last pas
   ['L-2', 'L-3'].map((k) => /stage 0\/9 as of 18:45\s/.test(bRow(logged, k))), [true, true]);
 writeLog('logged', 'L-2', `${said('AUTOPILOT_STAGE: 2/9 understand', FIXED - 4 * MIN)}\n${echoed('echo "AUTOPILOT_STAGE: 4b/9 self-review"; git status', FIXED - MIN)}\n`);
 t('DS-190: a stage echoed at the start of a Bash command counts, as it does for pass.mjs', Q.logStage(logOf('logged', 'L-2')), { stage: '4b/9', label: '4b/9 self-review', at: FIXED - MIN });
+writeLog('logged', 'L-6', `${said('AUTOPILOT_STAGE:  6/9 hygiene', FIXED - MIN)}\n`);
+t('DS-190: the stage is the first run of non-space, as pass.mjs reads it, even after a non-breaking space', Q.logStage(logOf('logged', 'L-6'))?.stage, '6/9');
 
 // AC4: only the log's last STAGE_TAIL bytes are read: a marker before them is not seen, one inside is,
 // and five fresh 4 MB logs read in well under 100 ms.

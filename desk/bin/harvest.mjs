@@ -70,10 +70,12 @@ export function lastStage(logText) {
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     for (const [k, v] of markersIn(saidBy(d))) {
-      if (k === 'AUTOPILOT_STAGE' && v) last = { label: v, at: Date.parse(d.timestamp ?? '') || null };
+      // The stage is the first run of non-space, pass.mjs's `AUTOPILOT_STAGE:\s*(\S+)`.
+      const stage = k === 'AUTOPILOT_STAGE' ? /\S+/.exec(v)?.[0] : null;
+      if (stage) last = { stage, label: v.trim(), at: Date.parse(d.timestamp ?? '') || null };
     }
   }
-  return last && { stage: last.label.split(/\s+/)[0], ...last };
+  return last;
 }
 
 // A session that ended on its own closes its last turn with a result event; one that was killed (a
