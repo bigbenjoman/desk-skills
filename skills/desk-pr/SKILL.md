@@ -192,6 +192,12 @@ whichever section holds the change list, the evidence and the pictures.
 
 Numbers, names and paths. "Tested and works" is not a Testing bullet.
 
+**What a person still has to check is an unchecked task item.** A step only a person can do after
+merge, on §4 Staging, goes in Testing as `- [ ] <what to look at, and where>`; checks that ran stay
+plain bullets. The autopilot's daily staging-check page lists each merged PR's unchecked items, and
+puts a PR with none under "Nothing to look at". A fix for a live production breakage opens its intro
+with `PRODUCTION BROKEN: <what is broken>`, so its promotion question is asked as soon as it merges.
+
 **Record the self-review the same way.** It is a check that ran, so it belongs in Testing:
 
 > `<§4 Local review command>` at `a1b2c3d`: <§4 Clean review verdict> across 7 files, findings

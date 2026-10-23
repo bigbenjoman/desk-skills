@@ -283,6 +283,7 @@ export const CONFIG_ROWS = Object.freeze({
   'local-db': { section: '4', row: 'Local database' },
   'local-services': { section: '4', row: 'Local services' },
   staging: { section: '4', row: 'Staging' },
+  'promotion-ref': { section: '4', row: 'Promotion ref' },
   'checkout-destination': { section: '4', row: 'Check-out destination' },
   'ai-attribution': { section: '5', row: 'AI attribution' },
   'branch-names': { section: '5', row: 'Branch names' },
@@ -459,15 +460,19 @@ export function memoryCeiling() {
 // Every item of a row, one per backtick span, in order. Items are never split on commas: a check
 // can be called `Lint, Type Check & Build`. Unset is null; `none` is ['none'] (callers test isNone).
 export function configValues(id) {
+  return configValuesIn(parseConfig(), id);
+}
+
+function configValuesIn(parsed, id) {
   const { section, row } = rowFor(id);
-  const e = parseConfig().sections[section]?.byName[norm(row)];
+  const e = parsed.sections[section]?.byName[norm(row)];
   if (!e || unset(e.value)) return null;
   const items = e.items.filter((x) => !unset(x)).map(expandSlug);
   // `none` beside other items is a note written in backticks: every span is an item, so the note
   // would be read as a command or check. Refuse rather than guess which one was meant.
   if (items.length > 1 && items.some((x) => isNone(x))) {
     throw new DeskConfigError(
-      `desk: config §${section} "${row}" mixes \`none\` with other items (${items.join(' | ')}) in ${configPathHint()}. ` +
+      `desk: config §${section} "${row}" mixes \`none\` with other items (${items.join(' | ')}) in ${parsed.path || configPathHint()}. ` +
         '`none` must stand alone: move the note out of backticks, e.g. `none` (the note in plain text). Refusing to guess.',
     );
   }
@@ -738,6 +743,9 @@ export function repoPortClaims(root = deskConfigRoot()) {
 // A row from another repo's config, by slug: desk-q reads every repo's cap. Unset is null.
 export const repoConfigValue = (slug, id, root = deskConfigRoot()) =>
   configValueIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+// Every item of another repo's row, as configValues reads this repo's. Unset is null.
+export const repoConfigValues = (slug, id, root = deskConfigRoot()) =>
+  configValuesIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
 
 const blocksMeet = (a, b) => a.port <= b.last && b.port <= a.last;
 export const portClashes = (self, claims) => claims.filter((c) => c.slug !== self.slug && blocksMeet(self, c));

@@ -370,6 +370,7 @@ such thing.
 | Staging | `TODO` (one span per app, `` `<app>: <url>` ``, and how access is protected; or `none`) |
 | Staging bypass token location | `TODO` (a file only you read, e.g. `~/.config/desk/repos/<slug>/vercel-staging-bypass`: the path, never the token) |
 | Production | `TODO` (URL and how it is deployed; skills never deploy it) |
+| Promotion ref | `TODO` (the ref production was last deployed from, e.g. `origin/production` (an `origin/` branch must be named `production`, `prod` or `release`); or `none`. At the day's last check-in the digest asks once whether to promote what merged to the default branch since it, with a staging-check page of those PRs. Unset or `none`: no promotion question, and the digest says why) |
 | Vercel | `TODO` (team slug, then one span per project, `` `<app>: <project id>` ``; or `none`) |
 | Slack channels | `TODO` (channels relevant to this repo, or `none`) |
 | Check-out destination | `TODO` (where `/desk-checkout` drafts go: a Slack channel, a file path, or `none`) |

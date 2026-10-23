@@ -23,9 +23,10 @@ import { isHeld } from './batch-state.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
+import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
-export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
+export { PRODUCTION_BROKEN };
 export const digestDir = () => E.expandHome(process.env.DESK_DIGEST_DIR ?? join(E.HOME, '.desk-autopilot', 'digest'));
 const stateRoot = () => join(E.HOME, '.desk-autopilot');
 
@@ -148,20 +149,30 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
+  const npr = groups.filter((g) => g.promotion?.key).length;
   const cmd = join(bin, 'digest.mjs');
   const lines = [`# Check-in ${slot.replace('T', ' ')}`, ''];
-  if (!nq && !nd && !nc && !np && !nm) {
+  // A repo the promotion window skipped says why, last, whatever else the page holds.
+  const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
+  const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
+  if (!nq && !nd && !nc && !np && !nm && !npr) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
-    return lines.join('\n');
+    return footer();
   }
-  lines.push(`${nq} question(s) to answer, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
     lines.push('');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key)) {
     lines.push(`## ${g.slug}`, '');
+    const p = g.promotion;
+    if (p?.key) {
+      lines.push('### Promotion', '');
+      lines.push(`- [ ] Promote \`${p.range}\` (${p.count} change(s) merged since the last promotion) to production? Staging check: ${p.page}`);
+      lines.push(`  go: \`node ${cmd} promote ${g.slug} ${p.range} go\``, '');
+    }
     if (g.questions.length) {
       lines.push('### Questions', '');
       for (const q of g.questions) {
@@ -192,7 +203,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       lines.push('');
     }
   }
-  return lines.join('\n');
+  return footer();
 }
 
 // Builds the digest for the latest slot if no digest has covered it yet, under a machine-wide lock
@@ -201,7 +212,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 // or null when nothing is new since the last digest: a question the last page did not list, or a
 // decision taken since. The repo that built the latest digest keeps getting its push until the next
 // slot, so a notification that failed goes out on a later pass; consumers send each key once.
-export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid } = {}) {
+// A repo's promotion for the day's last slot: {why} (no Promotion ref, or unreadable), {empty: true}
+// (nothing merged since it) or {range, prs, page}. Tests pass their own.
+const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
+
+export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion } = {}) {
   const slot = latestSlot(times, now);
   if (!slot) return { status: 'not_due', push: null };
   mkdirSync(dir, { recursive: true });
@@ -217,6 +232,17 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const answered = readJson(answeredFile(dir), {});
     const since = last?.through ?? null;
     const inWindow = (d) => (!since || d.at > since) && d.at <= now.toISOString();
+    const name = slot.id.replace(':', '');
+    // Going to production is asked once a day, in the last slot; nothing merged asks nothing.
+    const promotionOf = (r) => {
+      if (!promotionSlot(times, slot.id)) return null;
+      let p;
+      try { p = promote(r); } catch (e) { p = { why: `the promotion range could not be read: ${e.message}` }; }
+      if (!p || p.empty) return null;
+      if (p.why) return { why: p.why };
+      recordOffered(r.state, p.range);
+      return promotionQuestion({ slug: r.slug, p, dir, name });
+    };
     const groups = list.map((r) => {
       const { taken, checks, overrides } = readDecisions(r.state);
       const overridden = new Set(overrides.map((o) => o.override_of));
@@ -227,24 +253,26 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
         checks: checks.filter(inWindow),
         putOff: putOffQuestions(r, register),
+        promotion: promotionOf(r),
       };
     });
     const maintenance = digestNotes().filter(inWindow);
-    const page = join(dir, `${slot.id.replace(':', '')}.md`);
+    const page = join(dir, `${name}.md`);
     writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
     const nm = maintenance.length;
-    const listed = groups.flatMap((g) => g.questions.map((q) => q.key));
+    const asks = groups.filter((g) => g.promotion?.key);
+    const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length).length;
+    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.promotion?.key).length;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const push = nd || nm || fresh.length
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s), ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
-    return { status: 'sent', slot: slot.id, page, questions: nq, decisions: nd, push };
+    return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
   } finally { lock.release(); }
 }
 
@@ -319,6 +347,18 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   return { ok: true, entry, marked };
 }
 
+// A "go" on a promotion question: recorded in that repo's batch notes with the range, and marked on
+// the page. What runs next is the repo's own promotion steps, never a skill.
+export function promote({ slug, range, text, dir = digestDir(), list = repos(), by = who(), now = new Date() }) {
+  const r = list.find((x) => x.slug === slug);
+  if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
+  if (!/^go$/i.test(String(text ?? '').trim())) return { ok: false, why: `only "go" is recorded; anything else, leave it and the next promotion window asks again` };
+  const a = approve({ slug, state: r.state, range, by, now });
+  if (!a.ok) return a;
+  const marked = markPage(dir, (l) => l.includes(`Promote \`${range}\``) && pageRepo(dir, l, slug), `go from ${by} at ${now.toISOString()}`);
+  return { ...a, marked };
+}
+
 // Takes a parked ticket's put-off question out of its repo's register, so it is asked again.
 export function askAgain({ slug, ticket, list = repos() }) {
   const r = list.find((x) => x.slug === slug);
@@ -353,10 +393,16 @@ if (isMain) {
     console.log(`digest: ${target}'s question is out of ${slug}'s not-now register; the next check-in lists it to answer`);
     process.exit(0);
   }
-  if (!['answer', 'override'].includes(cmd) || !slug || !target || !text) {
-    refuse('usage: digest.mjs answer <slug> <TICKET> "<answer>" | digest.mjs override <slug> <decision-id> "<choice>" | digest.mjs ask-again <slug> <TICKET>');
+  if (!['answer', 'override', 'promote'].includes(cmd) || !slug || !target || !text) {
+    refuse('usage: digest.mjs answer <slug> <TICKET> "<answer>" | digest.mjs override <slug> <decision-id> "<choice>" | digest.mjs ask-again <slug> <TICKET> | digest.mjs promote <slug> <from>..<to> go');
   }
   if (!E.SAFE_ID.test(slug) || slug.includes('..')) refuse(`'${slug}' is not a repo slug`);
+  if (cmd === 'promote') {
+    const r = promote({ slug, range: target, text });
+    if (!r.ok) refuse(`not recorded: ${r.why}`);
+    console.log(`digest: promoting ${slug} ${r.from}..${r.to} approved and recorded in its batch notes. Now run that repo's own promotion steps; skills never deploy production.`);
+    process.exit(0);
+  }
   if (cmd === 'answer') {
     const r = answer({ slug, ticket: target, text });
     if (!r.ok) refuse(r.why);
