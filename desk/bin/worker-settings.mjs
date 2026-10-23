@@ -339,7 +339,7 @@ if (mode === 'triage') {
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs machine write:*)`, `Bash(node ${b}/desk-env.mjs machine write:*)`]),
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/merge-driver.sh:*)`, `Bash(bash ${b}/merge-driver.sh:*)`, `Bash(${b}/pass.mjs:*)`, `Bash(node ${b}/pass.mjs:*)`,
       `Bash(${b}/answer.mjs:*)`, `Bash(node ${b}/answer.mjs:*)`, `Bash(${b}/queue.mjs:*)`, `Bash(node ${b}/queue.mjs:*)`,
-      `Bash(${b}/decisions.mjs:*)`, `Bash(node ${b}/decisions.mjs:*)`]),
+      `Bash(${b}/decisions.mjs:*)`, `Bash(node ${b}/decisions.mjs:*)`, `Bash(${b}/not-now.mjs:*)`, `Bash(node ${b}/not-now.mjs:*)`]),
     ...bash('docker', ' compose down', ' compose rm', ' compose run', ' rm', ' run', ' system', ' volume'),
     ...bash('docker-compose', ' down', ' rm', ' run'),
     // Nothing under the browser lock leaves the worktree, whatever §3 worker-screenshots says.

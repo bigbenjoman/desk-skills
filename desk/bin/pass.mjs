@@ -15,7 +15,8 @@ import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from '
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
-import { parseDecision, decisionEntry, appendDecisions } from './decisions.mjs';
+import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
+import { readRegister, lookup, parseInputs } from './not-now.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos } from './digest.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
@@ -154,7 +155,15 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [] };
+
+// The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
+// question is asked as it would be without one, and the person is told.
+const REGISTER = readRegister(STATE);
+if (!REGISTER.ok) report.waiting.push(`not-now register: unreadable (${REGISTER.why}), so every question is asked as usual. Fix or remove the file`);
+// A park the person put off with the same inputs: it stays parked, and is not asked again.
+const putOff = (t) => t.state === 'parked' && !!t.park?.question && !isHeld(t)
+  && lookup(REGISTER, { question: t.park.question, inputs: t.park.inputs ?? {} }).status === 'put_off';
 
 // The 5-hour usage limit. Claude Code waits for the reset and then carries on, which spends the next
 // usage window: config §3 autopilot-usage-resume decides whether a worker may, and anything but `yes`
@@ -263,12 +272,29 @@ function logDecisions(t, log, pr) {
   const entries = [];
   const unreadable = new Set();
   for (const [k, v] of markers) {
-    if (k !== 'AUTOPILOT_DECISION') continue;
-    const d = parseDecision(v);
-    if (d.ok) entries.push(decisionEntry({ decision: d.decision, ticket: t.key, run: t.session_id, repo: GH_REPO, pr, source: 'worker' }));
-    else if (!unreadable.has(v)) { unreadable.add(v); report.waiting.push(`${t.key}: unreadable decision (${d.why}), nothing logged: ${v}`); }
+    if (k !== 'AUTOPILOT_DECISION' && k !== 'AUTOPILOT_CHECKED') continue;
+    const d = k === 'AUTOPILOT_CHECKED' ? parseCheck(v) : parseDecision(v);
+    const what = k === 'AUTOPILOT_CHECKED' ? 'check' : 'decision';
+    if (d.ok) entries.push(decisionEntry({ decision: d.check ?? d.decision, ticket: t.key, run: t.session_id, repo: GH_REPO, pr, source: 'worker' }));
+    else if (!unreadable.has(v)) { unreadable.add(v); report.waiting.push(`${t.key}: unreadable ${what} (${d.why}), nothing logged: ${v}`); }
   }
   if (entries.length) appendDecisions(entries, STATE);
+}
+
+// A worker's park against the "not now" register: the inputs the question depends on, from the
+// `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
+function againstRegister(t, question, log) {
+  let raw = null;
+  try {
+    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
+      if (k === 'AUTOPILOT_PARK') raw = null;
+      else if (k === 'AUTOPILOT_PARK_INPUTS') raw = v;
+    }
+  } catch { /* no log, no inputs */ }
+  const p = parseInputs(raw);
+  if (!p.ok) report.waiting.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
+  const inputs = p.ok ? p.inputs : {};
+  return { inputs, ...lookup(REGISTER, { question, inputs }) };
 }
 
 // A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
@@ -490,7 +516,10 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
     q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
-    report.parked.push(`${t.key}: ${park.trim()}`);
+    const reg = againstRegister(t, park.trim(), log);
+    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`);
+    if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
+    else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
     logDecisions(t, log, null);
   }
   else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
@@ -1399,6 +1428,7 @@ if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r));
 if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
+if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 
 // ---- verdict -------------------------------------------------------------
@@ -1412,7 +1442,7 @@ const waiting = [
   ...report.personStalls,
   ...blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
 ];
-const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
+const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !putOff(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
 const idle = batchIdle(qEnd, prState) && !gatePending;
 const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : report.spawned.length ? 'go_on' : 'nothing_yet';
 const lines = [];

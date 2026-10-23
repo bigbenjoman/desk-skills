@@ -116,6 +116,13 @@ A category is one of `product`, `design`, `wording`, `review`, `engineering`, `s
 each call under `Decisions taken` (`desk-pr`). Taking a call never widens §3: a write the config does
 not grant is still asked first, and the gates below still hold.
 
+**Try before asking, and never re-ask what was put off.** Before asking whether the user has done a
+step, check it with a read §3 already grants; ask only if that cannot settle it, saying what you
+tried and the error. Never attempt a step that spends money, writes to a shared or live system, or
+needs a credential you lack: ask it. A check that settles it is logged with `decisions.mjs check`.
+Before any question, `not-now.mjs check` says whether the user put it off with the same inputs; an
+answer of "not now" goes in with `not-now.mjs add`. `desk-autopilot` *Ask or take* has the commands.
+
 **Decisions that stay questions go in a question carousel.** Ask with `AskUserQuestion`: one
 question per decision, your pick first labelled `(Recommended)`, a one-line trade-off on each
 option, rather than a prose list of defaults.

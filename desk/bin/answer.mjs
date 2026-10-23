@@ -11,8 +11,9 @@
 import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, queueFile, SAFE_ID } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
 import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue } from './batch-state.mjs';
+import { NOT_NOW, putOffEntry, addPutOff, notNowPath } from './not-now.mjs';
 
 crashShowsPerson();
 const STATE = stateDir();
@@ -84,6 +85,29 @@ const brief = join(STATE, 'briefings', `${ticket}.md`);
 const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
 if (existsSync(brief)) appendFileSync(brief, entry);
 else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
+
+// A "not now" answer puts the question off: it goes in the register with the inputs it depends on,
+// and is not asked again until they change (not-now.mjs). The question is the ticket's park, else
+// its triage unknowns.
+if (NOT_NOW.test(text)) {
+  try {
+    const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
+    let question = t?.park?.question && !isHeld(t) ? t.park.question : null;
+    if (!question) {
+      try { question = JSON.parse(readFileSync(join(STATE, 'triage', `${ticket}.json`), 'utf8')).unknowns?.join(' · ') || null; } catch { /* no triage record */ }
+    }
+    if (question) {
+      let by = null;
+      try { by = configValue('name') ?? null; } catch { /* outside a repo */ }
+      addPutOff(putOffEntry({ question, ticket, inputs: t?.park?.inputs ?? {}, by, at: stamp }), STATE);
+      console.log(`${ticket}: put off in ${notNowPath(STATE)}; it is not asked again until its inputs change.`);
+    } else {
+      console.log(`${ticket}: "not now", but it has no open question to put off, so nothing went in the register.`);
+    }
+  } catch (e) {
+    console.error(`${ticket}: "not now" recorded in the briefing, but not in the register: ${e.message}`);
+  }
+}
 
 // A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible
 // to spawn, and answering them is exactly what the user was asked to do. A parked ticket's count
