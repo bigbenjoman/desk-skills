@@ -2,9 +2,13 @@
 """Add, remove and list the Claude Code permission rules /desk-setup writes.
 
   harness-rules.py add <plan.json>          apply a plan; prints which rules were new. A plan for a
-                                            repo's .claude/ also gets the orchestrator-tools allows
+                                            repo's .claude/ also gets the orchestrator-tools entries
                                             (Monitor, mcp__claude-in-chrome__*, ArtifactComments,
-                                            ArtifactData, Edit on the repo's session memory dir)
+                                            ArtifactData, Edit on the repo's session memory dir;
+                                            ~/.desk-autopilot and ~/.claude/desk as
+                                            additionalDirectories with Read on each, Edit on the
+                                            first; Read on the config files in ~/.config/desk, and
+                                            Edit under it on ask)
   harness-rules.py baseline [--check] [--slack-prefix P]... [<plan.json>]
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
@@ -83,6 +87,7 @@ import sys
 import tempfile
 
 LISTS = ("allow", "ask", "deny")
+DIRS = "additionalDirectories"  # a ledger "list" only orchestrator-tools writes; never in a plan
 SLACK_PREFIX = "mcp__claude_ai_Slack__"
 BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "references", "baseline-deny.json")
 
@@ -192,7 +197,7 @@ def check_ignored(root, rel):
 
 
 def widens(plan):
-    return any(e["list"] == "allow" for e in plan.get("add", [])) or bool(plan.get("remove_guards"))
+    return any(e["list"] in ("allow", DIRS) for e in plan.get("add", [])) or bool(plan.get("remove_guards"))
 
 
 def check_destination(settings_path, plan):
@@ -273,7 +278,7 @@ class State:
             die(f"{settings_path} is not a JSON object; nothing changed")
         perm = self.settings.get("permissions")
         if perm is not None and (not isinstance(perm, dict) or
-                                 any(not isinstance(perm.get(n, []), list) for n in LISTS)):
+                                 any(not isinstance(perm.get(n, []), list) for n in LISTS + (DIRS,))):
             die(f"{settings_path} has a malformed permissions block; nothing changed")
         self.before_settings = json.dumps(self.settings, sort_keys=True) if self.settings_existed else None
 
@@ -316,7 +321,7 @@ class State:
         # Drop containers setup created and nothing else now uses.
         perm = self.settings.get("permissions")
         if isinstance(perm, dict):
-            for name in LISTS:
+            for name in LISTS + (DIRS,):
                 if f"permissions.{name}" in self.ledger["created"] and perm.get(name) == []:
                     del perm[name]
                     self.ledger["created"].remove(f"permissions.{name}")
@@ -427,9 +432,24 @@ REOWNED = [("ask", ROUTE_ASK, "jira-assign-self", "jira-create")]
 
 # Tools an orchestrator or interactive desk session relies on, written whenever `add` writes a plan
 # to a repo: Monitor (waiting on a batch), the Chrome extension's tools, the Artifact tools Claude
-# Design canvases are read with, and Edit on this repo's session memory directory.
+# Design canvases are read with, Edit on this repo's session memory directory, and the desk folders
+# it works in all day (DESK_FOLDERS).
 ORCHESTRATOR = "orchestrator-tools"
 ORCHESTRATOR_TOOLS = ["Monitor", "mcp__claude-in-chrome__*", "ArtifactComments", "ArtifactData"]
+# The batch state and the installed desk scripts are additional directories with Read on each, and
+# Edit under the state folder (design snapshots land there). Edit on the install asks, so a mode that
+# approves edits inside the session's directories cannot change what workers run. The desk config
+# folder is not a directory of the session: the credentials kept beside each config (the Jira token,
+# a staging bypass secret under a name the user picks) would then be readable without a prompt. So
+# Read covers the config files by name, and an edit to them stays the user's call, since it can
+# widen what workers may do.
+STATE_FOLDER, CONFIG_FOLDER, INSTALL_FOLDER = "~/.desk-autopilot", "~/.config/desk", "~/.claude/desk"
+DESK_FOLDERS = [STATE_FOLDER, INSTALL_FOLDER]
+DESK_FOLDER_RULES = ([("allow", f"Read({d}/**)") for d in DESK_FOLDERS] +
+                     [("allow", f"Read({CONFIG_FOLDER}/repos/*/config.md)"),
+                      ("allow", f"Read({CONFIG_FOLDER}/machine.md)"),
+                      ("allow", f"Edit({STATE_FOLDER}/**)"), ("ask", f"Edit({CONFIG_FOLDER}/**)"),
+                      ("ask", f"Edit({INSTALL_FOLDER}/**)")])
 
 
 def memory_dir_rule(root):
@@ -446,8 +466,9 @@ def orchestrator_entries(settings_path):
         return []
     top = _git(scope[0], "rev-parse", "--show-toplevel")
     root = top.stdout.strip() if top and top.returncode == 0 else scope[0]
-    return [{"list": "allow", "rule": r, "rows": [ORCHESTRATOR]}
-            for r in ORCHESTRATOR_TOOLS + [memory_dir_rule(root)]]
+    tools = [("allow", r) for r in ORCHESTRATOR_TOOLS + [memory_dir_rule(root)]]
+    dirs = [(DIRS, os.path.expanduser(d)) for d in DESK_FOLDERS]
+    return [{"list": lst, "rule": r, "rows": [ORCHESTRATOR]} for lst, r in tools + DESK_FOLDER_RULES + dirs]
 
 
 def retire(st):
@@ -563,6 +584,10 @@ def cmd_remove(st, rows, everything, user_settings):
         what = "any recorded rule" if everything else f"a recorded rule owned by {', '.join(rows)}"
         where = f"{st.settings_path} does not exist and the" if missing else "the"
         st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
+    if everything or ORCHESTRATOR in revoked:  # the user's own copies of what this row writes
+        for e in orchestrator_entries(st.settings_path):
+            if e["rule"] in (st.perm_list(e["list"], create=False) or []) and not st.recorded(e["list"], e["rule"]):
+                st.log.append(f"kept     {e['list']:5} {e['rule']}  (yours: setup did not add it; left in place)")
     before = read_bytes(st.settings_path)
     if us:
         us.save(st, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))

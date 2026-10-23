@@ -574,7 +574,9 @@ snapshot **at Stage 1, before its triage**, taken by you. Find them with
 in the repo yet). List the artifact's files (`Artifact action:list scope:files`), then read
 `project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they
 load, with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under
-`<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`). Then record where it
+`<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`). The saves need no
+approval: `/desk-setup` grants this session the state folder (`orchestrator-tools`), so a prompt per
+file means the repo was set up before that, and re-running `/desk-setup` fixes it. Then record where it
 came from, naming **every** ticket in the batch that uses this canvas, so the workers who save it
 write identical files:
 

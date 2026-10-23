@@ -56,14 +56,17 @@ not denied: `git-force-with-lease` can be `yes`, and it prompts.
 
 `harness-rules.py add` adds these to every plan it writes to a repo's `.claude/settings.local.json`,
 whatever the rows say: they are what an orchestrator or interactive desk session uses to wait on a
-batch, read a Claude Design canvas, drive the Chrome extension and keep its memory (decision
-2026-10-21: routine operations get no permission prompts). _Reach_: the Chrome tools act in your
-signed-in browser. Owner `orchestrator-tools`, not a §3 row, so `remove
-orchestrator-tools` revokes them (until the next `add`). Workers never get them.
+batch, read a Claude Design canvas, drive the Chrome extension, keep its memory, and read and write
+the desk folders it works in all day (decisions 2026-10-21 and 2026-10-23: routine operations get no
+permission prompts). _Reach_: the Chrome tools act in your signed-in browser; the session reads every
+repo's desk config and batch state. Owner `orchestrator-tools`, not a §3 row, so `remove
+orchestrator-tools` revokes them (until the next `add`), and any of them you added yourself is
+reported `kept` and left in place. Workers never get them.
 
 | Owner | Allows |
 |---|---|
 | `orchestrator-tools` | `Monitor` `mcp__claude-in-chrome__*` `ArtifactComments` `ArtifactData` `Edit(~/.claude/projects/<repo root, each non-alphanumeric character as ->/memory/**)` (the repo's session memory directory, `desk-env paths`'s `DESK_MEMORY_DIR`) |
+| `orchestrator-tools` | `additionalDirectories`: `~/.desk-autopilot` and `~/.claude/desk` (written as absolute paths). Allows `Read(~/.desk-autopilot/**)` `Read(~/.claude/desk/**)` `Edit(~/.desk-autopilot/**)` (batch state, design snapshots) and `Read(~/.config/desk/repos/*/config.md)` `Read(~/.config/desk/machine.md)`. Ask `Edit(~/.config/desk/**)` and `Edit(~/.claude/desk/**)`: a config change can widen what workers may do, and the install is what they run, so both stay your call. `~/.config/desk` is not an additional directory and gets no wider Read: the credentials kept beside each config (the Jira token, a staging bypass secret under any name) keep prompting |
 
 ## Auto-mode entries — per repo, in the user settings
 
