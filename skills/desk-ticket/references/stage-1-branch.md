@@ -8,7 +8,9 @@ a "below" here that this file does not hold points there.
 |---|---|---|
 | 1 | Branch | Off up-to-date `<default>`, named per §5 Branch names with `<TICKET>` in it, prefix from the issue type. Record the exact branch in the resume file: the PR is opened from it and is found by it (the autopilot merge driver matches a ticket's PR by its exact head branch and base `<default>`), so never rename it later. Worktree if another session is live, or lane C/D. **A new worktree then runs §4 Project subagents sync**, see below. |
 
-A Claude Design canvas is saved on the branch once it exists: `design-canvas.md`, read at Stage 0.
+**Where the ticket links a Claude Design artifact and no saved copy is committed on this branch
+yet**, the canvas is saved here once the branch exists: read `design-canvas.md` (beside this file)
+now if this session did not read it at Stage 0, as one resumed from the resume file has not.
 
 **A new worktree can have no agents until you sync it (Stage 1).** Where the repo gitignores its
 generated `.claude/agents/*.md`, a fresh worktree starts with that directory empty and every named

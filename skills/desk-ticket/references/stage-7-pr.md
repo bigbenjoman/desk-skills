@@ -25,6 +25,9 @@ work went up attached to an unrelated ticket.
 
 ## Posting the self-review
 
+With §4 Local review command `none` there is no report to post: nothing is posted, and the PR's
+Testing section says the branch had no local review (the Stage 4b skip).
+
 **Posting the self-review (Stage 7).** Local reviews are posted to the PR so the code reviewer
 (config §4 People) can merge faster. So, where config §3 `pr-self-review-comment` allows, the Stage 4b
 report goes onto the PR as one `COMMENTED` review, immediately after `gh pr create --draft`:

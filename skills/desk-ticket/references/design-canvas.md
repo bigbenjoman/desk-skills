@@ -1,7 +1,8 @@
 # desk-ticket: a Claude Design canvas
 
 Read at Stage 0 when the ticket's Design section links a Claude Design artifact; it covers that
-stage's check and Stage 1's save, so it is not read again at Stage 1.
+stage's check and Stage 1's save. A session that reached Stage 1 without reading it at Stage 0
+(one resumed from the resume file) reads it at Stage 1.
 
 **A Claude Design canvas is saved into the repo (Stages 0–1).** A shared artifact is viewable from
 another account but not editable, and a headless worker cannot read one at all, so whenever a
