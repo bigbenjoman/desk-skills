@@ -159,8 +159,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  const asks = groups.filter((g) => g.promotion?.key && !g.promotion.approved).length;
-  lines.push(`${nq} question(s) to answer${asks ? `, ${asks} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -171,12 +170,8 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     const p = g.promotion;
     if (p?.key) {
       lines.push('### Promotion', '');
-      if (p.approved) lines.push(`- \`${p.range}\` (${p.count} PR(s)) was approved by ${p.approved.by} at ${p.approved.at} and has not reached production yet: run this repo's promotion steps. Staging check: ${p.page}`);
-      else {
-        lines.push(`- [ ] Promote \`${p.range}\` (${p.count} PR(s) merged since the last promotion) to production? Staging check: ${p.page}`);
-        lines.push(`  go: \`node ${cmd} promote ${g.slug} ${p.range} go\``);
-      }
-      lines.push('');
+      lines.push(`- [ ] Promote \`${p.range}\` (${p.count} change(s) merged since the last promotion) to production? Staging check: ${p.page}`);
+      lines.push(`  go: \`node ${cmd} promote ${g.slug} ${p.range} go\``, '');
     }
     if (g.questions.length) {
       lines.push('### Questions', '');
@@ -246,7 +241,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       if (!p || p.empty) return null;
       if (p.why) return { why: p.why };
       recordOffered(r.state, p.range);
-      return promotionQuestion({ slug: r.slug, state: r.state, p, dir, name });
+      return promotionQuestion({ slug: r.slug, p, dir, name });
     };
     const groups = list.map((r) => {
       const { taken, checks, overrides } = readDecisions(r.state);
@@ -268,7 +263,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
     const nm = maintenance.length;
-    const asks = groups.filter((g) => g.promotion?.key && !g.promotion.approved);
+    const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.promotion?.key).length;

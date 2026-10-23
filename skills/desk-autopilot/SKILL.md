@@ -1027,9 +1027,11 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   Per repo with config §4 "Promotion ref" set, it lists one question covering every PR merged to
   §0 Default branch since that ref, with a staging-check page beside the digest
   (`<date>T<HHMM>-<slug>-staging.md`): each PR's title, link and the unchecked `- [ ]` items its
-  Testing section leaves to a person (`desk-pr`), a PR with none under "Nothing to look at", and the
-  §4 Staging URLs. Nothing merged: no question and no page. A Promotion ref that is unset or `none`
-  asks nothing, and the digest says why. A "go" is recorded in that repo's batch notes with the
+  Testing section leaves to a person (`desk-pr`), a PR with none under "Nothing to look at", a PR
+  whose body could not be read under "Not read", each commit naming no PR (a rebase merge), and the
+  §4 Staging URLs. Nothing merged: no question and no page. A Promotion ref that is unset, `none`, or
+  an `origin/` branch that is not a production branch asks nothing, and the digest says why. A "go"
+  is recorded in that repo's batch notes with the
   approved commit range; the repo's own promotion steps are then the person's, since skills never
   deploy production:
 
@@ -1039,7 +1041,8 @@ node ~/.claude/desk/bin/digest.mjs promote <slug> <from>..<to> go
 
   A pass that sees a batch PR newly merged whose title or intro starts `PRODUCTION BROKEN` pushes
   that repo's promotion question at once (`promotion:<slug>:<sha>:urgent`), not held for the
-  last slot.
+  last slot, and carries it on every pass until the evening question or a "go". A PR whose body or
+  range could not be read is read again on the next pass.
 
 ## Asking
 
