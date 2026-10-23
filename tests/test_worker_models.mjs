@@ -32,5 +32,21 @@ t('a flag for a model is refused', models('standard=--x high=opus'), 'refused: n
 t('a shell character is refused', models('standard=a;b high=opus'), 'refused: names the row');
 t('a bare model is refused', models('opus'), 'refused: names the row');
 
+// The finder and text models: unset unless named, after either form, and never on their own.
+t('AC1 no finder or text model: neither is set', models('standard=sonnet high=opus'), '{"standard":"sonnet","high":"opus"}');
+t('AC2 a finder model after the tiers', models('standard=sonnet high=opus finder=haiku'), '{"standard":"sonnet","high":"opus","finder":"haiku"}');
+t('AC3 a text model after default', models('default text=sonnet'), '{"off":true,"text":"sonnet"}');
+t('both, in any order among the tiers', models('text=sonnet high=opus finder=haiku standard=sonnet'), '{"standard":"sonnet","high":"opus","finder":"haiku","text":"sonnet"}');
+t('a finder model with no tiers or default is refused', models('finder=haiku'), 'refused: names the row');
+t('the tiers after default are refused', models('default standard=sonnet high=opus'), 'refused: names the row');
+t('a finder named twice is refused', models('default finder=haiku finder=sonnet'), 'refused: names the row');
+t('an empty finder model is refused', models('default finder='), 'refused: names the row');
+t('a flag for a text model is refused', models('default text=--x'), 'refused: names the row');
+t('a full model name for the finder is refused: the Agent tool takes an alias', models('default finder=claude-haiku-5-5'), 'refused: names the row');
+t('a full model name for the text model is accepted', models('default text=claude-sonnet-5-5'), '{"off":true,"text":"claude-sonnet-5-5"}');
+const why = (v) => { try { parseWorkerModels(v); return 'accepted'; } catch (e) { return e.message; } };
+t('AC5 an unknown key is refused, naming the key and the row', /Worker models.*unknown key `reviewer`/.test(why('default reviewer=haiku')), true);
+t('AC5 an unknown key after the tiers is named too', /unknown key `finders`/.test(why('standard=sonnet high=opus finders=haiku')), true);
+
 console.log(fails ? `${fails} failed` : 'worker models: all checks passed');
 process.exit(fails ? 1 : 0);

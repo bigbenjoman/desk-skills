@@ -155,6 +155,16 @@ $CHECKS" \
     if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then printf '  %-6s %-8s ok\n' MODEL "$MODEL"
     else echo "  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
   fi
+  # §3b Worker models' finder and text models (from pass.mjs; empty when unset) never run in this
+  # call, so each is asked for one word on its own: a value the CLI rejects fails here, naming it.
+  for extra in "finder:${AUTOPILOT_FINDER_MODEL:-}" "text:${AUTOPILOT_TEXT_MODEL:-}"; do
+    key="${extra%%:*}"; val="${extra#*:}"
+    [ -n "$val" ] || continue
+    GOT=$(desk_timeout 120 claude -p "Reply with exactly one word: MODEL_OK" --setting-sources "" --strict-mcp-config \
+      --model "$val" --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
+    if printf '%s\n' "$GOT" | grep -q MODEL_OK; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"
+    else echo "  $(printf '%s' "$key" | tr 'a-z' 'A-Z')  FAIL     (config §3b Worker models names $key=\"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
+  done
   check W_IN  OK        # must be able to edit its own worktree
   check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
   i=0
