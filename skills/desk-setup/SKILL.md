@@ -640,8 +640,8 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
    - an `add` entry for each rule whose **every** owner row is `yes`, `rows` = all its owners.
    - the row's `ask:` guards with the same owners; `unguard:` entries go in `remove_guards`.
    - not the orchestrator tools (Monitor, `mcp__claude-in-chrome__*`, ArtifactComments,
-     ArtifactData, Edit on this repo's session memory directory, and the desk folders
-     `~/.desk-autopilot`, `~/.config/desk` and `~/.claude/desk`): `add` writes them with every plan,
+     ArtifactData, Edit on this repo's session memory directory, the desk folders
+     `~/.desk-autopilot` and `~/.claude/desk`, and Read on the desk config files): `add` writes them with every plan,
      owner `orchestrator-tools` (permission-rows.md). Show them in step 3 all the same.
 3. **Show the plan** grouped by row, _Reach_ notes included, name the file it goes to
    (`<root>/.claude/settings.local.json`), and get a yes.

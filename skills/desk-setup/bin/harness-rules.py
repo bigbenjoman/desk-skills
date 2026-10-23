@@ -4,11 +4,11 @@
   harness-rules.py add <plan.json>          apply a plan; prints which rules were new. A plan for a
                                             repo's .claude/ also gets the orchestrator-tools entries
                                             (Monitor, mcp__claude-in-chrome__*, ArtifactComments,
-                                            ArtifactData, Edit on the repo's session memory dir; the
-                                            desk folders ~/.desk-autopilot, ~/.config/desk and
-                                            ~/.claude/desk as additionalDirectories with Read on
-                                            each, Edit on the first, Edit on the config on ask, and
-                                            Read of a *token* file under the config denied)
+                                            ArtifactData, Edit on the repo's session memory dir;
+                                            ~/.desk-autopilot and ~/.claude/desk as
+                                            additionalDirectories with Read on each, Edit on the
+                                            first; Read on the config files in ~/.config/desk, and
+                                            Edit under it on ask)
   harness-rules.py baseline [--check] [--slack-prefix P]... [<plan.json>]
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
@@ -436,15 +436,18 @@ REOWNED = [("ask", ROUTE_ASK, "jira-assign-self", "jira-create")]
 # it works in all day (DESK_FOLDERS).
 ORCHESTRATOR = "orchestrator-tools"
 ORCHESTRATOR_TOOLS = ["Monitor", "mcp__claude-in-chrome__*", "ArtifactComments", "ArtifactData"]
-# The batch state, the desk config and the installed desk scripts: additional directories with Read
-# on all three. Edit is allowed under the state folder only (design snapshots land there); an edit to
-# the config stays the user's call, since it can widen what workers may do, and the credentials kept
-# beside it stay unreadable, as they are to workers.
+# The batch state and the installed desk scripts are additional directories with Read on each, and
+# Edit under the state folder (design snapshots land there). The desk config folder is not a
+# directory of the session: the credentials kept beside each config (the Jira token, a staging
+# bypass secret under a name the user picks) would then be readable without a prompt. So Read covers
+# the config files by name, and an edit to them stays the user's call, since it can widen what
+# workers may do.
 STATE_FOLDER, CONFIG_FOLDER = "~/.desk-autopilot", "~/.config/desk"
-DESK_FOLDERS = [STATE_FOLDER, CONFIG_FOLDER, "~/.claude/desk"]
+DESK_FOLDERS = [STATE_FOLDER, "~/.claude/desk"]
 DESK_FOLDER_RULES = ([("allow", f"Read({d}/**)") for d in DESK_FOLDERS] +
-                     [("allow", f"Edit({STATE_FOLDER}/**)"), ("ask", f"Edit({CONFIG_FOLDER}/**)"),
-                      ("deny", f"Read({CONFIG_FOLDER}/**/*token*)")])
+                     [("allow", f"Read({CONFIG_FOLDER}/repos/*/config.md)"),
+                      ("allow", f"Read({CONFIG_FOLDER}/machine.md)"),
+                      ("allow", f"Edit({STATE_FOLDER}/**)"), ("ask", f"Edit({CONFIG_FOLDER}/**)")])
 
 
 def memory_dir_rule(root):

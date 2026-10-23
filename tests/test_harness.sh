@@ -198,20 +198,23 @@ cp "$T/ot/.claude/settings.local.json" "$T/ot-before.json"; cp "$T/ot.json" "$T/
 run --ledger "$T/ot.json" --settings "$T/ot/.claude/settings.local.json" add "$T/allow.json"
 check "AC7: every rule already there is reported present, with no backup and no change" '[ $rc -eq 0 ] && [[ "$out" == *"present  allow Monitor  (recorded for orchestrator-tools)"* ]] && [[ "$out" == *"present  allow Bash(gh pr ready *)"* ]] && [[ "$out" != *NEW* ]] && [[ "$out" != *backup* ]] && cmp -s "$T/ot/.claude/settings.local.json" "$T/ot-before.json" && cmp -s "$T/ot.json" "$T/ot-ledger-before.json" && [ "$(ls "$T"/ot/.claude/ | grep -c bak-desk)" = 0 ]'
 mkrepo oty; printf '.claude/settings.local.json\n' > "$T/oty/.gitignore"
-DESK_ALLOW='["Read(~/.desk-autopilot/**)","Read(~/.config/desk/**)","Read(~/.claude/desk/**)","Edit(~/.desk-autopilot/**)"]'
-DESK_DIRS="[\"$HOME/.desk-autopilot\",\"$HOME/.config/desk\",\"$HOME/.claude/desk\"]"
-jq -n --arg m "${MEM//-ot\//-oty/}" --argjson da "$DESK_ALLOW" --argjson dd "$DESK_DIRS" '{permissions:{allow:(["Bash(gh pr ready *)","Monitor","mcp__claude-in-chrome__*","ArtifactComments","ArtifactData",$m] + $da),ask:["Bash(gh pr merge *)","Edit(~/.config/desk/**)"],deny:["Read(~/.config/desk/**/*token*)"],additionalDirectories:$dd}}' > "$T/oty/.claude/settings.local.json"
+DESK_ALLOW='["Read(~/.desk-autopilot/**)","Read(~/.claude/desk/**)","Read(~/.config/desk/repos/*/config.md)","Read(~/.config/desk/machine.md)","Edit(~/.desk-autopilot/**)"]'
+DESK_DIRS="[\"$HOME/.desk-autopilot\",\"$HOME/.claude/desk\"]"
+jq -n --arg m "${MEM//-ot\//-oty/}" --argjson da "$DESK_ALLOW" --argjson dd "$DESK_DIRS" '{permissions:{allow:(["Bash(gh pr ready *)","Monitor","mcp__claude-in-chrome__*","ArtifactComments","ArtifactData",$m] + $da),ask:["Bash(gh pr merge *)","Edit(~/.config/desk/**)"],additionalDirectories:$dd}}' > "$T/oty/.claude/settings.local.json"
 cp "$T/oty/.claude/settings.local.json" "$T/oty-before.json"
 run --ledger "$T/oty.json" --settings "$T/oty/.claude/settings.local.json" add "$T/allow.json"
 check "AC7: rules the user already holds are reported present, with no backup and no change" '[ $rc -eq 0 ] && [[ "$out" == *"present  allow Monitor  (yours"* ]] && [[ "$out" == *"present  allow ${MEM//-ot\//-oty/}  (yours"* ]] && [[ "$out" != *NEW* ]] && [[ "$out" != *backup* ]] && cmp -s "$T/oty/.claude/settings.local.json" "$T/oty-before.json" && [ "$(ls "$T"/oty/.claude/ | grep -c bak-desk)" = 0 ]'
 
-# DS-192 the desk folders: additional directories, Read on all three, Edit on the state folder,
-# Edit on the config on ask, owner orchestrator-tools
+# the desk folders: the state and install folders as additional directories with Read, Edit on the
+# state folder, Read on the config files only, Edit on the config on ask, owner orchestrator-tools
 OTS="$T/ot/.claude/settings.local.json"
 ot_dirs(){ jq -e --argjson dd "$DESK_DIRS" '.permissions.additionalDirectories as $a | all($dd[]; . as $d | $a | index($d))' "$1" >/dev/null; }
-ot_rules(){ jq -e --argjson da "$DESK_ALLOW" '(.permissions.allow as $a | all($da[]; . as $r | $a | index($r))) and (.permissions.ask | index("Edit(~/.config/desk/**)")) and (.permissions.deny | index("Read(~/.config/desk/**/*token*)"))' "$1" >/dev/null; }
+ot_rules(){ jq -e --argjson da "$DESK_ALLOW" '(.permissions.allow as $a | all($da[]; . as $r | $a | index($r))) and (.permissions.ask | index("Edit(~/.config/desk/**)"))' "$1" >/dev/null; }
+# the credentials beside a config (any name) are reachable through no allow and no directory
+ot_creds(){ jq -e '[.permissions.allow[], .permissions.additionalDirectories[]] | all(test("config/desk(/\\*\\*)?\\)?$") | not)' "$1" >/dev/null; }
 ot_ledger(){ jq -e --argjson dd "$DESK_DIRS" '[.rules[] | select(.rows == ["orchestrator-tools"]) | .list + " " + .rule] as $r | ($r | index("ask Edit(~/.config/desk/**)")) and ($r | index("allow Edit(~/.desk-autopilot/**)")) and all($dd[]; ("additionalDirectories " + .) as $d | $r | index($d))' "$1" >/dev/null; }
-check "DS-192 AC1: the plan grants the three desk folders as additional directories, with Read on each" 'ot_dirs "$OTS" && ot_rules "$OTS"'
+check "DS-192 AC1: the plan grants the state and install folders as additional directories, with Read on them and the config files" 'ot_dirs "$OTS" && ot_rules "$OTS"'
+check "  … and never the config folder itself, where credentials sit beside each config" 'ot_creds "$OTS" && ! grep -qF "\"$HOME/.config/desk\"" "$OTS"'
 check "DS-192 AC2: Edit is allowed under the state folder and on ask under the config, both recorded" 'jq -e ".permissions.allow | index(\"Edit(~/.desk-autopilot/**)\")" "$OTS" >/dev/null && ! jq -e ".permissions.allow | index(\"Edit(~/.config/desk/**)\")" "$OTS" >/dev/null && ot_ledger "$T/ot.json"'
 mkrepo otd; printf '.claude/settings.local.json\n' > "$T/otd/.gitignore"
 run --ledger "$T/otd-ledger.json" --settings "$T/otd/.claude/settings.local.json" add "$T/allow.json"

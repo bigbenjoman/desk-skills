@@ -66,7 +66,7 @@ reported `kept` and left in place. Workers never get them.
 | Owner | Allows |
 |---|---|
 | `orchestrator-tools` | `Monitor` `mcp__claude-in-chrome__*` `ArtifactComments` `ArtifactData` `Edit(~/.claude/projects/<repo root, each non-alphanumeric character as ->/memory/**)` (the repo's session memory directory, `desk-env paths`'s `DESK_MEMORY_DIR`) |
-| `orchestrator-tools` | `additionalDirectories`: `~/.desk-autopilot`, `~/.config/desk` and `~/.claude/desk` (written as absolute paths). Allows `Read(~/.desk-autopilot/**)` `Read(~/.config/desk/**)` `Read(~/.claude/desk/**)` `Edit(~/.desk-autopilot/**)` (batch state, design snapshots). Ask `Edit(~/.config/desk/**)`: a config change can widen what workers may do, so it stays your call. Deny `Read(~/.config/desk/**/*token*)`: the credentials beside the config stay unreadable, as they are to workers |
+| `orchestrator-tools` | `additionalDirectories`: `~/.desk-autopilot` and `~/.claude/desk` (written as absolute paths). Allows `Read(~/.desk-autopilot/**)` `Read(~/.claude/desk/**)` `Edit(~/.desk-autopilot/**)` (batch state, design snapshots) and `Read(~/.config/desk/repos/*/config.md)` `Read(~/.config/desk/machine.md)`. Ask `Edit(~/.config/desk/**)`: a config change can widen what workers may do, so it stays your call. `~/.config/desk` is not an additional directory and gets no wider Read: the credentials kept beside each config (the Jira token, a staging bypass secret under any name) keep prompting |
 
 ## Auto-mode entries — per repo, in the user settings
 
