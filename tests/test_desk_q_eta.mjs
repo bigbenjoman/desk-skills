@@ -220,7 +220,7 @@ t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+○ read
 
 // ---- forecast AC5 and AC6: no date while it waits on the user, or is stuck
 t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
-t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships     No date until you answer it. Press c to date it at the next check-in.'), true);
+t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships     No date until you answer it. Press c to date it as if answered at the next check-in.'), true);
 t('DS-161 AC6: a stuck ticket has no date', F.T['A-7'], null);
 t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships     No date while it is blocked behind A-6. Unblock it to date it.'), true);
 
@@ -278,13 +278,14 @@ const a6 = () => frame().find((l) => /\sA-6\s/.test(l)) ?? '';
 // The note follows the tab line, under the breadcrumb.
 const note = () => frame()[1];
 await sleep(20);
-t('DS-161 AC12: before c, the header says parked tickets have no date', note().endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
+const UNDATED = 'Tickets waiting on you have no date · c: date them as if answered at the next check-in';
+t('DS-161 AC12 (DS-188 AC3): before c, the header says tickets waiting on you have no date', note().endsWith(UNDATED) && /no date/.test(a6()), true);
 input.write('c'); await sleep(20);
-t('DS-161 AC12: after c, the header says they are dated at the next check-in', note().endsWith('Parked: dated at the next check-in · c to undo'), true);
+t('DS-161 AC12 (DS-188 AC4): after c, the header says they are dated at the next check-in', note().endsWith('Waiting-on-you tickets dated at the next check-in · c to undo'), true);
 t('DS-161 AC12: and the ticket waiting on the user has a date', a6().includes(`  ${when(Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].likely, FIXED)}  `) && !/no date/.test(a6()), true);
 t('DS-161 AC12: from no earlier than the next check-in, Tue 08:00', Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].start >= at(2026, 9, 20, 8, 0), true);
 input.write('c'); await sleep(20);
-t('DS-161 AC12: c again takes the dates away', note().endsWith('Parked: no date · c to date them at check-ins') && /no date/.test(a6()), true);
+t('DS-161 AC12: c again takes the dates away', note().endsWith(UNDATED) && /no date/.test(a6()), true);
 ui.finish(0);
 
 // ==== DS-162: each ticket's first estimate, kept beside its merge, and how often it held.
@@ -334,17 +335,27 @@ const RATE = '78% shipped before their could-run-to time (last 40 tickets)';
 t('DS-162 AC3: the Timeline header gives the hit rate', Q.timelineScreen(Q.loadRepos(FIXED), 'acme__hits', { now: FIXED }).split('\n').slice(0, 3).includes(RATE), true);
 t('DS-162 AC3: and so does --plain', Q.run(['ships', 'hits', '--plain'], { now: FIXED }).split('\n').slice(0, 3).includes(RATE), true);
 
-// ---- AC4: no pass for 15 minutes marks the dates paused
+// ---- AC4: no pass for 15 minutes stops the dates
 repo('quiet', 3800, { tickets: { 'Q-1': { state: 'triaged' } }, sizes: { 'Q-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 20 * MIN });
 const quiet = repoAt('quiet');
-const PAUSED = 'Dates paused: no pass for 20m. The forecast assumes passes keep running, so dates show again at the next pass.';
-const STOPPED = ['quiet · passes stopped: last pass 18:31 (20m ago)',
-  'Running workers carry on, but nothing new starts and stages are not updated. To resume passes, run /desk-autopilot in quiet and ask it to pick the batch back up.'];
-t('DS-162 AC4 (DS-185 AC7): ships gives no dates, says passes stopped and how to resume them', Q.run(['ships', 'quiet', '--plain'], { now: FIXED }).split('\n').slice(0, 2), STOPPED);
+const STOPPED = ['quiet · passes stopped 20m ago (last pass 18:31)',
+  'Running workers carry on, but nothing new starts and stages are not updated.',
+  'To resume: run /desk-autopilot in quiet.'];
+t('DS-162 AC4 (DS-188 AC1, AC6): ships gives no dates, says passes stopped and how to resume them', Q.run(['ships', 'quiet', '--plain'], { now: FIXED }).split('\n').slice(0, 3), STOPPED);
 t('DS-162 AC4 (DS-185 AC3): the queue screen dates nothing, and no cell reads paused', /\sQ-1\s+○ ready\s+starts when passes resume\s+—\s+—\s/.test(Q.repoScreen(quiet, { now: FIXED })), true);
-t('DS-162 AC4: the ticket screen says so in place of its dates', field(Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n'), 'Ships'), `Ships     ${PAUSED}`);
-t('DS-162 AC4: the overview\'s QUEUE DONE reads paused', /\spaused\s/.test(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? ''), true);
-t('DS-162 AC4: and a paused forecast saves no estimate', readEstimates(stateOf('quiet')).size, 0);
+t('DS-162 AC4 (DS-188 AC1): the ticket screen says passes stopped in place of its dates', field(Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n'), 'Ships'),
+  'Ships     Passes stopped 20m ago, so no dates until they resume.');
+const quietRow = Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? '';
+t('DS-162 AC4 (DS-188 AC1): the overview\'s QUEUE DONE reads passes stopped, not paused', [/\spasses stopped\s/.test(quietRow), /paused/.test(quietRow)], [true, false]);
+t('DS-162 AC4: and a stopped forecast saves no estimate', readEstimates(stateOf('quiet')).size, 0);
+// Every screen that describes a stopped batch.
+const quietViews = { repo: Q.repoScreen(quiet, { now: FIXED }), ticket: Q.ticketScreen(quiet, 'Q-1', { now: FIXED }), ships: Q.run(['ships', 'quiet', '--plain'], { now: FIXED }),
+  timeline: Q.timelineScreen(Q.loadRepos(FIXED), 'acme__quiet', { now: FIXED }), days: Q.daysScreen(Q.loadRepos(FIXED), 'acme__quiet', { now: FIXED }),
+  epics: await epicsView('acme__quiet'), overview: Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? '' };
+// The overview's row says it in two columns: LAST PASS "■ stopped · 20m", QUEUE DONE "passes stopped".
+t('DS-188 AC1: every screen of a stopped batch says passes stopped 20m ago and never paused',
+  Object.fromEntries(Object.entries(quietViews).map(([k, s]) => [k, [k === 'overview' ? /stopped · 20m .*passes stopped/.test(s) : /passes stopped 20m ago/i.test(s), /paused/i.test(s)]])),
+  Object.fromEntries(Object.keys(quietViews).map((k) => [k, [true, false]])));
 
 // ---- DS-185: a batch between passes more than 15 minutes apart is live until its next pass is overdue
 const between = { tickets: { 'B-1': { state: 'running', stage: '3/9' }, 'B-2': { state: 'running', stage: '0/9' }, 'B-3': { state: 'triaged' }, 'B-4': { state: 'triaged' } },
@@ -364,10 +375,11 @@ t('DS-185 AC3: with no next pass recorded, 22m without a pass is stopped', repoA
 t('DS-185 AC3: and with its next pass more than the grace period overdue', repoAt('overdue').live, false);
 t('DS-185 AC3: no STARTS or SHIPS cell reads paused, and running rows start "running"',
   [gone, overdue].map((s) => [/paused/.test(s), /\sB-1\s+● running\s+stage 3\/9 as of \d\d:\d\d\s+running\s+—\s/.test(bRow(s, 'B-1'))]), [[false, true], [false, true]]);
-t('DS-185 AC3: the header says passes stopped, when, what carries on, and how to resume', gone.split('\n').slice(0, 2),
-  ['gone · batch gone · passes stopped: last pass 18:29 (22m ago)',
-    'Running workers carry on, but nothing new starts and stages are not updated. To resume passes, run /desk-autopilot in gone and ask it to pick the batch back up.']);
-t('DS-185 AC3: an overdue next pass is named', overdue.split('\n')[0], 'overdue · batch overdue · passes stopped: last pass 18:11 (40m ago), next was due 18:36');
+t('DS-185 AC3 (DS-188 AC6): the header says passes stopped, when, what carries on, and how to resume', gone.split('\n').slice(0, 3),
+  ['gone · batch gone · passes stopped 22m ago (last pass 18:29)',
+    'Running workers carry on, but nothing new starts and stages are not updated.',
+    'To resume: run /desk-autopilot in gone.']);
+t('DS-185 AC3: an overdue next pass is named', overdue.split('\n')[0], 'overdue · batch overdue · passes stopped 40m ago (last pass 18:11, next was due 18:36)');
 t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+● running\s+stage 0\/9 as of 18:29\s/.test(bRow(waiting, 'B-2')), true);
 t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
 repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
@@ -376,7 +388,7 @@ const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);
 t('DS-185 AC7: and prints the next pass, or that passes stopped and how to resume',
-  [shipsW.split('\n').includes('orchestrator live, last pass 22m ago · next pass 18:56'), shipsG.split('\n').slice(0, 2).join('\n') === gone.split('\n').slice(0, 2).join('\n').replace('gone · batch gone · ', 'gone · ')], [true, true]);
+  [shipsW.split('\n').includes('orchestrator live, last pass 22m ago · next pass 18:56'), shipsG.split('\n').slice(0, 3).join('\n') === gone.split('\n').slice(0, 3).join('\n').replace('gone · batch gone · ', 'gone · ')], [true, true]);
 t('DS-185 AC7: a stopped batch\'s running row still reads running in ships', /^ {2}B-1\s+● running\s+running\s+—$/m.test(shipsG), true);
 
 // ---- AC5: under 10 merged estimates, no percentage
@@ -434,7 +446,7 @@ t('DS-165 AC3: no earlier than its queued child ships', VF.E['EP-2'].likely >= V
 
 // ---- AC4: a child waiting on the user leaves the epic undated
 t('DS-165 AC4: an epic with a child waiting on the user has no date', VF.E['EP-3'], null);
-t('DS-165 AC4: and says so, with c', epicRow('EP-3').endsWith('No date: 1 waiting on you · c to date them at check-ins'), true);
+t('DS-165 AC4: and says so, with c', epicRow('EP-3').endsWith('No date: 1 waiting on you · c: date them as if answered at the next check-in'), true);
 
 // ---- AC5: every child done shows when it shipped
 t('DS-165 AC5: an epic whose children are all done shows when it shipped', /\s2\/2\s+—\s+shipped today 13:51$/.test(epicRow('EP-4')), true);
@@ -484,7 +496,7 @@ const IDLE = 'idle · Nothing left for autopilot: 2 tickets need you (2 need an 
 const idleViews = { Timeline: Q.timelineScreen(Q.loadRepos(FIXED), 'acme__idle', { now: FIXED }), 'By day': Q.daysScreen(Q.loadRepos(FIXED), 'acme__idle', { now: FIXED }),
   Epics: await epicsView('acme__idle'), ships: Q.run(['ships', 'idle', '--plain'], { now: FIXED }) };
 t('DS-184 AC1-AC4: Timeline, By day, Epics and ships say nothing is left for autopilot, and not that dates are paused',
-  Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split(/\r?\n/).includes(IDLE), /Dates paused/.test(s)]])),
+  Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split(/\r?\n/).includes(IDLE), /paused|passes stopped/i.test(s)]])),
   { Timeline: [true, false], 'By day': [true, false], Epics: [true, false], ships: [true, false] });
 t('DS-184 AC5: the overview\'s QUEUE DONE for it does not read paused',
   (Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}idle /.test(l)) ?? '').match(/\s(paused|nothing left)\s/)?.[1], 'nothing left');
@@ -494,7 +506,7 @@ t('DS-184 AC1: one ticket, none needing a session, reads in the singular with no
 
 repo('stalled', 4720, { tickets: { 'P-1': { state: 'running', stage: '3/9' }, 'P-2': { state: 'triaged' }, 'P-3': { state: 'parked', park: { question: 'which copy?' } } },
   sizes: { 'P-1': 'M', 'P-2': 'M', 'P-3': 'M' }, history: hist12, pass: FIXED - 20 * MIN });
-const stalledNote = 'stalled · Dates paused: no pass for 20m. The forecast assumes passes keep running, so dates show again at the next pass.';
+const stalledNote = 'stalled · passes stopped 20m ago, so no dates until they resume.';
 const row = (s, key) => s.split('\n').find((l) => new RegExp(`^ +${key} `).test(l)) ?? '';
 const stl = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__stalled', { now: FIXED });
 const sdy = Q.daysScreen(Q.loadRepos(FIXED), 'acme__stalled', { now: FIXED });
@@ -505,7 +517,7 @@ t('DS-184 AC6: and so does By day, the tickets under "No date yet"',
   [sdy.split('\n')[0], sdy.split('\n').some((l) => l.startsWith('  No date yet · 3 tickets')), /^ {4}P-2 +○ ready +Starts when passes resume/.test(row(sdy, 'P-2'))], [stalledNote, true, true]);
 repo('stalledep', 4730, { tickets: { 'S-1': { state: 'triaged' } }, sizes: { 'S-1': 'M' }, epics: { 'S-1': { key: 'EP-5', summary: 'Stalled epic', children: [{ key: 'S-1', done: false }] } }, history: hist12, pass: FIXED - 20 * MIN });
 const sep = (await epicsView('acme__stalledep')).split('\r\n');
-const sepNote = sep.findIndex((l) => l.startsWith('stalledep · Dates paused')), sepRow = sep.findIndex((l) => /^[ ›] {1,2}EP-5 .*No date while passes are stopped$/.test(l));
+const sepNote = sep.findIndex((l) => l.startsWith('stalledep · passes stopped')), sepRow = sep.findIndex((l) => /^[ ›] {1,2}EP-5 .*No date while passes are stopped$/.test(l));
 t('DS-184 AC6: and Epics lists its epics undated, under the note', [sepNote >= 0, sepRow > sepNote], [true, true]);
 
 // AC7: at a width narrower than the note, it wraps at word boundaries; AC8: with no width it is one line.

@@ -219,8 +219,8 @@ const startsCell = (F, x, now) => {
 };
 const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
-const pausedNote = (r, now) => `Dates paused: ${r.last == null ? 'no pass yet' : `no pass for ${ago(now - r.last).replace(' ago', '')}`}. `
-  + 'The forecast assumes passes keep running, so dates show again at the next pass.';
+// A stopped batch has no dates: the forecast assumes passes keep running.
+const stoppedNote = (r, now) => (r.last == null ? 'no pass yet, so no dates until passes start' : `passes stopped ${ago(now - r.last)}, so no dates until they resume`);
 // A parked ticket only an interactive /desk-ticket session can take on: queue.mjs requeues only
 // lanes A, B and E to a headless worker.
 const needsSession = (t) => ['C', 'D'].includes(t.lane) || /^lane [CD]\b/.test(t.park?.question ?? '');
@@ -261,12 +261,12 @@ function etaFields(r, F, x, now) {
   if (!F) return [];
   if (F.idle) return [['Ships', [[idleNote(r), null]]]];
   if (F.none) return [['Ships', [[noHistory(r, F), null]]]];
-  if (F.paused) return [['Ships', [[pausedNote(r, now), null]]]];
+  if (F.paused) return [['Ships', [[`${capital(stoppedNote(r, now))}.`, null]]]];
   const key = x.t.key, e = F.T[key];
   if (!e) {
     const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
     const why = r.workers === 0 ? 'No date: workers are set to 0, so nothing starts.'
-      : x.k === 'needs' ? 'No date until you answer it. Press c to date it at the next check-in.'
+      : x.k === 'needs' ? 'No date until you answer it. Press c to date it as if answered at the next check-in.'
         : x.k === 'stuck' ? `No date while it is blocked behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
           : x.k === 'failed' ? 'No date: it failed. Requeue it to date it.'
             : `No date until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.`;
@@ -287,7 +287,7 @@ function etaFields(r, F, x, now) {
 // When the repo's last dated ticket ships.
 function queueDone(r, now, checkin) {
   const F = forecastOf(r, { now, checkin });
-  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'paused' : F.clears ? when(F.clears, now) : 'no date yet';
+  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? when(F.clears, now) : 'no date yet';
 }
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
@@ -335,7 +335,7 @@ function epicWhy(r, F, e, checkin) {
   const why = [['needs', 'waiting on you'], ['stuck', 'blocked'], ['failed', 'failed']].filter(([k]) => c(k)).map(([k, w]) => `${c(k)} ${w}`);
   const rest = undated.length - c('needs') - c('stuck') - c('failed');
   if (rest) why.push(`${rest} behind those`);
-  return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c to date them at check-ins' : ''}`;
+  return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c: date them as if answered at the next check-in' : ''}`;
 }
 
 // One epic's line: key, title, children done of total, then STARTS and SHIPS, shipped, or why it has no date.
@@ -428,7 +428,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
     if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
     const F = forecastOf(r, { now, checkin });
     if (F.idle) return { r, note: `${r.name} · ${idleNote(r)}` };
-    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${pausedNote(r, now)}`, stopped: F } : { r, F };
+    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${stoppedNote(r, now)}.`, stopped: F } : { r, F };
   });
   const fit = (s) => (width == null ? [s] : wrap(s, width));
   const dated = per.filter((p) => p.F);
@@ -447,7 +447,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
 
 // A ships view's first line; `workers` null leaves the count out, as every repo's view does.
 const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count} merged tickets`
-  + `${workers == null ? '' : ` · ${workers} workers`}${checkin ? ' · parked dated at the next check-in' : ''}`;
+  + `${workers == null ? '' : ` · ${workers} workers`}${checkin ? ' · waiting-on-you tickets dated at the next check-in' : ''}`;
 
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
@@ -639,7 +639,8 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
 }
 
 // The screens' header note on tickets waiting on the user.
-const parkedBadge = (checkin) => (checkin ? 'Parked: dated at the next check-in · c to undo' : 'Parked: no date · c to date them at check-ins');
+const parkedBadge = (checkin) => (checkin ? 'Waiting-on-you tickets dated at the next check-in · c to undo'
+  : 'Tickets waiting on you have no date · c: date them as if answered at the next check-in');
 
 // ---- screens ---------------------------------------------------------------------------------
 
@@ -656,6 +657,8 @@ const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValu
 // LAST PASS: "● live · 4m ago" in green while passes run on time; stopped, how long since the last
 // one, yellow under a day and red beyond.
 const LAST_W = 21;
+// QUEUE DONE fits "passes stopped".
+const QD_W = 14;
 function lastPass(r, now) {
   if (r.live) return [`● live · ${ago(r.last == null ? null : now - r.last)}`, STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
@@ -695,15 +698,15 @@ function needsLine(list) {
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
-  const allowed = liveAllowed(repos);
   const room = headroom({ running, cap, avail, gate, perWorker });
   const at = clock(now);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
     needsLine(list),
-    `desk-q · ${at} · workers ${running} running · ${allowed} allowed by live batches · machine ${cap ?? '?'} · ${avail.toFixed(1)} GiB free · room for ${room}${cap == null ? ' (no machine profile: /desk-setup writes one)' : ''}`,
+    `desk-q · ${at} · ${running} worker${running === 1 ? '' : 's'} running · `
+      + `${cap == null ? 'no machine cap (/desk-setup writes a machine profile)' : `machine cap ${cap} workers`}, ${room} free · ${avail.toFixed(1)} GiB free`,
     '',
-    bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', 12)}  WORKERS`),
+    bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', QD_W)}  WORKERS`),
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
@@ -714,11 +717,11 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : DIM]; };
     const qd = queueDone(r, now, checkin);
     rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}`, null], [pad(last, LAST_W), lastSgr], n('running', 4), n(['ready', 'queued'], 7, STATE_SGR.ready), n('waiting', 6), n('stuck', 9), n('needs', 11), n('failed', 8),
-      [rpad(r.done, 6), r.done ? null : DIM], ['  ', null], [pad(qd, 12), ['paused', 'no history'].includes(qd) ? DIM : null],
+      [rpad(r.done, 6), r.done ? null : DIM], ['  ', null], [pad(qd, QD_W), ['passes stopped', 'no history'].includes(qd) ? DIM : null],
       [`  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`, null]], { kind: 'repo', slug: r.slug }));
   }
   const none = repos.filter((r) => !hasBatch(r));
-  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 65)}  cap ${r.cap}`);
+  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 53 + QD_W)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
   if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
   const seen = new Set();
@@ -745,11 +748,12 @@ function passLines(r, now) {
     const next = r.next == null ? '' : r.next > now ? ` · next pass ${clock(r.next)}` : ` · next pass due ${clock(r.next)}`;
     return [`orchestrator live, last pass ${ago(now - r.last)}${next}`];
   }
-  const resume = r.q?.supervised === true ? `check the supervisor: node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
-    : `run /desk-autopilot in ${r.name} and ask it to pick the batch back up`;
+  const resume = r.q?.supervised === true ? `check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
+    : `run /desk-autopilot in ${r.name}`;
   return [
-    r.last == null ? 'no pass yet' : `passes stopped: last pass ${clock(r.last)} (${ago(now - r.last)})${r.next != null ? `, next was due ${clock(r.next)}` : ''}`,
-    `Running workers carry on, but nothing new starts and stages are not updated. To resume passes, ${resume}.`,
+    r.last == null ? 'no pass yet' : `passes stopped ${ago(now - r.last)} (last pass ${clock(r.last)}${r.next != null ? `, next was due ${clock(r.next)}` : ''})`,
+    'Running workers carry on, but nothing new starts and stages are not updated.',
+    `To resume: ${resume}.`,
   ];
 }
 
@@ -898,7 +902,7 @@ const FIELD_W = 10;
 
 // The ticket page's Now: what is happening to it, in its state's colour.
 function nowSegs(r, row, k, t) {
-  if (!row) return [[capital(k), null]];
+  if (!row) return [[capital(k === 'stuck' ? 'blocked' : k), null]];
   if (k === 'running') return [['A worker is on it', STATE_SGR.running], [` · ${runningStage(r, row)}`, null]];
   const why = k === 'needs' && t.state === 'parked' ? 'waits for your answer' : k === 'stuck' ? `blocked ${detail(r, row)}` : k === 'failed' ? 'failed: requeue it' : detail(r, row);
   return [[capital(why), STATE_SGR[k] ?? null]];
@@ -1444,7 +1448,7 @@ export function interactive({
     else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;
-      msg = checkin ? 'Parked tickets are now dated as if you answer at the next check-in (08:00 or 17:00).' : 'Parked tickets have no date until you answer them.';
+      msg = checkin ? 'Tickets waiting on you are now dated as if answered at the next check-in (08:00 or 17:00).' : 'Tickets waiting on you have no date until you answer them.';
     }
     else if (str === 'l' && view.kind === 'ticket') {
       const r = repoOf(view.slug);
