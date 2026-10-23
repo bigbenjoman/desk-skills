@@ -116,6 +116,7 @@ check "AC2: the digest lists it with the park question" 'questions | grep -q "^C
 check "AC2: it is not requeued" 'grep -q "\"state\":\"parked\"" "$DESK_QUEUE"'
 
 # ---- AC3: an item needing a §3 row that is ask goes to the digest ---------------------------------
+queue '{"D":{"key":"D","state":"done","lane":"A","result":{"pr":4}}}'
 W='D: screenshots for PR #4 are in /x — config §3 pr-images is \"ask\". Upload them by hand'
 verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[\"$W\"],\"parked\":[],\"notify\":true,\"push\":[]}"
 out=$(tick)
