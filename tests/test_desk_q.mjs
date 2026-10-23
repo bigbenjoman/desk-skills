@@ -92,7 +92,8 @@ const all = W.run('--plain', '--all');
 t('AC3 every set-up repo listed', ['voicepa', 'desk-skills', 'pr-ninja', 'pranicuk', 'forewatt', 'yield-index', 'gygg-platform'].every((n) => rowOf(all.out, n)), true);
 t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? ''), true);
 // ---- AC4: header gives running workers, live batches' allowance against the machine cap, free memory
-const head = lines(ov.out)[0];
+// The line under what needs you.
+const head = lines(ov.out)[1];
 t('AC4 header', /workers 2 running · 5 allowed by live batches · machine 10 · \d+\.\d GiB free · room for \d+$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('▲ ports overlap: desk-skills + pranicuk share 3502–3503')), true);
@@ -120,13 +121,13 @@ const zz = W.run('--plain', 'zz');
 t('AC10 no match exits non-zero listing the repos', zz.code !== 0 && /forewatt/.test(zz.err) && /voicepa/.test(zz.err), true);
 // ---- AC11: show on a held ticket
 const show = W.run('--plain', 'voicepa', 'show', 'VPL-3');
-const want = ['Long gaps between bookings', 'waiting', 'Starts when the last of these merges:\n  VPL-1     ● running', 'Parked: held by orchestrator', 'lane A', 'Why lane A:', 'mechanical once the gap rule is read', 'Files in scope (2):', 'src/gaps.ts', 'Branch: feat/VPL-3-gaps', `Log: ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
+const want = ['Long gaps between bookings', 'waiting', 'Starts when the last of these merges:\n  VPL-1     ● running', 'Parked: held by orchestrator', 'lane A', 'Why lane A', 'mechanical once the gap rule is read', 'Files in scope · 2', 'src/gaps.ts', 'Branch    feat/VPL-3-gaps', `Open      log ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
 t('AC11 show prints every field', want.filter((w) => !show.out.includes(w)).join(' | '), '');
 t('AC11 show leaves out the merged blocker', lines(show.out).some((l) => /^\s+VPL-0\b/.test(l)), false);
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);
 // ---- AC12: no arguments, output not a terminal: the overview, exit 0
 const bare = W.run();
-t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^desk-q · /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
+t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^● .*\ndesk-q · /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
 
 // ---- AC6: a held ticket whose blocker is parked for its own reason is stuck
 const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
@@ -265,13 +266,14 @@ await A.press('\r');
 t('AC2 Enter on voicepa opens its queue', A.crumbs(), 'desk-q › voicepa');
 t('AC12 no row on an 80-column repo screen is wider than 80', A.frame().filter((l) => l.length > 80).length, 0);
 t('AC13 a title that does not fit ends in an ellipsis', /VPL-4 .*…$/.test(A.frame().find((l) => /VPL-4/.test(l)) ?? ''), true);
-await A.press(DOWN); await A.press(DOWN); await A.press('\r');
-t('AC3 down twice and Enter opens the third ticket', A.crumbs(), 'desk-q › voicepa › VPL-3');
+// Grouped: Running VPL-1 and VPL-2, Ready VPL-4, Waiting VPL-3.
+await A.press(DOWN); await A.press(DOWN); await A.press(DOWN); await A.press('\r');
+t('AC3 down to the Waiting ticket and Enter opens it', A.crumbs(), 'desk-q › voicepa › VPL-3');
 t('AC4 the blocker is a selectable row', /^›\s+VPL-1\s+● running/.test(A.selected()), true);
 await A.press('\r');
 t('AC4 Enter on the blocker opens its ticket screen', A.crumbs(), 'desk-q › voicepa › VPL-1');
 await A.press('\x1b'); await A.press('\x1b');
-await A.press(DOWN); await A.press('\r');
+await A.press('\x1b[A'); await A.press('\r');
 t('the fourth ticket opens', A.crumbs(), 'desk-q › voicepa › VPL-4');
 await A.press('l');
 t('AC14 l with no log says so', A.frame().some((l) => l === 'VPL-4 has no log yet.'), true);
@@ -283,7 +285,7 @@ for (const c of ':voicepa show vpl-3') await A.press(c);
 t('the : prompt echoes what is typed', A.frame().at(-1), ':voicepa show vpl-3');
 await A.press('\r');
 t('AC9 :voicepa show <KEY> opens that ticket', A.crumbs(), 'desk-q › voicepa › VPL-3');
-const logLine = () => A.frame().some((l) => l.startsWith('Log: '));
+const logLine = () => A.frame().some((l) => l === '  src/gap-29.ts');
 t('a ticket taller than the terminal hides its last lines at first', logLine(), false);
 for (let i = 0; i < 40; i++) await A.press(DOWN);
 t('↓ on the last blocker reads on to the bottom of the ticket', logLine(), true);
@@ -325,7 +327,7 @@ const qfile = join(I.env.DESK_HOME, 'repos', 'acme__voicepa', 'queue.json');
 const rewritten = vpQueue({ 'VPL-7': { state: 'triaged', open_questions: 0 } });
 writeFileSync(qfile, JSON.stringify({ version: 1, ...rewritten, tickets: Object.fromEntries(Object.entries(rewritten.tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
 await sleep(Q.REFRESH_MS);
-t('AC6 within 2 seconds the change shows, selection still on the same key', C.frame().some((l) => /^\s+1\s+VPL-7\s/.test(l)) && /^›\s+4\s+VPL-3\s/.test(C.selected()), true);
+t('AC6 within 2 seconds the change shows, selection still on the same key', C.frame().some((l) => /^\s+1\s+VPL-7\s/.test(l)) && /^›\s+5\s+VPL-4\s/.test(C.selected()), true);
 C.ui.finish(0);
 
 // ---- DS-116 on the screen: shift+arrows, t, b, + and -, each a queue.mjs command on voicepa's queue.
@@ -342,15 +344,18 @@ const SHIFT_UP = '\x1b[1;2A';
 writeQueue(sixQueue(3));
 const D = screen({ kind: 'repo', slug: 'acme__voicepa' }, 160);
 await sleep(20);
-for (let i = 0; i < 4; i++) await D.press(DOWN);
+// Grouped: Running VPL-1, Ready VPL-3 to VPL-6, Waiting VPL-2.
+for (let i = 0; i < 3; i++) await D.press(DOWN);
 await D.press(SHIFT_UP);
 t('DS-116 AC1 shift+↑ on position 5 moves it to 4, marked placed', /^›\s+\*4\s+VPL-5\s/.test(D.selected()) && unfinishedKeys(nowQ()).indexOf('VPL-5') === 3 && nowQ().tickets['VPL-5'].placed === true, true);
 t('DS-116 AC1 the status line confirms the move', D.frame().some((l) => l.startsWith('VPL-5 → position 4 of 6, placed by you.')), true);
-await D.press('\x1b[A'); await D.press('\x1b[A');
+// Down past VPL-4 and VPL-6 to the Waiting group's VPL-2.
+for (let i = 0; i < 3; i++) await D.press(DOWN);
 await D.press('t');
 t('DS-116 AC2 t puts the waiting ticket first', unfinishedKeys(nowQ())[0], 'VPL-2');
 t('DS-116 AC2 and says it still waits on its blockers', D.frame().some((l) => /^VPL-2 → position 1 of 6\b.*still waits on VPL-1\b/.test(l)), true);
-await D.press(DOWN);
+// Up to the top row, the Running group's VPL-1.
+for (let i = 0; i < 6; i++) await D.press('\x1b[A');
 const beforeRunning = readFileSync(qfile, 'utf8');
 await D.press(SHIFT_UP);
 t('DS-116 AC3 shift+↑ on a running ticket says it is running', D.frame().some((l) => l.startsWith('VPL-1 is running')), true);
@@ -373,7 +378,7 @@ await sleep(20);
 await E1.press('-');
 t('DS-116 AC6 - from 1 worker sets 0', nowQ().concurrency, 0);
 t('DS-116 AC6 and says no new workers start and running ones finish', status(E1).includes('No new workers start, and running ones finish.'), true);
-await E1.press(DOWN); await E1.press(DOWN); await E1.press('\r');
+await E1.press(DOWN); await E1.press('\r');
 await E1.press('b');
 t('b on a ticket screen moves that ticket to the bottom', `${E1.crumbs()} ${unfinishedKeys(nowQ()).at(-1)}`, 'desk-q › voicepa › VPL-3 VPL-3');
 t('the ticket screen says its position was placed by you', E1.frame()[2].includes('position 6 of 6 (placed by you)'), true);
@@ -389,7 +394,7 @@ put(I.T, I.env, 'pr-ninja', { port: 3200, conc: '2 / 4', beat: 1, queue: { batch
   'PN-1': { state: 'running', stage: '4/9' }, 'PN-2': { state: 'running', stage: '2/9' }, 'PN-3': { state: 'triaged', open_questions: 0 } } } });
 const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 the header gives running, allowed, machine, free memory and the room left',
-  lines(room)[0].endsWith(' · workers 4 running · 9 allowed by live batches · machine 10 · 36.6 GiB free · room for 6'), true);
+  lines(room)[1].endsWith(' · workers 4 running · 9 allowed by live batches · machine 10 · 36.6 GiB free · room for 6'), true);
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
 t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 (cap 4) · 1 ready with no free slot'), true);
 t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('5 (cap 5)'), true);
@@ -521,13 +526,13 @@ t('DS-167 AC1 7 of 8 titles start "autopilot:": those rows start at the words af
 t('DS-167 AC2 7 of 12 titles start "Your day <n>/14:": the tag is dropped from those rows', titlesOf('voice12').slice(0, 7).join(), 'step 1,step 2,step 3,step 4,step 5,step 6,step 7');
 t('DS-167 AC3 no tag starts half the titles: every tag stays', titlesOf('ninja6').join(), ninja6.join());
 t('DS-167 AC3 a tag on one title alone stays', Q.titler(['desk-q: a'])('desk-q: a'), 'desk-q: a');
-t('DS-167 AC4 the ticket screen shows the full title with its tag', lines(Q.ticketScreen(repoOf('skills8'), 'A-1', { width: 160 }))[2], 'autopilot: one');
+t('DS-167 AC4 the ticket screen shows the full title with its tag', lines(Q.ticketScreen(repoOf('skills8'), 'A-1', { width: 160 }))[1], 'autopilot: one');
 
 const head8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /^ +# /.test(l));
-// Wide enough for "waits for a worker (2 of 2 busy)".
-t('DS-167 AC7 the DETAIL column is 36 columns wide', head8.indexOf('STARTS') - head8.indexOf('DETAIL'), 36);
+// DS-187: WHAT IT NEEDS takes 52 columns where the terminal has them.
+t('DS-167 AC7 (DS-187) the WHAT IT NEEDS column is 52 columns wide', head8.indexOf('STARTS') - head8.indexOf('WHAT IT NEEDS'), 52);
 const a8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /A-8 /.test(l));
-t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('DETAIL'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 33)}…  `);
+t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('WHAT IT NEEDS'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 49)}…  `);
 t('DS-167 AC7 the ticket screen still shows the detail in full', lines(Q.ticketScreen(repoOf('skills8'), 'A-8', { width: 160 })).includes(`Parked: ${LONG_Q}`), true);
 
 // A dated repo whose W-1 title is longer than any row has room for, and W-2's is short.
@@ -887,9 +892,10 @@ await sleep(20);
 const tp = lastFrame(Tp);
 const tpLine = (text) => tp.find((l) => l.replace(ANSI, '').startsWith(text)) ?? '';
 t('DS-186 AC1 on a ticket\'s page the state after the key is in its colour, with its glyph', tpLine('H-2  ').includes('\x1b[34m○ ready\x1b[39m'), true);
-t('DS-186 AC1 the Ships date is bold', /Ships: \x1b\[1m[^\x1b]+\x1b\[22m {3}Could run to/.test(tpLine('Starts: ')), true);
-t('DS-186 AC1 the Branch, Log, Jira and file path lines are dim', ['Branch: ', 'Log: ', 'Jira: ', '  src/a.ts'].map((p) => tpLine(p).startsWith('\x1b[2m')).join(), 'true,true,true,true');
-t('DS-186 AC7 the ticket page\'s headings are bold', ['Why lane A:', 'Files in scope (1):'].map((p) => tpLine(p).startsWith('\x1b[1m')).join(), 'true,true');
+t('DS-186 AC1 the Ships date is bold', /Ships {5}\x1b\[22m\x1b\[1m[^\x1b]+\x1b\[22m\x1b\[2m {2}could run to/.test(tpLine('Ships ')), true);
+t('DS-186 AC1 the branch, the Jira link and the file paths are dim',
+  [tpLine('Branch ').includes('\x1b[2mfeat/H-2-x'), tpLine('Open ').includes('\x1b[2macme.atlassian.net/browse/H-2'), tpLine('  src/a.ts').startsWith('\x1b[2m')].join(), 'true,true,true');
+t('DS-186 AC7 the ticket page\'s headings are bold', ['Why lane A', 'Files in scope'].map((p) => tpLine(p).startsWith('\x1b[1m')).join(), 'true,true');
 t('DS-186 AC7 the breadcrumb\'s last part is bold, the parts before it dim',
   tp[0].startsWith('\x1b[2mdesk-q\x1b[22m\x1b[2m › \x1b[22m\x1b[2mhue\x1b[22m\x1b[2m › \x1b[22m\x1b[1mH-2\x1b[22m'), true);
 Tp.ui.finish(0);
@@ -912,11 +918,11 @@ await sleep(20);
 const passCell = (name) => coloured(ovRow(Lp, name))[0] ?? '';
 t('DS-186 AC3 LAST PASS: live in green, stopped under a day in yellow, over a day in red',
   `${/^32:● live · \d+m ago$/.test(passCell('ontime'))} ${/^33:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^31:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
-// AC8: each ports overlap line starts ▲ and is yellow; "N need you" is magenta.
+// AC8: each ports overlap line starts ▲ and is yellow; "N tickets need you" is magenta (DS-187).
 const lpRaw = lastFrame(Lp);
 const overlaps = lpRaw.filter((l) => l.replace(ANSI, '').includes('ports overlap:'));
 t('DS-186 AC8 each ports overlap line starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.startsWith('\x1b[33m▲ ports overlap: '))}`, 'true true');
-t('DS-186 AC8 "N need you" is magenta', lpRaw.some((l) => /^\x1b\[35m\d+ need you\x1b\[39m, \d+ blocked\.$/.test(l)), true);
+t('DS-186 AC8 "N tickets need you" is magenta', lpRaw.some((l) => /^\x1b\[35m● \d+ tickets need you\x1b\[39m/.test(l)), true);
 // AC4: the QUEUE DONE notes "paused" and "no history" are dim.
 t('DS-186 AC4 the QUEUE DONE notes paused and no history are dim', `${ovRow(Lp, 'hours').includes('\x1b[2mpaused')} ${ovRow(Lp, 'ontime').includes('\x1b[2mno history')}`, 'true true');
 Lp.ui.finish(0);
@@ -954,6 +960,73 @@ writeFileSync(join(slLogs, 'VPL-1.log'), `${JSON.stringify({ type: 'assistant', 
 const slOut = SL.run('--plain', 'voicepa').out;
 t('DS-190 AC1 the CLI shows the worker\'s stage since its marker', (lines(slOut).find((l) => /VPL-1/.test(l)) ?? '').includes(`stage 4/9 verify since ${saidAt.toTimeString().slice(0, 5)}`), true);
 t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2\s+● running\s+stage 0\/9 as of \d\d:\d\d\s/.test(lines(slOut).find((l) => /VPL-2/.test(l)) ?? ''), true);
+
+// ---- DS-187: lead with what needs you, a repo's Queue grouped by state, a ticket's status first.
+// AC1: voicepa has two tickets parked on the user and one blocked behind them; pr-ninja has one.
+const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
+  'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
+  'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' } } } } } });
+t('DS-187 AC1 the overview opens with how many need you, each repo\'s count, most first, then the blocked count',
+  lines(NY.run('--plain').out)[0], '● 3 tickets need you  2 in voicepa · 1 in pr-ninja   1 blocked');
+const NYs = screen({ kind: 'overview', all: false }, 160);
+await sleep(20);
+t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('● ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
+NYs.ui.finish(0);
+
+// mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
+dated('mixed', 4830, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: {
+  'M-1': { state: 'parked', park: { question: 'which copy?' } }, 'M-2': { ...ready, branch: 'feat/M-2-x', collides_with: 'M-5' },
+  'M-3': { state: 'parked', held_by: 'M-1', park: { question: 'held by orchestrator: blocked by M-1' } }, 'M-4': { state: 'running', stage: '4/9' },
+  'M-5': ready, 'M-6': { state: 'parked', held_by: 'M-2', park: { question: 'held by orchestrator: blocked by M-2' } } } });
+const mixedTriage = join(I.env.HOME, '.desk-autopilot', 'acme__mixed', 'triage');
+writeFileSync(join(mixedTriage, 'M-2.json'), JSON.stringify({ ticket: 'M-2', epic: null, summary: 'M-2 title', size: 'M', lane: 'A', lane_reason: 'mechanical once read', files_in_scope: ['src/m.ts'] }));
+writeFileSync(join(mixedTriage, 'M-5.json'), JSON.stringify({ ticket: 'M-5', epic: null, summary: LONG_T, size: 'M' }));
+const mixed = () => Q.loadRepos(FIXED).find((r) => r.name === 'mixed');
+const GROUP_LINE = /^ {2}([A-Z][a-z]+(?: you)?) · (\d+)$/;
+const groupsAndKeys = (out) => lines(out).map((l) => GROUP_LINE.exec(l)?.slice(1).join(' · ') ?? /^ +\d+ {2}(M-\d)\s/.exec(l)?.[1]).filter(Boolean).join(' | ');
+const mixedQ = Q.repoScreen(mixed(), { width: 140, now: FIXED });
+t('DS-187 AC2 the Queue is grouped Running, Ready, Waiting, Needs you, Blocked, each group in queue order', groupsAndKeys(mixedQ),
+  'Running · 1 | M-4 | Ready · 2 | M-2 | M-5 | Waiting · 1 | M-6 | Needs you · 1 | M-1 | Blocked · 1 | M-3');
+const mixedHead = lines(mixedQ).find((l) => /^ +# /.test(l));
+t('DS-187 AC3 at 140 columns WHAT IT NEEDS follows STATE and is at least 50 wide',
+  `${mixedHead.indexOf('WHAT IT NEEDS') === mixedHead.indexOf('STATE') + 13} ${mixedHead.indexOf('STARTS') - mixedHead.indexOf('WHAT IT NEEDS') >= 50}`, 'true true');
+const m5 = lines(mixedQ).find((l) => /^ +\d+ {2}M-5 /.test(l)) ?? '';
+t('DS-187 AC3 and TITLE takes the rest of the width', `${m5.length} ${m5.endsWith('…')}`, '140 true');
+const mixedPlain = I.run('--plain', 'mixed').out;
+t('DS-187 AC9 --plain keeps the group headings and the WHAT IT NEEDS column',
+  `${/^ {2}Needs you · 1$/m.test(mixedPlain)} ${/^ +# {2}TICKET +STATE +WHAT IT NEEDS +STARTS/m.test(mixedPlain)}`, 'true true');
+
+const m2Page = lines(Q.ticketScreen(mixed(), 'M-2', { width: 120, now: FIXED, jiraUrl: 'https://acme.atlassian.net/browse/M-2' }));
+const fieldsOf = (ls) => ls.map((l) => /^(Now|Ships|Based on|Holds up|Branch|Open) {2,}\S/.exec(l)?.[1]).filter(Boolean).join();
+const at2 = (p) => m2Page.findIndex((l) => l.startsWith(p));
+t('DS-187 AC6 a ticket\'s page: the ticket line, the title, then Now, Ships, Based on, Holds up, Branch and Open',
+  `${m2Page[0].startsWith('M-2  ○ ready')} ${m2Page[1]} ${fieldsOf(m2Page)} ${at2('Now') === 3}`, 'true M-2 title Now,Ships,Based on,Holds up,Branch,Open true');
+t('DS-187 AC6 Holds up names the ticket waiting on this one, and Open the keys', `${m2Page[at2('Holds up')]} | ${m2Page[at2('Open')]}`,
+  'Holds up  M-6 waits for this to merge | Open      l log  ·  o Jira  acme.atlassian.net/browse/M-2');
+t('DS-187 AC6 then the lane rationale, the files in scope and never-runs-with, in that order',
+  `${at2('Open') < at2('Why lane A')} ${at2('Why lane A') < at2('Files in scope · 1')} ${at2('Files in scope · 1') < at2('Never runs with M-5')}`, 'true true true');
+t('DS-187 AC7 a ticket nothing waits on has no Holds up line', fieldsOf(lines(Q.ticketScreen(mixed(), 'M-5', { width: 120, now: FIXED }))).includes('Holds up'), false);
+
+const Gm = screen({ kind: 'repo', slug: 'acme__mixed' }, 140, () => FIXED);
+await sleep(20);
+const selKey = () => /^›\s+\d+\s+(\S+)/.exec(Gm.selected())?.[1] ?? Gm.selected();
+const walk = [selKey()];
+for (const k of [DOWN, DOWN, DOWN, '\x1b[A']) { await Gm.press(k); walk.push(selKey()); }
+t('DS-187 AC8 the selection starts on the first ticket, and ↓ and ↑ step over the group headings', walk.join(), 'M-4,M-2,M-5,M-6,M-5');
+const readyHeading = Gm.frame().findIndex((l) => l.trim() === 'Ready · 2');
+await Gm.click(5, readyHeading + 1);
+t('DS-187 a click on a group heading selects nothing and opens nothing', `${Gm.crumbs()} ${selKey()}`, 'desk-q › mixed M-5');
+Gm.ui.finish(0);
+
+// AC5: passes stopped for five hours; at 60 columns the resume instruction wraps rather than being cut.
+put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch: 'halted', concurrency: 1, tickets: { 'HL-1': ready } } });
+const Hs = screen({ kind: 'repo', slug: 'acme__halted' }, 60);
+await sleep(20);
+const hsFrame = Hs.frame();
+const hsHead = hsFrame.slice(2, hsFrame.findIndex((l) => /^ +# {2}TICKET/.test(l)));
+t('DS-187 AC5 on a narrow terminal the stopped batch\'s resume instruction wraps, never cut with …',
+  `${hsHead.some((l) => l.endsWith('…'))} ${hsHead.every((l) => l.length <= 60)} ${hsHead.join(' ').includes('To resume passes, run /desk-autopilot in halted and ask it to pick the batch back up.')}`, 'false true true');
+Hs.ui.finish(0);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
