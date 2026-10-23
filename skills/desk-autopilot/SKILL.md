@@ -23,7 +23,9 @@ moment it goes green*. `desk-clearance` owns what outlives the batch.
 This skill adds **no opinions about how a ticket is done**. `desk-ticket` decides that, and the
 workers get the memory index and every `desk-*` skill exactly as an interactive session does.
 What this adds is the batch: isolation, ordering, one round of questions up front, and a place for
-parked work to wait. Workers see two deltas: `references/autopilot-worker-contract.md`, and the
+parked work to wait. Workers see two deltas: `references/autopilot-worker-contract.md` (the core,
+in every worker's system prompt; each stage's rules are a `references/worker-contract-*.md` file the
+worker reads when it reaches that stage, and a task worker gets them all up front), and the
 resource rules seeded into `batch-notes.md` from `references/batch-notes-header.md`. Both are
 deltas: where one and a skill disagree, the skill wins.
 
@@ -982,7 +984,7 @@ recommendation like any other.
 it, so one task string serves the whole batch. `AUTOPILOT_RESUME` takes precedence; `pass.mjs` sets
 it only to resume a worker a reboot or crash killed, and setting it yourself does not work: see
 `references/orchestrator-recovery.md`. Set `AUTOPILOT_TASK` once in
-`pass.mjs`'s environment and every worker gets it; the worker contract's section 0 says a task
+`pass.mjs`'s environment and every worker gets it; the worker contract's section 0 (`references/worker-contract-task.md`) says a task
 overrides the ticket-implementation stages.
 
 Use it when the unit of work is not a ticket. A PR review sweep across open PRs is the worked

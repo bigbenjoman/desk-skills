@@ -35,6 +35,10 @@ command -v claude >/dev/null 2>&1 || { echo "FAIL: claude CLI not on PATH" >&2; 
 STATE="$DESK_STATE"
 BIN="$DESK_BIN"
 CONTRACT="$DESK_SKILLS_DIR/desk-autopilot/references/autopilot-worker-contract.md"
+# The core rides in every turn's system prompt; each stage section is a file beside it that the
+# worker Reads when it reaches that stage (the core's stage table names them). A task worker has no
+# stages to reach, so it gets the task section and every stage section up front.
+CONTRACT_DIR="$(dirname "$CONTRACT")"
 LOG="$STATE/logs/$TICKET.log"
 # Per repo: $DESK_STATE is this repo's batch state, so two repos with the same ticket key never
 # share (or overwrite) one another's permission file.
@@ -209,6 +213,27 @@ else
 fi
 
 SYSTEM="$(cat "$CONTRACT")"
+SYSTEM="${SYSTEM//\{\{STAGE_DIR\}\}/$CONTRACT_DIR}"
+if [ -n "${AUTOPILOT_TASK:-}" ]; then
+  # Every stage file the core's table names, so a missing one refuses the spawn rather than dropping out.
+  STAGES="$(grep -oE 'worker-contract-stage-[0-9]+\.md' "$CONTRACT" | uniq || true)"
+  [ -n "$STAGES" ] || { echo "FAIL: worker contract core names no stage sections" >&2; exit 1; }
+  for f in worker-contract-task.md $STAGES; do
+    [ -s "$CONTRACT_DIR/$f" ] || { echo "FAIL: worker contract section missing at $CONTRACT_DIR/$f" >&2; exit 1; }
+  done
+  # The task section goes where §0 always sat, after the header and before section 1, so "everything
+  # below" in it still covers the whole contract.
+  MARK="## Stage sections: read each one when you reach it"
+  case "$SYSTEM" in *"$MARK"*) ;; *) echo "FAIL: worker contract core has no \"$MARK\" heading" >&2; exit 1 ;; esac
+  SYSTEM="${SYSTEM%%"$MARK"*}$(cat "$CONTRACT_DIR/worker-contract-task.md")
+
+$MARK${SYSTEM#*"$MARK"}"
+  for f in $STAGES; do
+    SYSTEM="$SYSTEM
+
+$(cat "$CONTRACT_DIR/$f")"
+  done
+fi
 # A batch base (queue.mjs set-batch base=…) arrives as DESK_DEFAULT_BRANCH. The skills read
 # <default> from config §0, which still names the repo default, so the worker is told outright.
 CFG_DEFAULT="$(node "$DESK_ENV_MJS" get default-branch 2>/dev/null </dev/null; true)"
