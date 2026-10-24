@@ -323,7 +323,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const reaped = reapDecider(state, s);
   // The next tick is this agent's interval away, so the pass records it as its next.
   const every = Number(installedInterval(slug));
-  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', ...(every > 0 ? ['--next', `+${every}`] : [])], {
+  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
   let v;
