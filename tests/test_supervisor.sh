@@ -45,7 +45,7 @@ config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync, readFileSync } from 'node:fs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
@@ -221,13 +221,21 @@ check "DS-140: an idle batch still pushes the check-in, once, and runs no pass" 
 rm -f "$T/checkin.json"
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
+mkdir -p "$T/state/closed-out"
+printf '{"ticket":"B","how":"merged","pr":9,"at":"2026-10-23T09:00:00.000Z","queue":"%s"}\n' "$T/elsewhere.json" > "$T/state/closed-out/B.json"
+out=$(tick)
+check "DS-180 a close-out note for another queue leaves the batch idle" '[ "$(count "$T/pass.calls")" = 2 ]'
+printf '{"ticket":"B","how":"merged","pr":9,"at":"2026-10-23T09:00:00.000Z","queue":"%s"}\n' "$DESK_QUEUE" > "$T/state/closed-out/B.json"
+out=$(tick)
+check "DS-180 an interactive close-out's note ends the idle, so a pass reads it" '[ "$(count "$T/pass.calls")" = 3 ]'
+rm -f "$T/state/closed-out/B.json"
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"triaged"}}'
 verdict "$NOTHING"
 out=$(tick)
-check "a ticket requeued into the batch runs passes again" '[ "$(count "$T/pass.calls")" = 3 ]'
+check "a ticket requeued into the batch runs passes again" '[ "$(count "$T/pass.calls")" = 4 ]'
 queue true '{}' "$DONE" b2
 out=$(tick)
-check "a new batch runs passes again" '[ "$(count "$T/pass.calls")" = 4 ]'
+check "a new batch runs passes again" '[ "$(count "$T/pass.calls")" = 5 ]'
 
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
