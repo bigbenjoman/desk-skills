@@ -59,7 +59,9 @@
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
 #
-# Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, or another driver running.
+# Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, another driver running, or
+# gh signed out (a PR list it refuses for that is logged and stops the driver, never read as empty).
+# Once its arguments are accepted, the last line it writes is always `merge driver exited <code>`.
 set -uo pipefail
 
 usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"] [--log]" >&2; exit 2; }
@@ -113,6 +115,11 @@ if [ -n "$LOG" ]; then
   fi
   exec >>"$LOG_STATE/merge-driver.log" 2>&1
 fi
+# The last line is always the exit code, so the supervisor can tell a driver that failed from one it
+# never saw stop. The lock is removed only once this driver holds it, never another driver's.
+LOCK_HELD=""
+on_exit(){ rc=$?; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+trap on_exit EXIT
 
 for id in autopilot-merge pr-merge-green; do
   p="$(desk_perm "$id")"
@@ -166,8 +173,7 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
   if [ -z "$holder" ] && [ -z "$(find "$LOCKD" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then sleep 1; continue; fi
   mv "$LOCKD" "$LOCKD.stale.$$" 2>/dev/null && rm -rf "$LOCKD.stale.$$"   # atomic takeover of a dead holder's lock
 done
-echo "$$" > "$LOCKD/pid"
-trap 'rm -rf "$LOCKD"' EXIT
+echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -201,12 +207,19 @@ console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].bran
 NODE
 }
 # prs <state> [<key>...] -> lines `<number>\t<isDraft>\t<key>` for the batch's PRs (or those keys')
-# based on the default branch.
+# based on the default branch. A list gh could not give returns 1, or 4 when gh is signed out (gh's own
+# exit code for it, or a 401), with gh's error in $GH_ERR: it runs in a $( ), so it cannot log.
+GH_ERR="$SD/gh-pr-list.err"
 prs(){
   local st="$1"; shift
-  local map; if [ "$#" -gt 0 ]; then map="$(ticket_map "$@")"; else map="$(ticket_map "${KEY_LIST[@]}")"; fi || return 1
-  gh pr list --repo "$REPO" --state "$st" --author "$AUTHOR" --base "$BASE_BRANCH" --limit 100 \
-      --json number,title,headRefName,baseRefName,isDraft 2>/dev/null \
+  local map raw rc; if [ "$#" -gt 0 ]; then map="$(ticket_map "$@")"; else map="$(ticket_map "${KEY_LIST[@]}")"; fi || return 1
+  raw="$(gh pr list --repo "$REPO" --state "$st" --author "$AUTHOR" --base "$BASE_BRANCH" --limit 100 \
+      --json number,title,headRefName,baseRefName,isDraft 2>"$GH_ERR")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    { [ "$rc" -eq 4 ] || grep -qiE 'gh auth login|not logged in|HTTP 401|bad credentials' "$GH_ERR"; } && return 4
+    return 1
+  fi
+  printf '%s' "$raw" \
     | jq -r --argjson m "$map" --arg base "$BASE_BRANCH" '
         .[] | select(.baseRefName == $base) | . as $p
         | [ $m[] | .re as $re | select((.branch != "" and $p.headRefName == .branch)
@@ -491,7 +504,11 @@ while true; do
   join_queue_tickets
   release_chain
 
-  list=$(prs open) || { log "could not list PRs"; pause 120 1; continue; }
+  list=$(prs open); rc=$?
+  # Signed out, every later loop fails the same way, so the driver stops and says so: the supervisor
+  # reads this line as the reason, rather than a driver that runs and never merges.
+  if [ "$rc" -eq 4 ]; then log "FAIL: gh is signed out ($(tail -1 "$GH_ERR" 2>/dev/null)) — nothing can merge until \`gh auth login\`; stopping"; exit 1; fi
+  [ "$rc" -eq 0 ] || { log "could not list PRs"; pause 120 1; continue; }
   drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 }')
   [ -z "$ready" ] && { log "no ready batch PRs"; pause 60; continue; }

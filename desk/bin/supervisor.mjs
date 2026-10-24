@@ -21,7 +21,10 @@
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
 //     refused or failed;
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`) while tickets
-//     are still to merge and no driver holds <state>/merge-driver.lock.d;
+//     are still to merge and no driver holds <state>/merge-driver.lock.d, its output in
+//     <state>/merge-driver.log. A running driver logs nothing; once the one it started has stopped, the
+//     next tick logs why from that log (and keeps it in supervisor.json), and after 2 failed starts in a
+//     row sends one notification naming the repo and the reason;
 //   - when a pass exits needing the person, hands what the recovery rules never settle to the check-in
 //     digest and starts one headless decider session (decider.mjs) for the rest, unless one is still
 //     running; each tick stops a decider past its time, and records what an ended one cost, settled
@@ -31,8 +34,9 @@
 //     once if none is live, and its lines go into the tick's report;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
 //     a new batch, or a ticket admitted or requeued into this one. Each idle tick still runs the
-//     check-in and moves the weekly maintenance window on (maintenance.mjs step).
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
+//     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
+//     window on (maintenance.mjs step).
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -239,8 +243,12 @@ function interval() {
   const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut) {
     intakeAlone();
+    // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
-    if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
+    const driver = watchDriver(state, s, driverHolder(state), E.repoSlug());
+    if (reaped.length || driver.length) writeState(state, s);
+    if (reaped.length) log([`== ${stamp()} ${reaped.join('\n')}`]);
+    if (driver.length) log([`== ${stamp()} idle: the merge driver`, ...driver]);
     idleCheckin(state, s, log, stamp);
     return;
   }
@@ -269,9 +277,15 @@ function runIntake() {
 
 // An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
 // the check-in alone and pushes what it returns, once per key, as a pass's push would be.
+// The check-in reads Jira and GitHub; one that hangs is killed so the tick still ends.
+const CHECKIN_TIMEOUT_MS = Number(process.env.DESK_CHECKIN_TIMEOUT_MS) || 5 * 60 * 1000;
 function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
   if (maintenance) idleMaintenance(log, stamp);
-  const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CHECKIN_TIMEOUT_MS, killSignal: 'SIGKILL' });
+  if (r.error?.code === 'ETIMEDOUT') {
+    log([`== ${stamp()} idle check-in: timed out after ${CHECKIN_TIMEOUT_MS / 1000}s and was killed; the next tick tries again`]);
+    return;
+  }
   let d;
   try { d = JSON.parse(String(r.stdout ?? '').trim()); } catch {
     log([`== ${stamp()} idle check-in: failed (${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-2).join(' / ')})`]);
@@ -324,22 +338,29 @@ function runPass(state, q, s, log, stamp, intake = []) {
   try { qAfter = readQueue(qf); } catch { /* the pass reported it */ }
   out.push(...reaped, ...decide(state, s, v, qAfter));
   s.idle = null;
+  const driver = driverHolder(state);
+  out.push(...watchDriver(state, s, driver, slug));
   if (v.status !== 'idle') {
     const keys = toMerge(qAfter);
-    const driver = driverHolder(state);
     const ungranted = ['autopilot-merge', 'pr-merge-green'].filter((id) => E.permission(id) !== 'yes');
     if (!keys.length) { /* nothing to merge */ }
-    else if (driver) out.push(`merge driver: running (pid ${driver})`);
+    else if (driver) { /* running: nothing new to log */ }
     else if (ungranted.length) out.push(`merge driver: not started, since config §3 ${ungranted.map((id) => `${E.permissionKey(id)} is "${E.permission(id)}"`).join(' and ')}: green PRs wait for you`);
     else {
-      // The driver takes in every queue ticket and its holds (held_by) on each loop by itself.
+      // The driver takes in every queue ticket and its holds (held_by) on each loop by itself. Its
+      // output goes to its log from the first line, so what it says before it takes --log is kept too.
       const tickets = Object.keys(qAfter.tickets ?? {});
+      const from = logSize(driverLog(state));
+      let fd;
       try {
-        const child = spawn(join(HERE, 'merge-driver.sh'), ['--tickets', tickets.join(' '), '--log'], { cwd: process.cwd(), env: process.env, detached: true, stdio: 'ignore' });
+        fd = openSync(driverLog(state), 'a');
+        const child = spawn(join(HERE, 'merge-driver.sh'), ['--tickets', tickets.join(' '), '--log'], { cwd: process.cwd(), env: process.env, detached: true, stdio: ['ignore', fd, fd] });
         child.on('error', () => {});
         child.unref();
-        out.push(`merge driver: started (pid ${child.pid}) for ${tickets.join(' ')}; its log is ${join(state, 'merge-driver.log')}`);
+        s.driver = { failures: 0, notified: false, ...s.driver, pid: child.pid, started: new Date().toISOString(), from };
+        out.push(`merge driver: started (pid ${child.pid}) for ${tickets.join(' ')}; its log is ${driverLog(state)}`);
       } catch (e) { out.push(`merge driver: could not start: ${e.message}`); }
+      finally { if (fd !== undefined) closeSync(fd); }
     }
   }
 
@@ -362,6 +383,62 @@ function runPass(state, q, s, log, stamp, intake = []) {
   }
   writeState(state, s);
   log(out);
+}
+
+// ---- the merge driver ------------------------------------------------------------------------
+// s.driver is the last driver this supervisor started ({pid, started, from, failures, notified,
+// reason, code}): `from` is where its output starts in merge-driver.log, and `failures` counts the
+// starts in a row that stopped with a failure before a tick found a driver running.
+const DRIVER_NOTIFY_AFTER = 2;
+const driverLog = (state) => join(state, 'merge-driver.log');
+const logSize = (f) => { try { return statSync(f).size; } catch { return 0; } };
+const STAMP = /^\d\d:\d\d:\d\dZ /;
+const EXITED = /^merge driver exited (\d+)$/;
+
+// Why a driver stopped, from what it wrote from `from` on: its exit code (null when it logged none,
+// as a killed one does) and its last FAIL line, else its last line.
+function driverStop(state, from) {
+  let text = '';
+  try {
+    const fd = openSync(driverLog(state), 'r');
+    try {
+      const size = fstatSync(fd).size;
+      // A log cut shorter than `from` is read from its start; a long one by its last 64 KB.
+      const start = Math.max(size < from ? 0 : from, size - 64 * 1024);
+      const buf = Buffer.alloc(size - start);
+      readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf8');
+    } finally { closeSync(fd); }
+  } catch { /* no log yet */ }
+  const lines = text.split('\n').map((l) => l.trim().replace(STAMP, '')).filter(Boolean);
+  const codes = lines.map((l) => EXITED.exec(l)?.[1]).filter(Boolean);
+  const said = lines.filter((l) => !EXITED.test(l));
+  const reason = (said.filter((l) => l.startsWith('FAIL')).pop() ?? said.pop() ?? 'it wrote nothing to its log').slice(0, 300);
+  return { code: codes.length ? Number(codes.at(-1)) : null, reason };
+}
+
+// The lines a tick logs about the driver it last started: nothing while one runs, why it stopped
+// once, and one notification after DRIVER_NOTIFY_AFTER failed starts in a row. A driver that exits
+// 0 (a one-loop run) did not fail; one that logged no exit code was killed, and counts.
+function watchDriver(state, s, holder, slug) {
+  const d = s.driver;
+  if (!d) return [];
+  const lines = [];
+  if (holder === 'starting') return lines;
+  if (holder) { d.failures = 0; d.notified = false; return lines; }
+  if (d.pid) {
+    const { code, reason } = driverStop(state, d.from ?? 0);
+    lines.push(`merge driver: stopped (pid ${d.pid}, started ${d.started}, ${code == null ? 'no exit code logged' : `exit ${code}`}): ${reason}`);
+    Object.assign(d, { pid: null, code, reason, failures: code === 0 ? 0 : (d.failures ?? 0) + 1 });
+    if (code === 0) d.notified = false;
+  }
+  // Retried each tick until it is out, so a notification that failed is not lost.
+  if (d.failures >= DRIVER_NOTIFY_AFTER && !d.notified) {
+    const err = notify(`desk: ${slug}`, `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
+    d.notified = !err;
+    lines.push(err ? `notification: failed (${err}) for the merge driver; the next tick tries again` : `notification: sent for the merge driver (${d.failures} failed starts in a row)`);
+  }
+  return lines;
 }
 
 // ---- the decider -----------------------------------------------------------------------------

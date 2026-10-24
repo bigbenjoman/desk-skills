@@ -63,6 +63,9 @@ const F = '$T/prs.json';
 const a = process.argv.slice(2);
 const at = (flag) => a[a.indexOf(flag) + 1];
 fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
+// gh.signedout: what gh says, and its exit code, signed out; gh.broken: any other failure.
+if (fs.existsSync('$T/gh.signedout')) { console.error('To get started with GitHub CLI, please run:  gh auth login'); process.exit(4); }
+if (fs.existsSync('$T/gh.broken')) { console.error('error connecting to api.github.com'); process.exit(1); }
 const prs = JSON.parse(fs.readFileSync(F, 'utf8'));
 const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
@@ -272,5 +275,13 @@ check "AC5: the ticket is filed once per PR and head"                  '[ "$(mer
 
 out=$(DESK_CONFIG="$T/config-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-11" 2>&1); rc=$?
 check "AC9: a row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: config §4 Known flaky checks does not parse: \`lint\`" && ! echo "$out" | grep -q "merge driver up"'
+
+# ---- DS-225 AC2: gh signed out stops the driver, saying so -------------------------------------
+: > "$FAKE_SLEEPS"; touch "$T/gh.signedout"
+loop; rm -f "$T/gh.signedout"
+check "DS-225 AC2: a signed-out gh is logged as signed out and the driver exits non-zero" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: gh is signed out (To get started with GitHub CLI, please run:  gh auth login)" && echo "$out" | tail -1 | grep -q "merge driver exited 1$"'
+check "DS-225 AC2: the refused list is not read as empty, and the driver does not wait to retry" '! echo "$out" | grep -q "no ready batch PRs" && [ ! -s "$FAKE_SLEEPS" ]'
+touch "$T/gh.broken"; loop; rm -f "$T/gh.broken"
+check "DS-225 AC2: any other gh failure is retried as before" '! echo "$out" | grep -q "signed out" && echo "$out" | grep -q "could not list PRs" && [ $rc -eq 1 ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
