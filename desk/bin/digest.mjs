@@ -139,7 +139,7 @@ export function jiraTarget(r, root = E.deskConfigRoot()) {
   if (self) return { cwd: process.cwd(), env: process.env };
   const cwd = E.expandHome(String(val('repo-root') ?? '').trim());
   if (!cwd || !existsSync(cwd)) return { why: `its checkout (config §2 Primary repo root) is ${cwd ? `not at ${cwd}` : 'unset'}` };
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_REPO|DESK_CONFIG$|JIRA_)/.test(k)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_REPO|DESK_CONFIG$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
   return { cwd, env };
 }
 
