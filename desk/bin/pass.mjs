@@ -1363,9 +1363,9 @@ const qNow = queue();
 const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
 // Each done ticket's PR is read once a pass, its state, draft, review decision, mergeable state and
-// checks in one call, and kept on the ticket as
-// pr_status for desk-q, which makes no network call of its own. A PR recorded merged or closed is not
-// read again, unless it merged and the ticket has no merged_at yet.
+// checks in one call, and kept on the ticket as pr_status for desk-q, which makes no network call of
+// its own. A PR recorded merged or closed is not read again, unless it merged and the ticket has no
+// merged_at yet.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
   const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
