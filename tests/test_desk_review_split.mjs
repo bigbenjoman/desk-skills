@@ -5,7 +5,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkSplit, norm, walk } from './split_check.mjs';
+import { norm, walk } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -18,7 +18,8 @@ const phaseFiles = readdirSync(refs).filter((f) => /^phase-.*\.md$/.test(f)).sor
 const files = ['SKILL.md', ...phaseFiles];
 const before = readFileSync(join(root, 'tests/fixtures/desk-review-before-split.md'), 'utf8');
 
-// AC1: the core is within DS-228's cap, and the file before the split was not.
+// AC1: the core is within the size check's cap (tests/test_skill_size.mjs), and the file before
+// the split was not.
 const CAP = 20480;
 const within = (s) => Buffer.byteLength(s) <= CAP;
 t(`AC1 the core is at most 20,480 bytes (${Buffer.byteLength(core)})`, within(core), true);
@@ -40,9 +41,32 @@ t(`AC3 the core names reference files (${new Set(named).size})`, new Set(named).
 t('AC3 every reference file the core names exists', JSON.stringify(named.filter((f) => !existsSync(join(refs, f)))), '[]');
 t('AC3 a phase file that cannot be read stops the review', core.includes('**A phase file you cannot read stops the review.**'), true);
 
-// AC2: every heading, table row and paragraph of the old file is in exactly one new file.
-checkSplit({ t, label: 'AC2', before, files, read, headings: 22, minRows: 51 });
+// AC2: each heading of the old file is in exactly one new file.
 const lines = (f) => read(f).split('\n');
+const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
+t('AC2 the old file has its 22 headings', headings.length, 22);
+for (const h of headings) t(`AC2 "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
+
+// AC2: each table body row is in exactly one file; a header or separator row in at least one.
+const rows = before.split('\n').filter((l) => /^\|/.test(l));
+const header = new Set(before.split('\n').flatMap((l, i, a) => (/^\|/.test(l) && /^\|[-| ]+\|$/.test(a[i + 1] || '') ? [l] : [])));
+const body = rows.filter((r) => !header.has(r) && !/^\|[-| ]+\|$/.test(r));
+t(`AC2 the old file's table rows are read (${body.length} body rows)`, body.length > 50, true);
+for (const r of rows) {
+  const n = files.filter((f) => lines(f).includes(r)).length;
+  if (body.includes(r)) t(`AC2 row "${r.slice(0, 60)}" is in exactly one file`, n, 1);
+  else t(`AC2 header "${r.slice(0, 40)}" is in a file`, n >= 1, true);
+}
+
+// AC2: every paragraph of the old file is in a new file word for word (whitespace aside). Tables
+// are checked row by row above. Not split_check.mjs's checkSplit: it counts a paragraph by
+// substring, so the old file's bare "Then:" reads as in two files (the core's, and the end of a
+// Phase 7 paragraph).
+const after = norm(files.map(read).join('\n\n'));
+const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).filter((p) => !/^\|/.test(p.trimStart())).map(norm).filter(Boolean);
+const dropped = paras.filter((p) => !after.includes(p));
+t(`AC2 every paragraph of the old file survives the split (${paras.length} read)`, dropped.length, 0);
+for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 
 // AC4: a citation of a desk-review section still finds it.
 const sources = [...walk(join(root, 'skills')), ...walk(join(root, 'docs')), join(root, 'README.md')];
