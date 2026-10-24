@@ -554,6 +554,17 @@ t('DS-167 AC5 and a title that fits shows whole, with no …', Object.entries(at
 t('DS-167 AC5 an undated Timeline row puts its title in the same column', rowFor(at160.Timeline, 'W-3').indexOf('parked title'), rowFor(at160.Timeline, 'W-2').indexOf('short title'));
 t('DS-167 AC5 the Timeline header names TITLE over the titles', lines(at160.Timeline).find((l) => / {2}STARTS +SHIPS +TITLE$/.test(l))?.indexOf('TITLE'), rowFor(at160.Timeline, 'W-2').indexOf('short title'));
 
+// ---- DS-179: a ticket stuck behind 10 blockers keeps its row to the width.
+const ten = Array.from({ length: 10 }, (_, n) => `BLK-${101 + n}`);
+dated('stuck10', 4600, { hours: [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8], tickets: {
+  ...Object.fromEntries(ten.map((k) => [k, { state: 'parked', park: { question: 'which copy?' } }])),
+  'STK-1': { state: 'parked', held_by: ten.join('|'), park: { question: `held by orchestrator: blocked by ${ten.join(', ')}` } } } });
+const stuck10 = Q.loadRepos(FIXED);
+const stk = (w) => ({ 'By day': rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: w }), 'STK-1'), Timeline: rowFor(Q.timelineScreen(stuck10, 'acme__stuck10', { now: FIXED, width: w }), 'STK-1') });
+t('DS-179 AC1 at 120 and 80 columns, the stuck row is no wider than the terminal', [120, 80].flatMap((w) => Object.entries(stk(w)).filter(([, l]) => !l || l.length > w).map(([v, l]) => `${v}@${w}: ${l.length}`)).join(), '');
+t('DS-179 AC1 it says what it is blocked behind, cut with …, and keeps its title', Object.entries(stk(120)).filter(([, l]) => !/Blocked behind BLK-101, BLK-102, .*… +STK-1 title$/.test(l)).map(([v, l]) => `${v}: ${l}`).join(), '');
+t('DS-179 a reason that fits is written whole', rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: 120 }), 'BLK-101').includes('Waiting on you · ~'), true);
+
 const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 100, () => FIXED);
 await sleep(20);
 const w1 = () => Rz.frame().find((l) => /^[ ›] +\d+ {2}W-1 /.test(l)) ?? '';

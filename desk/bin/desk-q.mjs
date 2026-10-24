@@ -465,6 +465,13 @@ const forecastLine = (name, now, count, workers, checkin) => `${name} · forecas
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
 // With passes stopped, a running row has no STARTS column here to say so, so its stage stands in.
 const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.st.label ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
+// An undated row's reason in the `cell` columns its dates would take, two of them the gap before the
+// title. A longer one borrows up to half of the title's `tw` and is cut beyond that, so the row keeps
+// to the width; the ticket screen has it in full. Returns the cell and the title's width left.
+const whyCell = (s, cell, tw) => {
+  const n = Math.min(Math.max(s.length + 2, cell), cell + Math.floor(tw / 2));
+  return [cut(s, n - 2).padEnd(n), tw - (n - cell)];
+};
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
@@ -555,7 +562,9 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     }
     // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
     for (const i of mine(undated)) {
-      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...tlead(i), [' ', null], [byEpic ? why(i) : why(i).padEnd(cw + TL_TAIL), STATE_SGR[i.x.k]], ...tail(i)], openTicket(i, epic)));
+      const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), cw + TL_TAIL + TL_GAP, tw);
+      const title = byEpic ? [] : [[cut(tt(summaryOf(i)), left), null]];
+      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
@@ -606,10 +615,9 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
   for (const [g, list] of groups) {
     rows.push(segRow(`day ${g}`, [[`  ${g}`, BOLD], [` · ${list.length} ticket${list.length === 1 ? '' : 's'}`, DIM]], null));
     for (const i of list) {
-      const title = cut(tt(summaryOf(i)), tw);
-      const dates = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, null]
-        : [why(i).length <= 25 ? pad(why(i), 27) : `${why(i)}  `, STATE_SGR[i.x.k]];
-      rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), dates, [title, null]], openTicket(i, epic)));
+      const [cell, left] = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, tw] : whyCell(why(i), 27, tw);
+      const title = cut(tt(summaryOf(i)), left);
+      rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : [])];
