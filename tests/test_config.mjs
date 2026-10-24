@@ -66,11 +66,31 @@ t('a backticked note in trailing parens is still one none', plain('cmds', 'test-
 // The worker rows: known ids, `no` when the row is missing, read by key when it is there.
 const perms = join(T, 'perms.md');
 writeFileSync(perms, '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
-  + '| `worker-screenshots` | Capture | `ask` | `yes` |\n| `worker-local-services` | Start | `ask` | `ask` |\n');
+  + '| `worker-screenshots` | Capture | `ask` | `yes` |\n| `worker-local-services` | Start | `ask` | `ask` |\n'
+  + '| `jira-comment` | Comment | `yes` | `yes` |\n');
 const perm = (id) => execFileSync('node', [BIN, 'perm', id], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: perms, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim();
 t('worker-dependency-install missing reads as no', perm('worker-dependency-install'), 'no');
 t('worker-screenshots reads its row', perm('worker-screenshots'), 'yes');
 t('worker-local-services reads its row', perm('worker-local-services'), 'ask');
+t('AC2 jira-comment yes reads as yes', perm('jira-comment'), 'yes');
+t('AC3 jira-comment missing reads as no', execFileSync('node', [BIN, 'perm', 'jira-comment'], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: tool, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim(), 'no');
+
+// Outside any repo there is no config: a permission is refused unread, never read as `no`.
+const away = mkdtempSync(join(tmpdir(), 'desk-norepo-'));
+const awayEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|GIT_)/.test(k)));
+Object.assign(awayEnv, { HOME: away, DESK_CONFIG_ROOT: join(away, 'cfg'), DESK_MACHINE: join(away, 'none.md') });
+const outside = (args) => {
+  try { return { code: 0, out: execFileSync('node', args, { encoding: 'utf8', env: awayEnv, cwd: away, stdio: 'pipe' }).trim(), err: '' }; }
+  catch (e) { return { code: e.status, out: String(e.stdout).trim(), err: String(e.stderr).trim() }; }
+};
+let o = outside([BIN, 'perm', 'jira-comment']);
+t('AC1 perm outside a repo exits 3', o.code, 3);
+t('AC1 and says no repo config was found', /no repo config found/.test(o.err), true);
+t('AC1 and prints neither yes nor no', o.out, '');
+o = outside(['--input-type=module', '-e', `import { permission } from ${JSON.stringify(BIN)}; console.log(permission('jira-comment'));`]);
+t('AC4 permission() with no config throws', o.code !== 0 && o.out === '', true);
+t('AC4 and names the missing config', /no repo config found/.test(o.err), true);
+rmSync(away, { recursive: true, force: true });
 
 // `desk-env drift`: rows the template has that a config lacks, `ask` rows an unattended batch parks
 // on, and a settings file that starts sessions in dontAsk.

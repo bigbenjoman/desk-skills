@@ -22,7 +22,8 @@
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs ticket-kind <id>        print tracker|work-id|issue|slug, exit 2 if the id is not accepted
-//   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no)
+//   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no),
+//                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, exit 3 if
 //                                             unset (no override), exit 4 if the row is malformed
@@ -302,6 +303,9 @@ export const CONFIG_ROWS = Object.freeze({
 });
 
 export class DeskConfigError extends Error {}
+// No config file resolves (outside a repo, or setup never ran): nothing was read, so nothing may be
+// read as a value. The CLI exits 3 on it, as for any lookup it cannot resolve.
+export class NoRepoConfigError extends DeskConfigError {}
 
 // ---- config parsing ------------------------------------------------------------------------
 // The config is markdown written by /desk-setup and editable by hand: sections are `## <n>.`
@@ -511,11 +515,16 @@ export function resolve({ env, id, fallback, identity = false }) {
 }
 
 // §3 is an allowlist, matched by exact key: a missing row, a blank, a TODO or anything unrecognised
-// is a `no`. An id this file does not know is a bug in the caller, so it throws.
+// is a `no`. An id this file does not know is a bug in the caller, so it throws. With no config at
+// all it throws NoRepoConfigError: an unread grant is not a refusal.
 export function permission(id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
-  const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
+  const parsed = parseConfig();
+  if (!parsed.exists) {
+    throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so permission "${id}" cannot be read. Run inside the repo, or /desk-setup.`);
+  }
+  const v = parsed.sections['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return 'no';
   return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
 }
@@ -1320,6 +1329,6 @@ if (isMain) {
     }
   } catch (e) {
     console.error(e.message);
-    process.exit(e instanceof DeskConfigError ? 4 : 1);
+    process.exit(e instanceof NoRepoConfigError ? 3 : e instanceof DeskConfigError ? 4 : 1);
   }
 }
