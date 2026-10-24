@@ -25,7 +25,7 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
-import { firstSpawnFromLogs, epicUnread } from './desk-q-eta.mjs';
+import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck } from './gate.mjs';
@@ -1288,27 +1288,46 @@ const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
 // Each done ticket's PR is read once a pass, state and checks in one call, and kept on the ticket as
 // pr_status for desk-q, which makes no network call of its own. A PR recorded merged or closed is not
-// read again.
+// read again, unless it merged and the ticket has no merged_at yet.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
   // gh writes a time GitHub has not set as the zero time, 0001-01-01.
   const time = (s) => (s && !s.startsWith('0001-') ? s : null);
   const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued' }));
-  return { pr: n, state: v.state, url: v.url ?? null, checks, at: new Date().toISOString() };
+  return { pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt), checks, at: new Date().toISOString() };
 }
+// A merge is recorded here whoever made it, the merge driver or anyone else: merged_at on the ticket
+// and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
+const merges = [];
 for (const t of Object.values(qNow.tickets)) {
   const n = t.state === 'done' ? t.result?.pr : null;
   if (n == null) continue;
-  if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state)) { prStates[n] = t.pr_status.state; continue; }
-  if (n in prStates) continue;
-  const s = readPrStatus(n);
-  if (!s) continue;
-  prStates[n] = s.state;
-  q('set', t.key, `pr_status=${JSON.stringify(s)}`);
+  let s = null;
+  if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state)) {
+    prStates[n] = t.pr_status.state;
+    if (t.pr_status.state !== 'MERGED' || t.merged_at) continue;
+    if (t.pr_status.merged_at) s = t.pr_status;
+  } else if (n in prStates) continue;
+  if (!s) {
+    s = readPrStatus(n);
+    if (!s) continue;
+    prStates[n] = s.state;
+    q('set', t.key, `pr_status=${JSON.stringify(s)}`);
+  }
+  if (s.state === 'MERGED' && !t.merged_at && !DRY) {
+    const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
+    if (rec) merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
+  }
+}
+for (const m of merges) out.push(`merge recorded: ${m}`);
+// A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
+if (!DRY && readHistory(STATE) === null) {
+  const built = buildHistory({ state: STATE, queue: queue(), mergedPrs: () => ghMergedPrs(GH_REPO) });
+  out.push(`eta history built: ${describeHistory(built).split('\n').join('; ')}`);
 }
 const readPr = (n) => {
   if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;

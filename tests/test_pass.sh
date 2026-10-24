@@ -755,6 +755,7 @@ echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 300 "*) echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/300","statusCheckRollup":[{"__typename":"CheckRun","name":"tests (ubuntu-latest)","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","completedAt":"2026-10-23T10:07:35Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/1/job/2"},{"__typename":"CheckRun","name":"tests (macos-latest)","workflowName":"ci","status":"QUEUED","conclusion":"","startedAt":"2026-10-23T10:00:00Z","completedAt":"0001-01-01T00:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/1/job/3"}]}' ;;
   "pr view 301 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/301","statusCheckRollup":[]}' ;;
+  "pr list "*) echo '[]' ;;
   *) exit 1 ;;
 esac
 EOF
@@ -770,5 +771,55 @@ check "DS-194 AC2 a merged PR is recorded merged" '[ "$(field G-2 pr_status.stat
 check "DS-194 one gh call per done ticket with a PR, none for one without" '[ "$(grep -c "^pr view" "$T/gh-calls")" = 2 ] && [ "$(field G-3 pr_status)" = null ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-194 AC2 the next pass reads the open PR again and makes no call for the merged one" '[ "$(cut -d" " -f1-3 "$T/gh-calls")" = "pr view 300" ]'
+
+# ---- DS-175: a merge is recorded however the PR was merged, and a missing eta history is built once
+ago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 3600e3).toISOString())' "$1"; }
+SPAWNED=$(ago 5); MERGED=$(ago 2)
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 400 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/400","mergedAt":"$MERGED","statusCheckRollup":[]}' ;;
+  "pr view 501 "*) if [ -f "$T/n-merged" ]; then echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/501","mergedAt":"$MERGED","statusCheckRollup":[]}'
+                   else echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/501","mergedAt":"0001-01-01T00:00:00Z","statusCheckRollup":[]}'; fi ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+lines(){ wc -l < "$DESK_AUTOPILOT_STATE/eta-history.jsonl" | tr -d ' '; }
+keyed(){ grep -c "\"key\":\"$1\"" "$DESK_AUTOPILOT_STATE/eta-history.jsonl"; }
+
+# AC1: a done ticket whose PR was merged by hand, in a repo that already has a history.
+export DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
+mkdir -p "$T/state-m/logs"
+printf '%s\n' '{"key":"OLD-1","size":"S","spawned_at":"2026-10-01T00:00:00Z","merged_at":"2026-10-01T03:00:00Z","hours":3}' > "$T/state-m/eta-history.jsonl"
+q init m
+q add M-1; q set M-1 state=done result.pr=400 "spawned_at=$SPAWNED"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-175 AC1 a hand-merged PR gives the ticket GitHub's merge time" "[ \"\$(field M-1 merged_at)\" = '\"$MERGED\"' ]"
+check "DS-175 AC1 and the history gains exactly one line for it" '[ "$(lines)" = 2 ] && [ "$(keyed M-1)" = 1 ] && echo "$out" | grep -q "merge recorded: M-1 (PR #400)"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-175 AC1 the next pass records nothing again and reads no PR" '[ "$(lines)" = 2 ] && [ ! -s "$T/gh-calls" ] && ! echo "$out" | grep -q "merge recorded"'
+q set M-1 merged_at=null; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-175 AC1 a merged PR status kept from before is recorded from it, with no gh call and no second line" \
+  "[ \"\$(field M-1 merged_at)\" = '\"$MERGED\"' ] && [ ! -s \"\$T/gh-calls\" ] && [ \"\$(keyed M-1)\" = 1 ]"
+
+# AC2: a repo with no history file: the pass builds it once, and later passes only append.
+export DESK_QUEUE="$T/queue-n.json" DESK_AUTOPILOT_STATE="$T/state-n"
+mkdir -p "$T/state-n/logs"
+q init n
+q add N-1; q set N-1 state=done result.pr=500 "spawned_at=$SPAWNED" "merged_at=$MERGED" \
+  "pr_status={\"pr\":500,\"state\":\"MERGED\",\"merged_at\":\"$MERGED\",\"checks\":[]}"
+q add N-2; q set N-2 state=done result.pr=501 "spawned_at=$SPAWNED"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-175 AC2 a missing history is built from the queue, the same as desk-q-eta.mjs build" \
+  '[ "$(lines)" = 1 ] && [ "$(keyed N-1)" = 1 ] && echo "$out" | grep -q "eta history built: eta history: 1 line(s) added"'
+touch "$T/n-merged"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-175 AC2 the next pass only appends the new merge: no rebuild and no merged-PR listing" \
+  '[ "$(lines)" = 2 ] && [ "$(keyed N-1)" = 1 ] && [ "$(keyed N-2)" = 1 ] && ! echo "$out" | grep -q "eta history built" && ! grep -q "^pr list" "$T/gh-calls"'
+export DESK_QUEUE="$T/queue-e.json" DESK_AUTOPILOT_STATE="$T/state-e"
+mkdir -p "$T/state-e/logs"; q init e
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-175 AC2 a build with nothing to add still leaves the file, so it is built once" '[ -f "$T/state-e/eta-history.jsonl" ] && [ "$(lines)" = 0 ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

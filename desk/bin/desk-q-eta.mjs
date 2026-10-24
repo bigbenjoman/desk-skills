@@ -2,15 +2,16 @@
 // Each repo's spawn-to-merge history, the input to desk-q's ship dates: <state>/eta-history.jsonl,
 // one line per merged autopilot ticket, {key, size, spawned_at, merged_at, hours}.
 //
-// Built once from the queue and the worker logs (`desk-q-eta.mjs build`), then grown by one line per
-// merge (`queue.mjs merged <TICKET>`, which the merge driver calls), from the queue alone: a ticket's
+// Built once from the queue and the worker logs (`desk-q-eta.mjs build`, or pass.mjs when the file is
+// missing), then grown by one line per merge (`queue.mjs merged <TICKET>`, which the merge driver calls,
+// and pass.mjs for a PR GitHub shows merged however it was merged), from the queue alone: a ticket's
 // first spawn is `spawned_at` on its queue entry, set by pass.mjs, so a merge never reads a log. Only
 // a ticket first spawned before that field existed falls back to its logs.
 //
 // No model, no Jira: local files, plus one `gh pr list` in a build for tickets that merged before
 // the queue recorded `merged_at`. `forecast` turns the history and a queue into desk-q's dates, and
 // <state>/eta.jsonl keeps the first of them per ticket beside its merge time, for the hit rate.
-import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, openSync, readSync, closeSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, openSync, readSync, closeSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -100,7 +101,8 @@ export function ghMergedPrs(repo) {
 }
 
 // Add a line for every ticket that merged in the last WINDOW_DAYS and is not in the history yet.
-// `mergedPrs` is called at most once, and only when some ticket has a PR but no merged_at.
+// `mergedPrs` is called at most once, and only when some ticket has a PR but no merged_at. A build
+// whose merge lookup did not fail leaves the file in place even with no lines, so it is built once.
 export function buildHistory({ state, queue, mergedPrs = () => ({}), now = Date.now() }) {
   const have = new Set((readHistory(state) ?? []).map((l) => l.key));
   const since = now - WINDOW_DAYS * 86_400_000;
@@ -127,6 +129,7 @@ export function buildHistory({ state, queue, mergedPrs = () => ({}), now = Date.
     have.add(key);
   }
   append(historyPath(state), lines);
+  if (!report.mergeLookup && !existsSync(historyPath(state))) { mkdirSync(state, { recursive: true }); writeFileSync(historyPath(state), ''); }
   return report;
 }
 
