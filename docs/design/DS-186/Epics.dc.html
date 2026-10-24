@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q epics</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',Menlo,monospace;font-size:13px;line-height:20px;color:#e6e6e6}
+.l{white-space:pre;height:20px}
+.c{display:inline-block;white-space:pre;overflow:hidden;vertical-align:top}
+.r{text-align:right}
+.B{font-weight:700;color:#f2f2f2}
+.d{color:#8b919c}
+.g{color:#98c379}.y{color:#e5c07b}.b{color:#61afef}.m{color:#c678dd}.x{color:#e06c75}
+.sel{background:#3b4250}
+.tab{padding:0 6px}
+.tabon{padding:0 6px;background:#3b4250;color:#f2f2f2;font-weight:700;box-shadow:inset 0 -2px 0 #61afef}
+.state{border-top:1px dashed #4a505c;margin-top:16px;padding-top:12px;display:flex;flex-direction:column}
+.empty{border:1px solid #3b4250;border-radius:4px;padding:10px 14px;display:flex;flex-direction:column;max-width:96ch}
+</style>
+</helmet>
+<div class="t" style="width:1160px;height:760px;box-sizing:border-box;background:#282c34;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
+<div style="height:36px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#21252b" aria-hidden="true">
+<span style="width:12px;height:12px;border-radius:6px;background:#ff5f57"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#febc2e"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#28c840"></span>
+<span class="d" style="margin-left:10px">desk-q</span>
+</div>
+<div style="padding:12px 16px;display:flex;flex-direction:column;flex:1">
+<div class="l"><span class="B">desk-q</span></div>
+<div class="l"><span class="tab">1 Queue</span>  <span class="tab">2 Timeline</span>  <span class="tab">3 By day</span>  <span class="tabon">4 Epics</span>      <span class="d">←→ or 1–4</span></div>
+<div class="l"> </div>
+<div class="l"><span class="B">Every repo's epics, soonest first</span><span class="d"> · forecast from Thu 22 Oct 18:20</span></div>
+<div class="l"> </div>
+<div class="l d B"><span class="c" style="width:14ch">  REPO</span><span class="c" style="width:11ch">EPIC</span><span class="c" style="width:36ch">TITLE</span><span class="c" style="width:26ch">CHILDREN</span><span class="c" style="width:14ch">SHIPS</span></div>
+<div class="l sel"><span class="c B" style="width:14ch">› [repo]</span><span class="c B" style="width:11ch">[EPIC-1]</span><span class="c" style="width:36ch">[epic title]</span><span class="c" style="width:26ch"><span class="g">■■■■■■■■</span><span class="y">■■■■</span><span class="d">□□□□</span>  <span class="d">8 of 16</span></span><span class="c B" style="width:14ch">Fri 14:10</span><span class="d">set by [last child]</span></div>
+<div class="l"><span class="c" style="width:14ch">  [repo]</span><span class="c" style="width:11ch">[EPIC-2]</span><span class="c" style="width:36ch">[epic title]</span><span class="c" style="width:26ch"><span class="g">■■■</span><span class="y">■■■■■</span><span class="d">□□□□□□□□</span>  <span class="d">3 of 16</span></span><span class="c B" style="width:14ch">Mon 26 Oct</span><span class="y">provisional · 8 children not queued yet</span></div>
+<div class="l"><span class="c" style="width:14ch">  [repo]</span><span class="c" style="width:11ch">[EPIC-3]</span><span class="c" style="width:36ch">[epic title]</span><span class="c" style="width:26ch"><span class="g">■■■■■■</span><span class="m">■■</span><span class="y">■■■■</span><span class="d">□□□□</span>  <span class="d">6 of 16</span></span><span class="c d" style="width:14ch">no date</span><span class="m">◆ [child] needs you first</span></div>
+<div class="l"> </div>
+<div class="l"><span class="d">key  </span> <span class="g">■</span> merged  <span class="y">■</span> in the queue  <span class="m">■</span> needs you  <span class="d">□ not queued yet</span>   <span class="d">An epic ships when its last child merges.</span></div>
+<div class="state">
+<div class="l d">Empty state: what every repo shows today</div>
+<div class="l"> </div>
+<div class="empty">
+<div class="l B">No epics in any running batch</div>
+<div class="l">A ticket shows up here when its Jira parent is an Epic and it is in a batch's queue.</div>
+<div class="l d">desk-skills, pr-ninja, pranicuk and voicepa queue no epic children right now.</div>
+<div class="l"><span class="B">2</span> Timeline shows every queued ticket instead.</div>
+</div>
+</div>
+<div style="flex:1"></div>
+<div class="l"><span class="d">move </span> <span class="B">↑↓</span> select · <span class="B">enter</span> open the epic · <span class="B">←→</span> or <span class="B">1–4</span> view · <span class="B">c</span> date parked tickets · <span class="B">:</span> command · <span class="B">q</span> quit</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1160,"height":760}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q queue, PR landing</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#1d2026}
+a{color:#61afef}a:hover{color:#8cc4f4}
+</style>
+</helmet>
+<div style="width: 1440px; height: 780px; box-sizing: border-box; padding: 24px; background: #1d2026; font-family: 'JetBrains Mono', ui-monospace, monospace">
+<div style="width: 1392px; height: 732px; box-sizing: border-box; background: #282c34; border-radius: 12px; border: 1px solid #3e4451; overflow: hidden; display: flex; flex-direction: column">
+<div style="height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #21252b; border-bottom: 1px solid #3e4451">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="margin-left: 16px; font-size: 13px; color: #959ba5">desk-q</span>
+</div>
+<div style="padding: 16px 24px; font-size: 15px; line-height: 24px; color: #d7dae0">
+<sc-for list="{{lines}}" as="line" hint-placeholder-count="28">
+<div style="{{line.style}}"><sc-for list="{{line.segs}}" as="s" hint-placeholder-count="4"><span style="{{s.style}}">{{s.t}}</span></sc-for></div>
+</sc-for>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":780}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const C = { fg: '#d7dae0', dim: '#959ba5', green: '#98c379', yellow: '#e5c07b', blue: '#61afef', magenta: '#c678dd', red: '#e06c75', cyan: '#56b6c2' };
+    const seg = (t, c, b, inv) => ({ t, style: 'white-space:pre;color:' + (inv ? '#282c34' : C[c || 'fg']) + (b ? ';font-weight:700' : '') + (inv ? ';background:' + C.fg : '') });
+    const line = (segs, sel) => ({ segs, style: 'height:24px;white-space:pre;' + (sel ? 'background:#3a3f4b;' : '') });
+    const pad = (s, n) => (s.length >= n ? s.slice(0, n - 1) + '…' : s + ' '.repeat(n - s.length));
+    const rpad = (s, n) => ' '.repeat(Math.max(0, n - s.length)) + s;
+    const TONE = { landing: 'cyan', waiting: 'yellow', running: 'green' };
+    const LABEL = { landing: '◐ landing', waiting: '· waiting', running: '● running' };
+    const row = (pos, key, k, need, starts, ships, title, sel) => line([
+      seg((sel ? '› ' : '  ') + rpad(pos, 4) + '  ' + pad(key, 10)),
+      seg(pad(LABEL[k], 13), TONE[k]),
+      ...need,
+      seg(pad(starts, 13) + pad(ships, 14) + title),
+    ], sel);
+    const need = (s) => [seg(pad(s, 52))];
+    const group = (name, n) => line([seg('  ' + name, 'fg', true), seg(' · ' + n, 'dim')]);
+    const blank = line([seg(' ')]);
+    const lines = [
+      line([seg('desk-q › ', 'dim'), seg('desk-skills', 'fg', true)]),
+      line([seg('1 Queue', 'fg', false, true), seg('   2 Timeline   3 By day   4 Epics')]),
+      blank,
+      line([seg('desk-skills · batch 2026-10-19T05:33 · orchestrator live, last pass 1m ago · next pass 12:40')]),
+      line([seg('workers 0 running of 2 (cap 3) · '), seg('1 PR landing', 'cyan', true), seg(' · 75 merged, not shown')]),
+      blank,
+      line([seg('  ' + rpad('#', 4) + '  ' + pad('TICKET', 10) + pad('STATE', 13) + pad('WHAT IT NEEDS', 52) + pad('STARTS', 13) + pad('SHIPS', 14) + 'TITLE', 'fg', true)]),
+      group('Landing', 1),
+      row('-', 'DS-156', 'landing', [seg('#164', 'cyan', true), seg(' · 1 of 2 checks passed · '), seg(pad('macOS: no runner, 14m', 52 - 30), 'yellow')], 'started', 'today 12:52', 'a respawned worker resumes from the last round'),
+      group('Waiting', 10),
+      row('1', 'DS-142', 'waiting', need('behind #164, DS-143, DS-151, DS-157, DS-158'), 'today 17:20', 'today 18:39', 'one promotion window a day, with a staging-c…'),
+      row('2', 'DS-143', 'waiting', need('behind #164, DS-157, DS-158'), 'today 14:41', 'today 15:59', 'try before asking, and do not re-ask a decl…'),
+      row('3', 'DS-149', 'waiting', need('behind #164, DS-142, DS-143, DS-151, DS-157, DS-158'), 'today 18:39', 'today 20:02', 'a fresh small headless session makes a pass…'),
+      row('4', 'DS-150', 'waiting', need('behind #164, DS-142, DS-143, DS-149, DS-151, DS-157'), 'today 20:02', 'today 21:24', 'standing intake admits new tickets from a qu…'),
+      row('5', 'DS-151', 'waiting', need('behind #164, DS-143, DS-157, DS-158'), 'today 15:59', 'today 17:20', 'a weekly maintenance window drains, updates…'),
+      row('6', 'DS-157', 'waiting', [seg('behind '), seg('#164', 'cyan', true), seg(pad(' (DS-156), in CI', 52 - 11))], 'after #164', 'today 13:47', 'separate models for review finders and for…', true),
+      row('7', 'DS-158', 'waiting', need('behind #164, DS-157'), 'today 13:47', 'today 14:55', 'log the preflight’s cost, drop partial mess…'),
+      row('8', 'DS-168', 'waiting', need('behind #164, DS-142, DS-143, DS-149, DS-150, DS-151'), 'today 21:24', 'today 22:41', 'README: rewrite it as the guide to desk, on…'),
+      row('9', 'DS-180', 'waiting', need('behind #164, DS-142, DS-143, DS-149, DS-150, DS-151'), 'today 22:59', 'Sat 00:24', 'digest: leave out parked tickets already Do…'),
+      row('10', 'DS-175', 'waiting', need('behind #164, DS-142, DS-149, DS-150, DS-151, DS-157'), 'today 21:24', 'today 22:59', 'record a merge’s time and ETA-history line…'),
+      blank, blank,
+      line([seg('move  ', 'dim'), seg('↑↓', 'fg', true), seg(' select · '), seg('enter', 'fg', true), seg(' open · '), seg('↔ or 1-4', 'fg', true), seg(' view · '), seg('esc', 'fg', true), seg(' back')]),
+      line([seg('act   ', 'dim'), seg('shift+↑↓', 'fg', true), seg(' move · '), seg('t', 'fg', true), seg(' top · '), seg('b', 'fg', true), seg(' bottom · '), seg('+ -', 'fg', true), seg(' workers · '), seg('c', 'fg', true), seg(' parked dates · '), seg(':', 'fg', true), seg(' command · '), seg('q', 'fg', true), seg(' quit')]),
+    ];
+    return { lines };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q ticket page</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',Menlo,monospace;font-size:13px;line-height:20px;color:#e6e6e6}
+.l{white-space:pre;height:20px}
+.p{white-space:normal;max-width:100ch}
+.k{display:inline-block;white-space:pre;width:11ch;color:#8b919c}
+.B{font-weight:700;color:#f2f2f2}
+.d{color:#8b919c}
+.g{color:#98c379}.y{color:#e5c07b}.b{color:#61afef}.m{color:#c678dd}.x{color:#e06c75}
+.box{border:1px solid #3b4250;border-radius:4px;padding:8px 12px;display:flex;flex-direction:column;max-width:104ch}
+.h{white-space:pre;height:20px;font-weight:700;color:#f2f2f2;margin-top:4px}
+</style>
+</helmet>
+<div class="t" style="width:1160px;height:760px;box-sizing:border-box;background:#282c34;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
+<div style="height:36px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#21252b" aria-hidden="true">
+<span style="width:12px;height:12px;border-radius:6px;background:#ff5f57"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#febc2e"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#28c840"></span>
+<span class="d" style="margin-left:10px">desk-q</span>
+</div>
+<div style="padding:12px 16px;display:flex;flex-direction:column;flex:1">
+<div class="l"><span class="d">desk-q › desk-skills › </span><span class="B">DS-182</span></div>
+<div class="l"> </div>
+<div class="l"><span class="B">DS-182</span>  <span class="g B">● running</span>   <span class="d">Story · size XS · lane A · 1 of 16 in the queue</span></div>
+<div class="l B">desk-q: ← and → switch views along the tab bar, stopping at each end</div>
+<div class="l"> </div>
+<div class="box">
+<div class="l"><span class="k">Now</span><span class="g">A worker is on it</span> · stage 4b of 9 (self-review)</div>
+<div class="l"><span class="k">Ships</span><span class="B">today 18:49</span>  <span class="d">could run to 19:11 (1 run in 5 is later)</span></div>
+<div class="l"><span class="k">Based on</span><span class="d">56 merged desk-skills tickets · typically 1.0 h from start to merge</span></div>
+<div class="l"><span class="k">Holds up</span><span class="y">DS-184</span> <span class="d">waits for this to merge</span></div>
+<div class="l"><span class="k">Branch</span><span class="d">feat/DS-182-desk-q-arrow-keys-switch-views</span></div>
+<div class="l"><span class="k">Open</span><span class="B">l</span> log  ·  <span class="B">o</span> Jira  <span class="d">benlavender1.atlassian.net/browse/DS-182</span></div>
+</div>
+<div class="l"> </div>
+<div class="h">Why lane A</div>
+<div class="p d">Mechanical once the cause is known, with no product or design decision left: the ticket's Decisions settle that the arrows stop at the ends and Tab keeps wrapping. onKey (desk/bin/desk-q.mjs:1174) handles only key.name === 'tab' and 1–4, and 'left'/'right' fall through to nothing. The fix is one more branch beside it that reuses hasTabs(), tabOk(), setTab() and the VIEWS order, clamping at the ends instead of wrapping. Not B: it is a Story, and the cause is plain from reading the code. Not D: no UI design.</div>
+<div class="l"> </div>
+<div class="h">Files in scope · 2</div>
+<div class="l d">  desk/bin/desk-q.mjs</div>
+<div class="l d">  tests/test_desk_q.mjs</div>
+<div class="l"> </div>
+<div class="l"><span class="B">Never runs with </span><span class="d">DS-147, DS-181, DS-184, DS-185</span></div>
+<div style="flex:1"></div>
+<div class="l"><span class="d">move </span> <span class="B">esc</span> back</div>
+<div class="l"><span class="d">act  </span> <span class="B">shift+↑↓</span> reorder · <span class="B">t</span>/<span class="B">b</span> top/bottom · <span class="B">+ −</span> workers · <span class="B">l</span> log · <span class="B">o</span> Jira · <span class="B">c</span> date parked tickets · <span class="B">:</span> command · <span class="B">q</span> quit</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1160,"height":760}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
