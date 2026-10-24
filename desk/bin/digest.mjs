@@ -24,6 +24,7 @@ import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
+import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
@@ -83,7 +84,8 @@ export function repos({ home = E.deskHome(), root = stateRoot(), self = null } =
     if (existsSync(join(qdir, slug, 'queue.json'))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
   }
   for (const slug of existsSync(root) ? readdirSync(root) : []) {
-    if (existsSync(join(root, slug, 'decisions.jsonl'))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
+    // A repo whose only news is what standing intake handed on has no queue or decision log yet.
+    if (['decisions.jsonl', 'intake.json'].some((f) => existsSync(join(root, slug, f)))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
   }
   return [...found.values()].sort((a, b) => a.slug.localeCompare(b.slug));
 }
@@ -129,6 +131,10 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   for (const h of handed.filter((x) => x.kind !== 'parked')) {
     const key = questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`);
     if (!answered[key]) out.push({ ticket: h.ticket, kind: h.kind === 'batch' ? 'batch' : 'handed on', text: `${h.text} (${h.why})`, key });
+  }
+  // What standing intake did not admit: fixed in the tracker, it is tried again once forgotten.
+  for (const h of handedByIntake(r.state)) {
+    out.push({ ticket: h.ticket, kind: 'intake', text: `not admitted by intake: ${h.text}`, key: questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`), state: r.state });
   }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
@@ -186,7 +192,9 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       for (const q of g.questions) {
         lines.push(`- [ ] \`${q.ticket}\` (${q.kind}): ${q.text}`);
         // The batch's own items have no ticket to answer: they go once a pass no longer lists them.
-        lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it' : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
+        lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it'
+          : q.kind === 'intake' ? `  fix the ticket, or run it in a desk-ticket session; to let intake try it again: \`DESK_AUTOPILOT_STATE=${q.state} node ${join(bin, 'intake.mjs')} forget ${q.ticket}\``
+            : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
       }
       lines.push('');
     }
