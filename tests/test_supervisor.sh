@@ -236,10 +236,10 @@ check "a push that went away and came back notifies again" '[ "$(count "$T/notif
 # ---- AC8: only the approvals recorded with the batch are passed on -----------------------------
 config ask yes; verdict "$NOTHING"; : > "$T/pass.calls"
 out=$(AUTOPILOT_USER_APPROVED=1 tick)
-check "AC8: no approval recorded, none passed on, even one in the environment" '[ "$(cat "$T/pass.calls")" = "- -" ] && tail -3 "$LOG" | grep -q "approvals passed on: none"'
+check "AC8: no approval recorded, none passed on, even one in the environment" '[ "$(cat "$T/pass.calls")" = "- -" ] && grep "approvals passed on:" "$LOG" | tail -1 | grep -q "approvals passed on: none$"'
 queue true '{"workers":true,"base_push":true}' "$RUNNING"; : > "$T/pass.calls"
 out=$(tick)
-check "the recorded approvals are passed on" '[ "$(cat "$T/pass.calls")" = "1 1" ] && tail -3 "$LOG" | grep -q "approvals passed on: workers, base push"'
+check "the recorded approvals are passed on" '[ "$(cat "$T/pass.calls")" = "1 1" ] && grep "approvals passed on:" "$LOG" | tail -1 | grep -q "approvals passed on: workers, base push$"'
 config yes yes; queue true '{}' "$RUNNING"
 
 # ---- AC9: an idle batch runs nothing until it changes -------------------------------------------
