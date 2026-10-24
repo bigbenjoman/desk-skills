@@ -42,7 +42,7 @@ t('AC3 a phase file that cannot be read stops the review', core.includes('**A ph
 // AC2: each heading of the old file is in exactly one new file.
 const lines = (f) => read(f).split('\n');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
-t('AC2 the old file has its 20 headings', headings.length, 20);
+t('AC2 the old file has its 22 headings', headings.length, 22);
 for (const h of headings) t(`AC2 "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
 
 // AC2: each table body row is in exactly one file; a header or separator row in at least one.
