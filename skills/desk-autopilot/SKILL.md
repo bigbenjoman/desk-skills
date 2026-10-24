@@ -187,7 +187,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | `codex-review` | workers get `codex`; the preflight asserts `CODEX=OK` (fails if codex is missing, unless `AUTOPILOT_ALLOW_NO_CODEX=1`) | `codex` is denied and the preflight asserts `CODEX=BLOCKED`; refutations are same-vendor, and where a required check demands a cross-vendor verdict those PRs cannot pass it: say so |
 | `pr-images` | `pass.mjs` uploads automatically | `pass.mjs` reports the directory; ask, then run the uploader with `DESK_UPLOAD_APPROVED=1` |
 | `read-figma` | workers get the Figma read tools | a ticket needing the frame parks |
-| `pr-ready` | you undraft once the checks in Stage 7 hold | `ask`: ask once at Stage 3 for the whole batch, never once per PR: "Undraft this batch's PRs once each is clean and green?" Approved: `queue.mjs set-batch approved.undraft=true`, then undraft each PR without asking once the checks in Stage 7 hold, and note the approval each time in `batch-notes.md`. Declined, or `no`: report the PR as ready to undraft |
+| `pr-ready` | `pass.mjs` undrafts once the checks in Stage 7 hold | `ask`: ask once at Stage 3 for the whole batch, never once per PR: "Undraft this batch's PRs once each is clean and green?" Approved: `queue.mjs set-batch approved.undraft=true`, then each pass undrafts each PR without asking once the checks in Stage 7 hold, and notes the approval each time in `batch-notes.md`. Declined, or `no`: the pass reports the PR as ready to undraft |
 | `pr-auto-merge` | not used in a batch: neither you nor the driver arms auto-merge, because the platform's idea of green is not the config's | — |
 | `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green, pinned to the head | the driver refuses to start (exit 1); report green PRs to the user |
 | `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms any auto-merge armed on it | the checks alone decide; feedback is still worked and reported |
@@ -778,9 +778,14 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   user, not a merge: keep it draft, since the driver merges any ready PR that goes green. With §4
   Local review command `none`, there is no verdict: "reviewed" is then the user's call, so report the
   PR rather than undrafting it. A clean verdict on a conflicted head is spent the moment the conflict
-  is resolved. Workers are denied `gh pr ready`, so check these facts yourself, then `gh pr ready`;
-  the driver merges it, pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do
-  not arm auto-merge. Undrafting earlier pings the reviewer before the evidence is in.
+  is resolved. Workers are denied `gh pr ready`, so every pass checks these facts for each done
+  ticket's draft PR (`undraft.mjs`, whoever runs the pass, the supervisor included), with its checks
+  green too, then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
+  are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
+  YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
+  ticket as `undraft`; a feature spine is left to `queue.mjs approve`. The driver merges a ready PR,
+  pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
+  Undrafting earlier pings the reviewer before the evidence is in.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart

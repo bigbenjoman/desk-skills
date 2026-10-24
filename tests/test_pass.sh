@@ -14,7 +14,7 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : 
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR DESK_UPLOAD_APPROVED AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_START_STAGE
+  AUTOPILOT_START_STAGE DESK_GITHUB_HANDLE
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -928,5 +928,106 @@ out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES
 check "DS-221 AC7 a second error in a row counts two" '[ "$(pass_rec errors)" = 2 ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 the next pass that succeeds sets the count to 0" '[ "$(pass_rec errors)" = 0 ] && [ "$(pass_rec error)" = null ]'
+
+# ---- DS-222: a done ticket's draft PR leaves draft under Stage 7's rules
+# The fake gh: every PR is an open draft with one green check until `pr ready` marks it ready
+# (u/<n>.ready), or refuses while u/<n>.fail exists. Each carries a clean verdict from `ben` at
+# HEAD_A; #704's head has moved on to HEAD_B since, #705 conflicts with its base, and GitHub has not
+# worked out #708's mergeability yet.
+HEAD_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; HEAD_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+NODE=$(command -v node); mkdir -p "$T/u"
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+const n = a[2]; const has = (f) => fs.existsSync('$T/u/' + n + f);
+const fields = a[a.indexOf('--json') + 1] ?? '';
+const green = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+const mergeable = n === '705' ? 'CONFLICTING' : n === '708' ? 'UNKNOWN' : 'MERGEABLE';
+const verdict ='<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=$HEAD_A p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n**desk-review, round 1: clean at \`aaaaaaa\`**';
+if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('state,')) {
+  console.log(JSON.stringify({ state: 'OPEN', url: 'https://github.com/acme/widgets/pull/' + n, isDraft: !has('.ready'), mergeable,
+    statusCheckRollup: green }));
+} else if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('headRefOid,')) {
+  console.log(JSON.stringify({ headRefOid: n === '704' ? '$HEAD_B' : '$HEAD_A', mergeable, mergeStateStatus: n === '705' ? 'DIRTY' : n === '708' ? 'UNKNOWN' : 'DRAFT', body: '## Summary',
+    reviews: [{ author: { login: 'ben' }, body: verdict }], statusCheckRollup: green }));
+} else if (a[0] === 'pr' && a[1] === 'ready') {
+  if (has('.fail')) { console.error('GraphQL: Something went wrong while executing your query.'); process.exit(1); }
+  fs.writeFileSync('$T/u/' + n + '.ready', '');
+} else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+# The config with pr-ready set to $1, a GitHub handle, a review command and a clean verdict.
+uconfig(){
+  cat > "$T/config-u.md" <<EOF
+## 0. Repo
+| Field | Value |
+|---|---|
+| GitHub repo | \`acme/widgets\` |
+| Default branch | \`main\` |
+
+## 2. Paths
+| Field | Value |
+|---|---|
+| Primary repo root | \`$T/repo\` |
+| Worktrees directory | \`$T/wt\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+| \`pr-ready\` | Undraft PRs | \`yes\` | \`$1\` |
+EOF
+  cat >> "$T/config-u.md" <<'EOF'
+
+## 1. Identity
+| Field | Value |
+|---|---|
+| GitHub handle | `ben` |
+
+## 4. Checks
+| Field | Value |
+|---|---|
+| Local review command | `/desk-review` |
+| Clean review verdict | `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0` |
+EOF
+}
+export DESK_CONFIG="$T/config-u.md" DESK_QUEUE="$T/queue-ud.json" DESK_AUTOPILOT_STATE="$T/state-ud"
+mkdir -p "$T/state-ud/logs"
+q init ud
+for k in 1 4 5 6 7 8; do q add "U-$k"; q set "U-$k" state=done "result.pr=70$k"; done
+q set-batch spine=U-6
+touch "$T/u/707.fail"
+readied(){ grep -c "^pr ready $1 --repo acme/widgets" "$T/gh-calls"; }
+
+uconfig no; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-222 AC3 pr-ready no: a clean, green PR stays draft" '[ "$(readied 701)" = 0 ] && [ "$(field U-1 undraft.call)" = "\"person\"" ]'
+check "DS-222 AC3 and the ticket needs the person, with undraft #<n> as the action" \
+  '[ "$(field U-1 undraft.action)" = "\"undraft #701\"" ] && echo "$out" | grep -q "U-1: DRAFT — PR #701 stays draft: it is clean and green, and config §3 pr-ready is \"no\". Undraft #701"'
+uconfig ask; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-222 AC3 pr-ready ask with no batch approval: it stays draft and needs the person" \
+  '[ "$(readied 701)" = 0 ] && echo "$out" | grep -q "PR #701 stays draft: .*pr-ready is \"ask\" with no batch approval. Undraft #701"'
+check "DS-222 AC4 a verdict for an older head leaves the PR draft" '[ "$(readied 704)" = 0 ] && field U-4 undraft.why | grep -q "not the head bbbbbbbbb"'
+check "DS-222 AC5 a conflicted PR stays draft and needs the person, the conflict its reason" \
+  '[ "$(readied 705)" = 0 ] && echo "$out" | grep -q "U-5: DRAFT — PR #705 stays draft: it has a merge conflict with its base"'
+q set-batch approved.undraft=true; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-222 AC2 pr-ready ask with the batch approval: the PR is marked ready" '[ "$(readied 701)" = 1 ] && echo "$out" | grep -q "undrafted: PR #701 (U-1)"'
+check "DS-222 AC2 and one batch-notes line names the ticket, the PR, the head and the approval" \
+  '[ "$(grep -c "^- \[U-1\] undrafted #701 at $HEAD_A: §3 pr-ready is ask, batch approval given at Stage 3$" "$T/state-ud/batch-notes.md")" = 1 ]'
+check "DS-222 AC4 AC5 a stale verdict and a conflict still stay draft under the approval" '[ "$(readied 704)" = 0 ] && [ "$(readied 705)" = 0 ]'
+check "DS-222 AC5 a head GitHub has not checked for conflicts yet stays draft and waits for a later pass" \
+  '[ "$(readied 708)" = 0 ] && [ "$(field U-8 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -q "PR #708 (U-8) stays draft for now: GitHub has not yet worked out whether it conflicts with its base (UNKNOWN)"'
+check "DS-222 AC6 a feature spine's PR is never undrafted by this step" '[ "$(readied 706)" = 0 ] && [ "$(field U-6 undraft)" = null ] && ! echo "$out" | grep -q "#706 stays draft"'
+check "DS-222 AC7 a failed gh pr ready leaves it draft and the pass record holds the error" \
+  '[ "$(field U-7 undraft.call)" = "\"failed\"" ] && pass_rec undraft_errors | grep -q "U-7: gh pr ready 707 failed: GraphQL: Something went wrong"'
+rm -f "$T/u/707.fail" "$T/u/701.ready"; q set-batch approved.undraft=false
+uconfig yes; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-222 AC7 the next pass tries again, and the error is gone from the record" '[ "$(readied 707)" = 1 ] && [ "$(pass_rec undraft_errors)" = "[]" ]'
+check "DS-222 AC1 pr-ready yes: a clean, green draft at its head is marked ready, with no batch-notes line" \
+  '[ "$(readied 701)" = 1 ] && [ "$(grep -c "undrafted #701" "$T/state-ud/batch-notes.md")" = 1 ]'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-222 a PR already ready is not undrafted again" '[ "$(grep -c "^pr ready" "$T/gh-calls")" = 0 ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
