@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraLine, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraSearch, jiraLine, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
 import { addPutOff, putOffEntry } from '../desk/bin/not-now.mjs';
 import { takeBorrowLock } from '../desk/bin/borrow.mjs';
 let fails = 0;
@@ -182,8 +182,23 @@ const r8 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-26', '17:01'),
 const page8 = readFileSync(r8.page, 'utf8');
 t('DS-180 AC5 an unreachable Jira still writes the digest', r8.status, 'sent');
 t('DS-180 AC5 every park of that repo is listed', ['VPL-259', 'VPL-271', 'VPL-300'].every((k) => page8.includes(`\`${k}\` (parked)`)), true);
-t('DS-180 AC5 with a line saying Jira was not checked', page8.includes('Jira status was not checked for acme__voicepa (desk-jira: HTTP 401 from Jira): every park is listed.'), true);
+t('DS-180 AC5 with a line saying Jira was not checked', page8.includes('Jira status was not checked for acme__voicepa (desk-jira: HTTP 401 from Jira), so its parks are listed as usual.'), true);
 t('DS-180 AC5 a search that throws reads the same', doneParks(VP, { target: here, search: () => { throw new Error('ETIMEDOUT'); } }).unchecked, 'ETIMEDOUT');
+
+// The search itself, through a fake desk-jira: a reply with no issue list, or with more pages behind it,
+// is a failure rather than "none Done"; a refusal carries its last line.
+const fakeBin = join(root, 'fakebin');
+mkdirSync(fakeBin, { recursive: true });
+writeFileSync(join(fakeBin, 'desk-jira'), '#!/bin/sh\ncat "$FAKE_JIRA_OUT"\n[ -n "$FAKE_JIRA_ERR" ] && { echo "$FAKE_JIRA_ERR" >&2; exit 1; }\nexit 0\n', { mode: 0o755 });
+const fakeOut = join(root, 'fake-jira.json');
+const viaFake = (body, err = '') => {
+  writeFileSync(fakeOut, body);
+  return jiraSearch({ cwd: root, env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_JIRA_OUT: fakeOut, FAKE_JIRA_ERR: err } }, 'key in (A-1)', 1);
+};
+t('DS-180 a search reply with issues is read', viaFake('{"issues":[{"key":"A-1"}]}').issues?.[0]?.key, 'A-1');
+t('DS-180 a reply with no issue list is a failure', viaFake('{"errorMessages":["bad"]}').why, 'desk-jira search returned no issue list (bad)');
+t('DS-180 a reply with more pages behind it is a failure', viaFake('{"issues":[],"nextPageToken":"x"}').ok, false);
+t('DS-180 a refused search says why', viaFake('', 'desk-jira: HTTP 401').why, 'desk-jira: HTTP 401');
 
 // AC6: no desk config, or a Tracker that is not jira: every park listed, not-checked line; others checked.
 mkdirSync(join(root, 'cfg', 'repos', 'acme__nodone'), { recursive: true });
@@ -194,7 +209,7 @@ searches = [];
 const r9 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-27', '08:01'), dir, list: [VP, ND], bin: BIN, self: 'acme__voicepa',
   checkJira: (r) => doneParks(r, { target: r.slug === 'acme__nodone' ? jiraTarget : here, search: stubJira(STATUS) }) });
 const page9 = readFileSync(r9.page, 'utf8');
-t('DS-180 AC6 the repo with no Jira lists every park and says it was not checked', page9.includes('`N-1` (parked)') && page9.includes('Jira status was not checked for acme__nodone (its §4 Tracker is none): every park is listed.'), true);
+t('DS-180 AC6 the repo with no Jira lists every park and says it was not checked', page9.includes('`N-1` (parked)') && page9.includes('Jira status was not checked for acme__nodone (its §4 Tracker is none), so its parks are listed as usual.'), true);
 t('DS-180 AC6 and other repos are checked as normal', `${page9.includes('`VPL-259` (parked)')} ${searches.map((s) => s.keys.join(',')).join(' ')}`, 'false VPL-259,VPL-271,VPL-300');
 t('DS-180 AC7 no queue changed across every run', [VP, ND].map((r) => readFileSync(r.queue, 'utf8')).every((s, i) => s === before[i]), true);
 

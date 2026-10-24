@@ -143,12 +143,17 @@ export function jiraTarget(r, root = E.deskConfigRoot()) {
   return { cwd, env };
 }
 
-// One desk-jira search: {ok, issues} or {ok: false, why}.
+// One desk-jira search, one page: {ok, issues} or {ok: false, why}. A page with more behind it read
+// nothing about the keys past it, so it is a failure rather than a partial answer.
 export function jiraSearch({ cwd, env }, jql, max) {
   const r = spawnSync('desk-jira', ['search', jql, String(max), '--json'], { cwd, env, encoding: 'utf8', timeout: SEARCH_TIMEOUT_MS, maxBuffer: 64 << 20 });
   const why = `${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `desk-jira exited ${r.status ?? r.signal}`;
   if (r.status !== 0) return { ok: false, why };
-  try { return { ok: true, issues: JSON.parse(r.stdout).issues ?? [] }; } catch { return { ok: false, why: 'desk-jira search did not return JSON' }; }
+  let res;
+  try { res = JSON.parse(r.stdout); } catch { return { ok: false, why: 'desk-jira search did not return JSON' }; }
+  if (!Array.isArray(res?.issues)) return { ok: false, why: `desk-jira search returned no issue list${res?.errorMessages?.length ? ` (${res.errorMessages.join('; ')})` : ''}` };
+  if (res.nextPageToken) return { ok: false, why: `Jira returned fewer than ${max} issues a page` };
+  return { ok: true, issues: res.issues };
 }
 
 // One repo's parked tickets that Jira has moved to a Done status: {done: [keys]}, {unchecked: why}, or
@@ -175,7 +180,7 @@ export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) 
 
 // The page's line for a repo's Done check, or null when there is nothing to say.
 export function jiraLine(slug, j) {
-  if (j?.unchecked) return `Jira status was not checked for ${slug} (${j.unchecked}): every park is listed.`;
+  if (j?.unchecked) return `Jira status was not checked for ${slug} (${j.unchecked}), so its parks are listed as usual.`;
   const n = j?.done?.length ?? 0;
   if (!n) return null;
   return n === 1
