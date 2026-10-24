@@ -5,6 +5,8 @@
 //
 //   ticket-facts.mjs <KEY>
 //   ticket-facts.mjs --epic <KEY>...   fill in `epic` alone, for records written before it existed
+//   ticket-facts.mjs --blockers <KEY>...   read `blockers` again, alone; a key that cannot be read
+//                                          is left as it was and named on stderr with exit 1
 //
 // --epic touches nothing but `epic` and `epic_error`, so a record keeps the rest of its triage. A
 // key whose issue cannot be read is left as it was, its record still without `epic`, and named on
@@ -46,6 +48,25 @@ function epicOf(issue, kids = new Map()) {
   }
   out.epic = epicFact(issue, children);
   return out;
+}
+
+const blockersOf = (issue) => (issue.fields?.issuelinks ?? [])
+  .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
+  .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new' }));
+
+if (process.argv[2] === '--blockers') {
+  let failed = 0;
+  for (const key of process.argv.slice(3)) {
+    const path = join(stateDir(), 'triage', `${key}.json`);
+    let rec;
+    try { rec = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); continue; }
+    let issue;
+    try { issue = jira(['get', key]); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: ${lastLine(e) || 'desk-jira get failed'}`); continue; }
+    rec.blockers = blockersOf(issue);
+    writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
+    console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}`);
+  }
+  process.exit(failed ? 1 : 0);
 }
 
 if (process.argv[2] === '--epic') {
@@ -100,9 +121,7 @@ if (kind.kind !== 'tracker') {
   }
   if (issue) {
     const links = issue.fields?.issuelinks ?? [];
-    rec.blockers = links
-      .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
-      .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new' }));
+    rec.blockers = blockersOf(issue);
     rec.other_links = links.filter((l) => !/block/i.test(l.type?.name ?? '') && !/^relates$/i.test(l.type?.name ?? '')).length;
     const sizeField = Object.entries(issue.names ?? {}).find(([, n]) => /^(t-shirt )?size$/i.test(String(n).trim()))?.[0];
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';

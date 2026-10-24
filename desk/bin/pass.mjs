@@ -31,6 +31,7 @@ import { readCloseouts } from './closeout.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck } from './gate.mjs';
 import { usagePace } from './usage-pace.mjs';
+import { INTAKE_EVERY_MS } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -38,7 +39,22 @@ import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, mac
 // finished batch, or an error). With --json, stdout is one object carrying the same verdict.
 const AS_JSON = process.argv.includes('--json');
 const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: EXIT.SHOW_PERSON, idle: EXIT.SHOW_PERSON, error: EXIT.SHOW_PERSON };
+// The queue's `pass` record, for desk-q: who ran the last pass and when, what held its spawns, how many
+// passes in a row have errored and the last error's first line, the last time a ticket started, merged
+// or was released, and the tickets held at that pass (a later pass that finds one no longer held
+// counts it released). It is written once the queue reads, and never by a pass another orchestrator's
+// lock refused.
+let RECORDS = false;
+function recordPass(f) {
+  if (!RECORDS) return;
+  try {
+    const prev = readQueue(QUEUE_FILE).pass ?? {};
+    const rec = { ...prev, at: PASS_AT, by: PASS_BY, ...f(prev) };
+    execFileSync('node', [join(BIN, 'queue.mjs'), 'set-batch', `pass=${JSON.stringify(rec)}`], { stdio: 'ignore' });
+  } catch { /* advisory: the verdict still goes out */ }
+}
 function verdict(status, message, fields = {}) {
+  if (status === 'error') recordPass((prev) => ({ errors: (Number(prev.errors) || 0) + 1, error: String(message).trim().split('\n')[0] }));
   const code = CODES[status];
   if (AS_JSON) {
     console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, push: [], release_due: [], stuck: [], ...fields }));
@@ -64,12 +80,18 @@ const DRY = !!process.env.AUTOPILOT_DRY_RUN;
 const NEXT_AT = process.argv.indexOf('--next');
 const NEXT = NEXT_AT < 0 ? null : parseNext(process.argv[NEXT_AT + 1]);
 if (NEXT_AT >= 0 && NEXT == null) refuse(`--next wants +<seconds> or an ISO time, not "${process.argv[NEXT_AT + 1] ?? ''}"`);
+// --by supervisor: the supervisor's tick started this pass; anything else is a session's.
+const BY_AT = process.argv.indexOf('--by');
+const PASS_BY = BY_AT < 0 ? 'session' : process.argv[BY_AT + 1];
+if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor or session, not "${PASS_BY ?? ''}"`);
+const PASS_AT = new Date().toISOString();
 
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
 }
 // A corrupt queue refuses here, before the pass touches anything, rather than mid-pass as a stack.
 try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
+RECORDS = true;
 
 // Headless workers cannot ask, so spawning needs the grant up front. Harvesting what is already
 // running does not, so a revoked or unset grant stops spawns, never the report.
@@ -107,7 +129,10 @@ function claim() {
     try {
       const { pid, since } = JSON.parse(readFileSync(LOCK, 'utf8'));
       process.kill(pid, 0);                       // throws if that process is gone
-      if (pid !== process.pid) refuse(`another orchestrator holds the lock (pid ${pid}, since ${since}).\nif it is dead, remove ${LOCK}`);
+      if (pid !== process.pid) {
+        RECORDS = false;
+        refuse(`another orchestrator holds the lock (pid ${pid}, since ${since}).\nif it is dead, remove ${LOCK}`);
+      }
     } catch { /* stale lock from a dead process — take it */ }
   }
   writeFileSync(LOCK, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
@@ -1273,6 +1298,36 @@ if (unreadEpics.length) {
     + (missed.length ? ` — not read, tried again next pass: ${missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ')}` : r.ok ? '' : ` — ${r.out.split('\n').pop()}`));
 }
 
+// ---- outside blockers ----------------------------------------------------
+// A ticket's open "is blocked by" links to tickets outside this queue, from its triage record's
+// `blockers`, kept on the ticket as outside_blockers [{key, category}] for desk-q. Only a ticket that
+// has some is read from Jira again (ticket-facts.mjs --blockers), at most once every INTAKE_EVERY_MS,
+// so this reads Jira no more often than intake does. A read that fails leaves the record, and so the
+// recorded blockers, as they were.
+const qB = queue();
+const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
+const outsideOf = (rec) => (Array.isArray(rec?.blockers)
+  ? rec.blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done').map((b) => ({ key: b.key, category: b.category }))
+  : null);
+const onTracker = Object.values(qB.tickets).filter((t) => {
+  if (!onJira || t.state === 'done') return false;
+  const k = E.ticketKind(t.key);
+  return k.ok && k.kind === 'tracker';
+});
+const blockersDue = onTracker.filter((t) => (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0
+  && !(t.outside_blockers_read && Date.now() - Date.parse(t.outside_blockers_read) < INTAKE_EVERY_MS)).map((t) => t.key);
+if (blockersDue.length) {
+  const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...blockersDue], { timeout: 120_000 });
+  const missed = r.out.split('\n').filter((l) => / blockers NOT READ: /.test(l));
+  if (missed.length || !r.ok) epicLines.push(`outside blockers: not read, kept as they were and tried again in ${INTAKE_EVERY_MS / 60_000} minutes: ${missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ') || r.out.split('\n').pop()}`);
+  const readAt = new Date().toISOString();
+  for (const key of blockersDue) q('set', key, `outside_blockers_read=${readAt}`);
+}
+for (const t of onTracker) {
+  const now = outsideOf(triageRec(t.key));
+  if (now && JSON.stringify(now) !== JSON.stringify(t.outside_blockers ?? null)) q('set', t.key, `outside_blockers=${JSON.stringify(now)}`);
+}
+
 // ---- base drift ----------------------------------------------------------
 const drift = [];
 for (const t of Object.values(queue().tickets)) {
@@ -1307,19 +1362,24 @@ if (concurrency <= 0 && eligible.length) {
 const qNow = queue();
 const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
-// Each done ticket's PR is read once a pass, state and checks in one call, and kept on the ticket as
+// Each done ticket's PR is read once a pass, its state, draft, review decision, mergeable state and
+// checks in one call, and kept on the ticket as
 // pr_status for desk-q, which makes no network call of its own. A PR recorded merged or closed is not
 // read again, unless it merged and the ticket has no merged_at yet.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
   // gh writes a time GitHub has not set as the zero time, 0001-01-01.
   const time = (s) => (s && !s.startsWith('0001-') ? s : null);
   const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued' }));
-  return { pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt), checks, at: new Date().toISOString() };
+  return {
+    pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
+    isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, mergeable: v.mergeable ?? null,
+    checks, at: new Date().toISOString(),
+  };
 }
 // A merge is recorded here whoever made it, the merge driver or anyone else: merged_at on the ticket
 // and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
@@ -1608,6 +1668,19 @@ if (idle) {
   const cost = batchCost(STATE, Object.values(qEnd.tickets));
   if (cost.length) lines.push(costTable(cost));
 }
+// Why nothing spawned while something could have: the first hold that applied this pass.
+const heldWhy = report.spawned.length || !eligible.length ? null
+  : held ?? (baseHold ? 'the batch base sync holds every spawn'
+  : lowMemory ? `memory: ${gateGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+  : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
+  : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
+const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
+recordPass((prev) => {
+  const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
+  const merged = merges.length > 0 || (!!prev.at && Object.values(qEnd.tickets).some((t) => t.merged_at && Date.parse(t.merged_at) > Date.parse(prev.at)));
+  const moved = report.spawned.length > 0 || merged || released;
+  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd };
+});
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
   waiting, parked, push, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
