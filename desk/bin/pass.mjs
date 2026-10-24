@@ -27,6 +27,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
+import { readCloseouts } from './closeout.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck } from './gate.mjs';
 import { usagePace } from './usage-pace.mjs';
@@ -601,6 +602,23 @@ if (notes.length) {
   const freshNotes = [];
   for (const n of notes) { if (!seen.has(n)) { seen.add(n); freshNotes.push(n); } }
   if (freshNotes.length) appendFileSync(path, `${freshNotes.join('\n')}\n`);
+}
+
+// ---- interactive close-outs --------------------------------------------------
+// A ticket an interactive session merged or moved to Done (closeout.mjs) is done here too, rather than
+// left parked. A running one is its worker's until it ends. With its PR recorded, the merge is read
+// below as any other. The note goes once the queue has the change.
+for (const c of readCloseouts(STATE)) {
+  const t = queue().tickets[c.ticket];
+  const how = `closed out from an interactive session (${c.how === 'done' ? 'moved to Done' : 'merged'}${c.pr ? `, PR #${c.pr}` : ''})`;
+  if (t?.state === 'running') { report.advanced.push(`${t.key}: ${how} while its worker runs; recorded once the worker ends`); continue; }
+  if (t && t.state !== 'done') {
+    const before = report.failed.length;
+    q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []));
+    if (report.failed.length !== before) continue;
+    report.done.push(`${t.key}: ${how}`);
+  }
+  try { unlinkSync(c.file); } catch { /* gone */ }
 }
 
 // ---- maintenance window ------------------------------------------------------
@@ -1561,7 +1579,7 @@ if (!DRY && PROMOTION_REF) {
   } catch (e) { lines.push(`promotion: the production-broken check could not run: ${e.message}`); }
 }
 if (CHECKIN.ok && !DRY) {
-  const d = await checkin({ times: CHECKIN.times, self: SLUG, list: digestRepos({ self: { slug: SLUG, state: STATE, queue: QUEUE_FILE } }) });
+  const d = await checkin({ times: CHECKIN.times, self: SLUG, list: digestRepos({ self: { slug: SLUG, state: STATE, queue: QUEUE_FILE, self: true } }) });
   if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
   if (d.push) push.unshift(d.push);
 }

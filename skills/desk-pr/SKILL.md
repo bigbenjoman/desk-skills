@@ -510,7 +510,9 @@ with success, skipped not counting; nothing else failed, errored, timed out or s
 report it with the hold's reason and the user merges. Never `--admin`, never past a failing check
 (`merge-bypass` is `never`). A draft cannot merge, so a PR left drafted is a merge silently deferred; if a row says
 `no`, say plainly it waits on the user. `desk-ticket`'s Stage 7 "Merging" section owns shepherding,
-including disarming auto-merge when review feedback lands under §3 `merge-feedback-first`. If `gh`
+including disarming auto-merge when review feedback lands under §3 `merge-feedback-first`, and the
+close-out once it merges: the move to Done, and `closeout.mjs` telling any batch that still holds
+the ticket. If `gh`
 fails, fall back to handing over the raw markdown to paste.
 
 **The title follows §5 PR title exactly** — the format (e.g. conventional commits

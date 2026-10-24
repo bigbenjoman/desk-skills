@@ -80,7 +80,18 @@ holds is never merged or armed by you**, whatever §3 grants: report it ready wi
 "armed": the same rules the autopilot's merge driver follows, for one PR. If either row is `ask`,
 ask; otherwise stop at the draft and report the link. Once it merges, and it was the last open PR on
 the key, move the ticket to §4 Done state via `desk-jira` under §3 `jira-close-own-merged` (a
-non-tracker ticket: nothing to move).
+non-tracker ticket: nothing to move). **Then tell the batch**, whether the PR merged or the ticket
+went to Done some other way: an autopilot batch may still hold the ticket parked, and would list it
+at every check-in.
+
+```bash
+node ~/.claude/desk/bin/closeout.mjs <TICKET> --pr <n>          # or --how done, with no PR
+```
+
+It leaves a note for that batch's orchestrator, whose next pass records the ticket done, and prints
+one line saying so. A ticket in no batch writes nothing and prints nothing, so say nothing about
+queues. The orchestrator's own merge flow already records its merges (`queue.mjs merged`), so this
+is for interactive sessions only.
 
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
