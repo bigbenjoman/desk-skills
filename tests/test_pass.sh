@@ -932,7 +932,8 @@ check "DS-221 AC7 the next pass that succeeds sets the count to 0" '[ "$(pass_re
 # ---- DS-222: a done ticket's draft PR leaves draft under Stage 7's rules
 # The fake gh: every PR is an open draft with one green check until `pr ready` marks it ready
 # (u/<n>.ready), or refuses while u/<n>.fail exists. Each carries a clean verdict from `ben` at
-# HEAD_A; #704's head has moved on to HEAD_B since, and #705 conflicts with its base.
+# HEAD_A; #704's head has moved on to HEAD_B since, #705 conflicts with its base, and GitHub has not
+# worked out #708's mergeability yet.
 HEAD_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; HEAD_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 NODE=$(command -v node); mkdir -p "$T/u"
 cat > "$T/stub/gh" <<EOF
@@ -943,12 +944,13 @@ fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
 const n = a[2]; const has = (f) => fs.existsSync('$T/u/' + n + f);
 const fields = a[a.indexOf('--json') + 1] ?? '';
 const green = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'SUCCESS' }];
-const verdict = '<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=$HEAD_A p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n**desk-review, round 1: clean at \`aaaaaaa\`**';
+const mergeable = n === '705' ? 'CONFLICTING' : n === '708' ? 'UNKNOWN' : 'MERGEABLE';
+const verdict ='<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=$HEAD_A p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n**desk-review, round 1: clean at \`aaaaaaa\`**';
 if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('state,')) {
-  console.log(JSON.stringify({ state: 'OPEN', url: 'https://github.com/acme/widgets/pull/' + n, isDraft: !has('.ready'), mergeable: n === '705' ? 'CONFLICTING' : 'MERGEABLE',
+  console.log(JSON.stringify({ state: 'OPEN', url: 'https://github.com/acme/widgets/pull/' + n, isDraft: !has('.ready'), mergeable,
     statusCheckRollup: green }));
 } else if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('headRefOid,')) {
-  console.log(JSON.stringify({ headRefOid: n === '704' ? '$HEAD_B' : '$HEAD_A', mergeStateStatus: n === '705' ? 'DIRTY' : 'CLEAN', body: '## Summary',
+  console.log(JSON.stringify({ headRefOid: n === '704' ? '$HEAD_B' : '$HEAD_A', mergeable, mergeStateStatus: n === '705' ? 'DIRTY' : n === '708' ? 'UNKNOWN' : 'DRAFT', body: '## Summary',
     reviews: [{ author: { login: 'ben' }, body: verdict }], statusCheckRollup: green }));
 } else if (a[0] === 'pr' && a[1] === 'ready') {
   if (has('.fail')) { console.error('GraphQL: Something went wrong while executing your query.'); process.exit(1); }
@@ -995,7 +997,7 @@ EOF
 export DESK_CONFIG="$T/config-u.md" DESK_QUEUE="$T/queue-ud.json" DESK_AUTOPILOT_STATE="$T/state-ud"
 mkdir -p "$T/state-ud/logs"
 q init ud
-for k in 1 4 5 6 7; do q add "U-$k"; q set "U-$k" state=done "result.pr=70$k"; done
+for k in 1 4 5 6 7 8; do q add "U-$k"; q set "U-$k" state=done "result.pr=70$k"; done
 q set-batch spine=U-6
 touch "$T/u/707.fail"
 readied(){ grep -c "^pr ready $1 --repo acme/widgets" "$T/gh-calls"; }
@@ -1015,6 +1017,8 @@ check "DS-222 AC2 pr-ready ask with the batch approval: the PR is marked ready" 
 check "DS-222 AC2 and one batch-notes line names the ticket, the PR, the head and the approval" \
   '[ "$(grep -c "^- \[U-1\] undrafted #701 at $HEAD_A: §3 pr-ready is ask, batch approval given at Stage 3$" "$T/state-ud/batch-notes.md")" = 1 ]'
 check "DS-222 AC4 AC5 a stale verdict and a conflict still stay draft under the approval" '[ "$(readied 704)" = 0 ] && [ "$(readied 705)" = 0 ]'
+check "DS-222 AC5 a head GitHub has not checked for conflicts yet stays draft and waits for a later pass" \
+  '[ "$(readied 708)" = 0 ] && [ "$(field U-8 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -q "PR #708 (U-8) stays draft for now: GitHub has not yet worked out whether it conflicts with its base (UNKNOWN)"'
 check "DS-222 AC6 a feature spine's PR is never undrafted by this step" '[ "$(readied 706)" = 0 ] && [ "$(field U-6 undraft)" = null ] && ! echo "$out" | grep -q "#706 stays draft"'
 check "DS-222 AC7 a failed gh pr ready leaves it draft and the pass record holds the error" \
   '[ "$(field U-7 undraft.call)" = "\"failed\"" ] && pass_rec undraft_errors | grep -q "U-7: gh pr ready 707 failed: GraphQL: Something went wrong"'

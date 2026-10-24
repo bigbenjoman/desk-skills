@@ -4,12 +4,13 @@
 //
 //   ready   every fact holds and config §3 pr-ready allows it: gh pr ready, then the merge driver
 //           merges it once it is green
-//   wait    nothing for anyone to do yet: checks still running
+//   wait    nothing for anyone to do yet: checks still running, or GitHub has not worked out whether
+//           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call), the head has no merge
-// conflict, the checks are green (gate.mjs's one definition), the screenshots are in the body (none
+// conflict (GitHub says MERGEABLE), the checks are green (gate.mjs's one definition), the screenshots are in the body (none
 // the pass could not upload, no `_drag <file>_` placeholder left), and only then the grant: §3 pr-ready `yes`, or `ask` with the
 // batch's Stage 3 approval (queue approved.undraft). A feature spine is never undrafted here:
 // queue.mjs approve does that once the person has approved its specs.
@@ -68,6 +69,7 @@ export function undraftCall(t, pr, cfg) {
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {
     return person(`it has a merge conflict with its base`, `resolve the conflict on #${n}; it then needs a fresh review`);
   }
+  if (pr.mergeable !== 'MERGEABLE') return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})` };
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   if (gate.state !== 'pass') return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);

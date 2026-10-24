@@ -781,7 +781,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   is resolved. Workers are denied `gh pr ready`, so every pass checks these facts for each done
   ticket's draft PR (`undraft.mjs`, whoever runs the pass, the supervisor included), with its checks
   green too, then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
-  are still running waits for a later pass; any other draft it may not undraft is under WAITING ON
+  are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. The driver merges a ready PR,
   pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
