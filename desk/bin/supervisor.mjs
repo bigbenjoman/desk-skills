@@ -40,6 +40,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
+import { readCloseouts } from './closeout.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -234,7 +235,9 @@ function interval() {
   // An answer to an item handed on leaves its ticket parked, so it does not change the fingerprint:
   // it ends idle by itself, so a pass lists it and a decider can act on the answer.
   const answeredNow = Object.values(readHanded(state)).some((e) => answered(state, e));
-  if (s.idle && s.idle === fingerprint(q) && !answeredNow) {
+  // So does an interactive close-out's note: only a pass turns it into a done ticket.
+  const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
+  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut) {
     intakeAlone();
     const reaped = reapDecider(state, s);
     if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }

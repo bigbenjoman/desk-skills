@@ -13,7 +13,7 @@
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
 // recorded, 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
@@ -74,7 +74,7 @@ const answeredFile = (dir) => join(dir, 'answered.json');
 const questionKey = (slug, ticket, text) => `${slug}/${ticket}/${createHash('sha256').update(String(text)).digest('hex').slice(0, 12)}`;
 
 // Every repo with a queue or a decision log: {slug, state, queue}. `self` names the calling repo's
-// paths, which environment overrides can move away from the defaults.
+// paths, which environment overrides can move away from the defaults, with `self: true`.
 export function repos({ home = E.deskHome(), root = stateRoot(), self = null } = {}) {
   const found = new Map();
   const add = (slug, r) => { if (!found.has(slug)) found.set(slug, r); };
@@ -118,6 +118,74 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
     out.set(l.entry.key, o);
   }
   return [...out.values()].map((o) => ({ ...o, tickets: o.tickets.sort() })).sort((a, b) => a.tickets[0].localeCompare(b.tickets[0]));
+}
+
+// A key `key in (...)` can take: anything else a queue holds (a work id, an issue slug) is not asked about.
+const JIRA_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
+// Keys per search: Jira's largest page for a search returning fields.
+export const DONE_CHUNK = 100;
+const SEARCH_TIMEOUT_MS = 30 * 1000;
+
+// Where to run a repo's own desk-jira, so its search uses that repo's config and credentials:
+// {cwd, env}, or {why} when its Jira status cannot be checked. The calling repo runs it as this process
+// would; any other repo from its §2 checkout, with the overrides that would pin this repo's Jira removed.
+export function jiraTarget(r, root = E.deskConfigRoot()) {
+  const self = !!r.self;
+  const config = self ? E.configPathOrNull() : join(root, 'repos', r.slug, 'config.md');
+  if (!config || !existsSync(config)) return { why: 'it has no desk config' };
+  const val = (id) => (self ? E.configValue(id) : E.repoConfigValue(r.slug, id, root));
+  const tracker = String(val('tracker') ?? '').trim().split(/\s+/)[0].toLowerCase();
+  if (tracker !== 'jira') return { why: `its §4 Tracker is ${tracker || 'unset'}` };
+  if (self) return { cwd: process.cwd(), env: process.env };
+  const cwd = E.expandHome(String(val('repo-root') ?? '').trim());
+  if (!cwd || !existsSync(cwd)) return { why: `its checkout (config §2 Primary repo root) is ${cwd ? `not at ${cwd}` : 'unset'}` };
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_REPO|DESK_CONFIG$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
+  return { cwd, env };
+}
+
+// One desk-jira search, one page: {ok, issues} or {ok: false, why}. A page with more behind it read
+// nothing about the keys past it, so it is a failure rather than a partial answer.
+export function jiraSearch({ cwd, env }, jql, max) {
+  const r = spawnSync('desk-jira', ['search', jql, String(max), '--json'], { cwd, env, encoding: 'utf8', timeout: SEARCH_TIMEOUT_MS, maxBuffer: 64 << 20 });
+  const why = `${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `desk-jira exited ${r.status ?? r.signal}`;
+  if (r.status !== 0) return { ok: false, why };
+  let res;
+  try { res = JSON.parse(r.stdout); } catch { return { ok: false, why: 'desk-jira search did not return JSON' }; }
+  if (!Array.isArray(res?.issues)) return { ok: false, why: `desk-jira search returned no issue list${res?.errorMessages?.length ? ` (${res.errorMessages.join('; ')})` : ''}` };
+  if (res.nextPageToken) return { ok: false, why: `Jira returned fewer than ${max} issues a page` };
+  return { ok: true, issues: res.issues };
+}
+
+// One repo's parked tickets that Jira has moved to a Done status: {done: [keys]}, {unchecked: why}, or
+// null when it has no park to check. One `key in (...)` search per DONE_CHUNK keys, never one per ticket;
+// any search failing leaves the whole repo unchecked. Reads the queue, never writes it.
+export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) {
+  const q = readJson(r.queue, null);
+  const keys = Object.values(q?.tickets ?? {}).filter((t) => t.state === 'parked' && !isHeld(t)).map((t) => t.key);
+  if (!keys.length) return null;
+  const where = target(r);
+  if (where.why) return { unchecked: where.why };
+  const asked = keys.filter((k) => JIRA_KEY.test(k)).sort();
+  const done = [];
+  for (let i = 0; i < asked.length; i += DONE_CHUNK) {
+    const chunk = asked.slice(i, i + DONE_CHUNK);
+    let res;
+    try { res = search(where, `key in (${chunk.join(', ')})`, chunk.length); } catch (e) { res = { ok: false, why: e.message }; }
+    if (!res?.ok) return { unchecked: res?.why ?? 'the search failed' };
+    const wanted = new Set(chunk);
+    for (const issue of res.issues) if (wanted.has(issue?.key) && issue.fields?.status?.statusCategory?.key === 'done') done.push(issue.key);
+  }
+  return { done: done.sort() };
+}
+
+// The page's line for a repo's Done check, or null when there is nothing to say.
+export function jiraLine(slug, j) {
+  if (j?.unchecked) return `Jira status was not checked for ${slug} (${j.unchecked}), so its parks are listed as usual.`;
+  const n = j?.done?.length ?? 0;
+  if (!n) return null;
+  return n === 1
+    ? `1 parked ticket is Done in Jira; its orchestrator can drop it: ${j.done[0]}`
+    : `${n} parked tickets are Done in Jira; their orchestrators can drop them: ${j.done.join(', ')}`;
 }
 
 // One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
@@ -164,23 +232,27 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
   const npr = groups.filter((g) => g.promotion?.key).length;
+  const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
+  const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
   const cmd = join(bin, 'digest.mjs');
   const lines = [`# Check-in ${slot.replace('T', ' ')}`, ''];
   // A repo the promotion window skipped says why, last, whatever else the page holds.
   const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
-  if (!nq && !nd && !nc && !np && !nm && !npr) {
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
     lines.push('');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key)) {
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira))) {
     lines.push(`## ${g.slug}`, '');
+    const jl = jiraLine(g.slug, g.jira);
+    if (jl) lines.push(jl, '');
     const p = g.promotion;
     if (p?.key) {
       lines.push('### Promotion', '');
@@ -233,7 +305,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 // (nothing merged since it) or {range, prs, page}. Tests pass their own.
 const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
 
-export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion } = {}) {
+export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {
   const slot = latestSlot(times, now);
   if (!slot) return { status: 'not_due', push: null };
   mkdirSync(dir, { recursive: true });
@@ -264,13 +336,18 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       const { taken, checks, overrides } = readDecisions(r.state);
       const overridden = new Set(overrides.map((o) => o.override_of));
       const register = readRegister(r.state);
+      // A park Jira already has as Done asks nothing: the page names it once, for its orchestrator.
+      let jira;
+      try { jira = checkJira(r); } catch (e) { jira = { unchecked: e.message }; }
+      const done = new Set(jira?.done ?? []);
       return {
         slug: r.slug,
-        questions: openQuestions(r, answered, register),
+        questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
         checks: checks.filter(inWindow),
-        putOff: putOffQuestions(r, register),
+        putOff: putOffQuestions(r, register).map((p) => ({ ...p, tickets: p.tickets.filter((k) => !done.has(k)) })).filter((p) => p.tickets.length),
         promotion: promotionOf(r),
+        jira,
       };
     });
     const maintenance = digestNotes().filter(inWindow);
@@ -400,7 +477,7 @@ if (isMain) {
     const times = checkinTimes(checkinRow());
     if (!times.ok) refuse(times.why);
     const self = E.repoSlug();
-    console.log(JSON.stringify(await checkin({ times: times.times, self, list: repos({ self: { slug: self, state: E.stateDir(), queue: E.queueFile() } }) })));
+    console.log(JSON.stringify(await checkin({ times: times.times, self, list: repos({ self: { slug: self, state: E.stateDir(), queue: E.queueFile(), self: true } }) })));
     process.exit(0);
   }
   if (cmd === 'ask-again' && slug && target) {

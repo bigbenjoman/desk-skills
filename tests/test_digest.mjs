@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraSearch, jiraLine, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
 import { addPutOff, putOffEntry } from '../desk/bin/not-now.mjs';
 import { takeBorrowLock } from '../desk/bin/borrow.mjs';
 let fails = 0;
@@ -22,6 +22,8 @@ t('just past a slot, it is that slot', latestSlot(DEFAULT_TIMES, at('2026-10-22'
 
 // Three repos: parks in two, decisions in a third.
 const root = mkdtempSync(join(tmpdir(), 'desk-digest-'));
+// Each repo's Jira check reads its desk config from here: none, unless a test writes one.
+process.env.DESK_CONFIG_ROOT = join(root, 'cfg');
 const repo = (slug, tickets, decisions = []) => {
   const state = join(root, 'state', slug);
   mkdirSync(join(state, 'triage'), { recursive: true });
@@ -139,6 +141,77 @@ t('DS-143 AC5 a not-now answer from the digest is recorded', answer({ slug: 'acm
 t('DS-143 AC6 and puts it off', openQuestions(P).map((q) => q.ticket).join(' '), 'P-3');
 askAgain({ slug: 'acme__p', ticket: 'P-1', list: [P] });
 t('DS-143 ask-again after a not-now answer from the digest asks it again', openQuestions(P, JSON.parse(readFileSync(join(dir, 'answered.json'), 'utf8'))).map((q) => q.ticket).join(' '), 'P-1 P-2 P-3');
+
+// DS-180: a park Jira already has as Done is not asked, and is named once; a repo whose Jira cannot be
+// read, or that has none, lists every park and says so. The Jira search is stubbed.
+let searches = [];
+const stubJira = (statuses, fail = null) => (where, jql, max) => {
+  const keys = /^key in \((.*)\)$/.exec(jql)[1].split(', ');
+  searches.push({ keys, max });
+  if (fail) return { ok: false, why: fail };
+  return { ok: true, issues: keys.filter((k) => statuses[k]).map((k) => ({ key: k, fields: { status: { statusCategory: { key: statuses[k] } } } })) };
+};
+const here = () => ({ cwd: root, env: process.env });
+const parked = (key, question) => ({ key, state: 'parked', park: { question } });
+const VP = repo('acme__voicepa', { 'VPL-259': parked('VPL-259', 'which voice?'), 'VPL-271': parked('VPL-271', 'which locale?'), 'VPL-300': parked('VPL-300', 'which greeting?') });
+const ND = repo('acme__nodone', { 'N-1': parked('N-1', 'which tier?') });
+const STATUS = { 'VPL-259': 'done', 'VPL-271': 'done', 'VPL-300': 'indeterminate', 'N-1': 'new' };
+const before = [VP, ND].map((r) => readFileSync(r.queue, 'utf8'));
+const r7 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-26', '08:01'), dir, list: [VP, ND], bin: BIN, self: 'acme__voicepa',
+  checkJira: (r) => doneParks(r, { target: here, search: stubJira(STATUS) }) });
+const page7 = readFileSync(r7.page, 'utf8');
+t('DS-180 AC1 a park Done in Jira is not asked; one In Progress is', `${page7.includes('`VPL-259` (parked)')} ${page7.includes('`VPL-271` (parked)')} ${page7.includes('`VPL-300` (parked): which greeting?')}`, 'false false true');
+t('DS-180 AC2 the repo names its Done parks in one line', page7.includes('## acme__voicepa\n\n2 parked tickets are Done in Jira; their orchestrators can drop them: VPL-259, VPL-271\n'), true);
+t('DS-180 AC3 a repo with no Done parks has no Done line', page7.split('## acme__nodone')[1].includes('Done in Jira'), false);
+t('DS-180 the push counts only what is asked', r7.push?.text.includes('2 question(s)'), true);
+t('DS-180 AC7 no queue changed', [VP, ND].map((r) => readFileSync(r.queue, 'utf8')).every((s, i) => s === before[i]), true);
+const one = doneParks(repo('acme__one', { 'O-1': parked('O-1', 'q?') }), { target: here, search: stubJira({ 'O-1': 'done' }) });
+t('DS-180 one Done park reads in the singular', jiraLine('acme__one', one),'1 parked ticket is Done in Jira; its orchestrator can drop it: O-1');
+
+// AC4: 250 parks are three `key in (...)` searches of at most 100 keys, each key asked once.
+const many = Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`M-${i + 1}`, parked(`M-${i + 1}`, `q${i}?`)]));
+searches = [];
+const m = doneParks(repo('acme__many', many), { target: here, search: stubJira({ 'M-7': 'done', 'M-250': 'done' }) });
+t('DS-180 AC4 250 parks are three searches', searches.length, 3);
+t('DS-180 AC4 of at most 100 keys each, every key once', `${searches.every((s) => s.keys.length <= 100 && s.max === s.keys.length)} ${new Set(searches.flatMap((s) => s.keys)).size} ${searches.flatMap((s) => s.keys).length}`, 'true 250 250');
+t('DS-180 AC4 and the Done ones are found across chunks', m.done.join(' '), 'M-250 M-7');
+
+// AC5: Jira unreachable: the digest is still written, lists every park, and says Jira was not checked.
+const r8 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-26', '17:01'), dir, list: [VP, ND], bin: BIN, self: 'acme__voicepa',
+  checkJira: (r) => doneParks(r, { target: here, search: stubJira(STATUS, r.slug === 'acme__voicepa' ? 'desk-jira: HTTP 401 from Jira' : null) }) });
+const page8 = readFileSync(r8.page, 'utf8');
+t('DS-180 AC5 an unreachable Jira still writes the digest', r8.status, 'sent');
+t('DS-180 AC5 every park of that repo is listed', ['VPL-259', 'VPL-271', 'VPL-300'].every((k) => page8.includes(`\`${k}\` (parked)`)), true);
+t('DS-180 AC5 with a line saying Jira was not checked', page8.includes('Jira status was not checked for acme__voicepa (desk-jira: HTTP 401 from Jira), so its parks are listed as usual.'), true);
+t('DS-180 AC5 a search that throws reads the same', doneParks(VP, { target: here, search: () => { throw new Error('ETIMEDOUT'); } }).unchecked, 'ETIMEDOUT');
+
+// The search itself, through a fake desk-jira: a reply with no issue list, or with more pages behind it,
+// is a failure rather than "none Done"; a refusal carries its last line.
+const fakeBin = join(root, 'fakebin');
+mkdirSync(fakeBin, { recursive: true });
+writeFileSync(join(fakeBin, 'desk-jira'), '#!/bin/sh\ncat "$FAKE_JIRA_OUT"\n[ -n "$FAKE_JIRA_ERR" ] && { echo "$FAKE_JIRA_ERR" >&2; exit 1; }\nexit 0\n', { mode: 0o755 });
+const fakeOut = join(root, 'fake-jira.json');
+const viaFake = (body, err = '') => {
+  writeFileSync(fakeOut, body);
+  return jiraSearch({ cwd: root, env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_JIRA_OUT: fakeOut, FAKE_JIRA_ERR: err } }, 'key in (A-1)', 1);
+};
+t('DS-180 a search reply with issues is read', viaFake('{"issues":[{"key":"A-1"}]}').issues?.[0]?.key, 'A-1');
+t('DS-180 a reply with no issue list is a failure', viaFake('{"errorMessages":["bad"]}').why, 'desk-jira search returned no issue list (bad)');
+t('DS-180 a reply with more pages behind it is a failure', viaFake('{"issues":[],"nextPageToken":"x"}').ok, false);
+t('DS-180 a refused search says why', viaFake('', 'desk-jira: HTTP 401').why, 'desk-jira: HTTP 401');
+
+// AC6: no desk config, or a Tracker that is not jira: every park listed, not-checked line; others checked.
+mkdirSync(join(root, 'cfg', 'repos', 'acme__nodone'), { recursive: true });
+writeFileSync(join(root, 'cfg', 'repos', 'acme__nodone', 'config.md'), '# desk config\n\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `none` |\n');
+t('DS-180 AC6 a repo with no desk config is not checked', jiraTarget(VP).why, 'it has no desk config');
+t('DS-180 AC6 a repo whose Tracker is none is not checked', jiraTarget(ND).why, 'its §4 Tracker is none');
+searches = [];
+const r9 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-27', '08:01'), dir, list: [VP, ND], bin: BIN, self: 'acme__voicepa',
+  checkJira: (r) => doneParks(r, { target: r.slug === 'acme__nodone' ? jiraTarget : here, search: stubJira(STATUS) }) });
+const page9 = readFileSync(r9.page, 'utf8');
+t('DS-180 AC6 the repo with no Jira lists every park and says it was not checked', page9.includes('`N-1` (parked)') && page9.includes('Jira status was not checked for acme__nodone (its §4 Tracker is none), so its parks are listed as usual.'), true);
+t('DS-180 AC6 and other repos are checked as normal', `${page9.includes('`VPL-259` (parked)')} ${searches.map((s) => s.keys.join(',')).join(' ')}`, 'false VPL-259,VPL-271,VPL-300');
+t('DS-180 AC7 no queue changed across every run', [VP, ND].map((r) => readFileSync(r.queue, 'utf8')).every((s, i) => s === before[i]), true);
 
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);

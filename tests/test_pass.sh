@@ -822,4 +822,20 @@ mkdir -p "$T/state-e/logs"; q init e
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-175 AC2 a build with nothing to add still leaves the file, so it is built once" '[ -f "$T/state-e/eta-history.jsonl" ] && [ "$(lines)" = 0 ]'
 
+# ---- DS-180: a ticket closed out from an interactive session is recorded done by the next pass
+export DESK_QUEUE="$T/queue-co.json" DESK_AUTOPILOT_STATE="$T/state-co"
+mkdir -p "$T/state-co/logs"; q init co
+q add CO-1; q park CO-1 "which copy?"
+q add CO-2; q park CO-2 "which tier?"
+q add CO-3; q park CO-3 "which plan?"; node "$B/closeout.mjs" CO-3 >/dev/null; q set CO-3 added_at=2099-01-01T00:00:00.000Z
+out=$(node "$B/closeout.mjs" CO-1 --pr 400 2>&1)
+check "DS-180 AC8 closing out a parked ticket leaves a note for the batch and says so" '[ -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "^CO-1 is parked in batch co: noted for its orchestrator"'
+out=$(node "$B/closeout.mjs" NOPE-1 --how "done" 2>&1)
+check "DS-180 AC10 closing out a ticket in no batch writes nothing and says nothing" '[ -z "$out" ] && [ ! -f "$T/state-co/closed-out/NOPE-1.json" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-180 AC9 the next pass records it done with its PR, and clears the note" \
+  '[ "$(field CO-1 state)" = "\"done\"" ] && [ "$(field CO-1 result.pr)" = 400 ] && [ "$(field CO-1 park)" = null ] && [ ! -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "CO-1: closed out from an interactive session (merged, PR #400)"'
+check "DS-180 AC9 a ticket nobody closed out stays parked" '[ "$(field CO-2 state)" = "\"parked\"" ]'
+check "DS-180 a note older than the ticket's place in the queue is stale: dropped, and the ticket stays parked" '[ "$(field CO-3 state)" = "\"parked\"" ] && [ ! -f "$T/state-co/closed-out/CO-3.json" ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
