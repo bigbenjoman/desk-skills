@@ -830,7 +830,7 @@ q add CO-2; q park CO-2 "which tier?"
 q add CO-3; q park CO-3 "which plan?"; node "$B/closeout.mjs" CO-3 >/dev/null; q set CO-3 added_at=2099-01-01T00:00:00.000Z
 out=$(node "$B/closeout.mjs" CO-1 --pr 400 2>&1)
 check "DS-180 AC8 closing out a parked ticket leaves a note for the batch and says so" '[ -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "^CO-1 is parked in batch co: noted for its orchestrator"'
-out=$(node "$B/closeout.mjs" NOPE-1 --how done 2>&1)
+out=$(node "$B/closeout.mjs" NOPE-1 --how "done" 2>&1)
 check "DS-180 AC10 closing out a ticket in no batch writes nothing and says nothing" '[ -z "$out" ] && [ ! -f "$T/state-co/closed-out/NOPE-1.json" ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-180 AC9 the next pass records it done with its PR, and clears the note" \
