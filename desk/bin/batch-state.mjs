@@ -104,8 +104,15 @@ export function batchConcurrency(q, { def, cap }) {
   return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
 }
 
-// Idle: nothing running, nothing left to spawn, nothing waiting on a merge to be released, and no
-// spine waiting on the person's approval.
-export function batchIdle(q, prState) {
+// Settled: nothing running, nothing left to spawn, nothing waiting on a merge to be released, and no
+// spine waiting on the person's approval. A done ticket's own PR may still be open.
+export function batchSettled(q, prState) {
   return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState) && !spinePark(t));
+}
+
+// Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
+// A done ticket with no PR is finished; a PR whose state is unknown counts as open.
+export function batchIdle(q, prState = () => null) {
+  return batchSettled(q, prState) && Object.values(q.tickets ?? {})
+    .every((t) => t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr)));
 }

@@ -545,6 +545,15 @@ check "held behind one merged and one failed blocker: idle (it can never release
 q='{"tickets":{"A":{"state":"done","result":{"pr":7}},"S":'"$H"'}}'
 check "held behind a blocker whose PR was closed unmerged: idle" '[ "$(idlep "$q" "$closed")" = idle ]'
 check "held behind a merged blocker (release due): not idle" '[ "$(idlep "$q" "$merged")" = busy ]'
+q='{"tickets":{"A":{"state":"done","result":{"pr":7}},"B":{"state":"done","result":{"pr":8}}}}'
+check "AC1: every ticket done and one PR still open: not idle" '[ "$(idlep "$q" '"'"'{"7":"MERGED","8":"OPEN"}'"'"')" = busy ]'
+check "AC1: a done ticket whose PR state is unknown: not idle" '[ "$(idlep "$q" "$merged")" = busy ]'
+check "AC2: every done ticket's PR merged or closed: idle" '[ "$(idlep "$q" '"'"'{"7":"MERGED","8":"CLOSED"}'"'"')" = idle ]'
+q='{"tickets":{"A":{"state":"done","result":{"pr":7}},"B":{"state":"done"},"X":{"state":"failed"}}}'
+check "AC3: a done ticket with no PR counts as finished: idle" '[ "$(idlep "$q" "$merged")" = idle ]'
+settled(){ node --input-type=module -e "import {batchSettled} from '$B/batch-state.mjs'; const st=JSON.parse(process.argv[2]); console.log(batchSettled(JSON.parse(process.argv[1]), (n)=>st[n]??null) ? 'settled' : 'moving')" "$1" "$2"; }
+q='{"tickets":{"A":{"state":"done","result":{"pr":7}}}}'
+check "a batch whose only open work is a done ticket's PR is settled, so the base gate still reports it" '[ "$(settled "$q" '"'"'{"7":"OPEN"}'"'"')" = settled ]'
 wom(){ node --input-type=module -e "import {waitingOnMerge} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); console.log(waitingOnMerge(q, q.tickets.S) ? 'waiting' : 'stuck')" "$1"; }
 HZ='{"state":"parked","park":{"question":"held by orchestrator: z"},"held_by":"Z"}'
 HA='{"state":"parked","park":{"question":"held by orchestrator: a"},"held_by":"A"}'
