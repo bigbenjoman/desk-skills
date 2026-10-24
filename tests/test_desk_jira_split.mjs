@@ -86,29 +86,57 @@ for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 const home = (name) => files.filter((f) => lines(f).some((l) => /^#+ /.test(l) && l.replace(/^#+ /, '').startsWith(name)) || read(f).includes(`**${name}`) || read(f).includes(`**"${name}"`));
 t('AC4 a section name no file holds is found nowhere', home('No such section'), []);
 const walk = (d) => (existsSync(d) ? readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : /\.(md|mjs|sh|py)$/.test(e.name) ? [join(d, e.name)] : [])) : []);
-const sources = [...['skills', 'agents', 'docs', 'desk/bin'].flatMap((d) => walk(join(root, d))), join(root, 'README.md')]
-  .filter((p) => existsSync(p) && p !== join(skill, 'SKILL.md'));
-let byName = 0, byPath = 0;
+// The fixtures are frozen copies of files as they were, and this file quotes the forms it looks for.
+const sources = [...['skills', 'agents', 'docs', 'desk/bin', 'bin', 'tests'].flatMap((d) => walk(join(root, d))), join(root, 'README.md')]
+  .filter((p) => existsSync(p) && p !== join(skill, 'SKILL.md') && !p.startsWith(join(root, 'tests/fixtures')) && p !== fileURLToPath(import.meta.url));
+const resolves = (label, cite, name, file) => {
+  const found = home(name);
+  t(`AC4 ${label} cites ${cite}: found in exactly one desk-jira file`, found.length, 1);
+  if (file) t(`AC4 and it is in ${file}, the file the citation names`, found, [file]);
+  else if (found.length === 1 && found[0] !== 'SKILL.md') {
+    const row = table.find((r) => r.file === found[0]);
+    t(`AC4 and the core's step table leads to it in ${found[0]}`, Boolean(row?.sections.includes(name)) || cite.includes(found[0]), true);
+  }
+};
+// Citations that name no section of their own: what each one means.
+const ALIAS = { scale: 'Size every ticket', gate: 'Gate' };
+const count = { name: 0, bare: 0, skillMd: 0, alias: 0, bold: 0, path: 0 };
 for (const p of sources) {
-  const text = norm(readFileSync(p, 'utf8'));
+  const raw = readFileSync(p, 'utf8');
+  const text = norm(raw);
   const label = relative(root, p);
-  for (const m of text.matchAll(/desk-jira`?(?:'s)? \*"?([A-Z][^*"]{2,60}?)"?\*/g)) {
-    const name = m[1];
-    const found = home(name);
-    byName++;
-    t(`AC4 ${label} cites desk-jira *${name}*: found in exactly one desk-jira file`, found.length, 1);
-    if (found.length === 1 && found[0] !== 'SKILL.md') {
-      const row = table.find((r) => r.file === found[0]);
-      t(`AC4 and the core's step table leads to it in ${found[0]}`, Boolean(row?.sections.includes(name)) || m[0].includes(found[0]), true);
+  // desk-jira's *Epics*, desk-jira *Fields*, desk-jira's *"Already fixed"*
+  for (const m of text.matchAll(/desk-jira`?(?:'s)? \*"?([A-Z][^*"]{2,60}?)"?\*/g)) { count.name++; resolves(label, m[0], m[1]); }
+  // (desk-jira Epics)
+  for (const m of text.matchAll(/(?<![\w`/-])desk-jira (?!SKILL\.md)([A-Z][\w-]+)/g)) { count.bare++; resolves(label, m[0], m[1]); }
+  // desk-jira SKILL.md: an "Epics" section. Naming the file is not enough: it must name the section.
+  for (const m of text.matchAll(/desk-jira`?(?:'s)? SKILL\.md(?:[,:]? (?:an? |its )?[*"]([A-Z][^*"]{2,60}?)[*"])?/g)) {
+    count.skillMd++;
+    t(`AC4 ${label} cites "${m[0]}": it names a section`, Boolean(m[1]), true);
+    if (m[1]) resolves(label, m[0], m[1], 'SKILL.md');
+  }
+  // desk-jira's scale, `desk-jira`'s gate
+  for (const m of text.matchAll(/desk-jira`?'s (scale|gate)\b/g)) { count.alias++; resolves(label, m[0], ALIAS[m[1]]); }
+  // Code that reads a section by its bold lead from a named desk-jira file, as tests/test_jira.sh
+  // reads **Writing an epic** from SKILL.md. In prose a bold beside a path is the citer's own label.
+  if (/\.(mjs|sh|py)$/.test(p)) {
+    for (const l of raw.split('\n')) {
+      const f = l.match(/desk-jira\/(SKILL\.md|references\/([\w.-]+\.md))/);
+      if (!f) continue;
+      for (const m of l.matchAll(/(?:\\?\*){2}([A-Z][^*\\]{2,60}?)(?:\\?\*){2}/g)) { count.bold++; resolves(label, `**${m[1]}** in desk-jira/${f[1]}`, m[1], f[2] ?? 'SKILL.md'); }
     }
   }
   for (const m of text.matchAll(/desk-jira(?:\/|'s `)references\/([\w.-]+\.md)/g)) {
-    byPath++;
+    count.path++;
     t(`AC4 ${label} names desk-jira's references/${m[1]}: it exists`, existsSync(join(refs, m[1])), true);
   }
 }
-t(`AC4 the citations by name were read (${byName})`, byName >= 8, true);
-t(`AC4 the citations by path were read (${byPath})`, byPath >= 3, true);
+t(`AC4 the citations by name were read (${count.name})`, count.name >= 8, true);
+t(`AC4 the citations by an unstarred name were read (${count.bare})`, count.bare >= 1, true);
+t(`AC4 the citations of desk-jira SKILL.md were read (${count.skillMd})`, count.skillMd >= 2, true);
+t(`AC4 the citations of desk-jira's scale and gate were read (${count.alias})`, count.alias >= 6, true);
+t(`AC4 the sections code reads by their bold lead were read (${count.bold})`, count.bold >= 1, true);
+t(`AC4 the citations by path were read (${count.path})`, count.path >= 3, true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
