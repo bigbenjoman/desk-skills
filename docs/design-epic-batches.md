@@ -215,7 +215,7 @@ DEPENDENCIES — from Jira links
   Design source: capture the build at every board width; check every visible string, colour and
   size the board states (or its copy key); a pixel diff needs the canvas runtime, so it is
   `UNVERIFIABLE` in a batch, never `PASS`. Figma's procedure is unchanged.
-- **Size scale** (desk-jira SKILL.md): XS a few lines in one place · S one area, one PR, under half
+- **Size scale** (desk-jira SKILL.md, *Epics*): XS a few lines in one place · S one area, one PR, under half
   a day · M one PR in one sitting, several areas or a new piece in an existing pattern · L more than
   one sitting or more than one PR (split before batching) · XL several independently mergeable
   parts (an epic). Where the project has a `Size` field (`desk-jira fields size`), set it on every
