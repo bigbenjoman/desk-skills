@@ -165,7 +165,9 @@ without asking"). **No agent transitions or comments.** Collect the results and 
 transitions as one list. The Done rows then follow config §3 `jira-close-own-merged`: `yes` applies
 them with that list as the record, `ask` waits for agreement, `no` or `TODO` reports the drift and
 changes nothing. The comment posts under §3 `jira-comment`, following §5 Ticket comment. Any other
-close is `jira-close`, a decision, and is never proposed from a sweep.
+close is `jira-close`, a decision, and is never proposed from a sweep. Each ticket moved to Done then
+gets `node ~/.claude/desk/bin/closeout.mjs <TICKET> --pr <n>`, so a batch still holding it parked
+records it done at its next pass (`desk-ticket` Stage 7); a ticket in no batch prints nothing.
 
 ## 2. Worktrees whose work has landed
 
