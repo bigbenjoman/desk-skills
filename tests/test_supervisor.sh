@@ -56,14 +56,28 @@ process.exitCode = v.code;
 EOF
 # The check-in an idle tick runs: whatever $T/checkin.json holds.
 cat > "$T/bin/digest.mjs" <<EOF
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 let d = { status: 'not_due', push: null };
+// checkin.hangs: a check-in that never answers.
+if (existsSync('$T/checkin.hangs')) await new Promise((r) => setTimeout(r, 60_000));
 try { d = JSON.parse(readFileSync('$T/checkin.json', 'utf8')); } catch {}
 console.log(JSON.stringify(d));
 EOF
 # The maintenance step an idle tick runs: no window.
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
-printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
+# The merge driver, whose output the supervisor sends to merge-driver.log. By default it ends as the
+# real one does, with its exit line; driver.mode `fail` stops it at once as a signed-out gh does, and
+# `hang` keeps it running, holding the lock. driver.calls is written last, once its log lines are out.
+cat > "$T/bin/merge-driver.sh" <<EOF
+#!/bin/sh
+case "\$(cat "$T/driver.mode" 2>/dev/null)" in
+  fail) echo "00:00:01Z FAIL: gh is signed out (HTTP 401: Bad credentials) — nothing can merge until \\\`gh auth login\\\`; stopping"
+        echo "00:00:01Z merge driver exited 1"; echo "\$@" >> "$T/driver.calls"; exit 1 ;;
+  hang) mkdir -p "$T/state/merge-driver.lock.d"; echo \$\$ > "$T/state/merge-driver.lock.d/pid"
+        echo "\$@" >> "$T/driver.calls"; exec sleep 30 ;;
+esac
+echo "00:00:01Z merge driver exited 0"; echo "\$@" >> "$T/driver.calls"
+EOF
 cat > "$T/fakes/launchctl" <<EOF
 #!/bin/sh
 echo "\$@" >> "$T/launchctl.calls"
@@ -142,11 +156,38 @@ mkdir -p "$T/state/merge-driver.lock.d"; echo "$HOLDER" > "$T/state/merge-driver
 n=$(started)
 out=$(tick)
 check "AC4: no second merge driver while one holds the lock" '[ "$(started)" = "$n" ]'
-check "AC4: the log names the running driver" 'grep -q "merge driver: running (pid $HOLDER)" "$LOG"'
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
 out=$(tick)
 check "a dead driver's lock does not stop a new one" '[ "$(started)" = $((n + 1)) ]'
 rm -rf "$T/state/merge-driver.lock.d"
+waitlines "$T/driver.calls" "$(started)"
+check "DS-225: a driver that exits 0 is logged as stopped, not failed, and notifies nothing" 'grep -q "^merge driver: stopped (pid [0-9]*, started .*, exit 0): it wrote nothing to its log$" "$LOG" && [ "$(count "$T/notify.calls")" = 0 ]'
+
+# ---- DS-225: why a merge driver stopped, and a notification after 2 failed starts ---------------
+drv(){ node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).driver ?? {}; console.log(s[process.argv[2]])' "$T/state/supervisor.json" "$1"; }
+echo fail > "$T/driver.mode"
+out=$(tick); waitlines "$T/driver.calls" "$(started)"      # logs the last exit 0, starts one that fails
+out=$(tick); waitlines "$T/driver.calls" "$(started)"
+check "DS-225 AC1: the next tick logs the reason from the driver's log, not started" 'grep -q "^merge driver: stopped (pid [0-9]*, started .*, exit 1): FAIL: gh is signed out (HTTP 401: Bad credentials)" "$LOG"'
+check "DS-225 AC1: the supervisor's record keeps the reason" 'drv reason | grep -q "^FAIL: gh is signed out" && [ "$(drv failures)" = 1 ]'
+check "DS-225: one failed start notifies nothing yet" '[ "$(count "$T/notify.calls")" = 0 ]'
+out=$(tick); waitlines "$T/driver.calls" "$(started)"
+check "DS-225 AC3: 2 failed starts in a row send one notification naming the repo and the reason" '[ "$(count "$T/notify.calls")" = 1 ] && grep -q "|desk: acme__widgets|The merge driver failed 2 starts in a row: FAIL: gh is signed out (HTTP 401: Bad credentials)" "$T/notify.calls" && grep -q "^notification: sent for the merge driver (2 failed starts in a row)$" "$LOG"'
+out=$(tick); waitlines "$T/driver.calls" "$(started)"
+check "DS-225 AC3: a third failed start sends no second notification" '[ "$(count "$T/notify.calls")" = 1 ] && [ "$(drv failures)" = 3 ]'
+echo hang > "$T/driver.mode"
+out=$(tick)
+i=0; while [ ! -s "$T/state/merge-driver.lock.d/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+before=$(grep -c "merge driver" "$LOG")
+out=$(tick); out=$(tick)
+check "DS-225 AC4: a driver running normally gets nothing new in the log" '[ "$(grep -c "merge driver" "$LOG")" = "$before" ] && grep -q "pass: exit 10" "$LOG"'
+check "DS-225 AC4: a running driver ends the run of failures" '[ "$(drv failures)" = 0 ] && [ "$(drv notified)" = false ]'
+kill "$(cat "$T/state/merge-driver.lock.d/pid")" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d" "$T/driver.mode"
+out=$(tick)
+check "DS-225: a running driver that is killed is logged with no exit code" 'grep -q "^merge driver: stopped (pid [0-9]*, started .*, no exit code logged)" "$LOG"'
+waitlines "$T/driver.calls" "$(started)"
+# The notification counts below start from none.
+rm -f "$T/notify.calls"
 
 # ---- the merge driver is not started without its grants ---------------------------------------
 config yes ask; n=$(started)
@@ -219,6 +260,10 @@ echo '{"status":"sent","push":{"key":"digest:2026-10-23T17:00","text":"Check-in 
 out=$(tick); out=$(tick)
 check "DS-140: an idle batch still pushes the check-in, once, and runs no pass" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|Check-in 17:00: 1 question(s)|$" && [ "$(count "$T/pass.calls")" = 2 ]'
 rm -f "$T/checkin.json"
+touch "$T/checkin.hangs"; s0=$SECONDS
+out=$(DESK_CHECKIN_TIMEOUT_MS=1000 tick); rc=$?
+rm -f "$T/checkin.hangs"
+check "DS-225 AC5: a check-in that hangs is killed at its timeout and the tick carries on" '[ $rc -eq 0 ] && [ $((SECONDS - s0)) -lt 30 ] && grep -q "idle check-in: timed out after 1s and was killed; the next tick tries again" "$LOG" && ! pgrep -f "$T/bin/digest.mjs" >/dev/null'
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
 mkdir -p "$T/state/closed-out"
