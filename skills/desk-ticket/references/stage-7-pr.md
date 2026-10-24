@@ -81,8 +81,8 @@ holds is never merged or armed by you**, whatever §3 grants: report it ready wi
 ask; otherwise stop at the draft and report the link. Once it merges, and it was the last open PR on
 the key, move the ticket to §4 Done state via `desk-jira` under §3 `jira-close-own-merged` (a
 non-tracker ticket: nothing to move). **Then tell the batch**, whether the PR merged or the ticket
-went to Done some other way: an autopilot batch may still hold the ticket parked, and would list it
-at every check-in.
+went to Done some other way: an autopilot batch may still hold the ticket parked, and would keep it
+parked for good.
 
 ```bash
 node ~/.claude/desk/bin/closeout.mjs <TICKET> --pr <n>          # or --how done, with no PR

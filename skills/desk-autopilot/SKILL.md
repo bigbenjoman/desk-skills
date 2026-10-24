@@ -1039,10 +1039,11 @@ supervisor tick moves it on too (`maintenance.mjs step`).
   in one line (`2 parked tickets are Done in Jira; their orchestrators can drop them: …`). The digest
   never writes a queue: dropping them is each orchestrator's call (`queue.mjs drop`, or `set <KEY>
   state=done`). A repo whose Jira cannot be read, or with no Jira (§4 Tracker not `jira`, or no desk
-  config), has every park listed under a line saying its Jira status was not checked.
+  config), has its parks listed as usual, under a line saying its Jira status was not checked.
 - **Interactive close-outs.** A ticket an interactive session merges or moves to Done is noted in
   this batch's state by `closeout.mjs` (`<state>/closed-out/<KEY>.json`); the next pass records it
-  done and reports it under `done:`, so it stops being listed as parked.
+  done and reports it under `done:`, so it stops being listed as parked. A running ticket waits for
+  its worker to end, and a note older than the ticket's place in the queue is dropped unread.
 - **Where.** `~/.desk-autopilot/digest/<date>T<HHMM>.md`, named in the push.
 - **Answering from it.** Each line carries its command. An answer goes through that repo's
   `answer.mjs`, exactly as Stage 5, and the page marks it answered:
