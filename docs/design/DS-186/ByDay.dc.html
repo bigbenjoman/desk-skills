@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q by day</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',Menlo,monospace;font-size:13px;line-height:20px;color:#e6e6e6}
+.l{white-space:pre;height:20px}
+.c{display:inline-block;white-space:pre;overflow:hidden;vertical-align:top}
+.B{font-weight:700;color:#f2f2f2}
+.d{color:#8b919c}
+.g{color:#98c379}.y{color:#e5c07b}.b{color:#61afef}.m{color:#c678dd}.x{color:#e06c75}
+.sel{background:#3b4250}
+.tab{padding:0 6px}
+.tabon{padding:0 6px;background:#3b4250;color:#f2f2f2;font-weight:700;box-shadow:inset 0 -2px 0 #61afef}
+.day{white-space:pre;height:20px;margin-top:8px;border-bottom:1px solid #3b4250;padding-bottom:2px;box-sizing:content-box}
+</style>
+</helmet>
+<div class="t" style="width:1160px;height:760px;box-sizing:border-box;background:#282c34;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
+<div style="height:36px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#21252b" aria-hidden="true">
+<span style="width:12px;height:12px;border-radius:6px;background:#ff5f57"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#febc2e"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#28c840"></span>
+<span class="d" style="margin-left:10px">desk-q</span>
+</div>
+<div style="padding:12px 16px;display:flex;flex-direction:column;flex:1">
+<div class="l"><span class="B">desk-q</span></div>
+<div class="l"><span class="tab">1 Queue</span>  <span class="tab">2 Timeline</span>  <span class="tabon">3 By day</span>  <span class="tab">4 Epics</span>      <span class="d">←→ or 1–4</span></div>
+<div class="l"> </div>
+<div class="l"><span class="B">Every repo, by ship date</span><span class="d"> · forecast from Thu 22 Oct 18:20 · 2,000 runs over 56 merged tickets</span></div>
+<div class="l"> </div>
+<div class="l d B"><span class="c" style="width:4ch"> </span><span class="c" style="width:13ch">REPO</span><span class="c" style="width:10ch">TICKET</span><span class="c" style="width:11ch">STATE</span><span class="c" style="width:13ch">STARTS</span><span class="c" style="width:14ch">SHIPS</span>TITLE</div>
+<div class="day sel"><span class="B">› Today · Thu 22 Oct</span>   <span class="d">6 tickets ·</span> <span class="g">1 running</span> <span class="d">·</span> <span class="y">5 waiting</span></div>
+<sc-for list="{{today}}" as="r" hint-placeholder-count="6">
+<div class="l"><span class="c" style="width:4ch"> </span><span class="c d" style="width:13ch">desk-skills</span><span class="c" style="width:10ch">{{r.key}}</span><span class="c" style="width:11ch;color:{{r.col}}">{{r.state}}</span><span class="c" style="width:13ch">{{r.starts}}</span><span class="c B" style="width:14ch">{{r.ships}}</span><span class="d">{{r.title}}</span></div>
+</sc-for>
+<div class="day"><span class="B">  Tomorrow · Fri 23 Oct</span>   <span class="d">10 tickets ·</span> <span class="y">10 waiting</span></div>
+<sc-for list="{{tomorrow}}" as="r" hint-placeholder-count="5">
+<div class="l"><span class="c" style="width:4ch"> </span><span class="c d" style="width:13ch">desk-skills</span><span class="c" style="width:10ch">{{r.key}}</span><span class="c" style="width:11ch;color:{{r.col}}">{{r.state}}</span><span class="c" style="width:13ch">{{r.starts}}</span><span class="c B" style="width:14ch">{{r.ships}}</span><span class="d">{{r.title}}</span></div>
+</sc-for>
+<div class="l d"><span class="c" style="width:4ch"> </span>… 5 more tomorrow</div>
+<div class="day"><span class="B">  No date</span>   <span class="d">their repos' passes have stopped, or there is no history yet</span></div>
+<div class="l"><span class="c" style="width:4ch"> </span><span class="c d" style="width:13ch">pr-ninja</span><span class="c" style="width:10ch">KAN-839</span><span class="c g" style="width:11ch">● running</span><span class="c d" style="width:13ch">running</span><span class="c d" style="width:14ch">no date</span><span class="d">Speaking: Match events and bodies to each wo…</span></div>
+<div class="l"><span class="c" style="width:4ch"> </span><span class="c d" style="width:13ch">pr-ninja</span><span class="c" style="width:10ch">KAN-685</span><span class="c b" style="width:11ch">○ ready</span><span class="c d" style="width:13ch">no date</span><span class="c d" style="width:14ch">no date</span><span class="d">When a customer confirms a story that was on…</span></div>
+<div class="l"><span class="c" style="width:4ch"> </span><span class="c d" style="width:13ch">voicepa</span><span class="c" style="width:10ch">VPL-367</span><span class="c b" style="width:11ch">○ ready</span><span class="c d" style="width:13ch">no date</span><span class="c d" style="width:14ch">no date</span><span class="d">cancel superseded PR runs in CI, Portal Depl…</span></div>
+<div class="l d"><span class="c" style="width:4ch"> </span>… 9 more · <span class="m">102 needing you are not dated</span> (c dates them as if answered at the next check-in)</div>
+<div style="flex:1"></div>
+<div class="l d">Day by day for a week, then week by week.</div>
+<div class="l"><span class="d">move </span> <span class="B">↑↓</span> select · <span class="B">enter</span> open · <span class="B">←→</span> or <span class="B">1–4</span> view · <span class="B">c</span> date parked tickets · <span class="B">:</span> command · <span class="B">q</span> quit</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1160,"height":760}}'>
+class Component extends DCLogic {
+renderVals() {
+const G = '#98c379', Y = '#e5c07b';
+const mk = ([key, state, starts, ships, title]) => ({ key, starts, ships, title, state: state === 'running' ? '● running' : '· waiting', col: state === 'running' ? G : Y });
+const today = [
+['DS-182','running','running','today 18:49','desk-q: ← and → switch views along the tab bar, stopping at…'],
+['DS-153','waiting','now','today 19:22','put only the core worker contract (<=14KB) in the worker sys…'],
+['DS-184','waiting','today 18:49','today 19:53','desk-q: says Dates paused for a batch with nothing left to r…'],
+['DS-154','waiting','today 19:22','today 20:39','desk-ticket: split the 50KB SKILL.md into an 18KB-max core f…'],
+['DS-155','waiting','today 20:39','today 21:52','self-review (Stage 4b) and the PR stage (Stage 7) start in a…'],
+['DS-156','waiting','today 21:52','today 23:02','a respawned worker resumes from the last round summary inste…']
+].map(mk);
+const tomorrow = [
+['DS-157','waiting','today 23:02','Fri 00:20','separate models for review finders and for PR and Jira text…'],
+['DS-158','waiting','Fri 00:20','Fri 01:56','log the preflight cost, drop partial messages from worker lo…'],
+['DS-143','waiting','Fri 01:56','Fri 03:17','try before asking (check via granted API/CLI/browser first)…'],
+['DS-151','waiting','Fri 03:17','Fri 04:32','a weekly maintenance window drains, updates, checks and rebo…'],
+['DS-142','waiting','Fri 04:32','Fri 05:57','one promotion window a day, held for the 17:00 check-in dige…']
+].map(mk);
+return { today, tomorrow };
+}
+}
+</script>
+</body>
+</html>

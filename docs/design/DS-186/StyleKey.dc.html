@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q style key</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',Menlo,monospace;font-size:13px;line-height:20px;color:#e6e6e6}
+.l{white-space:pre;height:20px}
+.c{display:inline-block;white-space:pre;overflow:hidden;vertical-align:top}
+.B{font-weight:700;color:#f2f2f2}
+.d{color:#8b919c}
+.g{color:#98c379}.y{color:#e5c07b}.b{color:#61afef}.m{color:#c678dd}.x{color:#e06c75}
+.h{font-weight:700;color:#f2f2f2;font-size:15px;line-height:24px;margin:0}
+.col{display:flex;flex-direction:column;gap:2px}
+</style>
+</helmet>
+<div class="t" style="width:1160px;height:700px;box-sizing:border-box;background:#282c34;border-radius:12px;padding:32px;display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:32px 48px;align-content:start">
+<div class="col">
+<h2 class="h">State: colour plus a glyph</h2>
+<div class="l d">Colour is the terminal's own ANSI palette, so your theme decides the shade.</div>
+<div class="l d">The glyph keeps every state readable with NO_COLOR or colour-blindness.</div>
+<div class="l"> </div>
+<div class="l"><span class="c g" style="width:14ch">● running</span><span class="c d" style="width:8ch">ANSI 32</span>a worker is on it</div>
+<div class="l"><span class="c b" style="width:14ch">○ ready</span><span class="c d" style="width:8ch">ANSI 34</span>starts when a worker is free</div>
+<div class="l"><span class="c y" style="width:14ch">· waiting</span><span class="c d" style="width:8ch">ANSI 33</span>behind other tickets in the queue</div>
+<div class="l"><span class="c m" style="width:14ch">◆ needs you</span><span class="c d" style="width:8ch">ANSI 35</span>parked on a question only you can answer</div>
+<div class="l"><span class="c d" style="width:14ch">◌ blocked</span><span class="c d" style="width:8ch">dim</span>behind a ticket that needs you (was "stuck", red)</div>
+<div class="l"><span class="c x" style="width:14ch">✕ failed</span><span class="c d" style="width:8ch">ANSI 31</span>red is kept for real failures only</div>
+</div>
+<div class="col">
+<h2 class="h">Batch health (LAST PASS)</h2>
+<div class="l d">The first thing you scan for on the overview, so it gets colour.</div>
+<div class="l"> </div>
+<div class="l"><span class="c g" style="width:22ch">● live · 1m ago</span>passes running on time</div>
+<div class="l"><span class="c y" style="width:22ch">■ stopped · 3h 24m</span>no pass past the next due time</div>
+<div class="l"><span class="c x" style="width:22ch">■ stopped · 3d 4h</span>stopped for more than a day</div>
+<div class="l"> </div>
+<h2 class="h">Weight: three levels only</h2>
+<div class="l"><span class="c B" style="width:14ch">bold</span>where you are, headings, the thing to act on</div>
+<div class="l"><span class="c" style="width:14ch">regular</span>the facts in each row</div>
+<div class="l"><span class="c d" style="width:14ch">dim</span>secondary: ids, paths, "as of", zero counts</div>
+</div>
+<div class="col">
+<h2 class="h">Selection</h2>
+<div class="l d">Now: reverse video turns coloured cells into blocks.</div>
+<div class="l"><span style="background:#e6e6e6;color:#282c34">› desk-skills    live 1m           </span><span style="background:#98c379;color:#282c34">1</span><span style="background:#e6e6e6;color:#282c34">      0    </span><span style="background:#e5c07b;color:#282c34">15</span><span style="background:#e6e6e6;color:#282c34">      0</span></div>
+<div class="l"> </div>
+<div class="l d">Proposed: a tinted bar (256-colour 238) that keeps each colour.</div>
+<div class="l" style="background:#3b4250"><span class="B">› desk-skills</span>    <span class="g">● live · 1m ago</span>  <span class="g">1</span>      <span class="d">0</span>    <span class="y">15</span>      <span class="d">0</span></div>
+<div class="l d">With NO_COLOR, reverse video stays as it is today.</div>
+</div>
+<div class="col">
+<h2 class="h">Notices</h2>
+<div class="l"><span class="m B">● 102 tickets need you</span>   the headline, at the top</div>
+<div class="l"><span class="y">▲ Ports overlap: …</span>        a warning, coloured yellow</div>
+<div class="l"><span class="y B">■ Passes stopped …</span>        a banner that wraps, never cut</div>
+<div class="l d">3 more repos are set up…    info stays dim</div>
+<div class="l"> </div>
+<h2 class="h">Keys</h2>
+<div class="l"><span class="d">move </span> <span class="B">↑↓</span> select · <span class="B">enter</span> open · <span class="B">←→</span> view</div>
+<div class="l"><span class="d">act  </span> <span class="B">c</span> date parked tickets · <span class="B">q</span> quit</div>
+<div class="l d">Two rows, keys in bold, so the line never wraps mid-group.</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1160,"height":700}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
