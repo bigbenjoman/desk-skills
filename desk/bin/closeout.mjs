@@ -21,11 +21,11 @@ export function noteCloseout({ queue, state, ticket, pr = null, how = 'merged', 
   if (!t || t.state === 'done') return null;
   mkdirSync(closedOutDir(state), { recursive: true });
   const path = join(closedOutDir(state), `${ticket}.json`);
-  writeFileSync(path, `${JSON.stringify({ ticket, how, pr, at: now.toISOString() })}\n`);
+  writeFileSync(path, `${JSON.stringify({ ticket, how, pr, at: now.toISOString(), queue })}\n`);
   return { path, batch: q.batch ?? null, state: t.state };
 }
 
-// Every note waiting for a pass: [{ticket, how, pr, at, file}]. An unreadable note is skipped, and kept.
+// Every note waiting for a pass: [{ticket, how, pr, at, queue, file}]. An unreadable note is skipped, and kept.
 export function readCloseouts(state) {
   const dir = closedOutDir(state);
   if (!existsSync(dir)) return [];

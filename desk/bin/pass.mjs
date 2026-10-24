@@ -607,12 +607,15 @@ if (notes.length) {
 // ---- interactive close-outs --------------------------------------------------
 // A ticket an interactive session merged or moved to Done (closeout.mjs) is done here too, rather than
 // left parked. A running one is its worker's until it ends. With its PR recorded, the merge is read
-// below as any other. The note goes once the queue has the change.
+// below as any other. The note goes once the queue has the change; a note written for another queue
+// file is left for it, and one older than the ticket's place in this queue is stale and goes unread.
 for (const c of readCloseouts(STATE)) {
+  if (c.queue && c.queue !== QUEUE_FILE) continue;
   const t = queue().tickets[c.ticket];
+  const stale = t?.added_at && Date.parse(t.added_at) > Date.parse(c.at);
   const how = `closed out from an interactive session (${c.how === 'done' ? 'moved to Done' : 'merged'}${c.pr ? `, PR #${c.pr}` : ''})`;
-  if (t?.state === 'running') { report.advanced.push(`${t.key}: ${how} while its worker runs; recorded once the worker ends`); continue; }
-  if (t && t.state !== 'done') {
+  if (t?.state === 'running' && !stale) { report.advanced.push(`${t.key}: ${how} while its worker runs; recorded once the worker ends`); continue; }
+  if (t && t.state !== 'done' && !stale) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []));
     if (report.failed.length !== before) continue;
