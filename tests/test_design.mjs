@@ -7,8 +7,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render } from '../desk/bin/desk-design.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -53,6 +53,52 @@ t('collect: canvas, boards, runtime, stylesheet and the font it loads', c0.files
 t('collect: a remote font is reported, not copied', c0.remote.join(' '), 'https://fonts.googleapis.com/css2?family=Inter');
 t('collect: nothing missing', c0.missing.length, 0);
 t('canonicalUrl ignores a trailing slash, fragment and host case', canonicalUrl('https://Claude.ai/design/p/abc123/#x'), URL1);
+
+// ---- a canvas.json v3 snapshot ----
+// Boards keyed by file name and sized w/h, {{…}} bindings in src, images as /_blob/<id> in an
+// attribute and in a script string, and the runtime as artifact-type/dc-runtime.js, not support.js.
+const B1 = '0123456789abcdef0123456789abcdef';
+const B2 = 'fedcba9876543210fedcba9876543210';
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+function snapshotV3(dir, { second = true } = {}) {
+  put(join(dir, 'project/canvas.json'), JSON.stringify({ version: 3, boards: {
+    'A-Home.dc.html': { x: 0, y: 1400, w: 1440, h: 3400, title: 'Home' },
+    'Landscape.dc.html': { x: 1500, y: 0, w: 390, h: 844 },
+  }, notes: [{ x: 0, y: 0, w: 300, h: 120, title: 'A sticky note, not a board' }] }));
+  put(join(dir, 'project/A-Home.dc.html'), `<script src="./support.js"></script><img src="{{janeSrc}}" alt=""><img src="/_blob/${B1}">`);
+  put(join(dir, 'project/Landscape.dc.html'), `<script src="./support.js"></script><img src='{{s.src}}'><script>const items = [{ src: '/_blob/${B2}' }];</script>`);
+  put(join(dir, 'artifact-type/dc-runtime.js'), 'window.dc = { runtime: true };');
+  put(join(dir, `assets/${B1}`), PNG);
+  if (second) put(join(dir, `_blob/${B2}.jpg`), 'JPEG');
+  return dir;
+}
+const v3 = snapshotV3(join(T, 'v3'));
+t('v3 parseBoards: boards keyed by file, sized by w', parseBoards(json(join(v3, 'project/canvas.json'))).map((x) => `${x.name}@${x.width}:${x.file}`).join(' '), 'Home@1440:A-Home.dc.html Landscape@390:Landscape.dc.html');
+t('references: a {{…}} binding names no file', references(`<img src="{{janeSrc}}"><img src='{{ s.src }}'><a href="x.html">`).join(' '), 'x.html');
+t('blobIds: an id in a script string', blobIds(`const items = [{ src: '/_blob/${B2}' }]`).join(' '), B2);
+const cv3 = collect(v3);
+t('v3 collect: no binding reported missing', cv3.missing.join(' | '), '');
+t('v3 collect: assets and support.js saved beside the boards', cv3.files.join(' '),
+  `project/A-Home.dc.html project/Landscape.dc.html project/assets/${B1}.png project/assets/${B2}.jpg project/canvas.json project/support.js`);
+t('v3 collect: support.js comes from dc-runtime.js', cv3.copyFrom['project/support.js'], 'artifact-type/dc-runtime.js');
+t('v3 collect: a /_blob/ path is not a remote or repo-root file', cv3.remote.length, 0);
+const rv3 = repo('rv3');
+const sv3 = save(v3, { root: rv3, dir: DIR, tickets: [{ key: 'PM-3', boards: [] }], epic: 'PM-2', url: URL1, version: '1' });
+const dv3 = join(rv3, DIR, 'PM-2/project');
+t('v3 save: the attribute points at the saved asset', read(join(dv3, 'A-Home.dc.html')).includes(`<img src="assets/${B1}.png">`), true);
+t('v3 save: the script string points at the saved asset', read(join(dv3, 'Landscape.dc.html')).includes(`src: 'assets/${B2}.jpg'`), true);
+t('v3 save: no /_blob/ reference is left', [read(join(dv3, 'A-Home.dc.html')), read(join(dv3, 'Landscape.dc.html'))].some((s) => s.includes('/_blob/')), false);
+t('v3 save: the assets are on disk', readFileSync(join(dv3, `assets/${B1}.png`)).equals(PNG) && read(join(dv3, `assets/${B2}.jpg`)) === 'JPEG', true);
+t('v3 save: support.js is the runtime', read(join(dv3, 'support.js')), 'window.dc = { runtime: true };');
+t('v3 save: bindings are kept as written', read(join(dv3, 'A-Home.dc.html')).includes('src="{{janeSrc}}"'), true);
+t('v3 save: README lists every board', read(join(rv3, DIR, 'PM-2/README.md')).includes('| Landscape | 390px | Landscape.dc.html |'), true);
+t('v3 save: source.json records the saved paths', JSON.stringify(sv3.files), JSON.stringify(cv3.files));
+t('v3 save: the saved folder reads back with nothing missing', collect(join(rv3, DIR, 'PM-2')).missing.length, 0);
+const rv3m = repo('rv3m');
+const noB2 = (() => { try { save(snapshotV3(join(T, 'v3m'), { second: false }), { root: rv3m, dir: DIR, tickets: [{ key: 'PM-3', boards: [] }], url: URL1, version: '1' }); return 'no error'; } catch (e) { return `${e.code}:${e.message}`; } })();
+t('v3 save: a missing asset exits 4', noB2.startsWith('4:not saved'), true);
+t('v3 save: and names the asset id', noB2.includes(`missing: asset ${B2} (from project/Landscape.dc.html`), true);
+t('v3 save: nothing written when an asset is missing', existsSync(join(rv3m, DIR)), false);
 
 // ---- write (source.json and README from a folder) ----
 const w = snapshot(join(T, 'w'));
@@ -248,6 +294,36 @@ if (!pw.entry) {
   const blank = canvasAt('rx');
   put(join(blank, 'project/test-390.dc.html'), '<!doctype html><body></body>');
   t('render: a blank board fails', await render(blank, { chromium, bps: [390] }).then(() => 'no error', (e) => e.message.includes('painted nothing')), true);
+
+  // A v3 canvas: keyed boards sized w/h, the runtime saved as support.js, an image the board's script
+  // sets from a /_blob/ id, and a binding the runtime fills in (in a <template>, as nothing fetches it).
+  const sr = join(T, 'v3r');
+  const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>';
+  put(join(sr, 'project/canvas.json'), JSON.stringify({ version: 3, boards: {
+    'Home.dc.html': { x: 0, y: 0, w: 1440, h: 900, title: 'Home' }, 'Phone.dc.html': { x: 1500, y: 0, w: 390, h: 844 } } }));
+  for (const f of ['Home', 'Phone']) {
+    put(join(sr, `project/${f}.dc.html`), `<!doctype html><script src="./support.js"></script><template><img src="{{janeSrc}}"></template>
+<main style="height:600px;background:#234;color:#fff">${f}</main><script>const items = [{ src: '/_blob/${B1}' }];
+for (const it of items) { const i = document.createElement('img'); i.src = it.src; document.querySelector('main').append(i); }</script>`);
+  }
+  put(join(sr, 'artifact-type/dc-runtime.js'), 'window.dc = { runtime: true };');
+  put(join(sr, `assets/${B1}`), SVG);
+  const rr = repo('v3r-repo');
+  const v3dir = join(rr, save(sr, { root: rr, dir: DIR, tickets: [{ key: 'PM-3', boards: [] }], epic: 'PM-2', url: URL1, version: '1' }).path);
+  const v3out = await render(v3dir, { chromium, bps: BPS, now: '2026-10-24T10:00:00Z' }).then((s) => s, (e) => e);
+  t('v3 render: a PNG for every board at every breakpoint', v3out.screens?.images.length ?? v3out.message, 10);
+  t('v3 render: README lists them', read(join(v3dir, 'README.md')).includes('| Phone | [drawn](screens/phone@390.png) |'), true);
+  // From file://, with nothing but the saved folder: every request stays on disk and succeeds.
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const off = [];
+  page.on('request', (r) => { if (!r.url().startsWith('file:')) off.push(r.url()); });
+  page.on('requestfailed', (r) => off.push(`${r.url()} failed`));
+  await page.goto(pathToFileURL(join(v3dir, 'project/Home.dc.html')).href, { waitUntil: 'load' });
+  const shown = await page.evaluate(() => [window.dc?.runtime === true, [...document.images].every((i) => i.complete && i.naturalWidth > 0)].join(' '));
+  await browser.close();
+  t('v3 file://: support.js and the asset load from disk', shown, 'true true');
+  t('v3 file://: no request leaves the folder', off.join(' '), '');
 }
 
 rmSync(T, { recursive: true, force: true });

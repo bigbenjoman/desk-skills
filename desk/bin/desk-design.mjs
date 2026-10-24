@@ -8,8 +8,11 @@
 //       writes source.json and README.md into <dir> (a snapshot, or a saved canvas)
 //   node desk-design.mjs save   <src> --key <K> [--epic <E>] [--url <u> --version <v>] [--boards <a,b>]
 //       copies canvas.json, every board's HTML and the local files they reference (support.js,
-//       fonts, CSS, images) from <src> into <design dir>/<EPIC or KEY>/ of the current checkout,
-//       or into the folder that already holds the same artifact, then writes source.json and README
+//       fonts, CSS, images, and each /_blob/<id> asset as assets/<id><ext>, which the boards are
+//       pointed at) from <src> into <design dir>/<EPIC or KEY>/ of the current checkout, or into the
+//       folder that already holds the same artifact, then writes source.json and README. A
+//       support.js the snapshot lacks is copied from its dc-runtime.js, which the artifact serves
+//       in its place
 //   node desk-design.mjs status <saved dir | artifact URL> --version <v>
 //       exit 0 when the saved copy is that version, 3 when the artifact has moved on
 //   node desk-design.mjs check  <KEY | ticket file> [--key <K>]
@@ -33,37 +36,63 @@ const fail = (msg, code = 2) => { const e = new Error(msg); e.code = code; throw
 // ---- the canvas ------------------------------------------------------------------------------
 
 // The boards canvas.json names, as [{name, width, file}], in order. Its exact shape is the design
-// tool's, so any object carrying a numeric width and a name-like field counts as a board.
+// tool's, so any object carrying a numeric `width` and a name-like field counts as a board, as does
+// one sized by `w` that names its file. An object keyed by an HTML file name is that file's board,
+// named by it when it has no title.
 export function parseBoards(canvas) {
   const out = []; const seen = new Set();
-  const walk = (v) => {
-    if (Array.isArray(v)) { v.forEach(walk); return; }
+  const walk = (v, key) => {
+    if (Array.isArray(v)) { v.forEach((x) => walk(x)); return; }
     if (!v || typeof v !== 'object') return;
-    const name = v.title ?? v.name ?? v.label ?? v.id;
-    if (typeof v.width === 'number' && typeof name === 'string' && name) {
-      const file = [v.file, v.src, v.path, v.html].find((f) => typeof f === 'string') ?? null;
-      const id = `${name}\0${v.width}\0${file}`;
-      if (!seen.has(id)) { seen.add(id); out.push({ name, width: v.width, file }); }
+    const keyFile = typeof key === 'string' && /\.html?$/i.test(key) ? key : null;
+    const name = v.title ?? v.name ?? v.label ?? v.id ?? keyFile?.replace(/(?:\.dc)?\.html?$/i, '');
+    const width = typeof v.width === 'number' ? v.width : v.w;
+    const file = [v.file, v.src, v.path, v.html].find((f) => typeof f === 'string') ?? keyFile;
+    // A `w` alone is any canvas item's size (a note, a group); only one with a file is a board.
+    if (typeof width === 'number' && typeof name === 'string' && name && (typeof v.width === 'number' || file)) {
+      const id = `${name}\0${width}\0${file}`;
+      if (!seen.has(id)) { seen.add(id); out.push({ name, width, file }); }
     }
-    Object.values(v).forEach(walk);
+    Object.entries(v).forEach(([k, x]) => walk(x, k));
   };
   walk(canvas);
   return out;
 }
 
-// Every reference a board or stylesheet makes: src/href attributes, CSS url() and @import.
+// Every reference a board or stylesheet makes: src/href attributes, CSS url() and @import. A
+// template binding (`{{janeSrc}}`) is filled in at runtime, so it names no file.
 export function references(text) {
   const refs = [];
   const add = (r) => { if (r && !refs.includes(r)) refs.push(r); };
   for (const m of text.matchAll(/\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) add(m[1] ?? m[2]);
   for (const m of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi)) add(m[1] ?? m[2] ?? m[3]);
   for (const m of text.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) add(m[1] ?? m[2]);
-  return refs.map((r) => r.trim()).filter(Boolean);
+  return refs.map((r) => r.trim()).filter((r) => r && !r.includes('{{'));
+}
+
+// An image in the artifact's asset store, `/_blob/<id>`, wherever a board names it: an attribute,
+// CSS, or a string in its script. Saved as assets/<id><ext> beside canvas.json.
+const BLOB = /(?:https?:\/\/[^/\s"'`]+)?\/_blob\/([0-9a-f]{32})\b/gi;
+export const blobIds = (text) => [...new Set([...text.matchAll(BLOB)].map((m) => m[1].toLowerCase()))];
+
+// The extension an asset file is saved under: its own, else what its first bytes say it is.
+function assetExt(path) {
+  if (extname(path)) return extname(path).toLowerCase();
+  const b = readFileSync(path).subarray(0, 512);
+  if (b[0] === 0x89 && b.subarray(1, 4).toString() === 'PNG') return '.png';
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return '.jpg';
+  if (b.subarray(0, 4).toString() === 'GIF8') return '.gif';
+  if (b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP') return '.webp';
+  if (/<svg\b/i.test(b.toString('utf8'))) return '.svg';
+  return '';
 }
 
 const isRemote = (r) => /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(r);
 const isInline = (r) => /^(?:data|blob|about|javascript|mailto|tel):/i.test(r) || r.startsWith('#');
 const TEXT = new Set(['.html', '.htm', '.css']);
+// The DC runtime a board loads as ./support.js: the artifact serves it at runtime rather than
+// publishing it, so a snapshot carries it under the type's own name.
+const RUNTIME = 'dc-runtime.js';
 
 function walkFiles(dir, base = dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
@@ -75,6 +104,8 @@ function walkFiles(dir, base = dir) {
 // What to copy out of a snapshot: canvas.json, every HTML file beside it, and every local file
 // those reference, followed through CSS. A reference that leaves <src> or names a file the
 // snapshot lacks is `missing`; one to another host is `remote` (it needs the network to render).
+// `blobs` maps each asset id the boards use to its saved path, and `copyFrom` maps a saved path to
+// the snapshot file it comes from where the two differ: an asset, or support.js from dc-runtime.js.
 export function collect(src) {
   const all = walkFiles(src);
   const canvasRel = all.filter((f) => basename(f) === 'canvas.json').sort((a, b) => a.length - b.length)[0];
@@ -83,24 +114,55 @@ export function collect(src) {
   const files = new Set([canvasRel]);
   const queue = all.filter((f) => /\.html?$/i.test(f) && (home === '.' || f.startsWith(home + sep)));
   const missing = []; const remote = [];
+  const blobs = {}; const copyFrom = {}; const noAsset = new Set();
+  // An asset file is named by its id, with or without an extension, anywhere in the snapshot.
+  const assetAt = new Map();
+  for (const f of all) {
+    const id = basename(f).replace(/\.[^.]*$/, '').toLowerCase();
+    if (/^[0-9a-f]{32}$/.test(id) && (!assetAt.has(id) || f.length < assetAt.get(id).length)) assetAt.set(id, f);
+  }
+  const runtime = all.filter((f) => basename(f) === RUNTIME).sort((a, b) => a.length - b.length)[0];
   queue.forEach((f) => files.add(f));
   for (let i = 0; i < queue.length; i++) {
     const from = queue[i];
-    for (const ref of references(readFileSync(join(src, from), 'utf8'))) {
-      if (isInline(ref)) continue;
+    const text = readFileSync(join(src, from), 'utf8');
+    for (const id of blobIds(text)) {
+      if (blobs[id]) continue;
+      const at = assetAt.get(id);
+      if (!at) {
+        if (!noAsset.has(id)) { noAsset.add(id); missing.push(`asset ${id} (from ${from} as /_blob/${id}: read it from the artifact by its id)`); }
+        continue;
+      }
+      const rel = join(home, 'assets', `${id}${assetExt(join(src, at))}`);
+      blobs[id] = rel; files.add(rel);
+      if (rel !== at) copyFrom[rel] = at;
+    }
+    for (const ref of references(text)) {
+      if (isInline(ref) || /\/_blob\/[0-9a-f]{32}\b/i.test(ref)) continue;
       if (isRemote(ref)) { if (!remote.includes(ref)) remote.push(ref); continue; }
       let path = ref.replace(/[?#].*$/, '');
       try { path = decodeURIComponent(path); } catch { /* keep it as written */ }
       if (!path) continue;
       const rel = normalize(path.startsWith('/') ? path.slice(1) : join(dirname(from), path));
       if (rel.startsWith('..') || isAbsolute(rel)) { missing.push(`${ref} (from ${from}: outside the snapshot)`); continue; }
-      if (!existsSync(join(src, rel)) || !statSync(join(src, rel)).isFile()) { missing.push(`${rel} (from ${from})`); continue; }
+      if (!existsSync(join(src, rel)) || !statSync(join(src, rel)).isFile()) {
+        if (basename(rel) === 'support.js' && runtime) { files.add(rel); copyFrom[rel] = runtime; continue; }
+        missing.push(`${rel} (from ${from})`); continue;
+      }
       if (files.has(rel)) continue;
       files.add(rel);
       if (TEXT.has(extname(rel).toLowerCase())) queue.push(rel);
     }
   }
-  return { canvas: canvasRel, files: [...files].sort(), missing, remote };
+  return { canvas: canvasRel, files: [...files].sort(), missing, remote, blobs, copyFrom };
+}
+
+// A board's text with each /_blob/<id> pointing at the asset's saved path, relative to the board.
+export function localiseBlobs(text, file, blobs) {
+  return text.replace(BLOB, (m, id) => {
+    const to = blobs[id.toLowerCase()];
+    return to ? relative(dirname(file), to).split(sep).join('/') : m;
+  });
 }
 
 // ---- source.json and the README --------------------------------------------------------------
@@ -279,7 +341,7 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   const prev = readJson(join(dest, 'source.json'));
   if (prev?.url && canonicalUrl(prev.url) !== canonicalUrl(url)) fail(`${destRel} already holds ${prev.url}: pass --epic to save this canvas elsewhere`);
 
-  const { canvas, files, missing, remote } = collect(src);
+  const { canvas, files, missing, remote, blobs, copyFrom } = collect(src);
   if (missing.length) fail(`not saved: the snapshot lacks files the boards reference; read them from the artifact too:\n${missing.map((m) => `missing: ${m}`).join('\n')}`, 4);
   const boards = parseBoards(readJson(join(src, canvas)) ?? {});
 
@@ -291,7 +353,13 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   }
   for (const f of files) {
     mkdirSync(dirname(join(dest, f)), { recursive: true });
-    copyFileSync(join(src, f), join(dest, f));
+    const from = join(src, copyFrom[f] ?? f);
+    if (TEXT.has(extname(f).toLowerCase())) {
+      const text = readFileSync(from, 'utf8');
+      const local = localiseBlobs(text, f, blobs);
+      if (local !== text) { writeFileSync(join(dest, f), local); continue; }
+    }
+    copyFileSync(from, join(dest, f));
   }
   const source = writeRecord(dest, {
     url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, tickets: all, boards, files,
