@@ -1600,7 +1600,7 @@ if (borrowLine) lines.push(borrowLine);
 lines.push('');
 lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 if (idle) {
-  lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+  lines.push('\nIDLE — every ticket is done, parked, or failed, none is held waiting on a merge, and every done ticket\'s PR is merged or closed (or it finished with no PR). Nothing left to spawn or merge.');
   const sc = batchScopeTotals(Object.values(qEnd.tickets));
   lines.push(`scope: ${sc.tickets} of ${sc.checked} checked ticket(s) changed files outside their triaged scope, ${sc.files} file(s) in all (report only)`);
   const resumed = Object.values(qEnd.tickets).filter((t) => t.resumes > 0);
