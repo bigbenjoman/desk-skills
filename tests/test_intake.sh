@@ -125,7 +125,8 @@ check "AC1: the search used the configured query" 'tail -1 "$T/jira.calls" | gre
 n=$(count "$T/triage.calls")
 out=$(intake)
 check "AC8: an admitted ticket is not triaged or admitted again" '[ "$(count "$T/triage.calls")" = "$n" ] && ! grep -q "A-1" <<< "$out"'
-search $(i=0; while [ $i -lt 100 ]; do echo A-1; i=$((i + 1)); done); out=$(intake)
+full=(); while [ ${#full[@]} -lt 100 ]; do full+=(A-1); done
+search "${full[@]}"; out=$(intake)
 check "a full page of search results is reported, never silent" 'grep -q "the search returned its limit of 100 tickets" <<< "$out"'
 check "the interval holds intake back: a tick soon after searches nothing" 'j=$(count "$T/jira.calls"); tick >/dev/null; [ "$(count "$T/jira.calls")" = "$j" ]'
 
@@ -221,10 +222,9 @@ check "nothing joins or replaces a batch on a base" '[ "$(qget batch)" = feat ] 
 # queue.mjs checks again under its lock: a batch that is no longer the finished one is left alone.
 printf '{"version":1,"batch":"p3","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
 out=$(cd "$T/repo" && node "$T/bin/queue.mjs" init standing-x --standing --if-batch old 2>&1); rc=$?
+check "init --standing refuses a queue that is not the batch intake found finished" '[ $rc -ne 0 ] && [ "$(qget batch)" = p3 ] && grep -q "left as it is" <<< "$out"'
 out=$(cd "$T/repo" && node "$T/bin/queue.mjs" init named-batch 2>&1)
 check "a plain init keeps the batch name it is given" '[ "$(qget batch)" = named-batch ]'
-printf '{"version":1,"batch":"p3","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
-check "init --standing refuses a queue that is not the batch intake found finished" '[ $rc -ne 0 ] && [ "$(qget batch)" = p3 ] && grep -q "left as it is" <<< "$out"'
 
 # ---- with no batch at all, what intake hands on still reaches the check-in ----------------------
 rm -f "$DESK_QUEUE" "$T/state/intake.json"; search C-1; d=$(count "$T/digest.calls")
