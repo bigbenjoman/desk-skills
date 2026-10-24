@@ -1,0 +1,534 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<meta charset="utf-8">
+<title>desk-q: Who Runs the Batch</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; full desk-q windows break out to the page width; case ledgers as the spine. */
+:root {
+  --paper: #f6f7f5; --ink: #1d2422; --muted: #5b6763; --rule: #d7dcd9; --panel: #ffffff;
+  --accent: #2f6f62; --ok: #237a4b; --warn: #8f5f12; --bad: #c0392b;
+  --win: #282c34; --win-bar: #21252b; --t-fg: #abb2bf; --t-dim: #959cab; --t-sel: #2f333c;
+  /* Terminal: One Dark approximations of desk-q's ANSI SGR codes (desk/bin/desk-q.mjs STATE_SGR). */
+  --t-bright: #e6e9ef; --t-ok: #98c379; --t-warn: #e5c07b; --t-bad: #f07c84; --t-you: #d08be3; --t-land: #56b6c2; --t-ready: #61afef;
+  --you: #8a3fb0;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #121615; --ink: #e4e9e6; --muted: #9aa6a1; --rule: #2a3230; --panel: #1a1f1e;
+  --accent: #6cc3ad; --ok: #5fd38d; --warn: #f0b94a; --bad: #ff7a6e; --you: #d39be8; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #121615; --ink: #e4e9e6; --muted: #9aa6a1; --rule: #2a3230; --panel: #1a1f1e;
+  --accent: #6cc3ad; --ok: #5fd38d; --warn: #f0b94a; --bad: #ff7a6e; --you: #d39be8; color-scheme: dark }
+body { background: var(--paper); color: var(--ink); font: 16px/1.55 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 1040px; margin: 0 auto; padding-block: 40px 72px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; }
+main > *, section > *, .pair > * { min-width: 0; }
+.prose { max-width: 68ch; }
+h1 { font-size: 2.1rem; line-height: 1.15; margin: 0 0 8px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 1.3rem; margin: 0 0 10px; text-wrap: balance; }
+h3 { font-size: 1rem; margin: 0 0 6px; }
+p { margin: 0 0 10px; }
+.eyebrow { font: 600 .75rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+.lede { color: var(--muted); font-size: 1.05rem; }
+.k { font-family: var(--mono); font-size: .88em; }
+.status { display: inline-flex; gap: 8px; align-items: center; font: 600 .8rem var(--mono); padding: 4px 10px; border: 1px solid var(--warn); color: var(--warn); border-radius: 3px; }
+section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.tag { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.cap { font-size: .88rem; color: var(--muted); }
+.s-ok { color: var(--ok); } .s-w { color: var(--warn); } .s-b { color: var(--bad); } .s-m { color: var(--you); } .s-d { color: var(--muted); }
+
+/* A desk-q window, drawn like the terminal it runs in. */
+.win { background: var(--win); border-radius: 10px; overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+.bar { background: var(--win-bar); display: flex; align-items: center; gap: 8px; padding: 9px 12px; font: 600 12px var(--mono); color: var(--t-dim); }
+.dot { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; } .dot:nth-child(2) { background: #febc2e; } .dot:nth-child(3) { background: #28c840; margin-right: 8px; }
+.scr { overflow-x: auto; }
+.scr pre { margin: 0; padding: 12px 16px 14px; color: var(--t-fg); font: 12.5px/1.65 var(--mono); min-width: max-content; }
+.bold { font-weight: 600; color: var(--t-bright); }
+/* One SGR colour each: green 32 running, cyan 36 landing, blue 34 ready, yellow 33 waiting/warn, magenta 35 needs you, red 31 failed, dim 2. */
+.d { color: var(--t-dim); } .ok { color: var(--t-ok); } .c { color: var(--t-land); } .bl { color: var(--t-ready); }
+.w { color: var(--t-warn); } .m { color: var(--t-you); } .b { color: var(--t-bad); }
+/* Usage bars: a font whose box-drawing glyphs join cell to cell, as a terminal draws them. */
+.bx { font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace; }
+.e { color: #4b5263; }
+/* A Timeline bar's could-run-to part: dim (2) plus the state colour; 3:1+ as a graphic on the window and the selection. */
+.ok.dm { color: #6b875d; } .w.dm { color: #99855f; }  /* the unused part of a usage bar: 256-colour 239 */
+.tab { background: var(--t-fg); color: var(--win); }  /* inverse (7) */
+.sel { background: var(--t-sel); display: inline-block; min-width: 100%; }
+.band { background: var(--t-bad); color: #1b1d22; font-weight: 600; display: inline-block; min-width: 100%; }  /* inverse (7) on red (31), bold */
+.new { }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+
+.ledger { overflow-x: auto; border-top: 2px solid var(--ink); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: .92rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--rule); }
+th { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.id { font: 600 .85rem var(--mono); color: var(--accent); width: 44px; }
+td .k { white-space: nowrap; }
+.opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.opt { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px; display: grid; gap: 8px; min-width: 0; }
+.opt.rec { border-color: var(--accent); }
+ul { margin: 0; padding-left: 20px; } li { margin-bottom: 6px; }
+.src { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); border-top: 1px solid var(--rule); }
+.src div { padding: 12px 14px 12px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.audit { gap: 14px; }
+.score { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.score b { font: 600 2.4rem/1 var(--mono); color: var(--bad); } .score b small { font-size: .9rem; color: var(--muted); }
+.find { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 28px; }
+.find h3 { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.find ol { margin: 0; padding-left: 20px; } .find li { margin-bottom: 6px; font-size: .94rem; }
+.keyt { background: var(--win); border-radius: 8px; padding: 12px 16px; display: grid; gap: 4px; font: 12.5px/1.6 var(--mono); color: var(--t-fg); overflow-x: auto; }
+.keyt div { display: grid; grid-template-columns: 15ch 1fr; gap: 12px; min-width: 0; }
+.keyt div span:last-child { white-space: normal; }
+.approve { border-left: 3px solid var(--accent); padding: 4px 0 4px 18px; }
+</style>
+
+<main>
+  <header class="prose">
+    <div class="eyebrow">desk-q · approved proposal · 24 Oct 2026</div>
+    <h1>desk-q: keeping batches moving</h1>
+    <p class="lede">desk-q shows whether passes are running, but not who runs them, whether anything actually moved, how much of your usage is left, or whether a waiting ticket will move without you. Below are the full screens as they would look, then every case against what desk-q does today. Nothing is built until you approve it.</p>
+    <span class="status" style="border-color:var(--ok);color:var(--ok)">✓ approved 24 Oct 2026</span>
+  </header>
+
+  <section class="audit">
+    <div class="prose">
+      <h2>Design audit: the previous mock-ups</h2>
+      <div class="score"><b>4<small>/10</small></b><span class="cap">The content was right; the screens had to be read, not scanned. Header lines were one run of white text, and red meant three different things.</span></div>
+    </div>
+    <div class="find">
+      <div><h3>Critical</h3><ol>
+        <li><b>"Needs you" was red.</b> desk-q draws it magenta (35). Red also marked failed and "supervisor off", so the one alarm colour no longer meant "nothing can run".</li>
+        <li><b>The home header was a blob.</b> Labels and figures had the same weight and colour, so 51, 18 and 12.1 GiB all looked alike. You had to read 100 characters to find one number.</li>
+        <li><b>"oldest 16h" sat after "12 blocked"</b>, so it read as the oldest blocked ticket. It is the oldest ticket needing you (R8).</li>
+      </ol></div>
+      <div><h3>Important</h3><ol>
+        <li><b>Blocked was amber, the same as waiting</b>, which hid the one difference the W cases turn on. desk-q draws blocked dim.</li>
+        <li><b>Table counts were all plain:</b> 0 looked like 28. desk-q colours each count by its state and dims a zero.</li>
+        <li><b>The repo header had no usage</b>, gave only one state count, and buried who runs the batch mid-sentence.</li>
+        <li><b>Notes mixed their signals</b> (a dim ▲, repo names at varying positions), and the ticket screens' right-hand hints drifted by up to 4 columns.</li>
+      </ol></div>
+      <div><h3>What works</h3><ol>
+        <li>Every state starts with a glyph, so <span class="k">--plain</span> still reads.</li>
+        <li>Warnings go in two places only: the red band and the notes.</li>
+        <li>LAST PASS answers "is it moving, and who moves it" in one cell.</li>
+        <li>The ticket screen's fixed order, and real figures throughout.</li>
+      </ol></div>
+    </div>
+    <div class="prose">
+      <h3>Rules the redesign follows</h3>
+      <ul>
+        <li><b>Your status line's language.</b> Labels dim, values bright, states in their colour, segments split by a dim <span class="k">│</span>.</li>
+        <li><b>Order by what you scan for:</b> what needs you, then whether work is moving, then capacity and usage.</li>
+        <li><b>One colour, one meaning,</b> and a glyph in front of every coloured run. Bold is for what you act on: commands, the selected row, needs-you counts. A zero is grey.</li>
+        <li><b>Every piece of text passes WCAG AA (4.5:1),</b> on the window background and on the selected row: labels 5.1:1 and 4.6:1, magenta 5.7:1 and 5.1:1, red 5.3:1, the band's text 6.4:1, everything else 5.9:1 to 11.5:1. Labels are a fixed grey, not the terminal's dim (SGR 2), whose shade each terminal picks for itself: desk-q draws them in 256-colour grey 247, which is 5.2:1 on this theme and 7.8:1 on black, and in a darker grey on a light terminal theme.</li>
+      </ul>
+    </div>
+    <div class="keyt" aria-label="Colour key">
+      <div><span class="m bold">◆ needs you</span><span>magenta: nothing moves until you act</span></div>
+      <div><span class="ok">● running</span><span>green: moving; also a live pass and a merged blocker <span class="ok">✓</span></span></div>
+      <div><span class="c">◐ landing</span><span>cyan: a PR open and merging</span></div>
+      <div><span class="bl">○ ready</span><span>blue: starts when a worker is free</span></div>
+      <div><span class="w">· waiting  ▲</span><span>amber: moves by itself, or a warning worth knowing</span></div>
+      <div><span class="d">◌ blocked</span><span>dim: held outside the batch; dim is also every label</span></div>
+      <div><span class="b">✕ failed</span><span>red: failed, errors, a batch stopped over a day, and the band when nothing can run</span></div>
+      <div><span><span class="ok bx">███</span><span class="e bx">███████</span></span><span>usage under 60%</span></div>
+      <div><span><span class="w bx">███████</span><span class="e bx">███</span></span><span>60–84%, or weekly pace holding workers</span></div>
+      <div><span><span class="b bx">█████████</span><span class="e bx">█</span></span><span>85% and over</span></div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>Four rules the screens follow</h2>
+    <ul>
+      <li><b>Who runs the batch</b> replaces the word "live" in LAST PASS: <span class="k s-ok">● supervisor</span> or <span class="k s-ok">● session</span>. It reads the per-repo §3b setting "Batches run by" from DS-204, and warns only when the setting and reality disagree, or when the supervisor has stopped.</li>
+      <li><b>Live means something moved.</b> A pass that ran but started, merged and released nothing for an hour reads <span class="k s-w">▲ no progress 1h</span>, with the reason it held (weekly pace, memory, maintenance, a failed sign-in) in the notes.</li>
+      <li><b>Usage is one line in every header:</b> 5-hour and 7-day bars with reset times. Each bar and its percentage turn from green to amber at 60% (or when weekly pace holds workers) and to red at 85%.</li>
+      <li><b>A state says whether it moves without you.</b> <span class="k s-w">· waiting</span> moves by itself. <span class="k s-m">◆ needs you</span> means nothing moves until you act, and the detail names the action. <span class="k s-d">◌ blocked</span> is held by something outside the batch.</li>
+    </ul>
+    <p class="cap">The colour key is in the audit above. Warnings live in two places only: one red band at the top when nothing can move, and a quiet notes area above the key bar for everything else.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">1 · Home, a normal morning</h2>
+    <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>07:05
+
+<span class="m bold">◆ 51 tickets need you</span><span class="d">  oldest </span><span class="new">16h</span><span class="d"> │ </span><span class="d">pr-ninja </span><span class="bold">28</span><span class="d"> · </span><span class="d">pranicuk </span><span class="bold">18</span><span class="d"> · </span><span class="d">voicepa </span><span class="bold">4</span><span class="d"> · </span><span class="d">desk-skills </span><span class="bold">1</span><span class="d"> │ </span><span class="d">◌ 12 blocked</span>
+<span class="ok">● 6 workers running</span><span class="d"> │ </span><span class="d">machine cap </span><span class="bold">18</span><span class="d"> · </span><span class="d">room for </span><span class="bold">1 more</span><span class="d"> │ </span><span class="bold">12.1 GiB</span><span class="d"> free</span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="d">  REPO          LAST PASS               RUN  READY  WAIT  BLOCKED  NEEDS YOU  QUEUE DONE    WORKERS</span>
+<span class="sel"><span class="bold">› desk-skills   </span><span class="ok new">● session · 1m ago      </span><span class="d">  0</span><span class="d">      0</span><span class="w">     1</span><span class="d">        1</span><span class="m bold">          1</span><span class="d">  no date       </span>2 (cap 3)  </span>
+  voicepa       <span class="w new">▲ supervisor + session  </span><span class="ok">  2</span><span class="d">      0</span><span class="w">     6</span><span class="d">        1</span><span class="m bold">          4</span>  today 23:39   3 (cap 5)
+  pr-ninja      <span class="ok new">● session · 26m ago     </span><span class="ok">  3</span><span class="bl">     23</span><span class="w">    26</span><span class="d">        2</span><span class="m bold">         28</span>  Fri 01:59     3 (cap 5)
+  pranicuk      <span class="b">■ stopped · 4d 16h      </span><span class="d">  0</span><span class="d">      0</span><span class="d">     0</span><span class="d">        8</span><span class="m bold">         18</span><span class="d">  nothing left  </span>2 (cap 2)
+
+<span class="d">  3 more set up with no batch: forewatt, gygg-platform, yield-index. desk-q --all lists them.</span>
+
+
+<span class="new"><span class="d">note</span>  <span class="w">▲ voicepa      </span>a session is also running this supervised batch. Close the session, or run: <span class="bold">desk-q voicepa supervisor off</span></span>
+<span class="new"><span class="d">    </span>  <span class="w">▲ voicepa      </span>the supervisor runs old desk code (no decider). <span class="bold">Run ./install.sh in desk-skills.</span></span>
+<span class="d">    </span>  <span class="w">▲ ports        </span>desk-skills + pranicuk share 3500–3502.
+<span class="new"><span class="d">    </span>  <span class="m">◆ needs you    </span><span class="bold">/desk-needs-you</span>, in a Claude session, asks you about all 51.</span>
+<span class="new"><span class="d">    </span>  <span class="d">  setup        </span><span class="d">4 repos have no "Batches run by" setting, so they run in a session. </span><span class="bold">/desk-setup</span><span class="d"> sets it.</span></span>
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">s</span> supervisor · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+    <p class="cap prose">Your queues: desk-skills as it would read at 07:05 under the new states (below), the other repos as at 06:59. The two voicepa notes are real: its supervisor is loaded while a session also runs the batch, and the installed desk code has no decider. Usage is the reading taken at 07:20: 5h at 17% is green, 7d at 60% is amber. With workers running it carries no age; with none, a reading over 5 minutes old shows <span class="k">as of HH:MM</span> in dim text until the next automatic check.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">2 · Home, when something is wrong</h2>
+    <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>09:12
+<span class="band"> ✕ voicepa: the supervisor is off, so no passes run. Run: desk-q voicepa supervisor on </span>
+<span class="m bold">◆ 4 tickets need you</span><span class="d">  oldest </span>2h 10m<span class="d"> │ </span><span class="d">voicepa </span><span class="bold">4</span><span class="d"> │ </span><span class="d">◌ 1 blocked</span>
+<span class="ok">● 3 workers running</span><span class="d"> │ </span><span class="d">machine cap </span><span class="bold">18</span><span class="d"> · </span><span class="d">room for </span><span class="bold">6 more</span><span class="d"> │ </span><span class="bold">21.4 GiB</span><span class="d"> free</span>
+<span class="d">5h </span><span class="b bx">█████████</span><span class="e bx">█</span><span class="b"> 88%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">███████</span><span class="e bx">███</span><span class="w"> 68%</span> Sun 15:00<span class="w">  ▲ ahead of pace: no new workers until it slows</span>
+
+<span class="d">  REPO          LAST PASS               RUN  READY  WAIT  BLOCKED  NEEDS YOU  QUEUE DONE    WORKERS</span>
+<span class="sel"><span class="bold">› voicepa       </span><span class="b">✕ supervisor off · 3m   </span><span class="ok">  2</span><span class="d">      0</span><span class="w">     6</span><span class="d">        1</span><span class="m bold">          4</span><span class="d">  no date       </span>3 (cap 5)  </span>
+  pr-ninja      <span class="w">▲ session · just now    </span><span class="ok">  1</span><span class="bl">      2</span><span class="w">     4</span><span class="d">        0</span><span class="d">          0</span>  today 14:05   3 (cap 5)
+  desk-skills   <span class="w">▲ no progress 3h        </span><span class="d">  0</span><span class="bl">      1</span><span class="w">     2</span><span class="d">        0</span><span class="d">          0</span><span class="d">  no date       </span>2 (cap 3)
+
+
+
+
+<span class="d">note</span>  <span class="w">▲ desk-skills  </span>no worker started for 3h: weekly usage is ahead of pace (68% with 55% of the week gone).
+<span class="d">    </span>  <span class="w">▲ pr-ninja     </span>the merge driver stopped at 08:40: gh is signed out. <span class="bold">Run gh auth login.</span>
+<span class="d">    </span>  <span class="w">▲ pr-ninja     </span>set to the supervisor, but a session runs this batch. Its next batch hands over.
+<span class="d">    </span>  <span class="m">◆ needs you    </span><span class="bold">/desk-needs-you</span>, in a Claude session, asks you about all 4.
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">s</span> supervisor · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+    <p class="cap prose">Example states, not your data; the 5h bar at 88% shows the red end of the ramp. The red band appears only when no passes can run, and it gives the one command that fixes it. Amber notes say what is holding a batch and the fix. A pass that errors twice in a row also gets the red band (R4).</p>
+  </section>
+
+  <section>
+    <h2 class="prose">3 · desk-skills, today and proposed</h2>
+    <div class="pair">
+      <div>
+        <div class="tag">Today, 07:02 (your screenshot)</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q ›</span> <span class="bold">desk-skills</span>
+<span class="tab">1 Queue</span>  2 Timeline  3 By day  4 Epics
+
+desk-skills · batch 2026-10-19T05:33 · orchestrator live, last pass 1m ago
+workers 0 running of 2 (cap 3) · 86 done, not shown
+
+    #  TICKET   STATE        DETAIL                         STARTS        SHIPS         TITLE
+<span class="sel">›   1  DS-168   <span class="w">· waiting</span>    behind PRs of done tickets     now           today 08:04   README: rewrite it…  </span>
+    2  DS-180   <span class="w">· waiting</span>    behind DS-175                  today 07:57   today 09:12   digest: leave out…
+    3  DS-175   <span class="w">· waiting</span>    behind PRs of done tickets     now           today 07:57   autopilot: record…
+
+
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">shift+↑↓</span> move · <span class="bold">t</span> top · <span class="bold">b</span> bottom · <span class="bold">+ -</span> workers · <span class="bold">c</span> parked dates · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+      </div>
+      <div>
+        <div class="tag">Proposed, 07:24 (your newer screenshot)</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q ›</span> <span class="bold">desk-skills</span><span class="d"> · </span>07:24
+<span class="tab">1 Queue</span>  2 Timeline  3 By day  4 Epics
+
+<span class="new"><span class="d">◆ nothing needs you</span>  <span class="ok">● 1 running</span>  <span class="w">· 1 waiting</span>  <span class="d">◌ 1 blocked</span><span class="d"> │ </span>✓ 86 done<span class="d">, not shown</span></span>
+<span class="new"><span class="ok">● session</span><span class="d">  last pass </span>just now<span class="d"> │ </span><span class="d">workers </span><span class="bold">1 of 2</span><span class="d"> · cap </span><span class="bold">3</span><span class="d"> │ </span><span class="d">batch 2026-10-19T05:33</span></span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="d">    #  TICKET   STATE        DETAIL                                    STARTS       SHIPS        TITLE</span>
+<span class="sel"><span class="bold">›   1  DS-175   </span><span class="ok">● running    </span>stage 4/9 verify since 07:22              <span class="ok">running      </span>today 07:55  autopilot: record…  </span>
+    2  DS-168   <span class="d new">◌ blocked    </span><span class="new">held: 27 Jira blockers outside the batch  </span><span class="d">—            </span><span class="d">no date      </span>README: rewrite it…
+    3  DS-180   <span class="w">· waiting    </span>behind DS-175                             today 07:55  today 09:07  digest: leave out…
+
+<span class="new"><span class="d">key </span>  <span class="ok">● running</span><span class="d"> │ </span><span class="w">· waiting</span><span class="d">: moves by itself</span><span class="d"> │ </span><span class="d">◌ blocked</span><span class="d">: held outside this batch</span></span>
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">shift+↑↓</span> move · <span class="bold">t</span> top · <span class="bold">b</span> bottom · <span class="bold">+ -</span> workers · <span class="bold">c</span> parked dates · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+      </div>
+    </div>
+    <p class="cap prose">The proposed side shows desk-skills at 07:24: DS-175 has started (stage 4/9 verify since 07:22, ships 07:55), DS-180 waits behind it, and DS-168 is held by 27 Jira blockers outside the batch. The repo header now carries the same usage bars as home. Earlier, checked at 07:05: DS-168 and DS-175 are held behind one PR, #175 (DS-150), which is a draft. In desk-skills merging is set to ask, so no merge driver runs, and there is no supervisor. Nothing will merge #175 unless you or the live session do. DS-180 waits on DS-175. DS-168 also has 27 open Jira blockers outside this batch, which today's desk-q does not count. SHIPS stays; it is left out here only to fit the page.</p>
+  </section>
+
+  <section>
+    <div class="prose">
+      <h2>4 · One ticket, opened</h2>
+      <p>The ticket screen gets a fixed order. First, one coloured line saying whether the ticket will move without you. Then the blockers, grouped by who has to act and coloured the same way as the states. Then any warnings, then timing, then the detail, with "Why lane" folded to two lines.</p>
+      <p class="cap">Colours follow the key in the audit: <span class="s-ok">green</span> merged or moving, <span class="s-m">magenta</span> needs you, <span class="s-w">amber</span> a warning, <span class="s-d">dim</span> outside the batch. The rail <span class="k">▌</span> takes the ticket's state colour. Every coloured line also starts with a glyph, so it reads without colour.</p>
+    </div>
+    <div class="pair">
+      <div>
+        <div class="tag">DS-168 · proposed (today: your 07:0x screenshot)</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q › desk-skills ›</span> <span class="bold">DS-168</span>
+<span class="ok">● session</span><span class="d">  last pass </span>1m ago<span class="d"> │ </span><span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="bold">DS-168</span>  <span class="d">◌ blocked</span><span class="d"> │ </span><span class="d">Task · size M · lane A · position 1 of 3</span>
+<span class="bold">README: rewrite it as the guide to desk, once every backlog feature has shipped</span>
+
+<span class="d">▌ </span>Will not start on its own. 27 Jira tickets outside this batch must be done first,
+<span class="d">▌ </span>and nothing in this batch can release it.
+
+<span class="bold">Blockers</span><span class="d">  73 · 46 in this batch, 27 open outside it</span>
+<span class="ok">  ✓ 45</span> in this batch merged                                       <span class="d">a shows them</span>
+<span class="m bold">  ◆ DS-150</span>  #175 is a draft: <span class="bold">undraft and merge it</span>                 <span class="d">in this batch</span>
+<span class="d">  ◌ DS-127</span>  autopilot: run unattended around the clock            <span class="d">Epic · To Do</span>
+<span class="d">  ◌ DS-129</span>  autopilot: fewer tokens per ticket                    <span class="d">To Do</span>
+<span class="d">  ◌ DS-111</span>  desk-q: see and steer every autopilot queue…          <span class="d">To Do</span>
+<span class="d">  ◌ DS-72 </span>  Merge only on results from registered runners…        <span class="d">To Do</span>
+<span class="d">  ◌ DS-58 </span>  Client-side CI: run secret-free checks…               <span class="d">To Do</span>
+<span class="d">    … 22 more outside this batch</span>                                  <span class="d">a shows all · o Jira</span>
+
+<span class="bold">Warnings</span>
+<span class="w">  ▲ </span>Triage flagged the timing: the README would describe features not on main yet.
+<span class="w">  ▲ </span>Releasing it when #175 merges would start that rewrite early. <span class="bold">Ask the desk-skills</span>
+    <span class="bold">session to take it out of this batch</span> until its Jira blockers are done.
+
+<span class="d">Starts</span>  not until its outside blockers are done<span class="d"> │ </span><span class="d">Ships</span><span class="d">  no date</span>
+
+<span class="d">Why lane A</span>  No product or design decision is left open; the work is
+            mechanical: shorten README.md, move detail into docs/.  <span class="d">y shows all</span>
+<span class="d">Files in scope</span>  9 · README.md, docs/…, tests/test_readme.sh       <span class="d">f shows all</span>
+
+<span class="d">move</span>  <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">a</span> blockers · <span class="bold">y</span> why lane · <span class="bold">f</span> files · <span class="bold">l</span> log · <span class="bold">o</span> Jira · <span class="bold">shift+↑↓</span> move · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+      </div>
+      <div>
+        <div class="tag">DS-175 · proposed, as at 07:10</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q › desk-skills ›</span> <span class="bold">DS-175</span>
+<span class="ok">● session</span><span class="d">  last pass </span>1m ago<span class="d"> │ </span><span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="bold">DS-175</span>  <span class="m bold">◆ needs you</span><span class="d"> │ </span><span class="d">Story · lane A · position 3 of 3</span>
+<span class="bold">autopilot: record a merge's time and ETA-history line however the PR was merged</span>
+
+<span class="m">▌ </span>Needs you. Its last blocker's PR, #175, is a draft, and nothing in desk-skills
+<span class="m">▌ </span>will merge it: merging is set to ask and no merge driver or supervisor runs.
+<span class="m">▌ </span><span class="bold">Undraft and merge #175, or ask the desk-skills session to.</span>
+
+<span class="bold">Blockers</span><span class="d">  14, all in this batch</span>
+<span class="ok">  ✓ 13</span> merged                                                     <span class="d">a shows them</span>
+<span class="m bold">  ◆ DS-150</span>  #175 is a draft: <span class="bold">undraft and merge it</span>                 <span class="d">standing intake</span>
+
+<span class="d">Holding up</span>  <span class="w">· DS-180</span> waits on this ticket
+
+<span class="d">Starts</span>  at the next pass after #175 merges<span class="d"> │ </span><span class="d">Ships</span>  about 1.0 h after it starts
+<span class="d">        from 33 merged size M tickets in desk-skills: typical 1.0 h spawn to merge,</span>
+<span class="d">        4 in 5 within 1.6 h</span>
+
+<span class="d">Why lane A</span>  The fix records merge time in one place for every
+            merge path.                                           <span class="d">y shows all</span>
+<span class="d">Files in scope</span>  3                                                 <span class="d">f shows all</span>
+
+<span class="d">move</span>  <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">a</span> blockers · <span class="bold">y</span> why lane · <span class="bold">f</span> files · <span class="bold">l</span> log · <span class="bold">o</span> Jira · <span class="bold">shift+↑↓</span> move · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+      </div>
+    </div>
+    <p class="cap prose">DS-168's blockers are real (Jira, 07:10): 46 held in this batch, of which 45 have merged and DS-150's PR #175 is a draft; 28 more Jira blockers are To Do, 27 of them outside the batch (DS-150 is in both). DS-175's "Why lane A" and file count are illustrative, since I did not open its triage record. Today's DS-168 screen says "waiting", "Starts: now", "Every blocker is done" and prints a 15-line "Why lane A".</p>
+    <div class="ledger">
+      <table>
+        <thead><tr><th></th><th>Ticket screen</th><th>Today</th><th>Proposed</th></tr></thead>
+        <tbody>
+          <tr><td class="id">T1</td><td>The first thing you read.</td><td>The state word and the ticket's metadata.</td><td>One line under the title, on a rail in the state's colour: will it move without you, and if not, what would move it.</td></tr>
+          <tr><td class="id">T2</td><td>Blockers.</td><td>"Parked: held by orchestrator: blocked by DS-120, DS-121, …", cut off at the screen edge, in-batch only.</td><td>Grouped: merged as one green count; each one needing you in magenta with the action in bold; each one outside the batch dim, with its Jira status. <span class="k">a</span> lists them all.</td></tr>
+          <tr><td class="id">T3</td><td>Warnings.</td><td>None; triage's own warning is buried in "Why lane".</td><td>A Warnings block, in amber, for anything the ticket's triage or the pass flagged that affects whether to let it run.</td></tr>
+          <tr><td class="id">T4</td><td>Timing.</td><td>"Starts: now" and a ship time, even while held.</td><td>Starts says what it waits for; Ships says "no date" until a start can be forecast.</td></tr>
+          <tr><td class="id">T5</td><td>Holding up.</td><td>Not shown.</td><td>The tickets waiting on this one, so you can see what acting here unblocks.</td></tr>
+          <tr><td class="id">T6</td><td>Long text.</td><td>"Why lane" printed in full, pushing the rest off screen.</td><td>Two lines each for "Why lane" and the file list; <span class="k">y</span> and <span class="k">f</span> show them in full.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="prose">
+      <h2>5 · Timeline, By day and Epics</h2>
+      <p>The other three tabs get the same header, colours and key line as the Queue, so a glance reads the same on every tab. The rows are desk-q's own, taken at 07:46; only the presentation changes.</p>
+    </div>
+    <div class="pair">
+      <div>
+        <div class="tag">Timeline · desk-skills · proposed</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q ›</span> <span class="bold">desk-skills</span><span class="d"> · </span>07:46
+1 Queue  <span class="tab">2 Timeline</span>  3 By day  4 Epics
+
+<span class="d">◆ nothing needs you</span>  <span class="ok">● 1 running</span>  <span class="w">· 1 waiting</span>  <span class="d">◌ 1 blocked</span><span class="d"> │ </span>✓ 86 done<span class="d">, not shown</span>
+<span class="ok">● session</span><span class="d">  last pass </span>1m ago<span class="d"> │ </span><span class="d">workers </span><span class="bold">1 of 2</span><span class="d"> · cap </span><span class="bold">3</span><span class="d"> │ </span><span class="d">batch 2026-10-19T05:33</span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+<span class="d">forecast  </span><span class="d">from </span>07:46<span class="d"> · </span><span class="bold">2,000</span><span class="d"> runs over </span><span class="bold">56</span><span class="d"> merged tickets</span><span class="d"> │ </span><span class="d">hit rate  </span>none yet<span class="d">: 0 of the 10 saved estimates it needs</span>
+
+<span class="d">  scale </span>hours<span class="d"> (auto)</span>      <span class="d">now        12:00            18:00</span>  <span class="d">STARTS       SHIPS         TITLE</span>
+                          <span class="d">├──────────┬─────────────▾──┬────</span>
+<span class="sel"><span class="bold">› DS-175    </span><span class="ok">● running    </span> <span class="ok bx">██</span><span class="ok dm bx">█</span><span class="d">                      ┆       </span>  <span class="ok">running      </span>today 08:17   autopilot: record a merge's tim…  </span>
+  DS-180    <span class="w">· waiting    </span> <span class="d">┆</span><span class="w bx">████</span><span class="w dm bx">███</span><span class="d">                 ┆       </span>  today 08:17  today 09:29   digest: leave out parked ticket…
+  DS-168    <span class="d">◌ blocked    </span> <span class="d">held: 27 Jira blockers outside the batch                    </span>  README: rewrite it as the guide…
+
+<span class="d">key </span>  <span class="ok bx">█</span> starts to ships  <span class="ok dm bx">█</span> could run to (1 run in 5 is later)<span class="d"> │ </span><span class="d">┆</span> check-ins 08:00 and 17:00<span class="d"> │ </span><span class="ok">● running</span>  <span class="w">· waiting</span>  <span class="d">◌ blocked</span>
+<span class="d">      within a week: day and time; beyond a week, the date</span>
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">z</span> scale · <span class="bold">c</span> parked dates · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+        <p class="cap prose">Changed from today: the repo header and usage replace the forecast line's run-on text, and "2 workers" moves into it. Each bar is solid: the likely span in the state's colour, the could-run-to part in a dimmer shade of it (dim plus the colour) instead of <span class="k">░</span>. Three legend lines become one key line. DS-168 shows as blocked, as on screen 3; today it reads <span class="k">◆ needs you</span> "Waiting on you".</p>
+      </div>
+      <div>
+        <div class="tag">By day · desk-skills · proposed</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q ›</span> <span class="bold">desk-skills</span><span class="d"> · </span>07:46
+1 Queue  2 Timeline  <span class="tab">3 By day</span>  4 Epics
+
+<span class="d">◆ nothing needs you</span>  <span class="ok">● 1 running</span>  <span class="w">· 1 waiting</span>  <span class="d">◌ 1 blocked</span><span class="d"> │ </span>✓ 86 done<span class="d">, not shown</span>
+<span class="ok">● session</span><span class="d">  last pass </span>1m ago<span class="d"> │ </span><span class="d">workers </span><span class="bold">1 of 2</span><span class="d"> · cap </span><span class="bold">3</span><span class="d"> │ </span><span class="d">batch 2026-10-19T05:33</span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+<span class="d">forecast  </span><span class="d">from </span>07:46<span class="d"> · </span><span class="bold">2,000</span><span class="d"> runs over </span><span class="bold">56</span><span class="d"> merged tickets</span><span class="d"> │ </span><span class="d">hit rate  </span>none yet<span class="d">: 0 of the 10 saved estimates it needs</span>
+
+<span class="d">    TICKET    STATE        STARTS       SHIPS         TITLE</span>
+<span class="bold">  Today · Sat 24 Oct</span><span class="d"> · 2 tickets</span>
+<span class="sel"><span class="bold">›   </span><span class="bold">DS-175    </span><span class="ok">● running    </span><span class="ok">running      </span>today 08:17   autopilot: record a merge's time and ETA-history line however the…  </span>
+    DS-180    <span class="w">· waiting    </span>today 08:17  today 09:29   digest: leave out parked tickets already Done in Jira (chunked ke…
+<span class="bold">  No date yet</span><span class="d"> · 1 ticket</span>
+    DS-168    <span class="d">◌ blocked    </span><span class="d">held: 27 Jira blockers outside the batch</span>  README: rewrite it as the guide to desk (overview of 400 lines or…
+
+<span class="d">key </span>  <span class="ok">● running</span>  <span class="w">· waiting</span>  <span class="d">◌ blocked</span><span class="d"> │ </span><span class="d">grouped by ship date: day by day for a week, then week by week</span>
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">c</span> parked dates · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+        <p class="cap prose">Changed from today: the same header; day headings stay bold, with their counts in grey; the closing sentence moves into the key line. An undated row's reason still pushes its title right when it is longer than the dates, as it does today.</p>
+      </div>
+      <div>
+        <div class="tag">Epics · pr-ninja · proposed (desk-skills has no open epic)</div>
+        <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="d">desk-q ›</span> <span class="bold">pr-ninja</span><span class="d"> · </span>07:46
+1 Queue  2 Timeline  3 By day  <span class="tab">4 Epics</span>
+
+<span class="m bold">◆ 28 need you</span>  <span class="ok">● 3 running</span>  <span class="bl">○ 22 ready</span>  <span class="w">· 26 waiting</span>  <span class="d">◌ 2 blocked</span><span class="d"> │ </span>✓ 124 done<span class="d">, not shown</span>
+<span class="w">■ stopped</span><span class="d">  last pass </span>16m ago<span class="d"> │ </span><span class="d">workers </span><span class="bold">3 of 3</span><span class="d"> · cap </span><span class="bold">5</span><span class="d"> │ </span><span class="d">batch 2026-10-12T07:29</span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · </span><span class="d">7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="d">  EPIC      TITLE                               CHILDREN                 SHIPS</span>
+<span class="sel"><span class="bold">› KAN-580   </span>Reach, Value &amp; Outlets — show Est…  <span class="ok bx">■■■■■■■■■</span><span class="w bx">■■■</span><span class="e bx">■■■■</span><span class="bold">  39</span><span class="d">/69</span>  <span class="d">no date while passes are stopped</span>  </span>
+  KAN-1012  Content beyond press: Write, gate…  <span class="ok bx">■■■■■■</span><span class="w bx">■■■■■■</span><span class="e bx">■■■■</span><span class="bold">  10</span><span class="d">/25</span>  <span class="d">no date while passes are stopped</span>
+  KAN-469   Newsjack Lift: An editor's review…  <span class="ok bx">■■■■■■■</span><span class="w bx">■■■■■</span><span class="e bx">■■■■</span><span class="bold">  15</span><span class="d">/36</span>  <span class="d">no date while passes are stopped</span>
+  KAN-542   Strategy monitoring: Spot the new…  <span class="ok bx">■■■■</span><span class="w bx">■■■■■■</span><span class="e bx">■■■■■■</span><span class="bold">  10</span><span class="d">/41</span>  <span class="d">no date while passes are stopped</span>
+  KAN-824   Speaking &amp; events: Find the right…  <span class="ok bx">■■■■■■</span><span class="w bx">■■■■■■</span><span class="e bx">■■■■</span><span class="bold">  11</span><span class="d">/30</span>  <span class="d">no date while passes are stopped</span>
+  KAN-984   Plan and campaigns: Turn the stra…  <span class="ok bx">■■■■■</span><span class="w bx">■■■■■■</span><span class="e bx">■■■■■</span><span class="bold">   9</span><span class="d">/29</span>  <span class="d">no date while passes are stopped</span>
+  KAN-1108  Platform: Every job runs on the r…  <span class="ok bx">■■■■■■■■■■</span><span class="w bx">■■■■■■</span><span class="bold">  12</span><span class="d">/20</span>  <span class="d">no date while passes are stopped</span>
+  KAN-448   Journalist Discovery: Find the jo…  <span class="ok bx">■■■■■■■■■■■■■■</span><span class="w bx">■</span><span class="e bx">■</span><span class="bold">  35</span><span class="d">/40</span>  <span class="d">no date while passes are stopped</span>
+  KAN-675   Coverage accuracy: Customers can …  <span class="ok bx">■■■■■■■■■■■</span><span class="w bx">■</span><span class="e bx">■■■■</span><span class="bold">  19</span><span class="d">/28</span>  <span class="d">no date while passes are stopped</span>
+  KAN-428   Beats: Give every journalist real…  <span class="ok bx">■■■■■■■■■■■■</span><span class="w bx">■</span><span class="e bx">■■■</span><span class="bold">  20</span><span class="d">/26</span>  <span class="d">no date while passes are stopped</span>
+
+<span class="d">note</span>  <span class="w">▲ pr-ninja     </span>passes stopped 16m ago, so no dates until they resume. <span class="bold">Run /desk-autopilot in pr-ninja.</span>
+
+<span class="d">key </span>  <span class="ok bx">■</span> done  <span class="w bx">■</span> in the queue  <span class="e bx">■</span> not queued yet (date is provisional)<span class="d"> │ </span><span class="d">an epic ships when its last child merges</span>
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">c</span> parked dates · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+        <p class="cap prose">Changed from today: the children bar is solid, with not-yet-queued children as grey <span class="k">■</span> instead of <span class="k">□</span>, and done counts are bright. "No date while passes are stopped" moves from magenta to grey, because nothing there needs you, and the reason becomes one amber note with its fix. At 07:46 pr-ninja's passes had stopped 16 minutes earlier; at 07:44 the same view still dated KAN-448 (Fri 10:24) and KAN-675 (Fri 17:29).</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="prose">Every case: who runs the batch</h2>
+    <div class="ledger">
+      <table>
+        <thead><tr><th></th><th>Situation</th><th>Today</th><th>Proposed</th></tr></thead>
+        <tbody>
+          <tr><td class="id">U1</td><td>The supervisor runs the batch and passes are on time.</td><td><span class="k s-ok">● live · just now</span>, the same as a session.</td><td><span class="k s-ok">● supervisor · just now</span></td></tr>
+          <tr><td class="id">U2</td><td>A session runs the batch, and the repo is set to <span class="k">session</span> or not set.</td><td><span class="k s-ok">● live · just now</span></td><td><span class="k s-ok">● session · just now</span>. No warning.</td></tr>
+          <tr><td class="id">U3</td><td>A session runs the batch, but the repo is set to <span class="k">supervisor</span>.</td><td><span class="k s-ok">● live</span>. Nothing says it is not supervised.</td><td><span class="k s-w">▲ session · just now</span>, and one amber note naming the repo.</td></tr>
+          <tr><td class="id">U4</td><td>The batch was handed to the supervisor, but its launchd agent is not loaded.</td><td><span class="k s-ok">● live</span> for up to 15 minutes, then <span class="k s-w">■ stopped</span> with "check the supervisor with supervisor.mjs status".</td><td><span class="k s-b">✕ supervisor off</span> at once, and the red band with its fix: <span class="k">desk-q voicepa supervisor on</span>.</td></tr>
+          <tr><td class="id">U5</td><td>The supervisor is loaded, but passes have stopped.</td><td><span class="k s-w">■ stopped</span> after 15 minutes, with the same hint.</td><td><span class="k s-w">■ stopped · 40m</span>. The repo screen adds the supervisor's last log line, for example "last tick: skipped, a pass still holds the orchestrator lock".</td></tr>
+          <tr><td class="id">U6</td><td>A session ran the batch and was closed.</td><td><span class="k s-w">■ stopped</span>, "To resume: run /desk-autopilot in pranicuk".</td><td>The same. A repo set to <span class="k">supervisor</span> adds "it hands the batch to the supervisor at Stage 4".</td></tr>
+          <tr><td class="id">U7</td><td>Tickets need you.</td><td>The top line counts them per repo.</td><td>The same, and a note that /desk-needs-you asks about them (once DS-205 ships).</td></tr>
+          <tr><td class="id">U8</td><td>Repos with no "Batches run by" row.</td><td>Nothing.</td><td>Run as <span class="k">session</span>; one note says how many and that /desk-setup sets it. Home only.</td></tr>
+          <tr><td class="id">U9</td><td>A computer that is not macOS.</td><td>Nothing.</td><td>Every repo reads <span class="k">session</span>. No supervisor state or warning.</td></tr>
+          <tr><td class="id">U10</td><td>Piped output or <span class="k">--plain</span>.</td><td>Glyph and word, no colour.</td><td>The same words and glyphs; the band and notes print as plain lines.</td></tr>
+          <tr><td class="id">U11</td><td>One repo's screen, passes on time.</td><td><span class="k">orchestrator live, last pass just now</span></td><td>The header's second line: <span class="k s-ok">● supervisor</span> or <span class="k s-ok">● session</span>, then <span class="k">last pass just now</span>, workers and batch, in segments.</td></tr>
+          <tr><td class="id">U12</td><td>Turning the supervisor on or off.</td><td>A separate script: <span class="k">node ~/.claude/desk/bin/supervisor.mjs install</span>, run in the repo.</td><td><span class="k">desk-q &lt;repo&gt; supervisor on</span> installs and loads it; <span class="k">… supervisor off</span> stops passes while running workers finish; <span class="k">… supervisor</span> shows its status. In the full screen, <span class="k">s</span> on the selected repo toggles it, turning off after an inline confirm: <span class="k">Turn off the supervisor for voicepa? Running workers finish.  y / n</span>. Every supervisor warning names the command.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="prose">Every case: what a waiting ticket waits on</h2>
+    <div class="ledger">
+      <table>
+        <thead><tr><th></th><th>Waiting on</th><th>Today</th><th>Proposed</th></tr></thead>
+        <tbody>
+          <tr><td class="id">W1</td><td>A blocker whose worker is still running.</td><td><span class="k s-w">· waiting</span> behind DS-175</td><td><span class="k s-w">· waiting</span> behind DS-175 (running, stage review). Moves by itself.</td></tr>
+          <tr><td class="id">W2</td><td>A blocker's PR with checks running, and a merge driver or supervisor that will merge it.</td><td><span class="k s-w">· waiting</span> behind PRs of done tickets, STARTS now</td><td><span class="k s-w">· waiting</span> behind #175: checks running, merges when green. STARTS after #175 merges.</td></tr>
+          <tr><td class="id">W3</td><td>A blocker's PR that nothing will merge: a draft, merging set to ask with no approval, or no merge driver.</td><td><span class="k s-w">· waiting</span>, STARTS now, "starts once the merge driver sees their PRs merged"</td><td><span class="k s-m">◆ needs you</span>: #175 is a draft: undraft and merge it. Counted in NEEDS YOU and asked about by /desk-needs-you.</td></tr>
+          <tr><td class="id">W4</td><td>A blocker that itself needs you, failed, or is parked.</td><td><span class="k s-w">· waiting</span> behind DS-175</td><td><span class="k s-w">· waiting</span> behind DS-175, which needs you.</td></tr>
+          <tr><td class="id">W5</td><td>Every blocker merged, waiting to be released.</td><td><span class="k s-w">· waiting</span>, "starts once the merge driver sees their PRs merged"</td><td>With a merge driver or the supervisor: <span class="k s-w">· waiting</span>, released within minutes. With neither: <span class="k s-m">◆ needs you</span>, release it, with the command.</td></tr>
+          <tr><td class="id">W6</td><td>Jira blockers outside the batch that are still open.</td><td>Not shown. "Every blocker is done."</td><td><span class="k s-d">◌ blocked</span>: 27 blockers outside this batch still open, first keys on the ticket screen. Never released by in-batch merges.</td></tr>
+          <tr><td class="id">W7</td><td>What each state means.</td><td>Not on screen.</td><td>One key line under the repo table: each state in its colour, its meaning dim.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="prose">
+      <h2>Every case: keeping it running</h2>
+      <p class="cap">From an adversarial review of the supervisor and desk-q on origin/main and your live state, 24 Oct. Rows marked * are confirmed in live state today.</p>
+    </div>
+    <div class="ledger">
+      <table>
+        <thead><tr><th></th><th>Situation</th><th>Today</th><th>Proposed</th></tr></thead>
+        <tbody>
+          <tr><td class="id">R1</td><td>Your 5-hour and 7-day usage.</td><td>Not shown. A weekly-pace hold stops new workers with no sign on screen.</td><td>One header line, on home and every repo screen, with a bar for each window and its reset time. Green under 60%, amber at 60–84% or when the 7d pace holds workers, red at 85% and over; at the limit a note says when workers resume. After a reset time passes, it shows 0% with no call.</td></tr>
+          <tr><td class="id">R2</td><td>Usage while no worker runs.</td><td>Not shown.</td><td>Every 5 minutes, only while desk-q is open, no worker is running and the newest reading is over 5 minutes old, a 2-second Haiku call (about 3.6k tokens) reads both windows. The reading's age shows when it is over 5 minutes old. Never billed to an API key.</td></tr>
+          <tr><td class="id">R3</td><td>Passes run, but nothing starts, merges or is released (pace, memory, maintenance, machine budget, a failed health check).</td><td><span class="k s-ok">● live</span>, and tickets say "starts at the next pass" forever.</td><td><span class="k s-w">▲ no progress 1h</span> after an hour, and a note naming what held it and the fix.</td></tr>
+          <tr><td class="id">R4</td><td>A pass that errors on every tick.</td><td>One notification, then <span class="k s-ok">● live</span>.</td><td>The red band after 2 errored passes in a row, with the error's first line.</td></tr>
+          <tr><td class="id">R5*</td><td>The supervisor and a session both running one batch (voicepa now).</td><td><span class="k s-ok">● live</span>.</td><td><span class="k s-w">▲ supervisor + session</span>, and a note to close one.</td></tr>
+          <tr><td class="id">R6</td><td>The merge driver died, or never started (signed out of gh, a config row unset).</td><td>Nothing. The supervisor logs "started" every tick.</td><td>An amber note with the reason from its log. The supervisor notifies after 2 failed restarts.</td></tr>
+          <tr><td class="id">R7*</td><td>The supervisor or merge driver runs old desk code, or the launchd agent cannot start.</td><td>Nothing. voicepa's supervisor has no decider today.</td><td>An amber note: "runs old desk code, run ./install.sh". "Cannot start" gets the red band.</td></tr>
+          <tr><td class="id">R8*</td><td>Items needing you sit for hours, notified only at 08:00 and 17:00.</td><td>A count.</td><td>The count, plus the age of the oldest ("oldest 16h").</td></tr>
+          <tr><td class="id">R9</td><td>Every ticket has a PR but some are unmerged; the supervisor calls the batch idle and stops the merge driver.</td><td><span class="k s-w">■ stopped</span> after 15 minutes, "check the supervisor".</td><td>Not idle while any PR is open: the pass keeps running and the row reads by its tickets (W2, W3). The fix itself is a pass change, filed with the supervisor tickets.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="cap prose">Not desk-q changes, and filed separately: the supervisor cannot undraft a PR, resolve a conflict or rerun checks, so a supervised batch stalls on its first draft (voicepa #664 has been a draft since 23 Oct 14:50). DS-204's "session ends at handover" waits on a new ticket that gives the supervisor that Stage 7 step. Until it ships, W3 shows each such draft as <span class="k s-m">◆ needs you</span>.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">One choice: where "who runs it" goes</h2>
+    <div class="opts">
+      <div class="opt rec">
+        <div class="tag">Option A · recommended · shown above</div>
+        <h3>In LAST PASS</h3>
+        <p>"live" becomes who runs it. The column grows by about 5 characters. One cell answers "is it moving, and who moves it?"</p>
+      </div>
+      <div class="opt">
+        <div class="tag">Option B</div>
+        <h3>A new RUN BY column</h3>
+        <p>Easier to scan down one kind of fact, but it adds about 14 characters to a row that already overflows a narrow terminal, and splits one question across two cells.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>How desk-q knows, with no model and no tokens</h2>
+    <div class="src">
+      <div><h3>The setting</h3><p>The repo's "Batches run by" row, read like the other config rows.</p></div>
+      <div><h3>Handed over</h3><p>The queue's <span class="k">supervised</span> flag, already read for the resume hint.</p></div>
+      <div><h3>Supervisor on and off</h3><p>The new <span class="k">supervisor</span> command and <span class="k">s</span> key call supervisor.mjs install and uninstall, as the <span class="k">+ -</span> keys already write workers.</p></div>
+      <div><h3>Agent loaded</h3><p>One <span class="k">launchctl print</span> per repo with a batch, per refresh.</p></div>
+      <div><h3>Drafts and merges</h3><p>Not recorded today: the pass fetches only a PR's state, URL and checks. It must also record draft, review decision and mergeable, which W3 depends on.</p></div>
+      <div><h3>Progress and holds</h3><p>New: each pass records its status, what it held and why, and when anything last started, merged or was released. desk-q reads it; it never works it out.</p></div>
+      <div><h3>Usage</h3><p>The newest of: a worker log's <span class="k">rate_limit_event</span>, the status line's reading, and the automatic check.</p></div>
+      <div><h3>Outside blockers</h3><p>The ticket's Jira Blocks links, read at triage and refreshed by the pass, never by desk-q.</p></div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>Not changing</h2>
+    <ul>
+      <li>The other columns, and the rows the Timeline, By day and Epics views compute (screen 5 changes only how they are drawn).</li>
+      <li>When a batch counts as stopped (15 minutes, or a recorded next pass still to come).</li>
+      <li>desk-q stays read-only apart from its move, workers and supervisor commands (U12). It names every other fix; it runs only those three.</li>
+    </ul>
+  </section>
+
+  <section class="approve prose">
+    <h2>Approved</h2>
+    <p>Approved as is on 24 Oct 2026, with Option A. Four desk-q stories go under DS-127: who runs the batch (U cases), linked to DS-204 and DS-205; what a waiting ticket waits on (W cases); the ticket screen (T cases, plus screen 5's Timeline, By day and Epics restyle); and keeping it running (R cases), with the pass and supervisor changes they read from as their own tickets.</p>
+  </section>
+</main>
+
+</body></html>
