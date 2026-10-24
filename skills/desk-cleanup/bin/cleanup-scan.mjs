@@ -159,7 +159,7 @@ export function portSet(spec) {
 }
 
 const WATCHMAN_LARGE = 2 * GiB
-// Leak thresholds from SKILL.md step 5's baselines (one machine; re-measure before trusting them).
+// Leak thresholds from step 5's baselines in references/step-5-memory.md (one machine; re-measure before trusting them).
 const LEAKS = [[/next/, 2.5 * GiB, 'next >2.5 GiB'], [/storybook/, 1.5 * GiB, 'storybook >1.5 GiB']]
 
 // The worktree a cwd belongs to: the longest registered prefix, else `GONE:<dir>` when it sits in a
