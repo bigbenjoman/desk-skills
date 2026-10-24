@@ -264,6 +264,15 @@ touch "$T/checkin.hangs"; s0=$SECONDS
 out=$(DESK_CHECKIN_TIMEOUT_MS=1000 tick); rc=$?
 rm -f "$T/checkin.hangs"
 check "DS-225 AC5: a check-in that hangs is killed at its timeout and the tick carries on" '[ $rc -eq 0 ] && [ $((SECONDS - s0)) -lt 30 ] && grep -q "idle check-in: timed out after 1s and was killed; the next tick tries again" "$LOG" && ! pgrep -f "$T/bin/digest.mjs" >/dev/null'
+# A driver an earlier pass started that stops while the batch is idle is still reported, and notified.
+DL="$T/state/merge-driver.log"; touch "$DL"
+node -e 'const fs = require("fs"); const [f, from] = process.argv.slice(1); const s = JSON.parse(fs.readFileSync(f, "utf8")); s.driver = { pid: 999999, started: "2026-10-23T09:00:00.000Z", from: Number(from), failures: 1, notified: false }; fs.writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$(wc -c < "$DL" | tr -d ' ')"
+printf '00:00:02Z FAIL: gh is signed out while idle\n00:00:02Z merge driver exited 1\n' >> "$DL"
+notified=$(count "$T/notify.calls"); n=$(started)
+out=$(tick)
+check "DS-225 AC1/AC3: an idle tick logs why the driver stopped and notifies, running no pass" 'grep -q "^merge driver: stopped (pid 999999, started .*, exit 1): FAIL: gh is signed out while idle$" "$LOG" && [ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "failed 2 starts in a row: FAIL: gh is signed out while idle|$" && [ "$(count "$T/pass.calls")" = 2 ] && [ "$(started)" = "$n" ]'
+out=$(tick)
+check "DS-225: the next idle tick logs nothing new about the driver" '[ "$(grep -c "999999" "$LOG")" = 1 ] && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
 mkdir -p "$T/state/closed-out"

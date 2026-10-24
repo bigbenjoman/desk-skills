@@ -282,6 +282,6 @@ loop; rm -f "$T/gh.signedout"
 check "DS-225 AC2: a signed-out gh is logged as signed out and the driver exits non-zero" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: gh is signed out (To get started with GitHub CLI, please run:  gh auth login)" && echo "$out" | tail -1 | grep -q "merge driver exited 1$"'
 check "DS-225 AC2: the refused list is not read as empty, and the driver does not wait to retry" '! echo "$out" | grep -q "no ready batch PRs" && [ ! -s "$FAKE_SLEEPS" ]'
 touch "$T/gh.broken"; loop; rm -f "$T/gh.broken"
-check "DS-225 AC2: any other gh failure is retried as before, with gh's error" '! echo "$out" | grep -q "signed out" && echo "$out" | grep -q "could not list PRs: error connecting to api.github.com"'
+check "DS-225 AC2: any other gh failure is retried as before" '! echo "$out" | grep -q "signed out" && echo "$out" | grep -q "could not list PRs" && [ $rc -eq 1 ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

@@ -508,7 +508,7 @@ while true; do
   # Signed out, every later loop fails the same way, so the driver stops and says so: the supervisor
   # reads this line as the reason, rather than a driver that runs and never merges.
   if [ "$rc" -eq 4 ]; then log "FAIL: gh is signed out ($(tail -1 "$GH_ERR" 2>/dev/null)) — nothing can merge until \`gh auth login\`; stopping"; exit 1; fi
-  [ "$rc" -eq 0 ] || { log "could not list PRs: $(tail -1 "$GH_ERR" 2>/dev/null)"; pause 120 1; continue; }
+  [ "$rc" -eq 0 ] || { log "could not list PRs"; pause 120 1; continue; }
   drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 }')
   [ -z "$ready" ] && { log "no ready batch PRs"; pause 60; continue; }

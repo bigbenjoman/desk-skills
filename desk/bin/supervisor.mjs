@@ -243,8 +243,12 @@ function interval() {
   const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut) {
     intakeAlone();
+    // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
-    if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
+    const driver = watchDriver(state, s, driverHolder(state), E.repoSlug());
+    if (reaped.length || driver.length) writeState(state, s);
+    if (reaped.length) log([`== ${stamp()} ${reaped.join('\n')}`]);
+    if (driver.length) log([`== ${stamp()} idle: the merge driver`, ...driver]);
     idleCheckin(state, s, log, stamp);
     return;
   }
