@@ -5,21 +5,22 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkSplit, norm, walk } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CAP = 20480;
-const norm = (s) => s.replace(/\s+/g, ' ').trim();
 
-// Each skill: the word for its steps, their numbers, and how many headings the old file had.
+// Each skill: the word for its steps, their numbers, how many headings the old file had, and the
+// reference files it already had, which the split left alone.
 const SKILLS = {
-  'desk-cleanup': { unit: 'step', steps: ['1', '2', '3', '4', '5', '6'], headings: 19 },
-  'desk-clearance': { unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30 },
+  'desk-cleanup': { unit: 'step', steps: ['1', '2', '3', '4', '5', '6'], headings: 19, kept: ['portable-checks.md'] },
+  'desk-clearance': { unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'] },
 };
 
 const loaded = {};
-for (const [name, { unit, steps, headings: headingCount }] of Object.entries(SKILLS)) {
+for (const [name, { unit, steps, headings: headingCount, kept }] of Object.entries(SKILLS)) {
   const dir = join(root, 'skills', name);
   const refs = join(dir, 'references');
   const core = readFileSync(join(dir, 'SKILL.md'), 'utf8');
@@ -47,31 +48,14 @@ for (const [name, { unit, steps, headings: headingCount }] of Object.entries(SKI
   }
   t(`AC3 ${name} a ${unit} file that cannot be read stops the run`, new RegExp(`\\*\\*A ${unit} file you cannot read stops the (run|pass)\\.\\*\\*`).test(core), true);
 
-  // AC2: every heading, table row and paragraph of the old file is in exactly one file.
+  // AC2: every heading, table row and paragraph of the old file is in exactly one file of the split.
+  // A reference file the table does not name is one that was there before the split; any other is a
+  // copy hiding from the count.
+  const onDisk = readdirSync(refs).filter((f) => f.endsWith('.md'));
+  t(`AC2 ${name} every reference file is named by the table or predates the split`, onDisk.filter((f) => !named.includes(f) && !kept.includes(f)), []);
   const files = ['SKILL.md', ...named];
   const read = (f) => (f === 'SKILL.md' ? core : readFileSync(join(refs, f), 'utf8'));
-  const lines = (f) => read(f).split('\n').map((l) => l.trim());
-  const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
-  t(`AC2 ${name} the old file has its ${headingCount} headings`, headings.length, headingCount);
-  for (const h of headings) t(`AC2 ${name} "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
-
-  const all = before.split('\n').map((l) => l.trim());
-  const rows = all.filter((l) => /^\|/.test(l));
-  const header = new Set(all.flatMap((l, i) => (/^\|/.test(l) && /^\|[-| ]+\|$/.test(all[i + 1] || '') ? [l] : [])));
-  const body = rows.filter((r) => !header.has(r) && !/^\|[-| ]+\|$/.test(r));
-  t(`AC2 ${name} the old file's table rows are read (${body.length} body rows)`, body.length >= 15, true);
-  for (const r of rows) {
-    const n = files.filter((f) => lines(f).includes(r)).length;
-    if (body.includes(r)) t(`AC2 ${name} row "${r.slice(0, 60)}" is in exactly one file`, n, 1);
-    else t(`AC2 ${name} header "${r.slice(0, 40)}" is in a file`, n >= 1, true);
-  }
-
-  // Word for word, whitespace aside: the split moves text, it does not reword it.
-  const after = files.map((f) => norm(read(f)));
-  const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).filter((p) => !/^\|/.test(p.trimStart())).map(norm).filter(Boolean);
-  const dropped = paras.filter((p) => !after.some((a) => a.includes(p)));
-  t(`AC2 ${name} every paragraph of the old file survives the split (${paras.length} read)`, dropped.length, 0);
-  for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
+  checkSplit({ t, label: `AC2 ${name}`, before, files, read, headings: headingCount, minRows: 15 });
 
   // A name is at home where it is a heading, or a bold or italic lead at the start of a line or item.
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -81,9 +65,8 @@ for (const [name, { unit, steps, headings: headingCount }] of Object.entries(SKI
 
 // AC4: every citation of a section of either skill still finds it. From another skill: a step or
 // phase by number is one the core's table lists, and a quoted name is a heading or lead in exactly one
-// file of the skill.
-const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : e.name.endsWith('.md') ? [join(d, e.name)] : []));
-const sources = [...walk(join(root, 'skills')), join(root, 'README.md')];
+// file of the skill. Scripts are read as well as skills: a comment citing a section is a citation.
+const sources = [...walk(join(root, 'skills'), ['.md', '.mjs', '.sh']), ...walk(join(root, 'desk'), ['.mjs', '.sh']), join(root, 'README.md')];
 let byNumber = 0, byName = 0;
 for (const p of sources) {
   const text = norm(readFileSync(p, 'utf8'));
@@ -99,6 +82,16 @@ for (const p of sources) {
   }
 }
 t(`AC4 the citations by number were read (${byNumber})`, byNumber >= 1, true);
+
+// A skill's own script that cites "SKILL.md step N" sends the reader to the core, which no longer
+// holds any step's rules: it must name the step's reference file instead.
+for (const [name, { unit }] of Object.entries(SKILLS)) {
+  const bin = join(root, 'skills', name, 'bin');
+  for (const p of existsSync(bin) ? walk(bin, ['.mjs', '.sh']) : []) {
+    const stale = [...norm(readFileSync(p, 'utf8')).matchAll(new RegExp(`SKILL\\.md'?s? ${unit} \\d+`, 'g'))].map((m) => m[0]);
+    t(`AC4 ${name}/bin/${basename(p)} cites no ${unit} as being in SKILL.md`, stale, []);
+  }
+}
 t('AC4 desk-jira still cites desk-cleanup\'s Jira sweep as its step 1', /`desk-cleanup`'s Jira sweep\*\* \(its step 1\)/.test(readFileSync(join(root, 'skills/desk-jira/SKILL.md'), 'utf8')), true);
 console.log(`     citations by name read: ${byName}`);
 
