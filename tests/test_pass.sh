@@ -915,6 +915,11 @@ q set J-2 open_questions=0; q hold J-2 J-1; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 the pass record lists the tickets it found held" '[ "$(pass_rec held_tickets | jq -c .)" = "[\"J-2\"]" ]'
 q set J-2 state=triaged park=null held_by=null open_questions=1; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC6 a ticket released since the last pass is progress" '[ "$(pass_rec progress_at)" = "$(pass_rec at)" ] && [ "$(pass_rec held_tickets)" = "[]" ]'
+# A merge recorded with a time later than the pass that found it (it merged mid-pass) counts once.
+q set J-4 merged_at=2099-01-01T00:00:00.000Z; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 a ticket merged since the last pass is progress" '[ "$(pass_rec progress_at)" = "$(pass_rec at)" ] && [ "$(pass_rec merged_tickets | jq -c .)" = "[\"J-4\"]" ]'
+PROGRESS=$(pass_rec progress_at); out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 a merge already counted is not progress again, however late its merge time" '[ "$(pass_rec progress_at)" = "$PROGRESS" ] && [ "$(pass_rec at)" != "$PROGRESS" ]'
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'

@@ -41,9 +41,9 @@ const AS_JSON = process.argv.includes('--json');
 const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: EXIT.SHOW_PERSON, idle: EXIT.SHOW_PERSON, error: EXIT.SHOW_PERSON };
 // The queue's `pass` record, for desk-q: who ran the last pass and when, what held its spawns, how many
 // passes in a row have errored and the last error's first line, the last time a ticket started, merged
-// or was released, and the tickets held at that pass (a later pass that finds one no longer held
-// counts it released). It is written once the queue reads, and never by a pass another orchestrator's
-// lock refused.
+// or was released, and the tickets held and merged at that pass (a later pass that finds one no
+// longer held counts it released, and one newly merged counts it merged). It is written once the
+// queue reads, and never by a pass another orchestrator's lock refused.
 let RECORDS = false;
 function recordPass(f) {
   if (!RECORDS) return;
@@ -1675,11 +1675,14 @@ const heldWhy = report.spawned.length || !eligible.length ? null
   : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
   : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
+const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
 recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
-  const merged = merges.length > 0 || (!!prev.at && Object.values(qEnd.tickets).some((t) => t.merged_at && Date.parse(t.merged_at) > Date.parse(prev.at)));
+  // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
+  // time later than the previous pass's start would count again a merge that pass already recorded.
+  const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd };
+  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd };
 });
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
