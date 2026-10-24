@@ -13,7 +13,8 @@ T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/logs" "$T/desk/bin" "$T/stub" "$T
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
-  CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR DESK_UPLOAD_APPROVED AUTOPILOT_BATCH_BUDGET_USD
+  CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR DESK_UPLOAD_APPROVED AUTOPILOT_BATCH_BUDGET_USD \
+  AUTOPILOT_START_STAGE
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -839,5 +840,93 @@ check "DS-180 AC9 the next pass records it done with its PR, and clears the note
   '[ "$(field CO-1 state)" = "\"done\"" ] && [ "$(field CO-1 result.pr)" = 400 ] && [ "$(field CO-1 park)" = null ] && [ ! -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "CO-1: closed out from an interactive session (merged, PR #400)"'
 check "DS-180 AC9 a ticket nobody closed out stays parked" '[ "$(field CO-2 state)" = "\"parked\"" ]'
 check "DS-180 a note older than the ticket's place in the queue is stale: dropped, and the ticket stays parked" '[ "$(field CO-3 state)" = "\"parked\"" ] && [ ! -f "$T/state-co/closed-out/CO-3.json" ]'
+
+# ---- DS-221: PR draft, review and mergeable state, outside blockers, and the pass record
+cat "$T/config.md" > "$T/config-j.md"
+cat >> "$T/config-j.md" <<EOF
+
+## 4. Tracker
+| Field | Value |
+|---|---|
+| Tracker | \`jira\` |
+| Ticket key pattern | \`J-[0-9]+\` |
+EOF
+export DESK_CONFIG="$T/config-j.md" DESK_QUEUE="$T/queue-j.json" DESK_AUTOPILOT_STATE="$T/state-j"
+mkdir -p "$T/state-j/logs" "$T/state-j/triage" "$T/jira"
+ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+[ -f "$T/jira-down" ] && { echo "jira: 503 Service Unavailable" >&2; exit 1; }
+[ "\$1" = get ] && cat "$T/jira/\$2.json"
+EOF
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+[ -f "$T/gh-down" ] && exit 1
+case "\$*" in
+  "pr view 600 "*) echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/600","isDraft":true,"reviewDecision":"REVIEW_REQUIRED","mergeable":"MERGEABLE","statusCheckRollup":[]}' ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira" "$T/stub/gh"
+blocked(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-9","fields":{"status":{"statusCategory":{"key":"%s"}}}}},{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"J-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' "$1" > "$T/jira/J-1.json"; }
+pass_rec(){ node -e 'const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).pass ?? {}; console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], p) ?? null))' "$DESK_QUEUE" "$1"; }
+q init j
+q add J-1; q set J-1 state=triaged open_questions=1
+q add J-2; q set J-2 state=triaged open_questions=1
+q add J-4; q set J-4 state=done result.pr=600
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-9","category":"new"},{"key":"J-2","category":"new"}]}' > "$T/state-j/triage/J-1.json"
+printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/J-2.json"
+blocked indeterminate
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC1 a draft PR records isDraft, reviewDecision and mergeable as GitHub reports them" \
+  '[ "$(field J-4 pr_status | jq -c "[.isDraft, .reviewDecision, .mergeable]")" = "[true,\"REVIEW_REQUIRED\",\"MERGEABLE\"]" ]'
+check "DS-221 AC2 an open blocker outside the batch is recorded with its status category, read again from Jira; one inside the batch is not" \
+  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\"}]" ] && [ "$(cat "$T/jira-calls")" = "get J-1 --json" ]'
+check "DS-221 a ticket with no outside blockers records none and is not read from Jira" '[ "$(field J-2 outside_blockers)" = "[]" ]'
+check "DS-221 AC4 a pass a session ran names session" '[ "$(pass_rec by)" = "\"session\"" ] && [ "$(pass_rec errors)" = 0 ]'
+STATUS_AT=$(field J-4 pr_status.at)
+: > "$T/jira-calls"; touch "$T/gh-down"; out=$(node "$B/pass.mjs" --by supervisor 2>&1)
+check "DS-221 outside blockers are not read from Jira again within the intake interval" '[ ! -s "$T/jira-calls" ]'
+check "DS-221 AC4 a pass the supervisor ran names supervisor" '[ "$(pass_rec by)" = "\"supervisor\"" ]'
+check "DS-221 AC8 a GitHub read that fails keeps the PR status as it was" '[ "$(field J-4 pr_status.at)" = "$STATUS_AT" ] && [ "$(field J-4 pr_status.isDraft)" = true ]'
+rm -f "$T/gh-down"
+blocked "done"; touch "$T/jira-down"; q set J-1 outside_blockers_read=null
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC8 a Jira read that fails keeps the outside blockers as they were, and says so" \
+  '[ "$(field J-1 outside_blockers | jq -c "[.[].key]")" = "[\"X-9\"]" ] && echo "$out" | grep -q "outside blockers: not read, kept as they were"'
+rm -f "$T/jira-down"; q set J-1 outside_blockers_read=null
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC3 a blocker now Done is no longer among the outside blockers" '[ "$(field J-1 outside_blockers)" = "[]" ]'
+: > "$T/jira-calls"; q set J-1 outside_blockers_read=null; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 a ticket left with no outside blockers is not read from Jira again" '[ ! -s "$T/jira-calls" ]'
+# AC5 and AC6: a ticket that could spawn, held by memory, then spawned.
+q add J-5; q set J-5 state=triaged
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-221 AC5 a pass memory held records why it spawned nothing" '[ "$(field J-5 state)" = "\"triaged\"" ] && pass_rec held | grep -q "^\"memory: "'
+check "DS-221 AC6 a pass that started, merged and released nothing records no progress" '[ "$(pass_rec progress_at)" = null ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 a pass that started a ticket records its own time as the last progress" \
+  '[ "$(field J-5 state)" = "\"running\"" ] && [ "$(pass_rec progress_at)" = "$(pass_rec at)" ] && [ "$(pass_rec held)" = null ]'
+PROGRESS=$(pass_rec progress_at)
+q set J-5 state=done; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 the next pass that does none of those leaves the last progress unchanged" '[ "$(pass_rec progress_at)" = "$PROGRESS" ] && [ "$(pass_rec at)" != "$PROGRESS" ]'
+q set J-2 open_questions=0; q hold J-2 J-1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 the pass record lists the tickets it found held" '[ "$(pass_rec held_tickets | jq -c .)" = "[\"J-2\"]" ]'
+q set J-2 state=triaged park=null held_by=null open_questions=1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 a ticket released since the last pass is progress" '[ "$(pass_rec progress_at)" = "$(pass_rec at)" ] && [ "$(pass_rec held_tickets)" = "[]" ]'
+# A merge recorded with a time later than the pass that found it (it merged mid-pass) counts once.
+q set J-4 merged_at=2099-01-01T00:00:00.000Z; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 a ticket merged since the last pass is progress" '[ "$(pass_rec progress_at)" = "$(pass_rec at)" ] && [ "$(pass_rec merged_tickets | jq -c .)" = "[\"J-4\"]" ]'
+PROGRESS=$(pass_rec progress_at); out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC6 a merge already counted is not progress again, however late its merge time" '[ "$(pass_rec progress_at)" = "$PROGRESS" ] && [ "$(pass_rec at)" != "$PROGRESS" ]'
+# AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
+out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
+check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'
+out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
+check "DS-221 AC7 a second error in a row counts two" '[ "$(pass_rec errors)" = 2 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-221 AC7 the next pass that succeeds sets the count to 0" '[ "$(pass_rec errors)" = 0 ] && [ "$(pass_rec error)" = null ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

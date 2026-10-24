@@ -138,7 +138,7 @@ out=$(tick); rc=$?
 check "a tick exits 0" '[ $rc -eq 0 ]'
 check "AC1: a pass runs" '[ "$(count "$T/pass.calls")" = 1 ]'
 check "AC1: its report is appended to the supervisor log" 'grep -q "pass: exit 10 (nothing_yet)" "$LOG" && grep -q "^no change this pass$" "$LOG"'
-check "DS-185 AC6: the pass records the next tick, one interval away, as its next pass" 'grep -qx -- "--json --next +300" "$T/pass.args"'
+check "DS-185 AC6 and DS-221 AC4: the pass is named the supervisor's, and records the next tick, one interval away, as its next pass" 'grep -qx -- "--json --by supervisor --next +300" "$T/pass.args"'
 waitlines "$T/driver.calls" 1
 check "AC3: the merge driver starts for the batch's tickets" '[ "$(started)" = 1 ] && grep -qx -- "--tickets A B --log" "$T/driver.calls"'
 
