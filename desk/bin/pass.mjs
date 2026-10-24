@@ -30,6 +30,7 @@ import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck } from './gate.mjs';
+import { undraftCall } from './undraft.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
@@ -495,8 +496,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       if (run.ok && doneLine && Number(doneLine[1]) > 0 && Number(doneLine[2]) === 0) {
         q('set', t.key, 'images_uploaded=true');
         report.advanced.push(`${t.key} images → #${prNo}`);
-        // The worker leaves the PR in draft; undrafting is the orchestrator's, after the review
-        // checks in SKILL.md. Report evidence completeness so that decision has what it needs.
+        // The worker leaves the PR in draft; the undraft step below takes it out once the review
+        // checks in SKILL.md hold. Report evidence completeness so that decision has what it needs.
         report.advanced.push(`${t.key} #${prNo} evidence complete — still draft`);
       } else if (doneLine || /uploaded, but found no/.test(up)) {
         // The assets now exist on GitHub but the body is not finished (placeholders left, or none
@@ -1384,6 +1385,7 @@ function readPrStatus(n) {
 // A merge is recorded here whoever made it, the merge driver or anyone else: merged_at on the ticket
 // and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
 const merges = [];
+const drafts = [];
 for (const t of Object.values(qNow.tickets)) {
   const n = t.state === 'done' ? t.result?.pr : null;
   if (n == null) continue;
@@ -1398,6 +1400,7 @@ for (const t of Object.values(qNow.tickets)) {
     if (!s) continue;
     prStates[n] = s.state;
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
+    if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
   }
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
@@ -1405,6 +1408,55 @@ for (const t of Object.values(qNow.tickets)) {
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);
+
+// ---- undraft -------------------------------------------------------------
+// Each done ticket's draft PR leaves draft under Stage 7's own rules (undraft.mjs), whoever runs the
+// pass, so a supervised batch does not stall on its first draft. One it may not undraft is recorded
+// on the ticket as `undraft` and put to the person; a gh pr ready that fails is kept in the pass
+// record and tried again next pass, since the PR is still a draft.
+const undraftErrors = [];
+if (drafts.length) {
+  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
+  const permKey = E.permissionKey('pr-ready');
+  const cfg = {
+    perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true,
+    localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'),
+    handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
+    required: list('required-checks'), advisory: list('advisory-checks'),
+  };
+  const notesFile = join(STATE, 'batch-notes.md');
+  for (const { t, s } of drafts) {
+    const n = s.pr;
+    const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,mergeStateStatus,body,reviews,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    let v;
+    try { v = JSON.parse(raw); } catch { v = null; }
+    if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
+    const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: s.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine });
+    if (!c) continue;
+    let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
+    if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
+    else if (c.call === 'person') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
+    else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}`);
+    else {
+      const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
+      if (r.ok) {
+        out.push(`undrafted: PR #${n} (${t.key}) at ${String(v.headRefOid).slice(0, 12)}; the merge driver merges it once it is green`);
+        if (c.note) {
+          if (!existsSync(notesFile)) writeFileSync(notesFile, '# Batch notes\n\n');
+          appendFileSync(notesFile, `${c.note}\n`);
+        }
+      } else {
+        const why = r.out.split('\n').pop();
+        undraftErrors.push(`${t.key}: gh pr ready ${n} failed: ${why}`);
+        out.push(`undraft: PR #${n} (${t.key}) could not leave draft (${why}); the next pass tries again`);
+        rec = { ...rec, call: 'failed', why };
+      }
+    }
+    const was = t.undraft ?? {};
+    if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
+  }
+}
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
   const built = buildHistory({ state: STATE, queue: queue(), mergedPrs: () => ghMergedPrs(GH_REPO) });
@@ -1682,7 +1734,7 @@ recordPass((prev) => {
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd };
+  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors };
 });
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
