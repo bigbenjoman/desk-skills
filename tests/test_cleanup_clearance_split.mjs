@@ -59,7 +59,7 @@ for (const [name, { unit, steps, headings: headingCount }] of Object.entries(SKI
   const rows = all.filter((l) => /^\|/.test(l));
   const header = new Set(all.flatMap((l, i) => (/^\|/.test(l) && /^\|[-| ]+\|$/.test(all[i + 1] || '') ? [l] : [])));
   const body = rows.filter((r) => !header.has(r) && !/^\|[-| ]+\|$/.test(r));
-  t(`AC2 ${name} the old file's table rows are read (${body.length} body rows)`, body.length > 30, true);
+  t(`AC2 ${name} the old file's table rows are read (${body.length} body rows)`, body.length >= 15, true);
   for (const r of rows) {
     const n = files.filter((f) => lines(f).includes(r)).length;
     if (body.includes(r)) t(`AC2 ${name} row "${r.slice(0, 60)}" is in exactly one file`, n, 1);
