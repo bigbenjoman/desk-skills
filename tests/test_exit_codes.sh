@@ -126,8 +126,9 @@ printf '#!/bin/sh\necho MERGED\n' > "$T/stub/gh"
 pj
 check "pass: a release due with no driver exits 11"             '[ $rc -eq 11 ] && [ "$(js ".release_due | join(\",\")")" = T-2 ] && js ".waiting[]" | grep -q "^T-2: RELEASE DUE"'
 
-# A finished batch: every ticket done, nothing parked or held.
+# A finished batch: every ticket done and its PR merged, nothing parked or held.
 q drop T-2
+q set T-1 merged_at=2026-10-23T10:00:00Z 'pr_status={"pr":7,"state":"MERGED","merged_at":"2026-10-23T10:00:00Z","checks":[]}'
 pj
 check "pass: a finished batch exits 11 with status idle"        '[ $rc -eq 11 ] && [ "$(js .status)" = idle ] && [ "$(js .notify)" = true ] && js .message | grep -q "^IDLE"'
 
