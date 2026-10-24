@@ -187,7 +187,10 @@ if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && a[3].includes('/issue
   if (!hit) { console.error('HTTP 404: Not Found'); process.exit(1); }
   hit.body = JSON.parse(fs.readFileSync(0, 'utf8')).body; fs.writeFileSync(cf(200), JSON.stringify(c)); console.log('{}'); process.exit(0);
 }
-if (a[0] === 'pr' && a[1] === 'view') { let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {} console.log(s); }
+if (a[0] === 'pr' && a[1] === 'view') {
+  let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {}
+  console.log(a.includes('--json') && !a.includes('--jq') ? JSON.stringify({ state: s, url: 'https://github.com/acme/widgets/pull/' + a[2], statusCheckRollup: [] }) : s);
+}
 if (a[0] === 'pr' && a[1] === 'create') console.log('https://github.com/acme/widgets/pull/200');
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
@@ -258,8 +261,9 @@ check "the stage a worker printed is recorded"                  '[ "$(field T-1 
 check "the held ticket spawns once its blocker has finished"    '[ $rc -eq 0 ] && [ "$(state T-3)" = running ] && live T-3'
 
 finish T-3
+for n in 101 102 103; do echo MERGED > "$T/pr/$n"; done
 pass
-check "the held ticket reaches done"                            '[ "$(state T-3)" = done ] && [ "$(field T-3 result.pr)" = 103 ]'
+check "the held ticket reaches done"                           '[ "$(state T-3)" = done ] && [ "$(field T-3 result.pr)" = 103 ]'
 check "the batch stops spawning: IDLE, and the finished batch exits 11" '[ $rc -eq 11 ] && echo "$out" | grep -q "^IDLE"'
 pass
 check "a further pass spawns nothing"                           '[ "$(grep -c "^claude worker" "$T/calls.log")" = 3 ] && echo "$out" | grep -q "^IDLE"'

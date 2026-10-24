@@ -9,7 +9,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1479,7 +1479,7 @@ function baseGate(qx) {
   return false;
 }
 const featureBase = qNow.feature === true && BASE && SOURCE && BASE !== SOURCE && Object.keys(qNow.tickets).length > 0;
-const gatePending = featureBase && batchIdle(qNow, prState) ? baseGate(qNow) : false;
+const gatePending = featureBase && batchSettled(qNow, prState) ? baseGate(qNow) : false;
 
 // ---- promotion ledger ------------------------------------------------------
 // The promotion PR carries one comment with one row per child (ledger.mjs), rewritten whenever a row
@@ -1600,7 +1600,7 @@ if (borrowLine) lines.push(borrowLine);
 lines.push('');
 lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
 if (idle) {
-  lines.push('\nIDLE — every ticket is done, parked, or failed, and none is held waiting on a merge. Nothing left to spawn. "done" means a PR exists, not that it merged.');
+  lines.push('\nIDLE — every ticket is done, parked, or failed, none is held waiting on a merge, and every done ticket\'s PR is merged or closed (or it finished with no PR). Nothing left to spawn or merge.');
   const sc = batchScopeTotals(Object.values(qEnd.tickets));
   lines.push(`scope: ${sc.tickets} of ${sc.checked} checked ticket(s) changed files outside their triaged scope, ${sc.files} file(s) in all (report only)`);
   const resumed = Object.values(qEnd.tickets).filter((t) => t.resumes > 0);

@@ -55,6 +55,8 @@ EOF
 printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 chmod +x "$T/stub/claude" "$T/stub/gh"
+# Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
+all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
 
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
@@ -224,7 +226,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "AC2 a finished ticket's out-of-scope files are listed against it" 'echo "$out" | grep -q "T-15: README.md, lib/b.js" && [ "$(field T-15 out_of_scope)" = "[\"README.md\",\"lib/b.js\"]" ]'
 check "AC2 the ticket proceeds as today"                 '[ "$(field T-15 state)" = "\"done\"" ] && [ "$(field T-15 result.pr)" = 15 ] && ! echo "$out" | grep -q "NOTIFY.*T-15"'
 check "AC1 scope, a test and a lockfile report nothing"  '[ "$(field T-16 out_of_scope)" = "[]" ] && ! echo "$out" | grep -qE "T-16: (a.js|tests/|yarn.lock)"'
-node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+all_done
 out=$(node "$B/pass.mjs" 2>&1)
 check "AC3 an idle batch gives the scope total"         'echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "scope: 1 of 2 checked ticket(s) changed files outside their triaged scope, 2 file(s) in all"'
 check "DS-122 an idle batch gives each worker's cost, unknown where its log has no result event" 'echo "$out" | grep -q "^WORKER COST" && echo "$out" | grep -qE "^  T-15 +1 +unknown +unknown +unknown +none +unknown" && echo "$out" | grep -qE "^  total .*not counted\)$"'
@@ -520,7 +522,7 @@ say "AUTOPILOT_DONE: pr=77 jira=none" >> "$T/state-k/logs/K-7.log"
 q set N-1 state=done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-145 AC8 a resumed worker that prints DONE is recorded done, keeping its resume count" '[ "$(field K-7 state)" = "\"done\"" ] && [ "$(field K-7 result.pr)" = 77 ] && [ "$(field K-7 resumes)" = 1 ]'
-node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) if (t.state !== "done") t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+all_done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-145 AC8 the batch report lists the resumes" 'echo "$out" | grep -q "^resumed after a kill: .*K-7 1 time(s) (done)"'
 q set K-1 state=triaged resume=pending resume_why=x
@@ -638,7 +640,7 @@ check "DS-155 AC5 an oversized handoff briefing is cut to the cap with a note sa
 check "DS-155 AC5 and the cut never drops the binding answer" 'brief H-4 | grep -q "keep the H-4 answer"'
 
 # AC7: the batch report's row adds every session's tokens and cost.
-node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) t.state = "done"; require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+all_done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC7 the batch report's row for a ticket whose sessions handed off counts every session's run and cost" 'echo "$out" | grep -qE "^  H-1 +4 .* \\\$2\.00 "'
 
