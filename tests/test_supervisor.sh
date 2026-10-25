@@ -45,7 +45,7 @@ config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync, readFileSync } from 'node:fs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
@@ -305,6 +305,21 @@ check "a new batch runs passes again" '[ "$(count "$T/pass.calls")" = 5 ]'
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)
 check "a pass with no verdict is logged as an error and notified" 'grep -q "(error)" "$LOG" && tail -1 "$T/notify.calls" | grep -q "the pass refused or failed"'
+
+# ---- DS-224: the agent's version, --reload, and what runs old code ------------------------------
+mkdir -p "$DESK_HOME"; printf '{"commit":"new1"}\n' > "$DESK_HOME/installed.json"
+n=$(grep -c "^bootstrap" "$T/launchctl.calls")
+out=$(sup install --interval 300 --reload); out=$(sup install --interval 300 --reload)
+check "DS-224 AC3: --reload reloads even an unchanged agent, and its plist names the installed version" '[ "$(grep -c "^bootstrap" "$T/launchctl.calls")" = $((n + 2)) ] && grep -A1 "<key>DESK_AGENT_VERSION</key>" "$PL" | grep -q "<string>new1</string>"'
+code(){ node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).code; console.log(`${c.installed} ${c.supervisor.version} ${c.supervisor.old_code} ${c.driver?.version} ${c.driver?.old_code}`)' "$T/state/supervisor.json"; }
+sleep 30 & HOLDER=$!
+mkdir -p "$T/state/merge-driver.lock.d"; echo "$HOLDER" > "$T/state/merge-driver.lock.d/pid"; echo old0 > "$T/state/merge-driver.lock.d/version"
+out=$(DESK_AGENT_VERSION=old0 tick)
+check "DS-224 AC5: an agent and a merge driver started at an older version are recorded as running old code" '[ "$(code)" = "new1 old0 true old0 true" ]'
+echo new1 > "$T/state/merge-driver.lock.d/version"
+out=$(DESK_AGENT_VERSION=new1 tick)
+check "DS-224 AC5: once both run the installed version, the record says neither runs old code" '[ "$(code)" = "new1 new1 false new1 false" ]'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d"
 
 # ---- AC10: uninstall ----------------------------------------------------------------------------
 out=$(sup uninstall); rc=$?

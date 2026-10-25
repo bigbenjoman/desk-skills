@@ -59,6 +59,7 @@ bad()     { printf '  MISS  %s\n' "$1"; MISSING=$((MISSING + 1)); }
 note()    { printf '        %s\n' "$1"; }
 has()     { command -v "$1" >/dev/null 2>&1; }
 WROTE=""
+RUNNING=""   # what installed.mjs restart said about running merge drivers and supervisor agents
 wrote()   { WROTE="$WROTE        $1
 "; }
 # resolved <path> — the physical directory a path lands on, empty if it lands nowhere
@@ -929,6 +930,28 @@ if [ -f "$SRC/vendor/sources.json" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------------------------
+section "Running autopilot  -> onto the code just installed"
+
+# Last, once every file is in place: scripts are replaced by rename, so a merge driver or supervisor
+# agent already running keeps the code it started with until it is started again.
+if [ -f "$DESKDIR/bin/installed.mjs" ]; then
+  if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" record "$SRC" 2>&1)"; then
+    ok "installed version $out (~/.claude/desk/installed.json)"
+    wrote "version  ~/.claude/desk/installed.json"
+  else
+    warn "could not record the installed version"; show_err "$out"
+  fi
+  if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart 2>&1)"; then
+    RUNNING="$out"
+    printf '%s\n' "$out" | sed 's/^/  /'
+  else
+    warn "could not restart what is running"; show_err "$out"
+  fi
+else
+  note "this checkout ships no desk/bin/installed.mjs; nothing restarted"
+fi
+
 printf '\nDone. %s warning(s) above.\n' "$WARNINGS"
 if [ "$SKIPPED_N" -gt 0 ]; then
   echo "Skipped (no terminal): $SKIPPED_N prompt(s), nothing was changed for them. Each one and how to apply it:"
@@ -938,6 +961,10 @@ if [ -n "$WROTE" ]; then
   echo "Written or moved, because these paths are desk-owned (an edited copy is backed up"
   echo "under $BACKUP first):"
   printf '%s' "$WROTE"
+fi
+if [ -n "$RUNNING" ]; then
+  echo "Running autopilot (merge drivers and supervisor agents):"
+  printf '%s\n' "$RUNNING" | sed 's/^/        /'
 fi
 echo
 echo "Next:"

@@ -68,6 +68,10 @@ for q in "Make one real codex call to prove it can answer?" \
 done
 check "every skip line is followed by an apply line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "^  SKIP  ")" = "$(printf "%s\n" "$summary" | grep -c "^        apply: ")" ]'
+check "DS-224 AC6: with nothing running, the summary says so in one line" \
+  '[ "$(printf "%s\n" "$summary" | grep -c "nothing to restart: no merge driver or supervisor agent is running")" = 1 ]'
+check "DS-224 AC4: the install records the commit it was installed from" \
+  'grep -q "\"commit\": \"$(git -C "$S/.." rev-parse HEAD)\"" "$HOME/.claude/desk/installed.json"'
 check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec --sandbox read-only"* ]]'
 check "deny-rule skip carries the harness-rules command" '[[ "$summary" == *"harness-rules.py\" --settings"*"baseline"* ]]'
 check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install vercel@claude-plugins-official --scope user"* ]]'

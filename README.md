@@ -231,6 +231,11 @@ it once per repo, from inside the repo. Its agent runs a pass at login and every
 the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. It keeps
 the batch's merge driver running, sends one macOS notification for each new set of items that need
 you, and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
+`./install.sh` records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
+reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
+between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick
+keeps `code` in `<state>/supervisor.json`, saying whether the agent or the running merge driver
+started at an older version.
 
 ```
 node ~/.claude/desk/bin/supervisor.mjs install [--interval <s>]   write and load the agent (default 180s)
