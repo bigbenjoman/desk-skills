@@ -177,6 +177,8 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
   mv "$LOCKD" "$LOCKD.stale.$$" 2>/dev/null && rm -rf "$LOCKD.stale.$$"   # atomic takeover of a dead holder's lock
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
+# The desk version this driver runs, so the supervisor can tell it started before the last install.
+node "$DESK_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

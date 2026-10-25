@@ -2,7 +2,9 @@
 // The autopilot supervisor: launchd runs a pass in this repo every few minutes while a batch is live,
 // keeps the batch's merge driver running, and starts both again at login. No model is in the loop.
 // Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
-//   node supervisor.mjs install [--interval <s>]   install or update this repo's launchd agent (default 180s)
+//   node supervisor.mjs install [--interval <s>] [--reload]
+//                                                  install or update this repo's launchd agent (default
+//                                                  180s); --reload reloads it even when unchanged
 //   node supervisor.mjs uninstall                  remove it: no further passes run for this repo
 //   node supervisor.mjs status                     the agent, whether the batch is handed over, the log's tail
 //   node supervisor.mjs tick [--foreground]        one interval; launchd runs this at login and every interval.
@@ -37,6 +39,8 @@
 //     a new batch, or a ticket admitted or requeued into this one. Each idle tick still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window on (maintenance.mjs step).
+// Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
+// this agent and the running merge driver started at an older one (`old_code`).
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -46,6 +50,7 @@ import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { readCloseouts } from './closeout.mjs';
+import { readInstalled, oldCode } from './installed.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -85,7 +90,7 @@ function plist(job) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n${plistValue(job, '')}\n</plist>\n`;
 }
 
-function install(interval) {
+function install(interval, reload = false) {
   const slug = E.repoSlug();
   let root;
   try { root = E.repoRoot(); } catch (e) { die(e.message); }
@@ -94,6 +99,9 @@ function install(interval) {
   mkdirSync(state, { recursive: true });
   const env = { PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', DESK_REPO_DIR: root };
   for (const k of PASS_ON) if (process.env[k]) env[k] = process.env[k];
+  // The desk version the agent was loaded at, so a tick can tell its plist predates the install.
+  const version = readInstalled()?.commit;
+  if (version) env.DESK_AGENT_VERSION = version;
   const job = {
     Label: label(slug),
     ProgramArguments: [process.execPath, join(HERE, 'supervisor.mjs'), 'tick'],
@@ -109,7 +117,7 @@ function install(interval) {
   };
   const text = plist(job);
   const file = plistPath(slug);
-  if (existsSync(file) && readFileSync(file, 'utf8') === text && loaded(slug)) {
+  if (!reload && existsSync(file) && readFileSync(file, 'utf8') === text && loaded(slug)) {
     console.log(`supervisor: ${label(slug)} is already installed and loaded, unchanged (every ${interval}s, log ${join(state, 'supervisor.log')})`);
     return;
   }
@@ -166,6 +174,28 @@ function driverHolder(state) {
   try { return Date.now() - statSync(d).mtimeMs < 60_000 ? 'starting' : null; } catch { return null; }
 }
 
+// What runs old desk code: this agent, by the version its plist was loaded at, and the running merge
+// driver, by the version it wrote into its lock, each against the installed version. A version not
+// recorded predates recording it, so it counts as old once an installed version is known.
+function codeRecord(state) {
+  const installed = readInstalled();
+  const agent = process.env.DESK_AGENT_VERSION || null;
+  const pid = driverHolder(state);
+  let driver = null;
+  if (typeof pid === 'number') {
+    let version = null;
+    try { version = readFileSync(join(state, 'merge-driver.lock.d', 'version'), 'utf8').trim() || null; } catch { /* none written */ }
+    driver = { pid, version, old_code: oldCode(version, installed) };
+  }
+  return { installed: installed?.commit ?? null, supervisor: { version: agent, old_code: oldCode(agent, installed) }, driver };
+}
+// supervisor.json's `code`, written only when it moved.
+function noteCode(state) {
+  const s = readState(state);
+  const code = codeRecord(state);
+  if (JSON.stringify(s.code ?? null) !== JSON.stringify(code)) writeState(state, { ...s, code });
+}
+
 // Tickets whose PR is still to merge: one still to start or running, one held behind a merge or a
 // spine, or one done with a PR that is neither merged nor closed. A failed ticket merges nothing.
 function toMerge(q) {
@@ -217,6 +247,8 @@ function interval() {
   const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   // Standing intake first: it may start the batch this tick then passes.
   const intake = runIntake();
+  // What runs old code is kept on every tick: with no batch, a queue unreadable, or a pass skipped.
+  noteCode(state);
   if (!existsSync(E.queueFile())) {
     if (intake.length) log([`== ${stamp()} intake`, ...intake]);
     // With no batch there is no pass, but what intake handed on still goes out at each check-in.
@@ -528,9 +560,9 @@ try {
     const i = rest.indexOf('--interval');
     const n = i < 0 ? DEFAULT_INTERVAL : Number(rest[i + 1]);
     if (!Number.isInteger(n) || n < MIN_INTERVAL) die(`--interval wants whole seconds, at least ${MIN_INTERVAL}`, 2);
-    install(n);
+    install(n, rest.includes('--reload'));
   } else if (cmd === 'uninstall') uninstall();
   else if (cmd === 'status') status();
   else if (cmd === 'tick') { if (rest.includes('--foreground')) interval(); else tick(); }
-  else die('usage: supervisor.mjs install [--interval <s>] | uninstall | status | tick [--foreground]', 2);
+  else die('usage: supervisor.mjs install [--interval <s>] [--reload] | uninstall | status | tick [--foreground]', 2);
 } catch (e) { die(describeCrash(e)); }
