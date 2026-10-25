@@ -55,14 +55,16 @@ node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary rep
 
 Run it from inside the repo, so `desk-jira` resolves this repo's Jira. It covers every open ticket in
 the project (`--jql` narrows it: one epic, a key range). More than 100 open tickets is refused rather
-than groomed in part: split it with `--jql` and run each part. `--json` gives the findings as data.
+than groomed in part: split it with `--jql` and run each part, and say in the report that duplicates,
+links and Blocks loops between two parts were not compared. `--json` gives the findings as data: run
+it once more with `--json`, redirected to `<scratchpad>/groom-scan.json`, for step 3's verdict.
 
 | Check | What it reads | What it proposes |
 |---|---|---|
 | `landed` | commits on main that name the ticket's key; commits under another key that touch a file the ticket cites and share its title's words; a name the ticket says it adds that main already has | §4 Done state, **only after step 3** |
 | `duplicate` | two open tickets whose titles share most of their words | a `duplicates` link from the newer to the older, and the newer closed, **only after step 3** |
-| `link` | a ticket that names another open ticket in prose with no link (`blocked-by` where the wording is a dependency: after, needs, builds on, once…); a command, flag or field one ticket adds and another uses; two tickets that both change the same function | `desk-jira link`, with both lines as evidence |
-| `stale` | each `path:line` citation: a file that is gone or moved, a line past the end, a name beside the citation that is no longer at that line | the edit (`from -> to`) where main shows the new place; otherwise a verifier writes it (step 3) |
+| `link` | a ticket that names another open ticket in prose with no link, in wording that orders them (`blocked-by` for after, needs, builds on, once…; `blocks` for before, feeds…; a bare mention proposes nothing); a command, flag or field one ticket adds and another uses; two tickets that both change the same function | `desk-jira link`, with both lines as evidence |
+| `stale` | each `path:line` citation: a file that is gone or moved, a line past the end, a name beside the citation that is no longer at that line | the edit (`from -> to`) where the name is a whole word on exactly one line of the file; otherwise, and for a file that moved, a verifier settles it (step 3) |
 | `field` | a blank §4 Priority or §4 Other fields value | the priority from the ticket's epic, else the one most of its open siblings hold; any other field is judged (a size from desk-jira's scale) |
 | `title` | a title with no area prefix where most of its epic's other children share one | the title with that prefix |
 | `blocker` | a Blocks link to a Done ticket; more than 10 open blockers; a loop of Blocks links | `desk-jira unlink` for a Done blocker; a rescope for the other two, which can never all be Done |
@@ -83,10 +85,12 @@ repo.** Brief each with the ticket's full text (`desk-jira get <KEY>` and `desk-
   desk-cleanup's open-PR check for the key (its step 1: `gh pr list --search` through
   `cleanup-scan.mjs key-filter`) and lists any open PR. It returns
   `{"ticket": "<KEY>", "criteria": [{"id": "AC1", "met": true, "cite": "path:line"}], "open_prs": [], "scope_left": []}`.
-  Write every verifier's result into one JSON array with the Write tool, then let the script decide:
+  Write every verifier's result into one JSON array with the Write tool, then let the script decide.
+  It checks each result against the criteria the scan read from the ticket, so a criterion a
+  verifier left out is NOT MET:
 
   ```bash
-  node ~/.agents/skills/desk-groom/bin/groom-scan.mjs verdict <results.json>
+  node ~/.agents/skills/desk-groom/bin/groom-scan.mjs verdict <results.json> --scan <scratchpad>/groom-scan.json
   ```
 
   Only `close: true` becomes a proposal; every other ticket stays open, and its `reasons` go in the

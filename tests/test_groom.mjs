@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, ticketOf } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -23,15 +23,20 @@ t('prefix: none on a plain title', prefixOf('check each ticket'), null)
 t('shared prefix: most of the others share it', sharedPrefix([{ key: 'A-1', summary: 'x: a' }, { key: 'A-2', summary: 'x: b' }, { key: 'A-3', summary: 'c' }], 'A-3'), 'x')
 t('shared prefix: one sibling is not a pattern', sharedPrefix([{ key: 'A-1', summary: 'x: a' }, { key: 'A-2', summary: 'b' }], 'A-2'), null)
 t('newer: created later wins over the key', newer({ key: 'A-9', created: '2026-01-01' }, { key: 'A-2', created: '2026-03-01' }).key, 'A-2')
+t('fields: a filled list or user is set; null, empty and [] are blank',
+  ticketOf({ key: 'K-1', fields: { a: [{ value: 'x' }, { value: 'y' }], b: { accountId: 'q1', displayName: 'Ben' }, c: [], d: '' } }, ['a', 'b', 'c', 'd', 'e']).fields,
+  { a: 'x, y', b: 'Ben', c: null, d: null, e: null })
 
-// AC1: a close needs every criterion MET with a file:line, and no open PR on the key.
+// AC1: a close needs every criterion the ticket has MET with a file:line, and no open PR on the key.
 const met = (id, cite = 'lib/admit.mjs:1') => ({ id, met: true, cite })
-t('AC1 every criterion met with a cite closes', closeVerdict({ ticket: 'K-1', criteria: [met('AC1'), met('AC2')] }).close, true)
-t('AC1 partly done stays open, naming what is not met', closeVerdict({ ticket: 'K-1', criteria: [met('AC1'), { id: 'AC2', met: false }] }), { ticket: 'K-1', close: false, reasons: ['AC2 NOT MET (no file:line)'] })
-t('AC1 met without a file:line is NOT MET', closeVerdict({ ticket: 'K-1', criteria: [{ id: 'AC1', met: true }] }).close, false)
-t('AC1 an unanswered criterion defaults to NOT MET', closeVerdict({ ticket: 'K-1', criteria: [{ id: 'AC1' }] }).close, false)
-t('AC1 no criteria checked is never a close', closeVerdict({ ticket: 'K-1', criteria: [] }).reasons, ['no criteria were checked'])
-t('AC1 an open PR on the key vetoes', closeVerdict({ ticket: 'K-1', criteria: [met('AC1')], open_prs: [7] }).reasons, ['PR #7 on the key is still open'])
+t('AC1 every criterion met with a cite closes', closeVerdict({ ticket: 'K-1', criteria: [met('AC1'), met('AC2')] }, ['AC1', 'AC2']).close, true)
+t('AC1 partly done stays open, naming what is not met', closeVerdict({ ticket: 'K-1', criteria: [met('AC1'), { id: 'AC2', met: false }] }, ['AC1', 'AC2']), { ticket: 'K-1', close: false, reasons: ['AC2 NOT MET (no file:line)'] })
+t('AC1 a criterion the verifier left out is NOT MET', closeVerdict({ ticket: 'K-1', criteria: [met('AC1')] }, ['AC1', 'AC2', 'AC3']).reasons, ['AC2 NOT MET (not checked)', 'AC3 NOT MET (not checked)'])
+t('AC1 met without a file:line is NOT MET', closeVerdict({ ticket: 'K-1', criteria: [{ id: 'AC1', met: true }] }, ['AC1']).close, false)
+t('AC1 an unanswered criterion defaults to NOT MET', closeVerdict({ ticket: 'K-1', criteria: [{ id: 'AC1' }] }, ['AC1']).close, false)
+t('AC1 no criteria checked is never a close', closeVerdict({ ticket: 'K-1', criteria: [] }, []).reasons, ['no criteria were checked'])
+t('AC1 a key the scan named no candidate for is never a close', closeVerdict({ ticket: 'K-1', criteria: [met('AC1')] }, null).reasons, ['the scan named no landed candidate for K-1'])
+t('AC1 an open PR on the key vetoes', closeVerdict({ ticket: 'K-1', criteria: [met('AC1')], open_prs: [7] }, ['AC1']).reasons, ['PR #7 on the key is still open'])
 
 // ---- fixture repo: origin/main holds the files the tickets cite, and the work landed under KAN-50
 const T = realpathSync(mkdtempSync(join(tmpdir(), 'desk-groom-')))
@@ -51,6 +56,7 @@ mkdirSync(join(R, 'lib'))
 writeFileSync(join(R, 'lib', 'admit.mjs'), 'export const FLAGS = []\n')
 writeFileSync(join(R, 'lib', 'parse.mjs'), `${Array.from({ length: 20 }, (_, i) => (i === 14 ? 'export function parseRow(line) {' : `// line ${i + 1}`)).join('\n')}\n`)
 writeFileSync(join(R, 'lib', 'render.mjs'), 'export const a = 1\nexport const b = 2\n')
+writeFileSync(join(R, 'lib', 'cells.mjs'), '// cells\n\n\n\nexport function trimCell(s) {\n  return s.trim()\n}\nconst retrimCell = 1\nconst x = trimCell(y)\n')
 git(R, 'add', '.'); git(R, 'commit', '-q', '-m', 'init')
 writeFileSync(join(R, 'lib', 'admit.mjs'), "export const FLAGS = ['--hold']\n")
 git(R, 'commit', '-q', '-am', 'feat(admit): KAN-50 the --hold flag holds a ticket on admit')
@@ -92,6 +98,10 @@ const issues = {
   'KAN-40': iss('import: read the header once', 'The rule lives in {{parseRow()}} at {{lib/parse.mjs:3}}.'),
   'KAN-41': iss('render: pad the table', 'Rendering starts in {{src/render.mjs:2}}.'),
   'KAN-42': iss('import: trim cells', 'See {{lib/parse.mjs:400}}.'),
+  // AC4: a name on more than one line of the file, so the new line is a verifier's call
+  'KAN-44': iss('cells: pad each cell', 'The rule lives in {{trimCell()}} at {{lib/cells.mjs:1}}.'),
+  // AC3: a bare mention of another ticket, with nothing that orders them
+  'KAN-45': iss('notes: a glossary page', 'See KAN-30 for context.'),
   // AC6: held behind a set that keeps growing, and a loop
   'KAN-60': iss('readme: document every feature', '', { issuelinks: Array.from({ length: 11 }, (_, i) => blocks(`KAN-${70 + i}`)) }),
   'KAN-61': iss('loop: the first half', '', { issuelinks: [blocks('KAN-62'), blocks('KAN-62', 'new', 'out')] }),
@@ -142,6 +152,7 @@ t('AC3 with both lines as evidence', of('link', 'KAN-31')[0]?.evidence?.length, 
 t('AC3 a ticket that builds on another in prose', cmds('link', 'KAN-32'), ['desk-jira link KAN-32 blocked-by KAN-30'])
 t('AC3 two tickets that change the same function relate', cmds('link', 'KAN-35'), ['desk-jira link KAN-35 relates-to KAN-36'])
 t('AC3 nothing without evidence', of('link', 'KAN-33').length, 0)
+t('AC3 nothing from a bare mention of another ticket', found.filter((f) => f.check === 'link' && [f.ticket, f.other].includes('KAN-45')).length, 0)
 t('AC3 nothing where a link already exists', found.filter((f) => f.check === 'link' && [f.ticket, f.other].includes('KAN-34')).length, 0)
 
 // AC4
@@ -149,6 +160,10 @@ const moved = of('stale', 'KAN-40')[0] ?? {}
 t('AC4 a function that moved: the stale text and the edit', moved.edit, { from: 'lib/parse.mjs:3', to: 'lib/parse.mjs:15' })
 t('AC4 its evidence quotes the line main has now', /line 3 of lib\/parse\.mjs on main is "\/\/ line 3"/.test((moved.evidence ?? [])[0]), true)
 t('AC4 a file that moved', of('stale', 'KAN-41')[0]?.edit, { from: 'src/render.mjs:2', to: 'lib/render.mjs:2' })
+t('AC4 and, found by its name alone, goes to a verifier', of('stale', 'KAN-41')[0]?.verify, 'stale')
+const twice = of('stale', 'KAN-44')[0] ?? {}
+t('AC4 a name on two lines: no edit, a verifier picks', [twice.edit, twice.verify], [null, 'stale'])
+t('AC4 the lines it is on, whole words only', /`trimCell` is on lines 5, 9$/.test((twice.evidence ?? [])[0]), true)
 t('AC4 a line past the end goes to a verifier', of('stale', 'KAN-42')[0]?.verify, 'stale')
 t('AC4 a citation main still matches is not stale', of('stale', 'KAN-10').length, 0)
 
@@ -169,10 +184,12 @@ t('the scan wrote nothing to Jira', writes, '0')
 
 // The text form and the verdict command
 const text = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S)
-t('the text form counts the tickets', /^groom-scan: 20 open tickets, \d+ findings/.test(text.stdout), true)
-writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }]))
-const v = run('verdict', join(T, 'results.json'))
-t('verdict closes only the fully met ticket', v.status === 0 ? JSON.parse(v.stdout).map((x) => [x.ticket, x.close]) : v.stderr, [['KAN-10', true], ['KAN-33', false]])
+t('the text form counts the tickets', /^groom-scan: 22 open tickets, \d+ findings/.test(text.stdout), true)
+writeFileSync(join(T, 'scan.json'), r.stdout)
+writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }, { ticket: 'KAN-31', criteria: [met('AC1')] }]))
+const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json'))
+t('verdict closes only the fully met scan candidate', v.status === 0 ? JSON.parse(v.stdout).map((x) => [x.ticket, x.close]) : v.stderr, [['KAN-10', true], ['KAN-33', false], ['KAN-31', false]])
+t('verdict refuses without the scan', run('verdict', join(T, 'results.json')).status, 2)
 
 console.log(fails ? `${fails} FAILED` : 'all groom checks passed')
 process.exit(fails ? 1 : 0)

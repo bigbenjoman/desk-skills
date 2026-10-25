@@ -6,7 +6,8 @@
 //   node groom-scan.mjs scan --repo <root> --default <branch> --project <§4 Jira project key>
 //        [--priority <§4 Priority field>] [--fields <§4 Other fields, comma-separated>]
 //        [--done <§4 Done state>] [--jql <jql>] [--json]
-//   node groom-scan.mjs verdict <results.json>     a verifier's per-criterion results in, close or keep out
+//   node groom-scan.mjs verdict <results.json> --scan <scan.json>   verifiers' per-criterion results
+//        in, checked against the criteria the scan (--json) read from each ticket: close or keep open
 //
 // `scan` prints one block per finding (or a JSON array with --json). A finding is
 //   {check, ticket, other?, evidence: [line], propose: [desk-jira command], verify?: brief}
@@ -14,9 +15,23 @@
 // is a candidate only: a read-only verifier settles it before anything is proposed (SKILL.md).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { readFileSync, realpathSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { keyMatches } from '../../desk-cleanup/bin/cleanup-scan.mjs'
+
+// desk-design.mjs's `sections`, the one reading of a ticket's headings. It sits in desk/bin, installed
+// at ~/.claude/desk/bin by install.sh; DESK_ENV_MJS or DESK_HOME point elsewhere, and a source
+// checkout of desk-skills finds its own copy.
+const deskBin = [
+  process.env.DESK_ENV_MJS && dirname(process.env.DESK_ENV_MJS),
+  process.env.DESK_HOME && join(process.env.DESK_HOME, 'bin'),
+  join(homedir(), '.claude', 'desk', 'bin'),
+  join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'desk', 'bin'),
+].filter(Boolean).find((d) => existsSync(join(d, 'desk-design.mjs')))
+if (!deskBin) { console.error('groom-scan: desk-design.mjs not found in desk/bin. Run install.sh from desk-skills.'); process.exit(2) }
+const { sections } = await import(pathToFileURL(join(deskBin, 'desk-design.mjs')).href)
 
 // ---- pure parts (exported for tests/test_groom.mjs) ------------------------------------------
 
@@ -33,7 +48,11 @@ export const plain = (wiki) => String(wiki ?? '').replace(/\\([-_*+^~?#{}[\]|!])
 // One open ticket from `desk-jira get --json`, reduced to what the checks read.
 export function ticketOf(issue, fieldIds = []) {
   const f = issue.fields ?? {}
-  const val = (v) => (v && typeof v === 'object' ? v.value ?? v.name ?? null : v ?? null)
+  // As desk-jira's JQ_VAL reads a value: a list joined, an option, user or other object by its name.
+  // Only null, '' and [] are blank.
+  const val = (v) => (v == null || v === '' ? null
+    : Array.isArray(v) ? (v.length ? v.map(val).join(', ') : null)
+      : typeof v === 'object' ? v.value ?? v.name ?? v.displayName ?? v.accountId ?? JSON.stringify(v) : v)
   return {
     key: issue.key,
     type: f.issuetype?.name ?? '',
@@ -55,15 +74,6 @@ export function ticketOf(issue, fieldIds = []) {
       }
     }),
   }
-}
-
-// The ticket's sections: [{name, lines: [{n, text}]}], `h2.` or markdown headings.
-function sections(text) {
-  const lines = String(text).split(/\r?\n/)
-  const head = lines.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? /^\s*h[1-6]\.\s+(.*)$/i : /^\s*#{1,6}\s+(.*?)\s*$/
-  const out = [{ name: '', lines: [] }]
-  lines.forEach((l, i) => { const m = head.exec(l); if (m) out.push({ name: m[1].trim(), lines: [] }); else out.at(-1).lines.push({ n: i + 1, text: l }) })
-  return out
 }
 
 // AC1:/DoD1: items, wherever the ticket writes them (`# AC1: …`, `AC2 (name): …`).
@@ -191,9 +201,10 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       const path = repo.resolve(c.path)
       if (!path) {
         const moved = repo.renamedTo(c.path)
-        add({ check: 'stale', ticket: t.key, evidence: [`cites ${c.cite}, but ${c.path} is not on main${moved ? `; it is now ${moved}` : ''}`],
+        // A file of the same name is a guess at the move, so a verifier checks it too.
+        add({ check: 'stale', ticket: t.key, evidence: [`cites ${c.cite}, but ${c.path} is not on main${moved ? `; the one file named ${moved.split('/').pop()} is ${moved}` : ''}`],
           edit: moved ? { from: c.cite, to: c.cite.replace(c.path, moved) } : null,
-          propose: [`desk-jira edit ${t.key} description=@<${t.key} description with the edit>`], verify: moved ? undefined : 'stale' })
+          propose: [`desk-jira edit ${t.key} description=@<${t.key} description with the edit>`], verify: 'stale' })
         continue
       }
       const lines = repo.lines(path)
@@ -210,11 +221,15 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       for (const name of named) {
         const window = lines.slice(Math.max(0, c.line - 4), c.end + 3).join('\n')
         if (window.includes(name)) continue
-        const at = lines.findIndex((l) => l.includes(name))
+        // The new line only where the name is a whole word on exactly one line; else a verifier picks.
+        const word = new RegExp(`(?<![\\w$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`)
+        const hits = lines.flatMap((l, i) => (word.test(l) ? [i + 1] : []))
+        const at = hits.length === 1 ? hits[0] : null
         add({ check: 'stale', ticket: t.key,
-          evidence: [`cites \`${name}\` at ${c.cite}, but line ${c.line} of ${path} on main is "${quote(lines[c.line - 1] ?? '')}"${at >= 0 ? `; \`${name}\` is at line ${at + 1}` : `, and \`${name}\` is not in it`}`],
-          edit: at >= 0 ? { from: c.cite, to: `${c.path}:${at + 1}` } : null,
-          propose: [`desk-jira edit ${t.key} description=@<${t.key} description with the edit>`], verify: at >= 0 ? undefined : 'stale' })
+          evidence: [`cites \`${name}\` at ${c.cite}, but line ${c.line} of ${path} on main is "${quote(lines[c.line - 1] ?? '')}"${at ? `; \`${name}\` is at line ${at}`
+            : hits.length ? `; \`${name}\` is on lines ${hits.slice(0, 10).join(', ')}` : `, and \`${name}\` is not in it`}`],
+          edit: at ? { from: c.cite, to: `${c.path}:${at}` } : null,
+          propose: [`desk-jira edit ${t.key} description=@<${t.key} description with the edit>`], verify: at ? undefined : 'stale' })
         break
       }
     }
@@ -257,8 +272,10 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       for (const k of new Set(l.text.match(KEY) ?? [])) {
         if (k === t.key || k === t.parent || !open.has(k) || isEpic(open.get(k)) || linked(t, k)) continue
         if (out.some((f) => f.check === 'link' && f.ticket === t.key && f.other === k)) continue
+        // Only wording that orders the two is evidence; a bare mention proposes nothing.
         const where = `${s.name || 'description'}: ${l.text}`
-        const verb = DEPENDS.test(where) ? 'blocked-by' : FEEDS.test(l.text) ? 'blocks' : 'relates-to'
+        const verb = DEPENDS.test(where) ? 'blocked-by' : FEEDS.test(l.text) ? 'blocks' : null
+        if (!verb) continue
         add({ check: 'link', ticket: t.key, other: k, evidence: [`${t.key} names ${k} in ${quote(where)}`], propose: [`desk-jira link ${t.key} ${verb} ${k}`] })
       }
     }
@@ -314,11 +331,15 @@ function modal(sibs, id) {
 
 // "Already fixed" (desk-jira): close only when every criterion is MET with a file:line, nothing is
 // left open in scope, and no PR on the key is still open. Anything else stays open, defaulting to NOT MET.
-export function closeVerdict(r) {
+// `expected` is the criteria ids the scan read from the ticket, so one the verifier left out is NOT
+// MET; null when the scan named no landed candidate for the key, which never closes.
+export function closeVerdict(r, expected) {
   const criteria = r.criteria ?? []
   const notMet = criteria.filter((c) => !(c.met === true && /\S+:\d+/.test(String(c.cite ?? ''))))
   const reasons = [
+    ...(expected ? [] : [`the scan named no landed candidate for ${r.ticket}`]),
     ...(criteria.length ? [] : ['no criteria were checked']),
+    ...(expected ?? []).filter((id) => !criteria.some((c) => c.id === id)).map((id) => `${id} NOT MET (not checked)`),
     ...notMet.map((c) => `${c.id ?? '?'} NOT MET${c.cite ? '' : ' (no file:line)'}`),
     ...(r.open_prs ?? []).map((n) => `PR #${n} on the key is still open`),
     ...(r.scope_left ?? []).map((s) => `scope still open: ${s}`),
@@ -412,9 +433,10 @@ function scan(o) {
 
 function verdict(o) {
   const file = o._[0]
-  if (!file) die('verdict needs a results file')
+  if (!file || !o.scan || o.scan === true) die('verdict needs a results file and --scan <the scan\'s --json output>')
   const results = [].concat(JSON.parse(readFileSync(file, 'utf8')))
-  const out = results.map(closeVerdict)
+  const landed = new Map(JSON.parse(readFileSync(o.scan, 'utf8')).filter((f) => f.check === 'landed').map((f) => [f.ticket, (f.criteria ?? []).map((c) => c.id)]))
+  const out = results.map((r) => closeVerdict(r, landed.get(r.ticket) ?? null))
   console.log(JSON.stringify(out, null, 2))
 }
 
