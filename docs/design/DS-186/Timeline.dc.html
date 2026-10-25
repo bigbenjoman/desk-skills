@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q timeline</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',Menlo,monospace;font-size:13px;line-height:20px;color:#e6e6e6}
+.l{white-space:pre;height:20px}
+.c{display:inline-block;white-space:pre;overflow:hidden;vertical-align:top}
+.B{font-weight:700;color:#f2f2f2}
+.d{color:#8b919c}
+.g{color:#98c379}.y{color:#e5c07b}.b{color:#61afef}.m{color:#c678dd}.x{color:#e06c75}
+.sel{background:#3b4250}
+.tab{padding:0 6px}
+.tabon{padding:0 6px;background:#3b4250;color:#f2f2f2;font-weight:700;box-shadow:inset 0 -2px 0 #61afef}
+.grp{white-space:pre;height:20px;font-weight:700;margin-top:6px}
+.sw{display:inline-block;width:1ch}
+</style>
+</helmet>
+<div class="t" style="width:1160px;height:760px;box-sizing:border-box;background:#282c34;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
+<div style="height:36px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#21252b" aria-hidden="true">
+<span style="width:12px;height:12px;border-radius:6px;background:#ff5f57"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#febc2e"></span>
+<span style="width:12px;height:12px;border-radius:6px;background:#28c840"></span>
+<span class="d" style="margin-left:10px">desk-q</span>
+</div>
+<div style="padding:12px 16px;display:flex;flex-direction:column;flex:1">
+<div class="l"><span class="B">desk-q</span></div>
+<div class="l"><span class="tab">1 Queue</span>  <span class="tabon">2 Timeline</span>  <span class="tab">3 By day</span>  <span class="tab">4 Epics</span>      <span class="d">←→ or 1–4</span></div>
+<div class="l"> </div>
+<div class="l"><span class="B">Every repo</span><span class="d"> · forecast from Thu 22 Oct 18:20 · 2,000 runs over 56 merged tickets · scale: hours (z to change)</span></div>
+<div class="l"> </div>
+<div class="l d"><span class="c" style="width:22ch"> </span><span class="c" style="width:46ch">now     Fri      06:00   12:00    18:00</span><span class="c" style="width:13ch">STARTS</span><span class="c" style="width:14ch">SHIPS</span>TITLE</div>
+<div class="l d"><span class="c" style="width:22ch"> </span>├───────┬────────┬──▾────┬───────▾┬────────┬</div>
+<div class="grp sel">› desk-skills · 16 tickets <span class="g" style="font-weight:400">● live</span></div>
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="16">
+<div class="l"><span class="c" style="width:2ch"> </span><span class="c" style="width:10ch">{{r.key}}</span><span class="c" style="width:10ch;color:{{r.col}}">{{r.state}}</span><span class="c" style="width:46ch"><span class="d">{{r.pad}}</span><span style="color:{{r.col}}">{{r.solid}}</span><span style="color:{{r.col}};opacity:.55">{{r.shade}}</span></span><span class="c" style="width:13ch">{{r.starts}}</span><span class="c B" style="width:14ch">{{r.ships}}</span><span class="d">{{r.title}}</span></div>
+</sc-for>
+<div class="grp y">  pr-ninja · 7 tickets <span class="d" style="font-weight:400">■ passes stopped 3h 24m ago, so no dates until they resume</span></div>
+<div class="l d"><span class="c" style="width:2ch"> </span><span class="c" style="width:10ch">KAN-839</span><span class="c g" style="width:10ch">running</span><span class="c" style="width:46ch">· · · · · · · · · · · · · · · · · · · · · · ·</span><span class="c" style="width:13ch">running</span><span class="c" style="width:14ch">no date</span>Speaking: Match events and bodies to…</div>
+<div class="l d"><span class="c" style="width:2ch"> </span><span class="c" style="width:10ch">KAN-685</span><span class="c b" style="width:10ch">ready</span><span class="c" style="width:46ch">· · · · · · · · · · · · · · · · · · · · · · ·</span><span class="c" style="width:13ch">no date</span><span class="c" style="width:14ch">no date</span>When a customer confirms a story th…</div>
+<div class="l d"><span class="c" style="width:2ch"> </span>… 5 more</div>
+<div class="l d">  pranicuk · no ship estimate yet: 4 of the 10 merged tickets it needs</div>
+<div style="flex:1"></div>
+<div class="l"><span class="d">key  </span> <span class="g">█</span> running  <span class="b">█</span> ready  <span class="y">█</span> waiting  <span class="m">█</span> needs you   <span class="d">█ starts→ships   ░ could run to (1 in 5 later)   ┆ check-ins 08:00 · 17:00</span></div>
+<div class="l"><span class="d">move </span> <span class="B">↑↓</span> select · <span class="B">enter</span> open · <span class="B">←→</span> or <span class="B">1–4</span> view · <span class="B">z</span> scale · <span class="B">c</span> date parked tickets · <span class="B">:</span> command · <span class="B">q</span> quit</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1160,"height":760}}'>
+class Component extends DCLogic {
+renderVals() {
+const G = '#98c379', Y = '#e5c07b';
+const raw = [
+['DS-182','running',0,1,1,'running','today 18:49','desk-q: ← and → switch views along the…'],
+['DS-153','waiting',0,2,1,'now','today 19:22','put only the core worker contract (<=1…'],
+['DS-184','waiting',0,3,3,'today 18:49','today 19:53','desk-q: says Dates paused for a batch…'],
+['DS-154','waiting',1,3,1,'today 19:22','today 20:39','desk-ticket: split the 50KB SKILL.md…'],
+['DS-155','waiting',3,3,1,'today 20:39','today 21:52','self-review (Stage 4b) and the PR stag…'],
+['DS-156','waiting',5,2,3,'today 21:52','today 23:02','a respawned worker resumes from the la…'],
+['DS-157','waiting',6,3,12,'today 23:02','Fri 00:20','separate models for review finders and…'],
+['DS-158','waiting',8,4,12,'Fri 00:20','Fri 01:56','log the preflight cost, drop partial…'],
+['DS-143','waiting',11,3,12,'Fri 01:56','Fri 03:17','try before asking (check via granted A…'],
+['DS-151','waiting',13,2,13,'Fri 03:17','Fri 04:32','a weekly maintenance window drains, upd…'],
+['DS-142','waiting',14,4,13,'Fri 04:32','Fri 05:57','one promotion window a day, held for t…'],
+['DS-149','waiting',17,3,13,'Fri 05:57','Fri 07:23','a fresh small headless session makes a…'],
+['DS-150','waiting',19,3,14,'Fri 07:23','Fri 08:48','standing intake admits new tickets fro…'],
+['DS-168','waiting',21,3,14,'Fri 08:48','Fri 10:14','README: rewrite it as the guide to des…'],
+['DS-175','waiting',21,4,17,'Fri 08:50','Fri 10:54','record a merge time and ETA-history li…'],
+['DS-180','waiting',24,3,17,'Fri 10:54','Fri 12:37','digest: leave out parked tickets alrea…']
+];
+const rows = raw.map(([key, state, off, n, s, starts, ships, title]) => ({
+key, state, starts, ships, title, col: state === 'running' ? G : Y,
+pad: ' '.repeat(off), solid: '█'.repeat(n), shade: '░'.repeat(s)
+}));
+return { rows };
+}
+}
+</script>
+</body>
+</html>

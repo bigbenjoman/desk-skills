@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q landing row over time</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#1d2026}
+a{color:#61afef}a:hover{color:#8cc4f4}
+</style>
+</helmet>
+<div style="width: 1440px; height: 780px; box-sizing: border-box; padding: 24px; background: #1d2026; font-family: 'JetBrains Mono', ui-monospace, monospace">
+<div style="width: 1392px; height: 732px; box-sizing: border-box; background: #282c34; border-radius: 12px; border: 1px solid #3e4451; overflow: hidden; display: flex; flex-direction: column">
+<div style="height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #21252b; border-bottom: 1px solid #3e4451">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="margin-left: 16px; font-size: 13px; color: #959ba5">desk-q</span>
+</div>
+<div style="padding: 16px 24px; font-size: 15px; line-height: 24px; color: #d7dae0">
+<sc-for list="{{lines}}" as="line" hint-placeholder-count="26">
+<div style="{{line.style}}"><sc-for list="{{line.segs}}" as="s" hint-placeholder-count="4"><span style="{{s.style}}">{{s.t}}</span></sc-for></div>
+</sc-for>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":780}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const C = { fg: '#d7dae0', dim: '#959ba5', green: '#98c379', yellow: '#e5c07b', red: '#e06c75', cyan: '#56b6c2' };
+    const seg = (t, c, b) => ({ t, style: 'white-space:pre;color:' + C[c || 'fg'] + (b ? ';font-weight:700' : '') });
+    const line = (segs) => ({ segs, style: 'height:24px;white-space:pre;' });
+    const pad = (s, n) => (s.length >= n ? s.slice(0, n - 1) + '…' : s + ' '.repeat(n - s.length));
+    const lead = '     -  ' + pad('DS-156', 10);
+    const land = (tail) => line([seg(lead), seg(pad('◐ landing', 13), 'cyan'), seg('#164', 'cyan', true), ...tail]);
+    const rule = (t) => line([seg('── ' + t + ' ' + '─'.repeat(Math.max(4, 60 - t.length)), 'dim')]);
+    const head = (segs) => line(segs);
+    const blank = line([seg(' ')]);
+    const lines = [
+      rule('12:26 · PR opened, both test legs started'),
+      head([seg('workers 0 running of 2 (cap 3) · '), seg('1 PR landing', 'cyan', true), seg(' · 75 merged, not shown')]),
+      land([seg(' · 0 of 2 checks passed · both running, 1m')]),
+      blank,
+      rule('12:38 · Ubuntu passed, macOS still waiting for a runner'),
+      head([seg('workers 0 running of 2 (cap 3) · '), seg('1 PR landing', 'cyan', true), seg(' · 75 merged, not shown')]),
+      land([seg(' · 1 of 2 checks passed · '), seg('macOS: no runner, 14m', 'yellow')]),
+      blank,
+      rule('12:51 · green at its head, being merged'),
+      head([seg('workers 0 running of 2 (cap 3) · '), seg('1 PR landing', 'cyan', true), seg(' · 75 merged, not shown')]),
+      land([seg(' · '), seg('all checks passed · merging', 'green')]),
+      blank,
+      rule('12:53 · merged: the row leaves, DS-157 starts'),
+      head([seg('workers 1 running of 2 (cap 3) · 76 merged, not shown')]),
+      line([seg('     6  ' + pad('DS-157', 10)), seg(pad('● running', 13), 'green'), seg('stage 0/9 · port 3575')]),
+      blank,
+      rule('or, if a check fails'),
+      land([seg(' · '), seg('tests (macos-latest) failed · rerun 1 of 2', 'red')]),
+      blank,
+      rule('or, if passes stop while it lands'),
+      head([seg('desk-skills · batch 2026-10-19T05:33 · passes stopped 16m ago (last pass 12:36)')]),
+      land([seg(' · as of 12:36: 1 of 2 checks passed', 'dim')]),
+    ];
+    return { lines };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q ticket page, waiting on a PR</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#1d2026}
+a{color:#61afef}a:hover{color:#8cc4f4}
+</style>
+</helmet>
+<div style="width: 1440px; height: 780px; box-sizing: border-box; padding: 24px; background: #1d2026; font-family: 'JetBrains Mono', ui-monospace, monospace">
+<div style="width: 1392px; height: 732px; box-sizing: border-box; background: #282c34; border-radius: 12px; border: 1px solid #3e4451; overflow: hidden; display: flex; flex-direction: column">
+<div style="height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #21252b; border-bottom: 1px solid #3e4451">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #4b5263"></span>
+<span style="margin-left: 16px; font-size: 13px; color: #959ba5">desk-q</span>
+</div>
+<div style="padding: 16px 24px; font-size: 15px; line-height: 24px; color: #d7dae0">
+<sc-for list="{{lines}}" as="line" hint-placeholder-count="26">
+<div style="{{line.style}}"><sc-for list="{{line.segs}}" as="s" hint-placeholder-count="4"><span style="{{s.style}}">{{s.t}}</span></sc-for></div>
+</sc-for>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":780}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const C = { fg: '#d7dae0', dim: '#959ba5', green: '#98c379', yellow: '#e5c07b', cyan: '#56b6c2' };
+    const seg = (t, c, b) => ({ t, style: 'white-space:pre;color:' + C[c || 'fg'] + (b ? ';font-weight:700' : '') });
+    const line = (segs, sel) => ({ segs, style: 'height:24px;white-space:pre;' + (sel ? 'background:#3a3f4b;' : '') });
+    const pad = (s, n) => (s.length >= n ? s.slice(0, n - 1) + '…' : s + ' '.repeat(n - s.length));
+    const field = (label, segs) => line([seg(pad(label, 10), 'dim'), ...segs]);
+    const blank = line([seg(' ')]);
+    const lines = [
+      line([seg('desk-q › desk-skills › ', 'dim'), seg('DS-157', 'fg', true)]),
+      blank,
+      line([seg('DS-157', 'fg', true), seg('  separate models for review finders and for PR and Jira text in §3b Worker models, unset by default')]),
+      blank,
+      field('Now', [seg('Waiting', 'yellow'), seg(' on 1 PR still in CI')]),
+      field('Starts', [seg('when #164 merges, about 12:52')]),
+      field('Ships', [seg('today 13:47')]),
+      field('Holds up', [seg('DS-158, DS-142, DS-143, DS-149', 'yellow'), seg(' wait for this to merge', 'dim')]),
+      field('Branch', [seg('feat/DS-157-finder-and-text-models', 'dim')]),
+      field('Open', [seg('l', 'fg', true), seg(' log  ·  '), seg('o', 'fg', true), seg(' Jira  '), seg('benlavender1.atlassian.net/browse/DS-157', 'dim')]),
+      blank,
+      line([seg('Starts when the last of these merges:', 'fg', true)]),
+      line([seg('  ' + pad('DS-156', 10)), seg(pad('◐ landing', 13), 'cyan'), seg('#164', 'cyan', true), seg(' · 1 of 2 checks passed · '), seg('macOS: no runner, 14m', 'yellow')], true),
+      line([seg('              ' + pad('✓', 3), 'green'), seg(pad('tests (ubuntu-latest)', 26)), seg('passed in 7m 35s', 'dim')]),
+      line([seg('              ' + pad('◌', 3), 'yellow'), seg(pad('tests (macos-latest)', 26)), seg('queued 14m, no runner yet', 'yellow')]),
+      line([seg('              ' + pad('·', 3), 'dim'), seg(pad('tests', 26)), seg('waits for both', 'dim')]),
+      line([seg('              checked by the last pass, 1m ago · ', 'dim'), seg('g', 'fg', true), seg(' open #164 on GitHub')]),
+      blank,
+      line([seg('Why lane A', 'fg', true)]),
+      line([seg('Mechanical extension of a pattern DS-97 already merged, with no product or design decision left (the', 'dim')]),
+      line([seg('ticket’s Decisions settle ‘unset by default’). The parts: parseWorkerModels (desk/bin/desk-env.mjs:490-499)…', 'dim')]),
+      blank,
+      line([seg('Files in scope', 'fg', true), seg(' · 9', 'dim')]),
+      line([seg('  desk-config.md', 'dim')]),
+      line([seg('  desk/bin/desk-env.mjs', 'dim')]),
+      line([seg('  desk/bin/pass.mjs', 'dim')]),
+    ];
+    return { lines };
+  }
+}
+</script>
+</body>
+</html>
