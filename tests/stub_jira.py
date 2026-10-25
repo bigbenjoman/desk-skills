@@ -5,7 +5,7 @@ DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
 # "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field], "fields": [field list GET /field
 # answers], "unlink_readback": "normal"|"keep", "projects": {KEY: id}, "create_seq": n,
-# "create_fail": [summary]}. Issue links posted are kept in memory, on both
+# "create_fail": [summary], "search": [KEY] (what any search but `parent =` returns)}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view. A DELETE of a
 # link id removes it from both.
 FIX = {"issues": {}, "children": {}}
@@ -80,6 +80,8 @@ class H(BaseHTTPRequestHandler):
                 elif fault == "endless":
                     res = {"issues": [], "isLast": False, "nextPageToken": str(start + 1)}
                 return self._send(200, res)
+            if "search" in FIX:
+                return self._send(200, {"issues": [issue(k) for k in FIX["search"] if issue(k)], "isLast": True})
             return self._send(200, {"issues": [{"key": "KAN-1", "fields": {"summary": "s", "status": {"name": "To Do"}, "priority": {"name": "High"}}}]})
         m = re.match(r"/rest/api/[23]/issue/([A-Z][A-Z0-9]*-[0-9]+)/remotelink$", path)
         if m and self.command == "GET":
