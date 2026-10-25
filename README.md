@@ -269,8 +269,37 @@ desk-runner status             the VM's state, the last isolation result with it
 desk-runner down               stop the VM, remove its agents, check nothing is left running for it
 desk-runner settings           show the Mac settings a runner needs; change them if you say yes
 desk-runner gate               exit 0 only while a new runner slot may start
-desk-runner keep               bring the VM back if it is down (its launchd agent runs this)
+desk-runner keep               bring the VM back if it is down, then refill the slots (its launchd agent runs this)
+desk-runner scale <owner/repo> [n]   keep n single-use runners online for a private repo; 0 removes them
+desk-runner slots              reap finished runners and start the missing ones now
 ```
+
+**Runner slots.** `scale` gives a private repo `n` runners (the machine profile's
+`runner-slots-per-repo` when `n` is left out); a public repo gets none, since any fork's pull
+request could run on it. Each slot is one GitHub Actions runner, labelled `self-hosted`, `linux`,
+`arm64` and `desk-local-pr`, registered from a JIT config that GitHub makes single-use and scoped to
+that runner. It is requested on the Mac with your `gh` login, and only it enters the VM, so your
+token never does. In the VM each slot has its own Docker daemon and network, which the runner
+shares, so a service container mapped to 5432 is on the job's `localhost:5432`, and a `container:`
+job sees the workspace. Slots share no daemon, volume or network. A slot takes one job; within a
+minute `keep` removes it with its containers and volumes and starts another. `down` deregisters
+every slot's runner first, and the next `up` starts them again. The slot image is Ubuntu 24.04 with
+actions/runner 2.338.0, Node 22.23.3, the Docker 29.9.0 CLI, gh, jq, shellcheck, build tools and
+python3; `setup-node`, `setup-python` and `setup-uv` fetch other versions as on a hosted runner.
+
+**The runs-on switch.** A job reaches a slot only if its `runs-on` names `desk-local-pr`. This one
+sends a job there while the repo variable `DESK_RUNS_ON` is `local`, and to GitHub-hosted otherwise,
+and always sends Dependabot's runs to GitHub-hosted, as `/desk-ci ci-lint` requires:
+
+```yaml
+runs-on: ${{ github.actor == 'dependabot[bot]' && 'ubuntu-latest' || vars.DESK_RUNS_ON == 'local' && 'desk-local-pr' || 'ubuntu-latest' }}
+```
+
+`gh variable set DESK_RUNS_ON --body local -R <owner/repo>` moves every such job to the slots;
+`gh variable delete DESK_RUNS_ON -R <owner/repo>` moves them back, from the next run on. Put it only
+on jobs `/desk-ci classify` places self-hosted: `ci-lint` fails any job it can send to a slot that
+receives a secret. Nothing yet moves a repo back when the Mac is off, so switch it back before the
+Mac sleeps or goes away for long.
 
 Once isolation passes, `up` installs two launchd agents in your login session. One runs
 `desk-runner keep` at login and every minute: if the VM is down, or its last check failed or is

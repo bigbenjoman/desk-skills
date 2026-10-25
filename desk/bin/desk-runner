@@ -7,11 +7,19 @@
 #   desk-runner down               stop the VM, remove its agents, and check nothing is left running
 #   desk-runner settings           show the Mac settings a runner needs; change them if you confirm
 #   desk-runner gate               exit 0 only while a new runner slot may start
-#   desk-runner keep               bring the VM back if it is down (launchd runs this every minute)
+#   desk-runner keep               bring the VM back if it is down, then refill the runner slots (launchd runs this every minute)
+#   desk-runner scale <owner/repo> [n]   keep n single-use runners online for a private repo (0 removes them)
+#   desk-runner slots              reap finished runners and start the missing ones now
 #
 # Once isolation passes, `up` installs two launchd agents: `keep` at login and every minute, which
 # restarts the VM with exponential backoff, and a nightly verify-isolation. `gate` stays closed
 # unless the VM runs behind the block and its last verification passed within MAX_AGE.
+#
+# Each slot is one GitHub Actions runner registered from a JIT config, which GitHub makes single-use
+# and scoped to that runner: it takes one job, then `keep` (or `slots`) reaps it with its containers
+# and volumes, deregisters it, and starts another. The JIT config is requested here, with your gh
+# login, and only it enters the VM. A job reaches a slot only through a runs-on that names
+# SLOT_POOL; the README shows the one that also switches back to GitHub-hosted with a repo variable.
 #
 # The boundary is Tart with Softnet, blocking every private, shared and link-local IPv4 range. That
 # covers the Mac's address on the VM network (a random private /30 per boot), so the guest resolves
@@ -28,7 +36,16 @@ BOOT_WAIT="${DESK_RUNNER_BOOT_WAIT:-180}"
 BLOCK="10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16"
 RESOLVERS="1.1.1.1 9.9.9.9"
 # Bump when the guest setup below changes, so `up` re-applies it to an existing VM.
-PROVISION_VERSION=1
+PROVISION_VERSION=2
+# The slot image's pins: each a release at least two weeks old when it was chosen.
+RUNNER_VERSION=2.338.0
+DOCKER_VERSION=29.9.0
+NODE_VERSION=22.23.3
+SLOT_IMAGE="desk-slot:$RUNNER_VERSION"
+DIND_IMAGE="docker:$DOCKER_VERSION-dind"
+SLOT_POOL=desk-local-pr
+SLOT_LABELS="self-hosted linux arm64 $SLOT_POOL"
+SLOTS="$STATE/slots"   # <owner/repo> <n>, one line per repo
 HOST_ALIASES="host.docker.internal gateway.docker.internal host.containers.internal host.lima.internal host.tart.internal"
 AGENTS="$HOME/Library/LaunchAgents"
 LABEL="com.desk-skills.$VM"
@@ -42,7 +59,7 @@ say() { printf 'desk-runner: %s\n' "$*"; }
 # ON_DIE names a function to run before exiting, so `keep` can record a failed attempt.
 ON_DIE=""
 die() { printf 'desk-runner: %s\n' "$*" >&2; [ -n "$ON_DIE" ] && "$ON_DIE"; exit "${2:-1}"; }
-usage() { sed -n '4,10p' "$0" | sed 's/^# //' >&2; exit 2; }
+usage() { sed -n '4,12p' "$0" | sed 's/^# //' >&2; exit 2; }
 
 # One EXIT trap for everything a run leaves behind: the test services, and the busy lock.
 SVC_PID=""; SERVICES=""; HOLDS_LOCK=""
@@ -157,12 +174,13 @@ start_vm() {
   done
 }
 
-provision() { # idempotent guest setup: public resolvers, Docker, the probe container's image
+provision() { # idempotent guest setup: public resolvers, Docker, the probe container's image, the slot images
   [ "$(guest cat /var/lib/desk-runner/provisioned 2>/dev/null)" = "$PROVISION_VERSION" ] && return
-  say "setting up the guest: public DNS resolvers ($RESOLVERS), Docker"
-  guest_stdin sudo -n bash -s -- "$PROVISION_VERSION" "$RESOLVERS" <<'GUEST' || die "guest setup failed"
+  say "setting up the guest: public DNS resolvers ($RESOLVERS), Docker, the runner slot image (a few minutes)"
+  guest_stdin sudo -n bash -s -- "$PROVISION_VERSION" "$RESOLVERS" "$RUNNER_VERSION" "$NODE_VERSION" \
+    "$DOCKER_VERSION" "$SLOT_IMAGE" "$DIND_IMAGE" <<'GUEST' || die "guest setup failed"
 set -e
-version=$1; resolvers=$2
+version=$1; resolvers=$2; runner=$3; node=$4; docker_version=$5; slot_image=$6; dind_image=$7
 dev=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1); exit}')
 mkdir -p /etc/systemd/resolved.conf.d /var/lib/desk-runner
 printf '[Resolve]\nDNS=%s\nDomains=~.\n' "$resolvers" > /etc/systemd/resolved.conf.d/desk-runner.conf
@@ -175,6 +193,32 @@ apt-get update -qq
 apt-get install -y -qq docker.io curl >/dev/null
 systemctl enable --now docker >/dev/null
 docker pull -q ubuntu:24.04 >/dev/null
+docker pull -q "$dind_image" >/dev/null
+# What a job on ubuntu-latest most often assumes is there; actions such as setup-node and setup-uv
+# fetch other versions themselves. The runner refuses root, so it runs as runner with passwordless
+# sudo, as on a hosted runner.
+docker build -q -t "$slot_image" --build-arg RUNNER="$runner" --build-arg NODE="$node" \
+  --build-arg DOCKER="$docker_version" - >/dev/null <<'DOCKERFILE'
+ARG DOCKER
+FROM docker:${DOCKER}-cli AS docker
+FROM ubuntu:24.04
+ARG RUNNER
+ARG NODE
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git jq \
+      sudo unzip zip xz-utils build-essential python3 python3-venv python3-pip shellcheck gh libicu74 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-arm64.tar.xz" \
+    | tar -xJ -C /usr/local --strip-components=1 --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md
+RUN useradd -m -u 1001 -s /bin/bash runner && echo 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/runner
+WORKDIR /home/runner
+RUN curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER}/actions-runner-linux-arm64-${RUNNER}.tar.gz" \
+    | tar -xz && mkdir -p _work && chown -R runner:runner /home/runner
+USER runner
+ENTRYPOINT ["/bin/bash", "-c", "jit=$DESK_JITCONFIG; unset DESK_JITCONFIG; exec ./run.sh --jitconfig \"$jit\""]
+DOCKERFILE
 echo "$version" > /var/lib/desk-runner/provisioned
 GUEST
 }
@@ -294,6 +338,105 @@ gate_reason() { # why no new runner slot may start, or nothing when one may
   [ $age -le $MAX_AGE ] || echo "the last pass is $(ago $age) old, past the nightly check"
 }
 
+# ---- runner slots ----------------------------------------------------------------------------
+SLOT_SCRIPT=/var/lib/desk-runner/slot.sh
+slot() { guest sudo -n bash "$SLOT_SCRIPT" "$@"; }
+valid_repo() {
+  case $1 in */*/*|/*|*/|*[!A-Za-z0-9._/-]*) return 1 ;; */*) return 0 ;; esac
+  return 1
+}
+slot_repos() { [ -s "$SLOTS" ] && awk 'NF == 2 {print $1}' "$SLOTS"; }
+wanted() { [ -s "$SLOTS" ] && awk -v r="$1" '$1 == r {n = $2} END {print n + 0}' "$SLOTS" || echo 0; }
+# deregister <repo> <runner-id>: exit non-zero when GitHub refuses, as it does for a runner mid-job.
+deregister() { gh api -X DELETE "repos/$1/actions/runners/$2" >/dev/null 2>&1; }
+our_runners() { # our_runners <repo>: <id> <status> for each runner of this VM registered there
+  gh api --paginate "repos/$1/actions/runners" --jq '.runners[] | "\(.id) \(.name) \(.status)"' 2>/dev/null \
+    | awk -v p="$VM-" 'index($2, p) == 1 {print $1, $3}'
+}
+
+start_slot() { # start_slot <repo>: register a single-use runner and start its slot in the VM
+  local repo=$1 id name resp rid jit l
+  local args=()
+  id="$(date +%s)-$RANDOM"; name="$VM-${repo#*/}-$id"
+  for l in $SLOT_LABELS; do args+=(-f "labels[]=$l"); done
+  resp=$(gh api -X POST "repos/$repo/actions/runners/generate-jitconfig" -f name="$name" -F runner_group_id=1 \
+    -f work_folder=_work "${args[@]}" 2>&1) || { say "could not register a runner for $repo: $resp"; return 1; }
+  rid=$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["runner"]["id"])' 2>/dev/null)
+  jit=$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["encoded_jit_config"])' 2>/dev/null)
+  if [ -z "$rid" ] || [ -z "$jit" ]; then
+    say "GitHub's answer for a $repo runner had no runner id or JIT config"
+    [ -n "$rid" ] && deregister "$repo" "$rid"
+    return 1
+  fi
+  # The JIT config goes in on stdin, so it is in no process list on the Mac or in the VM.
+  if ! printf '%s\n' "$jit" | guest_stdin sudo -n bash "$SLOT_SCRIPT" start "$id" "$repo" "$rid" "$SLOT_IMAGE" "$DIND_IMAGE"; then
+    deregister "$repo" "$rid"
+    say "slot $id for $repo did not start; its runner is deregistered"
+    return 1
+  fi
+  say "slot $id: a runner for $repo is online as $name"
+}
+
+reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
+  [ -e "$SLOTS" ] || return 0
+  local reason live id repo rid state have n extra rids rc=0
+  reason=$(gate_reason)
+  [ -z "$reason" ] || { say "runner slots closed: $reason"; return 1; }
+  guest_stdin sudo -n sh -c "mkdir -p /var/lib/desk-runner && cat > $SLOT_SCRIPT" < "$HERE/runner-slot.sh" \
+    || die "could not copy the slot script into $VM"
+  live=$(slot list) || die "could not list the runner slots in $VM"
+  # A single-use runner deregisters itself after its job, so deregistering a finished one is a
+  # no-op then; it matters for one that exited without taking a job.
+  while read -r id repo rid state; do
+    [ -n "$id" ] && [ "$state" != running ] || continue
+    slot reap "$id"; deregister "$repo" "$rid"
+    say "slot $id for $repo finished; reaped"
+  done <<EOF
+$live
+EOF
+  live=$(printf '%s\n' "$live" | awk '$4 == "running"')
+  # More running than wanted: drop the idle ones. GitHub refuses to deregister a runner mid-job.
+  for repo in $(printf '%s\n' "$live" | awk 'NF {print $2}' | sort -u); do
+    extra=$(( $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l) - $(wanted "$repo") ))
+    [ "$extra" -gt 0 ] || continue
+    while read -r id _ rid _; do
+      [ "$extra" -gt 0 ] || break
+      if deregister "$repo" "$rid"; then
+        slot reap "$id"; extra=$((extra - 1)); say "slot $id for $repo removed (more than wanted)"
+        live=$(printf '%s\n' "$live" | awk -v i="$id" '$1 != i')
+      fi
+    done <<EOF
+$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r')
+EOF
+  done
+  for repo in $(slot_repos); do
+    n=$(wanted "$repo")
+    # A runner of ours that GitHub lists offline with no slot behind it (the VM stopped or crashed) is deregistered.
+    rids=" $(printf '%s\n' "$live" | awk '{print $3}' | tr '\n' ' ') "
+    while read -r rid state; do
+      [ -n "$rid" ] && [ "$state" = offline ] && [[ "$rids" != *" $rid "* ]] && deregister "$repo" "$rid"
+    done <<EOF
+$(our_runners "$repo")
+EOF
+    have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
+    while [ "$have" -lt "$n" ]; do
+      start_slot "$repo" || { rc=1; break; }
+      have=$((have + 1))
+    done
+  done
+  return $rc
+}
+
+deregister_all() { # every runner of this VM, in every repo given slots; one mid-job stays until it finishes
+  local repo rid
+  for repo in $(slot_repos); do
+    while read -r rid _; do [ -n "$rid" ] && deregister "$repo" "$rid"; done <<EOF
+$(our_runners "$repo")
+EOF
+  done
+  return 0
+}
+
 # ---- the Mac's settings ----------------------------------------------------------------------
 SU_PLIST=/Library/Preferences/com.apple.SoftwareUpdate
 pmset_value() { pmset -g 2>/dev/null | awk -v k="$1" '$1 == k {print $2; exit}'; }
@@ -404,14 +547,15 @@ cmd_up() {
   fi
   rm -f "$BACKOFF"
   install_agents
-  say "$VM is up and isolated, and comes back after a restart. Runner registration is not part of desk-runner yet"
+  say "$VM is up and isolated, and comes back after a restart"
+  if [ -s "$SLOTS" ]; then reconcile || true; else say "no runner slots yet: desk-runner scale <owner/repo> [n]"; fi
 }
 
 cmd_keep() {
   lock skip
   local reason failures next now
   reason=$(gate_reason)
-  if [ -z "$reason" ]; then rm -f "$BACKOFF"; return 0; fi
+  if [ -z "$reason" ]; then rm -f "$BACKOFF"; reconcile; return; fi
   if [ -s "$BACKOFF" ]; then
     read -r failures next < "$BACKOFF"; now=$(date +%s)
     case $next in ''|*[!0-9]*) next=0 ;; esac
@@ -431,6 +575,34 @@ cmd_keep() {
   ON_DIE=""
   rm -f "$BACKOFF"
   say "$VM is back and isolated"
+  reconcile
+}
+
+cmd_scale() {
+  local repo=${1:-} n=${2:-} private
+  valid_repo "$repo" || { say "usage: desk-runner scale <owner/repo> [n]"; exit 2; }
+  if [ -z "$n" ]; then
+    n=$(machine get runner-slots-per-repo) || die "the machine profile has no runner-slots-per-repo: give a number (desk-runner scale $repo <n>)"
+    [ "$n" = 0 ] && die "the machine profile sizes no runner slots (runner-slots-per-repo is 0): give a number (desk-runner scale $repo <n>)"
+  fi
+  case $n in ''|*[!0-9]*) die "the number of slots is '$n', not a whole number" ;; esac
+  if [ "$n" -gt 0 ]; then
+    private=$(gh api "repos/$repo" --jq .private 2>&1) || die "could not read $repo from GitHub: $private"
+    [ "$private" = true ] || die "$repo is public: a self-hosted runner there would run any fork's pull request, so it gets none"
+  fi
+  lock wait
+  mkdir -p "$STATE"
+  { [ -s "$SLOTS" ] && awk -v r="$repo" '$1 != r' "$SLOTS"; [ "$n" -gt 0 ] && echo "$repo $n"; } > "$SLOTS.new"
+  mv "$SLOTS.new" "$SLOTS"
+  say "$repo: $n runner slots wanted"
+  reconcile || say "the slots start when the gate opens; keep tries every minute"
+  # With no repo left, no file: keep then stops looking in the VM every minute.
+  [ -s "$SLOTS" ] || rm -f "$SLOTS"
+  if [ "$n" -gt 0 ]; then
+    say "jobs reach them only through a runs-on naming $SLOT_POOL (README: desk-runner, the runs-on switch);"
+    say "  switch $repo to them with: gh variable set DESK_RUNS_ON --body local -R $repo"
+    say "  and back to GitHub-hosted with: gh variable delete DESK_RUNS_ON -R $repo"
+  fi
 }
 
 cmd_gate() {
@@ -464,6 +636,11 @@ cmd_status() {
     next=$(( next - $(date +%s) )); [ $next -lt 0 ] && next=0
     echo "restarts: $failures failed in a row; the next attempt is in $(ago $next)"
   fi
+  local repo live=""
+  [ "$state" = running ] && [ -s "$SLOTS" ] && live=$(slot list 2>/dev/null | awk '$4 == "running"')
+  for repo in $(slot_repos); do
+    echo "slots: $repo wants $(wanted "$repo"), $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ') running"
+  done
   [ "$state" = running ]
 }
 
@@ -473,6 +650,9 @@ cmd_down() {
   remove_agent "$LABEL"
   remove_agent "$LABEL.nightly"
   rm -f "$BACKOFF"
+  # Deregistered before the VM stops, so GitHub sends no job to a runner that is going away. The
+  # slots file stays, so the next up brings the same slots back.
+  deregister_all
   if vm_exists && vm_running; then
     say "stopping $VM"
     tart stop "$VM" || die "tart stop $VM failed"
@@ -496,5 +676,7 @@ case "${1:-}" in
   settings) mac_settings ask ;;
   gate) cmd_gate ;;
   keep) cmd_keep ;;
+  scale) shift; cmd_scale "$@" ;;
+  slots) lock wait; [ -e "$SLOTS" ] || say "no repo has runner slots: desk-runner scale <owner/repo> [n]"; reconcile ;;
   *) usage ;;
 esac
