@@ -276,12 +276,16 @@ desk-runner slots              reap finished runners and start the missing ones 
 
 **Runner slots.** `scale` gives a private repo `n` runners (the machine profile's
 `runner-slots-per-repo` when `n` is left out); a public repo gets none, since any fork's pull
-request could run on it. Each slot is one GitHub Actions runner, labelled `self-hosted`, `linux`,
+request could run on it, and a repo made public later loses its slots on the next pass. `scale`
+to 0 keeps the repo listed until its slots and runners are gone, so a slot mid-job goes once the
+job ends. Each slot is one GitHub Actions runner, labelled `self-hosted`, `linux`,
 `arm64` and `desk-local-pr`, registered from a JIT config that GitHub makes single-use and scoped to
 that runner. It is requested on the Mac with your `gh` login, and only it enters the VM, so your
 token never does. In the VM each slot has its own Docker daemon and network, which the runner
 shares, so a service container mapped to 5432 is on the job's `localhost:5432`, and a `container:`
-job sees the workspace. Slots share no daemon, volume or network. Each slot has CPUs of its own and
+job sees the workspace. Slots share no daemon, volume or network, and the slot's Docker daemon
+runs under sysbox, not `--privileged`, so even a privileged container a job starts stays inside
+its slot: it cannot reach the VM's disk, another repo's slot or the slot image. Each slot has CPUs of its own and
 a memory limit, 2 CPUs and 7 GB unless the machine profile sets `runner-slot-cpus` and
 `runner-slot-memory-gb`: `nproc` and Node's `os.availableParallelism()` show the slot's CPUs in a step
 and in a `container:` job, so test runners size themselves to them, and `/sys/fs/cgroup/memory.max`

@@ -8,7 +8,9 @@
 # A slot is ARC's dind pattern: its own Docker daemon (dind) on a network of its own, and the runner
 # sharing dind's network, so a service container mapped to 5432 is on the runner's localhost:5432.
 # The workspace and the runner's externals are volumes at the same path in both, so a container job
-# sees the workspace. Slots share no daemon, volume or network, so one job cannot see another's.
+# sees the workspace. Slots share no daemon, volume or network. dind runs under sysbox, not
+# --privileged: a job's own containers, privileged ones included, stay inside the slot's user
+# namespace and cannot reach the VM's disk, another slot's volumes or the slot image.
 #
 # A slot's limits: both containers get its CPU set (<cpus>, e.g. 0-1) and its memory, so nproc and
 # Node's os.availableParallelism() show the slot's CPUs in a step and in a container job, and
@@ -25,7 +27,7 @@ slice() { echo "deskslot_${1//-/_}.slice"; }
 reap() {
   local n="$P-$1" v s
   s=$(slice "$1")
-  docker rm -f "$n-runner" "$n-dind" >/dev/null 2>&1 || true
+  docker rm -f -v "$n-runner" "$n-dind" >/dev/null 2>&1 || true
   for v in work ext sock; do docker volume rm "$n-$v" >/dev/null 2>&1 || true; done
   docker network rm "$n" >/dev/null 2>&1 || true
   systemctl stop "$s" >/dev/null 2>&1 || true
@@ -47,7 +49,7 @@ start() {
   for i in work ext sock; do docker volume create --label desk.slot="$id" "$n-$i" >/dev/null; done
   # An empty named volume takes the image's files on first mount: this fills externals from the runner image.
   docker run --rm --entrypoint true -v "$n-ext:/home/runner/externals" -v "$n-work:/home/runner/_work" "$image"
-  docker run -d --name "$n-dind" --label desk.slot="$id" "${limits[@]}" --privileged --network "$n" \
+  docker run -d --name "$n-dind" --label desk.slot="$id" "${limits[@]}" --runtime sysbox-runc --network "$n" \
     -v "$n-work:/home/runner/_work" -v "$n-ext:/home/runner/externals" -v "$n-sock:/var/run/dind" \
     -e DOCKER_TLS_CERTDIR= "$dind" dockerd --host="unix://$SOCK" >/dev/null
   for i in $(seq 60); do
@@ -56,8 +58,9 @@ start() {
     sleep 1
   done
   docker exec "$n-dind" chmod 666 "$SOCK"
-  # The JIT config goes in through the environment, never the command line, and the image's entrypoint
-  # unsets it before the runner starts, so no job step can read it.
+  # The JIT config goes in through the environment, so it is never on a command line in the VM. The
+  # runner itself is started with it as an argument, so a job step on this slot can read it; it
+  # registers only this single-use runner.
   DESK_JITCONFIG=$jit docker run -d --name "$n-runner" --label desk.slot="$id" --label desk.repo="$repo" \
     --label desk.runner-id="$rid" "${limits[@]}" --network "container:$n-dind" \
     -v "$n-work:/home/runner/_work" -v "$n-ext:/home/runner/externals" -v "$n-sock:/var/run/dind" \

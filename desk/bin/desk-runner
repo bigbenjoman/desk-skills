@@ -42,11 +42,14 @@ BOOT_WAIT="${DESK_RUNNER_BOOT_WAIT:-180}"
 BLOCK="10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16"
 RESOLVERS="1.1.1.1 9.9.9.9"
 # Bump when the guest setup below changes, so `up` re-applies it to an existing VM.
-PROVISION_VERSION=2
+PROVISION_VERSION=3
 # The slot image's pins: each a release at least two weeks old when it was chosen.
 RUNNER_VERSION=2.338.0
 DOCKER_VERSION=29.9.0
 NODE_VERSION=22.23.3
+# Slot dind runs under sysbox rather than --privileged (runner-slot.sh says why).
+SYSBOX_VERSION=0.7.1
+SYSBOX_SHA256=04ca894ae0b53f0fa54eaacc173ce40363c9a95ea5450f773716a84ef650a69b
 SLOT_IMAGE="desk-slot:$RUNNER_VERSION"
 DIND_IMAGE="docker:$DOCKER_VERSION-dind"
 SLOT_POOL=desk-local-pr
@@ -201,9 +204,10 @@ provision() { # idempotent guest setup: public resolvers, Docker, the probe cont
   [ "$(guest cat /var/lib/desk-runner/provisioned 2>/dev/null)" = "$PROVISION_VERSION" ] && return
   say "setting up the guest: public DNS resolvers ($RESOLVERS), Docker, the runner slot image (a few minutes)"
   guest_stdin sudo -n bash -s -- "$PROVISION_VERSION" "$RESOLVERS" "$RUNNER_VERSION" "$NODE_VERSION" \
-    "$DOCKER_VERSION" "$SLOT_IMAGE" "$DIND_IMAGE" <<'GUEST' || die "guest setup failed"
+    "$DOCKER_VERSION" "$SLOT_IMAGE" "$DIND_IMAGE" "$SYSBOX_VERSION" "$SYSBOX_SHA256" <<'GUEST' || die "guest setup failed"
 set -e
 version=$1; resolvers=$2; runner=$3; node=$4; docker_version=$5; slot_image=$6; dind_image=$7
+sysbox=$8; sysbox_sha=$9
 dev=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1); exit}')
 mkdir -p /etc/systemd/resolved.conf.d /var/lib/desk-runner
 printf '[Resolve]\nDNS=%s\nDomains=~.\n' "$resolvers" > /etc/systemd/resolved.conf.d/desk-runner.conf
@@ -215,6 +219,15 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 apt-get update -qq
 apt-get install -y -qq docker.io curl >/dev/null
 systemctl enable --now docker >/dev/null
+if [ "$(dpkg-query -W -f '${Version}' sysbox-ce 2>/dev/null)" != "$sysbox" ]; then
+  # sysbox's installer restarts Docker and refuses while containers run; a slot left from before is reaped by keep.
+  docker ps -q | xargs -r docker rm -f >/dev/null
+  deb=/tmp/sysbox-ce.deb
+  curl -fsSL -o "$deb" "https://github.com/nestybox/sysbox/releases/download/v$sysbox/sysbox-ce_$sysbox.linux_arm64.deb"
+  echo "$sysbox_sha  $deb" | sha256sum -c --quiet
+  apt-get install -y -qq "$deb" >/dev/null
+  rm -f "$deb"
+fi
 docker pull -q ubuntu:24.04 >/dev/null
 docker pull -q "$dind_image" >/dev/null
 # What a job on ubuntu-latest most often assumes is there; actions such as setup-node and setup-uv
@@ -402,9 +415,10 @@ free_cpus() {
 }
 # deregister <repo> <runner-id>: exit non-zero when GitHub refuses, as it does for a runner mid-job.
 deregister() { gh api -X DELETE "repos/$1/actions/runners/$2" >/dev/null 2>&1; }
-our_runners() { # our_runners <repo>: <id> <status> for each runner of this VM registered there
-  gh api --paginate "repos/$1/actions/runners" --jq '.runners[] | "\(.id) \(.name) \(.status)"' 2>/dev/null \
-    | awk -v p="$VM-" 'index($2, p) == 1 {print $1, $3}'
+our_runners() { # our_runners <repo>: <id> <status> for each runner of this VM registered there; fails when GitHub does
+  local all
+  all=$(gh api --paginate "repos/$1/actions/runners" --jq '.runners[] | "\(.id) \(.name) \(.status)"' 2>/dev/null) || return 1
+  printf '%s\n' "$all" | awk -v p="$VM-" 'index($2, p) == 1 {print $1, $3}'
 }
 
 start_slot() { # start_slot <repo> <cpus>: register a single-use runner and start its slot in the VM on those CPUs
@@ -430,14 +444,44 @@ start_slot() { # start_slot <repo> <cpus>: register a single-use runner and star
   say "slot $id: a runner for $repo is online as $name (CPUs $cpus, $SLOT_MEM_GB GB)"
 }
 
+set_wanted() { # set_wanted <repo> <n>: a repo at 0 stays listed until its slots and runners are gone
+  mkdir -p "$STATE"
+  { [ -s "$SLOTS" ] && awk -v r="$1" '$1 != r' "$SLOTS"; echo "$1 $2"; } > "$SLOTS.new"
+  mv "$SLOTS.new" "$SLOTS"
+}
+# trusted <live>: only rows a slot of ours could have written. The labels come from inside the VM, and
+# the Mac acts on them with its own token, so a row naming another repo or a malformed id is ignored.
+trusted() {
+  local repos
+  repos=" $(slot_repos | tr '\n' ' ') "
+  printf '%s\n' "$1" | while read -r id repo rid state rest; do
+    case $id in ''|*[!0-9-]*) continue ;; esac
+    case $rid in ''|*[!0-9]*) continue ;; esac
+    [[ "$repos" == *" $repo "* ]] && echo "$id $repo $rid $state${rest:+ $rest}"
+  done
+}
+
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
-  local reason live id repo rid state cpus mem gone have n extra rids rc=0
+  local reason live id repo rid state cpus mem gone have n extra rids left private rc=0
+  # A repo made public since scale gets no new slot, and its slots are drained.
+  for repo in $(slot_repos); do
+    [ "$(wanted "$repo")" -gt 0 ] || continue
+    private=$(gh api "repos/$repo" --jq .private 2>/dev/null) || continue
+    [ "$private" = false ] || continue
+    set_wanted "$repo" 0
+    say "$repo is public now: its runner slots are removed, as a fork's pull request could run on them"
+  done
+  # Clearing out needs only the VM running; the gate holds back new slots.
   reason=$(gate_reason)
-  [ -z "$reason" ] || { say "runner slots closed: $reason"; return 1; }
-  guest_stdin sudo -n sh -c "mkdir -p /var/lib/desk-runner && cat > $SLOT_SCRIPT" < "$HERE/runner-slot.sh" \
-    || die "could not copy the slot script into $VM"
-  live=$(slot list) || die "could not list the runner slots in $VM"
+  if vm_running; then
+    guest_stdin sudo -n sh -c "mkdir -p /var/lib/desk-runner && cat > $SLOT_SCRIPT" < "$HERE/runner-slot.sh" \
+      || die "could not copy the slot script into $VM"
+    live=$(slot list) || die "could not list the runner slots in $VM"
+    live=$(trusted "$live")
+  else
+    live=""
+  fi
   # A single-use runner deregisters itself after its job, so deregistering a finished one is a
   # no-op then; it matters for one that exited without taking a job.
   gone=" "
@@ -481,6 +525,11 @@ EOF
 $(our_runners "$repo")
 EOF
     have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
+    if [ "$n" -eq 0 ] && [ "$have" -eq 0 ] && left=$(our_runners "$repo") && [ -z "$left" ]; then
+      awk -v r="$repo" '$1 != r' "$SLOTS" > "$SLOTS.new"; mv "$SLOTS.new" "$SLOTS"
+      continue
+    fi
+    [ -z "$reason" ] || continue
     while [ "$have" -lt "$n" ]; do
       # A slot mid-job outlives a smaller share or an older size, so the VM-wide count and memory are
       # checked too; a slot from before limits counts as the current size.
@@ -495,6 +544,9 @@ EOF
       have=$((have + 1))
     done
   done
+  # With no repo left, no file: keep then stops looking in the VM every minute.
+  [ -s "$SLOTS" ] || rm -f "$SLOTS"
+  [ -z "$reason" ] || { say "runner slots closed: $reason"; return 1; }
   return $rc
 }
 
@@ -662,16 +714,12 @@ cmd_scale() {
     [ "$private" = true ] || die "$repo is public: a self-hosted runner there would run any fork's pull request, so it gets none"
   fi
   lock wait
-  mkdir -p "$STATE"
-  { [ -s "$SLOTS" ] && awk -v r="$repo" '$1 != r' "$SLOTS"; [ "$n" -gt 0 ] && echo "$repo $n"; } > "$SLOTS.new"
-  mv "$SLOTS.new" "$SLOTS"
+  set_wanted "$repo" "$n"
   say "$repo: $n runner slots wanted"
   fit
   [ "$n" -gt 0 ] && [ "$(allotted "$FIT" "$repo")" -lt "$n" ] \
     && say "$repo: $(allotted "$FIT" "$repo") of them will run; $(held_back)"
-  reconcile || say "the slots start when the gate opens; keep tries every minute"
-  # With no repo left, no file: keep then stops looking in the VM every minute.
-  [ -s "$SLOTS" ] || rm -f "$SLOTS"
+  reconcile || say "keep tries again every minute"
   if [ "$n" -gt 0 ]; then
     say "jobs reach them only through a runs-on naming $SLOT_POOL (README: desk-runner, the runs-on switch);"
     say "  switch $repo to them with: gh variable set DESK_RUNS_ON --body local -R $repo"

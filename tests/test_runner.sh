@@ -135,7 +135,7 @@ case "$*" in
     printf '{"runner":{"id":%s},"encoded_jit_config":"JIT-%s"}\n' "$n" "$n" ;;
   "api -X DELETE repos/"*)
     id=${4##*/}; case " ${STUB_BUSY:-} " in *" $id "*) exit 1 ;; esac; echo "$id" >> "$G/gh-deleted" ;;
-  "api --paginate repos/"*"/actions/runners --jq "*) cat "$G/gh-runners" 2>/dev/null ;;
+  "api --paginate repos/"*"/actions/runners --jq "*) cat "$G/gh-runners" 2>/dev/null || true ;;
   *) echo "stub gh: unexpected $*" >&2; exit 99 ;;
 esac
 EOF
@@ -193,9 +193,8 @@ check "first up: cloned from Ubuntu 24.04"              '[[ "$log" == *"clone gh
 check "first up: sized from the profile"                '[ "$(cat "$v/cpu") $(cat "$v/memory") $(cat "$v/disk")" = "8 24576 100" ]'
 check "started headless behind the Softnet block"       'grep -q -- "--no-graphics --net-softnet-block=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16" "$v/run-args"'
 check "no shared folder or forwarded port"              '! grep -qE -- "--dir|--net-softnet-expose|--net-softnet-allow" "$v/run-args"'
-check "guest set up: public resolvers, Docker"          'grep -q "use-dns: false" "$v/provision-script" && grep -q "docker.io" "$v/provision-script" && [ "$(cat "$v/provisioned")" = 2 ]'
-check "the slot image pins the runner, Node and Docker"  'grep -q "actions-runner-linux-arm64-\${RUNNER}" "$v/provision-script" && [[ "$log" == *"bash -s -- 2 1.1.1.1 9.9.9.9 2.338.0 22.23.3 29.9.0 desk-slot:2.338.0 docker:29.9.0-dind"* ]]'
-check "the JIT config is unset before the runner starts" 'grep -q "unset DESK_JITCONFIG; exec ./run.sh --jitconfig" "$v/provision-script"'
+check "guest set up: public resolvers, Docker"          'grep -q "use-dns: false" "$v/provision-script" && grep -q "docker.io" "$v/provision-script" && [ "$(cat "$v/provisioned")" = 3 ]'
+check "the guest gets the pinned runner, Node, Docker and sysbox" '[[ "$log" == *"bash -s -- 3 1.1.1.1 9.9.9.9 2.338.0 22.23.3 29.9.0 desk-slot:2.338.0 docker:29.9.0-dind 0.7.1 04ca894ae0b53f0fa54eaacc173ce40363c9a95ea5450f773716a84ef650a69b"* ]]'
 check "no slots yet: up says how to add them, calls no gh" '[[ "$out" == *"desk-runner scale <owner/repo>"* ]] && [ ! -s "$T/gh.log" ]'
 check "the probe was copied into the guest"             'cmp -s "$v/probe.sh" "$SRC/desk/bin/runner-probe.sh"'
 check "the pass is recorded"                            'read -r r _ < "$T/state/isolation.status"; [ "$r" = pass ]'
@@ -279,7 +278,7 @@ check "... and recorded as a failure"                   'read -r r _ < "$T/state
 rm -f "$v/running"; run up
 check "up starts it behind the block again"             '[ $rc -eq 0 ] && [[ "$out" == *"isolation passed"* ]]'
 
-# ---- runner slots (DS-60) ----
+# ---- runner slots ----
 RP=bigbenjoman/voicepa; SL="$T/state/slots"
 run scale
 check "scale with no repo: usage, exit 2"               '[ $rc -eq 2 ] && [[ "$out" == *"desk-runner scale <owner/repo>"* ]]'
@@ -340,13 +339,13 @@ run scale bigbenjoman/other 3
 check "two repos share the 3 in turn: 2 and 1"          '[ $rc -eq 0 ] && [ "$(awk -v r=$RP "\$2 == r" "$v/slots" | wc -l | tr -d " ")" = 2 ] && [ "$(awk "\$2 == \"bigbenjoman/other\"" "$v/slots" | wc -l | tr -d " ")" = 1 ] && [[ "$out" == *"removed (more than wanted)"* ]]'
 run scale bigbenjoman/other 0
 check "back to one repo: it has all 3 again"            '[ "$(awk -v r=$RP "\$2 == r" "$v/slots" | wc -l | tr -d " ")" = 3 ] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
-echo "old1 $RP 900 running" >> "$v/slots"
+echo "7-1 $RP 900 running" >> "$v/slots"
 run keep
-check "an idle slot from before limits is replaced"     '[ $rc -eq 0 ] && grep -qx old1 "$v/reaped" && grep -qx 900 "$T/gh-deleted" && [[ "$out" == *"slot old1 for $RP was not 2 CPUs and 7 GB; replaced"* ]] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
-echo "old2 $RP 901 running" >> "$v/slots"
+check "an idle slot from before limits is replaced"     '[ $rc -eq 0 ] && grep -qx 7-1 "$v/reaped" && grep -qx 900 "$T/gh-deleted" && [[ "$out" == *"slot 7-1 for $RP was not 2 CPUs and 7 GB; replaced"* ]] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
+echo "7-2 $RP 901 running" >> "$v/slots"
 STUB_BUSY=901 run keep
-check "... one mid-job is left to finish, an idle one making room" '! grep -qx old2 "$v/reaped" && grep -q "^old2 " "$v/slots" && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
-awk '$1 != "old2"' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+check "... one mid-job is left to finish, an idle one making room" '! grep -qx 7-2 "$v/reaped" && grep -q "^7-2 " "$v/slots" && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
+awk '$1 != "7-2"' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-slot-cpus 4 runner-slot-memory-gb 10
 awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run keep
@@ -386,8 +385,32 @@ run slots
 check "slots with the gate closed: says why, starts none" '[ $rc -ne 0 ] && [[ "$out" == *"runner slots closed: the last verify-isolation failed"* ]] && ! grep -q generate-jitconfig "$T/gh.log"'
 run verify-isolation
 run scale "$RP" 0
-check "scale to 0: the repo's slots go, and the line"   '[ $rc -eq 0 ] && [ ! -s "$v/slots" ] && [ ! -s "$SL" ] && [[ "$out" != *"gh variable set"* ]]'
-rm -f "$SL"
+check "scale to 0: the repo's slots go, and the line"   '[ $rc -eq 0 ] && [ ! -s "$v/slots" ] && [ ! -e "$SL" ] && [[ "$out" != *"gh variable set"* ]]'
+
+run scale "$RP" 2
+busy=$(awk 'NR == 1 {print $3}' "$v/slots"); bid=$(awk 'NR == 1 {print $1}' "$v/slots")
+printf '%s desk-runner-test-voicepa-x online\n' "$busy" > "$T/gh-runners"
+STUB_BUSY="$busy" run scale "$RP" 0
+check "scale to 0 with a slot mid-job: the repo stays at 0" '[ "$(cat "$SL")" = "$RP 0" ] && [ "$(awk "{print \$3}" "$v/slots")" = "$busy" ]'
+awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"; rm -f "$T/gh-runners"
+run keep
+check "once its job ends, keep reaps it and drops the repo" '[ $rc -eq 0 ] && grep -qx "$bid" "$v/reaped" && [ ! -e "$SL" ] && ! grep -q generate-jitconfig "$T/gh.log"'
+
+run scale "$RP" 2
+printf 'fail %s 1 failed\n' "$(date +%s)" > "$T/state/isolation.status"
+run scale "$RP" 0
+check "scale to 0 with the gate closed: idle slots still go" '[ ! -s "$v/slots" ] && [ ! -e "$SL" ] && [[ "$out" == *"runner slots closed"* ]]'
+run verify-isolation
+
+run scale "$RP" 2
+STUB_PRIVATE=false run slots
+check "a repo made public: its slots go, none start"   '[[ "$out" == *"$RP is public now"* ]] && [ ! -s "$v/slots" ] && [ ! -e "$SL" ] && ! grep -q generate-jitconfig "$T/gh.log"'
+
+run scale "$RP" 1
+printf '1-1 other/repo 9990 exited\n1-2 %s 9x9 exited\n' "$RP" >> "$v/slots"
+run slots
+check "rows naming another repo or a bad id: nothing deregistered" '! grep -qE "^(9990|9x9)$" "$T/gh-deleted" && ! grep -qE "runners/(9990|9x9)" "$T/gh.log"'
+run scale "$RP" 0; rm -f "$v/slots" "$SL"
 
 # ---- runner-slot.sh against a stubbed docker and systemctl (DS-248) ----
 mkdir -p "$T/slotstub"
