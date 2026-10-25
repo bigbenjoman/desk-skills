@@ -3,7 +3,8 @@
 // keep (the skill arm passed more checks), trim (the same number) or drop (fewer).
 //
 //   node skill-eval.mjs --skill <name|dir> --tasks <file.json> --max-budget-usd <usd>
-//                       [--skills-dir <dir>] [--out <dir>] [--timeout <seconds>] [--model <model>]
+//                       [--total-budget-usd <usd>] [--skills-dir <dir>] [--out <dir>]
+//                       [--timeout <seconds>] [--model <model>]
 //
 // The task set is JSON: {"tasks": [{"id", "prompt", "checks": [{"name", <one of contains | absent |
 // matches>: "<text or regex>"}]}]}. Checks read the run's final reply. Both arms run `claude -p` with
@@ -11,6 +12,10 @@
 // skill's SKILL.md appended to its system prompt and its directory readable. --max-budget-usd is
 // each run's ceiling, handed to claude. A run that errors, exceeds its budget or times out is failed
 // for that arm and counts neither as a pass nor as a fail.
+//
+// --total-budget-usd (default 5) caps the whole eval, as claude's reported cost: a task starts only
+// while both its runs fit under it at their ceiling, and a run that reports no cost counts as its
+// ceiling. A task left unstarted is listed as not run, and the report then gives no verdict.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve, basename } from 'node:path';
@@ -18,13 +23,15 @@ import { fileURLToPath } from 'node:url';
 
 export const ARMS = Object.freeze(['skill', 'base']);
 const CHECK_KINDS = Object.freeze(['contains', 'absent', 'matches']);
-const USAGE = 'usage: skill-eval.mjs --skill <name|dir> --tasks <file.json> --max-budget-usd <usd> [--skills-dir <dir>] [--out <dir>] [--timeout <seconds>] [--model <model>]';
+export const DEFAULT_TOTAL_USD = 5;
+const USAGE = 'usage: skill-eval.mjs --skill <name|dir> --tasks <file.json> --max-budget-usd <usd> [--total-budget-usd <usd>] [--skills-dir <dir>] [--out <dir>] [--timeout <seconds>] [--model <model>]';
+const USD = /^\d+(\.\d+)?$/;
 
 // argv -> options. Throws, naming the flag, on anything missing or malformed; the budget is checked
 // first so no run can start without one.
 export function parseArgs(argv) {
-  const o = { skillsDir: 'skills', timeout: 600 };
-  const names = { '--skill': 'skill', '--tasks': 'tasks', '--max-budget-usd': 'budget', '--skills-dir': 'skillsDir', '--out': 'out', '--timeout': 'timeout', '--model': 'model' };
+  const o = { skillsDir: 'skills', timeout: 600, total: String(DEFAULT_TOTAL_USD) };
+  const names = { '--skill': 'skill', '--tasks': 'tasks', '--max-budget-usd': 'budget', '--total-budget-usd': 'total', '--skills-dir': 'skillsDir', '--out': 'out', '--timeout': 'timeout', '--model': 'model' };
   for (let i = 0; i < argv.length; i++) {
     const key = names[argv[i]];
     if (!key) throw new Error(`unknown argument ${argv[i]}\n${USAGE}`);
@@ -32,7 +39,9 @@ export function parseArgs(argv) {
     o[key] = argv[++i];
   }
   if (o.budget == null) throw new Error('refusing to start: --max-budget-usd <usd> is required (the spend ceiling for each claude run)');
-  if (!/^\d+(\.\d+)?$/.test(o.budget) || !(Number(o.budget) > 0)) throw new Error(`--max-budget-usd must be a positive number of USD, not ${o.budget}`);
+  if (!USD.test(o.budget) || !(Number(o.budget) > 0)) throw new Error(`--max-budget-usd must be a positive number of USD, not ${o.budget}`);
+  if (!USD.test(o.total) || !(Number(o.total) > 0)) throw new Error(`--total-budget-usd must be a positive number of USD, not ${o.total}`);
+  if (2 * Number(o.budget) > Number(o.total)) throw new Error(`--total-budget-usd ${o.total} cannot fit one task: each task runs twice at up to --max-budget-usd ${o.budget}`);
   if (!o.skill) throw new Error(`--skill is required\n${USAGE}`);
   if (!o.tasks) throw new Error(`--tasks is required\n${USAGE}`);
   if (!/^\d+$/.test(String(o.timeout)) || !(Number(o.timeout) > 0)) throw new Error(`--timeout must be a positive number of seconds, not ${o.timeout}`);
@@ -78,18 +87,19 @@ export function checkPasses(check, reply) {
   return new RegExp(check.matches).test(reply);
 }
 
-// One finished claude process -> {ok, reply, why}. Anything other than a successful JSON
-// result is failed, with the reason.
+// One finished claude process -> {ok, reply, why, cost}. Anything other than a successful JSON
+// result is failed, with the reason. cost is claude's total_cost_usd, or null when it gave none.
 export function readRun({ status, signal, error, stdout }, timeout) {
-  if (error?.code === 'ETIMEDOUT') return { ok: false, why: `timed out after ${timeout}s` };
-  if (error) return { ok: false, why: `could not run claude: ${error.message}` };
-  if (signal) return { ok: false, why: `killed by ${signal}` };
   let r;
   try { r = JSON.parse(String(stdout).trim().split('\n').pop()); } catch { r = null; }
-  if (status !== 0) return { ok: false, why: `claude exited ${status}${r?.subtype ? ` (${r.subtype})` : ''}` };
-  if (!r || typeof r.result !== 'string') return { ok: false, why: 'claude printed no result' };
-  if (r.is_error || (r.subtype && r.subtype !== 'success')) return { ok: false, why: `claude reported ${r.subtype || 'an error'}` };
-  return { ok: true, reply: r.result };
+  const cost = typeof r?.total_cost_usd === 'number' ? r.total_cost_usd : null;
+  if (error?.code === 'ETIMEDOUT') return { ok: false, why: `timed out after ${timeout}s`, cost };
+  if (error) return { ok: false, why: `could not run claude: ${error.message}`, cost };
+  if (signal) return { ok: false, why: `killed by ${signal}`, cost };
+  if (status !== 0) return { ok: false, why: `claude exited ${status}${r?.subtype ? ` (${r.subtype})` : ''}`, cost };
+  if (!r || typeof r.result !== 'string') return { ok: false, why: 'claude printed no result', cost };
+  if (r.is_error || (r.subtype && r.subtype !== 'success')) return { ok: false, why: `claude reported ${r.subtype || 'an error'}`, cost };
+  return { ok: true, reply: r.result, cost };
 }
 
 // The claude arguments for one arm. The base arm differs only by not having the skill.
@@ -105,10 +115,12 @@ export function claudeArgs({ prompt, arm, skill, budget, model }) {
   return args;
 }
 
-// Per arm: checks passed and failed over the runs that finished, and the runs that failed.
+// Per arm: checks passed and failed over the runs that finished, and the runs that failed. A task
+// that was not run (null) counts in neither.
 export function totals(results) {
   const t = Object.fromEntries(ARMS.map((a) => [a, { passed: 0, failed: 0, runsFailed: 0 }]));
   for (const r of results) {
+    if (!r) continue;
     for (const a of ARMS) {
       const run = r[a];
       if (!run.ok) { t[a].runsFailed++; continue; }
@@ -126,15 +138,21 @@ export function verdict(t) {
 
 const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
-// The markdown report. Transcript links are relative to the report's directory.
-export function renderReport({ skill, tasksFile, tasks, results, budget, timeout }) {
+const usd = (n) => `$${n.toFixed(2)}`;
+
+// The markdown report. Transcript links are relative to the report's directory. A null result is a
+// task the whole-run budget left unstarted; any such task means no verdict.
+export function renderReport({ skill, tasksFile, tasks, results, budget, timeout, total = DEFAULT_TOTAL_USD, spent = 0 }) {
   const t = totals(results);
-  const v = verdict(t);
+  const notRun = tasks.filter((_, i) => !results[i]).map((task) => task.id);
+  const v = notRun.length ? null : verdict(t);
   const head = (a) => (a === 'skill' ? `With ${skill.name}` : 'Without');
   const out = [`# Skill eval: ${skill.name}`, '',
-    `Task set \`${tasksFile}\` · ${tasks.length} task${tasks.length === 1 ? '' : 's'} · $${budget} ceiling per run · ${timeout}s timeout per run`, ''];
+    `Task set \`${tasksFile}\` · ${tasks.length} task${tasks.length === 1 ? '' : 's'} · $${budget} ceiling per run · ${timeout}s timeout per run`, '',
+    `Spent ${usd(spent)} of the $${total} whole-run budget. The figure is claude's reported cost: on a claude.ai subscription it is plan usage, not a charge.`, ''];
   tasks.forEach((task, i) => {
     const r = results[i];
+    if (!r) { out.push(`## ${task.id}`, '', 'Not run: the whole-run budget could not fit both of its runs.', ''); return; }
     out.push(`## ${task.id}`, '', `| Check | ${head('skill')} | ${head('base')} |`, '|---|---|---|');
     task.checks.forEach((c, j) => {
       const res = ARMS.map((a) => (r[a].ok ? (r[a].checks[j] ? 'pass' : 'fail') : '—'));
@@ -148,6 +166,11 @@ export function renderReport({ skill, tasksFile, tasks, results, budget, timeout
     `| Checks failed | ${t.skill.failed} | ${t.base.failed} |`,
     `| Runs failed (not counted) | ${t.skill.runsFailed} | ${t.base.runsFailed} |`, '');
   out.push('## Verdict', '');
+  if (!v) {
+    out.push(`No verdict: the $${total} whole-run budget ran out with ${notRun.length} of ${tasks.length} task${tasks.length === 1 ? '' : 's'} not run, so the arms were not compared on the whole set. Not run:`, '');
+    notRun.forEach((id) => out.push(`- ${id}`));
+    return { text: `${out.join('\n')}\n`, verdict: null, totals: t, notRun };
+  }
   if (t.skill.runsFailed || t.base.runsFailed) {
     out.push(`${t.skill.runsFailed + t.base.runsFailed} run(s) failed and are not counted, so this verdict rests on the runs that finished.`, '');
   }
@@ -158,7 +181,7 @@ export function renderReport({ skill, tasksFile, tasks, results, budget, timeout
   }
   const why = { keep: 'the skill arm passed more checks', trim: 'both arms passed the same number of checks', drop: 'the skill arm passed fewer checks' }[v];
   out.push(`Verdict: ${skill.name}: **${v}** (${why}: ${t.skill.passed} with, ${t.base.passed} without)`);
-  return { text: `${out.join('\n')}\n`, verdict: v, totals: t };
+  return { text: `${out.join('\n')}\n`, verdict: v, totals: t, notRun };
 }
 
 // Runs every task in both arms, writes transcripts and report.md under opts.out, returns the report.
@@ -167,7 +190,10 @@ export function runEval(opts, log = () => {}) {
   const tasks = loadTasks(opts.tasks);
   const out = resolve(opts.out || `skill-eval-${skill.name}-${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}`);
   mkdirSync(join(out, 'transcripts'), { recursive: true });
+  const budget = Number(opts.budget), total = Number(opts.total ?? DEFAULT_TOTAL_USD);
+  let spent = 0;
   const results = tasks.map((task) => {
+    if (spent + 2 * budget > total + 1e-9) { log(`skip ${task.id}: ${usd(spent)} of $${total} spent`); return null; }
     const r = {};
     for (const arm of ARMS) {
       // A fresh empty directory per run, so neither arm reads this repo or the other arm's output.
@@ -180,11 +206,12 @@ export function runEval(opts, log = () => {}) {
       const transcript = join('transcripts', `${task.id}.${arm}.json`);
       writeFileSync(join(out, transcript), `${proc.stdout || ''}${proc.stderr ? `\n--- stderr ---\n${proc.stderr}` : ''}`);
       const run = readRun(proc, opts.timeout);
+      spent += run.cost ?? budget;
       r[arm] = { ...run, transcript, checks: run.ok ? task.checks.map((c) => checkPasses(c, run.reply)) : [] };
     }
     return r;
   });
-  const report = renderReport({ skill, tasksFile: opts.tasks, tasks, results, budget: opts.budget, timeout: opts.timeout });
+  const report = renderReport({ skill, tasksFile: opts.tasks, tasks, results, budget: opts.budget, timeout: opts.timeout, total: opts.total ?? DEFAULT_TOTAL_USD, spent });
   writeFileSync(join(out, 'report.md'), report.text);
   return { ...report, path: join(out, 'report.md') };
 }
@@ -199,7 +226,7 @@ if (isMain) {
     const opts = parseArgs(process.argv.slice(2));
     const r = runEval(opts, (m) => console.error(m));
     console.log(`report: ${r.path}`);
-    console.log(`verdict: ${r.verdict}`);
+    console.log(r.verdict ? `verdict: ${r.verdict}` : `verdict: none (not run: ${r.notRun.join(', ')})`);
   } catch (e) {
     console.error(e.message);
     process.exit(2);

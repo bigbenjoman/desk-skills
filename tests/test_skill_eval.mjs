@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, loadTasks, readRun, verdict } from '../desk/bin/skill-eval.mjs';
+import { parseArgs, loadTasks, readRun, verdict, checkPasses } from '../desk/bin/skill-eval.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
@@ -26,7 +26,8 @@ fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ args: a, cwd: process.c
 const reply = () => {
   if (prompt.includes('CRASH-BASE') && !sys) { process.stderr.write('boom'); process.exit(1); }
   const marker = sys && sys.includes('MARKER-FROM-SKILL') ? ' MARKER-FROM-SKILL uses-skill' : '';
-  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'hello ' + prompt + marker, total_cost_usd: 0.01 }));
+  const cost = Number((/COST=([0-9.]+)/.exec(prompt) || [0, '0.01'])[1]);
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'hello ' + prompt + marker, total_cost_usd: cost }));
 };
 if (prompt.includes('SLOW')) setTimeout(reply, 5000); else reply();
 `);
@@ -95,6 +96,44 @@ t('AC2 linked transcripts exist', existsSync(join(trimOut, 'transcripts', 'hi.sk
 r = run(['--skill', 'stub-skill', '--tasks', taskSet('drop', [{ id: 'plain', prompt: 'greet', checks: [{ name: 'no skill talk', absent: 'uses-skill' }] }]), '--max-budget-usd', '1', '--out', join(dir, 'out-drop')]);
 t('AC2 drop when fewer', /\*\*drop\*\*/.test(readFileSync(join(dir, 'out-drop', 'report.md'), 'utf8').trim().split('\n').at(-1)), true);
 t('AC2 keep/trim/drop by passes', [verdict({ skill: { passed: 2 }, base: { passed: 1 } }), verdict({ skill: { passed: 1 }, base: { passed: 1 } }), verdict({ skill: { passed: 0 }, base: { passed: 1 } })].join(','), 'keep,trim,drop');
+
+// DS-123 AC3: the whole-run budget. A task starts only while both runs fit at their ceiling; one
+// left unstarted is named, and the report gives no verdict.
+t('the whole-run budget defaults to 5', parseArgs(['--max-budget-usd', '1', '--skill', 'x', '--tasks', 'y']).total, '5');
+t('a whole-run budget that fits no task is refused', /cannot fit one task/.test(throws(() => parseArgs(['--max-budget-usd', '2', '--total-budget-usd', '3', '--skill', 'x', '--tasks', 'y']))), true);
+t('a malformed whole-run budget is refused', /--total-budget-usd must be/.test(throws(() => parseArgs(['--max-budget-usd', '1', '--total-budget-usd', 'all', '--skill', 'x', '--tasks', 'y']))), true);
+const capOut = join(dir, 'out-cap');
+r = run(['--skill', 'stub-skill', '--tasks', taskSet('cap', [
+  { id: 'dear', prompt: 'greet COST=0.9', checks: [{ name: 'says hello', contains: 'hello' }] },
+  { id: 'second', prompt: 'greet', checks: [{ name: 'says hello', contains: 'hello' }] },
+  { id: 'third', prompt: 'greet', checks: [{ name: 'says hello', contains: 'hello' }] },
+]), '--max-budget-usd', '1', '--total-budget-usd', '3', '--out', capOut]);
+t('AC3 stops at the budget', calls().length, 2);
+t('AC3 CLI prints no verdict', /verdict: none \(not run: second, third\)/.test(r.stdout), true);
+const cap = readFileSync(join(capOut, 'report.md'), 'utf8').trim().split('\n');
+t('AC3 report gives no verdict', cap.some((l) => /keep|trim|drop/.test(l) && l.startsWith('Verdict')), false);
+t('AC3 report names the tasks not run', cap.slice(cap.indexOf('## Verdict')).filter((l) => l === '- second' || l === '- third').length, 2);
+t('AC3 report says what was spent', cap.includes('Spent $1.80 of the $3 whole-run budget. The figure is claude\'s reported cost: on a claude.ai subscription it is plan usage, not a charge.'), true);
+t('AC3 an unstarted task is marked not run', cap[cap.indexOf('## second') + 2], 'Not run: the whole-run budget could not fit both of its runs.');
+r = run(['--skill', 'stub-skill', '--tasks', taskSet('nocost', [
+  { id: 'crash-base', prompt: 'CRASH-BASE now', checks: [{ name: 'greets', contains: 'hello' }] },
+  { id: 'after', prompt: 'greet', checks: [{ name: 'says hello', contains: 'hello' }] },
+]), '--max-budget-usd', '1', '--total-budget-usd', '3', '--out', join(dir, 'out-nocost')]);
+t('AC3 a run that reports no cost counts as its ceiling', /not run: after/.test(r.stdout), true);
+t('AC2 a full run still gives a verdict under the budget', /verdict: keep/.test(run(['--skill', 'stub-skill', '--tasks', keepSet, '--max-budget-usd', '0.5', '--timeout', '1', '--out', join(dir, 'out-keep2')]).stdout), true);
+
+// DS-123 AC1: the committed desk-pr task set. At least 5 tasks; every task's checks pass against its
+// fixture reply, and at least one fails against an empty reply.
+const PR_TASKS = join(dirname(SCRIPT), '..', '..', 'evals', 'desk-pr.json');
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'eval-desk-pr');
+const prTasks = loadTasks(PR_TASKS);
+t('desk-pr task set has at least 5 tasks', prTasks.length >= 5, true);
+for (const task of prTasks) {
+  const reply = readFileSync(join(FIXTURES, `${task.id}.md`), 'utf8');
+  const failing = task.checks.filter((c) => !checkPasses(c, reply)).map((c) => c.name);
+  t(`desk-pr ${task.id} passes its fixture`, failing.join(', ') || 'all', 'all');
+  t(`desk-pr ${task.id} fails an empty reply`, task.checks.some((c) => !checkPasses(c, '')), true);
+}
 
 // The run reader and the task-set checks.
 t('an error result is failed', readRun({ status: 0, stdout: JSON.stringify({ subtype: 'error_max_budget_usd', is_error: true, result: 'partial' }) }, 1).why, 'claude reported error_max_budget_usd');

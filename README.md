@@ -261,12 +261,17 @@ only the skill arm gets the skill's `SKILL.md`. The report lists each task's che
 side by side and ends with one verdict: **keep** (the skill arm passed more), **trim** (the same
 number, with the transcripts linked to read) or **drop** (fewer). A run that fails or times out is
 marked failed and counted neither way. It refuses to start without `--max-budget-usd`, each run's
-spend ceiling:
+spend ceiling. `--total-budget-usd` (default 5) caps the whole eval: a task starts only while both
+its runs fit under what is left, and any task left unstarted is named in the report, which then
+gives no verdict. The figures are claude's reported cost, so on a claude.ai subscription they are
+plan usage, not a charge:
 
 ```
 node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> --max-budget-usd <usd> \
-  [--skills-dir skills] [--out <dir>] [--timeout 600] [--model <model>]
+  [--total-budget-usd 5] [--skills-dir skills] [--out <dir>] [--timeout 600] [--model <model>]
 ```
+
+`evals/desk-pr.json` is desk-pr's task set; its last report is `docs/evals/desk-pr/report.md`.
 
 ```json
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
