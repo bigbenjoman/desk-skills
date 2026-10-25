@@ -608,8 +608,9 @@ switch (cmd) {
     break;
 
   // The orchestrator's status monitor, run under Monitor: one plain command, so starting it never
-  // prompts. Prints the table and the memory line once, then again only when the table changes;
-  // memory figures moving on their own print nothing. Runs until killed, like `desk-env mem watch`.
+  // prompts. Prints the table and the memory line once, then again only when a ticket's state or
+  // question changes (with `--stages`, a stage step too); memory figures moving on their own print
+  // nothing. Runs until killed, like `desk-env mem watch`.
   // At config §3b "Orchestrator status table" `quiet`, every print after the first is one line per
   // ticket that changed, not the whole table.
   case 'watch': {
@@ -623,24 +624,38 @@ switch (cmd) {
     // ending the monitor: the next good read prints the table again (quiet: what changed since the
     // last good read).
     const read = () => { try { return { q: existsSync(QUEUE) ? readQueue(QUEUE) : empty() }; } catch (e) { return { err: `queue: ${e.message}` }; } };
+    // A stage step alone wakes nobody: desk-q shows it. `--stages` compares stages too, as before.
+    const stages = args.includes('--stages');
+    // A running worker waiting on an unanswered question, as pass.mjs reads it.
+    let state = null;
+    try { state = stateDir(); } catch { /* no state directory to read questions from */ }
+    const asks = (q) => {
+      const out = {};
+      for (const t of state ? Object.values(q.tickets) : []) {
+        if (t.state !== 'running' || existsSync(join(state, 'answers', `${t.key}.txt`))) continue;
+        try { const p = JSON.parse(readFileSync(join(state, 'parks', `${t.key}.json`), 'utf8')); if (p.question) out[t.key] = p.question; } catch { /* none, or half-written */ }
+      }
+      return out;
+    };
     let last = null;
     let good = null;
     for (;;) {
       const { q: now, err } = read();
-      const table = err ?? render(now);
+      const opts = err ? null : { stages, asks: asks(now) };
+      const table = err ?? render(now, opts);
       if (table !== last) {
-        const changes = err || !good || mode.value !== 'quiet' ? null : tableChanges(good, tableRows(now));
-        const text = changes ? changes.join('\n') : table;
+        const changes = err || !good || mode.value !== 'quiet' ? null : tableChanges(good, tableRows(now, opts));
+        const text = changes ? changes.join('\n') : err ?? render(now, { asks: opts.asks });
         if (text) console.log(`${text}\n${memStatusLine()}\n`);
       }
       last = table;
-      if (!err) good = tableRows(now);
+      if (!err) good = tableRows(now, opts);
       await new Promise((res) => setTimeout(res, intervalMs));
     }
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
@@ -648,8 +663,8 @@ switch (cmd) {
 }
 
 // The status table, as one string.
-function render(q) {
-  const { head, rows, parked } = tableRows(q);
+function render(q, opts) {
+  const { head, rows, parked } = tableRows(q, opts);
   if (!rows.length) return 'queue is empty';
   const out = [`${head}\n`, ...rows.map((r) => `  ${r.label.padEnd(8)} ${r.key.padEnd(9)} ${r.tail}`)];
   if (parked) out.push(`\n${parked} ticket(s) waiting on you.`);
@@ -681,7 +696,9 @@ function tableChanges(before, after) {
 }
 
 // The table's parts: the batch heading, one row per ticket in shown order, and how many wait on you.
-function tableRows(q) {
+// `stages: false` leaves a running ticket's stage out, so a stage step alone changes nothing;
+// `asks` maps a running ticket to the question it is waiting on, shown on its row.
+function tableRows(q, { stages = true, asks = {} } = {}) {
   const rows = Object.values(q.tickets);
   const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
   rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
@@ -695,7 +712,7 @@ function tableRows(q) {
       : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
       : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
       : t.state === 'parked' ? t.park?.question ?? ''
-      : t.state === 'running' ? `stage ${t.stage ?? '?'}  port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}`
+      : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
       : '';
