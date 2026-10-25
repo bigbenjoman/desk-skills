@@ -14,20 +14,22 @@
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
+//   desk-q <repo> supervisor [on|off]    the repo's supervisor: its status, or install or uninstall it
 //
 // A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–4 for a place's Queue,
 // Timeline, By day and Epics, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
-// of the repo named. The one other write is a repo's <state>/eta.jsonl, which gains a ticket's first
-// ship estimate the first time a live batch's forecast dates it.
+// of the repo named. The supervisor command runs that repo's supervisor.mjs install, uninstall or
+// status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
+// which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -1064,8 +1066,10 @@ export function resolveRepo(repos, word) {
 
 const MOVES = ['up', 'down', 'top', 'bottom', 'move'];
 const SHIPS = ['ships', 'when'];
-const VERBS = ['show', ...MOVES, 'workers', 'ships', 'days'];
+const VERBS = ['show', ...MOVES, 'workers', 'supervisor', 'ships', 'days'];
 const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
+// A command that prints a line rather than opening a view.
+const isCommand = (v) => isWrite(v) || v.kind === 'supervisor';
 // The view a ships or days word names.
 const etaView = (word, slug) => ({ kind: word.toLowerCase() === 'days' ? 'days' : 'timeline', slug });
 
@@ -1084,6 +1088,11 @@ function target(repos, words) {
   const unknown = () => new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". Verbs: ${VERBS.join(', ')}.`);
   if ([...SHIPS, 'days'].includes(verb)) { if (keyWord) throw unknown(); return etaView(verb, r.slug); }
   if (!VERBS.includes(verb)) throw unknown();
+  // The supervisor is the repo's, not its batch's, so a repo with no batch has one too.
+  if (verb === 'supervisor') {
+    if (extra.length || (keyWord != null && !['on', 'off'].includes(keyWord.toLowerCase()))) throw new Usage(`On, off or its status? desk-q ${r.name} supervisor [on|off].`);
+    return { kind: 'supervisor', slug: r.slug, op: keyWord?.toLowerCase() ?? 'status' };
+  }
   if (r.error) throw new Usage(`${r.name}: queue unreadable: ${r.error}`);
   if (!r.q) throw new Usage(`${r.name} has no batch yet.`);
   if (verb === 'workers') {
@@ -1162,7 +1171,68 @@ function setWorkers(repos, r, word) {
 // One confirmation line, or a Usage refusal that says what to do instead.
 function apply(repos, v) {
   const r = repos.find((x) => x.slug === v.slug);
+  if (v.kind === 'supervisor') return supervisor(r, v.op);
   return v.kind === 'workers' ? setWorkers(repos, r, v.n) : moveTicket(r, v.key, v.verb, v.to);
+}
+
+// ---- the supervisor ----------------------------------------------------------------------------
+
+// supervisor.mjs, run in the named repo's own checkout, so its slug, state and queue are that repo's.
+// DESK_SUPERVISOR_MJS and DESK_PLATFORM stand in for the script and the platform in tests.
+const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(dirname(fileURLToPath(import.meta.url)), 'supervisor.mjs');
+const platform = () => process.env.DESK_PLATFORM || process.platform;
+export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.';
+
+function supervisorRun(r, sub, ...args) {
+  const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
+  if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to run its supervisor in. Nothing changed.`);
+  if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
+  const env = { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath };
+  const p = spawnSync(process.execPath, [supervisorMjs(), sub, ...args], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const said = (s) => String(s ?? '').trim().split('\n').filter(Boolean).map((l) => l.replace(/^supervisor: /, ''));
+  return { code: p.status, out: said(p.stdout), err: said(p.stderr).join(' ') || p.error?.message || `exited ${p.status ?? p.signal}` };
+}
+
+// The agent's state from `supervisor.mjs status`: 'loaded', 'installed' (not loaded) or 'none', its
+// interval, and the log's last line.
+function supervisorState(r) {
+  const s = supervisorRun(r, 'status');
+  const agent = s.out.find((l) => l.startsWith('agent: '));
+  if (!agent) throw new Usage(`${r.name}: could not read the supervisor's status: ${s.err}`);
+  const m = /installed \(every (\S+?)s\), (loaded|not loaded)/.exec(agent);
+  const at = s.out.findIndex((l) => l.startsWith('log: '));
+  return { state: !m ? 'none' : m[2] === 'loaded' ? 'loaded' : 'installed', every: m?.[1] ?? null, last: at < 0 || at === s.out.length - 1 ? null : s.out.at(-1).trim() };
+}
+
+// `on` and `off` say what changed in one line; a refusal or a failure says nothing changed.
+function supervisor(r, op) {
+  if (platform() !== 'darwin') {
+    if (op === 'status') return `${r.name}: no supervisor. ${NEEDS_LAUNCHD.replace(' Nothing changed.', '')}`;
+    throw new Usage(NEEDS_LAUNCHD);
+  }
+  const was = supervisorState(r);
+  if (op === 'status') {
+    const state = { loaded: `on: installed and loaded, a pass every ${was.every}s`,
+      installed: `installed but not loaded, so no passes run. Turn it on: desk-q ${r.name} supervisor on`,
+      none: `off: not installed. Turn it on: desk-q ${r.name} supervisor on` }[was.state];
+    return `${r.name}: the supervisor is ${state}.\n${was.last ? `Last log line: ${was.last}` : 'No supervisor log yet.'}`;
+  }
+  if (op === 'on') {
+    if (was.state === 'loaded') return `${r.name}: the supervisor is already on, a pass every ${was.every}s. Nothing changed.`;
+    // An agent already installed keeps its interval: install writes the default otherwise.
+    const s = supervisorRun(r, 'install', ...(/^\d+$/.test(was.every ?? '') ? ['--interval', was.every] : []));
+    if (s.code !== 0) {
+      // A failed load can leave a new agent file behind; with none before, it goes again.
+      if (was.state === 'none') supervisorRun(r, 'uninstall');
+      throw new Usage(`${r.name}: the supervisor could not be turned on: ${s.err}. It is ${was.state === 'none' ? 'still off' : 'still installed but not loaded'}.`);
+    }
+    const every = /every (\d+)s/.exec(s.out.join(' '))?.[1];
+    return `${r.name}: supervisor on. It runs a pass ${every ? `every ${every}s ` : ''}and at login, for a batch handed over at Stage 4.`;
+  }
+  if (was.state === 'none') return `${r.name}: the supervisor is already off. Nothing changed.`;
+  const s = supervisorRun(r, 'uninstall');
+  if (s.code !== 0) throw new Usage(`${r.name}: the supervisor could not be turned off: ${s.err}. It is still ${was.state === 'loaded' ? 'on' : 'installed'}.`);
+  return `${r.name}: supervisor off. No further passes run, and running workers carry on to their end (so does a merge driver it started).`;
 }
 
 function checkFlags(argv) {
@@ -1178,10 +1248,12 @@ function loadOrRefuse(now) {
 
 export function run(argv, { now = Date.now() } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>]\n'
-    + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>';
+    + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
+    + '       desk-q <repo> supervisor [on|off]';
   checkFlags(argv);
   const repos = loadOrRefuse(now);
   const v = target(repos, argv);
+  if (v.kind === 'supervisor') return apply(repos, v);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
   // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
   if (v.kind === 'timeline') return argv.includes('--plain') ? shipsScreen(repos, v.slug, { now }) : timelineScreen(repos, v.slug, { now });
@@ -1199,6 +1271,8 @@ export function run(argv, { now = Date.now() } = {}) {
 export const REFRESH_MS = 2000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
+// The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
+export const askLine = (name) => segLine([[`Turn off the supervisor for ${name}? Running workers finish.  `, null], ['y', BOLD], [' / ', null], ['n', BOLD]]);
 const ESC = '\x1b[';
 // Mouse reporting in SGR form (1000 + 1006), so a click on the breadcrumb, a tab or a row arrives
 // as ESC [ < button ; column ; row M.
@@ -1315,7 +1389,8 @@ export function interactive({
   // `checkin`: tickets waiting on the user are dated as if answered at the next check-in (c).
   // `zoom`: the Timeline's scale, z cycling it; back to auto whenever the place changes.
   // `layout`: where the last draw put the breadcrumb, the tabs and the rows, for a click to find them.
-  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, screen = null, done = false, timer = null, checkin = false, zoom = 'auto', layout = null;
+  // `ask`: a change waiting on y or n, shown in place of the keys; nothing else acts until it is answered.
+  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, done = false, timer = null, checkin = false, zoom = 'auto', layout = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -1359,7 +1434,7 @@ export function interactive({
     }
     if (view.kind === 'overview') {
       return { badge: badge(repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
-        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · ${cmdKeys}` };
+        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · ${cmdKeys}` };
     }
     if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
     if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
@@ -1403,7 +1478,7 @@ export function interactive({
     } else pinned.push(fit(screen.badge ? segLine([...crumbs.segs, [`    ${screen.badge}`, null]]) : crumbs));
     const body = ['', ...screen.head.map(fit), ...rows.map((x, i) => paint(x, w, i === sel)), ...screen.foot.map(fit)];
     // A message can be longer than the line (a refused raise says what raising the cap takes).
-    const status = [...wrap(msg, w), ...(cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit);
+    const status = [...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit);
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + screen.head.length;
     let top = 0;
@@ -1462,7 +1537,7 @@ export function interactive({
   // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
   // selects and opens it. The wheel moves the selection as the arrows do.
   function onMouse(b, x, y) {
-    if (done || !layout || cmd != null) return;
+    if (done || !layout || cmd != null || ask) return;
     if (b === 64 || b === 65) return onKey(undefined, { name: b === 64 ? 'up' : 'down' });
     if ((b & ~(4 | 8 | 16)) !== 0) return;
     const col = x - 1, line = y - 1;
@@ -1529,7 +1604,8 @@ export function interactive({
     try {
       checkFlags(words);
       const v = target(repos, words);
-      if (isWrite(v)) {
+      if (v.kind === 'supervisor') act(v);
+      else if (isWrite(v)) {
         // A change typed anywhere lands on that repo's Queue, with the moved ticket selected.
         if (!(view.kind === 'repo' && view.slug === v.slug && tab === 'queue')) { goPlace({ kind: 'repo', slug: v.slug }); tab = 'queue'; }
         if (v.key) selId = v.key;
@@ -1547,6 +1623,12 @@ export function interactive({
       else if (key.name === 'escape') cmd = null;
       else if (key.name === 'backspace') cmd = cmd.slice(0, -1);
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
+      return draw();
+    }
+    if (ask) {
+      if (str === 'y') { const v = ask.v; ask = null; act(v); }
+      else if (str === 'n' || key.name === 'escape') { ask = null; msg = ''; }
+      else return;
       return draw();
     }
     // On a repo's Queue the selected ticket moves; on a ticket's screen, that ticket. On a Timeline
@@ -1583,6 +1665,17 @@ export function interactive({
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; }
     else if (str === 'a' && view.kind === 'overview' && tab === 'queue') view = { ...view, all: !view.all };
+    else if (str === 's' && view.kind === 'overview' && tab === 'queue') {
+      // Turning off asks first; turning on does not.
+      const r = repoOf(rows[sel]?.id);
+      if (!r) return;
+      const v = { kind: 'supervisor', slug: r.slug };
+      let state = null;
+      if (platform() !== 'darwin') msg = NEEDS_LAUNCHD;
+      else { try { ({ state } = supervisorState(r)); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); } }
+      if (state === 'loaded') { ask = { name: r.name, v: { ...v, op: 'off' } }; msg = ''; }
+      else if (state) act({ ...v, op: 'on' });
+    }
     else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;
@@ -1635,7 +1728,7 @@ if (isMain) {
       checkFlags(argv);
       start = target(loadOrRefuse(Date.now()), argv);
     }
-    if (start && !isWrite(start)) {
+    if (start && !isCommand(start)) {
       const ui = interactive({ start });
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
