@@ -564,6 +564,9 @@ export function mergeDriverHolder(state) {
   if (pid) { try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : null; } }
   try { return Date.now() - statSync(d).mtimeMs < 60_000 ? 'starting' : null; } catch { return null; }
 }
+// The command that releases a held ticket by hand, as the merge driver releases one whose blockers
+// merged. `queue` is how the caller names queue.mjs.
+export const releaseCommand = (key, queue = 'queue.mjs') => `${queue} set ${key} state=triaged park=null held_by=null, then ${queue} front ${key}`;
 
 // Whether a batch's green PRs merge without the person: config §3 autopilot-merge and pr-merge-green
 // both `yes`, or each `yes` or `ask` with the batch's Stage 3 approval (the queue's approved.merge).

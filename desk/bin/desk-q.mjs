@@ -29,7 +29,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -99,8 +99,7 @@ const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
 const outsideText = (t) => { const n = outsideOf(t).length; return `held: ${n} Jira blocker${n === 1 ? '' : 's'} outside the batch`; };
-// The release the pass prints when every blocker has merged and no merge driver runs.
-const releaseCmd = (key) => `node ~/.claude/desk/bin/queue.mjs set ${key} state=triaged park=null held_by=null, then node ~/.claude/desk/bin/queue.mjs front ${key}`;
+const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
 // merged, running now or started by a supervisor running its passes. The supervisor starts it only
@@ -119,6 +118,8 @@ function holdContext(r) {
 // when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
 // Behind several blockers, the first that needs the user speaks for the ticket.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
+  // Neither the pass nor the merge driver releases a hold that names no blocker.
+  if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: release it', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
     if (!keysOf(t.held_by).every((p) => prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
@@ -142,6 +143,8 @@ function blockerHold(q, key, b, ctx, seen) {
     if (ps.isDraft === true) return { k: 'needs', name: pr, text: `${pr} is a draft: undraft and merge it` };
     // The merge driver skips a conflicting PR, and nothing in the batch resolves the conflict.
     if (ps.mergeable === 'CONFLICTING') return { k: 'needs', name: pr, text: `${pr} conflicts with its base: resolve it` };
+    // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
+    if (String(bt.merge_blocked ?? '').startsWith('merge hold:')) return { k: 'needs', name: pr, text: `${pr} is under a merge hold: merge it` };
     if (!ctx.merges) return { k: 'needs', name: pr, text: `${pr} will not merge on its own: merge it` };
     const failed = (ps.checks ?? []).find(checkFailed);
     if (failed) return { k: 'needs', name: pr, text: `${pr}: ${failed.name} failed: fix or re-run it` };
@@ -1096,23 +1099,19 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     : [['l', BOLD], [' log', null], ...(jiraUrl ? [['  ·  ', null], ['o', BOLD], [' Jira  ', null], [jiraUrl.replace(/^https?:\/\//, ''), DIM]] : [])], true);
   head.push('');
   const rows = [], out = [];
-  // A blocked ticket lists its outside blockers first, so what it waits on in the batch follows them
-  // as rows rather than heading the page.
-  const lead = (l) => (k === 'stuck' ? rows.push(typeof l === 'string' ? segLine([[l, null]]) : l) : head.push(l));
-  if (k === 'stuck') {
-    const ob = outsideOf(t);
-    head.push(bold(`Held by ${ob.length} Jira blocker${ob.length === 1 ? '' : 's'} outside this batch, which nothing in it releases:`));
-    for (const b of ob) rows.push(segRow(b.key, [[`  ${pad(b.key, 10)}`, null], [JIRA_CATEGORY[b.category] ?? b.category ?? '', GREY]], null));
-    out.push('');
-  }
   const h = isHeld(t) ? holdOf(r.q, t, r.ctx) : null;
+  if (k === 'stuck') {
+    const n = outsideOf(t).length;
+    head.push(bold(`Held by ${n} Jira blocker${n === 1 ? '' : 's'} outside this batch, which nothing in it releases.`));
+    if (!h) out.push('');
+  }
   if (h) {
     const open = unmergedBlockers(r.q, t);
-    if (k === 'stuck') lead('');
-    lead(!open.length ? (h.k === 'needs' ? bold('Every blocker in this batch has merged, and no merge driver or supervisor runs to release it.')
-      : h.text === 'released at the next pass' ? 'Every blocker in this batch has merged: it is released at the next pass.'
-        : 'Every blocker in this batch has finished: the next pass reads whether their PRs merged.')
-      : bold(k === 'stuck' ? 'Also behind, in this batch:' : k === 'needs' ? `Needs you: ${h.text}. Behind:` : 'Starts when the last of these merges:'));
+    head.push(!keysOf(t.held_by).length ? bold('Held behind no recorded blocker, which nothing releases.')
+      : !open.length ? (h.k === 'needs' ? bold('Every blocker in this batch has merged, and no merge driver or supervisor runs to release it.')
+        : h.text === 'released at the next pass' ? 'Every blocker in this batch has merged: it is released at the next pass.'
+          : 'Every blocker in this batch has finished: the next pass reads whether their PRs merged.')
+        : bold(k === 'stuck' ? 'Also behind, in this batch:' : k === 'needs' ? `Needs you: ${h.text}. Behind:` : 'Starts when the last of these merges:'));
     for (const b of open) {
       const bt = r.q.tickets[b];
       const bk = bt ? shownState(r.q, bt, r.ctx) : null;
@@ -1121,7 +1120,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
         : [['not in this queue', null]])], bt ? { kind: 'ticket', slug: r.slug, key: b } : null));
       if (bk === 'landing') rows.push(...checkLines(r, bt, now, width == null));
     }
-    if (k !== 'stuck') out.push('');
+    out.push('');
   }
   if (k === 'landing') {
     out.push(bold(`Checks on #${t.result.pr}:`), ...checkLines(r, t, now, width == null), '');
@@ -1145,8 +1144,6 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
 
 // The ticket page's label column.
 const FIELD_W = 10;
-// A Jira status category, as the pass records it on an outside blocker.
-const JIRA_CATEGORY = { new: 'to do', indeterminate: 'in progress' };
 
 // The ticket page's Now: what is happening to it, in its state's colour.
 function nowSegs(r, row, k, t, now = Date.now()) {

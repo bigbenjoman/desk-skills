@@ -1155,7 +1155,9 @@ dated('hold', 5000, { hours: twelveHours, tickets: {
   'W-10': { ...heldBy('B-RUN'), open_questions: 0, outside_blockers: outside(2) } } });
 dated('holdsup', 5010, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, tickets: {
   'B-GREEN': prAt(177), 'W-2': heldBy('B-GREEN'), 'B-MERGED': mergedAt(171), 'W-6': heldBy('B-MERGED'),
-  'B-CONF': prAt(178, { mergeable: 'CONFLICTING' }), 'W-2C': heldBy('B-CONF') } });
+  'B-CONF': prAt(178, { mergeable: 'CONFLICTING' }), 'W-2C': heldBy('B-CONF'),
+  'B-HOLD': { ...prAt(180), merge_blocked: 'merge hold: desk/bin/** (a person merges it; 1 file(s), e.g. desk/bin/pass.mjs)' }, 'W-2H': heldBy('B-HOLD'),
+  'W-0': { ...heldBy(''), park: { question: 'held by orchestrator' } } } });
 dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK'), 'B-MERGED': mergedAt(172), 'W-6A': heldBy('B-MERGED'),
   'C-1': heldBy('C-2'), 'C-2': heldBy('C-1'), 'C-3': heldBy('C-1') } });
@@ -1175,6 +1177,10 @@ const cells217 = (name, key, n = 2) => {
 t('DS-217 AC1 behind a running blocker: waiting, with its stage', cells217('hold', 'W-1'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC2 behind a PR a supervisor merges: waiting until green, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: checks running, merges when green | after #177');
 t('DS-217 behind a PR that conflicts with its base: needs you, even where a supervisor merges', cells217('holdsup', 'W-2C'), '◆ needs you | #178 conflicts with its base: resolve it');
+t('DS-217 behind a PR the merge driver leaves under a merge hold: needs you, even where a supervisor merges', cells217('holdsup', 'W-2H'), '◆ needs you | #180 is under a merge hold: merge it');
+t('DS-217 a hold that names no blocker: needs you, since nothing releases it', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: release it');
+t('DS-217 its page says so and gives the release command', ['Held behind no recorded blocker, which nothing releases.', 'Release it, in holdsup: node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged']
+  .map((s) => Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED }).includes(s)).join(), 'true,true');
 t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W-3'), '◆ needs you | #175 is a draft: undraft and merge it');
 t('DS-217 AC3 and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 }))[0].includes('4 in hold'), true);
 t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176 will not merge on its own: merge it');
@@ -1194,7 +1200,7 @@ t('DS-217 two tickets held behind each other both need you, and one behind them 
   '◆ needs you | C-2 is held behind this one: release one of them / ◆ needs you | C-1 is held behind this one: release one of them / · waiting | behind C-1, which needs you');
 const w9 = Q.ticketScreen(repo217('hold'), 'W-9', { now: FIXED });
 t('DS-217 AC9 with its batch blockers merged and one outside open, the page never says every blocker is done',
-  `${/Every blocker is done/.test(w9)} ${w9.includes('Held by 1 Jira blocker outside this batch, which nothing in it releases:\n  OUT-1     in progress')}`, 'false true');
+  `${/Every blocker is done/.test(w9)} ${w9.includes('Held by 1 Jira blocker outside this batch, which nothing in it releases.')}`, 'false true');
 t('DS-217 AC9 no ticket page says every blocker is done', Object.keys(repo217('hold').q.tickets).filter((k) => /Every blocker is done/.test(Q.ticketScreen(repo217('hold'), k, { now: FIXED }))).join(), '');
 t('DS-217 the 2026-10-24 desk-skills queue', ['DS-168', 'DS-175', 'DS-180'].map((k) => cells217('skills24', k)).join(' / '),
   '◌ blocked | held: 27 Jira blockers outside the batch / ◆ needs you | #175 is a draft: undraft and merge it / · waiting | behind DS-175, which needs you');
