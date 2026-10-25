@@ -1017,10 +1017,12 @@ stopped with its session kept and queued to resume (`resume=maintenance`, not co
 a killed worker"); workers in a repo whose passes are not running are waited on for 30 minutes more.
 Then one pass pulls the desk-skills checkout fast-forward on a clean `main` and runs `install.sh`,
 and runs `reboot-check.mjs`. Where §3 `machine-reboot` is `yes` and the check found no blocker
-(anything heavy running, or a worker still running in any repo), it runs `desk-runner down` if the
+(anything heavy running, a worker still running in any repo, or FileVault on or unreadable, since a
+restarted Mac then waits at the unlock screen until someone logs in), it runs `desk-runner down` if the
 runner was up and restarts the computer; the supervisor brings passes back at login, the first pass
 runs `desk-runner up` again (as does a restart that fails or never happens), and the stopped workers
-resume. At `ask` (unset) it does not restart and puts "ready to reboot" in the next check-in; at `no`
+resume. At `ask` (unset), or at `yes` with FileVault the only blocker, it does not restart and puts
+"ready to reboot" in the next check-in, naming FileVault where it is on; at `no`
 it stops there. A failed update goes in the check-in too, and does not restart. Every step, with the
 old and new commit and the check's summary, goes in `~/.desk-autopilot/maintenance/maintenance.log`.
 A window runs once a week; one no pass reaches within 6 hours is missed that week. An idle batch's

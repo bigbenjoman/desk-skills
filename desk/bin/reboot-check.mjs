@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // What a reboot of this computer would interrupt or leave behind, read-only: every worktree of every
-// configured repo with uncommitted changes or unpushed commits, the desk-runner VM, and the heavy
-// processes desk-env counts. Claude sessions are not listed here: /desk-reboot reads them with
+// configured repo with uncommitted changes or unpushed commits, the desk-runner VM, the heavy
+// processes desk-env counts, and FileVault, which holds a restarted Mac at the disk unlock screen
+// until someone logs in. Claude sessions are not listed here: /desk-reboot reads them with
 // ListAgents, the only source of their busy, waiting or idle state.
 //   node reboot-check.mjs
-// The last line is
-// `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown> keep=<loaded|none> heavy=<n>`.
+//   node reboot-check.mjs --filevault   only the filevault line (what /desk-setup reads)
+// The last line is `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown>
+// keep=<loaded|none> heavy=<n> filevault=<on|off|unknown|n/a>`. DESK_FDESETUP_CMD (run with sh -c)
+// stands in for `fdesetup status` in tests; without it, FileVault is n/a anywhere but macOS.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -19,6 +22,23 @@ const run = (cmd, args, opts = {}) => {
   catch (e) { return { ok: false, status: e.status, out: String(e.stdout ?? '') }; }
 };
 const git = (dir, ...args) => run('git', ['-C', dir, ...args]);
+
+// `fdesetup status` says `FileVault is On.` or `FileVault is Off.`; anything else (a failure, a
+// missing binary, encryption or decryption in progress) cannot be read as off, so it is unknown.
+function fileVault() {
+  const r = process.env.DESK_FDESETUP_CMD ? run('sh', ['-c', process.env.DESK_FDESETUP_CMD])
+    : process.platform === 'darwin' ? run('fdesetup', ['status']) : null;
+  if (!r) return { state: 'n/a', line: 'filevault: n/a (not macOS)' };
+  const said = r.out.trim().split('\n')[0] || `exit ${r.status ?? '?'}`;
+  if (r.ok && /^FileVault is On\.?$/.test(said)) return { state: 'on', line: 'filevault: on (after a restart nothing runs until someone logs in)' };
+  if (r.ok && /^FileVault is Off\.?$/.test(said)) return { state: 'off', line: 'filevault: off' };
+  return { state: 'unknown', line: `filevault: unknown, could not tell from fdesetup status (${said}), so counted as on` };
+}
+
+if (process.argv[2] === '--filevault') {
+  console.log(fileVault().line);
+  process.exit(0);
+}
 
 // Each repo's §2 Primary repo root, read through desk-env so there is one config parser. The child
 // runs outside any repo with the repo-pinning variables cleared, so it reads only the config named.
@@ -101,4 +121,7 @@ const heavy = heavyProcesses();
 console.log(`heavy: ${heavy.length} (test suites, typechecks, dev servers)`);
 for (const p of heavy) console.log(`  ${p.pid} ${p.args}`);
 
-console.log(`summary: dirty=${dirty} unpushed=${unpushed} runner=${runner} keep=${keep} heavy=${heavy.length}`);
+const fv = fileVault();
+console.log(fv.line);
+
+console.log(`summary: dirty=${dirty} unpushed=${unpushed} runner=${runner} keep=${keep} heavy=${heavy.length} filevault=${fv.state}`);
