@@ -311,6 +311,7 @@ export const CONFIG_ROWS = Object.freeze({
   'worker-location': { section: '3b', row: 'Worker location' },
   'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
   'batches-run-by': { section: '3b', row: 'Batches run by' },
+  'status-table': { section: '3b', row: 'Orchestrator status table' },
 });
 
 export class DeskConfigError extends Error {}
