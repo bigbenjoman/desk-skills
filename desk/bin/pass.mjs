@@ -491,7 +491,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     let shots = [];
-    try { shots = readdirSync(imgDir).filter((f) => /\.(png|jpe?g)$/i.test(f)); } catch { /* missing */ }
+    try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
     if (!shots.length) {
       if (done) q('set', t.key, 'images_uploaded=none');
     } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {

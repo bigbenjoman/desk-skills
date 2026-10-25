@@ -29,7 +29,7 @@
 import { readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError } from './desk-env.mjs';
+import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, SCREENSHOT_FILE } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
 const [pr, dir] = process.argv.slice(2);
@@ -73,7 +73,7 @@ if (!playwright.entry) {
 }
 const { chromium } = await importPlaywright(playwright);
 
-const files = readdirSync(dir).filter((f) => /\.(png|jpe?g)$/i.test(f)).sort();
+const files = readdirSync(dir).filter((f) => SCREENSHOT_FILE.test(f)).sort();
 if (!files.length) { console.error(`no images in ${dir}`); process.exit(1); }
 console.log(`[upload] #${pr} <- ${files.length} image(s) from ${dir}`);
 
