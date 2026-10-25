@@ -209,7 +209,7 @@ pj 2026-10-19T06:31:00Z; pj 2026-10-19T06:50:00Z
 check "a worker in another repo keeps the window draining"  'grep -q "none running here; waiting on 1 worker(s) in other repos (other O-1) until 2026-10-19T07:31:00Z" <<< "$out" && [ "$(field M-8 state)" = triaged ]'
 pj 2026-10-19T07:31:00Z
 check "then the window moves on and the check names it"     'mlog | grep -q "blockers: 1 worker(s) running in another repo (other O-1)" && grep -q "\"not ready to reboot\" is in the next check-in" <<< "$out" && [ "$(field M-8 state)" = running ]'
-rm -r "$T/desk/repos"
+rm -r "$T/desk/repos"; q set M-8 state=done
 
 # ---- DS-226: FileVault holds a restarted Mac at the unlock screen --------------------------------
 # Earlier weeks than the cases above, so each opens its own window and its notes are in the past.

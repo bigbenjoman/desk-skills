@@ -6,7 +6,8 @@
 // for DRAIN_OTHERS_MIN past the limit), one pass pulls desk-skills fast-forward and installs it, runs
 // the reboot check, and restarts the computer where config §3 machine-reboot is `yes` and the check
 // found no blocker. At `ask` (unset), or at `yes` with FileVault the only blocker, it hands "ready to
-// reboot" to the check-in digest; at `no` it stops there. Spawning resumes once the window is done, or after the restart at login.
+// reboot" to the check-in digest; at `no` it stops there. Spawning resumes once the window is done, or
+// after the restart at login.
 //
 // Every repo's pass calls maintenance() once a pass, and the supervisor's idle tick runs the CLI, so an
 // idle batch still gets its window. A repo with no window row follows a window another repo opened.
