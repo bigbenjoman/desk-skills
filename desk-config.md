@@ -104,7 +104,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Running on WSL? | `TODO` | `yes` / `no` |
 | Signed-in browser profile | `~/.cache/ms-playwright-mcp/desk-profile` | optional: unset means that machine-level default. `github-signin.mjs` saves the GitHub login beside it (`<profile>.github-session.json`), which PR image upload and Claude's Playwright MCP load; set it only to give this repo's uploads another login (the MCP keeps the machine one); exclusive while an upload runs |
 | Handoff at context % | `45` | when the session's context passes this share of its window, it finishes its step and writes `.handoffs/<yyyy-mm-dd>[-n].md` in the repo root, which the session after `/clear` or a compaction reads on its own; `0` disables. Read by install.sh's `desk-handoff.py` hook |
-| Handoff at context % on a 1M window |  | the same, for a session with a 1,000,000-token window; `0` disables it on 1M windows only. Unset (empty) means the row above's value, so one row sets both windows; set it only for a different 1M threshold |
+| Handoff at context % on a 1M window | `20` | the same, for a session with a 1,000,000-token window; `0` disables it on 1M windows only. `20` hands off near 200k tokens, which cut re-read tokens by about half in measured orchestrator sessions. Unset (empty) means the row above's value |
 | Autopilot state | `~/.desk-autopilot/<slug>/`, `~/.claude/desk/` | fixed; listed so you know where batch state lives |
 
 ## 3. Permissions — the allowlist

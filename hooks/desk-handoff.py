@@ -24,6 +24,9 @@ added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session
 also the marker that stops a second injection or a second Stop block.
 
 Never fails a session: any error exits 0 with no output.
+
+Run as `desk-handoff.py offer-1m [--asked] [<dir>]` (not a hook event), it is /desk-update's one-time
+offer to lower a 1M threshold of 45 to 20: see offer_1m.
 """
 import glob
 import json
@@ -304,7 +307,45 @@ def on_session_start(data, session, root):
         "questions as still open."))
 
 
+OFFER_1M = (
+    "handoff at 45% of a 1M window (~450k tokens): lower §2 \"Handoff at context % on a "
+    "1M window\" to 20 (~200k)? Replaying 71 orchestrator sessions, a fresh start at 200k saved 53% "
+    "of re-read tokens, against 10% at 450k")
+
+
+def offer_1m(args):
+    """`desk-handoff.py offer-1m [<dir>]`: print desk-update's SETTING text and exit 0 when the repo's
+    1M threshold is 45 (its row at 45, or unset under a 45 row) and it has not been offered before;
+    else exit 1. `offer-1m --asked [<dir>]` records that it was offered, whatever the answer."""
+    asked = "--asked" in args
+    rest = [a for a in args if a != "--asked"]
+    root = git(rest[0] if rest else os.getcwd(), "rev-parse", "--show-toplevel")
+    if not root:
+        return 1
+    rc, out = desk_env(root, "where")
+    slug = next((line.split("=", 1)[1].strip("'") for line in out.splitlines()
+                 if line.startswith("SLUG=")), "")
+    if rc != 0 or "EXISTS=yes" not in out or not slug:
+        return 1
+    marker = os.path.join(STATE_DIR, "offered-1m-" + "".join(
+        c for c in slug if c.isalnum() or c in "-_.") + ".json")
+    if asked:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(marker, "w") as f:
+            json.dump({"at": time.time()}, f)
+        return 0
+    if os.path.exists(marker) or threshold(root)[1] != 45:
+        return 1
+    print(OFFER_1M)
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["offer-1m"]:
+        try:
+            sys.exit(offer_1m(sys.argv[2:]))
+        except Exception:
+            sys.exit(1)
     data = json.load(sys.stdin)
     event = data.get("hook_event_name")
     cwd = data.get("cwd") or os.getcwd()
