@@ -1423,14 +1423,18 @@ for (const m of merges) out.push(`merge recorded: ${m}`);
 // on the ticket as `undraft` and put to the person; a gh pr ready that fails is kept in the pass
 // record and tried again next pass, since the PR is still a draft.
 const undraftErrors = [];
-if (drafts.length) {
+// What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
+const gateLists = () => {
   const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
+  return { required: list('required-checks'), advisory: list('advisory-checks') };
+};
+if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
     perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true,
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
-    required: list('required-checks'), advisory: list('advisory-checks'),
+    ...gateLists(),
   };
   const notesFile = join(STATE, 'batch-notes.md');
   for (const { t, s } of drafts) {
@@ -1509,13 +1513,19 @@ for (const t of Object.values(qNow.tickets).filter((r) => r.approved === true &&
 }
 // Out of draft and green with no merge driver to merge it (config §3, or the batch declined at Stage 3):
 // the person merges it, so it is put to them, and handed to the check-in digest under a supervisor.
+// Review feedback holds it as it would hold the driver (§3 merge-feedback-first, strict unless `no`):
+// changes requested are put first, and the person checks the threads, which this pass does not read.
 if (!merger.driver && undrafted.length) {
-  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
-  const gateCfg = { required: list('required-checks'), advisory: list('advisory-checks') };
+  const gateCfg = gateLists();
+  const feedbackFirst = E.permissionOrUnset('merge-feedback-first') !== 'no';
   for (const { t, s } of undrafted) {
     if (t.approved === true || s.mergeable === 'CONFLICTING') continue;
     if (evaluateGate(s.checks, gateCfg).state !== 'pass') continue;
-    report.waiting.push(`${t.key}: READY TO MERGE — PR #${s.pr} is out of draft and green, and no merge driver merges it (${merger.rows}): merge it yourself, pinned to its head (gh pr merge ${s.pr} --repo ${GH_REPO} --match-head-commit <sha>)`);
+    if (feedbackFirst && s.reviewDecision === 'CHANGES_REQUESTED') {
+      report.waiting.push(`${t.key}: CHANGES REQUESTED — PR #${s.pr} is out of draft and green, but changes are requested on it, and no merge driver merges it (${merger.rows}): work the feedback first, then merge it yourself`);
+      continue;
+    }
+    report.waiting.push(`${t.key}: READY TO MERGE — PR #${s.pr} is out of draft and green, and no merge driver merges it (${merger.rows}): merge it yourself${feedbackFirst ? ' once no review thread is left unresolved' : ''}, pinned to its head (gh pr merge ${s.pr} --repo ${GH_REPO} --match-head-commit <sha>)`);
   }
 }
 // The merge driver releases these on its next loop. Where it is not running, the release is yours:

@@ -546,20 +546,20 @@ export const permissionKey = (id) => PERMISSION_KEYS[id];
 
 // Whether a batch's green PRs merge without the person: config §3 autopilot-merge and pr-merge-green
 // both `yes`, or each `yes` or `ask` with the batch's Stage 3 approval (the queue's approved.merge).
-// The approval lasts one batch: queue.mjs init starts the next without it. `ask` is whether Stage 3
-// asks; `why` names the rows, and how the batch answered where they are `ask`.
-//   -> { by: 'config' | 'batch' | null, ask, why }
+// The approval lasts one batch: queue.mjs init starts the next without it. `why` names the rows, and
+// how the batch answered where they are `ask`.
+//   -> { by: 'config' | 'batch' | null, why }
 const MERGE_GRANT_ROWS = ['autopilot-merge', 'pr-merge-green'];
 export function mergeGrant(q = readQueueOrNull()) {
   const rows = MERGE_GRANT_ROWS.map((id) => ({ key: permissionKey(id), v: permission(id) }));
   const said = (list) => `config §3 ${list.map((r) => `${r.key} is "${r.v}"`).join(' and ')}`;
-  if (rows.every((r) => r.v === 'yes')) return { by: 'config', ask: false, why: said(rows) };
+  if (rows.every((r) => r.v === 'yes')) return { by: 'config', why: said(rows) };
   const off = rows.filter((r) => r.v !== 'yes' && r.v !== 'ask');
-  if (off.length) return { by: null, ask: false, why: said(off) };
+  if (off.length) return { by: null, why: said(off) };
   const asked = said(rows.filter((r) => r.v === 'ask'));
   const a = q?.approved?.merge;
-  if (a === true) return { by: 'batch', ask: true, why: `${asked}, and merging was approved for this batch at Stage 3` };
-  return { by: null, ask: true, why: `${asked}${a === false ? ', and merging was declined for this batch at Stage 3' : ' with no batch approval'}` };
+  if (a === true) return { by: 'batch', why: `${asked}, and merging was approved for this batch at Stage 3` };
+  return { by: null, why: `${asked}${a === false ? ', and merging was declined for this batch at Stage 3' : ' with no batch approval'}` };
 }
 
 // A spend guard is a number of USD or explicitly off. Anything else ("25 USD", "0", "lots") is

@@ -76,7 +76,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
-    state: p.state.toUpperCase(), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: '', autoMergeRequest: null,
+    state: p.state.toUpperCase(), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
     statusCheckRollup: p.checks.map(([name, conclusion, run]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/1' : undefined })) });
 } else if (a[0] === 'run' && a[1] === 'list') {
@@ -311,7 +311,8 @@ q set-batch approved.merge=false
 mloop "$T/config-ask.md"
 check "DS-203 AC3: declined at Stage 3, the driver refuses to start and merges nothing" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: $ASKED, and merging was declined for this batch at Stage 3" && [ ! -s "$T/merges.log" ]'
 mpj "$T/config-ask.md"
-check "DS-203 AC3: declined, the pass reports a green PR as ready to merge" 'js ".waiting[]" | grep -qF "T-21: READY TO MERGE — PR #121 is out of draft and green, and no merge driver merges it ($ASKED, and merging was declined for this batch at Stage 3)"'
+check "DS-203 AC3: declined, the pass reports a green PR as ready to merge" 'js ".waiting[]" | grep -qF "T-21: READY TO MERGE — PR #121 is out of draft and green, and no merge driver merges it ($ASKED, and merging was declined for this batch at Stage 3): merge it yourself once no review thread is left unresolved"'
+check "DS-203 AC3: a green PR with changes requested is put as feedback to work, never as ready to merge" 'js ".waiting[]" | grep -qF "T-22: CHANGES REQUESTED — PR #122 is out of draft and green, but changes are requested on it" && ! js ".waiting[]" | grep -q "T-22: READY TO MERGE"'
 js '{waiting: [.waiting[] | select(startswith("T-21: READY TO MERGE"))]}' > "$T/ready.json"
 hand=$(node --input-type=module -e "
 import { readFileSync } from 'node:fs';
@@ -324,7 +325,7 @@ q set-batch approved.merge=true
 mloop "$T/config-no.md"
 check "DS-203 AC4: a batch approval never outranks a §3 no" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §3 autopilot-merge is \"no\"" && [ ! -s "$T/merges.log" ]'
 out=$(DESK_CONFIG="$T/config-no.md" node "$B/desk-env.mjs" merge-grant); rc=$?
-check "DS-203 AC4: at no there is nothing to ask" '[ $rc -eq 1 ] && [ "$(DESK_CONFIG="$T/config-no.md" node --input-type=module -e "import { mergeGrant } from \"$B/desk-env.mjs\"; console.log(mergeGrant().ask)")" = false ] && [ "$(DESK_CONFIG="$T/config-ask.md" node --input-type=module -e "import { mergeGrant } from \"$B/desk-env.mjs\"; console.log(mergeGrant({}).ask)")" = true ]'
+check "DS-203 AC4: at no nothing merges, and the reason names the row at no" '[ $rc -eq 1 ] && [ "$out" = "$(printf "none\tconfig §3 autopilot-merge is \"no\"")" ]'
 mpj "$T/config-ask.md"
 check "DS-203 AC2: approved, the pass leaves green PRs to the merge driver" '! js ".waiting[]" | grep -q "READY TO MERGE"'
 mloop "$T/config-ask.md"
