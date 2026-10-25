@@ -248,6 +248,11 @@ desk-q does the same for any repo set up here, from anywhere: `desk-q <repo> sup
 `desk-q <repo> supervisor` for its status and last log line, and `s` on a repo's row in the full
 screen (turning it off asks first; running workers finish).
 
+Who runs a repo's batches is config §3b "Batches run by": `supervisor`, the default `/desk-setup`
+offers on macOS (it installs the agent, and Stage 4 hands each batch over and ends the session), or
+`session` (the batch runs in the interactive session through `/loop`; unset reads as this).
+`run-by.mjs stage4` makes Stage 4's call, installing a supervisor that is missing or unloaded.
+
 **`skill-eval.mjs`** runs a task set once with a skill loaded and once without it, so prose that
 only restates what the model now does by default can be found. Each task is a prompt with pass/fail
 checks on the final reply (`contains`, `absent` or `matches` a regex). Both arms run `claude -p`

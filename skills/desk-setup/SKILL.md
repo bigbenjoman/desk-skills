@@ -581,7 +581,15 @@ dangerous spelling.
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
 budget, worker models, worker location, stage reports; push notification, check-in times, killed-worker
 resumes (Recommended `2`: a pass resumes a worker a reboot or crash killed, in its own session, up to
-that many times; `0` marks it failed instead). For
+that many times; `0` marks it failed instead), batches run by. For batches run by, run
+`node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS (`ask: true`) offer `supervisor`
+(Recommended: once Stage 3 has asked, the supervisor runs the batch from launchd, the session ends,
+and you follow it in desk-q, opening a session only when it needs you) and `session` (the batch runs
+in the interactive session through `/loop`, as before). Off macOS (`ask: false`) don't ask: record
+`session` and say its `line` in one sentence. Once the config is written with `supervisor`, run
+`node ~/.claude/desk/bin/run-by.mjs ensure` in the repo, which installs and loads the supervisor, and
+report its result; on exit 11 give its `error` and `retry` command, and leave the row at
+`supervisor` (Stage 4 tries the install again). For
 check-in times, Recommended is `08:00, 17:00`: questions and logged decisions from every repo arrive
 together then, as one page and one push. For worker models, say that the row can also name a
 `finder=<alias>` (`sonnet`, `haiku`) for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,

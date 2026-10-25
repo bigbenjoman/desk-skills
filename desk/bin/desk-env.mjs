@@ -310,6 +310,7 @@ export const CONFIG_ROWS = Object.freeze({
   'worker-models': { section: '3b', row: 'Worker models' },
   'worker-location': { section: '3b', row: 'Worker location' },
   'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
+  'batches-run-by': { section: '3b', row: 'Batches run by' },
 });
 
 export class DeskConfigError extends Error {}
