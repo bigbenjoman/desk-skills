@@ -9,7 +9,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -534,13 +534,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     stopped = pid ? ` (session still live after ${said} — stopped pid ${pid})` : ` (session still live after ${said}, no pid to stop: session ${t.session_id})`;
   } else if (stillLive) {
     // A worker sitting on an unanswered question is waiting, not working.
-    const parkFile = join(STATE, 'parks', `${t.key}.json`);
-    if (existsSync(parkFile) && !existsSync(join(STATE, 'answers', `${t.key}.txt`))) {
-      try {
-        const p = JSON.parse(readFileSync(parkFile, 'utf8'));
-        if (p.question) report.waiting.push(`${t.key}: ${p.question}`);
-      } catch { /* a half-written park file is not an error */ }
-    }
+    const asked = openQuestion(STATE, t.key);
+    if (asked) report.waiting.push(`${t.key}: ${asked}`);
     continue;
   }
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess

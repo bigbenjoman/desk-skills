@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage } from './batch-state.mjs';
+import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -624,16 +624,16 @@ switch (cmd) {
     // ending the monitor: the next good read prints the table again (quiet: what changed since the
     // last good read).
     const read = () => { try { return { q: existsSync(QUEUE) ? readQueue(QUEUE) : empty() }; } catch (e) { return { err: `queue: ${e.message}` }; } };
-    // A stage step alone wakes nobody: desk-q shows it. `--stages` compares stages too, as before.
+    // A stage step alone wakes nobody: desk-q shows it. `--stages` compares stages too.
     const stages = args.includes('--stages');
-    // A running worker waiting on an unanswered question, as pass.mjs reads it.
+    // Each running worker waiting on an unanswered question.
     let state = null;
     try { state = stateDir(); } catch { /* no state directory to read questions from */ }
     const asks = (q) => {
       const out = {};
       for (const t of state ? Object.values(q.tickets) : []) {
-        if (t.state !== 'running' || existsSync(join(state, 'answers', `${t.key}.txt`))) continue;
-        try { const p = JSON.parse(readFileSync(join(state, 'parks', `${t.key}.json`), 'utf8')); if (p.question) out[t.key] = p.question; } catch { /* none, or half-written */ }
+        const asked = t.state === 'running' && openQuestion(state, t.key);
+        if (asked) out[t.key] = asked;
       }
       return out;
     };

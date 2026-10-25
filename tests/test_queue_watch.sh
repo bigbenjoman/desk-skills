@@ -39,7 +39,7 @@ out=$(cat "$T/watch.out")
 check "AC5 no queue: exits non-zero naming the missing queue"            '[ $rc -ne 0 ] && [ $rc -ne 124 ] && [[ "$out" == *"no queue at $T/queue.json"* ]]'
 
 q init t; q add T-1; q set T-1 state=running stage=2/9 port=3501
-# These checks step stages, so they watch with --stages (DS-201 AC4: a stage step prints as it did).
+# These checks step stages, so they watch with --stages.
 watch_bg --interval 0.3 --stages
 until_tables 1
 out=$(cat "$T/watch.out")
@@ -111,7 +111,7 @@ stop_watch
 out=$(cat "$T/watch.out")
 check "DS-198 AC8 an unknown value is said once and the watch runs at full"  '[ "$(grep -c "is \"loud\"" "$T/watch.out")" = 1 ] && [[ "$out" == *"want \`full\` or \`quiet\`; read as full"* ]] && [ "$(tables)" = 2 ]'
 
-# DS-201: without --stages, a stage step alone wakes nobody; a state change or a question does.
+# Without --stages, a stage step alone prints nothing; a state change or a question does.
 setting full
 watch_bg --interval 0.3
 until_tables 1
