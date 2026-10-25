@@ -1,0 +1,325 @@
+<title>desk-q CI Runner</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: the DS-227 proposal's own system, unchanged: one reading column, desk-q windows at page width, case ledgers as the spine. */
+:root {
+  --paper: #f6f7f5; --ink: #1d2422; --muted: #5b6763; --rule: #d7dcd9; --panel: #ffffff;
+  --accent: #2f6f62; --ok: #237a4b; --warn: #8f5f12; --bad: #c0392b;
+  --win: #282c34; --win-bar: #21252b; --t-fg: #abb2bf; --t-dim: #959cab; --t-sel: #2f333c;
+  --t-bright: #e6e9ef; --t-ok: #98c379; --t-warn: #e5c07b; --t-bad: #f07c84; --t-you: #d08be3; --t-land: #56b6c2; --t-ready: #61afef; --t-empty: #4b5263;
+  --you: #8a3fb0;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #121615; --ink: #e4e9e6; --muted: #9aa6a1; --rule: #2a3230; --panel: #1a1f1e;
+  --accent: #6cc3ad; --ok: #5fd38d; --warn: #f0b94a; --bad: #ff7a6e; --you: #d39be8; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #121615; --ink: #e4e9e6; --muted: #9aa6a1; --rule: #2a3230; --panel: #1a1f1e;
+  --accent: #6cc3ad; --ok: #5fd38d; --warn: #f0b94a; --bad: #ff7a6e; --you: #d39be8; color-scheme: dark }
+body { background: var(--paper); color: var(--ink); font: 16px/1.55 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 1040px; margin: 0 auto; padding-block: 40px 72px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; }
+main > *, section > *, .pair > * { min-width: 0; }
+.prose { max-width: 68ch; }
+h1 { font-size: 2.1rem; line-height: 1.15; margin: 0 0 8px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 1.3rem; margin: 0 0 10px; text-wrap: balance; }
+h3 { font-size: 1rem; margin: 0 0 6px; }
+p { margin: 0 0 10px; }
+.eyebrow { font: 600 .75rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+.lede { color: var(--muted); font-size: 1.05rem; }
+.k { font-family: var(--mono); font-size: .88em; }
+.status { display: inline-flex; gap: 8px; align-items: center; font: 600 .8rem var(--mono); padding: 4px 10px; border: 1px solid var(--warn); color: var(--warn); border-radius: 3px; }
+section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.tag { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.cap { font-size: .88rem; color: var(--muted); }
+.s-ok { color: var(--ok); } .s-w { color: var(--warn); } .s-b { color: var(--bad); } .s-m { color: var(--you); } .s-d { color: var(--muted); }
+.win { background: var(--win); border-radius: 10px; overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+.bar { background: var(--win-bar); display: flex; align-items: center; gap: 8px; padding: 9px 12px; font: 600 12px var(--mono); color: var(--t-dim); }
+.dot { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; } .dot:nth-child(2) { background: #febc2e; } .dot:nth-child(3) { background: #28c840; margin-right: 8px; }
+.scr { overflow-x: auto; }
+.scr pre { margin: 0; padding: 12px 16px 14px; color: var(--t-fg); font: 12.5px/1.65 var(--mono); min-width: max-content; }
+.bold { font-weight: 600; color: var(--t-bright); }
+.d { color: var(--t-dim); } .ok { color: var(--t-ok); } .c { color: var(--t-land); } .bl { color: var(--t-ready); }
+.w { color: var(--t-warn); } .m { color: var(--t-you); } .b { color: var(--t-bad); }
+.bx { font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace; }
+.e { color: var(--t-empty); }
+.tab { background: var(--t-fg); color: var(--win); }
+.sel { background: var(--t-sel); display: inline-block; min-width: 100%; }
+.new { background: rgba(229,192,123,.10); box-shadow: inset 2px 0 0 var(--t-warn); }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+.ledger { overflow-x: auto; border-top: 2px solid var(--ink); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: .92rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--rule); }
+th { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.id { font: 600 .85rem var(--mono); color: var(--accent); width: 44px; }
+td .k { white-space: nowrap; }
+.opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.opt { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px; display: grid; gap: 8px; min-width: 0; }
+.opt.rec { border-color: var(--accent); }
+ul, ol { margin: 0; padding-left: 20px; } li { margin-bottom: 6px; }
+.src { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); border-top: 1px solid var(--rule); }
+.src div { padding: 12px 14px 12px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.score { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.score b { font: 600 2.4rem/1 var(--mono); color: var(--bad); } .score b small { font-size: .9rem; color: var(--muted); }
+.find { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 28px; }
+.find h3 { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.find ol { margin: 0; padding-left: 20px; } .find li { margin-bottom: 6px; font-size: .94rem; }
+.approve { border-left: 3px solid var(--accent); padding: 4px 0 4px 18px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main>
+  <header class="prose">
+    <div class="eyebrow">desk-q · proposal on top of DS-227 · 25 Oct 2026</div>
+    <h1>desk-q: the CI runner</h1>
+    <p class="lede">desk-q says nothing about the CI runner, the Tart VM that runs Voice PA's checks on this Mac. You can't see whether it's up, whether it's running jobs, or that it's the reason no worker can start. Below are the screens as they would look, built on the approved DS-227 screens rather than today's desk-q. Nothing is built until you approve it.</p>
+    <span class="status">◆ waiting for your sign-off</span>
+  </header>
+
+  <section>
+    <div class="prose">
+      <h2>What desk-q shows today</h2>
+      <div class="score"><b>2<small>/10</small></b><span class="cap">desk-q reads the CI runner's effects but never names it, so when it stalls a batch you're left guessing at the cause.</span></div>
+    </div>
+    <div class="find">
+      <div><h3>Critical</h3><ol>
+        <li><b>"Room for N more" leaves out the CI runner's memory.</b> desk-q works it out from raw free memory (<span class="k">desk-q.mjs:719</span>). The spawn ladder first subtracts the runner's reservation (<span class="k">ladderMemory</span>, <span class="k">desk-env.mjs:901</span>). On 25 Oct the ladder was at 0 GiB against an 8 GiB gate, with about 20 GiB free, while desk-q still showed room.</li>
+      </ol></div>
+      <div><h3>Important</h3><ol>
+        <li><b>Up or down is never shown.</b> You only find out with <span class="k">desk-runner status</span> or <span class="k">tart list</span>.</li>
+        <li><b>Running jobs aren't shown either.</b> Four slots for Voice PA can be busy or idle, and nothing on screen tells the two apart.</li>
+        <li><b>A landing PR whose check waits for the VM reads <span class="k">Linux: no runner, 12m</span>.</b> It doesn't say the CI runner is down, or whether anything will bring it back.</li>
+      </ol></div>
+      <div><h3>What works</h3><ol>
+        <li>The landing state (DS-194) already finds a check queued with no runner after 10 minutes. This proposal names the reason.</li>
+        <li><span class="k">desk-runner status</span> already knows everything below. It just isn't written anywhere desk-q can read it.</li>
+      </ol></div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>Four rules</h2>
+    <ul>
+      <li><b>One name: "CI runner".</b> It's never just "runner". DS-227 already uses "who runs the batch" for the supervisor or a session, and a bare "runner" would read as that.</li>
+      <li><b>Up or down is in the words, not only the colour.</b> The line always says <span class="k">up</span>, <span class="k">down</span>, <span class="k">asleep</span> or <span class="k">waking</span>, so it reads the same in <span class="k">--plain</span>.</li>
+      <li><b>The colour comes from the consequence.</b> Down with nothing queued is dim, because you keep it down on purpose until DS-253. It turns <span class="k s-m">◆ magenta</span> only when a check is queued for it and nothing will start it, which is DS-227's "nothing moves until you act". It turns <span class="k s-b">✕ red</span> when it can't run safely (the isolation check failed) or keeps failing to restart.</li>
+      <li><b>"Working" means slots running jobs, named by PR.</b> The header line counts them, and <span class="k">r</span> opens a screen that lists each slot's job.</li>
+    </ul>
+    <p class="cap">Colours are DS-227's key: green moving, cyan in flight, blue ready, amber warning, magenta needs you, dim held or a label, red failed. The amber edge on a line marks what this proposal adds to the DS-227 screen.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">1 · Home, Voice PA's CI running</h2>
+    <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>07:05
+
+<span class="m bold">◆ 51 tickets need you</span><span class="d">  oldest </span>16h<span class="d"> │ pr-ninja </span><span class="bold">28</span><span class="d"> · pranicuk </span><span class="bold">18</span><span class="d"> · voicepa </span><span class="bold">4</span><span class="d"> · desk-skills </span><span class="bold">1</span><span class="d"> │ ◌ 12 blocked</span>
+<span class="ok">● 6 workers running</span><span class="d"> │ machine cap </span><span class="bold">10</span><span class="d"> · room for </span><span class="bold">3 more</span><span class="d"> │ </span><span class="bold">38.4 GiB</span><span class="d"> free</span><span class="new"><span class="d"> · </span><span class="bold">14.9</span><span class="d"> held for CI</span></span>
+<span class="new"><span class="ok">● CI runner up</span><span class="d"> │ </span><span class="bold">3 of 4</span><span class="d"> slots running jobs </span><span class="d">│ voicepa </span>#664 · #671 · #672<span class="d">                       </span></span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · 7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="d">  REPO          LAST PASS               RUN  READY  WAIT  BLOCKED  NEEDS YOU  QUEUE DONE    WORKERS</span>
+<span class="sel"><span class="bold">› desk-skills   </span><span class="ok">● session · 1m ago      </span><span class="d">  0</span><span class="d">      0</span><span class="w">     1</span><span class="d">        1</span><span class="m bold">          1</span><span class="d">  no date       </span>2 (cap 3)  </span>
+  voicepa       <span class="ok">● supervisor · 1m ago   </span><span class="ok">  2</span><span class="d">      0</span><span class="w">     6</span><span class="d">        1</span><span class="m bold">          4</span>  today 23:39   3 (cap 5)
+  pr-ninja      <span class="ok">● session · 26m ago     </span><span class="ok">  3</span><span class="bl">     23</span><span class="w">    26</span><span class="d">        2</span><span class="m bold">         28</span>  Fri 01:59     3 (cap 5)
+  pranicuk      <span class="b">■ stopped · 4d 16h      </span><span class="d">  0</span><span class="d">      0</span><span class="d">     0</span><span class="d">        8</span><span class="m bold">         18</span><span class="d">  nothing left  </span>2 (cap 2)
+
+<span class="d">note</span>  <span class="w">▲ ports        </span>desk-skills + pranicuk share 3500–3502.
+<span class="d">    </span>  <span class="m">◆ needs you    </span><span class="bold">/desk-needs-you</span>, in a Claude session, asks you about all 51.
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">s</span> supervisor · <span class="new"><span class="bold">r</span> CI runner</span> · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+    <p class="cap prose">DS-227's screen 1 with one line added under the workers line, because the CI runner competes with workers for the same memory. "Held for CI" on the workers line explains the "room for" figure next to it. The figures are examples: 38.4 GiB free, the VM at 9.1 GiB resident, so 24 − 9.1 = 14.9 GiB held back. The machine cap is 10, because that's the profile's cap while the runner is on (DS-253). With no CI runner set up, neither addition appears.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">2 · Home, the 25 Oct stall</h2>
+    <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>15:58
+
+<span class="m bold">◆ 6 tickets need you</span><span class="d">  oldest </span>3h 05m<span class="d"> │ voicepa </span><span class="bold">4</span><span class="d"> · pr-ninja </span><span class="bold">2</span><span class="d"> │ ◌ 3 blocked</span>
+<span class="d">● 0 workers running │ machine cap </span><span class="bold">10</span><span class="d"> · room for </span><span class="bold">0 more</span><span class="d"> │ </span><span class="bold">20.1 GiB</span><span class="d"> free</span><span class="new"><span class="d"> · </span><span class="w">24.0</span><span class="d"> held for CI</span></span>
+<span class="new"><span class="bl">○ CI runner up, idle 41m</span><span class="d"> │ </span><span class="bold">4</span><span class="d"> slots waiting for jobs │ voicepa                              </span></span>
+<span class="d">5h </span><span class="ok bx">███</span><span class="e bx">███████</span><span class="ok"> 31%</span> 19:20<span class="d"> · 7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 64%</span> Sun 15:00
+
+<span class="d">  REPO          LAST PASS               RUN  READY  WAIT  BLOCKED  NEEDS YOU  QUEUE DONE    WORKERS</span>
+<span class="sel"><span class="bold">› voicepa       </span><span class="w">▲ no progress 1h        </span><span class="d">  0</span><span class="bl">      3</span><span class="w">     4</span><span class="d">        1</span><span class="m bold">          4</span><span class="d">  no date       </span>3 (cap 5)  </span>
+  pr-ninja      <span class="w">▲ no progress 1h        </span><span class="d">  0</span><span class="bl">      9</span><span class="w">    11</span><span class="d">        2</span><span class="m bold">          2</span><span class="d">  no date       </span>3 (cap 5)
+
+<span class="new"><span class="d">note</span>  <span class="w">▲ memory       </span>no worker can start: the idle CI runner holds 24 GiB. <span class="bold">desk-runner down</span> gives it back.  </span>
+<span class="d">    </span>  <span class="m">◆ needs you    </span><span class="bold">/desk-needs-you</span>, in a Claude session, asks you about all 6.
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">s</span> supervisor · <span class="bold">r</span> CI runner · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+    <p class="cap prose">Rebuilt from 25 Oct: about 20 GiB free, the idle VM holding back its whole 24 GiB, and the ladder at 0 against its 8 GiB gate. Today desk-q showed free memory and room, and nothing said why workers had stopped. Here "room for 0" sits next to its cause, the blue "up, idle 41m" shows the VM isn't doing anything with that memory, and the one note names the fix. DS-227's R3 "no progress" note would normally name the hold. When the hold is the CI runner's memory, this note replaces it, so the cause is said once. After DS-253 the held figure follows the running slots, and an idle VM holds back almost nothing.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">3 · Home, a check waiting for a CI runner that is down</h2>
+    <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>09:40
+
+<span class="m bold">◆ 7 tickets need you</span><span class="d">  oldest </span>2h 10m<span class="d"> │ voicepa </span><span class="bold">7</span><span class="d"> │ ◌ 1 blocked</span>
+<span class="ok">● 2 workers running</span><span class="d"> │ machine cap </span><span class="bold">10</span><span class="d"> · room for </span><span class="bold">4 more</span><span class="d"> │ </span><span class="bold">31.0 GiB</span><span class="d"> free</span>
+<span class="new"><span class="m bold">◆ CI runner down</span><span class="d"> since 08:55 │ </span><span class="bold">3</span><span class="d"> voicepa checks queued for it, oldest </span>14m<span class="d"> │ </span><span class="m">nothing will start it</span></span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 22%</span> 11:20<span class="d"> · 7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 61%</span> Sun 15:00
+
+<span class="d">  REPO          LAST PASS               RUN  READY  WAIT  BLOCKED  NEEDS YOU  QUEUE DONE    WORKERS</span>
+<span class="sel"><span class="bold">› voicepa       </span><span class="ok">● supervisor · 2m ago   </span><span class="ok">  2</span><span class="d">      0</span><span class="w">     5</span><span class="d">        1</span><span class="m bold">          7</span><span class="d">  no date       </span>3 (cap 5)  </span>
+
+<span class="new"><span class="d">note</span>  <span class="m">◆ CI runner    </span>3 voicepa PRs wait for checks only the CI runner runs. Run: <span class="bold">desk-runner up</span>             </span>
+<span class="new"><span class="d">    </span>  <span class="d">               or send voicepa's CI back to GitHub: </span><span class="bold">gh variable delete DESK_RUNS_ON -R bigbenjoman/voicepa</span></span>
+<span class="d">    </span>  <span class="m">◆ needs you    </span><span class="bold">/desk-needs-you</span>, in a Claude session, asks you about all 7.
+
+<span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">s</span> supervisor · <span class="bold">r</span> CI runner · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+    <p class="cap prose">Example states. <span class="k">desk-runner down</span> also removes the agent that restarts the VM, so a PR routed to it waits until GitHub gives up on the job 24 hours later. Those 3 PRs count in NEEDS YOU (4 + 3 = 7) and <span class="k">/desk-needs-you</span> asks about them, the same as DS-227's W3 draft. If the restart agent is still loaded, the line reads <span class="k s-w">▲ CI runner down, restarting · next try in 4m</span> and nothing counts as needing you. It's not the red band: passes still run, and only these PRs wait.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">4 · The CI runner screen (<span class="k">r</span>)</h2>
+    <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q › CI runner</span><span class="d"> · </span>07:05
+
+<span class="ok">● up</span><span class="d"> since 06:12 │ </span><span class="bold">3 of 4</span><span class="d"> slots running jobs │ VM </span>8 CPUs · 24 GiB<span class="d"> │ isolation checked </span>4h ago<span class="ok"> ✓</span>
+<span class="d">memory  </span><span class="bold">9.1 GiB</span><span class="d"> in use by the VM · </span><span class="bold">14.9</span><span class="d"> more held for CI · autopilot gets the rest above its 8 GiB gate</span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · 7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="d">  SLOT  REPO      STATE              JOB                  PR      SINCE</span>
+<span class="sel"><span class="bold">› 1     voicepa   </span><span class="ok">● running a job    </span>ci / test            #664    07:01 · 4m       </span>
+  2     voicepa   <span class="ok">● running a job    </span>ci / lint            #671    07:03 · 2m
+  3     voicepa   <span class="ok">● running a job    </span>ci / e2e             #672    07:04 · 1m
+  4     voicepa   <span class="bl">○ waiting for a job</span><span class="d">  —                    —       online since 06:58</span>
+
+<span class="bold">Finished</span><span class="d">  last 5 of 23 today</span>
+  <span class="ok">✓</span> ci / test     #659   voicepa   <span class="d">passed in </span>7m 35s   <span class="d">06:52</span>
+  <span class="b">✕</span> ci / e2e      #662   voicepa   <span class="b">failed</span><span class="d"> in </span>3m 10s   <span class="d">06:47</span>
+  <span class="ok">✓</span> ci / lint     #662   voicepa   <span class="d">passed in </span>1m 02s   <span class="d">06:44</span>
+  <span class="ok">✓</span> ci / test     #662   voicepa   <span class="d">passed in </span>8m 11s   <span class="d">06:44</span>
+  <span class="ok">✓</span> ci / build    #658   voicepa   <span class="d">passed in </span>4m 40s   <span class="d">06:31</span>
+
+<span class="d">key   </span><span class="ok">● running a job</span><span class="d"> │ </span><span class="bl">○ waiting: takes the next job queued</span><span class="d"> │ slots are single-use: each takes one job, then a fresh one starts</span>
+<span class="d">move</span>  ↑↓ select · <span class="new"><span class="bold">enter</span> watch the job live on GitHub · <span class="bold">g</span> open the PR · <span class="bold">w</span> GitHub's runner list</span> · <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">:</span> command · <span class="bold">q</span> quit<span class="d">   │ start, stop and size it with </span><span class="bold">desk-runner up</span><span class="d"> · </span><span class="bold">down</span><span class="d"> · </span><span class="bold">scale</span></pre></div></div>
+    <p class="cap prose"><b>The deeper view is GitHub's own.</b> The CI runner has no web page of its own, and it doesn't need one. A job on the local VM shows on github.com exactly like a hosted job, with the same live log step by step. So <span class="k">enter</span> on a slot opens that job's page in your browser, mid-run. <span class="k">w</span> opens the repo's Settings → Actions → Runners page, where GitHub marks each slot Idle, Active or Offline. In plain output, the URL is printed instead.</p>
+    <p class="cap prose">Example rows. This is where "is it actually doing anything" gets answered in full. When the VM is down, the slot table is replaced by one line saying what's queued for it and the command that starts it. The screen only reads. Like DS-227's U12, desk-q runs no command that changes the VM, so starting and stopping stay with <span class="k">desk-runner</span>, and the screen names the commands.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">5 · A Voice PA queue whose PRs wait on the CI runner</h2>
+    <div class="pair">
+      <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q › voicepa</span><span class="d"> · </span>07:05
+<span class="tab">1 Queue</span>  2 Timeline  3 By day  4 Epics
+<span class="m bold">◆ 4 need you</span>  <span class="ok">● 2 running</span>  <span class="c">◐ 3 landing</span>  <span class="w">· 6 waiting</span>  <span class="d">◌ 1 blocked │ ✓ 61 done, not shown</span>
+<span class="ok">● supervisor</span><span class="d">  last pass </span>1m ago<span class="d"> │ workers </span>2 of 5<span class="d"> · cap 5 │ </span><span class="new"><span class="d">CI runner </span><span class="ok">● 3 of 4 busy</span></span><span class="d"> │ batch 2026-10-22T09:14</span>
+<span class="d">5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 17%</span> 11:20<span class="d"> · 7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 60%</span> Sun 15:00
+
+<span class="d">    #  TICKET   STATE        DETAIL                                               STARTS   SHIPS</span>
+<span class="sel"><span class="bold">›   1  VPL-412  </span><span class="c">◐ landing    </span><span class="c">#664</span> · 4 of 6 passed · <span class="new">test on the CI runner, 4m      </span>landing  today 07:20  </span>
+    2  VPL-415  <span class="c">◐ landing    </span><span class="c">#671</span> · 2 of 6 passed · <span class="new">lint on the CI runner, 2m      </span>landing  today 07:31
+    3  VPL-409  <span class="c">◐ landing    </span><span class="c">#672</span> · 5 of 6 passed · <span class="new">e2e queued: all 4 slots busy   </span>landing  today 07:40</pre></div></div>
+      <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q › voicepa › VPL-415</span><span class="d"> · </span>09:40
+<span class="ok">● supervisor</span><span class="d">  last pass 2m ago │ </span><span class="new"><span class="d">CI runner </span><span class="m">◆ down</span></span><span class="d"> │ 5h </span><span class="ok bx">██</span><span class="e bx">████████</span><span class="ok"> 22%</span><span class="d"> · 7d </span><span class="w bx">██████</span><span class="e bx">████</span><span class="w"> 61%</span>
+<span class="bold">VPL-415</span>  <span class="m">◆ needs you</span><span class="d"> │ Story · size S · lane A · position 2 of 9</span>
+call summaries: keep the speaker labels when a transcript is trimmed
+<span class="new"><span class="m">▌</span> Needs you. Its PR #671 waits for a lint check only the CI runner runs, and the CI   </span>
+<span class="new"><span class="m">▌</span> runner has been down since 08:55 with nothing to start it. Run: <span class="bold">desk-runner up</span>          </span>
+<span class="bold">Checks</span><span class="d">  #671 · 2 of 6 passed · read 09:38</span>
+  <span class="ok">✓</span> typecheck        <span class="d">passed in </span>1m 12s
+  <span class="ok">✓</span> unit             <span class="d">passed in </span>3m 40s
+<span class="new">  <span class="m">◆</span> lint             <span class="m">queued 14m for the CI runner, which is down</span>               </span>
+<span class="new">  <span class="m">◆</span> e2e              <span class="m">queued 14m for the CI runner, which is down</span>               </span>
+<span class="new">  <span class="m">◆</span> test             <span class="m">queued 14m for the CI runner, which is down</span>               </span>
+  <span class="d">·</span> build (macos)    <span class="d">queued on GitHub, 30s</span>
+<span class="d">move</span>  <span class="bold">esc</span> back
+<span class="d">act </span>  <span class="bold">g</span> open PR · <span class="bold">r</span> CI runner · <span class="bold">o</span> Jira · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
+    </div>
+    <p class="cap prose">Example tickets. The repo header only gets its CI runner segment in a repo whose CI the runner takes, which is Voice PA today. The landing DETAIL replaces <span class="k">Linux: no runner, 12m</span> with where the check is running, or why it isn't. A check on GitHub's runners (the macOS leg, or any repo not switched to local) reads as it does today. On the right, DS-227's ticket-screen rail says the ticket won't move until you act, and gives the command.</p>
+  </section>
+
+  <section>
+    <h2 class="prose">Every case: the CI runner line</h2>
+    <div class="ledger"><table>
+      <tr><th></th><th>Situation</th><th>Today</th><th>Proposed</th></tr>
+      <tr><td class="id">C1</td><td>No CI runner on this Mac: the machine profile has it off, no repo has slots, or the computer isn't macOS.</td><td>Nothing.</td><td>Nothing. The line, "held for CI" and <span class="k">r</span> don't appear.</td></tr>
+      <tr><td class="id">C2</td><td>Up, slots running jobs.</td><td>Nothing.</td><td><span class="k s-ok">● CI runner up │ 3 of 4 slots running jobs │ voicepa #664 · #671 · #672</span>. With more than three PRs: the first three, then <span class="k">+2 more</span>.</td></tr>
+      <tr><td class="id">C3</td><td>Up, no job running.</td><td>Nothing.</td><td><span class="k" style="color:var(--accent)">○ CI runner up, idle 41m │ 4 slots waiting for jobs │ voicepa</span>. Plus the memory note when it's what holds workers (screen 2).</td></tr>
+      <tr><td class="id">C4</td><td>Down, and nothing is queued for it.</td><td>Nothing.</td><td><span class="k s-d">◌ CI runner down since 16:12 │ nothing queued for it</span>. Dim, no note: this is a choice you made.</td></tr>
+      <tr><td class="id">C5</td><td>Down, a check is queued, and the restart agent is loaded.</td><td>A landing row reads <span class="k">Linux: no runner, 12m</span>.</td><td><span class="k s-w">▲ CI runner down, restarting │ next try in 4m</span>, with the restart count once two have failed.</td></tr>
+      <tr><td class="id">C6</td><td>Down, a check is queued, and nothing will start it (<span class="k">desk-runner down</span> removed the agent).</td><td>The same <span class="k">no runner</span> text, indefinitely.</td><td><span class="k s-m">◆ CI runner down │ 3 voicepa checks queued for it, oldest 14m │ nothing will start it</span>. Those PRs count in NEEDS YOU, and a note gives both fixes (screen 3).</td></tr>
+      <tr><td class="id">C7</td><td>The isolation check failed or is over 25 h old, so no slot may open.</td><td>Nothing.</td><td><span class="k s-b">✕ CI runner closed │ isolation check failed 2h ago: LAN reachable</span>, and a note: <span class="k">Run: desk-runner verify-isolation</span>. Red, because CI must not run unisolated.</td></tr>
+      <tr><td class="id">C8</td><td>Restarts keep failing (3 or more in a row).</td><td>Nothing.</td><td><span class="k s-b">✕ CI runner down │ 3 restarts failed, next try in 16m</span>, and a note with the first line of the error from its log.</td></tr>
+      <tr><td class="id">C9</td><td>Asleep after its idle timeout (once DS-249 ships).</td><td>n/a</td><td><span class="k s-d">◌ CI runner asleep since 06:40 │ wakes when a check is queued</span></td></tr>
+      <tr><td class="id">C10</td><td>Waking for a queued job (DS-249).</td><td>n/a</td><td><span class="k" style="color:#2a8c99">◐ CI runner waking │ voicepa check queued 40s ago</span>. Landing rows read <span class="k">waiting for the CI runner to wake</span>.</td></tr>
+      <tr><td class="id">C11</td><td>A slot waiting for memory (DS-252).</td><td>n/a</td><td><span class="k s-w">▲ CI runner up │ 1 check waiting for memory · 2 of 4 slots running jobs</span>. Autopilot's own hold says CI is ahead in the turn.</td></tr>
+      <tr><td class="id">C12</td><td>The status file is stale (the agent hasn't written it for over 3 minutes).</td><td>n/a</td><td>Up or down still comes from <span class="k">tart get</span>, so it's always current. Slot counts read <span class="k">as of 06:12</span> in dim.</td></tr>
+      <tr><td class="id">C13</td><td>Piped output or <span class="k">--plain</span>.</td><td>n/a</td><td>The same words and glyphs. The state is always written as a word, so nothing depends on colour.</td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <h2 class="prose">Every case: memory and checks</h2>
+    <div class="ledger"><table>
+      <tr><th></th><th>Situation</th><th>Today</th><th>Proposed</th></tr>
+      <tr><td class="id">M1</td><td>The VM is up and the profile reserves memory for it.</td><td>"Room for" comes from raw free memory, so it's too high by up to 24 GiB.</td><td>"Room for" uses the same <span class="k">ladderMemory()</span> figure the pass gates on, and the workers line adds <span class="k">· 14.9 held for CI</span>.</td></tr>
+      <tr><td class="id">M2</td><td>Room is 0 because of what the CI runner holds.</td><td>Nothing, and the room count is wrong.</td><td>The "held" figure in amber and one note: <span class="k">no worker can start: the idle CI runner holds 24 GiB. desk-runner down gives it back.</span> When jobs are running, the note says so and leaves out the fix.</td></tr>
+      <tr><td class="id">M3</td><td>After DS-253, the claim follows the running slots.</td><td>n/a</td><td>The same line; the held figure gets smaller. Nothing else changes.</td></tr>
+      <tr><td class="id">K1</td><td>A check running on the CI runner.</td><td><span class="k">test (ubuntu) running, 4m</span></td><td><span class="k">test on the CI runner, 4m</span></td></tr>
+      <tr><td class="id">K2</td><td>Queued, with all the repo's slots busy.</td><td><span class="k">Linux: no runner, 12m</span> after 10 minutes.</td><td><span class="k">e2e queued: all 4 slots busy</span>. It moves by itself, so it isn't a warning.</td></tr>
+      <tr><td class="id">K3</td><td>Queued while the CI runner restarts or wakes.</td><td>The same.</td><td><span class="k s-w">waiting for the CI runner to start</span></td></tr>
+      <tr><td class="id">K4</td><td>Queued, and nothing will start the CI runner.</td><td>The same.</td><td>The ticket becomes <span class="k s-m">◆ needs you</span>: <span class="k">queued 14m for the CI runner, which is down</span>, with the command on the rail.</td></tr>
+      <tr><td class="id">K5</td><td>A check on GitHub's runners.</td><td>As today.</td><td>Unchanged, apart from <span class="k">queued on GitHub</span> in the ticket's check list, so the two kinds read differently.</td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <h2 class="prose">One choice: where the CI runner goes on home</h2>
+    <div class="opts">
+      <div class="opt rec">
+        <div class="tag">Option A · recommended · shown above</div>
+        <h3>Its own header line, under the workers line</h3>
+        <p>It sits beside the other machine-wide line. The memory link reads straight down: "room for 0", then "idle, holding 24 GiB". The repo table stays about repos.</p>
+        <p class="cap">Costs one line of height when a CI runner exists, and none when it doesn't.</p>
+      </div>
+      <div class="opt">
+        <div class="tag">Option B</div>
+        <h3>A "CI runner" row in the repo table</h3>
+        <p>You could select it with the arrow keys and open it with enter, the same as a repo.</p>
+        <p class="cap">But LAST PASS, RUN, READY, WAIT and the other columns mean nothing for it, so it would be a row of dashes. It also puts a machine resource in a list of repos, and the memory cause ends up four lines away from "room for 0".</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="prose">How desk-q knows, with no model and no tokens</h2>
+    <div class="src">
+      <div><b>Up or down</b><br><span class="cap">One <span class="k">tart get</span> per refresh, which desk-env's <span class="k">runnerState()</span> already does for the pass.</span></div>
+      <div><b>Memory held</b><br><span class="cap"><span class="k">ladderMemory()</span>, the pass's own figure, so desk-q and the spawn gate can't disagree.</span></div>
+      <div><b>Slots and jobs</b><br><span class="cap">New: <span class="k">desk-runner keep</span>, which launchd already runs every minute, writes <span class="k">runner/status.json</span>. It holds each slot's state, job name (from the slot's own log, at no API cost), PR and the job's page on GitHub (one API call per job started, within DS-61's budget), recent finished jobs, the gate reason and the restart backoff.</span></div>
+      <div><b>Will anything start it</b><br><span class="cap">Whether the keep agent is loaded: one <span class="k">launchctl print</span>, as DS-227 already does for the supervisor.</span></div>
+      <div><b>Which checks need it</b><br><span class="cap">New: the status file records each repo's <span class="k">DESK_RUNS_ON</span> routing, read once an hour. A queued Linux check in a repo routed to local is waiting for the CI runner. The pass records today only whether a check has a runner (<span class="k">pass.mjs:1384</span>).</span></div>
+      <div><b>Isolation and restarts</b><br><span class="cap"><span class="k">isolation.status</span> and <span class="k">restart.backoff</span>, which <span class="k">desk-runner status</span> already reads.</span></div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>Not changing</h2>
+    <ul>
+      <li>DS-227's screens, colours, red band and notes rules. This only adds to them.</li>
+      <li>What the CI runner does. Sleep and wake (DS-249), memory turns (DS-252) and the claim (DS-253) are their own tickets. This shows their states once they ship.</li>
+      <li>desk-q stays read-only for the VM. It names <span class="k">desk-runner up</span>, <span class="k">down</span> and <span class="k">scale</span> and doesn't run them.</li>
+    </ul>
+  </section>
+
+  <section class="approve prose">
+    <h2>Tickets this would file, once approved</h2>
+    <p>Under DS-227, each one PR:</p>
+    <ol>
+      <li><b>desk-q: "room for" counts the memory the CI runner holds back</b> (S, P1). M1–M2. Needs nothing new, so it can go first, and it fixes the 25 Oct gap on its own.</li>
+      <li><b>desk-runner: keep writes a status file every minute</b> (M). Slots, jobs, routing, gate and backoff. Linked to DS-61, whose <span class="k">desk-runner status</span> view it feeds.</li>
+      <li><b>desk-q: the CI runner line on home and the repo header</b> (M), C1–C13. Blocked by 2.</li>
+      <li><b>desk-q: a landing check says whether it waits for the CI runner, and one nothing will run reads as needs you</b> (M), K1–K5. Blocked by 2.</li>
+      <li><b>desk-q: the CI runner screen on <span class="k">r</span></b> (M). Blocked by 2.</li>
+    </ol>
+    <p class="cap">C9–C11 show up once DS-249 and DS-252 ship, and each of those tickets would carry the desk-q line for its own state.</p>
+  </section>
+</main>
