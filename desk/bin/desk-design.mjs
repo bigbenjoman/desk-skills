@@ -72,7 +72,9 @@ export function references(text) {
 
 // An image in the artifact's asset store, `/_blob/<id>`, wherever a board names it: an attribute,
 // CSS, or a string in its script. Saved as assets/<id><ext> beside canvas.json.
-const BLOB = /(?:https?:\/\/[^/\s"'`]+)?\/_blob\/([0-9a-f]{32})\b/gi;
+const BLOB_ID = '[0-9a-f]{32}';
+const BLOB = new RegExp(`(?:https?://[^/\\s"'\`]+)?/_blob/(${BLOB_ID})\\b`, 'gi');
+const isAssetId = (s) => new RegExp(`^${BLOB_ID}$`).test(s);
 export const blobIds = (text) => [...new Set([...text.matchAll(BLOB)].map((m) => m[1].toLowerCase()))];
 
 // The extension an asset file is saved under: its own, else what its first bytes say it is.
@@ -119,7 +121,7 @@ export function collect(src) {
   const assetAt = new Map();
   for (const f of all) {
     const id = basename(f).replace(/\.[^.]*$/, '').toLowerCase();
-    if (/^[0-9a-f]{32}$/.test(id) && (!assetAt.has(id) || f.length < assetAt.get(id).length)) assetAt.set(id, f);
+    if (isAssetId(id) &&(!assetAt.has(id) || f.length < assetAt.get(id).length)) assetAt.set(id, f);
   }
   const runtime = all.filter((f) => basename(f) === RUNTIME).sort((a, b) => a.length - b.length)[0];
   queue.forEach((f) => files.add(f));
@@ -138,7 +140,7 @@ export function collect(src) {
       if (rel !== at) copyFrom[rel] = at;
     }
     for (const ref of references(text)) {
-      if (isInline(ref) || /\/_blob\/[0-9a-f]{32}\b/i.test(ref)) continue;
+      if (isInline(ref) || blobIds(ref).length) continue;
       if (isRemote(ref)) { if (!remote.includes(ref)) remote.push(ref); continue; }
       let path = ref.replace(/[?#].*$/, '');
       try { path = decodeURIComponent(path); } catch { /* keep it as written */ }
