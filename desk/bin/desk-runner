@@ -196,9 +196,9 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 apt-get update -qq
 apt-get install -y -qq docker.io curl >/dev/null
 systemctl enable --now docker >/dev/null
-if [ "$(dpkg-query -W -f '${Version}' sysbox-ce 2>/dev/null)" != "$sysbox" ]; then
-  # sysbox's installer restarts Docker and refuses while containers run; a slot left from before is reaped by keep.
-  docker ps -q | xargs -r docker rm -f >/dev/null
+if [ "$(dpkg-query -W -f '${Status} ${Version}' sysbox-ce 2>/dev/null)" != "install ok installed $sysbox.linux" ]; then
+  # sysbox's installer restarts Docker and refuses while any container exists; keep deregisters a slot's runner left from before.
+  docker ps -aq | xargs -r docker rm -f >/dev/null
   deb=/tmp/sysbox-ce.deb
   curl -fsSL -o "$deb" "https://github.com/nestybox/sysbox/releases/download/v$sysbox/sysbox-ce_$sysbox.linux_arm64.deb"
   echo "$sysbox_sha  $deb" | sha256sum -c --quiet
