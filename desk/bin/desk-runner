@@ -7,13 +7,19 @@
 #   desk-runner down               stop the VM, remove its agents, and check nothing is left running
 #   desk-runner settings           show the Mac settings a runner needs; change them if you confirm
 #   desk-runner gate               exit 0 only while a new runner slot may start
-#   desk-runner keep               bring the VM back if it is down, then refill the runner slots (launchd runs this every minute)
+#   desk-runner keep               wake or bring back the VM, refill the slots, put it to sleep when idle (launchd, every minute)
 #   desk-runner scale <owner/repo> [n]   keep n single-use runners online for a private repo (0 removes them)
 #   desk-runner slots              reap finished runners and start the missing ones now
 #
 # Once isolation passes, `up` installs two launchd agents: `keep` at login and every minute, which
 # restarts the VM with exponential backoff, and a nightly verify-isolation. `gate` stays closed
 # unless the VM runs behind the block and its last verification passed within MAX_AGE.
+#
+# Once no slot has run a job for the profile's runner-idle-minutes (10 unless set; `off` keeps the VM
+# up), `keep` deregisters the runners and stops the VM, which gives all its memory back to the Mac.
+# Asleep, it asks GitHub each minute for jobs queued for SLOT_POOL in the repos with slots, and wakes
+# the VM for the first one. A wake reuses a verify-isolation pass under MAX_AGE, since the boundary it
+# proved is the Softnet block the VM is started behind; an older or failed one is run again in full.
 #
 # Each slot is one GitHub Actions runner registered from a JIT config, which GitHub makes single-use
 # and scoped to that runner: it takes one job, then `keep` (or `slots`) reaps it with its containers
@@ -63,6 +69,9 @@ NIGHTLY_HOUR=3
 MAX_AGE=$((25 * 3600))
 BACKOFF_BASE=60
 BACKOFF_CAP=3600
+ASLEEP="$STATE/asleep"   # <epoch it stopped> <why>: stopped by keep for want of jobs, not down
+ACTIVE="$STATE/active"   # <epoch>: the last wake, or the last time a slot was seen on or after a job
+WOKE="$STATE/woke"       # <epoch> <how isolation was settled>: the last wake
 
 say() { printf 'desk-runner: %s\n' "$*"; }
 # ON_DIE names a function to run before exiting, so `keep` can record a failed attempt.
@@ -367,7 +376,10 @@ ago() { # a number of seconds, as 5m, 3h or 2d
 }
 gate_reason() { # why no new runner slot may start, or nothing when one may
   local result at detail age
-  vm_running || { echo "$VM is not running"; return; }
+  if ! vm_running; then
+    if [ -s "$ASLEEP" ]; then echo "$VM is asleep until a job is queued for $SLOT_POOL"; else echo "$VM is not running"; fi
+    return
+  fi
   behind_block || { echo "$VM is not running behind the Softnet block"; return; }
   [ -s "$STATE/isolation.status" ] || { echo "isolation has never been verified"; return; }
   read -r result at detail < "$STATE/isolation.status"
@@ -417,10 +429,10 @@ free_cpus() {
 }
 # deregister <repo> <runner-id>: exit non-zero when GitHub refuses, as it does for a runner mid-job.
 deregister() { gh api -X DELETE "repos/$1/actions/runners/$2" >/dev/null 2>&1; }
-our_runners() { # our_runners <repo>: <id> <status> for each runner of this VM registered there; fails when GitHub does
+our_runners() { # our_runners <repo>: <id> <status> <busy> for each runner of this VM registered there; fails when GitHub does
   local all
-  all=$(gh api --paginate "repos/$1/actions/runners" --jq '.runners[] | "\(.id) \(.name) \(.status)"' 2>/dev/null) || return 1
-  printf '%s\n' "$all" | awk -v p="$VM-" 'index($2, p) == 1 {print $1, $3}'
+  all=$(gh api --paginate "repos/$1/actions/runners" --jq '.runners[] | "\(.id) \(.name) \(.status) \(.busy)"' 2>/dev/null) || return 1
+  printf '%s\n' "$all" | awk -v p="$VM-" 'index($2, p) == 1 {print $1, $3, $4}'
 }
 
 start_slot() { # start_slot <repo> <cpus>: register a single-use runner and start its slot in the VM on those CPUs
@@ -444,6 +456,7 @@ start_slot() { # start_slot <repo> <cpus>: register a single-use runner and star
     return 1
   fi
   say "slot $id: a runner for $repo is online as $name (CPUs $cpus, $SLOT_MEM_GB GB)"
+  STARTED=$((STARTED + 1))
 }
 
 set_wanted() { # set_wanted <repo> <n>: a repo at 0 stays listed until its slots and runners are gone
@@ -463,9 +476,11 @@ trusted() {
   done
 }
 
+# Set by reconcile for keep's idle check: how many slots it started, and whether a runner list failed.
+STARTED=0; RUNNERS_UNKNOWN=""
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
-  local reason live listed='' id repo rid state cpus mem gone have n extra rids left private rc=0
+  local reason live listed='' id repo rid state busy runners cpus mem gone have n extra rids left private rc=0
   # A repo made public since scale gets no new slot, and its slots are drained.
   for repo in $(slot_repos); do
     [ "$(wanted "$repo")" -gt 0 ] || continue
@@ -491,7 +506,7 @@ reconcile() { # reap finished slots, drop extra idle ones, start missing ones; s
   while read -r id repo rid state cpus mem; do
     [ -n "$id" ] || continue
     if [ "$state" != running ]; then
-      slot reap "$id"; deregister "$repo" "$rid"
+      slot reap "$id"; deregister "$repo" "$rid"; touch_active
       say "slot $id for $repo finished; reaped"
     # A slot not of the current size (none, from before slots had limits, or the profile's size
     # changed) is replaced once idle, so the slots running are the ones fit counted.
@@ -521,10 +536,12 @@ EOF
     n=$(allotted "$FIT" "$repo")
     # A runner of ours that GitHub lists offline with no slot behind it (the VM stopped or crashed) is deregistered.
     rids=" $(printf '%s\n' "$live" | awk '{print $3}' | tr '\n' ' ') "
-    while read -r rid state; do
+    runners=$(our_runners "$repo") || RUNNERS_UNKNOWN=1
+    while read -r rid state busy; do
+      [ "$busy" = true ] && touch_active
       [ -n "$rid" ] && [ "$state" = offline ] && [[ "$rids" != *" $rid "* ]] && deregister "$repo" "$rid"
     done <<EOF
-$(our_runners "$repo")
+$runners
 EOF
     have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
     # Only a pass that looked in the VM can know a repo at 0 has no slot left there. A repo the VM
@@ -658,6 +675,92 @@ keep_failed() { # each failed attempt doubles the wait before the next, up to BA
   echo "$failures $(( $(date +%s) + delay ))" > "$BACKOFF"
   say "attempt $failures to bring $VM back failed; the next is in $(ago $delay)"
 }
+wait_gone() { # until the VM's tart run exits; tart stop shuts the guest down cleanly first, which can take well over 30 seconds
+  local waited=0
+  while [ -n "$(run_process)" ]; do
+    [ $waited -ge 120 ] && return 1
+    sleep 1; waited=$((waited + 1))
+  done
+}
+
+# ---- sleeping when idle, waking on a queued job ----------------------------------------------
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+at_time() { python3 -c 'import sys,time; print(time.strftime("%Y-%m-%d %H:%M", time.localtime(int(sys.argv[1]))))' "$1"; }
+since() { # since <UTC time as GitHub writes it>: how many seconds ago
+  python3 -c 'import sys,time,calendar; print("%ds" % (time.time() - calendar.timegm(time.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ"))))' "$1" 2>/dev/null || echo "an unknown time"
+}
+touch_active() { mkdir -p "$STATE"; date +%s > "$ACTIVE"; }
+idle_minutes() { # the profile's runner-idle-minutes (the rules' default when unset), or off when it is not valid
+  local v
+  v=$(machine idle-minutes 2>&1) && { echo "$v"; return; }
+  say "$v: $VM does not sleep" >&2; echo off
+}
+queued_jobs() { # queued_jobs <repo>: when each job waiting for SLOT_POOL was queued; fails when GitHub does
+  local runs run jobs out=""
+  # A job can queue in a run already under way, after a job of it that ran on GitHub-hosted.
+  runs=$(gh api --paginate "repos/$1/actions/runs?status=queued&per_page=100" --jq '.workflow_runs[].id' 2>/dev/null \
+    && gh api --paginate "repos/$1/actions/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id' 2>/dev/null) || return 1
+  for run in $runs; do
+    case $run in *[!0-9]*) continue ;; esac
+    jobs=$(gh api --paginate "repos/$1/actions/runs/$run/jobs?per_page=100" \
+      --jq ".jobs[] | select(.status == \"queued\" and any(.labels[]; . == \"$SLOT_POOL\")) | .created_at" 2>/dev/null) || return 1
+    out="$out$jobs
+"
+  done
+  printf '%s' "$out" | awk 'NF'
+}
+oldest_queued() { # <queued at> <repo> of the oldest job waiting for SLOT_POOL in a repo with slots, or nothing
+  local repo t all=""
+  for repo in $(slot_repos); do
+    [ "$(wanted "$repo")" -gt 0 ] || continue
+    t=$(queued_jobs "$repo") || { say "could not read $repo's queued jobs from GitHub; tried again in a minute" >&2; continue; }
+    [ -n "$t" ] && all="$all$(printf '%s\n' "$t" | sed "s|\$| $repo|")
+"
+  done
+  printf '%s' "$all" | awk 'NF' | sort | head -n 1
+}
+reusable_pass() { # the age of the last verify-isolation pass, when the gate takes it as it stands
+  local at
+  [ -z "$(gate_reason)" ] || return 1
+  read -r _ at _ < "$STATE/isolation.status"
+  ago $(( $(date +%s) - at ))
+}
+sleep_if_idle() { # after reconcile: once no slot has run a job for the idle timeout, deregister the runners and stop the VM
+  local mins last repo runners all="" live rid id reaped=" "
+  mins=$(idle_minutes); [ "$mins" = off ] && return 0
+  # Without every repo's runner list, a slot mid-job cannot be ruled out.
+  [ -z "$RUNNERS_UNKNOWN" ] || return 0
+  last=$(cat "$ACTIVE" 2>/dev/null)
+  case $last in ''|*[!0-9]*) touch_active; return 0 ;; esac
+  [ $(( $(date +%s) - last )) -ge $((mins * 60)) ] || return 0
+  # Every repo is checked for a runner mid-job before any is deregistered, so none is left half done.
+  for repo in $(slot_repos); do
+    runners=$(our_runners "$repo") || return 0
+    all="$all$(printf '%s\n' "$runners" | awk -v r="$repo" 'NF {print r, $0}')
+"
+  done
+  printf '%s' "$all" | awk '$4 == "true"' | grep -q . && { touch_active; return 0; }
+  live=$(trusted "$(slot list 2>/dev/null)")
+  # GitHub refuses to deregister a runner mid-job, so one that took a job since keeps the VM up; a slot
+  # whose runner is already deregistered by then is reaped, so reconcile starts it again.
+  while read -r repo rid _; do
+    [ -n "$rid" ] || continue
+    if ! deregister "$repo" "$rid"; then
+      for id in $(printf '%s\n' "$live" | awk -v k="$reaped" 'NF && index(k, " " $3 " ") {print $1}'); do slot reap "$id"; done
+      say "a runner in $repo took a job; $VM stays up"; touch_active; return 0
+    fi
+    reaped="$reaped$rid "
+  done <<EOF
+$all
+EOF
+  for id in $(printf '%s\n' "$live" | awk 'NF {print $1}'); do slot reap "$id"; done
+  say "no slot has run a job for ${mins}m: $VM's runners are deregistered, and it stops until a job is queued for $SLOT_POOL"
+  tart stop "$VM" || { say "tart stop $VM failed"; return 1; }
+  mkdir -p "$STATE"
+  echo "$(date +%s) no job for ${mins}m" > "$ASLEEP"
+  wait_gone || { say "tart run $VM is still running two minutes after it was stopped"; return 1; }
+  say "$VM is asleep"
+}
 
 # ---- commands --------------------------------------------------------------------------------
 cmd_up() {
@@ -667,6 +770,7 @@ cmd_up() {
   if [ -t 0 ]; then mac_settings ask; else mac_settings tell; fi
   ensure_vm
   start_vm
+  rm -f "$ASLEEP"; touch_active
   provision
   if ! verify_isolation; then
     say "no runner started: the VM stays up for inspection; desk-runner down stops it"
@@ -680,9 +784,22 @@ cmd_up() {
 
 cmd_keep() {
   lock skip
-  local reason failures next now
+  local reason failures next now rc queued="" qat="" qrepo="" reuse
+  if [ -s "$ASLEEP" ] && ! vm_running; then
+    if [ "$(idle_minutes)" = off ]; then
+      rm -f "$ASLEEP"
+    else
+      queued=$(oldest_queued)
+      [ -n "$queued" ] || return 0
+      read -r qat qrepo <<< "$queued"
+    fi
+  fi
   reason=$(gate_reason)
-  if [ -z "$reason" ]; then rm -f "$BACKOFF"; reconcile; return; fi
+  if [ -z "$reason" ]; then
+    # A wake that died after the VM started leaves it up, still marked asleep, with the clock from before it slept.
+    [ -e "$ASLEEP" ] && { rm -f "$ASLEEP"; touch_active; }
+    rm -f "$BACKOFF"; reconcile; rc=$?; sleep_if_idle || rc=1; return $rc
+  fi
   if [ -s "$BACKOFF" ]; then
     read -r failures next < "$BACKOFF"; now=$(date +%s)
     case $next in ''|*[!0-9]*) next=0 ;; esac
@@ -691,18 +808,28 @@ cmd_keep() {
       return 0
     fi
   fi
-  say "bringing $VM back: $reason"
+  if [ -n "$qat" ]; then say "waking $VM: a job for $SLOT_POOL in $qrepo was queued at $qat"
+  else say "bringing $VM back: $reason"; fi
   ON_DIE=keep_failed
   require_runner_possible
   require_tart
   ensure_vm
   start_vm
+  [ -n "$qat" ] && say "$VM answered at $(stamp)"
   provision
-  if ! verify_isolation; then ON_DIE=""; keep_failed; exit 1; fi
+  if [ -n "$qat" ] && reuse=$(reusable_pass); then
+    say "slots open on the verify-isolation pass from $reuse ago: it is under 25h old, and $VM runs behind the Softnet block"
+    echo "$(date +%s) used the pass from $reuse ago" > "$WOKE"
+  else
+    if ! verify_isolation; then ON_DIE=""; keep_failed; exit 1; fi
+    [ -n "$qat" ] && echo "$(date +%s) ran verify-isolation in full" > "$WOKE"
+  fi
   ON_DIE=""
-  rm -f "$BACKOFF"
+  rm -f "$BACKOFF" "$ASLEEP"; touch_active
   say "$VM is back and isolated"
-  reconcile
+  reconcile; rc=$?
+  [ -n "$qat" ] && [ "$STARTED" -gt 0 ] && say "a slot came online at $(stamp), $(since "$qat") after the job was queued"
+  return $rc
 }
 
 cmd_scale() {
@@ -739,10 +866,15 @@ cmd_gate() {
 }
 
 cmd_status() {
-  local state="absent" info result at detail reason failures next keep nightly
+  local state="absent" info result at detail reason failures next keep nightly mins
   if info=$(vm_info); then
     state=$( [ "$(echo "$info" | json_field Running)" = true ] && echo running || echo stopped )
+    [ "$state" = stopped ] && [ -s "$ASLEEP" ] && state=asleep
     echo "$VM: $state ($(echo "$info" | json_field CPU) CPUs, $(echo "$info" | json_field Memory) MB, $(echo "$info" | json_field Disk) GB disk)"
+    if [ "$state" = asleep ]; then
+      read -r at detail < "$ASLEEP"
+      echo "asleep: since $(at_time "$at") ($detail); it wakes when a job is queued for $SLOT_POOL"
+    fi
   else
     echo "$VM: absent (desk-runner up creates it)"
   fi
@@ -754,6 +886,13 @@ cmd_status() {
   fi
   reason=$(gate_reason)
   if [ -z "$reason" ]; then echo "runner slots: open"; else echo "runner slots: closed ($reason)"; fi
+  mins=$(idle_minutes 2>/dev/null)
+  if [ "$mins" = off ]; then echo "idle: never sleeps (runner-idle-minutes is off)"
+  else echo "idle: sleeps once no slot has run a job for ${mins}m"; fi
+  if [ -s "$WOKE" ]; then
+    read -r at detail < "$WOKE"
+    echo "last wake: $(at_time "$at"), which $detail"
+  fi
   keep="not installed"; agent_loaded "$LABEL" && keep=loaded
   nightly="not installed"; agent_loaded "$LABEL.nightly" && nightly=loaded
   echo "agents: restart at login and every minute $keep; verify-isolation nightly at 0$NIGHTLY_HOUR:30 $nightly"
@@ -778,7 +917,7 @@ cmd_down() {
   # The agents go first, or keep would start the VM again a minute later.
   remove_agent "$LABEL"
   remove_agent "$LABEL.nightly"
-  rm -f "$BACKOFF"
+  rm -f "$BACKOFF" "$ASLEEP"
   # Deregistered before the VM stops, so GitHub sends no job to a runner that is going away. The
   # slots file stays, so the next up brings the same slots back.
   deregister_all
@@ -788,18 +927,17 @@ cmd_down() {
   else
     say "$VM is not running"
   fi
-  local waited=0 left
-  while left=$(run_process | awk '{print $1}') && [ -n "$left" ]; do
-    # tart stop shuts the guest down cleanly first, which can take well over 30 seconds.
-    [ $waited -ge 120 ] && die "tart run $VM is still running (pid $left) two minutes after it was stopped"
-    sleep 1; waited=$((waited + 1))
-  done
+  wait_gone || die "tart run $VM is still running (pid $(run_process | awk '{print $1}')) two minutes after it was stopped"
   say "nothing is left running for $VM"
 }
 
 case "${1:-}" in
   up) cmd_up ;;
-  verify-isolation) lock wait; require_tart; verify_isolation ;;
+  verify-isolation)
+    lock wait; require_tart
+    # The nightly run leaves a sleeping VM asleep: the next wake verifies in full once the last pass is 25h old.
+    if [ -s "$ASLEEP" ] && ! vm_running; then say "$VM is asleep: not started to verify isolation"; exit 0; fi
+    verify_isolation ;;
   status) cmd_status ;;
   down) cmd_down ;;
   settings) mac_settings ask ;;

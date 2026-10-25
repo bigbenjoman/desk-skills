@@ -1341,14 +1341,21 @@ if (isMain) {
           console.log([f.fit, f.cpus, f.memoryGB, f.reserveGB, f.why].join('\t'));
           break;
         }
+        if (sub === 'idle-minutes') {
+          const v = machineValue('runner-idle-minutes');
+          const idle = M.idleChosen(machineProfile());
+          if (v != null && idle === undefined) { console.error(`the machine profile's runner-idle-minutes is '${v}', not a number of minutes or off`); process.exit(2); }
+          console.log(idle ?? M.RULES.idleMinutes);
+          break;
+        }
         if (!['detect', 'propose', 'write'].includes(sub)) {
-          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>|slot-fit <VM CPUs> <VM GB>');
+          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>|slot-fit <VM CPUs> <VM GB>|idle-minutes');
           process.exit(2);
         }
         const hw = M.gather();
         const profile = machineProfile();
         // The runner is off unless --runner asks for it or the profile already has one.
-        const proposal = M.propose(hw, { runner: M.runnerChosen(profile, rest.includes('--runner')), slot: M.slotChosen(profile) });
+        const proposal = M.propose(hw, { runner: M.runnerChosen(profile, rest.includes('--runner')), slot: M.slotChosen(profile), idle: M.idleChosen(profile) });
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }

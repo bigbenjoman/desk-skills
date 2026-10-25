@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, runnerChosen, slotChosen, slotFit } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, runnerChosen, slotChosen, idleChosen, slotFit } from '../desk/bin/machine.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -57,6 +57,7 @@ const miniOff = sized(macMini);
 t('desktop: runner off by default', miniOff['runner-possible'].value, 'no');
 t('desktop: reason says off by default and how to opt in', miniOff['runner-possible'].why, 'meets the minimum (64 GB, 12 cores, 410 GB free) but the runner is off by default: --runner sizes it on');
 t('desktop off: no VM', ['runner-vm-cpus', 'runner-vm-memory-gb', 'runner-vm-disk-gb', 'runner-slots-per-repo', 'runner-memory-reserved-gb'].map((k) => miniOff[k].value).join(' '), '0 0 0 0 0');
+t('desktop off: no idle timeout', miniOff['runner-idle-minutes'].value, 'off');
 t('desktop off: ceiling holds nothing back', `${miniOff['memory-ceiling-gb'].value} ${miniOff['memory-ceiling-gb'].why}`, '56 64 GB - 8 for the OS; nothing reserved for a runner');
 t('desktop off: workers from the whole ceiling', miniOff['autopilot-concurrency'].value, '9 / 18');
 
@@ -73,6 +74,7 @@ const bigSlot = Object.fromEntries(propose(macMini, { runner: true, slot: { cpus
 t('slotFit: what desk-runner enforces, floored at 0', `${slotFit(8, 24).fit} ${slotFit(12, 40).fit} ${slotFit(8, 24, { memoryGB: 30 }).fit} ${slotFit(8, 24).why}`, '3 5 0 min(8 CPUs / 2, (24 GB - 2 for the VM) / 7 GB)');
 t('a slot size the profile sets is kept and sizes the slots', `${bigSlot['runner-slot-cpus'].value} ${bigSlot['runner-slot-memory-gb'].value} ${bigSlot['runner-slots-per-repo'].value} ${bigSlot['runner-slot-cpus'].why}`, '4 10 2 kept from the profile');
 t('desktop: reserved = VM memory', mini['runner-memory-reserved-gb'].value, '24');
+t('desktop: the VM sleeps after 10 idle minutes', `${mini['runner-idle-minutes'].value} ${mini['runner-idle-minutes'].why}`, '10 stop the VM after 10 minutes with no job, which gives its memory back; off keeps it up');
 t('desktop: ceiling after OS and runner', mini['memory-ceiling-gb'].value, '32');
 t('desktop: workers at 3 GB each', mini['autopilot-concurrency'].value, '5 / 10');
 t('desktop: test cap = performance cores', mini['test-cap'].value, '8');
@@ -170,11 +172,18 @@ t('no change against itself', hardwareChanges(back, macMini).length + sizingChan
 const offBack = parseProfile(renderProfile(macMini, propose(macMini), '2026-10-17'));
 t('runner off in the profile stays off', again(offBack)[0].value, 'no');
 t('runner off: detect reports no change', hardwareChanges(offBack, macMini).length + sizingChanges(offBack, again(offBack)).length, 0);
-t('runner off: --runner turns it on', sizingChanges(offBack, again(offBack, macMini, true)).map((c) => c.key).join(), 'runner-possible,runner-vm-cpus,runner-vm-memory-gb,runner-vm-disk-gb,runner-slots-per-repo,runner-memory-reserved-gb,autopilot-concurrency,memory-ceiling-gb');
+t('runner off: --runner turns it on', sizingChanges(offBack, again(offBack, macMini, true)).map((c) => c.key).join(), 'runner-possible,runner-vm-cpus,runner-vm-memory-gb,runner-vm-disk-gb,runner-slots-per-repo,runner-memory-reserved-gb,runner-idle-minutes,autopilot-concurrency,memory-ceiling-gb');
 t('no profile: runner off', runnerChosen(null), false);
 t('no profile: no slot size kept', JSON.stringify(slotChosen(null)), '{}');
 const sizedBack = parseProfile(doc.replace('| `runner-slot-cpus` | `2` |', '| `runner-slot-cpus` | `3` |'));
 t('a slot size in the profile is chosen', JSON.stringify(slotChosen(sizedBack)), '{"cpus":3,"memoryGB":7}');
+t('no profile: no idle timeout kept', idleChosen(null), undefined);
+for (const v of ['5', 'off']) {
+  const idleBack = parseProfile(doc.replace('| `runner-idle-minutes` | `10` |', `| \`runner-idle-minutes\` | \`${v}\` |`));
+  const kept = Object.fromEntries(propose(macMini, { runner: true, idle: idleChosen(idleBack) }).map((r) => [r.key, r]));
+  t(`an idle timeout of ${v} in the profile is kept`, `${kept['runner-idle-minutes'].value} ${kept['runner-idle-minutes'].why}`, `${v} kept from the profile`);
+}
+t('an idle timeout that is not minutes or off is not kept', idleChosen(parseProfile(doc.replace('| `runner-idle-minutes` | `10` |', '| `runner-idle-minutes` | `soon` |'))), undefined);
 t('free disk drift is not a hardware change', hardwareChanges(back, { ...macMini, 'disk-free-gb': 300 }).length, 0);
 const more = { ...macMini, 'memory-gb': 128 };
 t('memory change reported', hardwareChanges(back, more).map((c) => `${c.key}:${c.was}->${c.now}`).join(), 'memory-gb:64->128');

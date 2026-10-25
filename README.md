@@ -284,7 +284,7 @@ desk-runner status             the VM's state, the last isolation result with it
 desk-runner down               stop the VM, remove its agents, check nothing is left running for it
 desk-runner settings           show the Mac settings a runner needs; change them if you say yes
 desk-runner gate               exit 0 only while a new runner slot may start
-desk-runner keep               bring the VM back if it is down, then refill the slots (its launchd agent runs this)
+desk-runner keep               wake or bring back the VM, refill the slots, put it to sleep when idle (its launchd agent runs this)
 desk-runner scale <owner/repo> [n]   keep n single-use runners online for a private repo; 0 removes them
 desk-runner slots              reap finished runners and start the missing ones now
 ```
@@ -332,7 +332,17 @@ Once isolation passes, `up` installs two launchd agents in your login session. O
 more than 25 hours old, it starts and verifies the VM, waiting 1, 2, 4… minutes (at most an hour)
 after each failed attempt. The other runs `verify-isolation` every night at 03:30. `gate` stays
 closed, so no new runner slot starts, unless the VM runs behind the block and its last check passed
-within 25 hours. `down` removes both agents before it stops the VM. FileVault means the VM comes back
+within 25 hours. `down` removes both agents before it stops the VM.
+
+**Sleeping when idle.** Once no slot has run a job for the machine profile's `runner-idle-minutes`
+(10 unless set), `keep` deregisters the runners and stops the VM, which gives all its memory back to
+the Mac; `status` shows it `asleep` with the time it stopped. Asleep, `keep` asks GitHub each minute
+for jobs queued for `desk-local-pr` in the repos with slots (two calls a repo when nothing is
+queued), and wakes the VM for the first one. GitHub keeps a queued job for 24 hours, so nothing fails
+while it boots. A wake reuses a verify-isolation pass under 25 hours old, since the VM is started
+behind the same Softnet block that pass proved, and its log records when the job queued, when the VM
+answered and when the slot came online; an older or failed pass is run again in full before any slot.
+The nightly check leaves a sleeping VM asleep. `runner-idle-minutes` set to `off` keeps the VM up. FileVault means the VM comes back
 only after you log in following a restart. `up` also shows the Mac settings a runner needs (never
 sleep, restart after power loss, no automatic macOS update installs) and, in a terminal, changes
 them with `sudo` only if you say yes.

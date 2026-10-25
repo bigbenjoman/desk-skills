@@ -123,11 +123,19 @@ EOF
 printf '#!/bin/sh\nprintf "   route to: default\\n    gateway: 192.168.4.1\\n"\n' > "$T/stub/route"
 # gh: each call logged one per line; a repo is private unless STUB_PRIVATE says otherwise; each JIT
 # request answers runner id 100, 101, …; a DELETE of an id in STUB_BUSY is refused, as GitHub refuses
-# a runner mid-job; the runners listed are the lines of $T/gh-runners (<id> <name> <status>).
+# a runner mid-job; the runners listed are the lines of $T/gh-runners (<id> <name> <status> [<busy>]),
+# turned into GitHub's JSON and put through the real jq filter.
+# Runs and jobs come from JSON files, through the real jq: $T/runs-queued.json, $T/runs-progress.json
+# and $T/jobs-<run>.json.
 cat > "$T/stub/gh" <<'EOF'
 #!/bin/bash
 G="$STUB_TART/.."; echo "$*" >> "$G/gh.log"
 case "$*" in
+  "api --paginate repos/"*"/actions/runs/"*"/jobs?"*) r=${3#*/runs/}; jq -r "$5" "$G/jobs-${r%%/*}.json" ;;
+  "api --paginate repos/"*"/actions/runs?status="*)
+    [ -n "${STUB_RUNS_RC:-}" ] && exit 1
+    f="$G/runs-queued.json"; case $3 in *status=in_progress*) f="$G/runs-progress.json" ;; esac
+    [ -s "$f" ] || echo '{"workflow_runs":[]}' > "$f"; jq -r "$5" "$f" ;;
   "api repos/"*" --jq .private") echo "${STUB_PRIVATE:-true}" ;;
   "api -X POST repos/"*"/generate-jitconfig"*)
     [ -n "${STUB_JIT_RC:-}" ] && { echo "HTTP 403: Resource not accessible" >&2; exit 1; }
@@ -135,7 +143,11 @@ case "$*" in
     printf '{"runner":{"id":%s},"encoded_jit_config":"JIT-%s"}\n' "$n" "$n" ;;
   "api -X DELETE repos/"*)
     id=${4##*/}; case " ${STUB_BUSY:-} " in *" $id "*) exit 1 ;; esac; echo "$id" >> "$G/gh-deleted" ;;
-  "api --paginate repos/"*"/actions/runners --jq "*) cat "$G/gh-runners" 2>/dev/null || true ;;
+  "api --paginate repos/"*"/actions/runners --jq "*)
+    [ -n "${STUB_RUNNERS_RC:-}" ] && exit 1
+    { cat "$G/gh-runners" 2>/dev/null || true; } \
+      | jq -R 'split(" ") | {id: (.[0] | tonumber), name: .[1], status: .[2], busy: (.[3] == "true")}' \
+      | jq -s '{runners: .}' | jq -r "$5" ;;
   *) echo "stub gh: unexpected $*" >&2; exit 99 ;;
 esac
 EOF
@@ -503,6 +515,103 @@ check "keep: another desk-runner busy, nothing done"    '[ $rc -eq 0 ] && [[ "$o
 sh -c 'exit 0' & dead=$!; wait $dead; echo "$dead" > "$T/state/busy/pid"
 run keep
 check "keep: a dead holder's lock is taken over"        '[ $rc -eq 0 ] && [[ "$out" == *"is back and isolated"* ]] && [ ! -e "$T/state/busy" ]'
+
+# ---- sleeping when idle and waking on a queued job (DS-249) ----
+ACT="$T/state/active"; ASL="$T/state/asleep"
+ago_s(){ echo $(( $(date +%s) - $1 )); }
+iso_ago(){ python3 -c 'import sys,time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - int(sys.argv[1]))))' "$1"; }
+runs(){ printf '{"workflow_runs":[%s]}\n' "$2" > "$T/runs-$1.json"; }
+# job <run> <labels, comma-separated and quoted> <queued so many seconds ago>: one queued job in that run
+job(){ printf '{"jobs":[{"status":"completed","labels":[%s],"created_at":"%s"},{"status":"queued","labels":[%s],"created_at":"%s"}]}\n' "$2" "$(iso_ago 900)" "$2" "$(iso_ago "$3")" > "$T/jobs-$1.json"; }
+no_runs(){ rm -f "$T/runs-queued.json" "$T/runs-progress.json" "$T"/jobs-*.json; }
+idle_for(){ echo $(( $(date +%s) - $1 * 60 )) > "$ACT"; }
+our(){ printf '%s desk-runner-test-voicepa-x online %s\n' "$(awk 'NR == 1 {print $3}' "$v/slots")" "$1" > "$T/gh-runners"; }
+run scale "$RP" 1
+idle_for 30; our true
+run keep
+check "a slot mid-job keeps the VM up and restarts the idle clock" '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ "$(ago_s "$(cat "$ACT")")" -lt 60 ] && [ ! -e "$ASL" ]'
+idle_for 30; rm -f "$T/gh-runners"; awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+run keep
+check "a job that just finished keeps the VM up too"     '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ "$(ago_s "$(cat "$ACT")")" -lt 60 ] && [[ "$out" == *"finished; reaped"* ]]'
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off
+idle_for 30; our false
+run keep
+check "runner-idle-minutes off: the VM stays up"        '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ] && [ -z "$out" ]'
+run status
+check "status: off, never sleeps"                       '[[ "$out" == *"idle: never sleeps (runner-idle-minutes is off)"* ]]'
+yes_profile
+STUB_RUNNERS_RC=1 run keep
+check "a runner list GitHub would not give: the VM stays up" '[ -f "$v/running" ] && [ ! -e "$ASL" ]'
+idle_for 9; run keep
+check "9 idle minutes, under the default 10: stays up"  '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ]'
+idle_for 11; STUB_BUSY="$(awk '{print $1}' "$T/gh-runners")" run keep
+check "a runner that takes a job as the VM would stop: it stays up" '[ -f "$v/running" ] && [ ! -e "$ASL" ] && [[ "$out" == *"took a job; desk-runner-test stays up"* ]]'
+run scale "$RP" 2; idle_for 11
+awk '$4 == "running" {print $3, "desk-runner-test-voicepa-" NR, "online", "false"}' "$v/slots" > "$T/gh-runners"
+first=$(awk 'NR == 1 {print $1}' "$T/gh-runners"); second=$(awk 'NR == 2 {print $1}' "$T/gh-runners")
+fsid=$(awk -v r="$first" '$3 == r {print $1}' "$v/slots"); ssid=$(awk -v r="$second" '$3 == r {print $1}' "$v/slots")
+STUB_BUSY="$second" run keep
+check "a runner refused part-way: the slot already deregistered is reaped, the other kept" '[ -f "$v/running" ] && [ ! -e "$ASL" ] && grep -qx "$first" "$T/gh-deleted" && grep -qx "$fsid" "$v/reaped" && ! grep -qx "$ssid" "$v/reaped"'
+run scale "$RP" 1; our false
+idle_for 11; rid=$(awk '{print $1}' "$T/gh-runners"); sid=$(awk 'NR == 1 {print $1}' "$v/slots")
+run keep
+check "10 idle minutes: runners deregistered, slots reaped, the VM stopped" '[ $rc -eq 0 ] && grep -qx "$rid" "$T/gh-deleted" && grep -qx "$sid" "$v/reaped" && [ ! -f "$v/running" ] && ! pgrep -f "$T/stub/tart run desk-runner-test" >/dev/null'
+check "... logging why, and asleep"                     '[[ "$out" == *"no slot has run a job for 10m"* ]] && [[ "$out" == *"desk-runner-test is asleep"* ]] && [ -s "$ASL" ]'
+rm -f "$T/gh-runners"; no_runs
+run keep
+check "asleep, nothing queued: stays stopped, silently, no backoff" '[ $rc -eq 0 ] && [ -z "$out" ] && [ ! -f "$v/running" ] && [ ! -e "$BACKOFF" ] && [[ "$log" != *"run desk-runner-test"* ]]'
+check "asleep: two GitHub calls for the repo, and no runner list" '[ "$(wc -l < "$T/gh.log" | tr -d " ")" = 2 ] && grep -q "repos/$RP/actions/runs?status=queued" "$T/gh.log" && grep -q "repos/$RP/actions/runs?status=in_progress" "$T/gh.log" && ! grep -q "actions/runners" "$T/gh.log"'
+run status
+check "status: asleep, since when, and why"             '[ $rc -eq 1 ] && [[ "$out" == "desk-runner-test: asleep ("* ]] && [[ "$out" =~ "asleep: since "[0-9]{4}-[0-9]{2}-[0-9]{2}" "[0-9]{2}:[0-9]{2}" (no job for 10m); it wakes when a job is queued for desk-local-pr" ]] && [[ "$out" == *"runner slots: closed (desk-runner-test is asleep until a job is queued for desk-local-pr)"* ]]'
+iso_before=$(cat "$T/state/isolation.status")
+run verify-isolation
+check "the nightly verify-isolation leaves it asleep and the last pass as it was" '[ $rc -eq 0 ] && [[ "$out" == *"is asleep: not started"* ]] && [ ! -f "$v/running" ] && [ "$(cat "$T/state/isolation.status")" = "$iso_before" ]'
+runs queued '{"id":7}'; job 7 '"ubuntu-latest"' 60
+run keep
+check "a job queued for GitHub-hosted only: stays asleep" '[ $rc -eq 0 ] && [ ! -f "$v/running" ] && grep -q "repos/$RP/actions/runs/7/jobs" "$T/gh.log" && [ "$(wc -l < "$T/gh.log" | tr -d " ")" = 3 ]'
+STUB_RUNS_RC=1 run keep
+check "GitHub not answering: stays asleep and says so"  '[ $rc -eq 0 ] && [ ! -f "$v/running" ] && [[ "$out" == *"could not read $RP'"'"'s queued jobs"* ]]'
+starts=$(wc -l < "$v/slot-starts" | tr -d " ")
+runs progress '{"id":8}'; job 8 '"self-hosted","linux","arm64","desk-local-pr"' 90
+run keep
+check "a job queued for the pool in a run under way wakes the VM behind the block" '[ $rc -eq 0 ] && [ -f "$v/running" ] && grep -q -- "--net-softnet-block=" "$v/run-args" && [ ! -e "$ASL" ] && [ ! -e "$BACKOFF" ]'
+check "... and its repo gets a slot"                    '[ "$(wc -l < "$v/slot-starts" | tr -d " ")" = $((starts + 1)) ] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 1 ]'
+check "the wake logs when the job queued, the VM answered and the slot came online" '[[ "$out" =~ "waking desk-runner-test: a job for desk-local-pr in $RP was queued at "[0-9T:-]+Z ]] && [[ "$out" =~ "desk-runner-test answered at "[0-9T:-]+Z ]] && [[ "$out" =~ "a slot came online at "[0-9T:-]+Z", "(9[0-9]|1[0-9][0-9])"s after the job was queued" ]]'
+check "a pass under 25h is reused: no verify-isolation"  '[[ "$out" == *"slots open on the verify-isolation pass from "*" ago: it is under 25h old"* ]] && [[ "$out" != *"isolation passed"* ]] && [[ "$log" != *probe.sh* ]]'
+run status
+check "status: the last wake used the pass, and its age" '[ $rc -eq 0 ] && [[ "$out" =~ "last wake: "[0-9-]+" "[0-9:]+", which used the pass from "[0-9]+[mh]" ago" ]] && [[ "$out" == *"idle: sleeps once no slot has run a job for 10m"* ]]'
+check "the wake starts the idle clock"                  '[ "$(ago_s "$(cat "$ACT")")" -lt 60 ]'
+echo "$(date +%s) no job for 10m" > "$ASL"; idle_for 30; our false
+run keep
+check "a wake that died with the VM up: the next keep clears asleep and restarts the clock" '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ] && [ "$(ago_s "$(cat "$ACT")")" -lt 60 ]'
+rm -f "$T/gh-runners"
+go_to_sleep(){ idle_for 11; our false; run keep; rm -f "$T/gh-runners"; }
+no_runs; go_to_sleep
+read -r r at d < "$T/state/isolation.status"; printf 'pass %s %s\n' $((at - 26 * 3600)) "$d" > "$T/state/isolation.status"
+runs queued '{"id":9}'; job 9 '"desk-local-pr"' 30
+run keep
+check "a wake on a pass 25h old or more runs verify-isolation in full first" '[ $rc -eq 0 ] && [ -f "$v/running" ] && [[ "$out" == *"isolation passed"* ]] && [[ "$out" != *"slots open on the verify-isolation pass"* ]] && grep -q "ran verify-isolation in full" "$T/state/woke"'
+no_runs; go_to_sleep
+printf 'fail %s 1 failed\n' "$(date +%s)" > "$T/state/isolation.status"
+printf 'BAD guest deny 10.9.9.1:1-65535 (connected: 5000)\nDONE guest\n' > "$STUB_GUEST_OUT"
+starts=$(wc -l < "$v/slot-starts" | tr -d " ")
+runs queued '{"id":9}'; job 9 '"desk-local-pr"' 30
+run keep
+check "a wake after a failed verify runs it again, and opens no slot when it fails" '[ $rc -eq 1 ] && [[ "$out" == *"isolation FAILED"* ]] && [ "$(wc -l < "$v/slot-starts" | tr -d " ")" = "$starts" ] && [ -s "$BACKOFF" ]'
+probe_ok guest > "$STUB_GUEST_OUT"; rm -f "$BACKOFF"; no_runs
+run keep
+check "... and the next passing verify opens them"     '[ $rc -eq 0 ] && [[ "$out" == *"isolation passed"* ]] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 1 ]'
+go_to_sleep
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off
+run keep
+check "asleep when the timeout turns off: brought back with nothing queued" '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ] && [[ "$out" == *"bringing desk-runner-test back"* ]]'
+yes_profile; go_to_sleep
+run up
+check "up wakes it and clears asleep"                   '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ]'
+go_to_sleep
+run down
+check "down while asleep: stopped, not asleep"         '[ $rc -eq 0 ] && [ ! -e "$ASL" ]'
+run up; run scale "$RP" 0; rm -f "$v/slots" "$SL" "$T/gh-runners"; no_runs
 
 # ---- status and down (AC9) ----
 run verify-isolation

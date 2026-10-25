@@ -106,12 +106,14 @@ console.log(`worktrees: ${configs.length} configured repo${configs.length === 1 
 for (const l of lines) console.log(l);
 
 // desk-runner status exits 0 only while the VM runs. Its keep agent starts a stopped or absent VM
-// within a minute, so a loaded agent means the VM will be running whatever its state now.
+// within a minute, and an asleep one when a CI job is queued, so a loaded agent means the VM can be
+// running whatever its state now.
 let runner = 'unknown';
 const rs = run(join(HERE, 'desk-runner'), ['status']);
 const rsLines = rs.out.split('\n').filter(Boolean);
 if (rs.ok) runner = 'running';
 else if (/: stopped /.test(rsLines[0] ?? '')) runner = 'stopped';
+else if (/: asleep /.test(rsLines[0] ?? '')) runner = 'asleep';
 else if (/: absent /.test(rsLines[0] ?? '')) runner = 'absent';
 const keep = rsLines.some((l) => /^agents: restart at login and every minute loaded/.test(l)) ? 'loaded' : 'none';
 console.log(`runner: ${runner}${keep === 'loaded' ? ' (its keep agent is loaded and starts it again within a minute)' : ''}`);
