@@ -482,6 +482,8 @@ STARTED=0; RUNNERS_UNKNOWN=""
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
   local reason live listed='' id repo rid state busy runners cpus mem gone have n extra rids left private rc=0
+  local rows="" jobs="" t targets follow=""
+  [ "$(idle_minutes)" = off ] || follow=1
   # A repo made public since scale gets no new slot, and its slots are drained.
   for repo in $(slot_repos); do
     [ "$(wanted "$repo")" -gt 0 ] || continue
@@ -519,9 +521,11 @@ reconcile() { # reap finished slots, drop extra idle ones, start missing ones; s
 $live
 EOF
   live=$(printf '%s\n' "$live" | awk -v gone="$gone" '$4 == "running" && index(gone, " " $1 " ") == 0')
-  # More running than the repo's share: drop the idle ones. GitHub refuses to deregister a runner mid-job.
+  # More running than the repo's share, or than it wants when slots follow the queue (the oldest jobs
+  # decide who gets a free slot then): drop the idle ones. GitHub refuses to deregister a runner mid-job.
   for repo in $(printf '%s\n' "$live" | awk 'NF {print $2}' | sort -u); do
-    extra=$(( $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l) - $(allotted "$FIT" "$repo") ))
+    if [ -n "$follow" ]; then n=$(wanted "$repo"); else n=$(allotted "$FIT" "$repo"); fi
+    extra=$(( $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l) - n ))
     [ "$extra" -gt 0 ] || continue
     while read -r id _ rid _; do
       [ "$extra" -gt 0 ] || break
@@ -534,7 +538,6 @@ $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r')
 EOF
   done
   for repo in $(slot_repos); do
-    n=$(allotted "$FIT" "$repo")
     # A runner of ours that GitHub lists offline with no slot behind it (the VM stopped or crashed) is deregistered.
     rids=" $(printf '%s\n' "$live" | awk '{print $3}' | tr '\n' ' ') "
     runners=$(our_runners "$repo") || RUNNERS_UNKNOWN=1
@@ -551,7 +554,31 @@ EOF
       awk -v r="$repo" '$1 != r' "$SLOTS" > "$SLOTS.new"; mv "$SLOTS.new" "$SLOTS"
       continue
     fi
-    [ -z "$reason" ] || continue
+    rows="$rows$repo $(wanted "$repo") $have $(printf '%s\n' "$runners" | awk '$3 == "true"' | wc -l | tr -d ' ')
+"
+  done
+  [ -z "$reason" ] || rows=""
+  # With the VM sleeping when idle, slots follow the jobs queued for the pool: a repo's idle slots take
+  # its oldest jobs, and the VM's free slots go to the oldest of the rest, up to each repo's wanted.
+  # A repo whose queue GitHub would not give is kept at its share, as with the timeout off.
+  if [ -n "$rows" ] && [ -n "$follow" ]; then
+    for repo in $(printf '%s' "$rows" | awk '{print $1}'); do
+      if t=$(queued_jobs "$repo"); then jobs="$jobs$(printf '%s\n' "$t" | awk -v r="$repo" 'NF {print "job", $1, r}')
+"
+      else jobs="${jobs}unknown $repo
+"; fi
+    done
+    targets=$( { printf '%s' "$rows"; printf '%s' "$jobs" | awk '$1 == "job"' | sort -k2; printf '%s' "$jobs" | awk '$1 == "unknown"'; } \
+      | awk -v free=$(( FIT - $(printf '%s\n' "$live" | awk 'NF' | wc -l) )) '
+        $1 == "job" {x = $3; if (idle[x] > 0) idle[x]--; else if (free > 0 && have[x] + add[x] < want[x]) {add[x]++; free--}; next}
+        $1 == "unknown" {unk[$2] = 1; next}
+        NF == 4 {r[++m] = $1; want[$1] = $2; have[$1] = $3; idle[$1] = ($3 > $4 ? $3 - $4 : 0); add[$1] = 0}
+        END {for (k = 1; k <= m; k++) print r[k], (r[k] in unk ? "-" : have[r[k]] + add[r[k]])}')
+  fi
+  for repo in $(printf '%s' "$rows" | awk '{print $1}'); do
+    n=$(printf '%s\n' "$targets" | awk -v r="$repo" '$1 == r {print $2}')
+    case $n in ''|-) n=$(allotted "$FIT" "$repo") ;; esac
+    have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
     while [ "$have" -lt "$n" ]; do
       # A slot mid-job outlives a smaller share or an older size, so the VM-wide count and memory are
       # checked too; a slot from before limits counts as the current size.
@@ -891,11 +918,12 @@ cmd_status() {
     next=$(( next - $(date +%s) )); [ $next -lt 0 ] && next=0
     echo "restarts: $failures failed in a row; the next attempt is in $(ago $next)"
   fi
-  local repo live=""
+  local repo q live=""
   [ "$state" = running ] && [ -s "$SLOTS" ] && live=$(slot list 2>/dev/null | awk '$4 == "running"')
   [ -s "$SLOTS" ] && fit
   for repo in $(slot_repos); do
-    echo "slots: $repo wants $(wanted "$repo"), $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ') running ($SLOT_CPUS CPUs and $SLOT_MEM_GB GB each)"
+    q=$(queued_jobs "$repo" 2>/dev/null) && q=$(printf '%s\n' "$q" | awk 'NF' | wc -l | tr -d ' ') || q="?"
+    echo "slots: $repo wants $(wanted "$repo"), $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ') running ($SLOT_CPUS CPUs and $SLOT_MEM_GB GB each), $q jobs queued for $SLOT_POOL"
     printf '%s\n' "$live" | awk -v r="$repo" '$2 == r {print "  slot " $1 ": " ($5 == "" ? "no CPU or memory limit (replaced once idle)" : "CPUs " $5 ", " $6 " GB")}'
   done
   [ -s "$SLOTS" ] && held_back
