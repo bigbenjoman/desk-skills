@@ -24,22 +24,29 @@ const FAKE = join(T, 'supervisor.mjs');
 writeFileSync(FAKE, `import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 const dir = ${JSON.stringify(SUP)};
-const [sub] = process.argv.slice(2);
+const [sub, ...rest] = process.argv.slice(2);
 const name = basename(process.env.DESK_REPO_DIR);
 const file = join(dir, name + '.state');
 const state = existsSync(file) ? readFileSync(file, 'utf8').trim() : 'none';
+const everyFile = join(dir, name + '.every');
+const every = existsSync(everyFile) ? readFileSync(everyFile, 'utf8').trim() : '180';
 appendFileSync(join(dir, 'calls'), sub + ' ' + process.env.DESK_REPO_DIR + ' ' + process.cwd() + ' ' + process.env.DESK_AUTOPILOT_STATE + '\\n');
+appendFileSync(join(dir, 'pins'), (process.env.DESK_REPO_OVERRIDE ?? '-') + ' ' + (process.env.GIT_DIR ?? '-') + '\\n');
 const fail = join(dir, sub + '.exit');
 if (sub === 'install') {
+  // As install does, the agent file is written with the interval given, else the default, before it loads.
+  const i = rest.indexOf('--interval');
+  const n = i < 0 ? '180' : rest[i + 1];
+  writeFileSync(everyFile, n);
   if (existsSync(fail)) { writeFileSync(file, 'installed'); console.error('supervisor: launchctl bootstrap failed: Bootstrap failed: 5: Input/output error'); process.exit(Number(readFileSync(fail, 'utf8'))); }
   writeFileSync(file, 'loaded');
-  console.log('supervisor: installed com.desk-skills.supervisor.acme__' + name + ': a pass every 180s and at login for a batch handed over at Stage 4 (queue.mjs set-batch supervised=true); log x');
+  console.log('supervisor: installed com.desk-skills.supervisor.acme__' + name + ': a pass every ' + n + 's and at login for a batch handed over at Stage 4 (queue.mjs set-batch supervised=true); log x');
 } else if (sub === 'uninstall') {
   if (existsSync(fail)) { console.error('supervisor: launchctl bootout failed: no such process'); process.exit(Number(readFileSync(fail, 'utf8'))); }
   writeFileSync(file, 'none');
   console.log('supervisor: removed com.desk-skills.supervisor.acme__' + name + ': no further passes run for this repo. A merge driver it started keeps running until it is stopped');
 } else if (sub === 'status') {
-  console.log('agent: com.desk-skills.supervisor.acme__' + name + ' ' + (state === 'none' ? 'not installed (supervisor.mjs install)' : 'installed (every 180s), ' + (state === 'loaded' ? 'loaded' : 'not loaded')));
+  console.log('agent: com.desk-skills.supervisor.acme__' + name + ' ' + (state === 'none' ? 'not installed (supervisor.mjs install)' : 'installed (every ' + every + 's), ' + (state === 'loaded' ? 'loaded' : 'not loaded')));
   console.log('batch vp: handed over');
   const log = join(dir, name + '.log');
   if (existsSync(log)) { console.log('log: ' + log + ', last lines:'); for (const l of readFileSync(log, 'utf8').trimEnd().split('\\n')) console.log('  ' + l); }
@@ -108,7 +115,18 @@ writeFileSync(join(SUP, 'install.exit'), '1');
 const bad = run(['forewatt', 'supervisor', 'on']);
 t('AC7 a failed install prints its error', bad.code !== 0 && /could not be turned on: launchctl bootstrap failed: Bootstrap failed: 5/.test(bad.err), true);
 t('AC7 and the supervisor is as it was: not installed', stateOf('forewatt'), 'none');
+// An agent installed but not loaded keeps its own interval, whether the load fails or not.
+setState('forewatt', 'installed'); writeFileSync(join(SUP, 'forewatt.every'), '600');
+const bad2 = run(['forewatt', 'supervisor', 'on']);
+t('AC7 a failed load leaves an installed agent installed, with its interval', `${bad2.code !== 0} ${stateOf('forewatt')} ${readFileSync(join(SUP, 'forewatt.every'), 'utf8')}`, 'true installed 600');
 rmSync(join(SUP, 'install.exit'));
+t('on keeps an installed agent\'s interval', `${run(['forewatt', 'supervisor', 'on']).out.includes('every 600s')} ${stateOf('forewatt')} ${readFileSync(join(SUP, 'forewatt.every'), 'utf8')}`, 'true loaded 600');
+setState('forewatt', 'none'); rmSync(join(SUP, 'forewatt.every'));
+
+// An override that pins the calling repo never reaches the named repo's supervisor.
+rmSync(join(SUP, 'pins'), { force: true });
+run(['forewatt', 'supervisor'], { DESK_REPO_OVERRIDE: 'acme/voicepa', GIT_DIR: join(T, 'elsewhere', '.git') });
+t('the calling repo\'s overrides are not passed on', readFileSync(join(SUP, 'pins'), 'utf8').trim(), '- -');
 
 // ---- AC8: not macOS
 clearCalls();

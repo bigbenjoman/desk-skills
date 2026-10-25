@@ -29,7 +29,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, expandHome, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -1183,13 +1183,12 @@ const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(dirname(file
 const platform = () => process.env.DESK_PLATFORM || process.platform;
 export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.';
 
-function supervisorRun(r, sub) {
+function supervisorRun(r, sub, ...args) {
   const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
   if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to run its supervisor in. Nothing changed.`);
   if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
-  const env = { ...process.env, DESK_REPO_DIR: root, DESK_REPO_ROOT: root, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath };
-  delete env.DESK_CONFIG;
-  const p = spawnSync(process.execPath, [supervisorMjs(), sub], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const env = { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath };
+  const p = spawnSync(process.execPath, [supervisorMjs(), sub, ...args], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const said = (s) => String(s ?? '').trim().split('\n').filter(Boolean).map((l) => l.replace(/^supervisor: /, ''));
   return { code: p.status, out: said(p.stdout), err: said(p.stderr).join(' ') || p.error?.message || `exited ${p.status ?? p.signal}` };
 }
@@ -1220,7 +1219,8 @@ function supervisor(r, op) {
   }
   if (op === 'on') {
     if (was.state === 'loaded') return `${r.name}: the supervisor is already on, a pass every ${was.every}s. Nothing changed.`;
-    const s = supervisorRun(r, 'install');
+    // An agent already installed keeps its interval: install writes the default otherwise.
+    const s = supervisorRun(r, 'install', ...(/^\d+$/.test(was.every ?? '') ? ['--interval', was.every] : []));
     if (s.code !== 0) {
       // A failed load can leave a new agent file behind; with none before, it goes again.
       if (was.state === 'none') supervisorRun(r, 'uninstall');

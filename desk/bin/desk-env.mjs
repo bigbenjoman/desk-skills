@@ -118,6 +118,11 @@ export function currentRepo() {
   return repoCache;
 }
 
+// An environment for a child run in another repo's checkout: every override that would pin it to
+// this repo (its dir, config, Jira or git directory) removed, so the checkout decides.
+export const otherRepoEnv = (env = process.env) => Object.fromEntries(Object.entries(env)
+  .filter(([k]) => !/^(DESK_REPO|DESK_CONFIG$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
+
 export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskConfigRoot(), 'repos', slug) : null);
 export const credsDir = () => repoConfigDir();
 
