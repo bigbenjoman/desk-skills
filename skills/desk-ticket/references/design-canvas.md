@@ -19,7 +19,7 @@ asset ids, in its attributes or in strings in its script: read each by its id, o
 `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), into the same `out_dir` as the files
 below. And the `./support.js` a board loads is the type's runtime, which the artifact serves rather
 than publishes: read `artifact-type/dc-runtime.js` instead. The save finds an asset by its id as the
-file name, saves it as `assets/<id>` and points the boards at it, and saves `dc-runtime.js` as the
+file name, saves it as `assets/<id>.<ext>` and points the boards at it, and saves `dc-runtime.js` as the
 `support.js` they load. `missing: asset <id>` is an asset still to read.
 
 A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
