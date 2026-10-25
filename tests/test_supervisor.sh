@@ -193,6 +193,16 @@ rm -f "$T/notify.calls"
 config yes ask; n=$(started)
 out=$(tick)
 check "no merge driver without autopilot-merge" '[ "$(started)" = "$n" ] && grep -q "merge driver: not started, since config §3 autopilot-merge is \"ask\"" "$LOG"'
+queue true '{"merge":true}' "$RUNNING"
+out=$(tick); waitlines "$T/driver.calls" "$(started)"
+check "DS-203 AC7: a batch that approved merging at Stage 3 gets its merge driver, though autopilot-merge is ask" '[ "$(started)" = $((n + 1)) ]'
+n=$(started); queue true '{"merge":false}' "$RUNNING"
+out=$(tick)
+check "DS-203 AC8: a batch that declined merging gets no merge driver, and the log says why" '[ "$(started)" = "$n" ] && grep -q "merge driver: not started, since config §3 autopilot-merge is \"ask\", and merging was declined for this batch at Stage 3" "$LOG"'
+config yes no; queue true '{"merge":true}' "$RUNNING"
+out=$(tick)
+check "DS-203: a batch approval never outranks a §3 no" '[ "$(started)" = "$n" ] && grep -q "merge driver: not started, since config §3 autopilot-merge is \"no\"" "$LOG"'
+queue true '{}' "$RUNNING"
 config yes yes
 
 # ---- AC5: a pass still running, the supervisor's own or one run by hand ------------------------

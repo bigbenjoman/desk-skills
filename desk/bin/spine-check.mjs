@@ -8,18 +8,18 @@
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { changedFiles } from './scope-report.mjs';
-import { permission, permissionKey } from './desk-env.mjs';
+import { mergeGrant } from './desk-env.mjs';
 
 export const EXPECTED_FAIL = 'strict expected-fail (test.fail, it.fails, test.failing, or @pytest.mark.xfail(strict=True))';
 // The modifiers a titled JS declaration may carry; `describe`, `step` and the hooks are not tests.
 const JS_MODIFIERS = new Set(['fail', 'fails', 'failing', 'only', 'skip', 'concurrent', 'sequential']);
 const JS_FAILS = new Set(['fail', 'fails', 'failing']);
 
-// Who merges an approved spine under the batch's merge rules: the merge driver where config §3 grants
-// it both rows, else the person. `rows` names the two settings for the message that asks them.
-export function spineMerger() {
-  const rows = ['autopilot-merge', 'pr-merge-green'].map((id) => `${permissionKey(id)} is "${permission(id)}"`).join(' and ');
-  return { driver: permission('autopilot-merge') === 'yes' && permission('pr-merge-green') === 'yes', rows: `config §3 ${rows}` };
+// Who merges an approved spine under the batch's merge rules: the merge driver where config §3, or the
+// batch's Stage 3 approval, lets it merge (mergeGrant), else the person. `rows` says why, for the message.
+export function spineMerger(q) {
+  const g = mergeGrant(q);
+  return { driver: g.by != null, rows: g.why };
 }
 
 const mentions = (title, id) => new RegExp(`(^|[^A-Za-z0-9])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^A-Za-z0-9])`, 'i').test(title);

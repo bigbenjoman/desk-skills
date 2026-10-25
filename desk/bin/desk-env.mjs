@@ -25,6 +25,8 @@
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no),
 //                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
+//   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
+//                                             when nothing may merge this batch's green PRs
 //   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, exit 3 if
 //                                             unset (no override), exit 4 if the row is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
@@ -542,6 +544,24 @@ export function permissionOrUnset(id) {
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
+// Whether a batch's green PRs merge without the person: config §3 autopilot-merge and pr-merge-green
+// both `yes`, or each `yes` or `ask` with the batch's Stage 3 approval (the queue's approved.merge).
+// The approval lasts one batch: queue.mjs init starts the next without it. `why` names the rows, and
+// how the batch answered where they are `ask`.
+//   -> { by: 'config' | 'batch' | null, why }
+const MERGE_GRANT_ROWS = ['autopilot-merge', 'pr-merge-green'];
+export function mergeGrant(q = readQueueOrNull()) {
+  const rows = MERGE_GRANT_ROWS.map((id) => ({ key: permissionKey(id), v: permission(id) }));
+  const said = (list) => `config §3 ${list.map((r) => `${r.key} is "${r.v}"`).join(' and ')}`;
+  if (rows.every((r) => r.v === 'yes')) return { by: 'config', why: said(rows) };
+  const off = rows.filter((r) => r.v !== 'yes' && r.v !== 'ask');
+  if (off.length) return { by: null, why: said(off) };
+  const asked = said(rows.filter((r) => r.v === 'ask'));
+  const a = q?.approved?.merge;
+  if (a === true) return { by: 'batch', why: `${asked}, and merging was approved for this batch at Stage 3` };
+  return { by: null, why: `${asked}${a === false ? ', and merging was declined for this batch at Stage 3' : ' with no batch approval'}` };
+}
+
 // A spend guard is a number of USD or explicitly off. Anything else ("25 USD", "0", "lots") is
 // refused rather than read as off: a typo must never silently remove a cap.
 //   -> { off: true } | { usd: <number> }, or throws DeskConfigError
@@ -679,9 +699,13 @@ export const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 // A batch merges into its base, and pass.mjs pushes to it, so a production branch is refused on every
 // read, not only when set-batch writes it: production only ever takes promotion PRs.
 export const PRODUCTION_BRANCH = /^(production|prod|release)$/i;
+// The queue as it stands, or null when there is none or it does not parse.
+function readQueueOrNull() {
+  try { return JSON.parse(readFileSync(queueFile(), 'utf8')); } catch { return null; }
+}
 export function batchBase() {
-  let q;
-  try { q = JSON.parse(readFileSync(queueFile(), 'utf8')); } catch { return null; }
+  const q = readQueueOrNull();
+  if (!q) return null;
   const b = typeof q?.base === 'string' ? q.base.trim() : '';
   if (!b) return null;
   if (!BRANCH_NAME.test(b) || b.includes('..') || b.endsWith('.lock')) {
@@ -1108,6 +1132,12 @@ if (isMain) {
       case 'perm':
         console.log(permission(args[0]));
         break;
+      case 'merge-grant': {
+        const g = mergeGrant();
+        console.log(`${g.by ?? 'none'}\t${g.why}`);
+        if (!g.by) process.exit(1);
+        break;
+      }
       case 'key':
         if (!PERMISSION_KEYS[args[0]]) throw new Error(`desk-env: unknown permission id "${args[0]}"`);
         console.log(PERMISSION_KEYS[args[0]]);

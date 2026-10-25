@@ -469,7 +469,7 @@ switch (cmd) {
       needsPerson = true;
       lines.push(`config §3 ${permissionKey('pr-ready')} is "${permission('pr-ready')}": undraft PR #${pr} yourself (gh pr ready ${pr} --repo ${repo})`);
     }
-    const merger = spineMerger();
+    const merger = spineMerger(q);
     if (merger.driver) {
       lines.push(`the merge driver merges PR #${pr} once it is green; ${after}`);
     } else {

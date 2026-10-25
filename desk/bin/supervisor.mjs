@@ -20,7 +20,8 @@
 //   - sends one macOS notification for the pass's `push` entries the last notification did not carry
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
 //     refused or failed;
-//   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`) while tickets
+//   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`, or the batch's
+//     `approved.merge` is true where they are `yes` or `ask`: the driver reads it itself) while tickets
 //     are still to merge and no driver holds <state>/merge-driver.lock.d, its output in
 //     <state>/merge-driver.log. A running driver logs nothing; once the one it started has stopped, the
 //     next tick logs why from that log (and keeps it in supervisor.json), and after 2 failed starts in a
@@ -342,10 +343,10 @@ function runPass(state, q, s, log, stamp, intake = []) {
   out.push(...watchDriver(state, s, driver, slug));
   if (v.status !== 'idle') {
     const keys = toMerge(qAfter);
-    const ungranted = ['autopilot-merge', 'pr-merge-green'].filter((id) => E.permission(id) !== 'yes');
+    const grant = E.mergeGrant(qAfter);
     if (!keys.length) { /* nothing to merge */ }
     else if (driver) { /* running: nothing new to log */ }
-    else if (ungranted.length) out.push(`merge driver: not started, since config §3 ${ungranted.map((id) => `${E.permissionKey(id)} is "${E.permission(id)}"`).join(' and ')}: green PRs wait for you`);
+    else if (!grant.by) out.push(`merge driver: not started, since ${grant.why}: green PRs wait for you`);
     else {
       // The driver takes in every queue ticket and its holds (held_by) on each loop by itself. Its
       // output goes to its log from the first line, so what it says before it takes --log is kept too.

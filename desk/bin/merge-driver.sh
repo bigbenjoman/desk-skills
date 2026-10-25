@@ -49,9 +49,11 @@
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
 # armed auto-merge on a held PR, or one with feedback outstanding, is disarmed.
 #
-# Refuses to start unless config §3 autopilot-merge AND pr-merge-green are both `yes`, or while another
-# merge driver is running. Where the grants are missing, the orchestrator reports green PRs and the
-# user merges.
+# Refuses to start unless config §3 autopilot-merge AND pr-merge-green are both `yes`, or each is `yes`
+# or `ask` and the user approved merging this batch at Stage 3 (`queue.mjs set-batch approved.merge=true`),
+# or while another merge driver is running. It reads that again before every merge and stops once it no
+# longer holds (a new batch carries no approval). A merge made under the batch's approval is noted in
+# <state>/batch-notes.md. Where nothing grants it, the orchestrator reports green PRs and the user merges.
 #
 # Environment, for tests and for checking by hand:
 #   MERGE_DRIVER_RELEASE_ONLY=1  one release pass, then exit 0
@@ -121,14 +123,15 @@ LOCK_HELD=""
 on_exit(){ rc=$?; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
 trap on_exit EXIT
 
-for id in autopilot-merge pr-merge-green; do
-  p="$(desk_perm "$id")"
-  if [ "$p" != "yes" ]; then
-    echo "FAIL: config §3 $(node "$DESK_ENV_MJS" key "$id") is $p — the driver merges nothing." >&2
-    echo "      Report green PRs to the user instead, or run /desk-setup to grant it." >&2
-    exit 1
-  fi
-done
+# Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
+# read again before every merge, so a new batch that was not approved stops a driver still running.
+TAB="$(printf '\t')"
+if ! GRANT="$(node "$DESK_ENV_MJS" merge-grant 2>&1)"; then
+  echo "FAIL: ${GRANT#*"$TAB"} — the driver merges nothing." >&2
+  echo "      Report green PRs to the user instead, ask once at Stage 3 for the batch, or run /desk-setup to grant it." >&2
+  exit 1
+fi
+GRANT_BY="${GRANT%%"$TAB"*}"
 
 # How this repo merges, and what "green" means here — both from config §4, never assumed.
 MERGE_METHOD="$(desk_cfg merge-method 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}' || true)"
@@ -433,7 +436,7 @@ flaky_ticket(){
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out waived label
+  local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out waived label grant
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -480,10 +483,18 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
   if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
+  if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
+    log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1
+  fi
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
+    # A merge only the batch's approval allowed is noted, as an undraft under it is.
+    if [ "${grant%%"$TAB"*}" = batch ]; then
+      [ -f "$DESK_STATE/batch-notes.md" ] || printf '# Batch notes\n\n' > "$DESK_STATE/batch-notes.md"
+      printf -- '- [%s] merged #%s at %s: %s\n' "$key" "$n" "$sha" "${grant#*"$TAB"}" >> "$DESK_STATE/batch-notes.md"
+    fi
     [ -n "$waived" ] && flaky_ticket "$n" "$sha" "$g" "$key" "$waived"
     # The merge time on the ticket, and its line in the eta history. A failure here never undoes the merge.
     if rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
@@ -495,7 +506,7 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   return 1
 }
 
-log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)]"
+log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)]"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
 # pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run.

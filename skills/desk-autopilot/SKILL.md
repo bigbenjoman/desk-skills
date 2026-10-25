@@ -189,7 +189,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | `read-figma` | workers get the Figma read tools | a ticket needing the frame parks |
 | `pr-ready` | `pass.mjs` undrafts once the checks in Stage 7 hold | `ask`: ask once at Stage 3 for the whole batch, never once per PR: "Undraft this batch's PRs once each is clean and green?" Approved: `queue.mjs set-batch approved.undraft=true`, then each pass undrafts each PR without asking once the checks in Stage 7 hold, and notes the approval each time in `batch-notes.md`. Declined, or `no`: the pass reports the PR as ready to undraft |
 | `pr-auto-merge` | not used in a batch: neither you nor the driver arms auto-merge, because the platform's idea of green is not the config's | — |
-| `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green, pinned to the head | the driver refuses to start (exit 1); report green PRs to the user |
+| `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green, pinned to the head | each `yes` or `ask`, and at least one `ask`: ask once at Stage 3 for the whole batch, never once per green PR: "Merge each of this batch's PRs once it is green?" Approved: `queue.mjs set-batch approved.merge=true`, then the merge driver (yours, or the supervisor's) merges each green PR without asking, under the same holds and `merge-feedback-first`, and notes each merge in `batch-notes.md`; the approval lasts this batch only, since `queue.mjs init` starts the next without it. Declined: `queue.mjs set-batch approved.merge=false`; the driver refuses to start (exit 1), and each pass reports a green PR as `READY TO MERGE`, or as `CHANGES REQUESTED` while `merge-feedback-first` holds it (under a supervisor, the next check-in digest lists it). Either one `no`: don't ask; the driver refuses to start and the pass reports green PRs the same way |
 | `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms any auto-merge armed on it | the checks alone decide; feedback is still worked and reported |
 
 Never widen a row because the batch would go faster. Offer `/desk-setup` instead.
@@ -212,7 +212,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
 | 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a call *Ask or take* keeps (a missing design, copy or product fact, or a call with no recommendation) is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
 | 3 | Ask once | Every unknown across every ticket that *Ask or take* keeps as a question, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base, undrafting), each as one question for the whole batch, and in feature mode the drafted spine and owner table for approval. Leave out what you take instead: a call outside the ask categories that has a recommendation, and any write §3 grants (a Jira comment, edit or transition under a `yes` row), which you make and then log. Wait. This is the whole promise. See *Asking*. |
-| 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`; **each time you schedule the next pass, record it** with `queue.mjs next-pass +<the delay in seconds>`, or desk-q shows the batch as stopped once 15 minutes pass with no pass (the supervisor records its own). It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
+| 4 | Run | **Where the supervisor is installed for this repo** (`supervisor.mjs status` exits 0), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave, and `approved.merge` as the user answered the merge question (*The supervisor*). Otherwise `pass.mjs --json`, self-paced via `/loop`; **each time you schedule the next pass, record it** with `queue.mjs next-pass +<the delay in seconds>`, or desk-q shows the batch as stopped once 15 minutes pass with no pass (the supervisor records its own). It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. Without the supervisor, start the merge driver now, before the first worker finishes. |
 | 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:` naming a directory that holds a screenshot (a missing or empty one is no images: a finished ticket gets `images_uploaded=none` and nothing is reported): serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
 | 6b | Notify | Push only what a pass's `push` lists, whatever its exit: send **one** `PushNotification` carrying the `text` of each entry whose `key` the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`). That is the check-in digest, once a §3b "Check-in times" slot has passed, a park reading `PRODUCTION BROKEN: …`, at once, and a health check newly failing. Everything else waiting on the person reaches them in the next digest (*The check-in digest*), so a park, a failure or a finished batch is shown in the session and never pushed on its own. |
@@ -289,7 +289,9 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   notification did not carry (the check-in digest, a production-broken park), or for a pass that
   refused or failed. This replaces Stage 6b while the supervisor runs;
 - starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
-  are still to merge and no driver holds `<state>/merge-driver.lock.d`;
+  are still to merge and no driver holds `<state>/merge-driver.lock.d`, where §3 `autopilot-merge` and
+  `pr-merge-green` are both `yes` or the batch's `approved.merge` is `true`. Declined, it starts none,
+  and each green PR the pass lists as `READY TO MERGE` goes to the next check-in digest;
 - when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
   repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
   It settles what those rules let you do without asking (a requeue of a lane A, B or E park that needs
@@ -495,7 +497,8 @@ spine is never left done: it parks, and its PR stays draft.
      back: reject it with every spec's note in one.
   - Approved: `queue.mjs approve <SPINE>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
     otherwise it tells you to undraft it), and it merges under the batch's merge rules: the merge
-    driver where §3 `autopilot-merge` and `pr-merge-green` are `yes`, else each pass says
+    driver where §3 `autopilot-merge` and `pr-merge-green` are `yes` or the batch approved merging at
+    Stage 3, else each pass says
     `SPINE APPROVED — merge PR #<n>` until the person merges it. Once it merges, the children are
     released as any hold is, and spawn on a later pass. The driver releases nothing behind a spine
     that was never approved, even if its PR merged.
@@ -679,9 +682,11 @@ batch carried to all-open-before-any-merged pays a conflict resolution and a re-
 ahead of it, none of which exist had each merged when it first went green.
 
 **This section applies as written where config §3 `autopilot-merge` and `pr-merge-green` are both
-`yes`.** Where they are not, do everything below except the merge itself: undraft (if `pr-ready`
-allows), keep the checks green, and put each green PR in front of the user the moment it flips: the
-cost of holding PRs open is the same, so say so rather than letting them queue.
+`yes`, or where the user approved merging this batch at Stage 3 (the queue's `approved.merge` is
+`true`; the §3 table under *Read the config first*).** Where neither holds, do everything below except the merge itself:
+undraft (if `pr-ready` allows), keep the checks green, and put each green PR in front of the user the
+moment it flips (the pass lists it as `READY TO MERGE`): the cost of holding PRs open is the same, so
+say so rather than letting them queue.
 
 **"Green" is the config's one definition** (desk-config "Green"), the same in the driver, in
 `desk-clearance`, in `desk-ticket` and here: on the **exact head commit** being merged, every §4
@@ -1386,6 +1391,8 @@ node ~/.claude/desk/bin/supervisor.mjs install                        # passes a
 node ~/.claude/desk/bin/supervisor.mjs status                         # exit 0 while installed and loaded; uninstall removes it
 node ~/.claude/desk/bin/queue.mjs set-batch supervised=true approved.workers=true   # Stage 4 with the supervisor: only the approvals the user gave
 node ~/.claude/desk/bin/queue.mjs set-batch approved.undraft=true     # Stage 3: §3 pr-ready is ask and the user approved undrafting this batch's clean PRs
+node ~/.claude/desk/bin/queue.mjs set-batch approved.merge=true       # Stage 3: §3 autopilot-merge / pr-merge-green are ask and the user approved merging this batch's green PRs (=false when declined)
+node ~/.claude/desk/bin/desk-env.mjs merge-grant                      # config, batch or none, and why: whether the merge driver may merge this batch
 node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
