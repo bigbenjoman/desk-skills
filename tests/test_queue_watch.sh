@@ -138,11 +138,11 @@ watch_bg --interval 0.3
 until_tables 1
 q set T-1 stage=3/9
 sleep 1
-q requeue T-3
+q set T-3 state=failed
 n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
 stop_watch
 out=$(cat "$T/watch.out")
-check "DS-201 AC1 quiet: a stage step gets no change line, a state change does" '! grep -q "^T-1 " "$T/watch.out" && grep -q "^T-3 .*PARKED which colour → " "$T/watch.out" && [ "$(mems)" = 2 ]'
+check "DS-201 AC1 quiet: a stage step gets no change line, a state change does" '! grep -q "^T-1 " "$T/watch.out" && grep -q "^T-3 .*PARKED which colour → FAILED" "$T/watch.out" && [ "$(mems)" = 2 ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
