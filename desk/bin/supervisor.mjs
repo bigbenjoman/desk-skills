@@ -189,6 +189,12 @@ function codeRecord(state) {
   }
   return { installed: installed?.commit ?? null, supervisor: { version: agent, old_code: oldCode(agent, installed) }, driver };
 }
+// supervisor.json's `code`, written only when it moved.
+function noteCode(state) {
+  const s = readState(state);
+  const code = codeRecord(state);
+  if (JSON.stringify(s.code ?? null) !== JSON.stringify(code)) writeState(state, { ...s, code });
+}
 
 // Tickets whose PR is still to merge: one still to start or running, one held behind a merge or a
 // spine, or one done with a PR that is neither merged nor closed. A failed ticket merges nothing.
@@ -241,6 +247,8 @@ function interval() {
   const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   // Standing intake first: it may start the batch this tick then passes.
   const intake = runIntake();
+  // What runs old code is kept on every tick: with no batch, a queue unreadable, or a pass skipped.
+  noteCode(state);
   if (!existsSync(E.queueFile())) {
     if (intake.length) log([`== ${stamp()} intake`, ...intake]);
     // With no batch there is no pass, but what intake handed on still goes out at each check-in.
@@ -250,9 +258,6 @@ function interval() {
   let q;
   try { q = readQueue(E.queueFile()); } catch (e) { log([`== ${stamp()} queue unreadable, no pass run: ${describeCrash(e)}`, ...intake]); return; }
   const s = readState(state);
-  const code = codeRecord(state);
-  const codeMoved = JSON.stringify(s.code ?? null) !== JSON.stringify(code);
-  s.code = code;
   // What intake did goes in the pass's report; a tick that runs no pass logs it alone.
   const intakeAlone = () => { if (intake.length) log([`== ${stamp()} intake`, ...intake]); };
   if (q.supervised !== true) {
@@ -261,7 +266,7 @@ function interval() {
     if (s.unsupervised !== (q.batch ?? null)) {
       log([`== ${stamp()} batch ${q.batch ?? '?'} is not handed over: no pass until Stage 4 runs queue.mjs set-batch supervised=true`]);
       writeState(state, { ...s, unsupervised: q.batch ?? null });
-    } else if (codeMoved) writeState(state, s);
+    }
     return;
   }
   // An answer to an item handed on leaves its ticket parked, so it does not change the fingerprint:
@@ -274,7 +279,7 @@ function interval() {
     // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
     const driver = watchDriver(state, s, driverHolder(state), E.repoSlug());
-    if (reaped.length || driver.length || codeMoved) writeState(state, s);
+    if (reaped.length || driver.length) writeState(state, s);
     if (reaped.length) log([`== ${stamp()} ${reaped.join('\n')}`]);
     if (driver.length) log([`== ${stamp()} idle: the merge driver`, ...driver]);
     idleCheckin(state, s, log, stamp);

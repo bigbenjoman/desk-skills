@@ -85,7 +85,9 @@ check "AC4: installed.json under DESK_HOME holds the commit it was installed fro
 out=$(node "$T/bin/installed.mjs" version)
 check "AC4: version prints it back" '[ "$out" = "$head_sha" ]'
 out=$(node "$T/bin/installed.mjs" record "$T/repo" 2>&1); rc=$?
-check "AC4: a directory that is not a checkout records nothing, and says so" '[ $rc -eq 1 ] && grep -q "not a git checkout" <<< "$out" && grep -q "$head_sha" "$T/desk/installed.json"'
+check "AC4: a directory that is not a checkout replaces the commit with a version of its own, and says so" '[ $rc -eq 0 ] && grep -q "^unversioned-.* (not a git checkout)$" <<< "$out" && ! grep -q "$head_sha" "$T/desk/installed.json" && grep -q "\"commit\": \"unversioned-" "$T/desk/installed.json"'
+check "AC4: so what started at the commit before it reads as old code" 'node --input-type=module -e "import { oldCode } from \"$T/bin/installed.mjs\"; process.exit(oldCode(\"$head_sha\") ? 0 : 1)"'
+node "$T/bin/installed.mjs" record "$G" >/dev/null
 
 # ---- AC6: nothing running ------------------------------------------------------------------------
 out=$(restart); rc=$?

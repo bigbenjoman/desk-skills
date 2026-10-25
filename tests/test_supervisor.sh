@@ -319,6 +319,13 @@ check "DS-224 AC5: an agent and a merge driver started at an older version are r
 echo new1 > "$T/state/merge-driver.lock.d/version"
 out=$(DESK_AGENT_VERSION=new1 tick)
 check "DS-224 AC5: once both run the installed version, the record says neither runs old code" '[ "$(code)" = "new1 new1 false new1 false" ]'
+mv "$DESK_QUEUE" "$T/queue.away"
+out=$(DESK_AGENT_VERSION=old0 tick)
+check "DS-224 AC5: a tick with no batch still records the agent as running old code" '[ "$(code)" = "new1 old0 true new1 false" ]'
+printf 'not json\n' > "$DESK_QUEUE"
+out=$(DESK_AGENT_VERSION=new1 tick)
+check "DS-224 AC5: so does a tick whose queue is unreadable" '[ "$(code)" = "new1 new1 false new1 false" ]'
+mv "$T/queue.away" "$DESK_QUEUE"
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d"
 
 # ---- AC10: uninstall ----------------------------------------------------------------------------

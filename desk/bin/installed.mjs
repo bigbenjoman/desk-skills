@@ -26,11 +26,15 @@ export function readInstalled(home = E.deskHome()) {
 // A process runs old code when an installed version is known and the one it started at is not it.
 export const oldCode = (version, installed = readInstalled()) => Boolean(installed?.commit) && version !== installed.commit;
 
+// A source that is not a git checkout has no commit, so it gets one of its own for this install: the
+// version before it must not stay recorded, or what started on older code would read as current.
 function record(src) {
   const git = (...a) => spawnSync('git', ['-C', src, ...a], { encoding: 'utf8' });
   const head = git('rev-parse', 'HEAD');
-  if (head.status !== 0) throw new Error(`${src} is not a git checkout, so no version was recorded`);
-  const v = { commit: head.stdout.trim(), dirty: Boolean(git('status', '--porcelain').stdout.trim()), at: new Date().toISOString(), from: src };
+  const at = new Date().toISOString();
+  const v = head.status === 0
+    ? { commit: head.stdout.trim(), dirty: Boolean(git('status', '--porcelain').stdout.trim()), at, from: src }
+    : { commit: `unversioned-${at}`, dirty: null, at, from: src };
   mkdirSync(E.deskHome(), { recursive: true });
   writeFileSync(installedFile(), `${JSON.stringify(v, null, 2)}\n`);
   return v;
@@ -146,9 +150,8 @@ function reloadAgents(dir) {
 }
 
 export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = join(E.HOME, 'Library', 'LaunchAgents') } = {}) {
-  const drivers = runningDrivers(stateRoot);
-  const ps = drivers.length ? processes() : [];
-  const lines = [...drivers.map((d) => restartDriver(d, ps)), ...reloadAgents(agents)];
+  // A fresh ps for each driver: restarting the one before can take seconds, in which this one wakes.
+  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d, processes())), ...reloadAgents(agents)];
   return lines.length ? lines : ['nothing to restart: no merge driver or supervisor agent is running'];
 }
 
@@ -158,7 +161,7 @@ const isMain = () => {
 if (isMain()) {
   const [cmd, arg] = process.argv.slice(2);
   try {
-    if (cmd === 'record' && arg) { const v = record(arg); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}`); }
+    if (cmd === 'record' && arg) { const v = record(arg); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);
     else { console.error('usage: installed.mjs record <checkout> | version | restart'); process.exit(2); }
