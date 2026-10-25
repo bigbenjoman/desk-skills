@@ -350,13 +350,13 @@ awk '$1 != "old2"' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-slot-cpus 4 runner-slot-memory-gb 10
 awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run keep
-check "a slot size in the profile: 4 CPUs and 10 GB, 2 fit" '[ $rc -eq 0 ] && [ "$(tail -n 2 "$v/slot-starts" | awk "{print \$(NF - 1), \$NF}" | tr "\n" " ")" = "0-3 10 4-7 10 " ] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 2 ]'
+check "a slot size in the profile: 4 CPUs and 10 GB, 2 fit" '[ $rc -eq 0 ] && [ "$(tail -n 2 "$v/slot-starts" | awk "{print \$(NF - 1) FS \$NF}" | tr "\n" " ")" = "0-3 10 4-7 10 " ] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 2 ]'
 busy4=$(awk '{print $3}' "$v/slots" | tr '\n' ' ')
 yes_profile
 STUB_BUSY="$busy4" run keep
 check "a smaller slot size beside busy larger slots: says why, starts none" '[[ "$out" == *"no memory in desk-runner-test for another $RP slot"* ]] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 2 ]'
 run keep
-check "idle slots of the old size are replaced at the new one" '[[ "$out" == *"was not 2 CPUs and 7 GB; replaced"* ]] && [ "$(awk "\$4 == \"running\" {print \$5, \$6}" "$v/slots" | sort | tr "\n" " ")" = "0-1 7 2-3 7 4-5 7 " ]'
+check "idle slots of the old size are replaced at the new one" '[[ "$out" == *"was not 2 CPUs and 7 GB; replaced"* ]] && [ "$(awk "\$4 == \"running\" {print \$5 FS \$6}" "$v/slots" | sort | tr "\n" " ")" = "0-1 7 2-3 7 4-5 7 " ]'
 profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-slot-memory-gb 10
 awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run keep
