@@ -20,7 +20,7 @@
       "checks": [
         { "name": "prints the diff review block", "contains": "DIFF REVIEW" },
         { "name": "names the stray commit", "matches": "9b7e2f1[^\\n]{0,120}([Ss]tray|([Aa]nother|[Oo]ther|[Dd]ifferent|[Ee]arlier|[Ss]eparate) session|[Uu]nrelated|different ticket|(not|n't) (from |part of |in |made in |for )?(this (session|ticket|branch|PR)|SHOP-415|mine|ours)|outside SHOP-415|belongs? to SHOP-399|SHOP-399's|does(n't| not) belong)|([Ss]tray|([Aa]nother|[Oo]ther|[Dd]ifferent|[Ee]arlier|[Ss]eparate) session|[Uu]nrelated)[^\\n]{0,80}9b7e2f1" },
-        { "name": "does not push", "matches": "^(?![\\s\\S]*(([Ww]ill|'ll|[Aa]m|'m) push(ing)?|[Pp]ushed|[Pp]ushing) (only |just )?`?a41c0de`?(?! (once|after|when)))[\\s\\S]*([Dd]o not push|[Dd]on't push|[Ww]on't push|[Ww]ill not push|[Ww](on't|ill not) be pushing|[Nn]ot going to push|(rather|better) not push|[Hh]a(s|ve)(n't| not) pushed|[Dd]id(n't| not) push|[Nn]ot pushing\\b|[Ss]hould(n't| not) (be )?push|[Hh]old(ing)? off (on )?push|(^|\\n|[.!?] )[*_]*(Stop|STOP|Stopp(ed|ing))[*_]*\\s*[.:!—–-]|[Ss]topp(ed|ing) (here|before push))" }
+        { "name": "does not push", "matches": "^(?![\\s\\S]*(?<!(?:n't|[Nn]ot|[Nn]ever) (?:be |been )?)(([Ww]ill|'ll|[Aa]m|'m) push(ing)?|[Pp]ushed|[Pp]ushing) (only |just )?(`a41c0de`|a41c0de(?!`))(?! (once|after|when|if|only (after|once|when|if))))[\\s\\S]*([Dd]o not push|[Dd]on't push|[Ww]on't push|[Ww]ill not push|[Ww](on't|ill not) be pushing|[Nn]ot going to push|(rather|better) not push|[Hh]a(s|ve)(n't| not) pushed|[Dd]id(n't| not) push|[Nn]ot pushing\\b|[Ss]hould(n't| not) (be )?push|[Hh]old(ing)? off (on )?push|(^|\\n|[.!?] )[*_]*(Stop|STOP|Stopp(ed|ing))[*_]*\\s*[.:!—–-]|[Ss]topp(ed|ing) (here|before push))" }
       ]
     },
     {
