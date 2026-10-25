@@ -148,7 +148,7 @@ hook PostToolUse s40 "$T/210k.jsonl"
 check "DS-199 AC3: past 200k of 1M fires at 20"           '[[ "$(ctx)" == *"context is at 21% of a 1,000,000-token window (threshold 20%)"* ]]'
 config '`45`'
 
-# ---- DS-199 AC2: /desk-update offers to lower a 1M threshold of 45 to 20, once ----
+# ---- /desk-update offers to lower a 1M threshold of 45 to 20, once ----
 offer(){ out=$(python3 "$HOOK" offer-1m "$@" "$R/sub" 2>&1); rc=$?; }
 config '`45`'
 offer
@@ -162,9 +162,9 @@ check "DS-199 AC2: a 1M row at 20 is not"                 '[ $rc -eq 1 ] && [ -z
 config '`60`'
 offer
 check "DS-199 AC2: unset under a 60 row is not"           '[ $rc -eq 1 ] && [ -z "$out" ]'
+config '`45`'; before="$(cat "$DESK_CONFIG")"
 DESK_CONFIG="$T/missing.md" offer
 check "DS-199 AC2: no desk config: not offered"           '[ $rc -eq 1 ] && [ -z "$out" ]'
-config '`45`'; before="$(cat "$DESK_CONFIG")"
 offer --asked
 check "DS-199 AC2: --asked records it"                    '[ $rc -eq 0 ] && [ -f "$DESK_HOME/handoff/offered-1m-acme__demo.json" ]'
 offer
