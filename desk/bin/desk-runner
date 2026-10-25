@@ -527,8 +527,9 @@ EOF
 $(our_runners "$repo")
 EOF
     have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
-    # Only a pass that looked in the VM can know a repo at 0 has no slot left there.
-    if [ -n "$listed" ] && [ "$n" -eq 0 ] && [ "$have" -eq 0 ] && left=$(our_runners "$repo") && [ -z "$left" ]; then
+    # Only a pass that looked in the VM can know a repo at 0 has no slot left there. A repo the VM
+    # has no room for is allotted 0 but still wants its slots, so it stays.
+    if [ -n "$listed" ] && [ "$(wanted "$repo")" -eq 0 ] && [ "$have" -eq 0 ] && left=$(our_runners "$repo") && [ -z "$left" ]; then
       awk -v r="$repo" '$1 != r' "$SLOTS" > "$SLOTS.new"; mv "$SLOTS.new" "$SLOTS"
       continue
     fi

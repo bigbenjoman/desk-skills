@@ -406,6 +406,12 @@ run scale "$RP" 2
 STUB_PRIVATE=false run slots
 check "a repo made public: its slots go, none start"   '[[ "$out" == *"$RP is public now"* ]] && [ ! -s "$v/slots" ] && [ ! -e "$SL" ] && ! grep -q generate-jitconfig "$T/gh.log"'
 
+echo 9216 > "$v/memory"   # (9 GB - 2) / 7 fits one slot
+run scale "$RP" 1
+run scale bigbenjoman/other 1
+check "a repo the full VM allots none keeps its request" '[ "$(awk "\$1 == \"bigbenjoman/other\" {print \$2}" "$SL")" = 1 ] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 1 ]'
+run scale bigbenjoman/other 0; run scale "$RP" 0; echo 24576 > "$v/memory"
+
 run scale "$RP" 1
 run down
 run scale "$RP" 0
