@@ -295,7 +295,14 @@ token never does. In the VM each slot has its own Docker daemon and network, whi
 shares, so a service container mapped to 5432 is on the job's `localhost:5432`, and a `container:`
 job sees the workspace. Slots share no daemon, volume or network, and the slot's Docker daemon
 runs under sysbox, not `--privileged`, so even a privileged container a job starts stays inside
-its slot: it cannot reach the VM's disk, another repo's slot or the slot image. A slot takes one job; within a
+its slot: it cannot reach the VM's disk, another repo's slot or the slot image. Each slot has CPUs of its own and
+a memory limit, 2 CPUs and 7 GB unless the machine profile sets `runner-slot-cpus` and
+`runner-slot-memory-gb`: `nproc` and Node's `os.availableParallelism()` show the slot's CPUs in a step
+and in a `container:` job, so test runners size themselves to them, and `/sys/fs/cgroup/memory.max`
+shows its memory in a step (a container job's reads `max`, though the slot's limit holds it). A job that runs out of memory fails on its own without taking the VM or
+another slot with it. The VM runs only as many slots as it fits, the smaller of its CPUs over the
+slot's and its memory less 2 GB over the slot's; when the repos want more, the slots are shared
+between them in turn, and `status` lists each slot's CPUs and says how many are held back and why. A slot takes one job; within a
 minute `keep` removes it with its containers and volumes and starts another. `down` deregisters
 every slot's runner first, and the next `up` starts them again. The slot image is Ubuntu 24.04 with
 actions/runner 2.338.0, Node 22.23.3, the Docker 29.9.0 CLI, gh, jq, shellcheck, build tools and
