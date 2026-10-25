@@ -97,7 +97,7 @@ r = run(['--skill', 'stub-skill', '--tasks', taskSet('drop', [{ id: 'plain', pro
 t('AC2 drop when fewer', /\*\*drop\*\*/.test(readFileSync(join(dir, 'out-drop', 'report.md'), 'utf8').trim().split('\n').at(-1)), true);
 t('AC2 keep/trim/drop by passes', [verdict({ skill: { passed: 2 }, base: { passed: 1 } }), verdict({ skill: { passed: 1 }, base: { passed: 1 } }), verdict({ skill: { passed: 0 }, base: { passed: 1 } })].join(','), 'keep,trim,drop');
 
-// DS-123 AC3: the whole-run budget. A task starts only while both runs fit at their ceiling; one
+// AC3: the whole-run budget. A task starts only while both runs fit at their ceiling; one
 // left unstarted is named, and the report gives no verdict.
 t('the whole-run budget defaults to 5', parseArgs(['--max-budget-usd', '1', '--skill', 'x', '--tasks', 'y']).total, '5');
 t('a whole-run budget that fits no task is refused', /cannot fit one task/.test(throws(() => parseArgs(['--max-budget-usd', '2', '--total-budget-usd', '3', '--skill', 'x', '--tasks', 'y']))), true);
@@ -122,7 +122,7 @@ r = run(['--skill', 'stub-skill', '--tasks', taskSet('nocost', [
 t('AC3 a run that reports no cost counts as its ceiling', /not run: after/.test(r.stdout), true);
 t('AC2 a full run still gives a verdict under the budget', /verdict: keep/.test(run(['--skill', 'stub-skill', '--tasks', keepSet, '--max-budget-usd', '0.5', '--timeout', '1', '--out', join(dir, 'out-keep2')]).stdout), true);
 
-// DS-123 AC1: the committed desk-pr task set. At least 5 tasks; every task's checks pass against its
+// AC1: the committed desk-pr task set. At least 5 tasks; every task's checks pass against its
 // fixture reply, and at least one fails against an empty reply.
 const PR_TASKS = join(dirname(SCRIPT), '..', '..', 'evals', 'desk-pr.json');
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'eval-desk-pr');
@@ -134,6 +134,14 @@ for (const task of prTasks) {
   t(`desk-pr ${task.id} passes its fixture`, failing.join(', ') || 'all', 'all');
   t(`desk-pr ${task.id} fails an empty reply`, task.checks.some((c) => !checkPasses(c, '')), true);
 }
+// A reply that only restates the prompt's facts fails the checks that need judgement. The DIFF REVIEW
+// block alone copies git log and git status, so it must flag nothing.
+const blockOnly = (id) => readFileSync(join(FIXTURES, `${id}.md`), 'utf8').split('```')[1];
+const passing = (id, reply, names) => prTasks.find((task) => task.id === id).checks.filter((c) => names.includes(c.name) && checkPasses(c, reply)).map((c) => c.name).join(', ') || 'none';
+t('desk-pr artefacts block alone flags nothing', passing('artefacts', blockOnly('artefacts'), ['takes the one-off script out', 'flags the Playwright output', 'flags the loose screenshot']), 'none');
+t('desk-pr stray-commit block alone names no stray commit', passing('stray-commit', blockOnly('stray-commit'), ['names the stray commit']), 'none');
+t('desk-pr stray-commit "cannot push" is not holding off', passing('stray-commit', 'I cannot push from here; run git push.', ['does not push']), 'none');
+t('desk-pr staging-step an unchecked box for another step does not pass', passing('staging-step', '### Testing\n- [ ] typecheck passes\n- Staging is https://staging.shop.example.', ['leaves the staging check unchecked']), 'none');
 
 // The run reader and the task-set checks.
 t('an error result is failed', readRun({ status: 0, stdout: JSON.stringify({ subtype: 'error_max_budget_usd', is_error: true, result: 'partial' }) }, 1).why, 'claude reported error_max_budget_usd');

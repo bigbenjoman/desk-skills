@@ -10,5 +10,11 @@ Search matched records on their free-text description, so anything that mentione
 - `/search?q=economics` drops 9 → 7 on a local copy of the staging database; the two dropped were tagged Business Studies and Psychology.
 - `pnpm typecheck`, `pnpm lint` and the 14 specs in `src/server/search.test.ts` pass.
 - `/desk-review` at `3f9c2ab`: 0 P0 · 0 P1 · 0 P2 across 2 files, findings refuted by codex.
+
+### Before / after
+| `/search?q=economics` | Before | After |
+|---|---|---|
+| Results | 9 | 7 |
+| Business Studies, Psychology | listed | gone |
 <!-- desk-pr: end -->
 ```

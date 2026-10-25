@@ -1,5 +1,5 @@
 ```
-DIFF REVIEW — awaiting approval
+DIFF REVIEW — recorded
 commits ahead : a41c0de fix(cart): SHOP-415 round the total, not each line
                 9b7e2f1 fix(auth): SHOP-399 rotate refresh tokens on use
 files changed : 3  src/cart/total.ts src/cart/total.test.ts src/auth/refresh.ts
