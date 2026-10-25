@@ -29,7 +29,7 @@ import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs,
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate } from './gate.mjs';
 import { undraftCall } from './undraft.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
@@ -1392,6 +1392,7 @@ function readPrStatus(n) {
 // and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
 const merges = [];
 const drafts = [];
+const undrafted = [];
 for (const t of Object.values(qNow.tickets)) {
   const n = t.state === 'done' ? t.result?.pr : null;
   if (n == null) continue;
@@ -1407,6 +1408,7 @@ for (const t of Object.values(qNow.tickets)) {
     prStates[n] = s.state;
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
     if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
+    if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
   }
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
@@ -1498,12 +1500,23 @@ for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'spec
 }
 // An approved spine merges under the batch's merge rules: the merge driver where §3 grants it, else
 // the person.
-const merger = spineMerger();
+const merger = spineMerger(qNow);
 for (const t of Object.values(qNow.tickets).filter((r) => r.approved === true && r.state === 'done' && r.result?.pr != null)) {
   const n = t.result.pr;
   if (merger.driver) continue;
   if (readPr(n) === 'MERGED') continue;
   report.waiting.push(`${t.key}: SPINE APPROVED — merge PR #${n} once it is green (${merger.rows}, so no merge driver merges it); what is held behind it is released once it merges`);
+}
+// Out of draft and green with no merge driver to merge it (config §3, or the batch declined at Stage 3):
+// the person merges it, so it is put to them, and handed to the check-in digest under a supervisor.
+if (!merger.driver && undrafted.length) {
+  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
+  const gateCfg = { required: list('required-checks'), advisory: list('advisory-checks') };
+  for (const { t, s } of undrafted) {
+    if (t.approved === true || s.mergeable === 'CONFLICTING') continue;
+    if (evaluateGate(s.checks, gateCfg).state !== 'pass') continue;
+    report.waiting.push(`${t.key}: READY TO MERGE — PR #${s.pr} is out of draft and green, and no merge driver merges it (${merger.rows}): merge it yourself, pinned to its head (gh pr merge ${s.pr} --repo ${GH_REPO} --match-head-commit <sha>)`);
+  }
 }
 // The merge driver releases these on its next loop. Where it is not running, the release is yours:
 // queue.mjs set <TICKET> state=triaged park=null held_by=null, then queue.mjs front <TICKET>.

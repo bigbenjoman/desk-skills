@@ -76,7 +76,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
-    mergeStateStatus: 'CLEAN', reviewDecision: '', autoMergeRequest: null,
+    state: p.state.toUpperCase(), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: '', autoMergeRequest: null,
     statusCheckRollup: p.checks.map(([name, conclusion, run]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/1' : undefined })) });
 } else if (a[0] === 'run' && a[1] === 'list') {
@@ -85,7 +85,8 @@ if (a[0] === 'pr' && a[1] === 'list') {
   // recorded in gh.log above; run 9116 is one GitHub refuses to rerun
   if (a[2] === '9116') { console.error('run 9116 cannot be rerun'); process.exit(1); }
 } else if (a[0] === 'api' && a.includes('graphql')) {
-  out('NONE 0');
+  // A PR's review decision and unresolved threads, as the driver's --jq gives them.
+  out(prs[(a.find((x) => x.startsWith('n=')) ?? '').slice(2)]?.feedback ?? 'NONE 0');
 } else if (a[0] === 'api') {
   const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
   out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
@@ -283,5 +284,60 @@ check "DS-225 AC2: a signed-out gh is logged as signed out and the driver exits 
 check "DS-225 AC2: the refused list is not read as empty, and the driver does not wait to retry" '! echo "$out" | grep -q "no ready batch PRs" && [ ! -s "$FAKE_SLEEPS" ]'
 touch "$T/gh.broken"; loop; rm -f "$T/gh.broken"
 check "DS-225 AC2: any other gh failure is retried as before" '! echo "$out" | grep -q "signed out" && echo "$out" | grep -q "could not list PRs" && [ $rc -eq 1 ]'
+
+# ---- DS-203: merging asked once per batch at Stage 3, where §3 says ask --------------------------
+sed -e 's/| `autopilot-merge` | Merge batch PRs | `no` | `yes` |/| `autopilot-merge` | Merge batch PRs | `no` | `ask` |/' \
+  -e 's/| `pr-merge-green` | Merge on green | `no` | `yes` |/| `pr-merge-green` | Merge on green | `no` | `ask` |/' "$T/config.md" > "$T/config-ask.md"
+sed -e 's/| `autopilot-merge` | Merge batch PRs | `no` | `yes` |/| `autopilot-merge` | Merge batch PRs | `no` | `no` |/' \
+  -e 's/| `pr-merge-green` | Merge on green | `no` | `yes` |/| `pr-merge-green` | Merge on green | `no` | `ask` |/' "$T/config.md" > "$T/config-no.md"
+SHA21=b111111111111111111111111111111111111111; SHA22=b222222222222222222222222222222222222222; SHA23=b333333333333333333333333333333333333333
+cat > "$T/prs.json" <<EOF
+{
+  "121": { "head": "fix/T-21", "base": "main", "sha": "$SHA21", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "122": { "head": "fix/T-22", "base": "main", "sha": "$SHA22", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "feedback": "CHANGES_REQUESTED 0" },
+  "123": { "head": "fix/T-23", "base": "main", "sha": "$SHA23", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "feedback": "APPROVED 1" }
+}
+EOF
+q init merge-ask
+for k in T-21 T-22 T-23; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; rm -f "$T/state/batch-notes.md"
+mloop(){ out=$(DESK_CONFIG="$1" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-21 T-22 T-23" 2>&1); rc=$?; }
+mpj(){ out=$(DESK_CONFIG="$1" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
+ASKED='config §3 autopilot-merge is "ask" and pr-merge-green is "ask"'
+
+mloop "$T/config-ask.md"
+check "DS-203: with merging at ask and never asked, the driver refuses to start" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: $ASKED with no batch approval" && ! echo "$out" | grep -q "merge driver up"'
+q set-batch approved.merge=false
+mloop "$T/config-ask.md"
+check "DS-203 AC3: declined at Stage 3, the driver refuses to start and merges nothing" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: $ASKED, and merging was declined for this batch at Stage 3" && [ ! -s "$T/merges.log" ]'
+mpj "$T/config-ask.md"
+check "DS-203 AC3: declined, the pass reports a green PR as ready to merge" 'js ".waiting[]" | grep -qF "T-21: READY TO MERGE — PR #121 is out of draft and green, and no merge driver merges it ($ASKED, and merging was declined for this batch at Stage 3)"'
+js '{waiting: [.waiting[] | select(startswith("T-21: READY TO MERGE"))]}' > "$T/ready.json"
+hand=$(node --input-type=module -e "
+import { readFileSync } from 'node:fs';
+import { deciderItems, presort } from '$B/decider.mjs';
+const { hand } = presort(deciderItems(JSON.parse(readFileSync('$T/ready.json', 'utf8')), JSON.parse(readFileSync('$DESK_QUEUE', 'utf8'))));
+console.log(hand.map((h) => h.item.ticket + ' ' + h.why).join('\n'));")
+check "DS-203 AC8: under a supervisor that line goes to the check-in digest without a decider session" '[ "$hand" = "T-21 needs config §3 autopilot-merge, which is \"ask\"" ]'
+
+q set-batch approved.merge=true
+mloop "$T/config-no.md"
+check "DS-203 AC4: a batch approval never outranks a §3 no" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §3 autopilot-merge is \"no\"" && [ ! -s "$T/merges.log" ]'
+out=$(DESK_CONFIG="$T/config-no.md" node "$B/desk-env.mjs" merge-grant); rc=$?
+check "DS-203 AC4: at no there is nothing to ask" '[ $rc -eq 1 ] && [ "$(DESK_CONFIG="$T/config-no.md" node --input-type=module -e "import { mergeGrant } from \"$B/desk-env.mjs\"; console.log(mergeGrant().ask)")" = false ] && [ "$(DESK_CONFIG="$T/config-ask.md" node --input-type=module -e "import { mergeGrant } from \"$B/desk-env.mjs\"; console.log(mergeGrant({}).ask)")" = true ]'
+mpj "$T/config-ask.md"
+check "DS-203 AC2: approved, the pass leaves green PRs to the merge driver" '! js ".waiting[]" | grep -q "READY TO MERGE"'
+mloop "$T/config-ask.md"
+check "DS-203 AC2: approved at Stage 3, the driver starts though both rows are ask" '[ $rc -eq 0 ] && echo "$out" | grep -q "merge-by=batch" && echo "$out" | grep -q "#121 green at b11111111 — confirming"'
+mloop "$T/config-ask.md"
+check "DS-203 AC2: the green PR merges with no further question, pinned to its head" '[ "$(merged)" = 121 ] && grep -qx "121 main $SHA21" "$T/merges.log"'
+check "DS-203 AC2: the merge is noted in batch-notes.md" 'grep -qxF -- "- [T-21] merged #121 at $SHA21: $ASKED, and merging was approved for this batch at Stage 3" "$T/state/batch-notes.md"'
+mloop "$T/config-ask.md"
+check "DS-203 AC5: changes requested or an unresolved thread still hold a PR under the approval" '[ "$(merged)" = 121 ] && echo "$out" | grep -q "#122 has outstanding review feedback (CHANGES_REQUESTED, 0 unresolved)" && echo "$out" | grep -q "#123 has outstanding review feedback (APPROVED, 1 unresolved)"'
+q init merge-ask-2
+q add T-21 Task A; q set T-21 branch=fix/T-21 state=done result.pr=121
+jq '."121".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+mloop "$T/config-ask.md"
+check "DS-203 AC6: a new batch carries no approval, so it is asked again" '[ $rc -eq 1 ] && echo "$out" | grep -qF "with no batch approval" && [ "$(merged)" = 121 ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
