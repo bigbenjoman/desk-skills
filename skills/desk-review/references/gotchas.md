@@ -1,6 +1,6 @@
 # Gotchas
 
-Read this when a command in `SKILL.md` misbehaves. Each entry explains a failure that is silent
+Read this when a command in `SKILL.md` or a phase file misbehaves. Each entry explains a failure that is silent
 rather than loud: it produces a plausible report, not an error.
 
 Every block below may run in its own shell and inherits nothing. Substitute `<owner>`, `<repo>`,
@@ -52,7 +52,7 @@ query($owner:String!, $name:String!) {
   including yours at the current head, and the PR gets reviewed twice.
 - **`. as $pr` is required.** Inside `.reviews.nodes[]`, `.headRefOid` resolves against the review
   node, yields `null`, and matches nothing.
-- **Marker, `startswith`, `.body // ""`.** See SKILL.md Phase 1 for why author-only and substring
+- **Marker, `startswith`, `.body // ""`.** See `phase-1-target.md` for why author-only and substring
   matches are false cleans. `// ""` guards the null body of a reply artefact.
 - **`reviewedAt` vs `lastReviewedAt`.** `reviewedAt` only matches the *current* head, so it is the
   skip rule. `lastReviewedAt` is our newest review at *any* head, the baseline for the base-merge
@@ -65,7 +65,7 @@ query($owner:String!, $name:String!) {
 - `first:100` is fetch depth, not `--limit`. Apply `--limit` after filtering and say when it
   truncated the queue.
 - **A PR with `filesTruncated`** gets its full list before routing, so the tier and the finders see
-  every file: once its worktree is fetched (SKILL.md Phase 1),
+  every file: once its worktree is fetched (`phase-1-target.md`),
   `git diff --name-only "origin/<base>...refs/desk-review/pr-<n>"`. Not `gh pr diff --name-only`,
   which fails with `HTTP 406` on any PR over 20,000 diff lines, exactly the PRs this is for.
 
