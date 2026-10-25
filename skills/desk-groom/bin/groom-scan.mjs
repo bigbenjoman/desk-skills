@@ -198,9 +198,10 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       }
       const lines = repo.lines(path)
       // The names written beside the citation, on its line, are what it claims sits at that line.
-      const from = Math.max(t.text.lastIndexOf('\n', c.index) + 1, c.index - 40)
-      const to = Math.min(...[t.text.indexOf('\n', c.index), t.text.length].filter((n) => n >= 0), c.index + c.cite.length + 40)
-      const named = spansOf(t.text.slice(from, to)).map((s) => fnName(s.span) ?? s.span).filter((s) => !/:\d+/.test(s))
+      const start = t.text.lastIndexOf('\n', c.index) + 1
+      const named = spansOf(t.text.slice(start).split('\n')[0])
+        .filter((s) => start + s.index + s.span.length + 2 >= c.index - 40 && start + s.index <= c.index + c.cite.length + 40)
+        .map((s) => fnName(s.span) ?? s.span).filter((s) => !/:\d+/.test(s))
       if (c.end > lines.length) {
         add({ check: 'stale', ticket: t.key, evidence: [`cites ${c.cite}, but ${path} has ${lines.length} lines on main`], edit: null,
           propose: [`desk-jira edit ${t.key} description=@<${t.key} description with the edit>`], verify: 'stale' })
