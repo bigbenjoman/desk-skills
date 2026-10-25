@@ -3,7 +3,7 @@
 # The context handoff hook (hooks/desk-handoff.py), fed hook inputs and fixture transcripts in a
 # throwaway repo: one injection past the §2 threshold and none under it, the main chain only, the
 # window (200k, [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a
-# single Stop block, the .handoffs/ exclude
+# single Stop block, the .handoffs/ exclude, /desk-update's one-time offer-1m of a 20% 1M row
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only).
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -138,7 +138,38 @@ hook PostToolUse s28 "$T/300k.jsonl"
 check "the 45 row at 0, a 1M row at 25: fires on 1M"      '[[ "$(ctx)" == *"(threshold 25%)"* ]]'
 hook PostToolUse s29 "$T/high.jsonl"
 check "and stays off on a 200k window"                    '[ -z "$out" ]'
+config '`45`' '`20`'
+transcript "$T/190k.jsonl" 190000
+hook SessionStart s40 "$T/190k.jsonl" ',"source":"startup","model":"claude-opus-5-5[1m]"'
+hook PostToolUse s40 "$T/190k.jsonl"
+check "DS-199 AC3: a 1M row at 20, 190k of 1M: nothing"   '[ -z "$out" ]'
+transcript "$T/210k.jsonl" 210000
+hook PostToolUse s40 "$T/210k.jsonl"
+check "DS-199 AC3: past 200k of 1M fires at 20"           '[[ "$(ctx)" == *"context is at 21% of a 1,000,000-token window (threshold 20%)"* ]]'
 config '`45`'
+
+# ---- DS-199 AC2: /desk-update offers to lower a 1M threshold of 45 to 20, once ----
+offer(){ out=$(python3 "$HOOK" offer-1m "$@" "$R/sub" 2>&1); rc=$?; }
+config '`45`'
+offer
+check "DS-199 AC2: unset under a 45 row is offered"       '[ $rc -eq 0 ] && [[ "$out" == "handoff at 45%"*"to 20"*"53%"* ]]'
+config '`45`' '`45`'
+offer
+check "DS-199 AC2: a 1M row at 45 is offered"             '[ $rc -eq 0 ] && [[ "$out" == "handoff at 45%"* ]]'
+config '`45`' '`20`'
+offer
+check "DS-199 AC2: a 1M row at 20 is not"                 '[ $rc -eq 1 ] && [ -z "$out" ]'
+config '`60`'
+offer
+check "DS-199 AC2: unset under a 60 row is not"           '[ $rc -eq 1 ] && [ -z "$out" ]'
+DESK_CONFIG="$T/missing.md" offer
+check "DS-199 AC2: no desk config: not offered"           '[ $rc -eq 1 ] && [ -z "$out" ]'
+config '`45`'; before="$(cat "$DESK_CONFIG")"
+offer --asked
+check "DS-199 AC2: --asked records it"                    '[ $rc -eq 0 ] && [ -f "$DESK_HOME/handoff/offered-1m-acme__demo.json" ]'
+offer
+check "DS-199 AC2: once asked, never offered again"       '[ $rc -eq 1 ] && [ -z "$out" ]'
+check "DS-199 AC2: and the config is unchanged"           '[ "$(cat "$DESK_CONFIG")" = "$before" ]'
 
 # ---- AC5: the row ----
 config '`10`'

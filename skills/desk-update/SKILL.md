@@ -95,7 +95,13 @@ eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a c
 python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse --show-toplevel)" offer
                                                     # only when EXISTS=yes: exit 0 prints the PLUGINS line's
                                                     # counts; exit 1, no plugin choice to offer here
+python3 ~/.claude/hooks/desk-handoff.py offer-1m    # only when EXISTS=yes: exit 0 prints the 1M handoff
+                                                    # SETTING line; exit 1, nothing to offer here
 ```
+
+The 1M handoff offer is made once per repo: `offer-1m` prints its line only while this repo hands
+off at 45% of a 1M window (its §2 "Handoff at context % on a 1M window" row at `45`, or unset under
+a `45` row) and the offer has not been recorded as asked.
 
 The plugin pass is offered only where no plugin choice was ever made: `offer` exits 1 once this
 repo's `.claude/settings.local.json` has any `enabledPlugins` entry, so a repo the user has already
@@ -140,6 +146,7 @@ SETTING       skills listed in full: name-only + skill-index cuts the listing ~3
 SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
 SETTING       no context handoff: past §2 Handoff at context % the session would write .handoffs/<date>.md,
               and the session after /clear or a compaction would pick it up
+SETTING       <the line `desk-handoff.py offer-1m` printed, verbatim>
 SETTING       skipped by install.sh: <question>
               apply: <the apply line install.sh printed under it, verbatim>
 PLUGINS       <repo>: no plugin choice made here; switching off <n> plugins (<ids>) removes <m> skills from every turn
@@ -203,6 +210,11 @@ first). For the context handoff: the same, or register it the way install.sh doe
 `Stop` and `SessionStart` that lacks one, settings backed up first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
 copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` first). For a chosen
 PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
+For the 1M handoff SETTING, chosen: set the Value cell of §2 "Handoff at context % on a 1M window"
+in the `CONFIG` file `desk-env where` printed to `` `20` `` (add the row under "Handoff at context %"
+if the config lacks it), then read it back with `desk-env get handoff-pct-1m`. Chosen or not, once
+the question has been asked run `python3 ~/.claude/hooks/desk-handoff.py offer-1m --asked`, so it is
+never offered again; on a no the row is left exactly as it was.
 For any other chosen `skipped by install.sh` row: run its `apply:` command; where that says
 `run in a terminal`, tell the user to run it there rather than doing it for them.
 
