@@ -34,7 +34,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-autopilot` | A batch of tickets (or an epic's children), one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2`, `/desk-autopilot ABC-900` |
 | `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
 | `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub, leaked memory (scripted scans in `bin/`) | `/desk-cleanup` |
-| `desk-groom` | Checks every open ticket for work already on the default branch, duplicates, missing links, stale citations, blank fields and dead blockers, and proposes each fix with its evidence; writes nothing (scripted checks in `bin/`) | `/desk-groom` |
+| `desk-groom` | Checks every open ticket for work already on the default branch, duplicates, missing links, stale citations, blank fields and dead blockers, and every epic for uncovered DoD items, a stale Children list, a child that outranks it and a status its children have moved past; proposes each fix with its evidence, and asks where loose tickets belong and each call with no single correct fix; writes nothing (scripted checks in `bin/`) | `/desk-groom` |
 | `desk-checkout` | Drafts your end-of-day check-out from calendar, meeting notes, Jira, GitHub, Slack and Claude Code; never sends it | `/desk-checkout` |
 | `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
 | `desk-jira` | Ticket comments, edits, transitions | loads itself |

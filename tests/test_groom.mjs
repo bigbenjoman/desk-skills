@@ -1,13 +1,13 @@
-// suite: desk-groom ticket checks (landed work, duplicates, links, stale text, fields, blockers)
-// desk-groom's scripted per-ticket checks against a stub Jira and a fixture repo with its own
-// origin: one case per DS-238 criterion, plus the close rule a verifier's results go through. Nothing
-// reads the real Jira, GitHub or this checkout's history.
+// suite: desk-groom ticket and epic checks (landed work, duplicates, links, stale text, fields, blockers, epics)
+// desk-groom's scripted checks against a stub Jira and a fixture repo with its own origin: one case
+// per DS-238 criterion (per ticket) and per DS-239 criterion (per epic), plus the close rule a
+// verifier's results go through. Nothing reads the real Jira, GitHub or this checkout's history.
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, ticketOf } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -112,10 +112,55 @@ const issues = {
   'KAN-60': iss('readme: document every feature', '', { issuelinks: Array.from({ length: 11 }, (_, i) => blocks(`KAN-${70 + i}`)) }),
   'KAN-61': iss('loop: the first half', '', { issuelinks: [blocks('KAN-62'), blocks('KAN-62', 'new', 'out')] }),
   'KAN-62': iss('loop: the second half', '', { issuelinks: [blocks('KAN-61'), blocks('KAN-61', 'new', 'out')] }),
+
+  // ---- DS-239 epic checks
+  // AC1, AC2, AC4, AC7: an epic in To Do with DoD items, a Children section that names a split, a
+  // closed, a renamed, a foreign and a missing ticket, and a P1 child ranked above it
+  'KAN-100': iss('Search: find any ticket by its words', 'h2. Outcome\nFor Ben, finding a ticket by its words.\n\nh2. Definition of done\n'
+    + '# DoD1: Given a query, when search runs, then matching tickets are listed (index child).\n'
+    + '# DoD2: Given a ticket, when its title changes, then the index follows it (KAN-102).\n'
+    + '# DoD3: Given a misspelt query, when search runs, then near matches are suggested.\n'
+    + '# DoD4: Given an archived project, when search runs, then its tickets are left out.\n'
+    + '# DoD5: Given two hits, when search runs, then the closer one ranks first.\n'
+    + '# DoD6: Given a quoted phrase, when search runs, then only exact phrases count.\n\nh2. Children\n'
+    + '# KAN-101 (S): index: build the word index\n# KAN-102 (S): reindex on title change\n# KAN-103 (M): ranking\n'
+    + '# KAN-107 (S): the old query parser\n# KAN-108 (S): highlight the hits\n# KAN-109 (S): export results\n# KAN-199 (S): gone',
+  { issuetype: { name: 'Epic', hierarchyLevel: 1 } }),
+  'KAN-101': iss('search: build the word index', '', { parent: { key: 'KAN-100' } }),
+  'KAN-102': iss('search: reindex a ticket when its title changes', '', { parent: { key: 'KAN-100' }, status: { name: 'Done', statusCategory: { key: 'done' } } }),
+  'KAN-103': iss('search: rank the hits', '', { parent: { key: 'KAN-100' }, status: { name: 'Done', statusCategory: { key: 'done' } },
+    issuelinks: ['KAN-105', 'KAN-106'].map((key) => ({ id: `s-${key}`, type: { name: 'Issue split', inward: 'split from', outward: 'split to' }, outwardIssue: { key, fields: { status: { name: 'To Do', statusCategory: { key: 'new' } } } } })) }),
+  'KAN-104': iss('search: suggest near matches for a misspelt query', '', { parent: { key: 'KAN-100' }, [P]: { value: 'P1' } }),
+  'KAN-105': iss('search: rank by title', 'Covers KAN-100\'s DoD5.', { parent: { key: 'KAN-100' } }),
+  'KAN-106': iss('search: rank by recency', '', { parent: { key: 'KAN-100' } }),
+  'KAN-107': iss('search: a query parser', 'Owns DoD6.', { parent: { key: 'KAN-100' }, status: { name: 'Won\'t Do', statusCategory: { key: 'done' } } }),
+  'KAN-108': iss('search: bold each match in results', '', { parent: { key: 'KAN-100' } }),
+  'KAN-109': iss('admit: export results', '', { parent: epic }),
+  // AC4: P2, blocking an epic at P3; its own parent is at P2 too
+  'KAN-111': iss('admit: index each admitted ticket', '', { parent: epic, [P]: { value: 'P2' }, issuelinks: [blocks('KAN-100', 'new', 'out')] }),
+  // AC7: an epic in progress whose every child is done, and one with no children
+  'KAN-120': iss('Exports: every table as csv', '', { issuetype: { name: 'Epic', hierarchyLevel: 1 }, status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } }),
+  'KAN-121': iss('exports: the queue as csv', '', { parent: { key: 'KAN-120' }, status: { name: 'Done', statusCategory: { key: 'done' } } }),
+  'KAN-122': iss('exports: the digest as csv', '', { parent: { key: 'KAN-120' }, status: { name: 'Done', statusCategory: { key: 'done' } } }),
+  'KAN-130': iss('Plugins: load third-party plugins', '', { issuetype: { name: 'Epic', hierarchyLevel: 1 } }),
+  // AC3, AC5: a loose ticket with one home, one that fits two epics, one that fits only a bucket
+  'KAN-140': iss('search: rank exact title matches first', ''),
+  'KAN-141': iss('notifications: a weekly digest of parked tickets', ''),
+  'KAN-142': iss('theme: a colour picker for the terminal', ''),
+  'KAN-150': iss('Notifications: email a digest of parked tickets', '', { issuetype: { name: 'Epic', hierarchyLevel: 1 } }),
+  'KAN-151': iss('Notifications: post a digest of parked tickets to Slack', '', { issuetype: { name: 'Epic', hierarchyLevel: 1 } }),
+  'KAN-160': iss('Misc: odds and ends (colour picker, terminal)', '', { issuetype: { name: 'Epic', hierarchyLevel: 1 } }),
+  // AC4: most of an epic's children sit above it, so the epic rises, once
+  'KAN-170': iss('Layout: fit desk-q to any width', '', { issuetype: { name: 'Epic', hierarchyLevel: 1 }, [P]: { value: 'P4' } }),
+  'KAN-171': iss('layout: wrap long titles', '', { parent: { key: 'KAN-170' }, [P]: { value: 'P2' } }),
+  'KAN-172': iss('layout: drop columns on narrow screens', '', { parent: { key: 'KAN-170' }, [P]: { value: 'P2' } }),
 }
 issues['KAN-30'].issuelinks = [{ id: 'r-KAN-34', type: { name: 'Relates', inward: 'relates to', outward: 'relates to' }, inwardIssue: { key: 'KAN-34', fields: { status: { name: 'To Do', statusCategory: { key: 'new' } } } } }]
-const fixture = { issues, children: { 'KAN-1': ['KAN-10', 'KAN-11', 'KAN-12', 'KAN-13', 'KAN-14', 'KAN-15'] },
-  search: Object.keys(issues).filter((k) => k !== 'KAN-14') }
+const fixture = { issues,
+  children: { 'KAN-1': ['KAN-10', 'KAN-11', 'KAN-12', 'KAN-13', 'KAN-14', 'KAN-15', 'KAN-109', 'KAN-111'],
+    'KAN-100': ['KAN-101', 'KAN-102', 'KAN-103', 'KAN-104', 'KAN-105', 'KAN-106', 'KAN-107', 'KAN-108'],
+    'KAN-120': ['KAN-121', 'KAN-122'], 'KAN-170': ['KAN-171', 'KAN-172'] },
+  search: Object.keys(issues).filter((k) => issues[k].status?.statusCategory?.key !== 'done') }
 writeFileSync(join(T, 'fixture.json'), JSON.stringify(fixture))
 const PORT = 20000 + Math.floor(Math.random() * 20000)
 stub = spawn('python3', [join(SRC, 'tests', 'stub_jira.py'), String(PORT), join(T, 'requests.log'), '', join(T, 'fixture.json')], { stdio: 'ignore' })
@@ -129,7 +174,7 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 for (let i = 0; i < 50 && spawnSync('desk-jira', ['whoami'], { cwd: R, env }).status !== 0; i++) sleep(100)
 
 const run = (...a) => spawnSync('node', [SCAN, ...a], { cwd: R, env, encoding: 'utf8' })
-const r = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--done', 'Done', '--json')
+const r = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--json')
 t('scan exits 0', r.status, 0)
 if (r.status !== 0) console.log(r.stderr)
 const found = r.status === 0 ? JSON.parse(r.stdout) : []
@@ -145,7 +190,8 @@ t('AC1 the criteria go to the verifier', (landed.criteria ?? []).map((c) => c.id
 t('AC1 the proposal is the Done state, once verified', landed.propose, ['desk-jira transition KAN-10 Done'])
 t('AC1 work landed under its own key is a candidate too', of('landed', 'KAN-33').length, 1)
 t('AC1 a ticket with nothing on main is not', of('landed', 'KAN-31').length, 0)
-t('AC1 the epic is not checked per ticket', found.filter((f) => f.ticket === 'KAN-1').length, 0)
+const PER_TICKET = ['landed', 'duplicate', 'link', 'stale', 'field', 'title', 'blocker']
+t('AC1 the epic is not checked per ticket', found.filter((f) => f.ticket === 'KAN-1' && PER_TICKET.includes(f.check)).length, 0)
 
 // AC2
 t('AC2 the newer duplicate is linked and closed', cmds('duplicate', 'KAN-21'), ['desk-jira link KAN-21 duplicates KAN-20', 'desk-jira transition KAN-21 Done'])
@@ -196,13 +242,71 @@ const fan = of('blocker', 'KAN-60')[0] ?? {}
 t('AC6 a set of blockers that keeps growing is rescoped', [fan.rescope, fan.propose?.length], [true, 12])
 t('AC6 a Blocks loop is rescoped, once', found.filter((f) => f.check === 'blocker' && f.rescope && /loop/.test(f.evidence[0])).map((f) => f.ticket), ['KAN-61'])
 
+// ---- DS-239: the epic checks
+const one = (check, ticket) => of(check, ticket)[0] ?? {}
+// AC1
+const gaps = of('coverage', 'KAN-100')
+t('DS-239 AC1 a DoD item no child covers is a gap, naming it', gaps.map((f) => f.item), ['DoD3', 'DoD4', 'DoD6'])
+t('DS-239 AC1 the gap quotes the item', /^DoD4: "Given an archived project, when search runs, then its tickets are left out\."/.test(gaps.find((f) => f.item === 'DoD4')?.evidence?.[0]), true)
+t('DS-239 AC1 a child sharing its words is a candidate for a verifier', [gaps.find((f) => f.item === 'DoD3')?.candidates, gaps.find((f) => f.item === 'DoD3')?.verify], [['KAN-104'], 'coverage'])
+t('DS-239 AC1 a gap with no near child goes straight to the report', gaps.find((f) => f.item === 'DoD4')?.verify, undefined)
+t('DS-239 AC1 a gap proposes nothing', gaps.flatMap((f) => f.propose), [])
+t('DS-239 AC1 a child closed as won\'t do covers nothing', gaps.some((f) => f.item === 'DoD6'), true)
+t('DS-239 AC1 an epic with no DoD has no coverage findings', found.filter((f) => f.check === 'coverage' && f.ticket !== 'KAN-100').length, 0)
+// AC2
+const kids = one('children', 'KAN-100')
+t('DS-239 AC2 the corrected Children section', kids.section, ['# KAN-101 (S): index: build the word index', '# KAN-102 (S): reindex on title change',
+  '# KAN-105 (S): rank by title', '# KAN-106 (S): rank by recency', '# KAN-108 (S): bold each match in results', '# KAN-104 (S): suggest near matches for a misspelt query'])
+t('DS-239 AC2 a split, a closed, a renamed, a foreign and a missing child, and an unlisted one, each reported', kids.evidence, [
+  'KAN-103 is listed, but was split into KAN-105, KAN-106',
+  'KAN-105 is a child of KAN-100 in Jira but is not listed: "search: rank by title"',
+  'KAN-106 is a child of KAN-100 in Jira but is not listed: "search: rank by recency"',
+  'KAN-107 is listed, but was closed as Won\'t Do',
+  'KAN-108 is listed as "highlight the hits", but is now "search: bold each match in results"',
+  'KAN-109 is listed, but is not a child of KAN-100 in Jira (its parent is KAN-1)',
+  'KAN-199 is listed, but Jira has no such issue',
+  'KAN-104 is a child of KAN-100 in Jira but is not listed: "search: suggest near matches for a misspelt query"'])
+t('DS-239 AC2 proposed as one description edit', kids.propose, ['desk-jira edit KAN-100 description=@<KAN-100 description with its Children section as below>'])
+t('DS-239 AC2 an epic with no Children section gets none', found.filter((f) => f.check === 'children').map((f) => f.ticket), ['KAN-100'])
+// AC3, AC5
+const home = one('loose', 'KAN-140')
+t('DS-239 AC3 a loose ticket is a question with a recommended epic', [home.kind, home.recommend, home.propose], ['question', 'KAN-100 (Search: find any ticket by its words)', []])
+t('DS-239 AC3 with a new epic as the other option', home.options?.at(-1)?.startsWith('a new epic: '), true)
+const none = one('loose', 'KAN-142')
+t('DS-239 AC3 no fitting epic: a new epic, with a proposed title', [none.recommend?.startsWith('a new epic: '), none.title], [true, 'theme: a colour picker for the terminal'])
+t('DS-239 AC3 never a catch-all bucket epic', found.filter((f) => f.check === 'loose').some((f) => (f.options ?? []).some((o) => o.startsWith('KAN-160'))), false)
+t('DS-239 AC3 a ticket with a parent is not loose', of('loose', 'KAN-104').length + of('loose', 'KAN-10').length, 0)
+t('DS-239 AC3 an epic is not loose', of('loose', 'KAN-100').length, 0)
+const two = one('loose', 'KAN-141')
+t('DS-239 AC5 two epics that fit equally: both are options', two.options?.slice(0, 2).map((o) => o.split(' ')[0]), ['KAN-150', 'KAN-151'])
+t('DS-239 AC5 asked as a judgement call, with a recommendation and no fix', [/about equally/.test(two.question), !!two.recommend, two.propose], [true, true, []])
+// AC4
+t('DS-239 AC4 a P1 child above its P3 epic comes down', one('priority', 'KAN-104').propose, [`desk-jira edit KAN-104 ${P}=P3`])
+t('DS-239 AC4 with the evidence', one('priority', 'KAN-104').evidence, ['KAN-104 is P1, above its parent epic KAN-100, at P3', '0 of KAN-100\'s 4 other open children are at P1 or higher', 'so KAN-104 comes down to P3'])
+t('DS-239 AC4 a ticket above the epic it blocks', [one('priority', 'KAN-111').other, one('priority', 'KAN-111').propose], ['KAN-100', [`desk-jira edit KAN-111 ${P}=P3`]])
+t('DS-239 AC4 most children above the epic: the epic rises, once', found.filter((f) => f.check === 'priority' && f.other === 'KAN-170').flatMap((f) => f.propose), [`desk-jira edit KAN-170 ${P}=P2`])
+t('DS-239 AC4 no pair where the ticket is at or below its epic', found.filter((f) => f.check === 'priority').map((f) => f.ticket).sort(), ['KAN-104', 'KAN-111', 'KAN-171'])
+// AC7
+t('DS-239 AC7 an epic in To Do with started or done children goes to In Progress', one('status', 'KAN-100').propose, ["desk-jira transition KAN-100 'In Progress'"])
+t('DS-239 AC7 naming the children it rests on', one('status', 'KAN-100').evidence, ['KAN-100 is To Do, but KAN-102 is Done, KAN-103 is Done, KAN-107 is Won\'t Do'])
+t('DS-239 AC7 an epic whose every child is done goes to Done', [one('status', 'KAN-120').propose, one('status', 'KAN-120').evidence], [['desk-jira transition KAN-120 Done'], ['every child of KAN-120 is done: KAN-121 (Done), KAN-122 (Done)']])
+t('DS-239 AC7 an epic with no children is left alone', of('status', 'KAN-130').length + of('status', 'KAN-150').length, 0)
+t('DS-239 AC7 an epic with only open children is left alone', of('status', 'KAN-170').length, 0)
+// AC6: every finding is a fix (proposed), a question (asked, nothing proposed) or a report
+t('DS-239 AC6 every fix is proposed and never asked', found.filter((f) => f.kind === 'fix' && (!f.propose.length || f.options || f.question)).map((f) => `${f.check} ${f.ticket}`), [])
+t('DS-239 AC6 every question has options and a recommendation, and proposes nothing', found.filter((f) => f.kind === 'question' && (!(f.options?.length) || !f.options.includes(f.recommend) || f.propose.length)).map((f) => f.ticket), [])
+t('DS-239 AC6 only loose tickets are asked by the scan', [...new Set(found.filter((f) => f.kind === 'question').map((f) => f.check))], ['loose'])
+t('DS-239 AC6 every finding has a kind', found.filter((f) => !['fix', 'question', 'report'].includes(f.kind)).length, 0)
+t('DS-239 priority order: P0 first, named priorities, unknown values', ['P0', 'P3', 'Highest', 'low', 'urgent', null].map(priorityRank), [0, 3, 0, 3, null, null])
+
 // Read only: the scan sent no write to Jira.
 const writes = spawnSync('grep', ['-cE', '"method": "(PUT|DELETE)"|issueLink"|/transitions|/comment', join(T, 'requests.log')], { encoding: 'utf8' }).stdout.trim()
 t('the scan wrote nothing to Jira', writes, '0')
 
 // The text form and the verdict command
 const text = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S)
-t('the text form counts the tickets', /^groom-scan: 25 open tickets, \d+ findings/.test(text.stdout), true)
+t('the text form counts the tickets', /^groom-scan: 44 open tickets, \d+ findings/.test(text.stdout), true)
+t('the text form marks a question and its recommended option', /\nloose +KAN-141 +\[question\]\n(?:.*\n)*? {2}option {2}: KAN-150 .*\(recommended\)/.test(text.stdout), true)
 writeFileSync(join(T, 'scan.json'), r.stdout)
 writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }, { ticket: 'KAN-31', criteria: [met('AC1')] }]))
 const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json'))

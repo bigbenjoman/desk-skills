@@ -5,14 +5,18 @@
 //
 //   node groom-scan.mjs scan --repo <root> --default <branch> --project <§4 Jira project key>
 //        [--priority <§4 Priority field>] [--fields <§4 Other fields, comma-separated>]
-//        [--done <§4 Done state>] [--jql <jql>] [--json]
+//        [--done <§4 Done state>] [--in-progress <§4 In-progress state>] [--size <§4 Size field>]
+//        [--jql <jql>] [--json]
 //   node groom-scan.mjs verdict <results.json> --scan <scan.json>   verifiers' per-criterion results
 //        in, checked against the criteria the scan (--json) read from each ticket: close or keep open
 //
 // `scan` prints one block per finding (or a JSON array with --json). A finding is
 //   {check, ticket, other?, evidence: [line], propose: [desk-jira command], verify?: brief}
-// where `check` is landed, duplicate, link, stale, field, title or blocker. A finding with `verify`
-// is a candidate only: a read-only verifier settles it before anything is proposed (SKILL.md).
+// where `check` is landed, duplicate, link, stale, field, title or blocker per ticket, and coverage,
+// children, loose, priority or status per epic (groomEpics). A finding with `verify` is a candidate
+// only: a read-only verifier settles it before anything is proposed (SKILL.md). An epic finding
+// also has `kind`: `fix` (one correct fix, proposed), `question` (no single correct fix: `options`
+// and `recommend`, and nothing proposed) or `report` (a gap to report, nothing to write).
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
@@ -60,6 +64,7 @@ export function ticketOf(issue, fieldIds = []) {
     summary: f.summary ?? '',
     text: plain(f.description),
     created: f.created ?? '',
+    status: f.status?.name ?? '',
     category: f.status?.statusCategory?.key ?? 'new',
     parent: f.parent?.key ?? null,
     fields: Object.fromEntries(fieldIds.map((id) => [id, val(f[id])])),
@@ -353,6 +358,187 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
   return out
 }
 
+// ---- epic checks: coverage, Children lists, loose tickets, the priority path, status ----------
+
+// An epic no outcome lives in: never recommended as a home for a loose ticket.
+const BUCKET = /\b(?:misc(?:ellaneous)?|backlog|bucket|catch[- ]?all|other|general|loose|unsorted|uncategori[sz]ed|odds and ends|chores?|tech(?:nical)? debt)\b/i
+const BAG_STOP = new Set('given then when after before today ben user users ticket tickets epic epics run runs groom'.split(' '))
+// Words for matching a ticket to an epic or a criterion: the title's prefix kept, plurals and 's folded.
+const bag = (s) => new Set((String(s).toLowerCase().match(/[a-z0-9][a-z0-9'-]*/g) ?? [])
+  .map((w) => w.replace(/'s$/, '').replace(/(?<=[a-z]{3})s$/, '')).filter((w) => w.length > 2 && !STOP.has(w) && !BAG_STOP.has(w)))
+const sectionText = (t, re) => (sections(t.text).find((x) => re.test(x.name))?.lines ?? []).map((l) => l.text).join('\n')
+const about = (t) => `${t.summary}\n${sectionText(t, /^outcome\b/i)}`
+// A child closed in a status other than the Done state (won't do, cancelled): it covers nothing.
+const dropped = (c, done) => isDone(c.category) && c.status && c.status.toLowerCase() !== String(done).toLowerCase()
+
+// A priority's place, highest first: P0 above P1, Highest above Lowest. Null for a value with no order.
+const NAMED_PRIORITY = ['highest', 'high', 'medium', 'low', 'lowest']
+export function priorityRank(v) {
+  if (v == null || v === '') return null
+  const p = /^P(\d+)$/i.exec(String(v).trim())
+  if (p) return Number(p[1])
+  const i = NAMED_PRIORITY.indexOf(String(v).trim().toLowerCase())
+  return i < 0 ? null : i
+}
+
+// An epic's Children section: a row per line that starts with a key, `# KEY (size): label`.
+export function childrenSection(text) {
+  const s = sections(text).find((x) => /^children\b/i.test(x.name))
+  if (!s) return null
+  const rows = []
+  for (const l of s.lines) {
+    const m = /^(\s*(?:[#*-]+\s*)?)([A-Z][A-Z0-9]*-\d+)\b\s*(?:\(([^)]*)\))?\s*[:–-]?\s*(.*)$/.exec(l.text)
+    if (m) rows.push({ mark: m[1], key: m[2], size: m[3] ?? null, label: m[4].trim(), line: l.text })
+  }
+  return { name: s.name, rows }
+}
+
+// How well a text fits another: the shared words, and their share of the first text's words.
+function fit(a, b) {
+  const x = bag(a), y = bag(b)
+  const shared = [...x].filter((w) => y.has(w))
+  return { shared, score: shared.length / (x.size || 1) }
+}
+
+// Two candidates this close are a judgement call, not a pick.
+export const TIE = 0.85
+
+// Every epic check. `children` maps an open epic to its Jira children in rank order (ticketOf records,
+// done ones included); `lookup` maps a key a Children section lists but Jira does not have under that
+// epic to its record, or null when Jira has no such issue.
+export function groomEpics({ tickets, children = {}, lookup = {}, priority = null, size = null, done = 'Done', inProgress = 'In Progress' }) {
+  const out = []
+  const open = new Map(tickets.map((t) => [t.key, t]))
+  const epics = tickets.filter(isEpic)
+  const work = tickets.filter((t) => !isEpic(t))
+
+  for (const e of epics) {
+    const kids = children[e.key] ?? []
+    const live = kids.filter((c) => !dropped(c, done))
+    const sec = childrenSection(e.text)
+
+    // ---- coverage: a DoD item no open or done child covers (AC1). A child covers it when it names
+    // the item, the item names the child, or the child's Children row names the item or its label
+    // ("(ticket checks child)"). Children that only share its words go to a verifier.
+    for (const d of criteriaOf(e.text).filter((c) => c.id.startsWith('DoD'))) {
+      const id = new RegExp(`\\b${d.id}\\b`)
+      const label = /\(([^()]+?)\s+child\)/i.exec(d.text)?.[1]?.toLowerCase()
+      const covers = live.filter((c) => {
+        const row = sec?.rows.find((r) => r.key === c.key)
+        return id.test(c.text) || new RegExp(`\\b${c.key}\\b`).test(d.text)
+          || (row && (id.test(row.line) || (label && row.label.toLowerCase().includes(label))))
+      })
+      if (covers.length) continue
+      const near = live.map((c) => ({ c, ...fit(d.text, about(c)) })).filter((x) => x.shared.length >= 2)
+        .sort((a, b) => b.shared.length - a.shared.length || (a.c.key < b.c.key ? -1 : 1))
+      out.push({ check: 'coverage', kind: 'report', ticket: e.key, item: d.id,
+        evidence: [`${d.id}: "${quote(d.text)}": no open or done child of ${e.key} names it, or is named by it`,
+          ...near.map((x) => `${x.c.key} shares ${x.shared.join(', ')}: "${quote(x.c.summary)}"`)],
+        ...(near.length ? { candidates: near.map((x) => x.c.key), verify: 'coverage' } : {}), propose: [] })
+    }
+
+    // ---- Children section against Jira's children (AC2)
+    if (sec) {
+      const byKey = new Map(kids.map((c) => [c.key, c]))
+      const listed = new Set(sec.rows.map((r) => r.key))
+      const mark = sec.rows[0]?.mark || '# '
+      // A new row as the section writes them: `# KEY (size): the title less its area prefix`.
+      const row = (c, sz = size && c.fields?.[size]) => `${mark}${c.key}${sz ? ` (${sz})` : ''}: ${prefixOf(c.summary) ? c.summary.slice(prefixOf(c.summary).length + 1).trim() : c.summary}`
+      const evidence = [], lines = [], placed = new Set()
+      const unlisted = (c) => { if (placed.has(c.key)) return; placed.add(c.key); if (dropped(c, done)) { evidence.push(`${c.key} is a child but is not listed; it was closed as ${c.status}, so it stays off the list`); return } evidence.push(`${c.key} is a child of ${e.key} in Jira but is not listed: "${quote(c.summary)}"`); lines.push(row(c)) }
+      for (const r of sec.rows) {
+        const c = byKey.get(r.key)
+        const split = (c ?? lookup[r.key])?.links?.filter((l) => /split to/i.test(l.verb)).map((l) => l.key) ?? []
+        if (split.length) {
+          evidence.push(`${r.key} is listed, but was split into ${split.join(', ')}`)
+          for (const k of split) if (byKey.has(k) && !listed.has(k)) unlisted(byKey.get(k))
+          continue
+        }
+        if (!c) {
+          const o = lookup[r.key]
+          evidence.push(o ? `${r.key} is listed, but is not a child of ${e.key} in Jira${o.parent ? ` (its parent is ${o.parent})` : ''}` : `${r.key} is listed, but Jira has no such issue`)
+          continue
+        }
+        if (dropped(c, done)) { evidence.push(`${r.key} is listed, but was closed as ${c.status}`); continue }
+        const f = fit(r.label.replace(/^[^:]{1,30}:\s+/, ''), c.summary)
+        if (r.label && f.shared.length < 2 && f.score < 0.25) {
+          evidence.push(`${r.key} is listed as "${quote(r.label)}", but is now "${quote(c.summary)}"`)
+          lines.push(row(c, r.size ?? undefined))
+          continue
+        }
+        lines.push(r.line)
+      }
+      for (const c of kids) if (!listed.has(c.key)) unlisted(c)
+      if (evidence.length) {
+        out.push({ check: 'children', kind: 'fix', ticket: e.key, evidence, section: lines,
+          propose: [`desk-jira edit ${e.key} description=@<${e.key} description with its ${sec.name} section as below>`] })
+      }
+    }
+
+    // ---- status: started or finished children move the epic (AC7). An epic with none is left alone.
+    if (kids.length && !isDone(e.category)) {
+      if (kids.every((c) => isDone(c.category))) {
+        out.push({ check: 'status', kind: 'fix', ticket: e.key, evidence: [`every child of ${e.key} is done: ${kids.map((c) => `${c.key} (${c.status || 'done'})`).join(', ')}`],
+          propose: [`desk-jira transition ${e.key} ${shq(done)}`] })
+      } else if (e.category === 'new') {
+        const started = kids.filter((c) => c.category !== 'new')
+        if (started.length) {
+          out.push({ check: 'status', kind: 'fix', ticket: e.key, evidence: [`${e.key} is ${e.status || 'To Do'}, but ${started.map((c) => `${c.key} is ${c.status || c.category}`).join(', ')}`],
+            propose: [`desk-jira transition ${e.key} ${shq(inProgress)}`] })
+        }
+      }
+    }
+  }
+
+  // ---- loose tickets: no parent epic. Always a question, never a move (AC3), and two epics that fit
+  // about equally are a judgement call with both as options (AC5).
+  const homes = epics.filter((e) => !BUCKET.test(e.summary))
+  for (const t of work.filter((x) => !x.parent && x.level >= 0)) {
+    const fits = homes.map((e) => ({ e, ...fit(about(t), [about(e), ...(children[e.key] ?? []).map((c) => c.summary)].join('\n')) }))
+      .filter((x) => x.shared.length >= 2).sort((a, b) => b.score - a.score || b.shared.length - a.shared.length || (a.e.key < b.e.key ? -1 : 1))
+    const top = fits[0], next = fits[1]
+    const opt = (x) => `${x.e.key} (${x.e.summary})`
+    const fresh = `a new epic: "${t.summary}" (draft title: say the outcome it serves)`
+    const tie = top && next && next.score >= top.score * TIE
+    out.push({ check: 'loose', kind: 'question', ticket: t.key,
+      evidence: [`${t.key} has no parent epic: "${quote(t.summary)}"`,
+        ...fits.slice(0, 3).map((x) => `${x.e.key} shares ${x.shared.join(', ')} (${Math.round(x.score * 100)}%)`),
+        ...(top ? [] : ['no open epic shares two words with it'])],
+      question: tie ? `${t.key} fits ${top.e.key} and ${next.e.key} about equally: which epic does it serve?` : `Which epic does ${t.key} serve?`,
+      options: top ? [opt(top), ...(tie ? [opt(next)] : []), fresh] : [fresh],
+      recommend: top ? opt(top) : fresh,
+      ...(top ? {} : { title: t.summary }),
+      propose: [] })
+  }
+
+  // ---- the priority path: a ticket above the epic it works against (AC4)
+  const byRank = (t) => priorityRank(t.fields[priority]) ?? Infinity
+  if (priority) for (const t of [...work].sort((a, b) => byRank(a) - byRank(b))) {
+    const tp = priorityRank(t.fields[priority])
+    if (tp == null) continue
+    const against = [...new Set([t.parent, ...t.links.filter((l) => l.type === 'Blocks' && /^blocks$/i.test(l.verb)).map((l) => l.key)].filter(Boolean))]
+    for (const k of against) {
+      const e = open.get(k)
+      const ep = e && isEpic(e) ? priorityRank(e.fields[priority]) : null
+      if (ep == null || tp >= ep) continue
+      // Raise the epic when most of its other open children sit as high as the ticket; else the
+      // ticket comes down to the epic's.
+      const others = (children[k] ?? []).filter((c) => c.key !== t.key && !isDone(c.category))
+      const high = others.filter((c) => { const r = priorityRank(open.get(c.key)?.fields?.[priority] ?? c.fields?.[priority]); return r != null && r <= tp })
+      const raise = others.length > 0 && high.length * 2 >= others.length
+      const tv = t.fields[priority], ev = e.fields[priority]
+      // One raise per epic: its highest child is checked first, so the rest are already met.
+      if (raise && out.some((f) => f.check === 'priority' && f.raise === k)) continue
+      out.push({ check: 'priority', kind: 'fix', ticket: t.key, other: k, ...(raise ? { raise: k } : {}),
+        evidence: [`${t.key} is ${tv}, above ${k === t.parent ? 'its parent epic' : 'the epic it blocks,'} ${k}, at ${ev}`,
+          `${high.length} of ${k}'s ${others.length} other open children are at ${tv} or higher${high.length ? ` (${high.map((c) => c.key).join(', ')})` : ''}`,
+          raise ? `so ${k} rises to ${tv}` : `so ${t.key} comes down to ${ev}`],
+        propose: [raise ? `desk-jira edit ${k} ${priority}=${shq(tv)}` : `desk-jira edit ${t.key} ${priority}=${shq(ev)}`] })
+    }
+  }
+  return out
+}
+
 // The value most of an epic's other open children hold for a field, when one does.
 function modal(sibs, id) {
   const count = new Map()
@@ -453,15 +639,36 @@ function scan(o) {
     siblings[p] = jira('children', p).map((c) => ({ key: c.key, summary: c.fields?.summary ?? '' }))
   }
   const priority = o.priority && o.priority !== true && o.priority !== 'none' ? o.priority : null
-  const findings = groom({ tickets, siblings, repo: repoAt(o.repo, o.default), fields: ids, priority, done: o.done && o.done !== true ? o.done : 'Done' })
+  const done = o.done && o.done !== true ? o.done : 'Done'
+  // Each open epic's children in rank order. Open ones are already read; a done one is read in full
+  // only where the epic has DoD items to cover, and a key its Children section lists that Jira does
+  // not have under it is looked up, null when Jira has no such issue.
+  const byKey = new Map(tickets.map((t) => [t.key, t]))
+  const children = {}, lookup = {}
+  const read = (k) => { try { return ticketOf(jira('get', k), ids) } catch { return null } }
+  for (const e of tickets.filter(isEpic)) {
+    const dod = criteriaOf(e.text).some((c) => c.id.startsWith('DoD'))
+    children[e.key] = jira('children', e.key).map((c) => byKey.get(c.key) ?? (dod ? read(c.key) : null) ?? ticketOf(c, ids))
+    for (const r of childrenSection(e.text)?.rows ?? []) {
+      if (!children[e.key].some((c) => c.key === r.key) && !(r.key in lookup)) lookup[r.key] = byKey.get(r.key) ?? read(r.key)
+    }
+  }
+  const findings = [
+    ...groom({ tickets, siblings, repo: repoAt(o.repo, o.default), fields: ids, priority, done }),
+    ...groomEpics({ tickets, children, lookup, priority, size: o.size && o.size !== true && o.size !== 'none' ? o.size : null, done,
+      inProgress: o['in-progress'] && o['in-progress'] !== true ? o['in-progress'] : 'In Progress' }),
+  ].map((f) => ({ kind: 'fix', ...f }))
   if (o.json) { console.log(JSON.stringify(findings, null, 2)); return }
   console.log(`groom-scan: ${tickets.length} open tickets, ${findings.length} findings (origin/${o.default})`)
   for (const f of findings) {
-    console.log(`\n${f.check.padEnd(9)} ${f.ticket}${f.other ? ` · ${f.other}` : ''}${f.verify ? '   [verify first]' : ''}`)
+    console.log(`\n${f.check.padEnd(9)} ${f.ticket}${f.other ? ` · ${f.other}` : ''}${f.kind === 'fix' ? '' : `   [${f.kind}]`}${f.verify ? '   [verify first]' : ''}`)
     for (const e of f.evidence) console.log(`  evidence: ${e}`)
     if (f.edit) console.log(`  edit    : ${f.edit.from} -> ${f.edit.to}`)
     for (const c of f.criteria ?? []) console.log(`  criterion ${c.id}: ${quote(c.text)}`)
+    if (f.question) console.log(`  question: ${f.question}`)
+    for (const x of f.options ?? []) console.log(`  option  : ${x}${x === f.recommend ? '   (recommended)' : ''}`)
     for (const p of f.propose) console.log(`  propose : ${p}`)
+    for (const l of f.section ?? []) console.log(`  section : ${l}`)
   }
 }
 
