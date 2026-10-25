@@ -579,7 +579,7 @@ no_runs; go_to_sleep
 printf 'fail %s 1 failed\n' "$(date +%s)" > "$T/state/isolation.status"
 printf 'BAD guest deny 10.9.9.1:1-65535 (connected: 5000)\nDONE guest\n' > "$STUB_GUEST_OUT"
 starts=$(wc -l < "$v/slot-starts" | tr -d " ")
-runs queued '{"id":9}'
+runs queued '{"id":9}'; job 9 '"desk-local-pr"' 30
 run keep
 check "a wake after a failed verify runs it again, and opens no slot when it fails" '[ $rc -eq 1 ] && [[ "$out" == *"isolation FAILED"* ]] && [ "$(wc -l < "$v/slot-starts" | tr -d " ")" = "$starts" ] && [ -s "$BACKOFF" ]'
 probe_ok guest > "$STUB_GUEST_OUT"; rm -f "$BACKOFF"; no_runs
