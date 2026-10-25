@@ -168,7 +168,7 @@ page=$(digest 2)
 check "AC4 the failure is in the check-in digest"           'grep -q "desk-skills update failed in the maintenance window, so the computer was not restarted" <<< "$page"'
 git -C "$T/desk-src" clean -fq; q set M-4 state=done
 
-# ---- AC6: machine-reboot yes and no blocker (DS-226 AC3: FileVault off restarts as before) -------
+# ---- AC6: machine-reboot yes and no blocker, FileVault off --------------------------------------
 checkout_says running 0 off
 q add M-5; q set M-5 state=triaged branch=fix/M-5
 pj 2026-09-28T06:31:00Z; pj 2026-09-28T06:32:00Z
@@ -211,7 +211,7 @@ pj 2026-10-19T07:31:00Z
 check "then the window moves on and the check names it"     'mlog | grep -q "blockers: 1 worker(s) running in another repo (other O-1)" && grep -q "\"not ready to reboot\" is in the next check-in" <<< "$out" && [ "$(field M-8 state)" = running ]'
 rm -r "$T/desk/repos"; q set M-8 state=done
 
-# ---- DS-226: FileVault holds a restarted Mac at the unlock screen --------------------------------
+# ---- FileVault holds a restarted Mac at the unlock screen ----------------------------------------
 # Earlier weeks than the cases above, so each opens its own window and its notes are in the past.
 config "Mon 06:30 UTC" yes
 checkout_says stopped 0 on
