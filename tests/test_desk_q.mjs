@@ -1154,7 +1154,8 @@ dated('hold', 5000, { hours: twelveHours, tickets: {
   'W-9': { ...heldBy('B-MERGED'), open_questions: 1, outside_blockers: outside(1, 'indeterminate') },
   'W-10': { ...heldBy('B-RUN'), open_questions: 0, outside_blockers: outside(2) } } });
 dated('holdsup', 5010, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, tickets: {
-  'B-GREEN': prAt(177), 'W-2': heldBy('B-GREEN'), 'B-MERGED': mergedAt(171), 'W-6': heldBy('B-MERGED') } });
+  'B-GREEN': prAt(177), 'W-2': heldBy('B-GREEN'), 'B-MERGED': mergedAt(171), 'W-6': heldBy('B-MERGED'),
+  'B-CONF': prAt(178, { mergeable: 'CONFLICTING' }), 'W-2C': heldBy('B-CONF') } });
 dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK'), 'B-MERGED': mergedAt(172), 'W-6A': heldBy('B-MERGED'),
   'C-1': heldBy('C-2'), 'C-2': heldBy('C-1'), 'C-3': heldBy('C-1') } });
@@ -1173,6 +1174,7 @@ const cells217 = (name, key, n = 2) => {
 };
 t('DS-217 AC1 behind a running blocker: waiting, with its stage', cells217('hold', 'W-1'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC2 behind a PR a supervisor merges: waiting until green, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: checks running, merges when green | after #177');
+t('DS-217 behind a PR that conflicts with its base: needs you, even where a supervisor merges', cells217('holdsup', 'W-2C'), '◆ needs you | #178 conflicts with its base: resolve it');
 t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W-3'), '◆ needs you | #175 is a draft: undraft and merge it');
 t('DS-217 AC3 and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 }))[0].includes('4 in hold'), true);
 t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176 will not merge on its own: merge it');

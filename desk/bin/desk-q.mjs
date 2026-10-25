@@ -140,6 +140,8 @@ function blockerHold(q, key, b, ctx, seen) {
     const ps = prStatusOf(bt), pr = `#${n}`;
     if (ps.state === 'CLOSED') return { k: 'needs', name: pr, text: `${pr} was closed unmerged: release it`, act: releaseCmd(key) };
     if (ps.isDraft === true) return { k: 'needs', name: pr, text: `${pr} is a draft: undraft and merge it` };
+    // The merge driver skips a conflicting PR, and nothing in the batch resolves the conflict.
+    if (ps.mergeable === 'CONFLICTING') return { k: 'needs', name: pr, text: `${pr} conflicts with its base: resolve it` };
     if (!ctx.merges) return { k: 'needs', name: pr, text: `${pr} will not merge on its own: merge it` };
     const failed = (ps.checks ?? []).find(checkFailed);
     if (failed) return { k: 'needs', name: pr, text: `${pr}: ${failed.name} failed: fix or re-run it` };
