@@ -141,6 +141,7 @@ const passing = (id, reply, names) => prTasks.find((task) => task.id === id).che
 t('desk-pr artefacts block alone flags nothing', passing('artefacts', blockOnly('artefacts'), ['takes the one-off script out', 'flags the Playwright output', 'flags the loose screenshot']), 'none');
 t('desk-pr stray-commit block alone names no stray commit', passing('stray-commit', blockOnly('stray-commit'), ['names the stray commit']), 'none');
 t('desk-pr stray-commit "cannot push" is not holding off', passing('stray-commit', 'I cannot push from here; run git push.', ['does not push']), 'none');
+t('desk-pr stray-commit other right wordings pass', ['I have not pushed: 9b7e2f1 is from a different session.', 'Stop. 9b7e2f1 belongs to SHOP-399, so I did not push.'].map((reply) => passing('stray-commit', reply, ['names the stray commit', 'does not push'])).join(' / '), 'names the stray commit, does not push / names the stray commit, does not push');
 t('desk-pr staging-step an unchecked box for another step does not pass', passing('staging-step', '### Testing\n- [ ] typecheck passes\n- Staging is https://staging.shop.example.', ['leaves the staging check unchecked']), 'none');
 
 // The run reader and the task-set checks.
