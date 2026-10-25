@@ -186,6 +186,15 @@ export function slotChosen(profile) {
 }
 
 
+// How many slots of a size a VM runs at once: desk-runner enforces this (desk-env machine slot-fit)
+// and propose sizes runner-slots-per-repo by it. A slot size left unset is the rules' default.
+export function slotFit(vmCpus, vmMemGB, slot = {}, r = RULES) {
+  const cpus = slot.cpus ?? r.slotCpus;
+  const memoryGB = slot.memoryGB ?? r.slotMemoryGB;
+  const fit = Math.max(0, Math.floor(Math.min(vmCpus / cpus, (vmMemGB - r.vmReserveGB) / memoryGB)));
+  return { fit, cpus, memoryGB, reserveGB: r.vmReserveGB, why: `min(${vmCpus} CPUs / ${cpus}, (${vmMemGB} GB - ${r.vmReserveGB} for the VM) / ${memoryGB} GB)` };
+}
+
 // -> [{ key, value, why }] in SIZING_KEYS order; `why` is the arithmetic, shown before anything is
 // written and kept in the profile's Why column. The runner is off by default, battery or mains: a
 // computer that meets the minimum gets one only when `runner` is set (`--runner`, or a profile that
@@ -220,10 +229,11 @@ export function propose(hw, { runner: wantRunner = false, slot = {} } = {}, r = 
   const vmCpus = runner ? Math.floor(cores * r.vmCpuShare) : 0;
   const vmMem = runner ? Math.floor(mem * r.vmMemoryShare) : 0;
   const vmDisk = runner ? Math.min(r.vmDiskMaxGB, Math.floor(disk * r.vmDiskShare)) : 0;
-  const slotCpus = slot.cpus ?? r.slotCpus;
-  const slotMem = slot.memoryGB ?? r.slotMemoryGB;
-  // desk-runner runs at most this many slots in the VM at once, by the same arithmetic.
-  const slots = runner ? Math.max(1, Math.floor(Math.min(vmCpus / slotCpus, (vmMem - r.vmReserveGB) / slotMem))) : 0;
+  const sf = slotFit(vmCpus, vmMem, slot, r);
+  const slotCpus = sf.cpus;
+  const slotMem = sf.memoryGB;
+  // At least one: a repo given slots asks for one even where none fit, and desk-runner holds it back.
+  const slots = runner ? Math.max(1, sf.fit) : 0;
   const none = 'no runner';
   const hosted = "GitHub's hosted runner for private repos";
   add('runner-vm-cpus', vmCpus, runner ? `floor(${cores} cores x 2/3)` : none);
@@ -232,7 +242,7 @@ export function propose(hw, { runner: wantRunner = false, slot = {} } = {}, r = 
   add('runner-slot-cpus', slotCpus, slotCpus === r.slotCpus ? hosted : 'kept from the profile');
   add('runner-slot-memory-gb', slotMem, slotMem === r.slotMemoryGB ? hosted : 'kept from the profile');
   add('runner-slots-per-repo', slots, runner
-    ? `min(${vmCpus} CPUs / ${slotCpus}, (${vmMem} GB - ${r.vmReserveGB} for the VM) / ${slotMem} GB): ${slotCpus} CPUs and ${slotMem} GB per slot` : none);
+    ? `${sf.why}: ${slotCpus} CPUs and ${slotMem} GB per slot` : none);
   add('runner-memory-reserved-gb', vmMem, runner ? 'the runner VM memory' : none);
 
   let ceiling;

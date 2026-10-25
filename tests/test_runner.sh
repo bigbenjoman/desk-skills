@@ -47,12 +47,12 @@ case $cmd in
       "ip -4 route show default") echo "default via 10.9.9.1 dev enp0s1 proto dhcp src 10.9.9.2 metric 100" ;;
       "sudo -n sh -c ulimit -n 8192; exec bash /var/lib/desk-runner/probe.sh"*) shift 7; printf '%s\n' "$@" > "$v/targets"; cat "$STUB_GUEST_OUT" ;;
       *"cat > /var/lib/desk-runner/slot.sh") cat > "$v/slot.sh" ;;
-      # Slots are lines of $v/slots: <id> <repo> <runner-id> <state> <cpus>.
+      # Slots are lines of $v/slots: <id> <repo> <runner-id> <state> <cpus> <memory-gb>.
       "sudo -n bash /var/lib/desk-runner/slot.sh list") cat "$v/slots" 2>/dev/null; exit "${STUB_LIST_RC:-0}" ;;
       "sudo -n bash /var/lib/desk-runner/slot.sh start "*)
         echo "$*" >> "$v/slot-starts"; read -r jit; echo "$jit" >> "$v/jits"
         [ -n "${STUB_START_RC:-}" ] && exit "$STUB_START_RC"
-        echo "$6 $7 $8 running ${11}" >> "$v/slots" ;;
+        echo "$6 $7 $8 running ${11} ${12}" >> "$v/slots" ;;
       "sudo -n bash /var/lib/desk-runner/slot.sh reap "*)
         echo "$6" >> "$v/reaped"; awk -v i="$6" '$1 != i' "$v/slots" > "$v/slots.new"; mv "$v/slots.new" "$v/slots" ;;
       "sudo -n sh -c "*) cat > "$v/probe.sh"; exit "${STUB_COPY_RC:-0}" ;;
@@ -325,21 +325,24 @@ check "the next pass starts the missing slot"           '[ $rc -eq 0 ] && [ "$(a
 
 # ---- slot limits and how many the VM fits (DS-248): 8 CPUs, 24 GB, 2-CPU 7 GB slots fit 3 ----
 run status
-cpusets=$(printf '%s\n' "$out" | sed -n 's/^  slot [^:]*: CPUs //p')
+cpusets=$(printf '%s\n' "$out" | sed -n 's/^  slot [^:]*: CPUs \([0-9-]*\), 7 GB$/\1/p')
 check "status: each slot's own CPU set, none shared"    '[ "$(printf "%s\n" "$cpusets" | sort | tr "\n" " ")" = "0-1 2-3 4-5 " ] && [[ "$out" == *"3 running (2 CPUs and 7 GB each)"* ]] && [[ "$out" != *"held back"* ]]'
 starts=$(wc -l < "$v/slot-starts" | tr -d " ")
 run scale "$RP" 6
-check "scale past what the VM fits: recorded, says how many run and why, exit 0" '[ $rc -eq 0 ] && [ "$(cat "$SL")" = "$RP 6" ] && [[ "$out" == *"$RP: 3 of them will run; slots held back: 3 of the 6 wanted; the VM fits 3, the smaller of 8 CPUs / 2 and (24 GB - 2 for the VM) / 7 GB"* ]]'
+check "scale past what the VM fits: recorded, says how many run and why, exit 0" '[ $rc -eq 0 ] && [ "$(cat "$SL")" = "$RP 6" ] && [[ "$out" == *"$RP: 3 of them will run; slots held back: 3 of the 6 wanted; the VM fits 3, min(8 CPUs / 2, (24 GB - 2 for the VM) / 7 GB)"* ]]'
 check "... and starts none past the 3"                  '[ "$(wc -l < "$v/slot-starts" | tr -d " ")" = "$starts" ] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
 run status
-check "status: how many are held back and why"          '[[ "$out" == *"slots held back: 3 of the 6 wanted; the VM fits 3, the smaller of"* ]]'
+check "status: how many are held back and why"          '[[ "$out" == *"slots held back: 3 of the 6 wanted; the VM fits 3, min(8 CPUs / 2, (24 GB - 2 for the VM) / 7 GB)"* ]]'
+echo 12 > "$v/cpu"; echo 40960 > "$v/memory"; run status
+check "a 12-CPU 40 GB VM fits 5 of the 6"               '[[ "$out" == *"slots held back: 1 of the 6 wanted; the VM fits 5, min(12 CPUs / 2, (40 GB - 2 for the VM) / 7 GB)"* ]]'
+echo 8 > "$v/cpu"; echo 24576 > "$v/memory"
 run scale bigbenjoman/other 3
 check "two repos share the 3 in turn: 2 and 1"          '[ $rc -eq 0 ] && [ "$(awk -v r=$RP "\$2 == r" "$v/slots" | wc -l | tr -d " ")" = 2 ] && [ "$(awk "\$2 == \"bigbenjoman/other\"" "$v/slots" | wc -l | tr -d " ")" = 1 ] && [[ "$out" == *"removed (more than wanted)"* ]]'
 run scale bigbenjoman/other 0
 check "back to one repo: it has all 3 again"            '[ "$(awk -v r=$RP "\$2 == r" "$v/slots" | wc -l | tr -d " ")" = 3 ] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
 echo "old1 $RP 900 running" >> "$v/slots"
 run keep
-check "an idle slot from before limits is replaced"     '[ $rc -eq 0 ] && grep -qx old1 "$v/reaped" && grep -qx 900 "$T/gh-deleted" && [[ "$out" == *"slot old1 for $RP had no CPU or memory limit; replaced"* ]] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
+check "an idle slot from before limits is replaced"     '[ $rc -eq 0 ] && grep -qx old1 "$v/reaped" && grep -qx 900 "$T/gh-deleted" && [[ "$out" == *"slot old1 for $RP was not 2 CPUs and 7 GB; replaced"* ]] && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
 echo "old2 $RP 901 running" >> "$v/slots"
 STUB_BUSY=901 run keep
 check "... one mid-job is left to finish, an idle one making room" '! grep -qx old2 "$v/reaped" && grep -q "^old2 " "$v/slots" && [ "$(wc -l < "$v/slots" | tr -d " ")" = 3 ]'
@@ -348,9 +351,23 @@ profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-di
 awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run keep
 check "a slot size in the profile: 4 CPUs and 10 GB, 2 fit" '[ $rc -eq 0 ] && [ "$(tail -n 2 "$v/slot-starts" | awk "{print \$(NF - 1), \$NF}" | tr "\n" " ")" = "0-3 10 4-7 10 " ] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 2 ]'
+busy4=$(awk '{print $3}' "$v/slots" | tr '\n' ' ')
 yes_profile
+STUB_BUSY="$busy4" run keep
+check "a smaller slot size beside busy larger slots: says why, starts none" '[[ "$out" == *"no memory in desk-runner-test for another $RP slot"* ]] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 2 ]'
 run keep
-check "a smaller slot size with every CPU taken: says so, starts none" '[[ "$out" == *"no free set of 2 CPUs"* ]] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 2 ]'
+check "idle slots of the old size are replaced at the new one" '[[ "$out" == *"was not 2 CPUs and 7 GB; replaced"* ]] && [ "$(awk "\$4 == \"running\" {print \$5, \$6}" "$v/slots" | sort | tr "\n" " ")" = "0-1 7 2-3 7 4-5 7 " ]'
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-slot-memory-gb 10
+awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+run keep
+busy10=$(awk '{print $3}' "$v/slots" | tr '\n' ' ')
+yes_profile
+STUB_BUSY="$busy10" run keep
+check "busy 10 GB slots leave no memory for a 7 GB one: says so, starts none" '[[ "$out" == *"no memory in desk-runner-test for another $RP slot"* ]] && [ "$(awk "\$4 == \"running\" {print \$6}" "$v/slots" | tr "\n" " ")" = "10 10 " ]'
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-slot-cpus none
+run status
+check "a slot size that is not a number: refused, naming it" '[ $rc -ne 0 ] && [[ "$out" == *"runner-slot-cpus is '"'"'none'"'"', not a whole number"* ]]'
+yes_profile
 awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run scale "$RP" 3
 check "the defaults again: 3 slots of 2 CPUs"           '[ "$(awk "\$4 == \"running\" {print \$5}" "$v/slots" | sort | tr "\n" " ")" = "0-1 2-3 4-5 " ]'
@@ -385,7 +402,8 @@ EOF
 chmod +x "$T/slotstub/"*
 export SLOTLOG="$T/slot.log"; : > "$SLOTLOG"
 out=$(echo JIT-1 | PATH="$T/slotstub:$PATH" bash "$SRC/desk/bin/runner-slot.sh" start 17-42 "$RP" 7 img dind 2-3 7 2>&1); rc=$?
-lim="--cgroup-parent deskslot_17_42.slice --cpuset-cpus 2-3 --memory 7g --label desk.cpus=2-3"
+lim="--cgroup-parent deskslot_17_42.slice --cpuset-cpus 2-3 --memory 7g --label desk.cpus=2-3 --label desk.memory=7"
+check "slot start: the memory is a label too, for list" 'grep "^docker run -d --name desk-slot-17-42-runner" "$SLOTLOG" | grep -qF -- "--label desk.memory=7"'
 check "slot start: the slice is capped at the slot's memory" '[ $rc -eq 0 ] && grep -qx "systemctl start deskslot_17_42.slice" "$SLOTLOG" && grep -qx "systemctl set-property --runtime deskslot_17_42.slice MemoryMax=7G MemorySwapMax=0" "$SLOTLOG"'
 check "slot start: dind and the runner both carry the CPU set, memory and slice" '[ "$(grep "^docker run -d" "$SLOTLOG" | grep -cF -- "$lim")" = 2 ] && grep "^docker run -d --name desk-slot-17-42-dind" "$SLOTLOG" | grep -qF -- "$lim" && grep "^docker run -d --name desk-slot-17-42-runner" "$SLOTLOG" | grep -qF -- "$lim"'
 out=$(PATH="$T/slotstub:$PATH" bash "$SRC/desk/bin/runner-slot.sh" start 17-42 "$RP" 7 img dind 2>&1 < /dev/null); rc=$?
@@ -393,7 +411,7 @@ check "slot start without the limits: usage, exit 2"    '[ $rc -eq 2 ] && [[ "$o
 : > "$SLOTLOG"; PATH="$T/slotstub:$PATH" bash "$SRC/desk/bin/runner-slot.sh" reap 17-42
 check "slot reap: the slice goes too"                   'grep -qx "systemctl stop deskslot_17_42.slice" "$SLOTLOG" && grep -qx "systemctl revert deskslot_17_42.slice" "$SLOTLOG"'
 : > "$SLOTLOG"; PATH="$T/slotstub:$PATH" bash "$SRC/desk/bin/runner-slot.sh" list
-check "slot list: the CPU set is the fifth field"       'grep -qF "{{.State}} {{.Label \"desk.cpus\"}}" "$SLOTLOG"'
+check "slot list: the CPU set and memory are the fifth and sixth fields" 'grep -qF "{{.State}} {{.Label \"desk.cpus\"}} {{.Label \"desk.memory\"}}" "$SLOTLOG"'
 
 # ---- the gate on new runner slots (AC7) ----
 run gate

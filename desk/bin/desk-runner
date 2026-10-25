@@ -30,7 +30,8 @@
 #
 # Each slot gets a CPU set of its own and a memory limit (runner-slot-cpus, runner-slot-memory-gb;
 # 2 and 7 by default), and the VM runs only as many slots as it fits: the smaller of its CPUs over
-# the slot's CPUs and its memory, less VM_RESERVE_GB, over the slot's memory. When the repos want
+# the slot's CPUs and its memory, less 2 GB for the VM, over the slot's memory (machine.mjs slotFit,
+# through desk-env machine slot-fit, so the proposal and this agree). When the repos want
 # more, the slots that fit are shared between them in turn, and status says how many are held back.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -51,11 +52,6 @@ DIND_IMAGE="docker:$DOCKER_VERSION-dind"
 SLOT_POOL=desk-local-pr
 SLOT_LABELS="self-hosted linux arm64 $SLOT_POOL"
 SLOTS="$STATE/slots"   # <owner/repo> <n>, one line per repo
-# A slot's size unless the machine profile sets one: GitHub's hosted runner for private repos, so a
-# job that passes there fits. The VM keeps VM_RESERVE_GB of its memory for itself.
-SLOT_CPUS_DEFAULT=2
-SLOT_MEMORY_GB_DEFAULT=7
-VM_RESERVE_GB=2
 HOST_ALIASES="host.docker.internal gateway.docker.internal host.containers.internal host.lima.internal host.tart.internal"
 AGENTS="$HOME/Library/LaunchAgents"
 LABEL="com.desk-skills.$VM"
@@ -134,30 +130,22 @@ read_sizes() { # sets CPUS, MEM_GB, DISK_GB from the profile, or dies naming the
     case $key in runner-vm-cpus) CPUS=$v ;; runner-vm-memory-gb) MEM_GB=$v ;; *) DISK_GB=$v ;; esac
   done
 }
-slot_size() { # sets SLOT_CPUS, SLOT_MEM_GB from the profile, or the defaults; never in a $(…)
-  local key v
-  SLOT_CPUS=$SLOT_CPUS_DEFAULT; SLOT_MEM_GB=$SLOT_MEMORY_GB_DEFAULT
-  for key in runner-slot-cpus runner-slot-memory-gb; do
-    v=$(machine get "$key" 2>/dev/null) || continue
-    case $v in ''|*[!0-9]*) die "the machine profile's $key is '$v', not a whole number" ;; esac
-    [ "$v" -gt 0 ] || die "the machine profile's $key is 0"
-    case $key in runner-slot-cpus) SLOT_CPUS=$v ;; *) SLOT_MEM_GB=$v ;; esac
-  done
-}
-fit() { # sets FIT (how many slots the VM runs at once), FIT_WHY (the arithmetic) and VM_CPUS; never in a $(…)
-  local info vcpus vmem by_mem
-  slot_size; VM_CPUS=0
+# fit sets FIT (how many slots the VM runs at once) and FIT_WHY (the arithmetic), the VM's VM_CPUS
+# and VM_MEM_GB, and the slot's SLOT_CPUS, SLOT_MEM_GB (the profile's, or 2 and 7) and RESERVE_GB.
+# Never in a $(…).
+fit() {
+  local info vcpus vmem line
   if info=$(vm_info); then
     vcpus=$(echo "$info" | json_field CPU); vmem=$(echo "$info" | json_field Memory)
     case $vmem in ''|*[!0-9]*) ;; *) vmem=$((vmem / 1024)) ;; esac
   else
     vcpus=$(machine get runner-vm-cpus 2>/dev/null); vmem=$(machine get runner-vm-memory-gb 2>/dev/null)
   fi
-  case "$vcpus,$vmem" in ,*|*,|*[!0-9,]*) FIT=0; FIT_WHY="the VM's size is unknown"; return ;; esac
-  VM_CPUS=$vcpus; FIT=$((vcpus / SLOT_CPUS)); by_mem=$(( (vmem - VM_RESERVE_GB) / SLOT_MEM_GB ))
-  [ $by_mem -lt $FIT ] && FIT=$by_mem
-  [ $FIT -lt 0 ] && FIT=0
-  FIT_WHY="the smaller of $vcpus CPUs / $SLOT_CPUS and ($vmem GB - $VM_RESERVE_GB for the VM) / $SLOT_MEM_GB GB"
+  case "$vcpus,$vmem" in ,*|*,|*[!0-9,]*) vcpus=0; vmem=0 ;; esac
+  line=$(machine slot-fit "$vcpus" "$vmem") || die "could not size the runner slots (desk-env machine slot-fit: $line)"
+  IFS=$'\t' read -r FIT SLOT_CPUS SLOT_MEM_GB RESERVE_GB FIT_WHY <<< "$line"
+  VM_CPUS=$vcpus; VM_MEM_GB=$vmem
+  [ "$vcpus" = 0 ] && FIT_WHY="the VM's size is unknown"
 }
 
 # ---- the VM tool -----------------------------------------------------------------------------
@@ -398,6 +386,9 @@ held_back() { # after fit: how many wanted slots the VM has no room for, and why
   [ "$want" -gt "$FIT" ] && echo "slots held back: $((want - FIT)) of the $want wanted; the VM fits $FIT, $FIT_WHY"
   return 0
 }
+set_size() { # set_size <cpus>: how many CPUs a set such as 0-1 or 3 holds; 0 for none
+  case $1 in '') echo 0 ;; *-*) echo $(( ${1#*-} - ${1%-*} + 1 )) ;; *) echo 1 ;; esac
+}
 # free_cpus <VM CPUs> <slot CPUs> [set in use…]: the first aligned set that overlaps none in use, or nothing.
 free_cpus() {
   local total=$1 size=$2; shift 2
@@ -441,7 +432,7 @@ start_slot() { # start_slot <repo> <cpus>: register a single-use runner and star
 
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
-  local reason live id repo rid state cpus gone have n extra rids rc=0
+  local reason live id repo rid state cpus mem gone have n extra rids rc=0
   reason=$(gate_reason)
   [ -z "$reason" ] || { say "runner slots closed: $reason"; return 1; }
   guest_stdin sudo -n sh -c "mkdir -p /var/lib/desk-runner && cat > $SLOT_SCRIPT" < "$HERE/runner-slot.sh" \
@@ -450,21 +441,22 @@ reconcile() { # reap finished slots, drop extra idle ones, start missing ones; s
   # A single-use runner deregisters itself after its job, so deregistering a finished one is a
   # no-op then; it matters for one that exited without taking a job.
   gone=" "
-  while read -r id repo rid state cpus; do
+  fit
+  while read -r id repo rid state cpus mem; do
     [ -n "$id" ] || continue
     if [ "$state" != running ]; then
       slot reap "$id"; deregister "$repo" "$rid"
       say "slot $id for $repo finished; reaped"
-    # A slot started before slots had limits sees every CPU, so it is replaced once idle.
-    elif [ -z "$cpus" ] && deregister "$repo" "$rid"; then
+    # A slot not of the current size (none, from before slots had limits, or the profile's size
+    # changed) is replaced once idle, so the slots running are the ones fit counted.
+    elif [ "$(set_size "$cpus") ${mem:-0}" != "$SLOT_CPUS $SLOT_MEM_GB" ] && deregister "$repo" "$rid"; then
       slot reap "$id"; gone="$gone$id "
-      say "slot $id for $repo had no CPU or memory limit; replaced"
+      say "slot $id for $repo was not ${SLOT_CPUS} CPUs and ${SLOT_MEM_GB} GB; replaced"
     fi
   done <<EOF
 $live
 EOF
   live=$(printf '%s\n' "$live" | awk -v gone="$gone" '$4 == "running" && index(gone, " " $1 " ") == 0')
-  fit
   # More running than the repo's share: drop the idle ones. GitHub refuses to deregister a runner mid-job.
   for repo in $(printf '%s\n' "$live" | awk 'NF {print $2}' | sort -u); do
     extra=$(( $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l) - $(allotted "$FIT" "$repo") ))
@@ -490,13 +482,16 @@ $(our_runners "$repo")
 EOF
     have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
     while [ "$have" -lt "$n" ]; do
-      # A slot mid-job outlives a smaller share, so the count across the VM is checked too.
+      # A slot mid-job outlives a smaller share or an older size, so the VM-wide count and memory are
+      # checked too; a slot from before limits counts as the current size.
       [ "$(printf '%s\n' "$live" | awk 'NF' | wc -l)" -lt "$FIT" ] || break
+      [ "$(printf '%s\n' "$live" | awk -v m="$SLOT_MEM_GB" 'NF {t += ($6 == "" ? m : $6)} END {print t + m}')" \
+        -le $((VM_MEM_GB - RESERVE_GB)) ] || { say "no memory in $VM for another $repo slot until a larger one finishes"; break; }
       # shellcheck disable=SC2046
       cpus=$(free_cpus "$VM_CPUS" "$SLOT_CPUS" $(printf '%s\n' "$live" | awk '{print $5}'))
       [ -n "$cpus" ] || { say "no free set of $SLOT_CPUS CPUs in $VM for another $repo slot"; break; }
       start_slot "$repo" "$cpus" || { rc=1; break; }
-      live=$(printf '%s\n%s\n' "$live" "new $repo - running $cpus")
+      live=$(printf '%s\n%s\n' "$live" "new $repo - running $cpus $SLOT_MEM_GB")
       have=$((have + 1))
     done
   done
@@ -720,7 +715,7 @@ cmd_status() {
   [ -s "$SLOTS" ] && fit
   for repo in $(slot_repos); do
     echo "slots: $repo wants $(wanted "$repo"), $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ') running ($SLOT_CPUS CPUs and $SLOT_MEM_GB GB each)"
-    printf '%s\n' "$live" | awk -v r="$repo" '$2 == r {print "  slot " $1 ": " ($5 == "" ? "no CPU or memory limit (replaced once idle)" : "CPUs " $5)}'
+    printf '%s\n' "$live" | awk -v r="$repo" '$2 == r {print "  slot " $1 ": " ($5 == "" ? "no CPU or memory limit (replaced once idle)" : "CPUs " $5 ", " $6 " GB")}'
   done
   [ -s "$SLOTS" ] && held_back
   [ "$state" = running ]

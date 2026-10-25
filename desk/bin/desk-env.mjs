@@ -55,6 +55,7 @@
 //                                             the runner is off by default; --runner sizes it on
 //   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
+//   node desk-env.mjs machine slot-fit <VM CPUs> <VM GB>   how many runner slots that VM runs, with the slot size
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -1289,8 +1290,23 @@ if (isMain) {
           console.log(v);
           break;
         }
+        if (sub === 'slot-fit') {
+          // <fit> <slot cpus> <slot GB> <reserve GB> <why>, tab-separated, for desk-runner.
+          const [vmCpus, vmGB] = rest.map(Number);
+          if (rest.length !== 2 || ![vmCpus, vmGB].every((n) => Number.isInteger(n) && n >= 0)) {
+            console.error('usage: desk-env.mjs machine slot-fit <VM CPUs> <VM memory GB>');
+            process.exit(2);
+          }
+          for (const k of ['runner-slot-cpus', 'runner-slot-memory-gb']) {
+            const v = machineValue(k);
+            if (v != null && !/^[1-9][0-9]*$/.test(v)) { console.error(`the machine profile's ${k} is '${v}', not a whole number above 0`); process.exit(2); }
+          }
+          const f = M.slotFit(vmCpus, vmGB, M.slotChosen(machineProfile()));
+          console.log([f.fit, f.cpus, f.memoryGB, f.reserveGB, f.why].join('\t'));
+          break;
+        }
         if (!['detect', 'propose', 'write'].includes(sub)) {
-          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>');
+          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>|slot-fit <VM CPUs> <VM GB>');
           process.exit(2);
         }
         const hw = M.gather();

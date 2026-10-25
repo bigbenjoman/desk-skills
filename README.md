@@ -283,9 +283,9 @@ token never does. In the VM each slot has its own Docker daemon and network, whi
 shares, so a service container mapped to 5432 is on the job's `localhost:5432`, and a `container:`
 job sees the workspace. Slots share no daemon, volume or network. Each slot has CPUs of its own and
 a memory limit, 2 CPUs and 7 GB unless the machine profile sets `runner-slot-cpus` and
-`runner-slot-memory-gb`: `nproc`, Node's `os.availableParallelism()` and
-`/sys/fs/cgroup/memory.max` show that share in a step and in a `container:` job, so test runners
-size themselves to it, and a job that runs out of memory fails on its own without taking the VM or
+`runner-slot-memory-gb`: `nproc` and Node's `os.availableParallelism()` show the slot's CPUs in a step
+and in a `container:` job, so test runners size themselves to them, and `/sys/fs/cgroup/memory.max`
+shows its memory in a step (a container job's reads `max`, though the slot's limit holds it). A job that runs out of memory fails on its own without taking the VM or
 another slot with it. The VM runs only as many slots as it fits, the smaller of its CPUs over the
 slot's and its memory less 2 GB over the slot's; when the repos want more, the slots are shared
 between them in turn, and `status` lists each slot's CPUs and says how many are held back and why. A slot takes one job; within a
