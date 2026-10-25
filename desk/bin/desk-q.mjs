@@ -1189,7 +1189,7 @@ function supervisorRunner(r) {
   return (sub, args) => supervisorRun(sub, args, { cwd: root, env });
 }
 
-function supervisorState(r, run) {
+function supervisorState(r, run = supervisorRunner(r)) {
   const s = readSupervisorState(run);
   if (!s.state) throw new Usage(`${r.name}: could not read the supervisor's status: ${s.err}`);
   return s;
