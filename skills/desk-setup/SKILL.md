@@ -428,7 +428,7 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
   whose third column is the arithmetic behind each size. Say in one line what the rules are (a local
   CI runner needs at least 32 GB, 8 CPU cores and 100 GB free, and is off by default on every
   computer, battery or mains, because its memory comes off what autopilot can use; the runner VM
-  takes at most 3/8 of memory and 2/3 of the cores; a slot is 2 CPUs and 4 GB; autopilot workers at
+  takes at most 3/8 of memory and 2/3 of the cores; a slot is 2 CPUs and 7 GB, GitHub's hosted runner for private repos, with 2 GB of the VM kept back; autopilot workers at
   ~3 GB each from what the runner leaves; test workers capped at the performance cores). **Write
   nothing until the user confirms**; then `desk-env machine write`. On a computer that meets the
   minimum, say the runner is off and that opting in is `propose --runner` to see its sizes and

@@ -281,7 +281,14 @@ request could run on it. Each slot is one GitHub Actions runner, labelled `self-
 that runner. It is requested on the Mac with your `gh` login, and only it enters the VM, so your
 token never does. In the VM each slot has its own Docker daemon and network, which the runner
 shares, so a service container mapped to 5432 is on the job's `localhost:5432`, and a `container:`
-job sees the workspace. Slots share no daemon, volume or network. A slot takes one job; within a
+job sees the workspace. Slots share no daemon, volume or network. Each slot has CPUs of its own and
+a memory limit, 2 CPUs and 7 GB unless the machine profile sets `runner-slot-cpus` and
+`runner-slot-memory-gb`: `nproc`, Node's `os.availableParallelism()` and
+`/sys/fs/cgroup/memory.max` show that share in a step and in a `container:` job, so test runners
+size themselves to it, and a job that runs out of memory fails on its own without taking the VM or
+another slot with it. The VM runs only as many slots as it fits, the smaller of its CPUs over the
+slot's and its memory less 2 GB over the slot's; when the repos want more, the slots are shared
+between them in turn, and `status` lists each slot's CPUs and says how many are held back and why. A slot takes one job; within a
 minute `keep` removes it with its containers and volumes and starts another. `down` deregisters
 every slot's runner first, and the next `up` starts them again. The slot image is Ubuntu 24.04 with
 actions/runner 2.338.0, Node 22.23.3, the Docker 29.9.0 CLI, gh, jq, shellcheck, build tools and

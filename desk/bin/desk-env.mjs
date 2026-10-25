@@ -1296,7 +1296,7 @@ if (isMain) {
         const hw = M.gather();
         const profile = machineProfile();
         // The runner is off unless --runner asks for it or the profile already has one.
-        const proposal = M.propose(hw, { runner: M.runnerChosen(profile, rest.includes('--runner')) });
+        const proposal = M.propose(hw, { runner: M.runnerChosen(profile, rest.includes('--runner')), slot: M.slotChosen(profile) });
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }

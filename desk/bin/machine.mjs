@@ -20,7 +20,7 @@ export const HARDWARE_KEYS = Object.freeze([
 ]);
 export const SIZING_KEYS = Object.freeze([
   'runner-possible', 'runner-vm-cpus', 'runner-vm-memory-gb', 'runner-vm-disk-gb',
-  'runner-slots-per-repo', 'runner-memory-reserved-gb', 'autopilot-concurrency',
+  'runner-slot-cpus', 'runner-slot-memory-gb', 'runner-slots-per-repo', 'runner-memory-reserved-gb', 'autopilot-concurrency',
   'memory-ceiling-gb', 'test-cap', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
 ]);
 
@@ -29,7 +29,7 @@ export const SIZING_KEYS = Object.freeze([
 export const RULES = Object.freeze({
   runnerMinMemoryGB: 32, runnerMinCores: 8, runnerMinDiskGB: 100,
   vmMemoryShare: 3 / 8, vmCpuShare: 2 / 3, vmDiskShare: 1 / 2, vmDiskMaxGB: 100,
-  slotCpus: 2, slotMemoryGB: 4,
+  slotCpus: 2, slotMemoryGB: 7, vmReserveGB: 2,
   osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3,
   typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
 });
@@ -179,12 +179,18 @@ export function gather(plat = osPlatform()) {
 // so a computer that opted in is not a change and one that is off stays off.
 export const runnerChosen = (profile, flag = false) => flag || profile?.sizing?.['runner-possible']?.value === 'yes';
 
+// The slot size a profile already sets, kept on re-proposing as runner-possible is; unset keys are undefined.
+export function slotChosen(profile) {
+  const v = (key) => { const n = num(profile?.sizing?.[key]?.value); return known(n) && n > 0 ? n : undefined; };
+  return { cpus: v('runner-slot-cpus'), memoryGB: v('runner-slot-memory-gb') };
+}
+
 
 // -> [{ key, value, why }] in SIZING_KEYS order; `why` is the arithmetic, shown before anything is
 // written and kept in the profile's Why column. The runner is off by default, battery or mains: a
 // computer that meets the minimum gets one only when `runner` is set (`--runner`, or a profile that
 // already has one), so its memory is not held back from autopilot until someone opts in.
-export function propose(hw, { runner: wantRunner = false } = {}, r = RULES) {
+export function propose(hw, { runner: wantRunner = false, slot = {} } = {}, r = RULES) {
   const mem = num(hw['memory-gb']);
   const cores = num(hw['cpu-cores']);
   const disk = num(hw['disk-free-gb']);
@@ -214,13 +220,19 @@ export function propose(hw, { runner: wantRunner = false } = {}, r = RULES) {
   const vmCpus = runner ? Math.floor(cores * r.vmCpuShare) : 0;
   const vmMem = runner ? Math.floor(mem * r.vmMemoryShare) : 0;
   const vmDisk = runner ? Math.min(r.vmDiskMaxGB, Math.floor(disk * r.vmDiskShare)) : 0;
-  const slots = runner ? Math.max(1, Math.floor(Math.min(vmCpus / r.slotCpus, vmMem / r.slotMemoryGB))) : 0;
+  const slotCpus = slot.cpus ?? r.slotCpus;
+  const slotMem = slot.memoryGB ?? r.slotMemoryGB;
+  // desk-runner runs at most this many slots in the VM at once, by the same arithmetic.
+  const slots = runner ? Math.max(1, Math.floor(Math.min(vmCpus / slotCpus, (vmMem - r.vmReserveGB) / slotMem))) : 0;
   const none = 'no runner';
+  const hosted = "GitHub's hosted runner for private repos";
   add('runner-vm-cpus', vmCpus, runner ? `floor(${cores} cores x 2/3)` : none);
   add('runner-vm-memory-gb', vmMem, runner ? `floor(${mem} GB x 3/8)` : none);
   add('runner-vm-disk-gb', vmDisk, runner ? `half of ${disk} GB free, at most ${r.vmDiskMaxGB}` : none);
+  add('runner-slot-cpus', slotCpus, slotCpus === r.slotCpus ? hosted : 'kept from the profile');
+  add('runner-slot-memory-gb', slotMem, slotMem === r.slotMemoryGB ? hosted : 'kept from the profile');
   add('runner-slots-per-repo', slots, runner
-    ? `min(${vmCpus} CPUs / ${r.slotCpus}, ${vmMem} GB / ${r.slotMemoryGB}): ${r.slotCpus} CPUs and ${r.slotMemoryGB} GB per slot` : none);
+    ? `min(${vmCpus} CPUs / ${slotCpus}, (${vmMem} GB - ${r.vmReserveGB} for the VM) / ${slotMem} GB): ${slotCpus} CPUs and ${slotMem} GB per slot` : none);
   add('runner-memory-reserved-gb', vmMem, runner ? 'the runner VM memory' : none);
 
   let ceiling;
