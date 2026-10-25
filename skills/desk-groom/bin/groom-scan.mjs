@@ -511,30 +511,42 @@ export function groomEpics({ tickets, children = {}, lookup = {}, priority = nul
       propose: [] })
   }
 
-  // ---- the priority path: a ticket above the epic it works against (AC4)
+  // ---- the priority path: a ticket above the epic it works against (AC4). Highest ticket first, so an
+  // epic rises at most once and every later ticket is already met by the raise.
   const byRank = (t) => priorityRank(t.fields[priority]) ?? Infinity
+  const raised = new Map(), lowered = []
   if (priority) for (const t of [...work].sort((a, b) => byRank(a) - byRank(b))) {
     const tp = priorityRank(t.fields[priority])
     if (tp == null) continue
     const against = [...new Set([t.parent, ...t.links.filter((l) => l.type === 'Blocks' && /^blocks$/i.test(l.verb)).map((l) => l.key)].filter(Boolean))]
     for (const k of against) {
       const e = open.get(k)
-      const ep = e && isEpic(e) ? priorityRank(e.fields[priority]) : null
+      const ev = raised.get(k) ?? e?.fields?.[priority]
+      const ep = e && isEpic(e) ? priorityRank(ev) : null
       if (ep == null || tp >= ep) continue
       // Raise the epic when most of its other open children sit as high as the ticket; else the
       // ticket comes down to the epic's.
       const others = (children[k] ?? []).filter((c) => c.key !== t.key && !isDone(c.category))
       const high = others.filter((c) => { const r = priorityRank(open.get(c.key)?.fields?.[priority] ?? c.fields?.[priority]); return r != null && r <= tp })
       const raise = others.length > 0 && high.length * 2 >= others.length
-      const tv = t.fields[priority], ev = e.fields[priority]
-      // One raise per epic: its highest child is checked first, so the rest are already met.
-      if (raise && out.some((f) => f.check === 'priority' && f.raise === k)) continue
-      out.push({ check: 'priority', kind: 'fix', ticket: t.key, other: k, ...(raise ? { raise: k } : {}),
+      const tv = t.fields[priority]
+      const f = { check: 'priority', kind: 'fix', ticket: t.key, other: k, ...(raise ? { raise: k } : {}),
         evidence: [`${t.key} is ${tv}, above ${k === t.parent ? 'its parent epic' : 'the epic it blocks,'} ${k}, at ${ev}`,
           `${high.length} of ${k}'s ${others.length} other open children are at ${tv} or higher${high.length ? ` (${high.map((c) => c.key).join(', ')})` : ''}`,
           raise ? `so ${k} rises to ${tv}` : `so ${t.key} comes down to ${ev}`],
-        propose: [raise ? `desk-jira edit ${k} ${priority}=${shq(tv)}` : `desk-jira edit ${t.key} ${priority}=${shq(ev)}`] })
+        propose: [raise ? `desk-jira edit ${k} ${priority}=${shq(tv)}` : `desk-jira edit ${t.key} ${priority}=${shq(ev)}`] }
+      if (raise) raised.set(k, tv); else lowered.push({ f, tp })
+      out.push(f)
     }
+  }
+  // A ticket lowered before a lower-ranked sibling raised the epic comes down only to where the epic
+  // ends, and not at all when the raise already meets it.
+  for (const { f, tp } of lowered) {
+    const v = raised.get(f.other)
+    if (v == null) continue
+    if (priorityRank(v) <= tp) { out.splice(out.indexOf(f), 1); continue }
+    f.evidence[2] = `so ${f.ticket} comes down to ${v}, where ${f.other} rises to`
+    f.propose = [`desk-jira edit ${f.ticket} ${priority}=${shq(v)}`]
   }
   return out
 }
@@ -640,15 +652,25 @@ function scan(o) {
   }
   const priority = o.priority && o.priority !== true && o.priority !== 'none' ? o.priority : null
   const done = o.done && o.done !== true ? o.done : 'Done'
-  // Each open epic's children in rank order. Open ones are already read; a done one is read in full
-  // only where the epic has DoD items to cover, and a key its Children section lists that Jira does
-  // not have under it is looked up, null when Jira has no such issue.
+  // Each open epic's children in rank order. Those in the scan are already read; one outside it is
+  // read in full where the epic has DoD items to cover, or where it is open and its priority counts
+  // on the priority path. A key its Children section lists that Jira does not have under it is
+  // looked up, null only when Jira answers 404: any other failure stops the scan, since a failed
+  // read reported as a missing issue would propose deleting a valid row.
   const byKey = new Map(tickets.map((t) => [t.key, t]))
   const children = {}, lookup = {}
-  const read = (k) => { try { return ticketOf(jira('get', k), ids) } catch { return null } }
+  const read = (k) => {
+    try { return ticketOf(jira('get', k), ids) } catch (err) {
+      if (/\bHTTP 404\b/.test(String(err.stderr ?? ''))) return null
+      die(`could not read ${k}: ${String(err.stderr ?? err.message).trim()}`)
+    }
+  }
   for (const e of tickets.filter(isEpic)) {
     const dod = criteriaOf(e.text).some((c) => c.id.startsWith('DoD'))
-    children[e.key] = jira('children', e.key).map((c) => byKey.get(c.key) ?? (dod ? read(c.key) : null) ?? ticketOf(c, ids))
+    children[e.key] = jira('children', e.key).map((c) => {
+      const t = ticketOf(c, ids)
+      return byKey.get(c.key) ?? (dod || (priority && !isDone(t.category)) ? read(c.key) : null) ?? t
+    })
     for (const r of childrenSection(e.text)?.rows ?? []) {
       if (!children[e.key].some((c) => c.key === r.key) && !(r.key in lookup)) lookup[r.key] = byKey.get(r.key) ?? read(r.key)
     }

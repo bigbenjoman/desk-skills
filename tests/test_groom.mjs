@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -298,6 +298,21 @@ t('DS-239 AC6 every question has options and a recommendation, and proposes noth
 t('DS-239 AC6 only loose tickets are asked by the scan', [...new Set(found.filter((f) => f.kind === 'question').map((f) => f.check))], ['loose'])
 t('DS-239 AC6 every finding has a kind', found.filter((f) => !['fix', 'question', 'report'].includes(f.kind)).length, 0)
 t('DS-239 priority order: P0 first, named priorities, unknown values', ['P0', 'P3', 'Highest', 'low', 'urgent', null].map(priorityRank), [0, 3, 0, 3, null, null])
+// An epic at P3 under a P0 child and three P1s: the P1s raise it to P1, so the P0 comes down only to P1,
+// and a P1 the raise already meets is not lowered at all.
+const rec = (key, p, extra = {}) => ticketOf({ key, fields: { summary: `work ${key}`, [P]: { value: p }, ...extra } }, [P])
+const path = (kids, ...more) => {
+  const ep = rec('E-1', 'P3', { issuetype: { name: 'Epic', hierarchyLevel: 1 } })
+  const ks = kids.map(([k, p]) => rec(k, p, { parent: { key: 'E-1' } }))
+  return groomEpics({ tickets: [ep, ...ks, ...more], children: { 'E-1': ks }, priority: P }).filter((f) => f.check === 'priority').map((f) => [f.ticket, f.propose[0], f.evidence[2]])
+}
+t('DS-239 AC4 a lowering settles at the epic\'s raised priority', path([['A-1', 'P0'], ['B-1', 'P1'], ['C-1', 'P1'], ['D-1', 'P1']]),
+  [['A-1', `desk-jira edit A-1 ${P}=P1`, 'so A-1 comes down to P1, where E-1 rises to'], ['B-1', `desk-jira edit E-1 ${P}=P1`, 'so E-1 rises to P1']])
+// Two P1 children each see one of three siblings at P1 and come down; a P1 ticket blocking the epic sees
+// two of its four children there and raises it, which meets both children, so neither is lowered.
+const blocker = rec('T-1', 'P1', { issuelinks: [{ type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, outwardIssue: { key: 'E-1' } }] })
+t('DS-239 AC4 a lowering the raise already meets is dropped', path([['B-1', 'P1'], ['C-1', 'P1'], ['D-1', 'P3'], ['F-1', 'P3']], blocker).map((x) => x.slice(0, 2)),
+  [['T-1', `desk-jira edit E-1 ${P}=P1`]])
 
 // Read only: the scan sent no write to Jira.
 const writes = spawnSync('grep', ['-cE', '"method": "(PUT|DELETE)"|issueLink"|/transitions|/comment', join(T, 'requests.log')], { encoding: 'utf8' }).stdout.trim()
