@@ -176,7 +176,7 @@ repo('alpha', 3100, {
     'A-4': { state: 'triaged', collides_with: 'A-3' },
     'A-5': heldBy('A-3'),
     'A-6': { state: 'parked', park: { question: 'which copy?' } },
-    'A-7': heldBy('A-6'),
+    'A-7': { ...heldBy('A-6'), outside_blockers: [{ key: 'EXT-7', category: 'new' }] },
   },
   sizes: { 'A-1': 'M', 'A-2': 'S', 'A-3': 'M', 'A-4': 'M', 'A-5': 'S', 'A-6': 'M', 'A-7': 'S' },
   history: [...range(6, (i) => ['S', 1 + i]), ...range(6, (i) => ['M', 2 + i])],
@@ -222,7 +222,7 @@ t('DS-161 AC4: a ready ticket a free worker takes starts "now"', /A-2\s+○ read
 t('DS-161 AC5: a ticket waiting on the user has no date', F.T['A-6'], null);
 t('DS-161 AC5: and its screen says to answer it, or press c', show('A-6').includes('Ships     No date until you answer it. Press c to date it as if answered at the next check-in.'), true);
 t('DS-161 AC6: a stuck ticket has no date', F.T['A-7'], null);
-t('DS-161 AC6: and its screen names the ticket blocking it', show('A-7').includes('Ships     No date while it is blocked behind A-6. Unblock it to date it.'), true);
+t('DS-161 AC6 (DS-217 AC8): and its screen says what holds it outside the batch', show('A-7').includes('Ships     No date while it is held by 1 Jira blocker outside the batch.'), true);
 
 // ---- forecast AC7: too little history gives no dates
 const nine = Q.run(['ships', 'nine', '--plain'], { now: FIXED });
