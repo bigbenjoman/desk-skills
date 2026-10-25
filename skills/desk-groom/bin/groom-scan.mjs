@@ -106,6 +106,20 @@ const ADDS = /\b(?:adds?|added|adding|new|introduces?|creates?|exports?|a (?:new
 const CHANGES = /\b(?:change[sd]?|edit(?:s|ed)?|rework(?:s|ed)?|replace[sd]?|fix(?:es|ed)?|move[sd]?|rename[sd]?|split(?:s)?|update[sd]?|extend(?:s|ed)?|rewrite[s]?)\b/i
 const fnName = (span) => /^([A-Za-z_$][\w$.]*)\(/.exec(span)?.[1] ?? null
 
+// A code span that states something about main: a function, a long flag or a repo file. Commands with
+// arguments and placeholders say nothing a grep can check.
+const PATH = /^(?:\w[\w.-]*\/)+[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,5}$|^\w[\w.-]*\.(?:mjs|cjs|js|jsx|ts|tsx|py|sh|md|json|ya?ml|toml)$/
+export function premiseName(span) {
+  if (/[<>\s]/.test(span.replace(/\(.*\)$/, ''))) return null
+  const fn = fnName(span)
+  if (fn) return { name: fn, kind: 'function' }
+  if (/^--[a-z][\w-]*$/.test(span)) return { name: span, kind: 'flag' }
+  if (PATH.test(span)) return { name: span, kind: 'file' }
+  return null
+}
+// Sections that say what the work will do, not what main holds now.
+const FUTURE = /^(?:acceptance|criteria|definition of done|outcome|out of scope|verification|design)\b/i
+
 // What a ticket adds and uses: {adds: Map span→line, uses: Map span→line, changes: Map fn→line}.
 export function namesOf(t) {
   const adds = new Map(), uses = new Map(), changes = new Map()
@@ -171,6 +185,8 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
   const work = tickets.filter((t) => !isEpic(t))
   const open = new Map(tickets.map((t) => [t.key, t]))
   const names = new Map(work.map((t) => [t.key, namesOf(t)]))
+  // Every name an open ticket says it adds: a premise naming one is pending work, not stale.
+  const pending = new Set([...names.values()].flatMap((n) => [...n.adds.keys()].map((s) => premiseName(s)?.name ?? s)))
   const add = (f) => out.push(f)
 
   for (const t of work) {
@@ -234,6 +250,21 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       }
     }
 
+    // ---- stale premises: a line with no citation that names a function, flag or file main does not
+    // have (AC4). Criteria and other sections about the work to come are left out, as is any name an
+    // open ticket adds. A premise is a verifier's call: the name may live outside this repo.
+    const parts = sections(t.text)
+    for (const s of parts.filter((x) => !FUTURE.test(x.name))) for (const l of s.lines) {
+      if (citationsOf(l.text).length || /\b(?:AC|DoD)\d+\b/.test(l.text)) continue
+      const gone = [...new Set(spansOf(l.text).map((x) => premiseName(x.span)).filter(Boolean)
+        .filter((p) => !pending.has(p.name) && !(p.kind === 'file' ? repo.exists(p.name) : repo.has(p.name)))
+        .map((p) => `\`${p.name}\``))]
+      if (!gone.length) continue
+      add({ check: 'stale', ticket: t.key,
+        evidence: [`${s.name || 'description'}: "${quote(l.text)}" names ${gone.join(', ')}, which main does not have`],
+        edit: null, propose: [`desk-jira edit ${t.key} description=@<${t.key} description with the edit>`], verify: 'stale' })
+    }
+
     // ---- blank §4 Priority and §4 Other fields, and the title's area prefix (AC5)
     const sibs = t.parent ? siblings[t.parent] ?? [] : []
     const parent = t.parent ? open.get(t.parent) : null
@@ -249,9 +280,11 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
         propose: [`desk-jira edit ${t.key} ${id}=${from ? shq(from.value) : '<value>'}`] })
     }
     const want = sibs.length ? sharedPrefix(sibs, t.key) : null
-    if (want && !prefixOf(t.summary)) {
-      const title = `${want}: ${t.summary}`
-      add({ check: 'title', ticket: t.key, evidence: [`${sibs.filter((s) => prefixOf(s.summary) === want).length} of ${t.parent}'s other children start "${want}:", and "${quote(t.summary)}" has no prefix`],
+    const has = prefixOf(t.summary)
+    if (want && has !== want) {
+      // A different prefix is replaced, not stacked: `admit: x`, never `admit: import: x`.
+      const title = `${want}: ${has ? t.summary.slice(has.length + 1).trimStart() : t.summary}`
+      add({ check: 'title', ticket: t.key, evidence: [`${sibs.filter((s) => s.key !== t.key && prefixOf(s.summary) === want).length} of ${t.parent}'s other children start "${want}:", and "${quote(t.summary)}" ${has ? `starts "${has}:"` : 'has no prefix'}`],
         propose: [`desk-jira edit ${t.key} summary=${shq(title)}`] })
     }
 
@@ -267,7 +300,6 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
     }
 
     // ---- missing links: named in prose, or a name another open ticket adds or changes (AC3)
-    const parts = sections(t.text)
     for (const s of parts.filter((x) => !/^children\b/i.test(x.name))) for (const l of s.lines) {
       for (const k of new Set(l.text.match(KEY) ?? [])) {
         if (k === t.key || k === t.parent || !open.has(k) || isEpic(open.get(k)) || linked(t, k)) continue
@@ -369,6 +401,8 @@ export function repoAt(root, branch) {
       const hits = files.filter((f) => f === p || f.endsWith(`/${p}`))
       return hits.length === 1 ? hits[0] : null
     },
+    // A file the text names, at its path or under any directory: `bin/x.mjs` for `skills/a/bin/x.mjs`.
+    exists(p) { return fileSet.has(p) || files.some((f) => f.endsWith(`/${p}`)) },
     lines(p) { if (!cache.has(p)) cache.set(p, (tryGit('show', `${ref}:${p}`) ?? '').split('\n')); return cache.get(p) },
     has(s) {
       if (!grep.has(s)) grep.set(s, spawnSync('git', ['-C', root, 'grep', '-q', '-F', '-e', s, ref], { stdio: 'ignore' }).status === 0)

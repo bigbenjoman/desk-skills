@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, ticketOf } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, ticketOf } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -83,11 +83,13 @@ const issues = {
   // AC6: blocked by a Done ticket
   'KAN-13': iss('admit: refuse a key twice', '', { parent: epic, issuelinks: [blocks('KAN-14', 'done')] }),
   'KAN-14': iss('admit: show the hold in desk-q', '', { parent: epic, status: { name: 'Done', statusCategory: { key: 'done' } } }),
+  // AC5: a title with a prefix other than the one its siblings share
+  'KAN-15': iss('import: log each admitted key', '', { parent: epic }),
   // AC2: the same defect twice
   'KAN-20': iss('export: the csv export drops the header row', '', { created: '2026-01-01T00:00:00.000+0000' }),
   'KAN-21': iss('export: csv export drops the header row on download', '', { created: '2026-02-01T00:00:00.000+0000' }),
   // AC3: a command one adds and another uses; prose naming a dependency; one changing the same function
-  'KAN-30': iss('queue: pause a ticket', 'This adds a new command {{queue.mjs pause}}.'),
+  'KAN-30': iss('queue: pause a ticket', 'This adds a new command {{queue.mjs pause}} and exports {{pauseAll()}}.'),
   'KAN-31': iss('digest: show paused tickets', 'The digest lists the tickets held by {{queue.mjs pause}}.'),
   'KAN-32': iss('desk-q: a paused badge', 'h2. Build on\n* KAN-30\'s command.'),
   'KAN-33': iss('export: a note on the csv format', 'Write the format down in {{docs.md}}.'),
@@ -100,6 +102,10 @@ const issues = {
   'KAN-42': iss('import: trim cells', 'See {{lib/parse.mjs:400}}.'),
   // AC4: a name on more than one line of the file, so the new line is a verifier's call
   'KAN-44': iss('cells: pad each cell', 'The rule lives in {{trimCell()}} at {{lib/cells.mjs:1}}.'),
+  // AC4: premises with no citation: names main no longer has, beside ones it has and one KAN-30 adds
+  'KAN-46': iss('import: skip the byte order mark', 'h2. Context\nThe header is read by {{readHeader()}} in {{lib/parse.mjs}} and {{lib/header.mjs}}, behind the {{--bom}} flag; {{pauseAll()}} stops it.\nRows go through {{parseRow()}} in {{docs.md}}.'),
+  // AC4: a criterion says what the work will add, so it is no premise
+  'KAN-47': iss('notes: a strict mode', 'h2. Acceptance criteria\n# AC1: Given {{--strict}}, when {{checkStrict()}} runs, then rows are checked.'),
   // AC3: a bare mention of another ticket, with nothing that orders them
   'KAN-45': iss('notes: a glossary page', 'See KAN-30 for context.'),
   // AC6: held behind a set that keeps growing, and a loop
@@ -108,7 +114,7 @@ const issues = {
   'KAN-62': iss('loop: the second half', '', { issuelinks: [blocks('KAN-61'), blocks('KAN-61', 'new', 'out')] }),
 }
 issues['KAN-30'].issuelinks = [{ id: 'r-KAN-34', type: { name: 'Relates', inward: 'relates to', outward: 'relates to' }, inwardIssue: { key: 'KAN-34', fields: { status: { name: 'To Do', statusCategory: { key: 'new' } } } } }]
-const fixture = { issues, children: { 'KAN-1': ['KAN-10', 'KAN-11', 'KAN-12', 'KAN-13', 'KAN-14'] },
+const fixture = { issues, children: { 'KAN-1': ['KAN-10', 'KAN-11', 'KAN-12', 'KAN-13', 'KAN-14', 'KAN-15'] },
   search: Object.keys(issues).filter((k) => k !== 'KAN-14') }
 writeFileSync(join(T, 'fixture.json'), JSON.stringify(fixture))
 const PORT = 20000 + Math.floor(Math.random() * 20000)
@@ -166,10 +172,22 @@ t('AC4 a name on two lines: no edit, a verifier picks', [twice.edit, twice.verif
 t('AC4 the lines it is on, whole words only', /`trimCell` is on lines 5, 9$/.test((twice.evidence ?? [])[0]), true)
 t('AC4 a line past the end goes to a verifier', of('stale', 'KAN-42')[0]?.verify, 'stale')
 t('AC4 a citation main still matches is not stale', of('stale', 'KAN-10').length, 0)
+const premise = of('stale', 'KAN-46')
+t('AC4 a premise with no citation: one finding for the line that names what main lacks', premise.length, 1)
+t('AC4 it lists the stale text and the names gone, not the ones main has or another ticket adds',
+  (premise[0]?.evidence ?? [])[0], 'Context: "The header is read by `readHeader()` in `lib/parse.mjs` and `lib/header.mjs`, behind the `--bom` flag; `pauseAll()` stops it." names `readHeader`, `lib/header.mjs`, `--bom`, which main does not have')
+t('AC4 and proposes the edit, once a verifier has the corrected text', [premise[0]?.propose, premise[0]?.verify], [['desk-jira edit KAN-46 description=@<KAN-46 description with the edit>'], 'stale'])
+t('AC4 a criterion is no premise', of('stale', 'KAN-47').length, 0)
+t('AC4 premise names: a function, flag or file; not a command or a placeholder',
+  ['parseRow(line)', '--bom', 'lib/a.mjs', 'docs.md', 'queue.mjs pause', '<state>/x.json', '-v'].map((s) => premiseName(s)?.kind ?? null),
+  ['function', 'flag', 'file', 'file', null, null, null])
 
 // AC5
 t('AC5 a blank priority takes the epic\'s value', cmds('field', 'KAN-11'), [`desk-jira edit KAN-11 ${P}=P2`])
 t('AC5 a title missing its siblings\' prefix', cmds('title', 'KAN-12'), ["desk-jira edit KAN-12 summary='admit: count the rows'"])
+t('AC5 a title with a prefix other than its siblings\' is retitled, the old prefix replaced', cmds('title', 'KAN-15'), ["desk-jira edit KAN-15 summary='admit: log each admitted key'"])
+t('AC5 and says which prefix it has', /and "import: log each admitted key" starts "import:"$/.test(of('title', 'KAN-15')[0]?.evidence?.[0]), true)
+t('AC5 only those two: a title with the shared prefix is left alone', found.filter((f) => f.check === 'title').map((f) => f.ticket), ['KAN-12', 'KAN-15'])
 t('AC5 no field finding where every field is set', found.filter((f) => f.check === 'field').length, 1)
 
 // AC6
@@ -184,7 +202,7 @@ t('the scan wrote nothing to Jira', writes, '0')
 
 // The text form and the verdict command
 const text = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S)
-t('the text form counts the tickets', /^groom-scan: 22 open tickets, \d+ findings/.test(text.stdout), true)
+t('the text form counts the tickets', /^groom-scan: 25 open tickets, \d+ findings/.test(text.stdout), true)
 writeFileSync(join(T, 'scan.json'), r.stdout)
 writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }, { ticket: 'KAN-31', criteria: [met('AC1')] }]))
 const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json'))
