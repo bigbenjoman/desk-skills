@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 export const ARMS = Object.freeze(['skill', 'base']);
 const CHECK_KINDS = Object.freeze(['contains', 'absent', 'matches']);
-export const DEFAULT_TOTAL_USD = 5;
+const DEFAULT_TOTAL_USD = 5;
 const USAGE = 'usage: skill-eval.mjs --skill <name|dir> --tasks <file.json> --max-budget-usd <usd> [--total-budget-usd <usd>] [--skills-dir <dir>] [--out <dir>] [--timeout <seconds>] [--model <model>]';
 const USD = /^\d+(\.\d+)?$/;
 
@@ -142,7 +142,7 @@ const usd = (n) => `$${n.toFixed(2)}`;
 
 // The markdown report. Transcript links are relative to the report's directory. A null result is a
 // task the whole-run budget left unstarted; any such task means no verdict.
-export function renderReport({ skill, tasksFile, tasks, results, budget, timeout, total = DEFAULT_TOTAL_USD, spent = 0 }) {
+export function renderReport({ skill, tasksFile, tasks, results, budget, timeout, total, spent }) {
   const t = totals(results);
   const notRun = tasks.filter((_, i) => !results[i]).map((task) => task.id);
   const v = notRun.length ? null : verdict(t);
@@ -190,7 +190,7 @@ export function runEval(opts, log = () => {}) {
   const tasks = loadTasks(opts.tasks);
   const out = resolve(opts.out || `skill-eval-${skill.name}-${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}`);
   mkdirSync(join(out, 'transcripts'), { recursive: true });
-  const budget = Number(opts.budget), total = Number(opts.total ?? DEFAULT_TOTAL_USD);
+  const budget = Number(opts.budget), total = Number(opts.total);
   let spent = 0;
   const results = tasks.map((task) => {
     if (spent + 2 * budget > total + 1e-9) { log(`skip ${task.id}: ${usd(spent)} of $${total} spent`); return null; }
@@ -211,7 +211,7 @@ export function runEval(opts, log = () => {}) {
     }
     return r;
   });
-  const report = renderReport({ skill, tasksFile: opts.tasks, tasks, results, budget: opts.budget, timeout: opts.timeout, total: opts.total ?? DEFAULT_TOTAL_USD, spent });
+  const report = renderReport({ skill, tasksFile: opts.tasks, tasks, results, budget: opts.budget, timeout: opts.timeout, total: opts.total, spent });
   writeFileSync(join(out, 'report.md'), report.text);
   return { ...report, path: join(out, 'report.md') };
 }

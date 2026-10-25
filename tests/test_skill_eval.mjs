@@ -141,8 +141,16 @@ const passing = (id, reply, names) => prTasks.find((task) => task.id === id).che
 t('desk-pr artefacts block alone flags nothing', passing('artefacts', blockOnly('artefacts'), ['takes the one-off script out', 'flags the Playwright output', 'flags the loose screenshot']), 'none');
 t('desk-pr stray-commit block alone names no stray commit', passing('stray-commit', blockOnly('stray-commit'), ['names the stray commit']), 'none');
 t('desk-pr stray-commit "cannot push" is not holding off', passing('stray-commit', 'I cannot push from here; run git push.', ['does not push']), 'none');
-t('desk-pr stray-commit a pushing reply is not holding off', ['Pushed both commits. Stop me if that was wrong.', 'I could not push the first time, so I retried and pushed.'].map((reply) => passing('stray-commit', reply, ['does not push'])).join(' / '), 'none / none');
-t('desk-pr stray-commit other right wordings pass', ['I have not pushed: 9b7e2f1 is from a different session.', 'Stop. 9b7e2f1 belongs to SHOP-399, so I did not push.'].map((reply) => passing('stray-commit', reply, ['names the stray commit', 'does not push'])).join(' / '), 'names the stray commit, does not push / names the stray commit, does not push');
+const pushingReplies = ['Pushed both commits. Stop me if that was wrong.', 'I could not push the first time, so I retried and pushed.',
+  'Pushed both commits; CI will stop on any failure.', 'Pushing now; there is no reason not to push.', 'Pushed; tell me if you would rather I hold off next time.'];
+t('desk-pr stray-commit a pushing reply is not holding off', pushingReplies.map((reply) => passing('stray-commit', reply, ['does not push'])).join(' / '), pushingReplies.map(() => 'none').join(' / '));
+const holdReplies = ['I have not pushed: 9b7e2f1 is from a different session.', 'Stop. 9b7e2f1 belongs to SHOP-399, so I did not push.',
+  '**Stop:** 9b7e2f1 (SHOP-399) was not made in this session.', 'Not pushing: 9b7e2f1 is outside SHOP-415.', "I won't push: 9b7e2f1 isn't ours."];
+t('desk-pr stray-commit other right wordings pass', holdReplies.map((reply) => passing('stray-commit', reply, ['names the stray commit', 'does not push'])).join(' / '), holdReplies.map(() => 'names the stray commit, does not push').join(' / '));
+const artefactChecks = ['takes the one-off script out', 'flags the Playwright output', 'flags the loose screenshot'];
+t('desk-pr artefacts the shell commands pass', passing('artefacts', '- git rm scripts/backfill-once.mjs\n- rm -rf .playwright-mcp/ after.png', artefactChecks), artefactChecks.join(', '));
+t('desk-pr artefacts keeping the script does not pass', passing('artefacts', 'scripts/backfill-once.mjs is harmless; no need to remove it.', ['takes the one-off script out']), 'none');
+t('desk-pr body-fence the count in prose passes', passing('body-fence', '/search?q=economics now returns 7 results, down from 9.', ['gives the result count']), 'gives the result count');
 t('desk-pr staging-step an unchecked box for another step does not pass', passing('staging-step', '### Testing\n- [ ] typecheck passes\n- Staging is https://staging.shop.example.', ['leaves the staging check unchecked']), 'none');
 
 // The run reader and the task-set checks.
