@@ -1148,7 +1148,7 @@ dated('hold', 5000, { hours: twelveHours, tickets: {
   'B-DRAFT': prAt(175, { isDraft: true }), 'W-3': heldBy('B-DRAFT'),
   'B-READY': prAt(176), 'W-4': heldBy('B-READY'),
   'B-PARK': { state: 'parked', park: { question: 'which copy?' } }, 'W-5P': heldBy('B-PARK'),
-  'B-FAIL': { state: 'failed', park: { question: 'tests red' } }, 'W-5F': heldBy('B-FAIL'), 'W-5N': heldBy('W-3'),
+  'B-RED': { state: 'failed', park: { question: 'tests red' } }, 'W-5F': heldBy('B-RED'), 'W-5N': heldBy('W-3'),
   'B-MERGED': mergedAt(170), 'W-7': heldBy('B-MERGED'),
   'W-8': { ...heldBy('B-RUN'), outside_blockers: outside(27) },
   'W-9': { ...heldBy('B-MERGED'), outside_blockers: outside(1, 'indeterminate') } } });
@@ -1177,7 +1177,7 @@ t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hol
 t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '◆ needs you | #179 will not merge on its own: merge it');
 t('DS-217 AC5 behind a blocker that needs you, failed or is parked: waiting, saying which',
   ['W-5N', 'W-5F', 'W-5P'].map((k) => cells217('hold', k)).join(' / '),
-  '· waiting | behind W-3, which needs you / · waiting | behind B-FAIL, which failed / · waiting | behind B-PARK, which is parked');
+  '· waiting | behind W-3, which needs you / · waiting | behind B-RED, which failed / · waiting | behind B-PARK, which is parked');
 t('DS-217 AC6 every blocker merged, with a supervisor: waiting to be released', cells217('holdsup', 'W-6'), '· waiting | released at the next pass');
 t('DS-217 AC7 every blocker merged, with no merge driver or supervisor: needs you, release it', cells217('hold', 'W-7'), '◆ needs you | every blocker merged: release it');
 t('DS-217 AC7 its page gives the release command the pass prints', Q.ticketScreen(repo217('hold'), 'W-7', { now: FIXED }).includes(
