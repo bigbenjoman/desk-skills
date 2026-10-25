@@ -16,23 +16,29 @@ const T = realpathSync(mkdtempSync(join(tmpdir(), 'run-by-')));
 const ROOT = join(T, 'repo');
 mkdirSync(ROOT, { recursive: true });
 
-// The fake: `state` holds none, installed or loaded; `<sub>.exit` makes that command fail with that
-// code, and a failed install leaves the agent installed but not loaded, as a failed bootstrap does.
+// The fake: `state` holds none, installed or loaded, and `every` the agent's interval (180 unless an
+// install passed --interval); `<sub>.exit` makes that command fail with that code, and a failed
+// install leaves the agent installed but not loaded, as a failed bootstrap does.
 const FAKE = join(T, 'supervisor.mjs');
 writeFileSync(FAKE, `import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 const dir = ${JSON.stringify(T)};
-const [sub] = process.argv.slice(2);
+const [sub, ...args] = process.argv.slice(2);
 const file = join(dir, 'state');
 const state = existsSync(file) ? readFileSync(file, 'utf8').trim() : 'none';
-appendFileSync(join(dir, 'calls'), sub + '\\n');
+const every = existsSync(join(dir, 'every')) ? readFileSync(join(dir, 'every'), 'utf8').trim() : '180';
+appendFileSync(join(dir, 'calls'), [sub, ...args].join(' ') + '\\n');
 const fail = join(dir, sub + '.exit');
 if (sub === 'install') {
+  const i = args.indexOf('--interval');
+  writeFileSync(join(dir, 'every'), i < 0 ? '180' : args[i + 1]);
   if (existsSync(fail)) { writeFileSync(file, 'installed'); console.error('supervisor: launchctl bootstrap failed: Bootstrap failed: 5: Input/output error'); process.exit(Number(readFileSync(fail, 'utf8'))); }
   writeFileSync(file, 'loaded');
   console.log('supervisor: installed com.desk-skills.supervisor.acme__repo: a pass every 180s');
+} else if (sub === 'uninstall') {
+  writeFileSync(file, 'none');
 } else if (sub === 'status') {
-  console.log('agent: com.desk-skills.supervisor.acme__repo ' + (state === 'none' ? 'not installed' : 'installed (every 180s), ' + (state === 'loaded' ? 'loaded' : 'not loaded')));
+  console.log('agent: com.desk-skills.supervisor.acme__repo ' + (state === 'none' ? 'not installed' : 'installed (every ' + every + 's), ' + (state === 'loaded' ? 'loaded' : 'not loaded')));
   process.exitCode = state === 'loaded' ? 0 : 1;
 }
 `);
@@ -41,7 +47,7 @@ const CFG = join(T, 'config.md');
 const config = (runBy) => writeFileSync(CFG, `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${ROOT}\` |\n\n`
   + '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n'
   + (runBy == null ? '' : `| Batches run by | \`supervisor\` | ${runBy} |\n`));
-const setState = (s) => writeFileSync(join(T, 'state'), s);
+const setState = (s, every = '180') => { writeFileSync(join(T, 'state'), s); writeFileSync(join(T, 'every'), every); };
 const failing = (sub, code) => (code == null ? rmSync(join(T, `${sub}.exit`), { force: true }) : writeFileSync(join(T, `${sub}.exit`), String(code)));
 const calls = () => (existsSync(join(T, 'calls')) ? readFileSync(join(T, 'calls'), 'utf8').trim().split('\n').join(' ') : '');
 const run = (cmd, platform = 'darwin') => {
@@ -83,12 +89,16 @@ t('AC4 handed to the supervisor', `${r.code} ${r.out.by}`, '0 supervisor');
 t('AC4 no install', r.calls, 'status');
 
 // AC5: supervisor row, not installed or not loaded: installed without asking, then handed over.
-for (const s of ['none', 'installed']) {
+for (const [s, want] of [['none', 'status install status'], ['installed', 'status install --interval 180 status']]) {
   setState(s);
   r = run('stage4');
   t(`AC5 ${s}: handed to the supervisor`, `${r.code} ${r.out.by} ${r.out.installed}`, '0 supervisor true');
-  t(`AC5 ${s}: installed it`, r.calls, 'status install status');
+  t(`AC5 ${s}: installed it`, r.calls, want);
 }
+// An agent installed but not loaded keeps its own interval when it is installed again.
+setState('installed', '600');
+r = run('stage4');
+t('AC5 installed: keeps its interval', `${r.out.by} ${r.calls} ${readFileSync(join(T, 'every'), 'utf8')}`, 'supervisor status install --interval 600 status 600');
 
 // AC6: supervisor row, install fails: the session runs it, with the error and the retry command.
 setState('none'); failing('install', 1);
@@ -97,6 +107,11 @@ t('AC6 exits 11', r.code, 11);
 t('AC6 runs in the session', r.out.by, 'session');
 t('AC6 gives the install error', /Bootstrap failed: 5/.test(r.out.error ?? ''), true);
 t('AC6 gives the retry command', r.out.retry, `node ~/.claude/desk/bin/supervisor.mjs install (run in ${ROOT})`);
+t('AC6 a failed fresh install leaves no agent behind', `${r.calls} ${readFileSync(join(T, 'state'), 'utf8')}`, 'status install uninstall none');
+// One installed before the failed install stays installed.
+setState('installed');
+r = run('stage4');
+t('AC6 installed before: still installed', `${r.code} ${r.out.by} ${r.calls} ${readFileSync(join(T, 'state'), 'utf8')}`, '11 session status install --interval 180 installed');
 failing('install', null);
 
 // AC7: session row runs in the session, installed or not, without asking the supervisor.

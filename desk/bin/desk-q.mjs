@@ -25,7 +25,7 @@
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,7 @@ import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurren
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
+import { platform, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -1177,31 +1178,21 @@ function apply(repos, v) {
 
 // ---- the supervisor ----------------------------------------------------------------------------
 
-// supervisor.mjs, run in the named repo's own checkout, so its slug, state and queue are that repo's.
-// DESK_SUPERVISOR_MJS and DESK_PLATFORM stand in for the script and the platform in tests.
-const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(dirname(fileURLToPath(import.meta.url)), 'supervisor.mjs');
-const platform = () => process.env.DESK_PLATFORM || process.platform;
 export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.';
 
-function supervisorRun(r, sub, ...args) {
+// supervisor.mjs, run in the named repo's own checkout, so its slug, state and queue are that repo's.
+function supervisorRunner(r) {
   const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
   if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to run its supervisor in. Nothing changed.`);
   if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
   const env = { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath };
-  const p = spawnSync(process.execPath, [supervisorMjs(), sub, ...args], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const said = (s) => String(s ?? '').trim().split('\n').filter(Boolean).map((l) => l.replace(/^supervisor: /, ''));
-  return { code: p.status, out: said(p.stdout), err: said(p.stderr).join(' ') || p.error?.message || `exited ${p.status ?? p.signal}` };
+  return (sub, args) => supervisorRun(sub, args, { cwd: root, env });
 }
 
-// The agent's state from `supervisor.mjs status`: 'loaded', 'installed' (not loaded) or 'none', its
-// interval, and the log's last line.
-function supervisorState(r) {
-  const s = supervisorRun(r, 'status');
-  const agent = s.out.find((l) => l.startsWith('agent: '));
-  if (!agent) throw new Usage(`${r.name}: could not read the supervisor's status: ${s.err}`);
-  const m = /installed \(every (\S+?)s\), (loaded|not loaded)/.exec(agent);
-  const at = s.out.findIndex((l) => l.startsWith('log: '));
-  return { state: !m ? 'none' : m[2] === 'loaded' ? 'loaded' : 'installed', every: m?.[1] ?? null, last: at < 0 || at === s.out.length - 1 ? null : s.out.at(-1).trim() };
+function supervisorState(r, run) {
+  const s = readSupervisorState(run);
+  if (!s.state) throw new Usage(`${r.name}: could not read the supervisor's status: ${s.err}`);
+  return s;
 }
 
 // `on` and `off` say what changed in one line; a refusal or a failure says nothing changed.
@@ -1210,7 +1201,8 @@ function supervisor(r, op) {
     if (op === 'status') return `${r.name}: no supervisor. ${NEEDS_LAUNCHD.replace(' Nothing changed.', '')}`;
     throw new Usage(NEEDS_LAUNCHD);
   }
-  const was = supervisorState(r);
+  const run = supervisorRunner(r);
+  const was = supervisorState(r, run);
   if (op === 'status') {
     const state = { loaded: `on: installed and loaded, a pass every ${was.every}s`,
       installed: `installed but not loaded, so no passes run. Turn it on: desk-q ${r.name} supervisor on`,
@@ -1219,18 +1211,15 @@ function supervisor(r, op) {
   }
   if (op === 'on') {
     if (was.state === 'loaded') return `${r.name}: the supervisor is already on, a pass every ${was.every}s. Nothing changed.`;
-    // An agent already installed keeps its interval: install writes the default otherwise.
-    const s = supervisorRun(r, 'install', ...(/^\d+$/.test(was.every ?? '') ? ['--interval', was.every] : []));
+    const s = turnOn(was, run);
     if (s.code !== 0) {
-      // A failed load can leave a new agent file behind; with none before, it goes again.
-      if (was.state === 'none') supervisorRun(r, 'uninstall');
       throw new Usage(`${r.name}: the supervisor could not be turned on: ${s.err}. It is ${was.state === 'none' ? 'still off' : 'still installed but not loaded'}.`);
     }
     const every = /every (\d+)s/.exec(s.out.join(' '))?.[1];
     return `${r.name}: supervisor on. It runs a pass ${every ? `every ${every}s ` : ''}and at login, for a batch handed over at Stage 4.`;
   }
   if (was.state === 'none') return `${r.name}: the supervisor is already off. Nothing changed.`;
-  const s = supervisorRun(r, 'uninstall');
+  const s = run('uninstall');
   if (s.code !== 0) throw new Usage(`${r.name}: the supervisor could not be turned off: ${s.err}. It is still ${was.state === 'loaded' ? 'on' : 'installed'}.`);
   return `${r.name}: supervisor off. No further passes run, and running workers carry on to their end (so does a merge driver it started).`;
 }
