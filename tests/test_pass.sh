@@ -74,12 +74,22 @@ say "AUTOPILOT_IMAGES: $T/state/images/T-1/" "AUTOPILOT_DONE: pr=2 jira=none" > 
 # T-2: a log with screenshots and no AUTOPILOT_DONE yet, so the stored PR is all there is.
 q add T-2; q set T-2 state=running branch=fix/T-2 session_id=gone result.pr=5
 say "AUTOPILOT_IMAGES: $T/state/images/T-2/" > "$T/state/logs/T-2.log"
+for k in T-1 T-2 T-3; do mkdir -p "$T/state/images/$k"; : > "$T/state/images/$k/after-desktop.png"; done
+# I-1 and I-2: finished workers that captured nothing, naming a directory that is missing or empty.
+q add I-1; q set I-1 state=running branch=fix/I-1 session_id=gone
+say "AUTOPILOT_IMAGES: $T/state/images/I-1/" "AUTOPILOT_DONE: pr=11 jira=none" > "$T/state/logs/I-1.log"
+q add I-2; q set I-2 state=running branch=fix/I-2 session_id=gone
+mkdir -p "$T/state/images/I-2"; : > "$T/state/images/I-2/notes.txt"
+say "AUTOPILOT_IMAGES: $T/state/images/I-2/" "AUTOPILOT_DONE: pr=12 jira=none" > "$T/state/logs/I-2.log"
 
 out=$(node "$B/pass.mjs" 2>&1)
 check "the log's PR wins over the stored one"           'grep -qx "2 $T/state/images/T-1/" "$T/uploads"'
 check "nothing goes to the stored PR when the log has one" '! grep -q "^1 " "$T/uploads"'
 check "the stored PR is used when the log has none"     'grep -qx "5 $T/state/images/T-2/" "$T/uploads"'
 check "the finished round records the log's PR"         '[ "$(field T-1 result.pr)" = 2 ]'
+check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
+check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
+check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
 
 # T-3: round one finished with PR 1 and uploaded; it is requeued for a deliberate re-run.
 q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true

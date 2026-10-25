@@ -25,6 +25,9 @@ files.
   `Read` back, so **look at every shot before you print the marker**: a cookie banner, a fixed navbar
   or an empty element is not evidence.
 
+  **Captured no screenshots? Print no `AUTOPILOT_IMAGES:` line at all**, even though your briefing
+  names the directory: a ticket that renders nothing has no images for the orchestrator to upload.
+
   Leave the image cells as `_drag <file>_` placeholders, but **leave nothing else**: no "delete this
   row once the images are in", no TODO. The body ships to a reviewer as written.
 

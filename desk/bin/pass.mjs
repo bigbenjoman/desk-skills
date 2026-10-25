@@ -4,7 +4,7 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { uptime } from 'node:os';
@@ -488,7 +488,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
   const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? t.result?.pr;
   if (imgDir && prNo && !t.images_uploaded) {
-    if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
+    // A directory that is missing or holds no screenshot means no images, not a failed upload. A
+    // running worker may still capture into it, so only a finished one is recorded as having none.
+    let shots = [];
+    try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
+    if (!shots.length) {
+      if (done) q('set', t.key, 'images_uploaded=none');
+    } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
       const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
       const up = run.out;
       const doneLine = /done: (\d+) image\(s\) in the body, (\d+) placeholder\(s\) left/.exec(up);
@@ -1098,7 +1104,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
   const parts = (h) => [
     `Orchestrator session name: ${orchestratorName()}`,
     `Answer file to wait on: ${answerFile}`,
-    `Screenshot directory (print it as AUTOPILOT_IMAGES): ${join(STATE, 'images', t.key)}/`,
+    `Screenshot directory (print it as AUTOPILOT_IMAGES once it holds your screenshots; captured none, print nothing): ${join(STATE, 'images', t.key)}/`,
     '',
     // Before the answers: collectAnswers keeps everything from an answer heading to the sibling
     // notes, or to the end of the file, so nothing but answers may follow one.

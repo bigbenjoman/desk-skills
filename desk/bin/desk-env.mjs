@@ -68,6 +68,8 @@ import * as TS from './test-scope.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
+// Which files in a screenshot directory upload-images.mjs uploads, and so which mean it has images.
+export const SCREENSHOT_FILE = /\.(png|jpe?g)$/i;
 
 // ---- which repo, which config --------------------------------------------------------------
 export const deskConfigRoot = () => expandHome(process.env.DESK_CONFIG_ROOT ?? join(HOME, '.config', 'desk'));
