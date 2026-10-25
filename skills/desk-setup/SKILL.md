@@ -577,11 +577,17 @@ reach in the Recommended option's description. For `git-push` say that Claude Co
 each push: no allow rule is written, because git's abbreviations mean no pattern can fence every
 dangerous spelling.
 
-**Then §3b** (four rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
+**Then §3b** (five rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
 spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
 budget, worker models, worker location, stage reports; push notification, check-in times, killed-worker
 resumes (Recommended `2`: a pass resumes a worker a reboot or crash killed, in its own session, up to
-that many times; `0` marks it failed instead), batches run by. For batches run by, run
+that many times; `0` marks it failed instead), batches run by; orchestrator status table. For the
+orchestrator status table, offer `full` (Recommended: the orchestrator session shows the whole
+status table on every spawn and stage step, as it always has) and `quiet` (for anyone who keeps
+desk-q open beside a batch run in the session: the status watch prints one line per ticket that
+changed and the orchestrator answers a spawn or stage step in a line or less, so the session spends
+fewer tokens; parks, questions, PRs, merges and failures are still reported, and the Stage 8 report
+and any status you ask for carry the full table), and record the answer. For batches run by, run
 `node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS (`ask: true`) offer `supervisor`
 (Recommended: once Stage 3 has asked, the supervisor runs the batch from launchd, the session ends,
 and you follow it in desk-q, opening a session only when it needs you) and `session` (the batch runs

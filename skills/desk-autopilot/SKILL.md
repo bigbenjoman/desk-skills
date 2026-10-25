@@ -218,7 +218,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 6b | Notify | Push only what a pass's `push` lists, whatever its exit: send **one** `PushNotification` carrying the `text` of each entry whose `key` the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`). That is the check-in digest, once a §3b "Check-in times" slot has passed, a park reading `PRODUCTION BROKEN: …`, at once, and a health check newly failing. Everything else waiting on the person reaches them in the next digest (*The check-in digest*), so a park, a failure or a finished batch is shown in the session and never pushed on its own. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
 | 7 | Merge | The moment a PR is green at its head, **merge it** (where granted, pinned to that head, never under a §4 Merge holds glob): do not collect PRs and merge at the end. See *Merge each PR the moment it goes green*. |
-| 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**: see *The status table*. |
+| 8 | Report | What is merged, what is parked and on whom, what is still running. **Emit the status table on every stage change**, or at §3b "Orchestrator status table" `quiet` a line for what needs the person; the batch report itself always carries the full table: see *The status table*. |
 
 Idle = every ticket merged, parked or failed, none held waiting on a merge, and in feature mode no
 base gate waiting on a merge or running (`pass.mjs` exits 11 with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
@@ -837,7 +837,7 @@ answer with the specific thing being waited on and what is already in flight aga
 
 ## The status table
 
-**Every stage change gets a table, not a sentence**, so the user can see each ticket and its state
+**Every stage change gets a table, not a sentence** (unless the repo has set quiet, below), so the user can see each ticket and its state
 at every stage. A prose line about the one ticket that moved makes the reader reconstruct the
 other six from memory, and silence between spawn and PR reads as nothing happening.
 
@@ -856,6 +856,21 @@ unpark, a PR landing. Not on memory jitter, and not on a pass that changed nothi
 - **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers,
   and the `runner=` and `ladder=` figures whenever the pass line carries them.
 - **Notes stay to one line.** The full park reason lives in the queue.
+
+**Quiet: config §3b "Orchestrator status table" `quiet`** (`desk-env get status-table`; unset is
+`full`, the rule above). It applies to a batch run in the session: someone following the batch in
+desk-q already sees every row, so the table twice in the session is only spent context. The status
+watch then prints the table once at start and, after that, one line per ticket that changed (key,
+old → new) with the memory line. On a spawn or a stage step, reply in one line at most, with no
+table, or not at all. Quiet removes repetition, never signal:
+
+- **A park, a question for the person, a PR opening, a merge or a failure** still gets its line,
+  naming the ticket and what it needs (what unparks it, the question, the PR number, the failure).
+- **The Stage 8 batch report** carries the full table and the `WORKER COST` table, as at `full`.
+- **Asked for the status**, print the full table (`queue.mjs render`, with `desk-env mem status`).
+
+Any value but `full` or `quiet` reads as `full`: the watch's first line says the value was not
+recognised; say that once to the person, and run the batch at `full`.
 
 **The batch report (Stage 8) carries the batch's CI red rate.** Workers now run related tests rather
 than full suites, so a rise in red PRs is the cost of that showing up. Once the batch has PRs, run
@@ -1337,7 +1352,8 @@ the batch's own number as it is.
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
 memory line (`vmmem=`, `avail=`) at start, then again only when the table changes, checking every
-90 seconds (`--interval <s>` to change it); and a sustained-high watch (`desk-env mem watch`) that
+90 seconds (`--interval <s>` to change it), or at §3b "Orchestrator status table" `quiet` one line
+per ticket that changed (*The status table*); and a sustained-high watch (`desk-env mem watch`) that
 fires only on `avail` below the ladder's lowest band (2 GiB, or a lower band the §3b row names) held
 5 minutes with nothing heavy running to explain it. Run each under `Monitor` exactly as written:
 never write a shell loop around `render` and `mem status` instead, which Claude Code prompts on every
@@ -1451,7 +1467,7 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # shell redirect, which writes outside the working directory and prompts every time
 
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
-node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a table change; every 90s, or --interval <s>
+node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a table change (quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
 
 # apply the ladder — top-level field (a lowering leaves concurrency_by as it is)

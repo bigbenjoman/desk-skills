@@ -610,18 +610,31 @@ switch (cmd) {
   // The orchestrator's status monitor, run under Monitor: one plain command, so starting it never
   // prompts. Prints the table and the memory line once, then again only when the table changes;
   // memory figures moving on their own print nothing. Runs until killed, like `desk-env mem watch`.
+  // At config §3b "Orchestrator status table" `quiet`, every print after the first is one line per
+  // ticket that changed, not the whole table.
   case 'watch': {
     if (!existsSync(QUEUE)) throw new Error(`no queue at ${QUEUE}: start a batch (queue.mjs init) before watching it`);
     const i = args.indexOf('--interval');
     const intervalMs = (i >= 0 && Number(args[i + 1]) > 0 ? Number(args[i + 1]) : 90) * 1000;
+    const mode = statusTableSetting();
+    if (mode.bad) console.log(mode.bad);
+    if (mode.value === 'quiet') console.log('status table quiet: after this table, one line per ticket that changed; queue.mjs render prints the whole table\n');
     // A queue that cannot be read (gone, or hand-mangled) is shown once as its error, rather than
-    // ending the monitor: the next good read prints the table again.
-    const snapshot = () => { try { return render(existsSync(QUEUE) ? readQueue(QUEUE) : empty()); } catch (e) { return `queue: ${e.message}`; } };
+    // ending the monitor: the next good read prints the table again (quiet: what changed since the
+    // last good read).
+    const read = () => { try { return { q: existsSync(QUEUE) ? readQueue(QUEUE) : empty() }; } catch (e) { return { err: `queue: ${e.message}` }; } };
     let last = null;
+    let good = null;
     for (;;) {
-      const table = snapshot();
-      if (table !== last) console.log(`${table}\n${memStatusLine()}\n`);
+      const { q: now, err } = read();
+      const table = err ?? render(now);
+      if (table !== last) {
+        const changes = err || !good || mode.value !== 'quiet' ? null : tableChanges(good, tableRows(now));
+        const text = changes ? changes.join('\n') : table;
+        if (text) console.log(`${text}\n${memStatusLine()}\n`);
+      }
       last = table;
+      if (!err) good = tableRows(now);
       await new Promise((res) => setTimeout(res, intervalMs));
     }
   }
@@ -636,12 +649,44 @@ switch (cmd) {
 
 // The status table, as one string.
 function render(q) {
-  const rows = Object.values(q.tickets);
+  const { head, rows, parked } = tableRows(q);
   if (!rows.length) return 'queue is empty';
-  const out = [];
+  const out = [`${head}\n`, ...rows.map((r) => `  ${r.label.padEnd(8)} ${r.key.padEnd(9)} ${r.tail}`)];
+  if (parked) out.push(`\n${parked} ticket(s) waiting on you.`);
+  return out.join('\n');
+}
+
+// Config §3b "Orchestrator status table": `full` or `quiet`, unset meaning full. Anything else is
+// said and read as full.
+function statusTableSetting(raw = configValue('status-table')) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'full' || v === 'quiet' || v === '') return { value: v || 'full', bad: null };
+  return { value: 'full', bad: `config §3b "Orchestrator status table" is "${raw}" — want \`full\` or \`quiet\`; read as full` };
+}
+
+// What changed between two reads of the table, one line per ticket (key, then old → new), plus a
+// line for the batch's own heading when that changed. Empty when nothing shown changed.
+function tableChanges(before, after) {
+  const line = (r) => `${r.label} ${r.tail}`.trim();
+  const was = new Map(before.rows.map((r) => [r.key, r]));
+  const now = new Map(after.rows.map((r) => [r.key, r]));
+  const out = before.head === after.head ? [] : [`batch     ${before.head} → ${after.head}`];
+  for (const r of after.rows) {
+    const o = was.get(r.key);
+    if (!o) out.push(`${r.key.padEnd(9)} added → ${line(r)}`);
+    else if (line(o) !== line(r)) out.push(`${r.key.padEnd(9)} ${line(o)} → ${line(r)}`);
+  }
+  for (const o of before.rows) if (!now.has(o.key)) out.push(`${o.key.padEnd(9)} ${line(o)} → dropped`);
+  return out;
+}
+
+// The table's parts: the batch heading, one row per ticket in shown order, and how many wait on you.
+function tableRows(q) {
+  const rows = Object.values(q.tickets);
   const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
   rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
-  out.push(`batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}\n`);
+  const head = `batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}`;
+  const out = [];
   for (const t of rows) {
     const stuck = isHeld(t) && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();
@@ -656,9 +701,8 @@ function render(q) {
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
-    out.push(`  ${label.padEnd(8)} ${t.key.padEnd(9)} ${tail}${modelNote}`);
+    out.push({ key: t.key, label, tail: `${tail}${modelNote}` });
   }
   const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && waitingOnMerge(q, t))).length;
-  if (parked) out.push(`\n${parked} ticket(s) waiting on you.`);
-  return out.join('\n');
+  return { head, rows: out, parked };
 }

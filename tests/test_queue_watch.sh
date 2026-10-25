@@ -71,5 +71,43 @@ stop_watch
 out=$(cat "$T/watch.out")
 check "DS-189 AC2 the watch row says the question is open and how to answer it" '[[ "$out" == *"TRIAGED  T-2       blocked: 1 question(s) open, answer with answer.mjs T-2 \"<answer>\""* ]]'
 
+# DS-198: config §3b "Orchestrator status table". setting <value>: rewrite the config with that row.
+setting(){ cp "$T/config.base" "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Orchestrator status table | `full` | `%s` |\n' "$1" >> "$T/config.md"; }
+cp "$T/config.md" "$T/config.base"
+
+# AC1 is the suites above: no row prints the whole table on every change. full set explicitly does too.
+setting full
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 stage=6/9
+until_tables 2
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-198 AC1 full prints the whole table again on a change"             '[ "$(tables)" = 2 ] && [ "$(grep -c "RUNNING  T-1" "$T/watch.out")" = 2 ] && [[ "$out" != *"quiet"* ]]'
+
+# AC2: quiet prints the table once, then one line per changed ticket and the memory line.
+setting quiet
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 stage=7/9; q add T-3
+n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
+sleep 0.7
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-198 AC2 quiet prints the full table once at start"                 '[ "$(tables)" = 1 ] && [[ "$out" == *"status table quiet"* ]]'
+check "DS-198 AC2 a stage step is one line: key, old stage → new stage"       '[[ "$out" == *"T-1       RUNNING stage 6/9  port 3501 → RUNNING stage 7/9  port 3501"* ]]'
+check "DS-198 AC2 a spawn-side change (a ticket added) is its own line"       '[[ "$out" == *"T-3       added → QUEUED"* ]]'
+check "DS-198 AC2 change lines carry the memory line; unchanged rows are not reprinted"'[ "$(mems)" -ge 2 ] && [ "$(grep -c "TRIAGED  T-2" "$T/watch.out")" = 1 ]'
+
+# AC8: an unrecognised value is said once and read as full.
+setting loud
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 stage=8/9
+until_tables 2
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-198 AC8 an unknown value is said once and the watch runs at full"  '[ "$(grep -c "is \"loud\"" "$T/watch.out")" = 1 ] && [[ "$out" == *"want \`full\` or \`quiet\`; read as full"* ]] && [ "$(tables)" = 2 ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
