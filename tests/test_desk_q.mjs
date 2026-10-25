@@ -425,7 +425,7 @@ function dated(name, port, { workers = 2, tickets, hours, at = FIXED, perms = nu
 const ready = { state: 'triaged', open_questions: 0 };
 dated('tidy', 3700, { hours: [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8], tickets: {
   'T-1': { state: 'running', stage: '4/9' }, 'T-2': ready, 'T-3': ready, 'T-4': { state: 'parked', park: { question: 'which copy?' } },
-  'T-5': { state: 'parked', held_by: 'T-4', park: { question: 'held by orchestrator: blocked by T-4' }, outside_blockers: [{ key: 'EXT-5', category: 'new' }] }, 'T-6': ready, 'T-7': ready } });
+  'T-5': { state: 'parked', held_by: 'T-4', park: { question: 'held by orchestrator: blocked by T-4' }, open_questions: 1, outside_blockers: [{ key: 'EXT-5', category: 'new' }] }, 'T-6': ready, 'T-7': ready } });
 dated('slow', 3800, { hours: [30, 40, 50, 60, 30, 40, 50, 60, 30, 40, 50, 60], tickets: { 'S-1': ready, 'S-2': ready, 'S-3': ready, 'S-4': ready } });
 dated('zero', 3900, { workers: 0, hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { 'Z-1': ready } });
 dated('piped', 4000, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], at: Date.now(), tickets: { 'P-1': ready, 'P-2': { state: 'parked', park: { question: 'which copy?' } } } });
@@ -833,7 +833,7 @@ t('DS-166 AC10 every repo\'s Timeline stays one bar per ticket, grouped by repo'
 // ---- DS-181: the Queue views' state counts and state cells in their state's colour
 const HUE = {
   'H-1': { state: 'running', stage: '4/9' }, 'H-2': ready, 'H-3': { state: 'parked', held_by: 'H-1', park: { question: 'held by orchestrator: blocked by H-1' } },
-  'H-4': { state: 'parked', park: { question: 'which copy?' } }, 'H-5': { state: 'parked', held_by: 'H-4', park: { question: 'held by orchestrator: blocked by H-4' }, outside_blockers: [{ key: 'EXT-5', category: 'new' }] },
+  'H-4': { state: 'parked', park: { question: 'which copy?' } }, 'H-5': { state: 'parked', held_by: 'H-4', park: { question: 'held by orchestrator: blocked by H-4' }, open_questions: 1, outside_blockers: [{ key: 'EXT-5', category: 'new' }] },
   'H-6': { state: 'failed', park: { question: 'tests red' } } };
 dated('hue', 4100, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: HUE });
 const ovRow = (s, name) => lastFrame(s).find((l) => l.replace(ANSI, '').replace(/^›/, ' ').startsWith(`  ${name} `)) ?? '';
@@ -988,7 +988,7 @@ t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2
 // AC1: voicepa has two tickets parked on the user and one blocked behind them; pr-ninja has one.
 const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
-  'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
+  'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
 t('DS-187 AC1 the overview opens with how many need you, each repo\'s count, most first, then the blocked count',
   lines(NY.run('--plain').out)[0], '● 3 tickets need you  2 in voicepa · 1 in pr-ninja   1 blocked');
 const NYs = screen({ kind: 'overview', all: false }, 400);
@@ -999,7 +999,7 @@ NYs.ui.finish(0);
 // mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
 dated('mixed', 4830, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: {
   'M-1': { state: 'parked', park: { question: 'which copy?' } }, 'M-2': { ...ready, branch: 'feat/M-2-x', collides_with: 'M-5' },
-  'M-3': { state: 'parked', held_by: 'M-1', park: { question: 'held by orchestrator: blocked by M-1' }, outside_blockers: [{ key: 'EXT-3', category: 'new' }] }, 'M-4': { state: 'running', stage: '4/9' },
+  'M-3': { state: 'parked', held_by: 'M-1', park: { question: 'held by orchestrator: blocked by M-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] }, 'M-4': { state: 'running', stage: '4/9' },
   'M-5': ready, 'M-6': { state: 'parked', held_by: 'M-2', park: { question: 'held by orchestrator: blocked by M-2' } } } });
 const mixedTriage = join(I.env.HOME, '.desk-autopilot', 'acme__mixed', 'triage');
 writeFileSync(join(mixedTriage, 'M-2.json'), JSON.stringify({ ticket: 'M-2', epic: null, summary: 'M-2 title', size: 'M', lane: 'A', lane_reason: 'mechanical once read', files_in_scope: ['src/m.ts'] }));
@@ -1137,7 +1137,7 @@ t('DS-194 AC10 desk-q makes no gh call', readdirSync(I.T).includes('gh-calls'), 
 
 // ---- DS-217: a held ticket says what it waits on; one nothing will release reads as needs you or blocked.
 // hold has no merge driver, no supervisor and no merge grant; holdsup's supervisor merges green PRs;
-// holdask's supervisor runs, but merging is ask with no batch approval.
+// holdask's supervisor runs, but merging is ask with no batch approval, so it starts no merge driver.
 const check217 = (name, status) => ({ name, status, conclusion: status === 'completed' ? 'success' : null, started: ago194(5), completed: null, runner: true });
 const prAt = (pr, more = {}) => ({ state: 'done', result: { pr }, pr_status: { pr, state: 'OPEN', url: null, isDraft: false, reviewDecision: null, mergeable: 'MERGEABLE', checks: [check217('tests', 'in_progress')], at: ago194(1), ...more } });
 const mergedAt = (pr) => ({ state: 'done', result: { pr }, pr_status: { pr, state: 'MERGED', url: null, checks: [], at: ago194(1) } });
@@ -1150,16 +1150,18 @@ dated('hold', 5000, { hours: twelveHours, tickets: {
   'B-PARK': { state: 'parked', park: { question: 'which copy?' } }, 'W-5P': heldBy('B-PARK'),
   'B-RED': { state: 'failed', park: { question: 'tests red' } }, 'W-5F': heldBy('B-RED'), 'W-5N': heldBy('W-3'),
   'B-MERGED': mergedAt(170), 'W-7': heldBy('B-MERGED'),
-  'W-8': { ...heldBy('B-RUN'), outside_blockers: outside(27) },
-  'W-9': { ...heldBy('B-MERGED'), outside_blockers: outside(1, 'indeterminate') } } });
+  'W-8': { ...heldBy('B-RUN'), open_questions: 1, outside_blockers: outside(27) },
+  'W-9': { ...heldBy('B-MERGED'), open_questions: 1, outside_blockers: outside(1, 'indeterminate') },
+  'W-10': { ...heldBy('B-RUN'), open_questions: 0, outside_blockers: outside(2) } } });
 dated('holdsup', 5010, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, tickets: {
   'B-GREEN': prAt(177), 'W-2': heldBy('B-GREEN'), 'B-MERGED': mergedAt(171), 'W-6': heldBy('B-MERGED') } });
 dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
-  'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK') } });
-// desk-skills on 2026-10-24: DS-168 and DS-175 behind DS-150's draft #175, DS-180 behind DS-175, and
-// DS-168 with 27 open Jira blockers outside the batch. Merging was ask, with no supervisor.
+  'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK'), 'B-MERGED': mergedAt(172), 'W-6A': heldBy('B-MERGED'),
+  'C-1': heldBy('C-2'), 'C-2': heldBy('C-1'), 'C-3': heldBy('C-1') } });
+// Two tickets behind one draft, a third behind one of them, and one with 27 open Jira blockers outside
+// the batch still asked about. Merging is ask, with no supervisor.
 dated('skills24', 5030, { hours: twelveHours, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
-  'DS-150': prAt(175, { isDraft: true }), 'DS-168': { ...heldBy('DS-150'), outside_blockers: outside(27) },
+  'DS-150': prAt(175, { isDraft: true }), 'DS-168': { ...heldBy('DS-150'), open_questions: 1, outside_blockers: outside(27) },
   'DS-175': heldBy('DS-150'), 'DS-180': heldBy('DS-175') } });
 const repos217 = Q.loadRepos(FIXED);
 const repo217 = (name) => repos217.find((r) => r.name === name);
@@ -1183,6 +1185,11 @@ t('DS-217 AC7 every blocker merged, with no merge driver or supervisor: needs yo
 t('DS-217 AC7 its page gives the release command the pass prints', Q.ticketScreen(repo217('hold'), 'W-7', { now: FIXED }).includes(
   'Release it, in hold: node ~/.claude/desk/bin/queue.mjs set W-7 state=triaged park=null held_by=null, then node ~/.claude/desk/bin/queue.mjs front W-7.'), true);
 t('DS-217 AC8 open Jira blockers outside the batch: blocked, no start and no date, whatever its blocker does', cells217('hold', 'W-8', 4), '◌ blocked | held: 27 Jira blockers outside the batch | — | no date');
+t('DS-217 AC8 once the user confirms it can start without them, outside blockers no longer block it', cells217('hold', 'W-10'), '· waiting | behind B-RUN (running, stage 4/9)');
+t('DS-217 AC6 every blocker merged, a supervisor but no merge grant: nothing releases it, so it needs you', cells217('holdask', 'W-6A'), '◆ needs you | every blocker merged: release it');
+t('DS-217 two tickets held behind each other both need you, and one behind them waits saying so',
+  ['C-1', 'C-2', 'C-3'].map((k) => cells217('holdask', k)).join(' / '),
+  '◆ needs you | C-2 is held behind this one: release one of them / ◆ needs you | C-1 is held behind this one: release one of them / · waiting | behind C-1, which needs you');
 const w9 = Q.ticketScreen(repo217('hold'), 'W-9', { now: FIXED });
 t('DS-217 AC9 with its batch blockers merged and one outside open, the page never says every blocker is done',
   `${/Every blocker is done/.test(w9)} ${w9.includes('Held by 1 Jira blocker outside this batch, which nothing in it releases:\n  OUT-1     in progress')}`, 'false true');
@@ -1197,7 +1204,7 @@ t('DS-217 AC10 at 80 columns the key line breaks between states, never past the 
   `${k80i > 0} ${key80.slice(k80i).filter((l) => l.length > 80).length} ${key80[k80i + 1]?.startsWith('      ')}`, 'true 0 true');
 // AC10 and AC11 on the screen: each state in its colour, its meaning grey; every colour in the rows and
 // the key line at least 4.5:1 on the window and on the selected row, in the One Dark palette the
-// approved design measured (256-colour greys are fixed: 8 + 10 * (n - 232)).
+// approved design measured, docs/design/DS-227/index.html (256-colour greys are fixed: 8 + 10 * (n - 232)).
 const Hk = screen({ kind: 'repo', slug: 'acme__hold' }, 220, () => FIXED);
 Hk.output.rows = 80; Hk.output.resize();
 await sleep(20);

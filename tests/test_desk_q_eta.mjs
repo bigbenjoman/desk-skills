@@ -176,7 +176,7 @@ repo('alpha', 3100, {
     'A-4': { state: 'triaged', collides_with: 'A-3' },
     'A-5': heldBy('A-3'),
     'A-6': { state: 'parked', park: { question: 'which copy?' } },
-    'A-7': { ...heldBy('A-6'), outside_blockers: [{ key: 'EXT-7', category: 'new' }] },
+    'A-7': { ...heldBy('A-6'), open_questions: 1, outside_blockers: [{ key: 'EXT-7', category: 'new' }] },
   },
   sizes: { 'A-1': 'M', 'A-2': 'S', 'A-3': 'M', 'A-4': 'M', 'A-5': 'S', 'A-6': 'M', 'A-7': 'S' },
   history: [...range(6, (i) => ['S', 1 + i]), ...range(6, (i) => ['M', 2 + i])],

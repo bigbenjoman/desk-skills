@@ -29,7 +29,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -79,15 +79,16 @@ export function titler(titles) {
 
 // ---- reading ---------------------------------------------------------------------------------
 
-// The shown state. Blocked is held by open Jira blockers outside the batch, which nothing in it
-// releases; a held ticket is waiting when it moves without the user and needs them when it does not
-// (holdOf). A queued ticket has not been triaged yet, so it is not ready either. `ctx` is the repo's
+// The shown state. Blocked is held by open Jira blockers outside the batch while the plan's question
+// on them is open: nothing in the batch releases it, and once the user confirms it can start without
+// them it moves as any other ticket does. A held ticket is waiting when it moves without the user and
+// needs them when it does not (holdOf). A queued ticket has not been triaged yet, so it is not ready either. `ctx` is the repo's
 // holdContext; without one, nothing merges or releases by itself.
 export const shownState = (q, t, ctx = NOBODY) => stateOf(q, t, ctx, new Set());
 function stateOf(q, t, ctx, seen) {
   if (landing(t)) return 'landing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
-  if (outsideOf(t).length) return 'stuck';
+  if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return holdOf(q, t, ctx, seen).k;
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
@@ -101,15 +102,15 @@ const outsideText = (t) => { const n = outsideOf(t).length; return `held: ${n} J
 // The release the pass prints when every blocker has merged and no merge driver runs.
 const releaseCmd = (key) => `node ~/.claude/desk/bin/queue.mjs set ${key} state=triaged park=null held_by=null, then node ~/.claude/desk/bin/queue.mjs front ${key}`;
 
-// Who moves a batch on without the user: a merge driver whose process is alive, or a supervisor running
-// its passes. Either releases a ticket whose blockers merged; they merge a PR only where config §3, or
-// the batch's approval, lets them (mergeGrant). `stage` is a running ticket's stage label.
+// Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
+// merged, running now or started by a supervisor running its passes. The supervisor starts it only
+// where config §3, or the batch's approval, lets it merge (mergeGrant), so without that grant only a
+// driver already running releases. `stage` is a running ticket's stage label.
 function holdContext(r) {
-  const pid = Number((() => { try { return readFileSync(join(r.stateDir, 'merge-driver.lock.d', 'pid'), 'utf8').trim(); } catch { return ''; } })());
-  const driver = pid > 0 && (() => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } })();
-  const releases = driver || (r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
+  const driver = mergeDriverHolder(r.stateDir) != null;
   let granted = false;
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
+  const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
   return { releases, merges: releases && granted, stage };
 }
@@ -146,11 +147,20 @@ function blockerHold(q, key, b, ctx, seen) {
     return { k: 'waiting', name: pr, text: `behind ${pr}: ${green ? 'checks passed, merging' : 'checks running, merges when green'}` };
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
-  if (seen.has(b)) return { k: 'needs', name: b, text: `${b} is held behind this one: release one of them`, act: releaseCmd(key) };
+  if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: release one of them`, act: releaseCmd(key) };
   const bk = stateOf(q, bt, ctx, seen);
   const which = bt.state === 'parked' && !isHeld(bt) && !spinePark(bt) ? 'which is parked'
     : bk === 'needs' ? 'which needs you' : bk === 'failed' ? 'which failed' : bk === 'stuck' ? 'which is blocked' : null;
   return { k: 'waiting', name: b, text: which ? `behind ${b}, ${which}` : `behind ${b}` };
+}
+
+// Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
+function holdsReach(q, from, key, seen = new Set()) {
+  if (from === key) return true;
+  const ft = q.tickets?.[from];
+  if (seen.has(from) || !ft || !isHeld(ft)) return false;
+  seen.add(from);
+  return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
 }
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
@@ -1120,7 +1130,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     out.push(needsSession(t) ? `Lane C or D: open an interactive /desk-ticket ${key} session.`
       : `Answer, in ${r.name}: node ~/.claude/desk/bin/answer.mjs ${key} "…", then the orchestrator decides whether to requeue it.`);
   }
-  if (k === 'stuck') out.push('It stays blocked until those Jira tickets are done; the pass reads them again from Jira.');
+  if (k === 'stuck') out.push(`It stays blocked until those Jira tickets are done, which the pass reads again from Jira, or you confirm it can start without them (in ${r.name}: node ~/.claude/desk/bin/answer.mjs ${key} "…").`);
   if (t.park?.question || ['needs', 'stuck'].includes(k)) out.push('');
   // Headings bold; the reason and the paths are secondary, so dim.
   if (tr.lane_reason) { out.push(bold(`Why lane ${lane}`)); for (const l of wrap(tr.lane_reason, ww)) out.push(dim(l)); out.push(''); }

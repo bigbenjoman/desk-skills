@@ -1531,8 +1531,7 @@ if (!merger.driver && undrafted.length) {
 // The merge driver releases these on its next loop. Where it is not running, the release is yours:
 // queue.mjs set <TICKET> state=triaged park=null held_by=null, then queue.mjs front <TICKET>.
 // A live merge driver releases these on its next loop, so they only need you when it is not running.
-const driverPid = Number((() => { try { return readFileSync(join(STATE, 'merge-driver.lock.d', 'pid'), 'utf8').trim(); } catch { return ''; } })());
-const driverLive = (() => { if (!driverPid) return false; try { process.kill(driverPid, 0); return true; } catch { return false; } })();
+const driverLive = E.mergeDriverHolder(STATE) != null;
 for (const t of releaseDue) {
   if (driverLive) out.push(`release due: ${t.key} (every blocker merged; the merge driver releases it on its next loop)`);
   else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running: release it (queue.mjs set ${t.key} state=triaged park=null held_by=null, then queue.mjs front ${t.key})`);

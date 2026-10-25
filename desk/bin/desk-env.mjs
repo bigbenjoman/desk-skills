@@ -555,6 +555,16 @@ export function permissionOrUnset(id) {
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
+// The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
+// user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
+export function mergeDriverHolder(state) {
+  const d = join(state, 'merge-driver.lock.d');
+  if (!existsSync(d)) return null;
+  const pid = Number((() => { try { return readFileSync(join(d, 'pid'), 'utf8').trim(); } catch { return ''; } })());
+  if (pid) { try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : null; } }
+  try { return Date.now() - statSync(d).mtimeMs < 60_000 ? 'starting' : null; } catch { return null; }
+}
+
 // Whether a batch's green PRs merge without the person: config §3 autopilot-merge and pr-merge-green
 // both `yes`, or each `yes` or `ask` with the batch's Stage 3 approval (the queue's approved.merge).
 // The approval lasts one batch: queue.mjs init starts the next without it. `why` names the rows, and
