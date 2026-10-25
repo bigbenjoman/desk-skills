@@ -99,6 +99,17 @@ for (const s of SECTIONS) {
   t(`AC4 *${s}* is cited inside desk-review (${cites})`, cites >= 1, true);
   t(`AC4 *${s}* is the start of exactly one heading`, allHeadings.filter((h) => h.startsWith(s)).length, 1);
 }
+// The old file's "(Phase 7)" and "(Phase 3, item 1)" pointers stay word for word (AC2), so they
+// reach their section through the forwarding line of the phase file they name.
+const FORWARDS = [
+  ['phase-7-post.md', 'The verdict', /\(Phase 7\)/],
+  ['phase-3-find.md', 'Every seat\'s prompt', /\(Phase 3, item 1\)/],
+];
+for (const [f, s, ptr] of FORWARDS) {
+  const ptrs = phaseFiles.filter((p) => ptr.test(norm(read(p)))).length;
+  t(`AC4 the old ${ptr.source.replace(/\\/g, '')} pointers are read (${ptrs})`, ptrs >= 1, true);
+  t(`AC4 ${f} forwards to the core's *${s}*`, norm(read(f)).includes(`the core's *${s}*`), true);
+}
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
