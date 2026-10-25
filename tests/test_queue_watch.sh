@@ -97,7 +97,7 @@ out=$(cat "$T/watch.out")
 check "DS-198 AC2 quiet prints the full table once at start"                 '[ "$(tables)" = 1 ] && [[ "$out" == *"status table quiet"* ]]'
 check "DS-198 AC2 a stage step is one line: key, old stage → new stage"       '[[ "$out" == *"T-1       RUNNING stage 6/9  port 3501 → RUNNING stage 7/9  port 3501"* ]]'
 check "DS-198 AC2 a spawn-side change (a ticket added) is its own line"       '[[ "$out" == *"T-3       added → QUEUED"* ]]'
-check "DS-198 AC2 change lines carry the memory line; unchanged rows are not reprinted"'[ "$(mems)" -ge 2 ] && [ "$(grep -c "TRIAGED  T-2" "$T/watch.out")" = 1 ]'
+check "DS-198 AC2 change lines carry the memory line; unchanged rows are not reprinted" '[ "$(mems)" -ge 2 ] && [ "$(grep -c "TRIAGED  T-2" "$T/watch.out")" = 1 ]'
 
 # AC8: an unrecognised value is said once and read as full.
 setting loud
