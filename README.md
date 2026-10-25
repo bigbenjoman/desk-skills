@@ -238,6 +238,10 @@ node ~/.claude/desk/bin/supervisor.mjs status                     the agent, the
 node ~/.claude/desk/bin/supervisor.mjs uninstall                  remove it; no further passes for the repo
 ```
 
+desk-q does the same for any repo set up here, from anywhere: `desk-q <repo> supervisor on|off`, bare
+`desk-q <repo> supervisor` for its status and last log line, and `s` on a repo's row in the full
+screen (turning it off asks first; running workers finish).
+
 **`skill-eval.mjs`** runs a task set once with a skill loaded and once without it, so prose that
 only restates what the model now does by default can be found. Each task is a prompt with pass/fail
 checks on the final reply (`contains`, `absent` or `matches` a regex). Both arms run `claude -p`
