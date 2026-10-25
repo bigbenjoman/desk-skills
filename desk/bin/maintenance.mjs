@@ -5,8 +5,8 @@
 // (minutes)" with their sessions kept. Once nothing runs (or other repos' workers have been waited on
 // for DRAIN_OTHERS_MIN past the limit), one pass pulls desk-skills fast-forward and installs it, runs
 // the reboot check, and restarts the computer where config §3 machine-reboot is `yes` and the check
-// found no blocker. At `ask` (unset) it hands "ready to reboot" to the check-in digest; at `no` it
-// stops there. Spawning resumes once the window is done, or after the restart at login.
+// found no blocker. At `ask` (unset), or at `yes` with FileVault the only blocker, it hands "ready to
+// reboot" to the check-in digest; at `no` it stops there. Spawning resumes once the window is done, or after the restart at login.
 //
 // Every repo's pass calls maintenance() once a pass, and the supervisor's idle tick runs the CLI, so an
 // idle batch still gets its window. A repo with no window row follows a window another repo opened.
@@ -36,6 +36,7 @@ export const START_WITHIN_H = 6;
 export const DRAIN_OTHERS_MIN = 30;
 // A restart that has not happened this long after it was asked for did not happen.
 const RESTART_GRACE_MS = 15 * 60 * 1000;
+export const FILEVAULT_ON = 'FileVault is on: after a restart nothing runs until someone logs in';
 const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 // Phases that hold every new spawn, resumes included.
@@ -151,6 +152,9 @@ export function updateDesk(dir = sourceCheckout()) {
 // The reboot check's summary, and what stops an unattended restart: anything heavy still running (a
 // suite, a typecheck, a dev server: a session is behind it) and any worker running in another repo.
 // Uncommitted and unpushed work is on disk, so a restart keeps it; the runner is stopped first.
+// FileVault on, or not readable, blocks it too: the restarted Mac waits at the disk unlock screen, so
+// no supervisor loads until someone logs in. That one is `loginWait` as well, since the computer is
+// otherwise ready for a restart a person makes.
 export function rebootCheck({ selfQueue = null } = {}) {
   const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.binDir(), 'reboot-check.mjs')]);
   const summary = r.out.split('\n').find((l) => l.startsWith('summary: ')) ?? null;
@@ -162,7 +166,12 @@ export function rebootCheck({ selfQueue = null } = {}) {
   const o = othersRunning(selfQueue);
   if (o.running.length) blockers.push(`${o.running.length} worker(s) running in another repo (${o.running.join(', ')})`);
   blockers.push(...o.unreadable);
-  return { summary, runner: field('runner'), keep: field('keep'), blockers };
+  const fv = field('filevault');
+  const loginWait = fv === 'on' ? FILEVAULT_ON
+    : fv === 'unknown' ? 'could not tell whether FileVault is on (fdesetup status failed or is missing), so it counts as on: after a restart nothing runs until someone logs in'
+      : null;
+  if (loginWait) blockers.push(loginWait);
+  return { summary, runner: field('runner'), keep: field('keep'), blockers, loginWait };
 }
 
 const runner = (sub) => (process.env.DESK_RUNNER_CMD ? shell(`${process.env.DESK_RUNNER_CMD} ${sub}`) : run(join(E.binDir(), 'desk-runner'), [sub]));
@@ -309,15 +318,21 @@ function step(s, { dir, at, running, stop, selfQueue }) {
       lines.push(`maintenance: restarting the computer (config §3 ${key} is "yes", the reboot check found no blocker); work resumes after login`);
       return { hold: true, lines };
     }
+    // FileVault stops only a restart nobody is there for: alone, the computer is ready for one a person makes.
+    const others = c.blockers.filter((b) => b !== c.loginWait);
+    if (perm === 'yes' && c.loginWait && !others.length) {
+      note(`ready to reboot: the maintenance window drained, updated desk-skills and found no other blocker, but did not restart itself because ${c.loginWait}. Restart when it suits you, then log in`);
+      return finish(`not restarted: ${c.loginWait}; "ready to reboot" is in the next check-in`);
+    }
     if (perm === 'yes') {
       note(`not restarted: config §3 ${key} is "yes", but the reboot check found ${c.blockers.join('; ')}`);
       return finish(`not restarted: ${c.blockers.join('; ')}`);
     }
     if (perm === 'ask') {
-      note(c.blockers.length
-        ? `not ready to reboot: the maintenance window drained and updated desk-skills, but the reboot check found ${c.blockers.join('; ')}. Config §3 ${key} is "ask"`
-        : `ready to reboot: the maintenance window drained, updated desk-skills and found no blocker. Config §3 ${key} is "ask", so it did not restart: restart when it suits you`);
-      return finish(`config §3 ${key} is "ask", so no restart: "${c.blockers.length ? 'not ready to reboot' : 'ready to reboot'}" is in the next check-in`);
+      note(others.length
+        ? `not ready to reboot: the maintenance window drained and updated desk-skills, but the reboot check found ${others.join('; ')}. Config §3 ${key} is "ask"`
+        : `ready to reboot: the maintenance window drained, updated desk-skills and found no blocker. Config §3 ${key} is "ask", so it did not restart: restart when it suits you${c.loginWait ? `, then log in (${c.loginWait})` : ''}`);
+      return finish(`config §3 ${key} is "ask", so no restart: "${others.length ? 'not ready to reboot' : 'ready to reboot'}" is in the next check-in`);
     }
     return finish(`config §3 ${key} is "${perm}", so no restart`);
   }

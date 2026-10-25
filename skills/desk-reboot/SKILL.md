@@ -47,8 +47,11 @@ Two sources, in one turn:
 - **Everything else: `node ~/.claude/desk/bin/reboot-check.mjs`.** Read-only. For every configured
   repo it lists each worktree with uncommitted changes (and how many untracked) or commits on no
   remote, with counts; then the desk-runner VM (`desk-runner status`), then every heavy process
-  (`desk-env heavy`: test suites, typechecks, dev servers). Its last line is
-  `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown> keep=<loaded|none> heavy=<n>`.
+  (`desk-env heavy`: test suites, typechecks, dev servers), then FileVault (`fdesetup status`). Its
+  last line is `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown>
+  keep=<loaded|none> heavy=<n> filevault=<on|off|unknown|n/a>`. With FileVault on (or `unknown`: the
+  status could not be read), a restarted Mac waits at the disk unlock screen and nothing runs until
+  someone logs in, so say so in the report.
   `keep=loaded` means desk-runner's launchd agent is installed, and it starts a stopped or absent
   VM again within a minute, so the VM counts as running whatever its state reads. A repo whose
   root is unset or not a checkout here is printed as not checked: carry that into the report.
@@ -64,6 +67,7 @@ sessions  : <n> open besides this one · <b> busy · <w> waiting · <i> idle
 runner    : desk-runner <running | stopped | absent | unknown>[, keep agent loaded]
 heavy     : <n>
             <pid> <args>
+filevault : <on | off | unknown | n/a>[: after the restart nothing runs until you log in]
 worktrees : <r> repos, <m> worktrees · <d> with uncommitted changes · <u> with unpushed commits
             <the script's per-repo lines>
             (on disk, so a reboot keeps them; reported only)

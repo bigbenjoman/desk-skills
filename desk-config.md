@@ -207,7 +207,8 @@ worker's own worktree, every other worktree denied, toolchain allow-listed) or `
 5-hour usage limit and parks it with the reset time. At `yes` the pass reports it as paused until the
 reset, and the batch notes record each resume.
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
-puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither.
+puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
+FileVault on, `yes` does as `ask` does: a restarted Mac waits at the unlock screen until you log in.
 `worker-dependency-install`, `worker-screenshots` and `worker-local-services` are read by
 `worker-settings.mjs` when a worker spawns: anything short of `yes`, unset included, is refused to the
 worker, which parks naming the row.

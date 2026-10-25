@@ -13,6 +13,15 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mk
 # A config or repo pinned by the caller must not leak into the per-repo lookups.
 export DESK_CONFIG_ROOT="$T/cfg" DESK_CONFIG="$T/elsewhere.md" DESK_REPO_OVERRIDE=other/repo
 export DESK_RUNNER_VM=desk-reboot-test-absent DESK_RUNNER_STATE="$T/runner"
+# A fake fdesetup, so the real one on a Mac is never read: fv <on|off|fail|missing|odd>.
+fv(){ case "$1" in
+  on) export DESK_FDESETUP_CMD='echo "FileVault is On."' ;;
+  off) export DESK_FDESETUP_CMD='echo "FileVault is Off."' ;;
+  fail) export DESK_FDESETUP_CMD='echo "fdesetup: not permitted" >&2; exit 1' ;;
+  missing) export DESK_FDESETUP_CMD="$T/no-such-fdesetup status" ;;
+  odd) export DESK_FDESETUP_CMD='echo "Decryption in progress: Percent completed = 40.0"' ;;
+esac; }
+fv off
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 config(){ mkdir -p "$T/cfg/repos/$1"; printf '## 2. Paths\n| Field | Value |\n|---|---|\n%s\n' "$2" > "$T/cfg/repos/$1/config.md"; }
@@ -48,7 +57,8 @@ check "clean repo still listed with its worktree count" 'grep -qE "acme__gadgets
 check "repo with no root row reported, not skipped" 'grep -q "acme__nope: §2 Primary repo root is unset; not checked" <<< "$out"'
 check "root that is not a checkout reported" 'grep -qE "acme__gone: .*gone is not a git checkout here; not checked" <<< "$out"'
 check "runner absent" 'grep -q "^runner: absent$" <<< "$out"'
-check "summary line" 'grep -qE "^summary: dirty=1 unpushed=1 runner=absent keep=none heavy=[0-9]+$" <<< "$out"'
+check "summary line" 'grep -qE "^summary: dirty=1 unpushed=1 runner=absent keep=none heavy=[0-9]+ filevault=off$" <<< "$out"'
+check "FileVault off is reported" 'grep -q "^filevault: off$" <<< "$out"'
 check "nothing written to the dirty tree" '[ "$(git -C "$T/wt/a" status --porcelain | wc -l | tr -d " ")" = 2 ]'
 
 rm -rf "$T/cfg/repos"
@@ -61,6 +71,23 @@ printf '#!/bin/sh\necho "desk-runner: stopped (4 CPUs, 8192 MB, 50 GB disk)"\nec
 chmod +x "$T/bin/desk-runner"
 out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1); rc=$?
 check "stopped VM with its keep agent loaded says so" 'grep -q "^runner: stopped (its keep agent is loaded and starts it again within a minute)$" <<< "$out"'
-check "summary carries keep=loaded" 'grep -qE "^summary: .* runner=stopped keep=loaded heavy=[0-9]+$" <<< "$out"'
+check "summary carries keep=loaded" 'grep -qE "^summary: .* runner=stopped keep=loaded heavy=[0-9]+ filevault=off$" <<< "$out"'
+
+# FileVault: on, off, and anything that cannot be read as either counts as unknown.
+fv on; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1)
+check "DS-226 AC1 FileVault on is reported, and why it matters" 'grep -q "^filevault: on (after a restart nothing runs until someone logs in)$" <<< "$out" && grep -qE "^summary: .* filevault=on$" <<< "$out"'
+fv fail; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1)
+check "DS-226 AC4 fdesetup failing is unknown, counted as on" 'grep -q "^filevault: unknown, could not tell from fdesetup status (exit 1), so counted as on$" <<< "$out" && grep -qE "^summary: .* filevault=unknown$" <<< "$out"'
+fv missing; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1)
+check "DS-226 AC4 fdesetup missing is unknown" 'grep -q "^filevault: unknown, could not tell" <<< "$out" && grep -qE "^summary: .* filevault=unknown$" <<< "$out"'
+fv odd; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1)
+check "DS-226 a status that is neither on nor off is unknown" 'grep -q "^filevault: unknown, could not tell from fdesetup status (Decryption in progress" <<< "$out"'
+fv on; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" --filevault 2>&1); rc=$?
+check "DS-226 AC5 --filevault prints only the filevault line" '[ $rc -eq 0 ] && [ "$out" = "filevault: on (after a restart nothing runs until someone logs in)" ]'
+unset DESK_FDESETUP_CMD
+if [ "$(uname)" != Darwin ]; then
+  out=$(cd "$T" && node "$T/bin/reboot-check.mjs" --filevault 2>&1)
+  check "DS-226 off macOS FileVault is n/a, not a blocker" '[ "$out" = "filevault: n/a (not macOS)" ]'
+fi
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
