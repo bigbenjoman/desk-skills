@@ -412,7 +412,7 @@ trusted() {
 
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
-  local reason live id repo rid state have n extra rids left private rc=0
+  local reason live listed='' id repo rid state have n extra rids left private rc=0
   # A repo made public since scale gets no new slot, and its slots are drained.
   for repo in $(slot_repos); do
     [ "$(wanted "$repo")" -gt 0 ] || continue
@@ -427,7 +427,7 @@ reconcile() { # reap finished slots, drop extra idle ones, start missing ones; s
     guest_stdin sudo -n sh -c "mkdir -p /var/lib/desk-runner && cat > $SLOT_SCRIPT" < "$HERE/runner-slot.sh" \
       || die "could not copy the slot script into $VM"
     live=$(slot list) || die "could not list the runner slots in $VM"
-    live=$(trusted "$live")
+    live=$(trusted "$live"); listed=1
   else
     live=""
   fi
@@ -465,7 +465,8 @@ EOF
 $(our_runners "$repo")
 EOF
     have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
-    if [ "$n" -eq 0 ] && [ "$have" -eq 0 ] && left=$(our_runners "$repo") && [ -z "$left" ]; then
+    # Only a pass that looked in the VM can know a repo at 0 has no slot left there.
+    if [ -n "$listed" ] && [ "$n" -eq 0 ] && [ "$have" -eq 0 ] && left=$(our_runners "$repo") && [ -z "$left" ]; then
       awk -v r="$repo" '$1 != r' "$SLOTS" > "$SLOTS.new"; mv "$SLOTS.new" "$SLOTS"
       continue
     fi

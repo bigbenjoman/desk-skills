@@ -357,6 +357,13 @@ STUB_PRIVATE=false run slots
 check "a repo made public: its slots go, none start"   '[[ "$out" == *"$RP is public now"* ]] && [ ! -s "$v/slots" ] && [ ! -e "$SL" ] && ! grep -q generate-jitconfig "$T/gh.log"'
 
 run scale "$RP" 1
+run down
+run scale "$RP" 0
+check "scale to 0 with the VM down: the repo stays at 0"  '[ "$(cat "$SL")" = "$RP 0" ] && [ -s "$v/slots" ]'
+run up
+check "... and the next up reaps its slot and drops it"   '[ ! -s "$v/slots" ] && [ ! -e "$SL" ]'
+
+run scale "$RP" 1
 printf '1-1 other/repo 900 exited\n1-2 %s 9x9 exited\n' "$RP" >> "$v/slots"
 run slots
 check "rows naming another repo or a bad id: nothing deregistered" '! grep -qE "^(900|9x9)$" "$T/gh-deleted" && ! grep -qE "runners/(900|9x9)" "$T/gh.log"'
