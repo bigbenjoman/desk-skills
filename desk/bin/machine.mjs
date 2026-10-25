@@ -20,7 +20,8 @@ export const HARDWARE_KEYS = Object.freeze([
 ]);
 export const SIZING_KEYS = Object.freeze([
   'runner-possible', 'runner-vm-cpus', 'runner-vm-memory-gb', 'runner-vm-disk-gb',
-  'runner-slot-cpus', 'runner-slot-memory-gb', 'runner-slots-per-repo', 'runner-memory-reserved-gb', 'autopilot-concurrency',
+  'runner-slot-cpus', 'runner-slot-memory-gb', 'runner-slots-per-repo', 'runner-memory-reserved-gb', 'runner-idle-minutes',
+  'autopilot-concurrency',
   'memory-ceiling-gb', 'test-cap', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
 ]);
 
@@ -29,7 +30,7 @@ export const SIZING_KEYS = Object.freeze([
 export const RULES = Object.freeze({
   runnerMinMemoryGB: 32, runnerMinCores: 8, runnerMinDiskGB: 100,
   vmMemoryShare: 3 / 8, vmCpuShare: 2 / 3, vmDiskShare: 1 / 2, vmDiskMaxGB: 100,
-  slotCpus: 2, slotMemoryGB: 7, vmReserveGB: 2,
+  slotCpus: 2, slotMemoryGB: 7, vmReserveGB: 2, idleMinutes: 10,
   osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3,
   typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
 });
@@ -185,6 +186,11 @@ export function slotChosen(profile) {
   return { cpus: v('runner-slot-cpus'), memoryGB: v('runner-slot-memory-gb') };
 }
 
+// The idle timeout a profile already sets (a number of minutes, or off), kept on re-proposing; undefined when unset.
+export function idleChosen(profile) {
+  const v = String(profile?.sizing?.['runner-idle-minutes']?.value ?? '');
+  return /^(off|[0-9]{1,3})$/.test(v) ? v : undefined;
+}
 
 // How many slots of a size a VM runs at once: desk-runner enforces this (desk-env machine slot-fit)
 // and propose sizes runner-slots-per-repo by it. A slot size left unset is the rules' default.
@@ -199,7 +205,7 @@ export function slotFit(vmCpus, vmMemGB, slot = {}, r = RULES) {
 // written and kept in the profile's Why column. The runner is off by default, battery or mains: a
 // computer that meets the minimum gets one only when `runner` is set (`--runner`, or a profile that
 // already has one), so its memory is not held back from autopilot until someone opts in.
-export function propose(hw, { runner: wantRunner = false, slot = {} } = {}, r = RULES) {
+export function propose(hw, { runner: wantRunner = false, slot = {}, idle } = {}, r = RULES) {
   const mem = num(hw['memory-gb']);
   const cores = num(hw['cpu-cores']);
   const disk = num(hw['disk-free-gb']);
@@ -244,6 +250,8 @@ export function propose(hw, { runner: wantRunner = false, slot = {} } = {}, r = 
   add('runner-slots-per-repo', slots, runner
     ? `${sf.why}: ${slotCpus} CPUs and ${slotMem} GB per slot` : none);
   add('runner-memory-reserved-gb', vmMem, runner ? 'the runner VM memory' : none);
+  add('runner-idle-minutes', runner ? idle ?? r.idleMinutes : 'off', !runner ? none : idle === undefined
+    ? `stop the VM after ${r.idleMinutes} minutes with no job, which gives its memory back; off keeps it up` : 'kept from the profile');
 
   let ceiling;
   let ceilingWhy;
