@@ -174,7 +174,9 @@ t('AC5 esc leaves it on and the line goes', `${stateOf('voicepa')} ${frame().inc
 await press('s'); await press('y');
 const said = frame().find((l) => l.startsWith('voicepa: supervisor off.')) ?? '';
 t('y turns it off and says so', `${stateOf('voicepa')} ${said !== ''}`, 'none true');
-t('AC10 the result line sets no text or background colour', fg(raw().find((l) => l.startsWith('voicepa: supervisor off.')) ?? 'x'), false);
+// Found in the stripped frame, read in the raw one: a colour before the text must not hide the line.
+const at = frame().findIndex((l) => l.startsWith('voicepa: supervisor off.'));
+t('AC10 the result line sets no text or background colour', at >= 0 && !fg(raw()[at]), true);
 
 await press('\x1b[B');
 t('pr-ninja is selected', /^› pr-ninja\s/.test(frame().find((l) => l.startsWith('›')) ?? ''), true);
