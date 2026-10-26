@@ -67,7 +67,12 @@ t('AC3 the sections no reference file holds are in the core', kept.filter((h) =>
 const heading = (f, name) => lines(f).some((l) => /^#+ /.test(l) && l.replace(/^#+ /, '').startsWith(name));
 const home = (name) => files.filter((f) => heading(f, name) || norm(read(f)).includes(`**${name}`));
 t('AC4 a section name no file holds is found nowhere', home('No such section'), []);
-const reachable = (name, f) => f === 'SKILL.md' || Boolean(table.find((r) => r.file === f)?.sections.some((s) => name.startsWith(s) || s.startsWith(name)));
+// A bold lead (step 1's *Jira credentials*) is inside a section of its file, so the file being in the
+// table is enough; a heading must be one of the sections the table names beside it.
+const reachable = (name, f) => {
+  const row = table.find((r) => r.file === f);
+  return f === 'SKILL.md' || Boolean(row && (!heading(f, name) || row.sections.some((s) => name.startsWith(s) || s.startsWith(name))));
+};
 const resolves = (label, cite, name) => {
   const found = home(name);
   t(`AC4 ${label} cites ${cite}: found in exactly one desk-setup file`, found.length, 1);
