@@ -14,10 +14,11 @@ PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
 # The fake gh answers `pr view <n>` from $T/pr-<n>.json, logs each call, and fails like gh for a PR
-# with no file.
+# with no file. `run list` answers from $T/runs.json, else no runs.
 cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
+if [ "$1 $2" = "run list" ]; then cat "$GH_DIR/runs.json" 2>/dev/null || echo '[]'; exit 0; fi
 [ "$1 $2" = "pr view" ] || { echo "fake gh: unexpected $*" >&2; exit 2; }
 f="$GH_DIR/pr-$3.json"
 [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest with the number of $3. (repository.pullRequest)" >&2; exit 1; }
@@ -58,6 +59,20 @@ check "AC1 all done and none failed says so" '[ $rc -eq 0 ] && [[ "$out" == "PR 
 pr 14 OPEN $SHA1 "[$(cr test COMPLETED FAILURE 201),$(cr test COMPLETED SUCCESS 202 | sed 's/08:00/08:30/')]"
 watch_bg checks 14; wait_exit
 check "AC1 a rerun check is read by its latest run" '[ $rc -eq 0 ] && [[ "$out" == *"none failed (1 checks)"* ]]'
+
+# Every reported check done while a workflow run is still in flight: a job that `needs` another has
+# not reported yet, so the watch waits for the run.
+pr 16 OPEN $SHA1 "[$(cr 'tests (ubuntu)' COMPLETED SUCCESS 301)]"
+echo '[{"databaseId":301,"name":"tests","workflowName":"tests","status":"in_progress","conclusion":""}]' > "$T/runs.json"
+watch_bg checks 16
+sleep 0.8
+out=$(cat "$T/watch.out")
+check "AC1 a workflow run still in flight: keeps waiting" 'running && [ -z "$out" ]'
+pr 16 OPEN $SHA1 "[$(cr 'tests (ubuntu)' COMPLETED SUCCESS 301),$(cr tests COMPLETED FAILURE 301)]"
+echo '[{"databaseId":301,"name":"tests","workflowName":"tests","status":"completed","conclusion":"failure"}]' > "$T/runs.json"
+wait_exit
+check "AC1 the run done: the late check is counted and named" '[ $rc -eq 0 ] && [[ "$out" == "PR #16 checks done on 1111111: 1 of 2 failed: tests (failure)" ]]'
+rm -f "$T/runs.json"
 
 pr 15 OPEN $SHA1 "[]"
 watch_bg checks 15
