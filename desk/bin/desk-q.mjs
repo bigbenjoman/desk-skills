@@ -256,21 +256,19 @@ export function loadRepos(now = Date.now()) {
   });
 }
 
-// Whether autopilot can still move the batch: a ticket a pass can run or start.
-const hasWork = (r) => r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+// Whether the batch is not yet finished: a ticket not done, or a PR still landing.
+const unfinished = (r) => r.rows.length > 0 || r.landing.length > 0;
 
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
 // `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
-// `agent` is 'loaded' or 'off' for a handed-over batch not yet finished (a ticket not done, or a PR
-// still landing), read with one launchctl print per refresh. Off macOS there is no supervisor, so
-// every batch is a session's.
+// `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
+// print per refresh. Off macOS there is no supervisor, so every batch is a session's.
 function whoRuns(r) {
   if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null };
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
-  const open = r.rows.length > 0 || r.landing.length > 0;
-  const agent = by === 'supervisor' && open ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
+  const agent = by === 'supervisor' && unfinished(r) ?(supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
   return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent };
 }
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
@@ -897,7 +895,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 53 + QD_W)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
   if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
-  const notes = list.filter((r) => !r.error && handsOver(r) && (r.live || hasWork(r))).map(handOverNote);
+  const notes = list.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote);
   const seen = new Set();
   for (const r of repos) {
     for (const c of portClashes(r.claim, repos.map((x) => x.claim))) {
