@@ -13,7 +13,7 @@
 // After that a failed read is retried, and only MAX_MISSES in a row end the watch the same way.
 // `checks` and `head` also end on a PR that merges or closes, since what they wait on cannot follow.
 import { execFileSync } from 'node:child_process';
-import { normaliseRollup, latestPerCheck, evaluateGate, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, readRuns, FAILED } from './gate.mjs';
 
 const MAX_MISSES = 5;
 const USAGE = 'usage: pr-watch.mjs checks <n> | head <n> <sha> | merged <n> [--repo owner/name] [--interval s]';
@@ -30,19 +30,13 @@ const short = (sha) => String(sha ?? '').slice(0, 7);
 const ended = (pr) => pr.state === 'MERGED' ? `PR #${pr.number} merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ''}`
   : pr.state === 'CLOSED' ? `PR #${pr.number} closed without merging` : null;
 
-// The workflow runs on a commit: a job that `needs` another has no check until that one finishes, so
-// a run still in flight is checks still to come, as gate.mjs reads it.
-function readRuns(sha, repo) {
-  return JSON.parse(execFileSync('gh', ['run', 'list', '--repo', repo, '--commit', sha, '--limit', '100', '--json', 'databaseId,name,workflowName,status,conclusion'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }));
-}
-
-// The line to print when the wait is over, or null to keep waiting.
+// The line to print when the wait is over, or null to keep waiting. A job that `needs` another has
+// no check until that one finishes, so a workflow run still in flight is checks still to come.
 function checksDone(pr, repo) {
   const all = normaliseRollup(pr.statusCheckRollup);
   const checks = latestPerCheck(all);
   if (!checks.length || checks.some((c) => c.status !== 'completed')) return ended(pr);
-  if (evaluateGate(all, { runs: readRuns(pr.headRefOid, repo) }).pending.length) return ended(pr);
+  if (evaluateGate(all, { runs: readRuns(repo, pr.headRefOid) }).pending.length) return ended(pr);
   const failed = checks.filter((c) => FAILED.has(c.conclusion));
   const at = `PR #${pr.number} checks done on ${short(pr.headRefOid)}`;
   return failed.length
