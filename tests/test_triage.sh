@@ -188,6 +188,10 @@ check "DS-242 AC5: the challenge prompt applies AC1 to AC3" \
 check "DS-242 AC5: a lane C ticket failing AC1 is downgraded to A, ben_steps kept" \
   '[ $rc -eq 0 ] && lc_ok A && [ "$(lc .lane_original)" = C ] && [[ "$(lc .lane_reason)" == "downgraded from C at challenge: size M, only signal is two packages"* ]] && [ "$(lc ".ben_steps[0].step")" = "a cdk deploy" ]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=C STUB_EXTRA=",$STEPS" STUB_CHAL='{"verdict":"DOWNGRADE","lane":"B","reason":"only signal is a deploy","ben_steps":[{"step":"a cdk deploy","blocker":"again"},{"step":"create the IAM role","blocker":"create the role, unblocking fix-thing"},{"step":"x"}]}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-242 AC4/AC5: a step the challenge finds joins ben_steps on a downgrade, a repeat or malformed one does not" \
+  '[ $rc -eq 0 ] && P1 | grep -qF "\"ben_steps\": [{\"step\"" && lc_ok B && [ "$(lc ".ben_steps | length")" = 2 ] && [ "$(lc ".ben_steps[0].blocker")" = "deploy the stack, unblocking fix-thing" ] && [ "$(lc ".ben_steps[1].step")" = "create the IAM role" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=C STUB_EXTRA=',"lane_reason":"size L feature: split into three stages"' STUB_CHAL='{"verdict":"CONFIRM","lane":"C","reason":"size L"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-242 AC3: a confirmed L-sized lane C ticket stays C with the split it proposes" \
   '[ $rc -eq 0 ] && lc_ok C && [ "$(lc .lane_challenge.verdict)" = CONFIRM ] && [ "$(lc .lane_reason)" = "size L feature: split into three stages" ]'

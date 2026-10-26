@@ -58,7 +58,7 @@ if [ "$KIND" = work-id ] || [ "$KIND" = slug ] || [ "$KIND" = issue ]; then
 else
   [ "$TRACKER" != none ] || { echo "FAIL: '$TICKET' reads as a tracker key but config §4 Tracker is none" >&2; exit 2; }
   READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for). Its \`parent\` line names the parent and its type (\`-\` when it has none); if it has one (an epic or a story), read the parent's description with \`desk-jira get <that key>\` for context only: this ticket's own criteria are its scope"
-  RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\`. It holds the ticket (plan-batch reads its Jira links); it is not a lane signal"
+  RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\`. It is not a lane signal: plan-batch holds the ticket behind a Jira-linked blocker in the batch and asks about one outside it"
   TYPE_HINT="Jira issue type"
   STATUS_JSON='"<Jira status>"'
   ASSIGNEE_JSON='"<assignee display name, or null if unassigned>"'
@@ -237,8 +237,9 @@ The ones that have actually been got wrong, all toward over-escalation:
   signal is that goes to A or B, with the packages named in your reason.
 - **Unmerged blockers read as "more than one sitting".** Blockers hold a ticket until they merge;
   they never set its lane. A ticket whose only C signal is its blockers goes to A or B.
-- **A step only the user can take read as lane C** (the routing file's list). It goes in the
-  record's \`ben_steps\` as its own blocker ticket, and the rest of the ticket keeps its lane.
+- **A step only the user can take read as lane C** (the routing file's list). It is its own blocker
+  ticket, and the rest of the ticket keeps its lane: list each one the first pass's \`ben_steps\`
+  does not already hold in your \`ben_steps\`.
 
 Lane C stands only on its own signals: a feature sized L or XL (with no size, more than one sitting
 judged from the code), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
@@ -258,8 +259,11 @@ Write ONLY this JSON to $CHAL — no prose, no code fence:
   "verdict": "CONFIRM|DOWNGRADE|INCONCLUSIVE",
   "lane": "<the lane you land on: $LANE if CONFIRM or INCONCLUSIVE, else A|B|E>",
   "reason": "<one or two sentences. On DOWNGRADE, name the trigger that does not fire and list the files. On CONFIRM, name the trigger that does, and for each 'new' thing say whether an existing pattern was found. On INCONCLUSIVE, say what you could not check.>",
-  "failed_reads": ["<each read you needed that failed, as the command or path and why, e.g. 'git show $BASE:src/x.ts: path not in $BASE'; [] when none did>"]
+  "failed_reads": ["<each read you needed that failed, as the command or path and why, e.g. 'git show $BASE:src/x.ts: path not in $BASE'; [] when none did>"],
+  "ben_steps": [{"step": "<a step only the user can take that the first pass did not record>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}]
 }
+
+ben_steps is [] when there is no such step.
 CHALLENGE_END
 
   cd "$MAIN"
@@ -286,6 +290,14 @@ if (!fs.existsSync(chal)) {
   catch (e) { d.lane_challenge = { verdict: 'UNAVAILABLE', reason: `unreadable challenge record (${e.message}); first-pass lane kept` }; }
   if (c) {
     const reason = String(c.reason ?? '').trim();
+    // A person-only step the challenge found joins the record whatever the verdict: it is not a lane
+    // signal, and a downgrade on it must not drop it. Malformed entries are ignored.
+    const have = new Set((d.ben_steps ?? []).map((s) => s.step.trim()));
+    const found = (Array.isArray(c.ben_steps) ? c.ben_steps : [])
+      .filter((s) => s && typeof s.step === 'string' && s.step.trim() && typeof s.blocker === 'string' && s.blocker.trim())
+      .filter((s) => !have.has(s.step.trim()) && have.add(s.step.trim()))
+      .map((s) => ({ step: s.step.trim(), blocker: s.blocker.trim() }));
+    if (found.length) d.ben_steps = [...(d.ben_steps ?? []), ...found];
     // A challenge that could not read the code has not checked the lane, whatever verdict it wrote:
     // any failed read makes it INCONCLUSIVE, and the first-pass lane stays, marked unchecked.
     const failedReads = (Array.isArray(c.failed_reads) ? c.failed_reads : []).map((x) => String(x).trim()).filter(Boolean);

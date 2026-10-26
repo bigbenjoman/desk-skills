@@ -924,8 +924,8 @@ The over-escalations that have actually happened, all named in the challenge pro
   what runs.
 - **Spanning more than one package read as lane C.** At size M or smaller it is one sitting: lane A
   or B, with the packages named.
-- **Unmerged blockers read as "more than one sitting".** They hold the ticket (plan-batch's holds on
-  its Jira links) and never set its lane.
+- **Unmerged blockers read as "more than one sitting".** They never set its lane: plan-batch holds the
+  ticket behind a Jira-linked blocker in the batch and asks about one outside it.
 - **A step only the user can take read as lane C** (`desk-ticket-routing.md`'s list: a production
   migration, a deploy, an IAM role or third-party app, a sign-off, a credential). Triage records it
   in `ben_steps` with a proposed blocker ticket, the plan shows it as `your step`, and the rest of the

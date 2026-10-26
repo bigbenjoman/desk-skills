@@ -32,8 +32,8 @@ Ties break toward the cheaper lane, then state the doubt.
 
 - **Spanning more than one app or package of a monorepo**, at size M or smaller. That is still one
   sitting: lane A or B, with the packages named in the lane reason.
-- **Blockers that have not merged.** They hold the ticket until they merge (in a batch, as holds on
-  the queue); they do not make it more than one sitting and do not change its lane.
+- **Blockers that have not merged.** They hold the ticket until they merge (in a batch, plan-batch
+  holds it behind a linked blocker it runs, and asks about one it does not); they do not make it more than one sitting and do not change its lane.
 - **A step only the user can take** (the list below). It becomes its own blocker ticket, and the rest
   of the ticket keeps the lane it would otherwise get.
 
