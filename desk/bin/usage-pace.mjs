@@ -31,12 +31,9 @@ export function pacingSetting(raw = E.configValue('usage-pacing')) {
   return { bad: `config §3b "${ROW()}" is "${raw}" — want a number of percentage points, or \`off\`` };
 }
 
-// The 7-day figures in one log's text: every top-level rate_limit_event that carries them, as
-// { utilization, resetsAt }. The same text inside a tool call or its result is not this worker's usage.
-export const sevenDayEvents = (text) => windowEvents(text).map((e) => e.seven_day).filter(Boolean);
-
 // Both windows in one log's text: each top-level rate_limit_event as { five_hour, seven_day }, each
-// window { utilization, resetsAt } or null when the event lacks it.
+// window { utilization, resetsAt } or null when the event lacks it. The same text inside a tool call
+// or its result is not this worker's usage.
 export const WINDOWS = ['five_hour', 'seven_day'];
 export function windowEvents(text) {
   const out = [];

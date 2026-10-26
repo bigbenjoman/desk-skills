@@ -101,6 +101,13 @@ t('AC4 at 85% or over they are red, pace hold or not', [colours(win(0.85)), colo
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
 t('AC5 ahead of weekly pace, the line ends with the note', home().endsWith('Fri 15:00  ▲ ahead of pace: no new workers until it slows'), true);
 t('AC3 and the 7-day bar is amber at 40%', colours(win(0.4), true), '33/33');
+// The hold is a pass's, which reads worker logs alone: the same reading from a probe claims none.
+rmSync(join(env.HOME, '.desk-autopilot', 'acme__solo', 'logs'), { recursive: true, force: true });
+mkdirSync(env.DESK_USAGE_DIR, { recursive: true });
+writeFileSync(P.probeLog(), `${event([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)])}\n`);
+utimesSync(P.probeLog(), (FIXED - MIN) / 1000, (FIXED - MIN) / 1000);
+t('AC5 a probe reading ahead of pace, with no worker log, claims no hold: a pass would not hold', home(), '5h ██········ 20% 11:20 · 7d ████······ 40% Fri 15:00');
+rmSync(env.DESK_USAGE_DIR, { recursive: true, force: true });
 
 // ---- AC6: a window whose reset time has passed reads 0% with no call
 reading([0.7, at(24, 8, 20)], [0.6, at(25, 15, 0)]);
@@ -129,16 +136,20 @@ const calls = () => readFileSync(join(T, 'calls'), 'utf8').trim().split('\n');
 t('AC7 as one Haiku call', calls()[0].split('|')[1].startsWith('-p Reply with: ok --model haiku --output-format stream-json'), true);
 
 // ---- AC8: a worker running anywhere, or desk-q not open: no probe
+// The probe's real-time reading is gone and the fixture's is stale, so only the running worker stops one.
+rmSync(env.DESK_USAGE_DIR, { recursive: true, force: true });
+reading([0.17, at(24, 11, 20)], [0.6, at(25, 15, 0)], 6 * MIN);
 repo('busy', { 'B-1': 'running' });
 const S8 = screen({ kind: 'overview', all: false }, { probeMs: 20 });
 await sleep(120);
 S8.ui.finish(0);
 t('AC8 with a worker running, no probe runs', S8.probes.length, 0);
 unrepo('busy');
-rmSync(env.DESK_USAGE_DIR, { recursive: true, force: true });
+const before8 = calls().length;
 Q.run(['--plain'], { now: FIXED });
 Q.run(['--plain', 'solo'], { now: FIXED });
-t('AC8 desk-q printed rather than open runs none', existsSync(env.DESK_USAGE_DIR), false);
+await sleep(300);
+t('AC8 desk-q printed rather than open runs none', `${existsSync(join(env.DESK_USAGE_DIR, 'probe.at'))} ${calls().length - before8}`, 'false 0');
 
 // ---- AC9: never billed to an API key
 t('AC9 the probe runs with ANTHROPIC_API_KEY unset', calls()[0].split('|')[0], 'unset');

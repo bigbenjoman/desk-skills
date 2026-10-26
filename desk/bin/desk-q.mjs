@@ -38,7 +38,7 @@ import { platform, runBySetting, supervisorLoaded, supervisorRun, supervisorStat
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { pacingSetting, usagePace } from './usage-pace.mjs';
+import { pacingSetting, usagePace, newestUsage } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, PROBE_EVERY_MS } from './usage-probe.mjs';
 
 export { LIVE_MS };
@@ -886,10 +886,11 @@ function machineLine(running, cap, room, avail) {
 
 // The usage reading every header shows: the newest of both windows, how many workers run in every
 // repo here, and whether weekly pace holds new workers in any of them (usage-pace.mjs, each repo by
-// its own §3b row).
+// its own §3b row). The hold is judged on the reading a pass judges it on, worker logs alone, so the
+// header never says a pass holds when it would not.
 export function usageOf(repos, now) {
-  const reading = readUsage({ now });
-  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
+  const reading = readUsage({ now }), passReading = newestUsage({ now });
+  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: passReading, now });
   return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: repos.some((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))) };
 }
 
