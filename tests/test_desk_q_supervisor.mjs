@@ -150,7 +150,7 @@ const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const input = new PassThrough();
 Object.assign(input, { isTTY: true, setRawMode: () => {} });
 const output = { buf: '', columns: 160, rows: 24, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-const ui = Q.interactive({ input, output, start: { kind: 'overview', all: false }, exit: () => {}, refreshMs: 600000 });
+const ui = Q.interactive({ input, output, start: { kind: 'overview', all: false }, exit: () => {}, refreshMs: 600000, probeWith: async () => ({ ran: false }) });
 const raw = () => output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => l.replace(/\x1b\[J$/, '').replace(/\x1b\[K$/, ''));
 const frame = () => raw().map((l) => l.replace(ANSI, ''));
 const press = async (s) => { input.write(s); await sleep(s === '\x1b' ? 600 : 30); };

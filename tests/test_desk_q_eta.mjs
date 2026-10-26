@@ -275,7 +275,7 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const input = new PassThrough();
 Object.assign(input, { isTTY: true, setRawMode: () => {} });
 const output = { buf: '', columns: 160, rows: 40, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-const ui = Q.interactive({ input, output, start: { kind: 'repo', slug: 'acme__alpha' }, exit: () => {}, refreshMs: 600000, clock: () => FIXED });
+const ui = Q.interactive({ input, output, start: { kind: 'repo', slug: 'acme__alpha' }, exit: () => {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
 const frame = () => output.buf.split('\x1b[H').at(-1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\r\n');
 const a6 = () => frame().find((l) => /\sA-6\s/.test(l)) ?? '';
 // The note follows the tab line, under the breadcrumb.
@@ -336,7 +336,7 @@ repo('hits', 3700, { tickets: { 'X-1': { state: 'triaged' } }, sizes: { 'X-1': '
 saved('hits', [...range(5, () => false), ...range(40, (i) => i % 40 >= 9)]);
 const RATE = '78% shipped before their could-run-to time (last 40 tickets)';
 t('DS-162 AC3 (DS-218 AC8): the Timeline\'s forecast line, under the Queue\'s header, gives the hit rate',
-  Q.timelineScreen(Q.loadRepos(FIXED), 'acme__hits', { now: FIXED }).split('\n')[2].endsWith(` │ hit rate  ${RATE}`), true);
+  Q.timelineScreen(Q.loadRepos(FIXED), 'acme__hits', { now: FIXED }).split('\n')[3].endsWith(` │ hit rate  ${RATE}`), true);
 t('DS-162 AC3: and so does --plain', Q.run(['ships', 'hits', '--plain'], { now: FIXED }).split('\n').slice(0, 3).includes(RATE), true);
 
 // ---- AC4: no pass for 15 minutes stops the dates
@@ -399,8 +399,8 @@ t('DS-185 AC7: a stopped batch\'s running row still reads running in ships', /^ 
 // ---- AC5: under 10 merged estimates, no percentage
 repo('few', 3900, { tickets: { 'F-1': { state: 'triaged' } }, sizes: { 'F-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) });
 saved('few', range(9, () => true));
-const fewHead = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__few', { now: FIXED }).split('\n').slice(0, 3);
-t('DS-162 AC5: 9 merged estimates give no percentage, and say a rate needs 10', [fewHead.some((l) => l.includes('%')), fewHead[2].endsWith(' │ hit rate  none yet: 9 of the 10 saved estimates it needs')],
+const fewHead = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__few', { now: FIXED }).split('\n').slice(0, 4);
+t('DS-162 AC5: 9 merged estimates give no percentage, and say a rate needs 10', [fewHead.some((l) => l.includes('%')), fewHead[3].endsWith(' │ hit rate  none yet: 9 of the 10 saved estimates it needs')],
   [false, true]);
 
 // ==== DS-165: each epic dated as the moment its last child merges, inside the same runs.
@@ -489,7 +489,7 @@ const hist12 = range(12, (i) => ['M', 2 + (i % 5)]);
 async function epicsView(slug, raw = false) {
   const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns: 200, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-  Q.interactive({ input, output, start: { kind: 'repo', slug }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED });
+  Q.interactive({ input, output, start: { kind: 'repo', slug }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
   input.write('4');
   await new Promise((res) => setTimeout(res, 20));
   const frame = output.buf.split('\x1b[H').at(-1);
