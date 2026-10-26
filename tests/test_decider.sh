@@ -137,7 +137,7 @@ printf '\n## Answer from the user (2020-01-01T00:00:00Z)\n\nan answer from befor
 out=$(tick)
 check "AC4: once answered, a new session starts for it" '[ "$(calls)" = 2 ]'
 settle; out=$(tick)
-# DS-264: the answer reaches the session, with its time, under its item.
+# The answer reaches the session, with its time, under its item.
 P=$(grep -l "use the recorded payload" "$T"/claude.args.* | head -1)
 check "DS-264 AC1: the prompt carries the answer since the hand-over, with its time, under its item" '[ -n "$P" ] && grep -A1 "· E · parked · lane A: the spec needs a fixture$" "$P" | grep -qx "  - answered $AT: use the recorded payload" && grep -qx "    from the staging log" "$P"'
 check "DS-264 AC1: an answer from before the hand-over is left out" '! grep -q "an answer from before it was handed on" "$P"'
