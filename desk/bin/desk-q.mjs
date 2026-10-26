@@ -29,8 +29,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
-import { isHeld, waitingOnMerge, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
+import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -80,21 +80,99 @@ export function titler(titles) {
 
 // ---- reading ---------------------------------------------------------------------------------
 
-// The shown state: "parked" splits three ways with waitingOnMerge, the orchestrator's own test. A
-// queued ticket has not been triaged yet, so it is not ready either.
-export function shownState(q, t) {
+// The shown state. Blocked is held by open Jira blockers outside the batch while the plan's question
+// on them is open: nothing in the batch releases it, and once the user confirms it can start without
+// them it moves as any other ticket does. A held ticket is waiting when it moves without the user and
+// needs them when it does not (holdOf). A queued ticket has not been triaged yet, so it is not ready either. `ctx` is the repo's
+// holdContext; without one, nothing merges or releases by itself.
+export const shownState = (q, t, ctx = NOBODY) => stateOf(q, t, ctx, new Set());
+function stateOf(q, t, ctx, seen) {
   if (landing(t)) return 'landing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
-  if (isHeld(t)) return waitingOnMerge(q, t, recordedPrState(q)) ? 'waiting' : 'stuck';
+  if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
+  if (isHeld(t)) return holdOf(q, t, ctx, seen).k;
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
+}
+
+const NOBODY = { releases: false, merges: false, stage: () => null };
+const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
+// The open Jira blockers outside the batch the last pass recorded.
+const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
+const outsideText = (t) => { const n = outsideOf(t).length; return `held: ${n} Jira blocker${n === 1 ? '' : 's'} outside the batch`; };
+const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
+
+// Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
+// merged, running now or started by a supervisor running its passes. The supervisor starts it only
+// where config §3, or the batch's approval, lets it merge (mergeGrant), so without that grant only a
+// driver already running releases. `stage` is a running ticket's stage label.
+function holdContext(r) {
+  const driver = mergeDriverHolder(r.stateDir) != null;
+  let granted = false;
+  try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
+  const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
+  const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
+  return { releases, merges: releases && granted, stage };
+}
+
+// What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
+// when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
+// Behind several blockers, the first that needs the user speaks for the ticket.
+export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
+  // Neither the pass nor the merge driver releases a hold that names no blocker.
+  if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: release it', act: releaseCmd(t.key) };
+  const open = unmergedBlockers(q, t);
+  if (!open.length) {
+    if (!keysOf(t.held_by).every((p) => prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
+    return ctx.releases ? { k: 'waiting', text: 'released at the next pass' } : { k: 'needs', text: 'every blocker merged: release it', act: releaseCmd(t.key) };
+  }
+  seen.add(t.key);
+  const each = open.map((b) => blockerHold(q, t.key, b, ctx, seen));
+  seen.delete(t.key);
+  return each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
+}
+
+// One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
+function blockerHold(q, key, b, ctx, seen) {
+  const bt = q.tickets?.[b];
+  if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: release it`, act: releaseCmd(key) };
+  const n = bt.result?.pr;
+  if (bt.state === 'done') {
+    if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: release it`, act: releaseCmd(key) };
+    const ps = prStatusOf(bt), pr = `#${n}`;
+    if (ps.state === 'CLOSED') return { k: 'needs', name: pr, text: `${pr} was closed unmerged: release it`, act: releaseCmd(key) };
+    if (ps.isDraft === true) return { k: 'needs', name: pr, text: `${pr} is a draft: undraft and merge it` };
+    // The merge driver skips a conflicting PR, and nothing in the batch resolves the conflict.
+    if (ps.mergeable === 'CONFLICTING') return { k: 'needs', name: pr, text: `${pr} conflicts with its base: resolve it` };
+    // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
+    if (String(bt.merge_blocked ?? '').startsWith('merge hold:')) return { k: 'needs', name: pr, text: `${pr} is under a merge hold: merge it` };
+    if (!ctx.merges) return { k: 'needs', name: pr, text: `${pr} will not merge on its own: merge it` };
+    const failed = (ps.checks ?? []).find(checkFailed);
+    if (failed) return { k: 'needs', name: pr, text: `${pr}: ${failed.name} failed: fix or re-run it` };
+    const green = (ps.checks ?? []).length > 0 && ps.checks.every((c) => c.status === 'completed');
+    return { k: 'waiting', name: pr, text: `behind ${pr}: ${green ? 'checks passed, merging' : 'checks running, merges when green'}` };
+  }
+  if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
+  if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: release one of them`, act: releaseCmd(key) };
+  const bk = stateOf(q, bt, ctx, seen);
+  const which = bt.state === 'parked' && !isHeld(bt) && !spinePark(bt) ? 'which is parked'
+    : bk === 'needs' ? 'which needs you' : bk === 'failed' ? 'which failed' : bk === 'stuck' ? 'which is blocked' : null;
+  return { k: 'waiting', name: b, text: which ? `behind ${b}, ${which}` : `behind ${b}` };
+}
+
+// Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
+function holdsReach(q, from, key, seen = new Set()) {
+  if (from === key) return true;
+  const ft = q.tickets?.[from];
+  if (seen.has(from) || !ft || !isHeld(ft)) return false;
+  seen.add(from);
+  return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
 }
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
 const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
-const recordedPrState = (q) => (n) => Object.values(q.tickets ?? {}).find((t) => t.result?.pr === n && prStatusOf(t))?.pr_status.state ?? null;
 
 // A hold's blockers less those done with a PR that is merged. A PR the pass has not read yet is taken
 // as merged or about to be; one it recorded open (landing) or closed still holds.
@@ -157,11 +235,12 @@ export function loadRepos(now = Date.now()) {
     r.last = beat?.at ?? null;
     r.next = beat?.next ?? null;
     r.live = liveBeat(beat, now);
+    r.ctx = r.q ? holdContext(r) : NOBODY;
     const rows = Object.values(r.q?.tickets ?? {});
     // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
     // keeps its slot and has no place.
     let place = 0;
-    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t), pos: t.state === 'failed' ? null : ++place, st: rowStage(stateDir, t, r.last) }));
+    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t, r.ctx), pos: t.state === 'failed' ? null : ++place, st: rowStage(stateDir, t, r.last) }));
     r.places = place;
     // A done ticket whose PR is still open has no place and no date: only the Queue shows it.
     r.landing = rows.filter(landing).map((t) => ({ t, k: 'landing', pos: null, st: rowStage(stateDir, t, r.last) }));
@@ -262,8 +341,8 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
-  if (x.k === 'needs') return `waiting on you · ~${typical(F, x.t.key)} h once answered`;
-  if (x.k === 'stuck') return `blocked behind ${listed(unmergedBlockers(r.q, x.t))}`;
+  if (x.k === 'needs') return isHeld(x.t) ? holdOf(r.q, x.t, r.ctx).text : `waiting on you · ~${typical(F, x.t.key)} h once answered`;
+  if (x.k === 'stuck') return outsideText(x.t);
   if (x.k === 'failed') return 'failed: requeue it';
   const b = undatedBlockers(r, F, x.t);
   return b.length ? `after ${listed(b)}, which ${b.length > 1 ? 'have' : 'has'} no date` : '';
@@ -277,10 +356,11 @@ function etaFields(r, F, x, now) {
   if (F.paused) return [['Ships', [[`${capital(stoppedNote(r, now))}.`, null]]]];
   const key = x.t.key, e = F.T[key];
   if (!e) {
-    const b = x.k === 'stuck' ? unmergedBlockers(r.q, x.t) : undatedBlockers(r, F, x.t);
+    const b = undatedBlockers(r, F, x.t);
     const why = r.workers === 0 ? 'No date: workers are set to 0, so nothing starts.'
+      : x.k === 'needs' && isHeld(x.t) ? `No date until you act: ${holdOf(r.q, x.t, r.ctx).text}.`
       : x.k === 'needs' ? 'No date until you answer it. Press c to date it as if answered at the next check-in.'
-        : x.k === 'stuck' ? `No date while it is blocked behind ${listed(b)}. Unblock ${b.length > 1 ? 'them' : 'it'} to date it.`
+        : x.k === 'stuck' ? `No date while it is ${outsideText(x.t).replace('held: ', 'held by ')}.`
           : x.k === 'failed' ? 'No date: it failed. Requeue it to date it.'
             : `No date until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.`;
     return [['Ships', [[why, null]]]];
@@ -384,9 +464,11 @@ const epicIn = (r, F, key) => !!F?.epics?.[key] && r.rows.some((x) => F.of[x.t.k
 // What z cycles through on the Timeline, auto first.
 export const ZOOMS = ['auto', 'hours', 'days', 'weeks'];
 // A row's colour, as an SGR code, by its shown state; DIM and BOLD for the rails, group rows,
-// headings and secondary detail. Red is for failed only: a blocked ticket is dim.
+// headings and secondary detail. Red is for failed only: a blocked ticket is grey.
 const DIM = '2', BOLD = '1';
-const STATE_SGR = { running: '32', landing: '36', ready: '34', queued: null, waiting: '33', stuck: DIM, needs: '35', failed: '31' };
+// A fixed grey, 256-colour 247, where text must stay readable: the terminal picks dim's shade itself.
+const GREY = '38;5;247';
+const STATE_SGR = { running: '32', landing: '36', ready: '34', queued: null, waiting: '33', stuck: GREY, needs: '35', failed: '31' };
 // The Notices colours: a warning yellow, what needs the user magenta.
 const WARN = '33', YOU = '35';
 // A landing PR's cyan, and its checks: passed green, failed red.
@@ -820,7 +902,7 @@ function holdingCheck(ps, now) {
   const failed = checks.find(checkFailed);
   if (failed) return [`${failed.name} failed`, FAIL];
   const open = checks.filter((c) => c.status !== 'completed').sort((a, b) => (startedMs(a) ?? now) - (startedMs(b) ?? now));
-  if (!open.length) return checks.length ? ['all checks passed · merging', GOOD] : ['no checks reported yet', DIM];
+  if (!open.length) return checks.length ? ['all checks passed · merging', GOOD] : ['no checks reported yet', GREY];
   const c = open[0], s = startedMs(c), age = s == null ? '' : `, ${since(Math.max(0, now - s))}`;
   if (!c.runner && s != null && now - s >= NO_RUNNER_MS) return [`${runnerOf(c.name)}: no runner${age}`, WARN];
   return [`${c.name} ${c.runner ? 'running' : 'queued'}${age}`, null];
@@ -830,7 +912,7 @@ function holdingCheck(ps, now) {
 // it says when they were read, dimmed.
 function landingSegs(r, t, now) {
   const ps = prStatusOf(t);
-  if (!r.live) return [[`as of ${clock(Date.parse(ps.at))}: ${passedOf(ps)}`, DIM]];
+  if (!r.live) return [[`as of ${clock(Date.parse(ps.at))}: ${passedOf(ps)}`, GREY]];
   const hold = holdingCheck(ps, now);
   // With every check passed the count adds nothing, and the row would not fit the column.
   return [[`#${ps.pr}`, LANDING], [hold[1] === GOOD ? ' · ' : ` · ${passedOf(ps)} · `, null], hold];
@@ -870,16 +952,12 @@ export function prToOpen(r, key, sel = null) {
   return k ? { pr: r.q.tickets[k].result.pr, url: prUrl(r, r.q.tickets[k]) } : null;
 }
 
-// WHAT IT NEEDS in coloured runs. A landing blocker is named by its PR.
+// WHAT IT NEEDS in coloured runs. A held ticket says what it waits on (holdOf).
 function needSegs(r, x, now = Date.now()) {
   const { t, k } = x;
   if (k === 'landing') return landingSegs(r, t, now);
-  if (k === 'waiting' || k === 'stuck') {
-    const open = unmergedBlockers(r.q, t);
-    if (!open.length) return [['behind PRs of done tickets', null]];
-    if (open.length === 1 && prOf(r, open[0])) return [['behind ', null], [prOf(r, open[0]), LANDING], [` (${open[0]}), in CI`, null]];
-    return [[`behind ${open.map((b) => prOf(r, b) ?? b).join(', ')}`, null]];
-  }
+  if (k === 'stuck') return [[outsideText(t), null]];
+  if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? LANDING : null]);
   if (k === 'running') return [[runningStage(r, x), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`, null]];
@@ -959,11 +1037,30 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) });
   const rows = GROUPS.flatMap(([name, ks]) => {
     const g = list.filter((x) => ks.includes(x.k));
-    return g.length ? [segRow(null, [[`  ${name}`, BOLD], [` · ${g.length}`, DIM]], null), ...g.map(row)] : [];
+    return g.length ? [segRow(null, [[`  ${name}`, BOLD], [` · ${g.length}`, GREY]], null), ...g.map(row)] : [];
   });
-  const foot = !list.length ? ['  No unfinished tickets.']
-    : list.some((x) => x.t.placed) ? ['', '* placed by you: a release or requeue leaves it where it is'] : [];
+  const foot = !list.length ? ['  No unfinished tickets.'] : ['', ...stateKey(list, width)];
+  if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: a release or requeue leaves it where it is');
   return { head: fit, rows, foot };
+}
+
+// What each state means, for the key line under a Queue. Running needs no gloss.
+const MEANS = { landing: 'a PR open and merging', ready: 'starts when a worker is free', queued: 'waits for triage', waiting: 'moves by itself',
+  stuck: 'held outside this batch', needs: 'nothing moves until you act', failed: 'requeue or drop it' };
+// The key line: each state on screen in its colour, its meaning grey. Narrower than the line, it
+// breaks between states, each further line indented under the first.
+function stateKey(list, width) {
+  const entries = Object.keys(LABEL).filter((k) => list.some((x) => x.k === k))
+    .map((k) => [[LABEL[k], STATE_SGR[k]], ...(MEANS[k] ? [[`: ${MEANS[k]}`, GREY]] : [])]);
+  const len = (segs) => segs.reduce((a, [s]) => a + s.length, 0);
+  const out = [];
+  for (const e of entries) {
+    const line = out.at(-1);
+    if (!line) out.push([['key ', GREY], ['  ', null], ...e]);
+    else if (width == null || len(line) + 3 + len(e) <= width) line.push([' │ ', GREY], ...e);
+    else out.push([['      ', null], ...e]);
+  }
+  return out.map(segLine);
 }
 
 export const repoScreen = (r, opts) => joined(repoParts(r, opts));
@@ -973,7 +1070,7 @@ const logPath =(r, key) => join(r.stateDir, 'logs', `${key}.log`);
 // `jiraUrl` adds the Jira line the interactive screen opens with o.
 function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), checkin = false } = {}) {
   const t = r.q.tickets[key];
-  const k = shownState(r.q, t);
+  const k = shownState(r.q, t, r.ctx);
   const row = r.rows.find((x) => x.t.key === key) ?? r.landing.find((x) => x.t.key === key);
   const tr = triageOf(r.stateDir, key) ?? {};
   const pos = r.rows.find((x) => x.t.key === key)?.pos;
@@ -1003,13 +1100,22 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     : [['l', BOLD], [' log', null], ...(jiraUrl ? [['  ·  ', null], ['o', BOLD], [' Jira  ', null], [jiraUrl.replace(/^https?:\/\//, ''), DIM]] : [])], true);
   head.push('');
   const rows = [], out = [];
-  if (k === 'waiting' || k === 'stuck') {
+  const h = isHeld(t) ? holdOf(r.q, t, r.ctx) : null;
+  if (k === 'stuck') {
+    const n = outsideOf(t).length;
+    head.push(bold(`Held by ${n} Jira blocker${n === 1 ? '' : 's'} outside this batch, which nothing in it releases.`));
+    if (!h) out.push('');
+  }
+  if (h) {
     const open = unmergedBlockers(r.q, t);
-    head.push(!open.length ? 'Every blocker is done: it starts once the merge driver sees their PRs merged.'
-      : bold(k === 'waiting' ? 'Starts when the last of these merges:' : 'Blocked. At least one of these will never merge by itself:'));
+    head.push(!keysOf(t.held_by).length ? bold('Held behind no recorded blocker, which nothing releases.')
+      : !open.length ? (h.k === 'needs' ? bold('Every blocker in this batch has merged, and no merge driver or supervisor runs to release it.')
+        : h.text === 'released at the next pass' ? 'Every blocker in this batch has merged: it is released at the next pass.'
+          : 'Every blocker in this batch has finished: the next pass reads whether their PRs merged.')
+        : bold(k === 'stuck' ? 'Also behind, in this batch:' : k === 'needs' ? `Needs you: ${h.text}. Behind:` : 'Starts when the last of these merges:'));
     for (const b of open) {
       const bt = r.q.tickets[b];
-      const bk = bt ? shownState(r.q, bt) : null;
+      const bk = bt ? shownState(r.q, bt, r.ctx) : null;
       const what = bk === 'landing' ? landingSegs(r, bt, now) : [[cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]];
       rows.push(segRow(b, [[`  ${pad(b, 10)}`, null], ...(bt ? [[pad(LABEL[bk], STATE_W), STATE_SGR[bk] ?? null], ...what]
         : [['not in this queue', null]])], bt ? { kind: 'ticket', slug: r.slug, key: b } : null));
@@ -1021,11 +1127,12 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     out.push(bold(`Checks on #${t.result.pr}:`), ...checkLines(r, t, now, width == null), '');
   }
   if (t.park?.question) out.push(`Parked: ${t.park.question}`);
-  if (k === 'needs') {
+  if (k === 'needs' && h?.act) out.push(`Release it, in ${r.name}: ${h.act}.`);
+  else if (k === 'needs' && !h) {
     out.push(needsSession(t) ? `Lane C or D: open an interactive /desk-ticket ${key} session.`
       : `Answer, in ${r.name}: node ~/.claude/desk/bin/answer.mjs ${key} "…", then the orchestrator decides whether to requeue it.`);
   }
-  if (k === 'stuck') out.push('Unblock the blocker first, or have the orchestrator drop this hold (orchestrator-recovery.md).');
+  if (k === 'stuck') out.push(`It stays blocked until those Jira tickets are done, which the pass reads again from Jira, or you confirm it can start without them (in ${r.name}: node ~/.claude/desk/bin/answer.mjs ${key} "…").`);
   if (t.park?.question || ['needs', 'stuck'].includes(k)) out.push('');
   // Headings bold; the reason and the paths are secondary, so dim.
   if (tr.lane_reason) { out.push(bold(`Why lane ${lane}`)); for (const l of wrap(tr.lane_reason, ww)) out.push(dim(l)); out.push(''); }
@@ -1044,7 +1151,7 @@ function nowSegs(r, row, k, t, now = Date.now()) {
   if (!row) return [[capital(k === 'stuck' ? 'blocked' : k), null]];
   if (k === 'running') return [['A worker is on it', STATE_SGR.running], [` · ${runningStage(r, row)}`, null]];
   if (k === 'landing') return [['Done, its PR in CI', LANDING], [' · ', null], ...landingSegs(r, t, now)];
-  const why = k === 'needs' && t.state === 'parked' ? 'waits for your answer' : k === 'stuck' ? `blocked ${detail(r, row)}` : k === 'failed' ? 'failed: requeue it' : detail(r, row);
+  const why = k === 'needs' && t.state === 'parked' && !isHeld(t) ? 'waits for your answer' : k === 'stuck' ? `blocked, ${detail(r, row)}` : k === 'failed' ? 'failed: requeue it' : detail(r, row);
   return [[capital(why), STATE_SGR[k] ?? null]];
 }
 
@@ -1142,7 +1249,7 @@ function moveTicket(r, key, verb, to) {
   if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
   const why = x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
-    : x.k === 'stuck' ? ` Still blocked behind ${unmergedBlockers(r.q, x.t).join(', ')}: moving it does not unblock it.`
+    : x.k === 'stuck' ? ` It is still ${outsideText(x.t).replace('held: ', 'held by ')}: moving it does not unblock it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
   return `${key} → position ${n} of ${last}, placed by you.${why}`;
 }
@@ -1295,8 +1402,9 @@ function systemOpener(url) {
 // Log text can carry a worker's own escape codes; only printable text reaches the screen.
 const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
 
-// The selected row's background: 256-colour 238, a tint that leaves each run's own colour readable.
-const SELECT_BG = '48;5;238';
+// The selected row's background: 256-colour 236, a tint dark enough that grey 247 and every state
+// colour keep 4.5:1 on it.
+const SELECT_BG = '48;5;236';
 
 // A row cut to `w` columns as `cut` would, `›` in its first column when selected, then each coloured
 // run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
@@ -1433,7 +1541,7 @@ export function interactive({
       const lines = readFileSync(p, 'utf8').split('\n');
       if (lines.at(-1) === '') lines.pop();
       const last = lines.slice(-LOG_LINES).map(printable);
-      const k = shownState(r.q, r.q.tickets[view.key]);
+      const k = shownState(r.q, r.q.tickets[view.key], r.ctx);
       return { head: [segLine([[view.key, BOLD], ['  ', null], [LABEL[k], STATE_SGR[k] ?? null]]), dim(`Last ${last.length} lines of ${p}`), ''], rows: [], foot: last, keys: '↑↓ scroll · esc back · q quit', bottom: true };
     }
     const jira = jiraUrlFor(r.slug, view.key);

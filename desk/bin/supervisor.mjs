@@ -166,13 +166,7 @@ function orchestratorHolder(state) {
     return pid && alive(pid) ? pid : null;
   } catch { return null; }
 }
-function driverHolder(state) {
-  const d = join(state, 'merge-driver.lock.d');
-  if (!existsSync(d)) return null;
-  const pid = Number((() => { try { return readFileSync(join(d, 'pid'), 'utf8').trim(); } catch { return ''; } })());
-  if (pid) return alive(pid) ? pid : null;
-  try { return Date.now() - statSync(d).mtimeMs < 60_000 ? 'starting' : null; } catch { return null; }
-}
+const driverHolder = E.mergeDriverHolder;
 
 // What runs old desk code: this agent, by the version its plist was loaded at, and the running merge
 // driver, by the version it wrote into its lock, each against the installed version. A version not

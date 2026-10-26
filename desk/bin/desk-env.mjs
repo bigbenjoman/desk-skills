@@ -530,13 +530,18 @@ export function resolve({ env, id, fallback, identity = false }) {
 // is a `no`. An id this file does not know is a bug in the caller, so it throws. With no config at
 // all it throws NoRepoConfigError: an unread grant is not a refusal.
 export function permission(id) {
-  const key = PERMISSION_KEYS[id];
-  if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
   const parsed = parseConfig();
   if (!parsed.exists) {
     throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so permission "${id}" cannot be read. Run inside the repo, or /desk-setup.`);
   }
-  const v = parsed.sections['3']?.byKey[norm(key)]?.value;
+  return permissionIn(parsed, id);
+}
+// Another repo's §3 row, by slug, read as permission() reads this repo's: no config is a `no`.
+export const repoPermission = (slug, id, root = deskConfigRoot()) => permissionIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+function permissionIn(parsed, id) {
+  const key = PERMISSION_KEYS[id];
+  if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
+  const v = parsed.sections?.['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return 'no';
   return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
 }
@@ -552,14 +557,27 @@ export function permissionOrUnset(id) {
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
+// The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
+// user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
+export function mergeDriverHolder(state) {
+  const d = join(state, 'merge-driver.lock.d');
+  if (!existsSync(d)) return null;
+  const pid = Number((() => { try { return readFileSync(join(d, 'pid'), 'utf8').trim(); } catch { return ''; } })());
+  if (pid) { try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : null; } }
+  try { return Date.now() - statSync(d).mtimeMs < 60_000 ? 'starting' : null; } catch { return null; }
+}
+// The command that releases a held ticket by hand, as the merge driver releases one whose blockers
+// merged. `queue` is how the caller names queue.mjs.
+export const releaseCommand = (key, queue = 'queue.mjs') => `${queue} set ${key} state=triaged park=null held_by=null, then ${queue} front ${key}`;
+
 // Whether a batch's green PRs merge without the person: config §3 autopilot-merge and pr-merge-green
 // both `yes`, or each `yes` or `ask` with the batch's Stage 3 approval (the queue's approved.merge).
 // The approval lasts one batch: queue.mjs init starts the next without it. `why` names the rows, and
-// how the batch answered where they are `ask`.
+// how the batch answered where they are `ask`. `perm` reads the rows: another repo's for desk-q.
 //   -> { by: 'config' | 'batch' | null, why }
 const MERGE_GRANT_ROWS = ['autopilot-merge', 'pr-merge-green'];
-export function mergeGrant(q = readQueueOrNull()) {
-  const rows = MERGE_GRANT_ROWS.map((id) => ({ key: permissionKey(id), v: permission(id) }));
+export function mergeGrant(q = readQueueOrNull(), perm = permission) {
+  const rows = MERGE_GRANT_ROWS.map((id) => ({ key: permissionKey(id), v: perm(id) }));
   const said = (list) => `config §3 ${list.map((r) => `${r.key} is "${r.v}"`).join(' and ')}`;
   if (rows.every((r) => r.v === 'yes')) return { by: 'config', why: said(rows) };
   const off = rows.filter((r) => r.v !== 'yes' && r.v !== 'ask');
