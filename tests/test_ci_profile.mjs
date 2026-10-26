@@ -87,7 +87,7 @@ t('a vercel deploy is full', placed(`on: pull_request\njobs:\n  v:\n    runs-on:
 t('needs on a chain of jobs propagates', placed(`on: pull_request\njobs:\n  a:\n    needs: b\n    runs-on: ubuntu-latest\n    steps: [{ run: 'true' }]\n  b:\n    needs:\n      - c\n    runs-on: ubuntu-latest\n    steps: [{ run: 'true' }]\n  c:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npx cypress run\n`), 'a=full@4 b=full@8 c=full@15');
 
 const own = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows/tests.yml'), 'utf8');
-t('own workflow is all light', placed(own), 'suite=light@18 tests=light@70');
+t('own workflow is all light', placed(own), 'tests=light@24');
 
 // ---- AC2: the plan gates every full job on PRs into the default branch
 const files = [{ file: 'ci.yml', text: ci }, { file: 'nightly.yml', text: nightly }, { file: 'light.yml', text: lightOnly }];

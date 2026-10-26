@@ -1,4 +1,5 @@
 // suite: desk-ticket split (a short core, and each stage's rules in its own file)
+// covers: skills/**/*.md README.md
 // tests/fixtures/desk-ticket-before-split.md is desk-ticket's SKILL.md as one file. Every heading,
 // table row and paragraph of it must still be in the core or one stage file, the core must stay
 // small, and every other skill's citation of a desk-ticket section must still find it.

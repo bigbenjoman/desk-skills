@@ -674,9 +674,17 @@ bash tests/run.sh
 
 It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
 every shell script when shellcheck is installed (it says when it is not). On macOS,
-`/bin/bash tests/run.sh` tests bash 3.2. CI runs it on Linux and macOS for every pull request.
-`run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite needs no edit
-there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
+`/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
+those suites. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
+needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
+A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
+
+CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
+(`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
+shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
+file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
+suite. Every push to main runs every suite on Linux, and every suite runs nightly on macOS under
+`/bin/bash` 3.2. While either is red an issue labelled `ci-main-red` stays open.
 
 ## Using autopilot
 

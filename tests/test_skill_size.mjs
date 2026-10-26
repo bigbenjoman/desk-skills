@@ -1,4 +1,5 @@
 // suite: skill size (every desk SKILL.md a core of 20 KB or less, and its reference files resolve)
+// covers: skills/desk-*/**
 // Every skills/desk-*/SKILL.md is at most 20,480 bytes unless it is on UNSPLIT, every
 // `references/<file>.md` a core names exists, and every file under a skill's references/ is named
 // by some file of that skill. Each check is also run on made-up skills, to prove it can fail.

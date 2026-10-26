@@ -1,0 +1,52 @@
+name: nightly macOS
+
+# The full suite on macOS under the system /bin/bash (3.2.57), the bash every Mac running desk has.
+# Pull requests run Linux only (tests.yml), so this catches what only macOS or bash 3.2 shows: a BSD
+# tool's flags, a bash 4 feature at run time. Its job has its own name, never `tests`, so a dispatch
+# writes no check the merge gate counts. ci-main-red.yml opens an issue when it fails.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-macos
+  cancel-in-progress: false
+
+jobs:
+  macos-full:
+    name: nightly macOS full suite
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - name: Warm up Python
+        # The first launch of a freshly installed Python on macOS is scanned and can take seconds;
+        # do it here so a stub's start-up wait measures the stub, not the scan.
+        run: python3 -c 'import http.server, json, urllib.parse; print("python ok")'
+      - name: Ensure jq
+        run: |
+          command -v jq >/dev/null || brew install jq
+          jq --version
+      # Run the system /bin/bash (3.2.57), not a Homebrew bash 5 the runner may put first on PATH.
+      # Scripts with `#!/usr/bin/env bash` follow PATH, so /bin/bash goes first there too.
+      - name: Use the system bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysbash"
+          ln -sf /bin/bash "$RUNNER_TEMP/sysbash/bash"
+          echo "$RUNNER_TEMP/sysbash" >> "$GITHUB_PATH"
+      - name: Run tests
+        run: |
+          bash --version | head -1
+          bash tests/run.sh

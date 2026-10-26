@@ -1,0 +1,45 @@
+declare -g -A m=()
+declare -g x=1
+local -n ref=x
+declare -n ref=x
+declare -l lower=X
+exec {fd}>/tmp/lock
+read -t 0.5 line
+echo {01..10}
+echo {1..10..2}
+shopt -s nullglob globstar
+shopt -s inherit_errexit
+[ -v FOO ]
+test -v FOO
+echo "${arr[-1]:-none}"
+echo "${#arr[-1]}"
+arr[-1]=x
+echo "${arr[ -1]}"
+echo $BASHPID
+echo $SRANDOM
+wait -p pid -n
+local -
+printf -v 'a[1]' %s x
+mapfile -t lines < f
+builtin readarray x
+x=${y^^}
+cmd |& tee f
+echo hi &>> f
+declare -A m
+x=${y,}
+echo "${v@Q}"
+typeset -u up=x
+readonly -A ro=()
+local -r -n ref2=x
+exec {lock}<"$f"
+read -r -t .25 line
+shopt -s -q autocd
+shopt -s direxpand
+[[ ! -v FOO ]]
+if test -v FOO; then :; fi
+echo ${EPOCHSECONDS}
+wait -n
+echo {a..z..2}
+coproc cat
+case $x in a) ;;& b) ;; esac
+printf '%(%F)T\n' -1

@@ -1,4 +1,5 @@
 // suite: command shapes Claude Code prompts on, in skill code blocks
+// covers: skills/**/*.md
 // Each fixture under tests/fixtures/command-shapes/ teaches one shape; the checker must name its file,
 // line and shape. Then the real skills/ tree must teach none of them.
 import { spawnSync } from 'node:child_process';

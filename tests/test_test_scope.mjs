@@ -1,4 +1,5 @@
 // suite: worker test scope and the runner's ladder reservation
+// claims: imports (repo file names below are test data, not what this suite runs)
 // What a worker tests before pushing (related tests, or the full suites when a change reaches past the
 // import graph), and the runner VM's memory held back from the autopilot ladder. Scratch repos and
 // fake tart/lsof/ps only; nothing reads this computer's VM.

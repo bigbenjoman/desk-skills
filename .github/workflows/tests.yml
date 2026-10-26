@@ -1,5 +1,9 @@
 name: tests
 
+# The one check the merge gate requires, `tests`, comes from this workflow and nothing else. It has no
+# workflow_dispatch: a dispatched run would write a passing `tests` onto whatever commit it ran on.
+# The full suite on macOS (the stock bash 3.2) runs nightly from nightly-macos.yml under another name,
+# and ci-main-red.yml opens an issue while main or the nightly run is red.
 on:
   pull_request:
   push:
@@ -15,61 +19,63 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  suite:
-    name: tests (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        # A hosted macOS minute costs about 10x a Linux one, and every PR has already passed the
-        # macOS leg before it merges, so a push to main runs Linux only.
-        event: ['${{ github.event_name }}']
-        exclude:
-          - { os: macos-latest, event: push }
-    runs-on: ${{ matrix.os }}
+  # One Linux job. A pull request runs the suites its change reaches (tests/scope_sections.mjs, which
+  # runs every suite when it cannot place a changed file); a push to main runs every suite.
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # A pull request checks out its merge commit, whose first parent is the base it merges into.
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - name: Warm up Python
-        # The first launch of a freshly installed Python on macOS is scanned and can take seconds;
-        # do it here so a stub's start-up wait measures the stub, not the scan.
-        run: python3 -c 'import http.server, json, urllib.parse; print("python ok")'
       - name: Ensure jq
         run: |
-          if ! command -v jq >/dev/null; then
-            if [ "$RUNNER_OS" = macOS ]; then brew install jq; else sudo apt-get update && sudo apt-get install -y jq; fi
-          fi
+          command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
           jq --version
-      # The macOS leg exists to catch bash 3.2 regressions, so it must run the system /bin/bash
-      # (3.2.57), not a Homebrew bash 5 the runner may put first on PATH. Scripts with
-      # `#!/usr/bin/env bash` follow PATH, so /bin/bash goes first there too.
-      - name: Use the system bash on macOS
-        if: runner.os == 'macOS'
+      - name: Choose the suites
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
-          mkdir -p "$RUNNER_TEMP/sysbash"
-          ln -sf /bin/bash "$RUNNER_TEMP/sysbash/bash"
-          echo "$RUNNER_TEMP/sysbash" >> "$GITHUB_PATH"
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-status -M HEAD^1...HEAD
+            node tests/scope_sections.mjs --base HEAD^1 --head HEAD --github-output
+          else
+            node tests/scope_sections.mjs --full --github-output
+          fi
       # shellcheck's findings do not depend on the OS, so Linux (where it is preinstalled) requires it.
-      - name: Require shellcheck on Linux
-        if: runner.os == 'Linux'
+      - name: Require shellcheck
         run: |
           shellcheck --version | head -2
           echo DESK_REQUIRE_SHELLCHECK=1 >> "$GITHUB_ENV"
+      # The stock macOS bash (3.2.57) in Docker: `bash -n`, and a scan for bash 4+ features that parse
+      # in 3.2 but fail when run, over the changed shell scripts and those the chosen suites run.
+      - name: Shell scripts under bash 3.2
+        env:
+          SHELLS: ${{ steps.scope.outputs.shells }}
+        run: |
+          # shellcheck disable=SC2086  # repo paths, one per word
+          bash tests/bash32_check.sh $SHELLS
       - name: Run tests
+        env:
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          REASON: ${{ steps.scope.outputs.reason }}
+          SUITES: ${{ steps.scope.outputs.suites }}
         run: |
           bash --version | head -1
-          bash tests/run.sh
-
-  # The one check named `tests`, which the merge gate requires: green only when every OS leg is.
-  tests:
-    needs: suite
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - run: '[ "${{ needs.suite.result }}" = success ]'
+          echo "scope: $SCOPE ($REASON)"
+          if [ "$SCOPE" = full ]; then
+            bash tests/run.sh
+          else
+            # shellcheck disable=SC2086  # suite file names, one per word
+            bash tests/run.sh $SUITES
+          fi
