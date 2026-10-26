@@ -47,7 +47,7 @@ it**, and only that one; a step not listed needs nothing beyond this file.
 
 | Step | Sections | Read |
 |---|---|---|
-| Writing the body, or changing what it says: its sections, the Testing bullets, attribution, a follow-up for what it leaves out | *2. The body*, *Say it simply* | `references/the-body.md` |
+| Writing the body, or changing what it says: its sections, the Testing bullets, attribution, a follow-up for what it leaves out | *2. The body*, *Decisions taken*, *Say it simply* | `references/the-body.md` |
 | Deciding whether the PR gets screenshots, then capturing them, building the image table and uploading the images | *3. Screenshots*, *A ticket with a saved canvas*, *The image table*, *Upload the images automatically* | `references/screenshots.md` |
 | Before `gh pr create` or `gh pr edit`: the PR-description checks, the title, opening the draft, undrafting and merging, and editing the body once the PR is open | *Before `gh pr create` or `gh pr edit`*, *Open it*, *Editing the body later* | `references/opening.md` |
 

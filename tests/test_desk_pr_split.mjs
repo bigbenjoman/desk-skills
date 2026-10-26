@@ -5,7 +5,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkSplit, norm, walk } from './split_check.mjs';
+import { checkSplit, checkSize, stepTable, paragraphs, norm, walk } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -21,21 +21,13 @@ const before = readFileSync(join(root, 'tests/fixtures/desk-pr-before-split.md')
 
 // AC1: the core is at most 20,480 bytes, the bound is a real one, and desk-pr is off the size
 // check's allow-list.
-const CAP = 20480;
-const within = (s) => Buffer.byteLength(s) <= CAP;
-t(`AC1 the core is at most 20,480 bytes (${Buffer.byteLength(core)} bytes)`, within(core), true);
-t('AC1 the size check fails one byte over', within('x'.repeat(CAP + 1)), false);
-t('AC1 and the file before the split would have failed it', within(before), false);
-const unsplit = readFileSync(join(root, 'tests/test_skill_size.mjs'), 'utf8').match(/^const UNSPLIT = \[([^\]]*)\]/m);
-t('AC1 the size check\'s UNSPLIT list is read', Boolean(unsplit), true);
-t('AC1 desk-pr is off UNSPLIT', /'desk-pr'/.test(unsplit?.[1] ?? "'desk-pr'"), false);
+checkSize({ t, root, name: 'desk-pr', core, before });
 
 // AC2: each heading, table row and paragraph of the old file is in exactly one file, word for word.
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35 });
 
 // AC3: the core's step table names, for each step, the sections it moved and the one file to read.
-const table = [...core.matchAll(/^\| ([^|]+) \| ([^|]+) \| `references\/([\w.-]+\.md)` \|$/gm)]
-  .map((m) => ({ step: m[1], sections: [...m[2].matchAll(/\*([^*]+)\*/g)].map((x) => x[1]), file: m[3] }));
+const table = stepTable(core);
 t(`AC3 the core's step table is read (${table.length} rows)`, table.length >= 2, true);
 for (const { file } of table) t(`AC3 the table's ${file} exists and is not empty`, existsSync(join(refs, file)) && read(file).trim().length > 0, true);
 t('AC3 no step names two files', table.map((r) => r.step).filter((s, i, a) => a.indexOf(s) !== i), []);
@@ -47,7 +39,7 @@ t('AC3 and is named rather than worked from memory', norm(core).includes('stop a
 // lines of an example, not sections.
 const fenced = (text) => { let inside = false; return text.split('\n').filter((l) => { if (/^```/.test(l)) { inside = !inside; return false; } return !inside; }); };
 const oldHeadings = fenced(before).filter((l) => /^#{1,3} /.test(l));
-const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).filter((p) => !/^\|/.test(p.trimStart())).map(norm).filter(Boolean);
+const paras = paragraphs(before);
 const moved = refFiles.filter((f) => oldHeadings.some((h) => lines(f).includes(h)) || paras.some((p) => p.length > 80 && norm(read(f)).includes(p)));
 t(`AC3 the reference files with moved text are found (${moved.join(', ')})`, moved.length >= 2, true);
 t('AC3 every file with moved text is named by the step table', moved.filter((f) => !table.some((r) => r.file === f)), []);
@@ -79,7 +71,7 @@ const sources = [...['skills', 'agents', 'docs', 'desk/bin', 'bin', 'tests'].fla
   .filter((p) => existsSync(p) && !p.startsWith(join(root, 'tests/fixtures')) && p !== fileURLToPath(import.meta.url));
 // Citations that name no section of their own: what each one means.
 const ALIAS = { 'canvas table': 'A ticket with a saved canvas' };
-const count = { number: 0, name: 0, alias: 0, path: 0, inner: 0 };
+const count = { number: 0, name: 0, backtick: 0, alias: 0, path: 0, inner: 0 };
 for (const p of sources) {
   const text = norm(readFileSync(p, 'utf8'));
   const label = relative(root, p);
@@ -98,6 +90,8 @@ for (const p of sources) {
     }
     // `desk-pr`'s "Before every push"
     for (const m of text.matchAll(/desk-pr`?'s`? "([A-Z][^"]{2,60})"/g)) { count.name++; resolves(label, m[0], m[1]); }
+    // `Decisions taken` (`desk-pr`)
+    for (const m of text.matchAll(/`([A-Z][^`]{2,60})` \(`desk-pr`\)/g)) { count.backtick++; resolves(label, m[0], m[1]); }
     // desk-pr's canvas table
     for (const m of text.matchAll(/desk-pr`?'s (canvas table)\b/g)) { count.alias++; resolves(label, m[0], ALIAS[m[1]]); }
     // desk-pr/references/screenshot-surfaces.md
@@ -117,6 +111,7 @@ for (const p of sources) {
 }
 t(`AC4 the citations by section number were read (${count.number})`, count.number >= 3, true);
 t(`AC4 the citations by section name were read (${count.name})`, count.name >= 2, true);
+t(`AC4 the citations by a section name in backticks were read (${count.backtick})`, count.backtick >= 3, true);
 t(`AC4 the citations of desk-pr's canvas table were read (${count.alias})`, count.alias >= 2, true);
 t(`AC4 the citations by path were read (${count.path})`, count.path >= 5, true);
 t(`AC4 desk-pr's own citations of its sections were read (${count.inner})`, count.inner >= 1, true);
