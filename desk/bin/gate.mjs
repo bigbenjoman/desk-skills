@@ -282,10 +282,10 @@ function loadFlaky(E) {
   if (errors.length) throw new Error(`config §4 Known flaky checks does not parse: ${errors.join(', ')} (want \`<check>: <glob> [<glob>…]\`, one span per check, or \`none\`). Run /desk-setup`);
   return flaky;
 }
-const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+export const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 // The workflow runs on a commit, in the shape evaluateGate reads. Throws when gh cannot list them.
-export const readRuns = (repo, sha, run = gh) =>
-  JSON.parse(run(['run', 'list', '--repo', repo, '--commit', sha, '--limit', '100', '--json', 'databaseId,name,workflowName,status,conclusion']));
+export const readRuns = (repo, sha) =>
+  JSON.parse(gh(['run', 'list', '--repo', repo, '--commit', sha, '--limit', '100', '--json', 'databaseId,name,workflowName,status,conclusion']));
 
 if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);

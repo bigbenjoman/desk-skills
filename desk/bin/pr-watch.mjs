@@ -12,19 +12,14 @@
 // A PR that cannot be read at start (no such PR, gh signed out) prints the error once and exits 1.
 // After that a failed read is retried, and only MAX_MISSES in a row end the watch the same way.
 // `checks` and `head` also end on a PR that merges or closes, since what they wait on cannot follow.
-import { execFileSync } from 'node:child_process';
-import { normaliseRollup, latestPerCheck, evaluateGate, readRuns, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, readRuns, gh } from './gate.mjs';
 
 const MAX_MISSES = 5;
 const USAGE = 'usage: pr-watch.mjs checks <n> | head <n> <sha> | merged <n> [--repo owner/name] [--interval s]';
 
 const ghError = (e) => (String(e?.stderr ?? '').trim() || String(e?.message ?? e)).split('\n')[0];
 
-function readPr(n, repo) {
-  const out = execFileSync('gh', ['pr', 'view', n, '--repo', repo, '--json', 'number,state,headRefOid,mergedAt,statusCheckRollup'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
-  return JSON.parse(out);
-}
+const readPr = (n, repo) => JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json', 'number,state,headRefOid,mergedAt,statusCheckRollup']));
 
 const short = (sha) => String(sha ?? '').slice(0, 7);
 const ended = (pr) => pr.state === 'MERGED' ? `PR #${pr.number} merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ''}`
@@ -36,8 +31,8 @@ function checksDone(pr, repo) {
   const all = normaliseRollup(pr.statusCheckRollup);
   const checks = latestPerCheck(all);
   if (!checks.length || checks.some((c) => c.status !== 'completed')) return ended(pr);
-  if (evaluateGate(all, { runs: readRuns(repo, pr.headRefOid) }).pending.length) return ended(pr);
-  const failed = checks.filter((c) => FAILED.has(c.conclusion));
+  const { pending, failing: failed } = evaluateGate(all, { runs: readRuns(repo, pr.headRefOid) });
+  if (pending.length) return ended(pr);
   const at = `PR #${pr.number} checks done on ${short(pr.headRefOid)}`;
   return failed.length
     ? `${at}: ${failed.length} of ${checks.length} failed: ${failed.map((c) => `${c.name} (${c.conclusion})`).join(', ')}`
