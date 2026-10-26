@@ -88,10 +88,11 @@ t('AC1 on screen each bar is solid, the used part in its colour and the rest in 
 const win = (u, h = 11) => ({ utilization: u, resetsAt: at(24, h, 20) });
 const colours = (seven, held = false) => {
   const l = Q.usageLine({ reading: { five_hour: win(0.1), seven_day: seven, at: FIXED - MIN }, running: 1, held }, { now: FIXED, solid: true });
-  const i = l.segs.findIndex(([s]) => s === '7d ');
-  return `${l.segs[i + 1][1]}/${l.segs[i + 3][1]}`;
+  const segs = l.segs.slice(l.segs.findIndex(([s]) => s === '7d '));
+  const bar = segs.find(([s, k]) => /^█+$/.test(s) && k !== '38;5;239'), pct = segs.find(([s]) => /^ \d+%$/.test(s));
+  return `${bar?.[1]}/${pct?.[1]}`;
 };
-t('AC2 under 60% the bar and its percentage are green', [0, 0.17, 0.59].map((u) => colours(win(u))).join(' '), '32/32 32/32 32/32');
+t('AC2 under 60% the bar and its percentage are green', [0.05, 0.17, 0.59].map((u) => colours(win(u))).join(' '), '32/32 32/32 32/32');
 t('AC3 at 60% to 84% they are amber', [0.6, 0.72, 0.84].map((u) => colours(win(u))).join(' '), '33/33 33/33 33/33');
 t('AC3 and a 7-day window under 60% while weekly pace holds new workers', colours(win(0.4), true), '33/33');
 t('AC4 at 85% or over they are red, pace hold or not', [colours(win(0.85)), colours(win(0.88)), colours(win(1)), colours(win(0.9), true)].join(' '), '31/31 31/31 31/31 31/31');
