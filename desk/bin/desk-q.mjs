@@ -38,8 +38,8 @@ import { platform, runBySetting, supervisorLoaded, supervisorRun, supervisorStat
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { pacingSetting, usagePace, newestUsage } from './usage-pace.mjs';
-import { readUsage, probeDue, probe, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
+import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour; "stuck" shows as blocked.
@@ -889,7 +889,8 @@ function machineLine(running, cap, room, avail) {
 // its own §3b row). The hold is judged on the reading a pass judges it on, worker logs alone, so the
 // header never says a pass holds when it would not.
 export function usageOf(repos, now) {
-  const reading = readUsage({ now }), passReading = newestUsage({ now });
+  const dirs = stateDirs({ self: usageDir() });
+  const reading = readUsage({ dirs, now }), passReading = newestUsage({ dirs, now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: passReading, now });
   return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: repos.some((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))) };
 }
