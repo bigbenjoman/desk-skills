@@ -1366,6 +1366,16 @@ never write a shell loop around `render` and `mem status` instead, which Claude 
 time. Both keep their state in the process, so re-arm one when its `Monitor` expires. Killing a
 runaway process is a call to make from the monitor, not a park.
 
+**Waiting on one PR is a watch command too.** Under `Monitor`, run
+`node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has
+completed, naming each failed one), `pr-watch.mjs head <n> <sha>` (one line with the new sha once
+the head moves off `<sha>`) or `pr-watch.mjs merged <n>` (one line once it merges or closes). Each
+exits after its line, so `checks` and `head` also end on a PR that merges or closes, and a PR that
+cannot be read prints its error once and exits non-zero. Like the queue's watch, each is one plain
+command the `autopilot-workers` rules allow, so starting it never prompts. Never wrap a loop around
+`queue.mjs render`, `gh pr checks` or `gh pr view` instead: `queue.mjs watch` is the queue's wait
+and these are a PR's.
+
 **Test runners ignore the cap unless it is on the command line**, so seed the worker-count flag
 (`--maxWorkers=<cap>`, appended **only** to a Jest or Vitest command; never to pytest or another
 runner, which rejects it) into `batch-notes.md` (the header does) and `SendMessage` any worker seen
@@ -1475,6 +1485,11 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
+
+# waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
+node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named
+node ~/.claude/desk/bin/pr-watch.mjs head 123 <sha>      # the head moved off <sha>: the new sha
+node ~/.claude/desk/bin/pr-watch.mjs merged 123          # merged or closed; every 60s, or --interval <s>
 
 # apply the ladder — top-level field (a lowering leaves concurrency_by as it is)
 node ~/.claude/desk/bin/queue.mjs set-batch concurrency=1
