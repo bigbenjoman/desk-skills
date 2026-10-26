@@ -1,0 +1,66 @@
+{
+  "tasks": [
+    {
+      "id": "body-fence",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself.\n\nRepo config: GitHub repo acme/shop, default branch main, Jira ticket keys SHOP-<n>. PR title convention `type(scope): description`. PR body sections, in order: intro, Changes, Testing, Before / after (optional). AI attribution: forbidden. Pushing: ask first. Local review command: /desk-review, clean verdict `0 P0 · 0 P1 · 0 P2`. No docs in this repo.\n\nTicket SHOP-412: search matched records on their free-text description, so anything that mentioned the term in prose surfaced.\n\ngit log --oneline origin/main..HEAD:\n3f9c2ab fix(search): SHOP-412 match name and tags only\n\ngit show --stat HEAD:\n src/server/search.ts      |  6 ++----\n src/server/search.test.ts | 18 ++++++++++++++++++\n\ngit status --porcelain: (empty)\n\nWhat the change does: the where clause in src/server/search.ts no longer ORs in description ILIKE, so it matches name and tags only. search.test.ts adds a spec that a record mentioning the term only in its description is not returned.\n\nChecks that ran: `pnpm typecheck` and `pnpm lint` pass, and the 14 specs in src/server/search.test.ts pass. `/search?q=economics` against a local copy of the staging database returns 7 results, down from 9: the two dropped were tagged Business Studies and Psychology.\n\n/desk-review ran at 3f9c2ab: 0 P0 · 0 P1 · 0 P2 across 2 files, findings refuted by codex.\n\nWrite the PR body markdown, ready to paste.",
+      "checks": [
+        { "name": "opens with desk's body marker", "contains": "<!-- desk-pr: body -->" },
+        { "name": "closes with desk's end marker", "contains": "<!-- desk-pr: end -->" },
+        { "name": "has a Changes section", "matches": "(^|\\n)### Changes" },
+        { "name": "has a Testing section", "matches": "(^|\\n)### Testing" },
+        { "name": "carries the reviewed SHA", "contains": "3f9c2ab" },
+        { "name": "gives the result count", "matches": "9\\s*(→|->|to)\\s*7|7[^\\n]{0,40}(down from|was|from)\\s*9" },
+        { "name": "no AI attribution footer", "absent": "Generated with" },
+        { "name": "has a Before / after for a result-count change", "matches": "(^|\\n)### Before / after" }
+      ]
+    },
+    {
+      "id": "stray-commit",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself.\n\nRepo config: GitHub repo acme/shop, default branch main, Jira ticket keys SHOP-<n>. PR title convention `type(scope): description`. PR body sections, in order: intro, Changes, Testing, Before / after (optional). AI attribution: forbidden. Pushing: yes. Local review command: /desk-review, clean verdict `0 P0 · 0 P1 · 0 P2`. No docs in this repo.\n\nBen says: \"just push it\".\n\nBranch feat/SHOP-415-cart-rounding, ticket SHOP-415 (cart totals round each line instead of the sum). This session has only worked on SHOP-415.\n\ngit log --oneline origin/main..HEAD:\na41c0de fix(cart): SHOP-415 round the total, not each line\n9b7e2f1 fix(auth): SHOP-399 rotate refresh tokens on use\n\ngit show --stat a41c0de:\n src/cart/total.ts      |  4 ++--\n src/cart/total.test.ts | 12 ++++++++++++\n\ngit show --stat 9b7e2f1:\n src/auth/refresh.ts | 22 +++++++++++++++-------\n\ngit status --porcelain: (empty)\n\nTypecheck, lint and the cart specs pass. /desk-review ran at a41c0de: 0 P0 · 0 P1 · 0 P2.\n\nReply with what you do next.",
+      "checks": [
+        { "name": "prints the diff review block", "contains": "DIFF REVIEW" },
+        { "name": "names the stray commit", "matches": "9b7e2f1[^\\n]{0,120}([Ss]tray|([Aa]nother|[Oo]ther|[Dd]ifferent|[Ee]arlier|[Ss]eparate) session|[Uu]nrelated|different ticket|(not|n't) (from |part of |in |made in |for )?(this (session|ticket|branch|PR)|SHOP-415|mine|ours)|outside SHOP-415|belongs? to SHOP-399|SHOP-399's|does(n't| not) belong)|([Ss]tray|([Aa]nother|[Oo]ther|[Dd]ifferent|[Ee]arlier|[Ss]eparate) session|[Uu]nrelated)[^\\n]{0,80}9b7e2f1" },
+        { "name": "does not push", "matches": "^(?![\\s\\S]*(?<!(?:n't|[Nn]ot|[Nn]ever) (?:be |been )?)(([Ww]ill|'ll|[Aa]m|'m) push(ing)?|[Pp]ushed|[Pp]ushing) (only |just )?(`a41c0de`|a41c0de(?!`))(?! (once|after|when|if|only (after|once|when|if))))[\\s\\S]*([Dd]o not push|[Dd]on't push|[Ww]on't push|[Ww]ill not push|[Ww](on't|ill not) be pushing|[Nn]ot going to push|(rather|better) not push|[Hh]a(s|ve)(n't| not) pushed|[Dd]id(n't| not) push|[Nn]ot pushing\\b|[Ss]hould(n't| not) (be )?push|[Hh]old(ing)? off (on )?push|(^|\\n|[.!?] )[*_]*(Stop|STOP|Stopp(ed|ing))[*_]*\\s*[.:!—–-]|[Ss]topp(ed|ing) (here|before push))" }
+      ]
+    },
+    {
+      "id": "artefacts",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself.\n\nRepo config: GitHub repo acme/shop, default branch main, Jira ticket keys SHOP-<n>. PR title convention `type(scope): description`. PR body sections, in order: intro, Changes, Testing, Before / after (optional). AI attribution: forbidden. Pushing: ask first. Local review command: /desk-review, clean verdict `0 P0 · 0 P1 · 0 P2`. No docs in this repo.\n\nBefore I push, check this branch is clean enough to be a PR.\n\nBranch feat/SHOP-420-cart-discounts, ticket SHOP-420 (apply percentage discounts after tax).\n\ngit log --oneline origin/main..HEAD:\nc5d81aa feat(cart): SHOP-420 apply discounts after tax\n\ngit show --stat HEAD:\n src/cart/discount.ts      |  9 +++++----\n src/cart/discount.test.ts | 20 ++++++++++++++++++++\n scripts/backfill-once.mjs | 41 +++++++++++++++++++++++++++++++++++++++++\n\nscripts/backfill-once.mjs recomputes stored discount totals on the dev database. It was run once yesterday to fix local data, and nothing calls it.\n\ngit status --porcelain:\n?? .playwright-mcp/\n?? after.png\n\nTypecheck, lint and the 20 discount specs pass. /desk-review ran at c5d81aa: 0 P0 · 0 P1 · 0 P2.\n\nReply with your findings.",
+      "checks": [
+        { "name": "prints the diff review block", "contains": "DIFF REVIEW" },
+        { "name": "takes the one-off script out", "matches": "(?<!(?:[Nn]o need to|[Nn]o reason to|[Nn]othing to|n't|[Nn]ot|[Nn]ever) )([Dd]elet|[Rr]emov|[Dd]rop|\\brm\\b|[Uu]nstag|out of)(?:[^\\n;.]|\\.(?!\\s)){0,80}backfill-once|backfill-once(?:[^\\n;.]|\\.(?!\\s)){0,120}(?<!(?:[Nn]o need to|[Nn]o reason to|[Nn]othing to|n't|[Nn]ot|[Nn]ever) )([Dd]elet|[Rr]emov|[Dd]rop|[Uu]nstag|out of (the )?(commit|PR|diff|branch))" },
+        { "name": "flags the Playwright output", "matches": "(?<!(?:[Nn]o need to|[Nn]o reason to|[Nn]othing to|n't|[Nn]ot|[Nn]ever) )([Dd]elet|[Rr]emov|\\brm\\b)(?:[^\\n;.]|\\.(?!\\s)){0,80}\\.playwright-mcp|\\.playwright-mcp(?:[^\\n;.]|\\.(?!\\s)){0,80}(?<!(?:[Nn]o need to|[Nn]o reason to|[Nn]othing to|n't|[Nn]ot|[Nn]ever) )([Dd]elet|[Rr]emov|gitignore)" },
+        { "name": "flags the loose screenshot", "matches": "(?<!(?:[Nn]o need to|[Nn]o reason to|[Nn]othing to|n't|[Nn]ot|[Nn]ever) )([Dd]elet|[Rr]emov|\\brm\\b)(?:[^\\n;.]|\\.(?!\\s)){0,80}after\\.png|after\\.png(?:[^\\n;.]|\\.(?!\\s)){0,80}(?<!(?:[Nn]o need to|[Nn]o reason to|[Nn]othing to|n't|[Nn]ot|[Nn]ever) )([Dd]elet|[Rr]emov|gitignore)" }
+      ]
+    },
+    {
+      "id": "same-vendor",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself.\n\nRepo config: GitHub repo acme/shop, default branch main, Jira ticket keys SHOP-<n>. PR title convention `type(scope): description`. PR body sections, in order: intro, Changes, Testing, Before / after (optional). AI attribution: forbidden. Pushing: ask first. Local review command: /desk-review, clean verdict `0 P0 · 0 P1 · 0 P2`. No docs in this repo.\n\nWrite only the ### Testing section of the PR body for SHOP-431 (order emails show the wrong currency symbol for GBP orders).\n\nWhat ran:\n- `pnpm typecheck` and `pnpm lint` pass.\n- The 9 specs in src/email/currency.test.ts pass, including a new one covering GBP, EUR and USD.\n- /desk-review ran at 7c1d9e0: 0 P0 · 0 P1 · 0 P2 across 3 files. codex was out of usage, so the findings were refuted by a Claude agent instead of codex.\n- The order email for a GBP order, rendered on localhost, shows £24.00 where it showed $24.00.",
+      "checks": [
+        { "name": "has a Testing section", "matches": "(^|\\n)### Testing" },
+        { "name": "carries the reviewed SHA", "contains": "7c1d9e0" },
+        { "name": "tags the refutation same-vendor", "contains": "(same-vendor)" },
+        { "name": "gives the rendered evidence", "contains": "£24.00" }
+      ]
+    },
+    {
+      "id": "decisions",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself.\n\nRepo config: GitHub repo acme/shop, default branch main, Jira ticket keys SHOP-<n>. PR title convention `type(scope): description`. PR body sections, in order: intro, Changes, Testing, Before / after (optional). AI attribution: forbidden. Pushing: ask first. Local review command: /desk-review, clean verdict `0 P0 · 0 P1 · 0 P2`. No docs in this repo.\n\nWrite the PR body markdown for SHOP-440: the profile form's submit button said \"Submit\", and the ticket asked for clearer wording without giving any.\n\ngit log --oneline origin/main..HEAD:\ne02b7f4 feat(profile): SHOP-440 label the profile form's button Save changes\n\ngit show --stat HEAD:\n src/profile/ProfileForm.tsx      | 2 +-\n src/profile/ProfileForm.test.tsx | 2 +-\n\nDuring the work you took one call on your own recommendation instead of asking: the label, \"Save changes\" over \"Save\" (a wording call).\n\nChecks: typecheck, lint and the 6 ProfileForm specs pass. /desk-review ran at e02b7f4: 0 P0 · 0 P1 · 0 P2 across 2 files, refuted by codex. Screenshots of /profile at 1280px are uploaded: before https://github.com/user-attachments/assets/1111 and after https://github.com/user-attachments/assets/2222.",
+      "checks": [
+        { "name": "opens with desk's body marker", "contains": "<!-- desk-pr: body -->" },
+        { "name": "has a Decisions taken section", "matches": "(^|\\n)### Decisions taken" },
+        { "name": "names the call and its category", "matches": "Save changes[^\\n]*wording" },
+        { "name": "shows before and after", "matches": "assets/1111[\\s\\S]*assets/2222" },
+        { "name": "no AI attribution footer", "absent": "Generated with" }
+      ]
+    },
+    {
+      "id": "staging-step",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself.\n\nRepo config: GitHub repo acme/shop, default branch main, Jira ticket keys SHOP-<n>. PR title convention `type(scope): description`. PR body sections, in order: intro, Changes, Testing, Before / after (optional). AI attribution: forbidden. Pushing: ask first. Local review command: /desk-review, clean verdict `0 P0 · 0 P1 · 0 P2`. No docs in this repo. Staging: https://staging.shop.example.\n\nWrite only the ### Testing section of the PR body for SHOP-447 (password-reset emails link to localhost when sent from staging).\n\nWhat ran: typecheck, lint and the 4 specs in src/auth/reset-link.test.ts pass; the link builder now reads APP_URL. /desk-review ran at 5aa31f2: 0 P0 · 0 P1 · 0 P2 across 2 files, refuted by codex. Staging is the only environment that sends real email (through SES), so whether the email that arrives links to https://staging.shop.example/reset can only be checked by a person on staging after this merges.",
+      "checks": [
+        { "name": "has a Testing section", "matches": "(^|\\n)### Testing" },
+        { "name": "leaves the staging check unchecked", "matches": "- \\[ \\] [^\\n]*staging\\.shop\\.example" }
+      ]
+    }
+  ]
+}
