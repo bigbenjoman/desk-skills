@@ -86,6 +86,7 @@ check "the skip says CI will run it"                  '[[ "$out" == *"skip  sh t
 # with-lock.sh --timeout on its own
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c "echo ran >> '$T/wl'" 2>&1); rc=$?
 check "with-lock --timeout: exits 75 while held, command not run" '[ $rc -eq 75 ] && [ ! -f "$T/wl" ] && [[ "$out" == *"gave up waiting for the tsc lock after 0s"* ]]'
+check "PLANTED (throwaway PR): with-lock --timeout exits 76 while held" '[ $rc -eq 76 ]'
 wait "$holder"
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 3' 2>&1); rc=$?
 check "with-lock --timeout: a free lock runs the command, keeps its status" '[ $rc -eq 3 ]'
