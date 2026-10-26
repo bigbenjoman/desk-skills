@@ -132,10 +132,17 @@ check "AC4: the session handed E on" '[ "$(calls)" = 1 ] && handed | grep -q "^E
 check "AC8: the report says what it handed on" 'grep -q "decider .*: \$0.05; settled nothing; handed to the digest E (a product call)" "$LOG"'
 check "AC4: E listed again starts no new session" '[ "$(calls)" = 1 ]'
 sleep 1
-printf '\n## Answer from the user (%s)\n\nuse the recorded payload\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/state/briefings/E.md"
+AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '\n## Answer from the user (2020-01-01T00:00:00Z)\n\nan answer from before it was handed on\n\n## Answer from the user (%s)\n\nuse the recorded payload\nfrom the staging log\n' "$AT" > "$T/state/briefings/E.md"
 out=$(tick)
 check "AC4: once answered, a new session starts for it" '[ "$(calls)" = 2 ]'
 settle; out=$(tick)
+# The answer reaches the session, with its time, under its item.
+P=$(grep -l "use the recorded payload" "$T"/claude.args.* | head -1)
+check "DS-264 AC1: the prompt carries the answer since the hand-over, with its time, under its item" '[ -n "$P" ] && grep -A1 "· E · parked · lane A: the spec needs a fixture$" "$P" | grep -qx "  - answered $AT: use the recorded payload" && grep -qx "    from the staging log" "$P"'
+check "DS-264 AC1: an answer from before the hand-over is left out" '! grep -q "an answer from before it was handed on" "$P"'
+check "DS-264 AC2/AC3: the prompt says to act on the answer, not hand the question back" 'grep -q "act on the answer, and never hand the same question back" "$P" && grep -q "pr-merge-green" "$P"'
+check "DS-264 AC4: an unanswered item gets no answer lines and no answer rule" '! grep -q "answered \|act on the answer" "$T/claude.args.0" && ! grep -q "act on the answer" "$T/claude.args.1"'
 
 # ---- AC5: one session at a time per repo ------------------------------------------------------------
 mark; rm -f "$T/state/handed.json"
