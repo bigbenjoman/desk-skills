@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statS
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -16,7 +16,11 @@ const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 // One fixture world: seven repos by default, or `repos` to override, each { port, conc, queue, beat, triage }.
 function world(overrides = {}) {
   const T = mkdtempSync(join(tmpdir(), 'desk-q-'));
-  const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), PATH: process.env.PATH };
+  // macOS, with a fake launchctl: `print gui/<uid>/<label>` exits 0 for each label in bin/loaded.
+  mkdirSync(join(T, 'bin'));
+  writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null\n', { mode: 0o755 });
+  const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
+    DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
   writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
   const held = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } });
   const repos = {
@@ -44,7 +48,9 @@ function world(overrides = {}) {
   };
   for (const [name, r] of Object.entries(repos)) if (r) put(T, env, name, r);
   const run = (...args) => { const r = spawnSync('node', [BIN, ...args], { encoding: 'utf8', env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
-  return { T, env, run };
+  // The supervisor agents launchd has loaded, by repo name.
+  const loaded = (...names) => writeFileSync(join(T, 'bin', 'loaded'), names.map((n) => `com.desk-skills.supervisor.acme__${n}\n`).join(''));
+  return { T, env, run, loaded };
 }
 
 // One repo's config, queue, heartbeats and triage records, written over whatever was there.
@@ -53,6 +59,7 @@ function put(T, env, name, r) {
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n` +
+    (r.runBy ? `| Batches run by | \`supervisor\` | \`${r.runBy}\` |\n` : '') +
     (r.jira ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${r.jira}\` |\n` : '') +
     (r.perms ? `\n## 3. Permissions\n\n| Key | Your setting |\n|---|---|\n${Object.entries(r.perms).map(([k, v]) => `| \`${k}\` | \`${v}\` |\n`).join('')}` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -95,12 +102,12 @@ t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? '')
 // ---- AC4: header gives running workers, live batches' allowance against the machine cap, free memory
 // The line under what needs you.
 const head = lines(ov.out)[1];
-t('AC4 (DS-188 AC5) header', /^desk-q · \d\d:\d\d · 2 workers running · machine cap 10 workers, \d+ free · \d+\.\d GiB free$/.test(head), true);
+t('AC4 (DS-188 AC5, DS-215 AC12) header', /^● 2 workers running │ machine cap 10 · room for \d+ more │ \d+\.\d GiB free$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
-t('AC5 port overlap line', lines(ov.out).some((l) => l.startsWith('▲ ports overlap: desk-skills + pranicuk share 3502–3503')), true);
+t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk share 3502–3503\./.test(l)), true);
 // ---- AC15: voicepa's counts, last pass and workers (and QUEUE DONE, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
-t('AC15 voicepa row: live 4m ago, run 2, ready 0, wait 1, blocked 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 16).join(' '), '● live · 4m ago 2 0 1 0 0 0 3 no history 3');
+t('AC15 voicepa row: a session 4m ago, run 2, ready 0, wait 1, blocked 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 16).join(' '), '● session · 4m ago 2 0 1 0 0 0 3 no history 3');
 
 // ---- AC7: a held ticket whose only unmerged blocker runs is waiting, behind that blocker only
 const repo = W.run('--plain', 'voicepa');
@@ -112,8 +119,8 @@ t('AC8 a prefix resolves', pre.code === 0 && pre.out === repo.out, true);
 const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
 t('AC8 state, detail and triage title', /running\s+stage 4\/9 as of \d\d:\d\d\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
-t('AC8 done count', /3 merged, not shown/.test(pre.out), true);
-t('DS-194 AC5 with no PR landing, the workers line leaves the landing part out', lines(pre.out).find((l) => l.startsWith('workers ')), 'workers 2 running of 3 (cap 5) · 3 merged, not shown');
+t('AC8 done count', /✓ 3 done, not shown/.test(pre.out), true);
+t('DS-194 AC5 (DS-215) with no PR landing, the counts line leaves the landing part out', lines(pre.out)[1], '◆ nothing needs you  ● 2 running  · 1 waiting │ ✓ 3 done, not shown');
 // ---- AC9: an ambiguous prefix refuses, naming both, with no table
 const amb = W.run('--plain', 'pr');
 t('AC9 ambiguous prefix exits non-zero', amb.code !== 0, true);
@@ -129,7 +136,7 @@ t('AC11 show leaves out the merged blocker', lines(show.out).some((l) => /^\s+VP
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);
 // ---- AC12: no arguments, output not a terminal: the overview, exit 0
 const bare = W.run();
-t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^● .*\ndesk-q · /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
+t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .*\n● \d+ workers? running │ /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
 
 // ---- AC6 (DS-217 AC5): a held ticket whose blocker is parked for its own reason waits on that blocker,
 // which is counted as needing you; open Jira blockers outside the batch are what blocks a ticket.
@@ -141,7 +148,7 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
 t('AC6 (DS-217 AC5) held behind a ticket parked for its own reason reads waiting, which is parked', /VPL-6\s+· waiting\s+behind VPL-5, which is parked\s/.test(S.run('--plain', 'voicepa').out), true);
 const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-7').out };
 t('DS-188 AC2 every screen calls the held ticket blocked, never stuck, and the overview heads its column BLOCKED',
-  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck/i.test(s)), lines(blockedViews.overview)[0].endsWith('   1 blocked'),
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck/i.test(s)), lines(blockedViews.overview)[0].endsWith(' │ ◌ 1 blocked'),
     lines(blockedViews.overview).some((l) => /^ +REPO .* BLOCKED /.test(l)), /VPL-7\s+◌ blocked\s/.test(blockedViews.queue),
     lines(blockedViews.ticket)[0].startsWith('VPL-7  ◌ blocked'), lines(blockedViews.ticket).some((l) => /^Now +Blocked, held: 2 Jira blockers outside the batch$/.test(l))]),
   '[false,false,false,true,true,true,true,true]');
@@ -172,7 +179,7 @@ const mq = qPath(M, 'voicepa');
 const topped = M.run('voicepa', 'top', 'VPL-6');
 const toppedLines = lines(topped.out);
 t('DS-116 AC8 top prints one confirmation line, then the updated table', topped.code === 0 && /^VPL-6 → position 1 of 12\b/.test(toppedLines[0])
-  && toppedLines[1] === '' && /^voicepa · batch vp/.test(toppedLines[2]) && toppedLines.slice(1).some((l) => /^\s+\*1\s+VPL-6\s/.test(l)), true);
+  && toppedLines[1] === '' && /^desk-q › voicepa · \d\d:\d\d$/.test(toppedLines[2]) && toppedLines.slice(1).some((l) => /^\s+\*1\s+VPL-6\s/.test(l)), true);
 t('DS-116 AC8 the queue has VPL-6 first, marked placed', `${unfinishedKeys(readQ(mq))[0]} ${readQ(mq).tickets['VPL-6'].placed}`, 'VPL-6 true');
 const mqBefore = readFileSync(mq, 'utf8');
 const far = M.run('voicepa', 'move', 'VPL-6', '99');
@@ -235,7 +242,12 @@ const I = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, jira: 'acme.atl
   'VPL-3': { summary: 'Long gaps', files_in_scope: Array.from({ length: 30 }, (_, i) => `src/gap-${i}.ts`) },
 } } });
 Object.assign(process.env, I.env);
+// A dark terminal theme: COLORFGBG from the shell running the suite would pick the light greys.
+delete process.env.COLORFGBG;
 const Q = await import(BIN);
+// The label grey on a dark theme, and a string made safe for a RegExp.
+const G = '\x1b[38;5;247m';
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -253,8 +265,8 @@ function screen(start, columns = 80, clock = Date.now) {
     input, output, modes, codes, opened, ui, frame,
     // A lone Esc is only told apart from an escape sequence after readline's 500ms wait.
     press: async (s) => { input.write(s); await sleep(s === '\x1b' ? 600 : 20); },
-    // The crumbs, less the parked note that follows them.
-    crumbs: () => frame()[0].split('    ')[0],
+    // The crumbs, less the time and the parked note that follow them.
+    crumbs: () => frame()[0].split('    ')[0].replace(/ · \d\d:\d\d$/, ''),
     selected: () => frame().find((l) => l.startsWith('›')) ?? '',
     // The tab drawn in reverse video on the tab line, the view shown.
     tabOn: () => /\x1b\[7m([^\x1b]+)\x1b\[27m/.exec(output.buf.split('\x1b[H').at(-1).split('\r\n')[1] ?? '')?.[1] ?? null,
@@ -404,7 +416,7 @@ put(I.T, I.env, 'pr-ninja', { port: 3200, conc: '2 / 4', beat: 1, queue: { batch
   'PN-1': { state: 'running', stage: '4/9' }, 'PN-2': { state: 'running', stage: '2/9' }, 'PN-3': { state: 'triaged', open_questions: 0 } } } });
 const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
-  lines(room)[1].endsWith(' · 4 workers running · machine cap 10 workers, 6 free · 36.6 GiB free'), true);
+  lines(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
 t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 (cap 4) · 1 ready with no free slot'), true);
 t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('5 (cap 5)'), true);
@@ -915,12 +927,12 @@ await sleep(20);
 const tp = lastFrame(Tp);
 const tpLine = (text) => tp.find((l) => l.replace(ANSI, '').startsWith(text)) ?? '';
 t('DS-186 AC1 on a ticket\'s page the state after the key is in its colour, with its glyph', tpLine('H-2  ').includes('\x1b[34m○ ready\x1b[39m'), true);
-t('DS-186 AC1 the Ships date is bold', /Ships {5}\x1b\[22m\x1b\[1m[^\x1b]+\x1b\[22m\x1b\[2m {2}could run to/.test(tpLine('Ships ')), true);
-t('DS-186 AC1 the branch, the Jira link and the file paths are dim',
-  [tpLine('Branch ').includes('\x1b[2mfeat/H-2-x'), tpLine('Open ').includes('\x1b[2macme.atlassian.net/browse/H-2'), tpLine('  src/a.ts').startsWith('\x1b[2m')].join(), 'true,true,true');
+t('DS-186 AC1 the Ships date is bold', /Ships {5}\x1b\[39m\x1b\[1m[^\x1b]+\x1b\[22m\x1b\[38;5;247m {2}could run to/.test(tpLine('Ships ')), true);
+t('DS-186 AC1 (DS-215 AC13) the branch, the Jira link and the file paths are grey',
+  [tpLine('Branch ').includes(`${G}feat/H-2-x`), tpLine('Open ').includes(`${G}acme.atlassian.net/browse/H-2`), tpLine('  src/a.ts').startsWith(G)].join(), 'true,true,true');
 t('DS-186 AC7 the ticket page\'s headings are bold', ['Why lane A', 'Files in scope'].map((p) => tpLine(p).startsWith('\x1b[1m')).join(), 'true,true');
-t('DS-186 AC7 the breadcrumb\'s last part is bold, the parts before it dim',
-  tp[0].startsWith('\x1b[2mdesk-q\x1b[22m\x1b[2m › \x1b[22m\x1b[2mhue\x1b[22m\x1b[2m › \x1b[22m\x1b[1mH-2\x1b[22m'), true);
+t('DS-186 AC7 (DS-215 AC13) the breadcrumb\'s last part is bold, the parts before it grey, then the time',
+  new RegExp(`^${esc(`${G}desk-q\x1b[39m${G} › \x1b[39m${G}hue\x1b[39m${G} › \x1b[39m\x1b[1mH-2\x1b[22m${G} · \x1b[39m`)}\\d\\d:\\d\\d`).test(tp[0]), true);
 Tp.ui.finish(0);
 const Hb = nav({ kind: 'repo', slug: 'acme__hue' });
 await sleep(20);
@@ -940,14 +952,14 @@ Lp.output.rows = 80; Lp.output.resize();
 await sleep(20);
 const passCell = (name) => coloured(ovRow(Lp, name))[0] ?? '';
 t('DS-186 AC3 LAST PASS: live in green, stopped under a day in yellow, over a day in red',
-  `${/^32:● live · \d+m ago$/.test(passCell('ontime'))} ${/^33:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^31:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
-// AC8: each ports overlap line starts ▲ and is yellow; "N tickets need you" is magenta.
+  `${/^32:● session · \d+m ago$/.test(passCell('ontime'))} ${/^33:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^31:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
+// AC8: each ports overlap note's ▲ is yellow; "N tickets need you" is bold magenta.
 const lpRaw = lastFrame(Lp);
-const overlaps = lpRaw.filter((l) => l.replace(ANSI, '').includes('ports overlap:'));
-t('DS-186 AC8 each ports overlap line starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.startsWith('\x1b[33m▲ ports overlap: '))}`, 'true true');
-t('DS-186 AC8 "N tickets need you" is magenta', lpRaw.some((l) => /^\x1b\[35m● \d+ tickets need you\x1b\[39m/.test(l)), true);
-// AC4: the QUEUE DONE notes "passes stopped" and "no history" are dim.
-t('DS-186 AC4 the QUEUE DONE notes passes stopped and no history are dim', `${ovRow(Lp, 'hours').includes('\x1b[2mpasses stopped')} ${ovRow(Lp, 'ontime').includes('\x1b[2mno history')}`, 'true true');
+const overlaps = lpRaw.filter((l) => / {2}▲ ports +\S+ \+ /.test(l.replace(ANSI, '')));
+t('DS-186 AC8 each ports overlap note starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.includes('\x1b[33m▲ ports'))}`, 'true true');
+t('DS-186 AC8 (DS-215 AC12) "N tickets need you" is bold magenta', lpRaw.some((l) => /^\x1b\[1;35m◆ \d+ tickets need you\x1b\[22;39m/.test(l)), true);
+// AC4: the QUEUE DONE notes "passes stopped" and "no history" are grey.
+t('DS-186 AC4 the QUEUE DONE notes passes stopped and no history are grey', `${ovRow(Lp, 'hours').includes(`${G}passes stopped`)} ${ovRow(Lp, 'ontime').includes(`${G}no history`)}`, 'true true');
 Lp.ui.finish(0);
 
 // AC9: the Timeline's legend names a swatch per state shown, each in its colour; Epics' swatches too.
@@ -963,13 +975,13 @@ const Le = screen({ kind: 'repo', slug: 'acme__feat' }, 160, () => FIXED);
 Le.output.rows = 80; Le.output.resize();
 await sleep(20);
 await Le.press('4');
-t('DS-186 AC9 the Epics legend\'s swatches are coloured as the bars are', lastFrame(Le).some((l) => l.startsWith('\x1b[32m■\x1b[39m done  \x1b[33m■\x1b[39m in the queue  \x1b[2m□\x1b[22m not queued yet')), true);
+t('DS-186 AC9 the Epics legend\'s swatches are coloured as the bars are', lastFrame(Le).some((l) => l.startsWith('\x1b[32m■\x1b[39m done  \x1b[33m■\x1b[39m in the queue  \x1b[38;5;247m□\x1b[39m not queued yet')), true);
 Le.ui.finish(0);
 
 // AC11: --plain and piped output carry no escape codes, and the glyphs still show.
 const plainOuts = [W.run('--plain'), W.run('--plain', 'voicepa'), W.run('--plain', 'voicepa', 'show', 'VPL-3'), I.run('ships', 'piped'), I.run('piped', 'days'), W.run()];
 t('DS-186 AC11 --plain and piped output: no escape codes', plainOuts.filter((o) => o.out.includes('\x1b')).length, 0);
-t('DS-186 AC11 and the glyphs still show', `${plainOuts[0].out.includes('● live · ')} ${plainOuts[1].out.includes('● running')} ${plainOuts[2].out.includes('· waiting')} ${plainOuts[3].out.includes('○ ready')} ${plainOuts[4].out.includes('◆ needs you')}`,
+t('DS-186 AC11 and the glyphs still show', `${plainOuts[0].out.includes('● session · ')} ${plainOuts[1].out.includes('● running')} ${plainOuts[2].out.includes('· waiting')} ${plainOuts[3].out.includes('○ ready')} ${plainOuts[4].out.includes('◆ needs you')}`,
   'true true true true true');
 
 // DS-190 AC1 and AC3: from the shell, a running ticket reads its worker's last stage marker; one with
@@ -990,7 +1002,7 @@ const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
   'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
 t('DS-187 AC1 the overview opens with how many need you, each repo\'s count, most first, then the blocked count',
-  lines(NY.run('--plain').out)[0], '● 3 tickets need you  2 in voicepa · 1 in pr-ninja   1 blocked');
+  lines(NY.run('--plain').out)[0], '◆ 3 tickets need you │ voicepa 2 · pr-ninja 1 │ ◌ 1 blocked');
 const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
 t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('● ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
@@ -1080,7 +1092,7 @@ async function landingRaw(checks, key = 'LD-1', opts) {
   const s = screen({ kind: 'repo', slug: 'acme__land' }, 140, () => NOW);
   await sleep(20);
   const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
-  const head = lastFrame(s).find((x) => x.replace(ANSI, '').startsWith('workers ')) ?? '';
+  const head = lastFrame(s).find((x) => x.replace(ANSI, '').startsWith('◆ ')) ?? '';
   s.ui.finish(0);
   return { l, head };
 }
@@ -1092,8 +1104,8 @@ t('DS-194 AC4 a running check reads its name and age', landRow(landQueue(landRep
 t('DS-194 AC4 a failed check reads failed, in red', coloured((await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }])).l).includes('31:e2e failed'), true);
 t('DS-194 AC4 every check passed reads merging, in green', coloured((await landingRaw([build])).l).includes('32:all checks passed · merging'), true);
 // AC5: the header counts the landing PR, in cyan.
-t('DS-194 AC5 the workers line counts the PRs landing and the merged tickets', lq.find((l) => l.startsWith('workers ')), 'workers 1 running of 2 (cap 3) · 1 PR landing · 2 merged, not shown');
-t('DS-194 AC5 the landing count is cyan', coloured(raw194.head).join(), '36:1 PR landing');
+t('DS-194 AC5 (DS-215) the counts line counts the PRs landing and the merged tickets', lq[1], '◆ nothing needs you  ● 1 running  ◐ 1 landing  · 2 waiting │ ✓ 2 done, not shown');
+t('DS-194 AC5 the landing count is cyan', coloured(raw194.head).includes('36:◐ 1 landing'), true);
 // AC6: a held ticket names its landing blocker by its PR.
 t('DS-194 AC6 (DS-217 AC2) the only blocker left is landing: behind its PR, merging when green, starting after it', /· waiting {4}behind #164: checks running, merges when green +after #164 /.test(landRow(lq, 'LD-2')), true);
 t('DS-194 AC6 with another blocker left, both are listed and STARTS is not after the PR', `${/· waiting {4}behind #164, LD-4 /.test(landRow(lq, 'LD-3'))} ${/after #/.test(landRow(lq, 'LD-3'))}`, 'true false');
@@ -1123,7 +1135,7 @@ t('DS-194 AC8 passes stopped: as of the last read, n of m checks passed', new Re
 t('DS-194 AC8 and it is grey', coloured((await landingRaw([ubuntu, macos], 'LD-1', { beat: 300 })).l, true).includes(`38;5;247:as of ${hhmm}: 1 of 2 checks passed`), true);
 // AC9: once the pass records the PR merged, the ticket leaves Landing and counts as merged.
 const mergedQ = landQueue(landRepo([ubuntu], { ps: { ...prOpen([ubuntu]), state: 'MERGED' } }));
-t('DS-194 AC9 a merged PR leaves Landing and is counted merged', `${mergedQ.some((l) => /Landing|LD-1 /.test(l))} ${mergedQ.find((l) => l.startsWith('workers '))}`, 'false workers 1 running of 2 (cap 3) · 3 merged, not shown');
+t('DS-194 AC9 a merged PR leaves Landing and is counted merged', `${mergedQ.some((l) => /Landing|LD-1 |landing/.test(l))} ${mergedQ[1].endsWith(' │ ✓ 3 done, not shown')}`, 'false true');
 // AC10: desk-q reads only what the pass recorded: a gh on its PATH is never called.
 landRepo([ubuntu, macos]);
 mkdirSync(join(I.T, 'stub-gh'), { recursive: true });
@@ -1235,6 +1247,97 @@ const codes = new Set(['39', ...hkLines.flatMap((l) => [...l.matchAll(/\x1b\[([0
 const window217 = rgb('#282c34');
 t('DS-217 AC11 every text colour in the rows and key line is at least 4.5:1 on the window and the selected row',
   `${selBg != null && codes.has('38;5;247')} ${[...codes].filter((c) => { const f = fgOf(c); return !f || contrast(f, window217) < 4.5 || contrast(f, selBg) < 4.5; }).join()}`, 'true ');
+
+// ---- DS-215: who runs each batch, in LAST PASS and the repo header, and the band and notes that warn
+// when that disagrees with the repo's "Batches run by" row or the supervisor has stopped. On macOS,
+// with the fake launchctl loading sup's and halt's agents only.
+const run215 = { state: 'running', stage: '4/9' }, parked215 = { state: 'parked', park: { question: 'which copy?' } };
+const put215 = (name, port, beat, runBy, supervised, tickets) => put(I.T, I.env, name, { port, conc: '2 / 3', beat, runBy,
+  queue: { batch: name, concurrency: 2, ...(supervised ? { supervised: true } : {}), tickets } });
+put215('sup', 5200, 2, 'supervisor', true, { 'SU-1': run215, 'SU-2': ready });
+put215('sess', 5210, 1, 'session', false, { 'SE-1': ready, 'SE-2': parked215 });
+put215('over', 5220, 3, 'supervisor', false, { 'OV-1': ready });
+put215('off', 5230, 3, 'supervisor', true, { 'OF-1': ready });
+put215('halt', 5240, 40, 'supervisor', true, { 'HA-1': ready, 'HA-2': parked215 });
+put215('gone', 5250, 30, 'supervisor', false, { 'GO-1': ready, 'GO-2': parked215 });
+I.loaded('sup', 'halt');
+writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__halt', 'supervisor.log'), 'tick: pass ran\nlast tick: skipped, a pass still holds the orchestrator lock\n\n');
+const at215 = (name) => Q.loadRepos(NOW).find((r) => r.name === name);
+const ov215 = Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 });
+const notes215 = lines(ov215).filter((l) => /^(note| {4}) {2}\S/.test(l));
+const S215 = screen({ kind: 'overview', all: true }, 240, () => NOW);
+S215.output.rows = 120; S215.output.resize();
+await sleep(20);
+const cell215 = (name) => coloured(ovRow(S215, name))[0] ?? '';
+t('DS-215 AC1 a handed-over batch with its agent loaded, on time: ● supervisor in green', `${cell215('sup')} ${/^ {2}sup +● supervisor · 2m ago {2}/.test(rowOf(ov215, 'sup') ?? '')}`, '32:● supervisor · 2m ago true');
+t('DS-215 AC2 a session-run batch set to session or unset: ● session in green, and no note names it',
+  `${cell215('sess')} ${notes215.some((l) => /▲ sess\b/.test(l))}`, '32:● session · 1m ago false');
+t('DS-215 AC3 a session-run batch set to the supervisor: ▲ session in amber, and one amber note', `${cell215('over')} ${notes215.filter((l) => l.includes('▲ over')).join('|')}`,
+  `33:▲ session · 3m ago ${notes215.find((l) => l.includes('▲ over'))?.startsWith('note') ? 'note' : '    '}  ▲ over          set to the supervisor, but a session runs this batch. Its next batch hands over.`);
+const bandAt = lines(ov215).indexOf(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on');
+const needsAt = lines(ov215).findIndex((l) => l.startsWith('◆ '));
+t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off in red at once, and the red band above the header names the fix',
+  `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;31m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on \x1b[22;27;39m'))}`, '31:✕ supervisor off · 3m true true');
+const halt215 = lines(Q.repoScreen(at215('halt'), { now: NOW }));
+t('DS-215 AC5 a loaded supervisor whose passes stopped: the header reads ■ stopped, then its last log line',
+  `${/^■ stopped · 40m {2}last pass \d\d:\d\d │ /.test(halt215[2])} ${halt215.includes("Supervisor's last log line: last tick: skipped, a pass still holds the orchestrator lock")}`, 'true true');
+t('DS-215 AC6 a stopped session-run batch set to the supervisor: the resume hint says it hands over at Stage 4, on home and its own screen',
+  `${notes215.some((l) => l.endsWith('▲ gone          passes stopped. To resume: run /desk-autopilot in gone; it hands the batch to the supervisor at Stage 4.'))} ${lines(Q.repoScreen(at215('gone'), { now: NOW })).includes('To resume: run /desk-autopilot in gone; it hands the batch to the supervisor at Stage 4.')}`, 'true true');
+const youOf = (s) => Number(/^◆ (\d+) tickets? needs? you/m.exec(s)?.[1] ?? 0);
+const withoutSkill = notes215.some((l) => l.includes('/desk-needs-you'));
+mkdirSync(join(I.env.DESK_SKILLS_DIR, 'desk-needs-you'), { recursive: true });
+writeFileSync(join(I.env.DESK_SKILLS_DIR, 'desk-needs-you', 'SKILL.md'), '# desk-needs-you\n');
+const ov215y = Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 });
+t('DS-215 AC7 with the desk-needs-you skill installed, one note says /desk-needs-you asks about all of them, with the count',
+  `${withoutSkill} ${lines(ov215y).filter((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about all (\d+)\.$/.exec(l)?.[1] === String(youOf(ov215y))).length} ${youOf(ov215y) > 1}`, 'false 1 true');
+const Sy = screen({ kind: 'overview', all: false }, 240, () => NOW);
+Sy.output.rows = 120; Sy.output.resize();
+await sleep(20);
+t('DS-215 AC7 the note is magenta, its command bold', lastFrame(Sy).some((l) => l.includes('\x1b[35m◆ needs you    ') && l.includes('\x1b[1m/desk-needs-you\x1b[22m')), true);
+Sy.ui.finish(0);
+const unsetNote = '4 repos have no "Batches run by" setting, so they run in a session. /desk-setup sets it.';
+t('DS-215 AC8 4 repos with a batch and no row: one grey note on home, none on a repo screen',
+  `${lines(ov.out).filter((l) => l.endsWith(`  setup         ${unsetNote}`)).length} ${W.run('--plain', 'voicepa').out.includes('Batches run by')}`, '1 false');
+process.env.DESK_PLATFORM = 'linux';
+const ov215l = Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 });
+const halt215l = Q.repoScreen(at215('halt'), { now: NOW });
+process.env.DESK_PLATFORM = 'darwin';
+t('DS-215 AC9 not macOS: every repo reads session, with no supervisor state, band or note',
+  `${/^ {2}sup +● session · 2m ago /.test(rowOf(ov215l, 'sup') ?? '')} ${/^ {2}off +● session · 3m ago /.test(rowOf(ov215l, 'off') ?? '')} ${/supervisor|Batches run by/.test(ov215l)} ${/✕/.test(ov215l)}`, 'true true false false');
+t('DS-215 AC9 and a repo screen offers no supervisor fix', /Supervisor's last log line|supervisor on/.test(halt215l), false);
+const plain215 = I.run('--plain').out;
+t('DS-215 AC10 --plain: the same words and glyphs, no colour, the band and notes as plain lines',
+  `${plain215.includes('\x1b')} ${lines(plain215).includes(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on')} ${lines(plain215).some((l) => /^(note| {4}) {2}▲ over {10}set to the supervisor/.test(l))} ${/ ✕ supervisor off · \d+m /.test(rowOf(plain215, 'off') ?? '')}`, 'false true true true');
+t('DS-215 AC11 a repo screen\'s second header line: who runs it, the last pass, workers and cap, the batch',
+  [lines(Q.repoScreen(at215('sup'), { now: NOW }))[2], lines(Q.repoScreen(at215('sess'), { now: NOW }))[2]].join(' | '),
+  '● supervisor  last pass 2m ago │ workers 1 of 2 · cap 3 │ batch sup | ● session  last pass 1m ago │ workers 0 of 2 · cap 3 │ batch sess');
+const Rs = screen({ kind: 'repo', slug: 'acme__sup' }, 160, () => NOW);
+await sleep(20);
+const rsHead = lastFrame(Rs).find((l) => l.replace(ANSI, '').startsWith('● supervisor')) ?? '';
+t('DS-215 AC11 its label is grey, its figures bright and its segments split by a grey │',
+  [`\x1b[32m● supervisor\x1b[39m  ${G}last pass \x1b[39m2m ago`, `${G} │ \x1b[39m${G}workers \x1b[39m\x1b[1m1 of 2\x1b[22m${G} · cap \x1b[39m\x1b[1m3\x1b[22m`].filter((s) => !rsHead.includes(s)).join(' | '), '');
+const s215 = lastFrame(S215);
+t('DS-215 AC12 home: the band, then the needs-you count with each repo\'s, then workers, machine cap, room and free memory',
+  `${needsAt === lines(ov215).filter((l) => l.startsWith(' ✕ ')).length} ${/^◆ \d+ tickets need you │ \S+ \d+( · \S+ \d+)*( │ ◌ \d+ blocked)?$/.test(lines(ov215)[needsAt])} ${/^● \d+ workers? running │ machine cap 10 · room for \d+ more │ 30\.0 GiB free$/.test(lines(ov215)[needsAt + 1])}`, 'true true true');
+t('DS-215 AC12 labels grey, values bright, segments split by a grey │',
+  `${s215.some((l) => l.startsWith('\x1b[1;35m◆ ') && /\x1b\[38;5;247m │ \x1b\[39m\x1b\[38;5;247m\S+ \x1b\[39m\x1b\[1m\d+\x1b\[22m/.test(l))} ${s215.some((l) => l.includes(`${G}machine cap \x1b[39m\x1b[1m10\x1b[22m${G} · \x1b[39m${G}room for \x1b[39m\x1b[1m`) && /\x1b\[1m\d+\.\d GiB\x1b\[22m\x1b\[38;5;247m free\x1b\[39m$/.test(l))}`, 'true true');
+S215.ui.finish(0);
+Rs.ui.finish(0);
+// AC13: no label is drawn dim, and every text colour desk-q draws is 4.5:1 or more on the One Dark
+// window, the selected row and black. The band's text is the window's colour on red.
+const sgrFg = (code) => (code === Q.TEXT_SGR.band ? null : fgOf(code.replace(/^1;/, '')));
+const dark215 = Object.entries(Q.TEXT_SGR).filter(([k]) => !['select', 'band'].includes(k));
+const sel215 = grey256(Number(Q.TEXT_SGR.select.split(';')[2]));
+t('DS-215 AC13 no screen draws dim (SGR 2)', [S215, Rs].some((s) => s.output.buf.includes('\x1b[2m')), false);
+t('DS-215 AC13 every text colour is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
+  `${dark215.filter(([, c]) => { const f = sgrFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).map(([k]) => k).join()}|${contrast(window217, rgb(ONE_DARK[31])) >= 4.5}`, '|true');
+process.env.COLORFGBG = '0;15';
+const QL = await import(`${pathToFileURL(BIN).href}?light`);
+delete process.env.COLORFGBG;
+const white = [255, 255, 255];
+t('DS-215 AC14 a light theme draws labels a darker grey, 4.5:1 or more on its background and its selected row',
+  `${QL.TEXT_SGR.grey} ${contrast(fgOf(QL.TEXT_SGR.grey), white) >= 4.5} ${contrast(fgOf(QL.TEXT_SGR.grey), grey256(Number(QL.TEXT_SGR.select.split(';')[2]))) >= 4.5} ${QL.lightTheme('15;0')} ${QL.lightTheme(undefined)}`,
+  '38;5;240 true true false false');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
