@@ -41,7 +41,7 @@ EOF
 echo "RECOVERY RULES: a lane C or D park is never requeued" > "$T/skills/desk-autopilot/references/orchestrator-recovery.md"
 
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { readFileSync } from 'node:fs';
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));

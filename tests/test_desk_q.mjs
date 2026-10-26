@@ -1362,9 +1362,9 @@ t('DS-215 AC4 a stopped handed-over batch with only tickets that need you: still
   `${/^ {2}stall +✕ supervisor off · 50m /.test(rowOf(ovStall, 'stall') ?? '')} ${lines(ovStall).includes(band('stall'))}`, 'true true');
 t('DS-215 AC4 a stopped handed-over batch with nothing for the user stays on home while its supervisor is off',
   `${/^ {2}idle +✕ supervisor off · 50m /.test(rowOf(ovStall, 'idle') ?? '')} ${lines(ovStall).includes(band('idle'))}`, 'true true');
-put215('asked', 5280, 50, 'supervisor', false, { 'AS-1': parked215 });
+put215('ask', 5280, 50, 'supervisor', false, { 'AS-1': parked215 });
 t('DS-215 AC6 a stopped session-run batch set to the supervisor whose only ticket needs you still gets the hand-over hint on home',
-  lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'asked'), { now: NOW, avail: 30 })).some((l) => l.endsWith('▲ asked         passes stopped. To resume: run /desk-autopilot in asked; it hands the batch to the supervisor at Stage 4.')), true);
+  /▲ ask +passes stopped\. To resume: run \/desk-autopilot in ask; it hands the batch to the supervisor at Stage 4\.$/m.test(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'ask'), { now: NOW, avail: 30 })), true);
 t('DS-215 AC7 with one ticket that needs you, the note still gives the count',
   lines(ovStall).some((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about the 1 ticket\.$/.test(l)), true);
 
