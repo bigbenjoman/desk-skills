@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR makes the run still going on the old head worthless, so cancel it.
+# Pushes to main each get their own group and always finish.
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   suite:
     name: tests (${{ matrix.os }})
@@ -15,6 +21,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # A hosted macOS minute costs about 10x a Linux one, and every PR has already passed the
+        # macOS leg before it merges, so a push to main runs Linux only.
+        event: ['${{ github.event_name }}']
+        exclude:
+          - { os: macos-latest, event: push }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:

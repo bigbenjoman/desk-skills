@@ -212,7 +212,7 @@ t('a Dependabot branch to self-hosted fails; != and fromJSON forms pass', linted
 
 // This repo's own workflow: a hosted-only matrix and a hosted label, so nothing to lint.
 const own = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows/tests.yml'), 'utf8');
-t('own workflow classifies', placed(own), 'suite=self-hosted@12 tests=self-hosted@59');
+t('own workflow classifies', placed(own), 'suite=self-hosted@18 tests=self-hosted@70');
 t('own workflow lints clean', linted(own), '');
 
 // The CLI over a directory: classify lines and summary, ci-lint exit status.
