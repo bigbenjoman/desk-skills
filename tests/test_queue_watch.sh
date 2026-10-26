@@ -18,7 +18,8 @@ cat > "$T/config.md" <<'EOF'
 | GitHub repo | `acme/widgets` |
 | Default branch | `main` |
 EOF
-export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json" DESK_REPO_DIR="$T/repo"
+export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json" DESK_REPO_DIR="$T/repo" DESK_AUTOPILOT_STATE="$T/state"
+mkdir -p "$T/state/parks" "$T/state/answers"
 git init -q "$T/repo"; mkdir -p "$T/repo/.claude"
 q(){ out=$(node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
 tables(){ grep -c '^batch ' "$T/watch.out"; }
@@ -38,7 +39,8 @@ out=$(cat "$T/watch.out")
 check "AC5 no queue: exits non-zero naming the missing queue"            '[ $rc -ne 0 ] && [ $rc -ne 124 ] && [[ "$out" == *"no queue at $T/queue.json"* ]]'
 
 q init t; q add T-1; q set T-1 state=running stage=2/9 port=3501
-watch_bg --interval 0.3
+# These checks step stages, so they watch with --stages.
+watch_bg --interval 0.3 --stages
 until_tables 1
 out=$(cat "$T/watch.out")
 check "AC1 the table and the memory line print once at start"           '[ "$(tables)" = 1 ] && [ "$(mems)" = 1 ] && [[ "$out" == *"RUNNING  T-1       stage 2/9"* ]]'
@@ -48,7 +50,7 @@ check "AC3 intervals with no change print nothing"                       '[ "$(t
 q set T-1 stage=4/9
 until_tables 2
 out=$(cat "$T/watch.out")
-check "AC2 a stage change prints the new table within an interval"      '[ "$(tables)" = 2 ] && [ "$(mems)" = 2 ] && [[ "$out" == *"stage 4/9"* ]]'
+check "AC2 (DS-201 AC4) with --stages a stage change prints the new table within an interval"   '[ "$(tables)" = 2 ] && [ "$(mems)" = 2 ] && [[ "$out" == *"stage 4/9"* ]]'
 q set T-1 stage=4/9
 sleep 1
 out=$(cat "$T/watch.out")
@@ -56,7 +58,7 @@ check "a write that changes nothing shown prints nothing"               '[ "$(ta
 stop_watch
 
 # AC4: the default interval is 90 seconds, so a change made after the first table is not printed yet.
-watch_bg
+watch_bg --stages
 until_tables 1
 q set T-1 stage=5/9; sleep 1.5
 out=$(cat "$T/watch.out")
@@ -77,7 +79,7 @@ cp "$T/config.md" "$T/config.base"
 
 # AC1 is the suites above: no row prints the whole table on every change. full set explicitly does too.
 setting full
-watch_bg --interval 0.3
+watch_bg --interval 0.3 --stages
 until_tables 1
 q set T-1 stage=6/9
 until_tables 2
@@ -87,7 +89,7 @@ check "DS-198 AC1 full prints the whole table again on a change"             '[ 
 
 # AC2: quiet prints the table once, then one line per changed ticket and the memory line.
 setting quiet
-watch_bg --interval 0.3
+watch_bg --interval 0.3 --stages
 until_tables 1
 q set T-1 stage=7/9; q add T-3
 n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
@@ -101,13 +103,72 @@ check "DS-198 AC2 change lines carry the memory line; unchanged rows are not rep
 
 # AC8: an unrecognised value is said once and read as full.
 setting loud
-watch_bg --interval 0.3
+watch_bg --interval 0.3 --stages
 until_tables 1
 q set T-1 stage=8/9
 until_tables 2
 stop_watch
 out=$(cat "$T/watch.out")
 check "DS-198 AC8 an unknown value is said once and the watch runs at full"  '[ "$(grep -c "is \"loud\"" "$T/watch.out")" = 1 ] && [[ "$out" == *"want \`full\` or \`quiet\`; read as full"* ]] && [ "$(tables)" = 2 ]'
+
+# Without --stages, a stage step alone prints nothing; a state change or a question does.
+setting full
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 stage=9/9
+sleep 1
+out=$(cat "$T/watch.out")
+check "DS-201 AC1 a stage step alone prints nothing"                        '[ "$(tables)" = 1 ] && [ "$(mems)" = 1 ]'
+q park T-3 which colour
+until_tables 2
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 a state change prints the table, showing the current stage" '[ "$(tables)" = 2 ] && [[ "$out" == *"PARKED   T-3       which colour"* ]] && [[ "$out" == *"RUNNING  T-1       stage 9/9"* ]]'
+printf '%s' '{"question":"ship it?"}' > "$T/state/parks/T-1.json"
+until_tables 3
+out=$(cat "$T/watch.out")
+check "DS-201 AC3 a running worker's open question prints on its row"       '[ "$(tables)" = 3 ] && [[ "$out" == *"RUNNING  T-1       stage 9/9  port 3501  asks: ship it?"* ]]'
+printf 'yes' > "$T/state/answers/T-1.txt"
+until_tables 4
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-201 AC3 an answered question leaves the row"                      '[ "$(tables)" = 4 ] && [ "$(grep -c "asks: ship it" "$T/watch.out")" = 1 ]'
+
+# A PR opened while its worker carries on, and a merge, are state changes the watch shows.
+q add T-4; q set T-4 state=done result.pr=41
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 draft_pr=40
+until_tables 2
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 a PR opened while its worker runs prints on its row"       '[ "$(tables)" = 2 ] && [[ "$out" == *"RUNNING  T-1       stage 9/9  port 3501  PR #40"* ]]'
+q set T-4 merged_at=2026-10-26T07:00:00.000Z
+until_tables 3
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 a merge prints on its row"                                 '[ "$(tables)" = 3 ] && [ "$(grep -c "DONE     T-4       PR #41 merged" "$T/watch.out")" = 1 ]'
+
+setting quiet
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 stage=3/9
+sleep 1
+q set T-3 state=failed
+n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-201 AC1 quiet: a stage step gets no change line, a state change does" '! grep -q "^T-1 " "$T/watch.out" && grep -q "^T-3 .*PARKED which colour → FAILED" "$T/watch.out" && [ "$(mems)" = 2 ]'
+
+q add T-5; q set T-5 state=running stage=7/9 port=3502
+q add T-6; q set T-6 state=done result.pr=51
+watch_bg --interval 0.3
+until_tables 1
+q set T-5 draft_pr=50
+n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
+q set T-6 merged_at=2026-10-26T07:00:00.000Z
+n=0; while [ "$(mems)" -lt 3 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 quiet: a PR opened and a merge each get a change line"     'grep -q "^T-5 .*port 3502 → RUNNING port 3502  PR #50$" "$T/watch.out" && grep -q "^T-6 .*DONE PR #51 → DONE PR #51 merged$" "$T/watch.out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

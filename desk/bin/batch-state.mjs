@@ -1,7 +1,7 @@
 // What a batch's queue says about itself, shared by pass.mjs and queue.mjs. Pure: takes the parsed
 // queue, reads nothing. Also the exit-code contract every orchestration script shares, and the one
 // place they read the queue and triage records, so a corrupt file refuses the same way in all four.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
@@ -25,6 +25,14 @@ export function readJsonOrRefuse(path, action) {
 export const readQueue = (path) => readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`);
 export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
+
+// The question a worker parked on and nobody has answered yet, or null: its park file's `question`
+// while no answer file sits beside it. A half-written park file is not an error.
+export function openQuestion(stateDir, t) {
+  const park = join(stateDir, 'parks', `${t}.json`);
+  if (!existsSync(park) || existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
+  try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
+}
 
 // A crash is a refusal like any other: it exits SHOW_PERSON, never node's own 1. `report` prints it.
 export function crashShowsPerson(report = (e) => console.error(describeCrash(e))) {
