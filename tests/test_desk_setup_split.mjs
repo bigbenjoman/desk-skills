@@ -1,4 +1,5 @@
 // suite: desk-setup split (a core of 20 KB or less, and each step's rules in a reference file)
+// covers: skills/** agents/** docs/** README.md
 // tests/fixtures/desk-setup-before-split.md is desk-setup's SKILL.md as one file. Every heading,
 // table row and paragraph of it must still be in the core or one reference file, the core must name
 // the file to read at each step whose rules moved, and every citation of a desk-setup section must
