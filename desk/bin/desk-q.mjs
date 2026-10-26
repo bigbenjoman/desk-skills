@@ -34,7 +34,7 @@ import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency } 
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
-import { platform, runBySetting, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
+import { platform, runBySetting, supervisorLoaded, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -253,8 +253,6 @@ export function loadRepos(now = Date.now()) {
 
 // Whether autopilot can still move the batch: a ticket a pass can run or start.
 const hasWork = (r) => r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
-const AGENT = (slug) => `com.desk-skills.supervisor.${slug}`;
-const agentLoaded = (slug) => spawnSync('launchctl', ['print', `gui/${process.getuid()}/${AGENT(slug)}`], { stdio: 'ignore' }).status === 0;
 
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
 // `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
@@ -265,7 +263,7 @@ function whoRuns(r) {
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
-  const agent = by === 'supervisor' && hasWork(r) ? (agentLoaded(r.slug) ? 'loaded' : 'off') : null;
+  const agent = by === 'supervisor' && hasWork(r) ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
   return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent };
 }
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.

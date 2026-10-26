@@ -51,6 +51,7 @@ import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
+import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -63,14 +64,14 @@ const PASS_TIMEOUT_MS = 10 * 60 * 1000;
 const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
-const label = (slug) => `com.desk-skills.supervisor.${slug}`;
+const label = supervisorLabel;
 const plistPath = (slug) => join(AGENTS, `${label(slug)}.plist`);
-const domain = () => `gui/${process.getuid()}`;
+const domain = launchdDomain;
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 // ---- launchd ---------------------------------------------------------------------------------
 const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
-const loaded = (slug) => launchctl('print', `${domain()}/${label(slug)}`).status === 0;
+const loaded = supervisorLoaded;
 // The installed agent's interval in seconds: '?' for a plist without one, null when not installed.
 const installedInterval = (slug) => (existsSync(plistPath(slug))
   ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null);
