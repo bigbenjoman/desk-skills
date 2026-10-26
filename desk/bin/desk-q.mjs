@@ -25,7 +25,7 @@
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -190,6 +190,14 @@ function triageOf(stateDir, key) {
 export const STAGE_TAIL = 256 * 1024;
 const logStages = new Map();
 
+// A file's last `bytes` as text, read at `size` (its length now unless given). Throws with no file.
+function tailText(path, bytes, size = statSync(path).size) {
+  const n = Math.min(bytes, size), buf = Buffer.alloc(n);
+  let fd;
+  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, size - n); } finally { if (fd != null) closeSync(fd); }
+  return buf.toString('utf8');
+}
+
 // A worker log's last stage marker (harvest.mjs lastStage), from its last STAGE_TAIL bytes only,
 // or null with no log or no marker there. Kept until the log grows, so a refresh rereads nothing.
 export function logStage(path) {
@@ -197,13 +205,10 @@ export function logStage(path) {
   try { st = statSync(path); } catch { return null; }
   const hit = logStages.get(path);
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.s;
-  const n = Math.min(STAGE_TAIL, st.size);
-  const buf = Buffer.alloc(n);
-  let fd;
-  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, st.size - n); } catch { return null; } finally { if (fd != null) closeSync(fd); }
-  let text = buf.toString('utf8');
+  let text;
+  try { text = tailText(path, STAGE_TAIL, st.size); } catch { return null; }
   // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
-  if (st.size > n) text = text.slice(text.indexOf('\n') + 1);
+  if (st.size > STAGE_TAIL) text = text.slice(text.indexOf('\n') + 1);
   const s = lastStage(text);
   if (logStages.size > 256) logStages.clear();
   logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
@@ -256,14 +261,16 @@ const hasWork = (r) => r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
 
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
 // `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
-// `agent` is 'loaded' or 'off' for a handed-over batch autopilot can still move, read with one
-// launchctl print per refresh. Off macOS there is no supervisor, so every batch is a session's.
+// `agent` is 'loaded' or 'off' for a handed-over batch not yet finished (a ticket not done, or a PR
+// still landing), read with one launchctl print per refresh. Off macOS there is no supervisor, so
+// every batch is a session's.
 function whoRuns(r) {
   if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null };
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
-  const agent = by === 'supervisor' && hasWork(r) ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
+  const open = r.rows.length > 0 || r.landing.length > 0;
+  const agent = by === 'supervisor' && open ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
   return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent };
 }
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
@@ -274,11 +281,12 @@ const count = (r, k) => r.rows.filter((x) => (Array.isArray(k) ? k : [k]).includ
 const attention = (r) => count(r, ['needs', 'stuck', 'failed']);
 const hasBatch = (r) => r.q != null || r.error != null;
 
-// Live batches first, freshest first; then quiet ones with something for the user, most first.
+// Live batches first, freshest first; then quiet ones with something for the user (a ticket, or a
+// supervisor to turn back on), most first.
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
-  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0)).sort((a, c) => attention(c) - attention(a));
+  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r))).sort((a, c) => attention(c) - attention(a));
   return [...live, ...quiet];
 }
 
@@ -901,7 +909,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     }
   }
   const you = list.filter((r) => !r.error).reduce((a, r) => a + count(r, 'needs'), 0);
-  if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'it' : `all ${you}`}.`, null]] });
+  if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
   const unset = repos.filter((r) => r.run?.unset).length;
   if (unset) {
     notes.push({ tag: '  setup', sgr: GREY, text: [[`${unset} repo${unset === 1 ? ' has' : 's have'} no "Batches run by" setting, so ${unset === 1 ? 'it runs' : 'they run'} in a session. `, GREY],
@@ -937,13 +945,7 @@ function stoppedLines(r) {
 
 // The supervisor log's last line, or null with no log: its last 4 KB is read.
 function supervisorLogLine(r) {
-  const p = join(r.stateDir, 'supervisor.log');
-  let fd;
-  try {
-    const n = Math.min(4096, statSync(p).size), buf = Buffer.alloc(n);
-    fd = openSync(p, 'r'); readSync(fd, buf, 0, n, statSync(p).size - n);
-    return buf.toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? null;
-  } catch { return null; } finally { if (fd != null) closeSync(fd); }
+  try { return tailText(join(r.stateDir, 'supervisor.log'), 4096).split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? null; } catch { return null; }
 }
 
 // A repo screen's second header line: who runs the batch (or that passes stopped, or the supervisor is
@@ -1519,9 +1521,6 @@ const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t
 // The selected row's background: on a dark theme 256-colour 236, a tint dark enough that grey 247 and
 // every state colour keep 4.5:1 on it; on a light theme 254, on which grey 240 keeps it.
 const SELECT_BG = LIGHT ? '48;5;254' : '48;5;236';
-// Every colour desk-q draws text in, for the contrast check.
-export const TEXT_SGR = { grey: GREY, warn: WARN, you: YOU, youBold: YOU_BOLD, band: BAND, good: GOOD, fail: FAIL, select: SELECT_BG,
-  ...Object.fromEntries(Object.entries(STATE_SGR).filter(([, k]) => k)) };
 // What undoes each code that sets more than a colour; a colour alone is undone by 39.
 const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39' };
 // Under NO_COLOR, grey is drawn faint, bold magenta bold and the band reversed.

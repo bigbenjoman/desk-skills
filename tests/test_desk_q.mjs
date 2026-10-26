@@ -252,14 +252,14 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-function screen(start, columns = 80, clock = Date.now) {
+function screen(start, columns = 80, clock = Date.now, M = Q) {
   const input = new PassThrough();
   const modes = [];
   Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
   // `resize` holds the screen's resize listener, so a test can change `columns` and call it.
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
-  const ui = Q.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock });
+  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
     input, output, modes, codes, opened, ui, frame,
@@ -1323,21 +1323,47 @@ t('DS-215 AC12 labels grey, values bright, segments split by a grey │',
   `${s215.some((l) => l.startsWith('\x1b[1;35m◆ ') && /\x1b\[38;5;247m │ \x1b\[39m\x1b\[38;5;247m\S+ \x1b\[39m\x1b\[1m\d+\x1b\[22m/.test(l))} ${s215.some((l) => l.includes(`${G}machine cap \x1b[39m\x1b[1m10\x1b[22m${G} · \x1b[39m${G}room for \x1b[39m\x1b[1m`) && /\x1b\[1m\d+\.\d GiB\x1b\[22m\x1b\[38;5;247m free\x1b\[39m$/.test(l))}`, 'true true');
 S215.ui.finish(0);
 Rs.ui.finish(0);
-// AC13: no label is drawn dim, and every text colour desk-q draws is 4.5:1 or more on the One Dark
-// window, the selected row and black. The band's text is the window's colour on red.
-const sgrFg = (code) => (code === Q.TEXT_SGR.band ? null : fgOf(code.replace(/^1;/, '')));
-const dark215 = Object.entries(Q.TEXT_SGR).filter(([k]) => !['select', 'band'].includes(k));
-const sel215 = grey256(Number(Q.TEXT_SGR.select.split(';')[2]));
-t('DS-215 AC13 no screen draws dim (SGR 2)', [S215, Rs].some((s) => s.output.buf.includes('\x1b[2m')), false);
-t('DS-215 AC13 every text colour is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
-  `${dark215.filter(([, c]) => { const f = sgrFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).map(([k]) => k).join()}|${contrast(window217, rgb(ONE_DARK[31])) >= 4.5}`, '|true');
+// AC13: no label is drawn dim, and every text colour the home and repo screens draw is 4.5:1 or more
+// on the One Dark window, the selected row and black. The band's text is the window's colour on red.
+const sgrOf = (bufs) => new Set(bufs.flatMap((b) => [...b.matchAll(/\x1b\[([0-9;]+)m/g)].map((m) => m[1])));
+const RESETS = ['0', '22', '23', '24', '27', '39', '49', '22;39', '22;27;39'];
+// The foreground each code draws text in, bold alone in the default colour; reverse video and
+// backgrounds are not text colours.
+const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && !/^1;7;/.test(c));
+const textFg = (c) => fgOf(c === '1' ? '39' : c.replace(/^1;/, ''));
+const drawn215 = sgrOf([S215, Rs, Sy].map((s) => s.output.buf));
+const sel215 = grey256(Number([...drawn215].find((c) => c.startsWith('48;5;'))?.split(';')[2]));
+const bands215 = [...drawn215].filter((c) => /^1;7;\d+$/.test(c));
+t('DS-215 AC13 no screen draws dim (SGR 2)', [S215, Rs, Sy].some((s) => s.output.buf.includes('\x1b[2m')), false);
+t('DS-215 AC13 every text colour drawn is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
+  `${sel215 != null} ${drawn215.has('38;5;247')} ${textCodes(drawn215).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands215.join()} ${bands215.every((c) => contrast(window217, fgOf(c.split(';')[2])) >= 4.5)}`,
+  'true true |1;7;31 true');
 process.env.COLORFGBG = '0;15';
 const QL = await import(`${pathToFileURL(BIN).href}?light`);
 delete process.env.COLORFGBG;
 const white = [255, 255, 255];
+const L215 = screen({ kind: 'overview', all: true }, 240, () => NOW, QL);
+L215.output.rows = 120; L215.output.resize();
+await sleep(20);
+L215.ui.finish(0);
+const drawnL = sgrOf([L215.output.buf]);
+const greysL = [...drawnL].filter((c) => /^38;5;\d+$/.test(c));
+const selL = grey256(Number([...drawnL].find((c) => c.startsWith('48;5;'))?.split(';')[2]));
 t('DS-215 AC14 a light theme draws labels a darker grey, 4.5:1 or more on its background and its selected row',
-  `${QL.TEXT_SGR.grey} ${contrast(fgOf(QL.TEXT_SGR.grey), white) >= 4.5} ${contrast(fgOf(QL.TEXT_SGR.grey), grey256(Number(QL.TEXT_SGR.select.split(';')[2]))) >= 4.5} ${QL.lightTheme('15;0')} ${QL.lightTheme(undefined)}`,
-  '38;5;240 true true false false');
+  `${greysL.join()} ${selL != null && greysL.every((c) => contrast(fgOf(c), white) >= 4.5 && contrast(fgOf(c), selL) >= 4.5)} ${QL.lightTheme('15;0')} ${QL.lightTheme(undefined)}`,
+  '38;5;240 true false false');
+// AC4 holds for a handed-over batch whose open tickets all wait on the user, and once its passes have
+// stopped the batch stays on home, band and all, rather than dropping off with the quiet ones.
+put215('stall', 5260, 50, 'supervisor', true, { 'ST-1': parked215 });
+put215('idle', 5270, 50, 'supervisor', true, { 'ID-1': ready });
+const ovStall = Q.overview(Q.loadRepos(NOW).filter((r) => ['stall', 'idle'].includes(r.name)), { now: NOW, avail: 30 });
+const band = (name) => ` ✕ ${name}: the supervisor is off, so no passes run. Run: desk-q ${name} supervisor on`;
+t('DS-215 AC4 a stopped handed-over batch with only tickets that need you: still ✕ supervisor off, with its band',
+  `${/^ {2}stall +✕ supervisor off · 50m /.test(rowOf(ovStall, 'stall') ?? '')} ${lines(ovStall).includes(band('stall'))}`, 'true true');
+t('DS-215 AC4 a stopped handed-over batch with nothing for the user stays on home while its supervisor is off',
+  `${/^ {2}idle +✕ supervisor off · 50m /.test(rowOf(ovStall, 'idle') ?? '')} ${lines(ovStall).includes(band('idle'))}`, 'true true');
+t('DS-215 AC7 with one ticket that needs you, the note still gives the count',
+  lines(ovStall).some((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about the 1 ticket\.$/.test(l)), true);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
