@@ -3,9 +3,11 @@ name: desk-groom
 description: >-
   Use when grooming this repo's Jira backlog: "groom the backlog", "is anything open already done",
   "which tickets are duplicates", "what links are missing", "which tickets cite stale code", "fill
-  in the blank priorities", "clear the dead blockers". Checks every open ticket against the default
-  branch and the rest of the backlog, and proposes each fix as a desk-jira gate block with its
-  evidence. It writes nothing.
+  in the blank priorities", "clear the dead blockers", "is every epic's Definition of done covered",
+  "fix the Children lists", "which tickets have no epic", "does anything outrank its epic". Checks
+  every open ticket and epic against the default branch and the rest of the backlog, proposes each
+  fix as a desk-jira gate block with its evidence, and asks the user each call with no single correct
+  fix. It writes nothing.
 argument-hint: "[--jql <jql>]"
 ---
 
@@ -23,20 +25,27 @@ another repo's config.
 
 What it answers here: §0 for the GitHub repo and default branch, §2 for the primary repo root, §3 for
 which writes a proposal would need (`jira-edit`, `jira-close`, `jira-transition`), §3b for the
-fan-out, and §4 for the Jira project, Done state, Priority, Other fields and Ticket key pattern.
+fan-out, and §4 for the Jira project, Done and In-progress states, Priority, Priorities only you set,
+Size field, Other fields and Ticket key pattern.
 
 ## Overview
 
 The backlog drifts between hand grooms: a dependency sits in prose that autopilot does not read, a
 ticket cites a line that moved, done work stays open, a duplicate gets filed, a priority is left
-blank, a ticket waits on blockers that finished months ago. desk-groom checks every open ticket for
-each of these and proposes the fix with the evidence that justifies it.
+blank, a ticket waits on blockers that finished months ago. Epics drift too: a Definition of done
+item nobody owns, a Children list that missed a split, loose tickets outside any epic, a ticket that
+outranks the epic it serves, an epic still in To Do with its children done. desk-groom checks every
+open ticket and epic for each of these and proposes the fix with the evidence that justifies it.
 
 **Core principle: no evidence, no proposal; nothing is written.** Every block this skill prints is
 `awaiting approval`, whatever §3 says. Writing the approved list is a separate step.
 
-Epics are not checked here, only used: an epic's priority and its children's title prefix feed the
-per-ticket checks.
+**A fix or a question, never both.** A finding with one correct fix is proposed, never asked. A
+finding with no single correct fix (two tickets that could each own the scope, a DoD item either of
+two children could take, a loose ticket two epics fit equally, which of a ticket's many blockers it
+truly needs, which link in a Blocks loop to cut) is a judgement call: it is asked, with
+the options and a recommendation, and nothing is proposed for it. A loose ticket is always asked,
+even with one clear home: the user decides where a ticket lives.
 
 ## 1. Precondition: `origin/<default branch>` is current and not shallow
 
@@ -50,7 +59,7 @@ before the scan, and stop if the SHAs still differ after a fetch.
 `desk-jira`, the repo through `git`.
 
 ```bash
-node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project key> --priority <§4 Priority> --fields <§4 Other fields, comma-separated> --done '<§4 Done state>'
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project key> --priority <§4 Priority> --fields <§4 Other fields, comma-separated> --size <§4 Size field> --done '<§4 Done state>' --in-progress '<§4 In-progress state>'
 ```
 
 Run it from inside the repo, so `desk-jira` resolves this repo's Jira. It covers every open ticket in
@@ -67,15 +76,26 @@ it once more with `--json`, redirected to `<scratchpad>/groom-scan.json`, for st
 | `stale` | each `path:line` citation: a file that is gone or moved, a line past the end, a name beside the citation that is no longer at that line; and each premise with no citation, a line outside the criteria, outcome, verification, design and out-of-scope sections that names a function, `--flag` or repo file main does not have and no open ticket adds | the edit (`from -> to`) where the name is a whole word on exactly one line of the file; otherwise, for a file that moved and for every premise, a verifier settles it (step 3) |
 | `field` | a blank §4 Priority or §4 Other fields value | the priority from the ticket's epic, else the one most of its open siblings hold; any other field is judged (a size from desk-jira's scale) |
 | `title` | a title with no area prefix, or a different one, where most of its epic's other children share one | the title with that prefix, in place of any other |
-| `blocker` | a Blocks link to a Done ticket; more than 10 open blockers; a loop of Blocks links | `desk-jira unlink` for a Done blocker; a rescope for the other two, which can never all be Done |
+| `blocker` | a Blocks link to a Done ticket; more than 10 open blockers; a loop of Blocks links | `desk-jira unlink` for a Done blocker. The other two can never all be Done, and are each a question, never a fix: for many blockers, keep the ones the ticket's text names (recommended), unlink them all, or keep them all; for a loop, one option per link to cut, a link whose blocked ticket does not name its blocker recommended |
 
-A finding marked `[verify first]` is a candidate, not a proposal. **No evidence, no finding**: the
+The epic checks read each open epic's Jira children in rank order, done ones included:
+
+| Check | What it reads | What it proposes |
+|---|---|---|
+| `coverage` | each DoD item of an epic: covered when an open or done child names the item (`DoD2`), the item names the child's key, or the child's Children row names the item or the label the item gives (`(ticket checks child)`); a child closed other than as §4 Done state covers nothing | nothing: an uncovered item is reported as a gap, naming it. Children that only share its words are candidates for a verifier (step 3) |
+| `children` | an epic's Children section against Jira: a listed ticket that is not its child (or not in Jira), closed other than as §4 Done state, split (a `split to` link) or renamed (its row shares under two words with its title), and a child the section does not list | the corrected Children section as one description edit: the split's pieces in its place, the dropped rows gone, a renamed row retitled, the unlisted children added in rank order |
+| `loose` | an open ticket with no parent epic, against each open epic's title, outcome and children's titles; an epic named as a catch-all (misc, backlog, bucket, other, general, chores, tech debt…) is never a home | a question, never a move: the best-fitting epic recommended, or "a new epic" with a draft title when none shares two words; two epics within 85% of each other are both options |
+| `priority` | an open ticket whose §4 Priority is above its parent epic's, or above an epic it blocks | re-ranking one of the pair: the epic rises to the ticket's priority when at least half of its other open children sit there or higher, else the ticket comes down to the epic's, as it stands after any raise |
+| `status` | an epic in To Do with a child started or done; an open epic whose every child is done | a transition to §4 In-progress state, or to §4 Done state, naming the children it rests on. An epic with no children is left alone |
+
+Each finding has a `kind`: `fix` (proposed), `question` (asked: `question`, `options`,
+`recommend`, nothing proposed) or `report` (a gap, nothing to write). A finding marked `[verify first]` is a candidate, not a proposal. **No evidence, no finding**: the
 scan proposes a link only from a line that shows it, never from two tickets merely looking related.
 
 ## 3. Verify the candidates: one read-only verifier each
 
-Fan out one read-only subagent per `landed`, `duplicate` and `stale` candidate marked `verify
-first`, within §3b "Subagents that may run without asking". **No verifier writes to Jira or the
+Fan out one read-only subagent per `landed`, `duplicate`, `stale` and `coverage` candidate marked
+`verify first`, within §3b "Subagents that may run without asking". **No verifier writes to Jira or the
 repo.** Brief each with the ticket's full text (`desk-jira get <KEY>` and `desk-jira comments
 <KEY>`), the scan's evidence, and `origin/<default branch>`:
 
@@ -103,6 +123,13 @@ repo.** Brief each with the ticket's full text (`desk-jira get <KEY>` and `desk-
   gone" with the file:line that shows it. That becomes the description edit. A premise the scan
   flagged may name something outside this repo, or under another name: "still true" with the
   file:line that shows it drops the finding.
+- **`coverage`**: brief it with the epic and each candidate child (`desk-jira get` and `comments`).
+  Does one child's criteria deliver the DoD item? One child that does, quoting the criterion, drops
+  the gap; none keeps it. Two that each could is a judgement call: put it to the user with both as
+  options and the one whose outcome names the item recommended.
+
+A `duplicate` verifier's "overlapping scope" is a judgement call too: which ticket owns the scope,
+with both as options. A judgement call never becomes a proposal in step 4, only a question.
 
 Read what each verifier returns as you would a colleague's finding: a verdict with no `file:line`
 behind it is NOT MET.
@@ -115,19 +142,41 @@ evidence first:
 ```
 JIRA <EDIT | TRANSITION> — awaiting approval
 target : <KEY>
-check  : <landed | duplicate | link | stale | field | title | blocker>
+check  : <landed | duplicate | link | stale | field | title | blocker | children | priority | status>
 evidence:
   <each evidence line the scan or verifier gave, with file:line or commit>
 ---
 <the exact desk-jira command, or for a description edit the exact before and after text>
 ```
 
-The §3 row each one would need when written: a link, unlink, field or title edit is `jira-edit`; a
-close as already fixed or duplicate is `jira-close`. Name it in the block so the person approving
-sees what it unlocks. A rescope is a proposal of what the ticket should wait on, with the unlink
-commands for the rest. Nothing here is posted, transitioned or linked, even where §3 says `yes`.
+For `children`, the after text is the epic's description with the Children section replaced by the
+scan's `section` lines. The §3 row each one would need when written: a link, unlink, field, title
+or description edit is `jira-edit`; a close as already fixed or duplicate is `jira-close`; an epic's
+status move is `jira-transition`. Name it in the block so the person approving sees what it unlocks.
+A priority proposal whose value is in §4 Priorities only you set says so: its write needs the user's
+own decision.
 
-End with a one-line count per check, and a `kept open` list: every close candidate step 3 kept open,
+Every `question` finding and every judgement call from step 3 is a question block, never a proposal:
+
+```
+QUESTION — <loose | blocker | coverage | duplicate>
+target : <KEY>
+evidence:
+  <each evidence line>
+---
+<the question>
+  1. <the recommended option> (Recommended)
+  2. <each other option>
+```
+
+The recommendation goes first. For a loose ticket with no home, rewrite the scan's draft title as
+the outcome the new epic serves ("For <who>, <what>") before asking. Ask them together in one
+question carousel where the session can (`AskUserQuestion`, one question per finding), and move
+nothing until the user answers. Each `coverage` gap the verifier kept is a report line: the epic,
+the DoD item and its text, and that no child covers it. Nothing here is posted, transitioned or
+linked, even where §3 says `yes`.
+
+End with a one-line count per check, the coverage gaps, the open questions, and a `kept open` list: every close candidate step 3 kept open,
 with its reasons. That list is how a wrong guard becomes visible.
 
 ## Keep them posted
@@ -143,6 +192,9 @@ Never work through the whole backlog in silence and present a wall at the end.
 - Proposing a size or a priority you cannot point to a source for, as if the scan had found it
 - Scanning against a stale or shallow `origin/<default branch>`
 - Grooming part of the backlog and reporting it as all of it
+- Proposing a move for a loose ticket, or a fix for a judgement call, rather than asking
+- Asking about a finding that has one correct fix
+- Recommending a catch-all epic as a loose ticket's home
 
 ## Common mistakes
 
@@ -153,3 +205,5 @@ Never work through the whole backlog in silence and present a wall at the end.
 | Unlinking every blocker of an over-blocked ticket | Propose what it truly waits on, and unlink only the rest |
 | Writing a dependency into a description | Dependencies are links; autopilot reads only the Blocks links |
 | Treating a moved line as a wrong premise | Where main shows the name at another line, the edit is the line number |
+| Calling a DoD item a gap because no child's title matches it | Coverage counts a child naming the item, or its Children row; a word match only sends it to a verifier |
+| Keeping a split ticket in the Children list | Its pieces take its place |
