@@ -268,7 +268,7 @@ function whoRuns(r) {
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
-  const agent = by === 'supervisor' && unfinished(r) ?(supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
+  const agent = by === 'supervisor' && unfinished(r) ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
   return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent };
 }
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
@@ -279,12 +279,12 @@ const count = (r, k) => r.rows.filter((x) => (Array.isArray(k) ? k : [k]).includ
 const attention = (r) => count(r, ['needs', 'stuck', 'failed']);
 const hasBatch = (r) => r.q != null || r.error != null;
 
-// Live batches first, freshest first; then quiet ones with something for the user (a ticket, or a
-// supervisor to turn back on), most first.
+// Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
+// supervisor to turn back on, or an unfinished batch to hand over), most first.
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
-  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r))).sort((a, c) => attention(c) - attention(a));
+  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r) || (handsOver(r) && unfinished(r)))).sort((a, c) => attention(c) - attention(a));
   return [...live, ...quiet];
 }
 
@@ -936,7 +936,7 @@ function passLines(r, now) {
 // What stopped passes mean for the batch's workers, and how to start them again.
 function stoppedLines(r) {
   const resume = supervisorOff(r) ? `desk-q ${r.name} supervisor on`
-    : (r.run?.by ?? (r.q?.supervised === true ? 'supervisor' : 'session')) === 'supervisor' ? `check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
+    : r.run?.by === 'supervisor' ?`check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
       : `run /desk-autopilot in ${r.name}${handsOver(r) ? '; it hands the batch to the supervisor at Stage 4' : ''}`;
   return ['Running workers carry on, but nothing new starts and stages are not updated.', `To resume: ${resume}.`];
 }

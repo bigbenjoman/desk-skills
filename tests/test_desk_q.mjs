@@ -1248,7 +1248,7 @@ const window217 = rgb('#282c34');
 t('DS-217 AC11 every text colour in the rows and key line is at least 4.5:1 on the window and the selected row',
   `${selBg != null && codes.has('38;5;247')} ${[...codes].filter((c) => { const f = fgOf(c); return !f || contrast(f, window217) < 4.5 || contrast(f, selBg) < 4.5; }).join()}`, 'true ');
 
-// ---- DS-215: who runs each batch, in LAST PASS and the repo header, and the band and notes that warn
+// ---- Who runs each batch, in LAST PASS and the repo header, and the band and notes that warn
 // when that disagrees with the repo's "Batches run by" row or the supervisor has stopped. On macOS,
 // with the fake launchctl loading sup's and halt's agents only.
 const run215 = { state: 'running', stage: '4/9' }, parked215 = { state: 'parked', park: { question: 'which copy?' } };
@@ -1365,6 +1365,10 @@ t('DS-215 AC4 a stopped handed-over batch with nothing for the user stays on hom
 put215('ask', 5280, 50, 'supervisor', false, { 'AS-1': parked215 });
 t('DS-215 AC6 a stopped session-run batch set to the supervisor whose only ticket needs you still gets the hand-over hint on home',
   /▲ ask +passes stopped\. To resume: run \/desk-autopilot in ask; it hands the batch to the supervisor at Stage 4\.$/m.test(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'ask'), { now: NOW, avail: 30 })), true);
+put215('closed', 5290, 50, 'supervisor', false, { 'CL-1': ready });
+const ovClosed = Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'closed'), { now: NOW, avail: 30 });
+t('DS-215 AC6 a stopped session-run batch set to the supervisor with only ready tickets stays on home, with the hand-over hint',
+  `${/^ {2}closed +■ stopped · 50m /.test(rowOf(ovClosed, 'closed') ?? '')} ${/▲ closed +passes stopped\. To resume: run \/desk-autopilot in closed; it hands the batch to the supervisor at Stage 4\.$/m.test(ovClosed)}`, 'true true');
 t('DS-215 AC7 with one ticket that needs you, the note still gives the count',
   lines(ovStall).some((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about the 1 ticket\.$/.test(l)), true);
 
