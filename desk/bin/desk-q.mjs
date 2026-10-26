@@ -1329,7 +1329,8 @@ function timingFields(r, F, x, h, now) {
     : h && h.k === 'needs' ? (open.length && prs.length === open.length
       ? (r.ctx.releases ? `at the next pass after ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'}` : `once ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'} and you release it`)
       : 'not until you act')
-      : h ? (open.length ? `after ${listed(open.map((b) => b.name))} ${open.length > 1 ? 'merge' : 'merges'}` : 'at the next pass')
+      : h ? (open.length ? `after ${listed(open.map((b) => b.name))} ${open.length > 1 ? 'merge' : 'merges'}`
+        : r.ctx.releases ? 'at the next pass' : 'once the next pass reads its PRs merged and you release it')
         : k === 'needs' ? 'once you answer it' : k === 'failed' ? 'once it is requeued' : r.workers === 0 ? 'not until workers are raised'
           : F?.paused ? 'when passes resume' : '—';
   const b = F && !undatable(F) ? undatedBlockers(r, F, t) : [];

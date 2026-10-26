@@ -1448,6 +1448,11 @@ t('DS-218 AC5 a held ticket: Starts says what it waits for, and Ships says no da
   'Starts    not until its outside blockers are done | Ships     no date / Starts    once #175 merges and you release it | Ships     no date / Starts    after DS-175 merges | Ships     no date');
 t('DS-218 AC5 behind a PR that needs you, where a supervisor releases holds: Starts at the next pass after it merges',
   lines(Q.ticketScreen(repo217('holdsup'), 'W-2H', { now: FIXED, width: 120 })).find((l) => l.startsWith('Starts')) ?? '', 'Starts    at the next pass after #180 merges');
+// Behind a PR whose status no pass has read yet, with too little history to date it and nothing to release it.
+dated('s218u', 5060, { hours: [4], tickets: { 'U-1': { state: 'done', result: { pr: 181 } }, 'U-2': heldBy('U-1') } });
+t('DS-218 AC5 behind an unread PR, where nothing releases holds: Starts does not promise the next pass',
+  lines(Q.ticketScreen(Q.loadRepos(FIXED).find((r) => r.name === 's218u'), 'U-2', { now: FIXED, width: 120 })).find((l) => l.startsWith('Starts')) ?? '',
+  'Starts    once the next pass reads its PRs merged and you release it');
 t('DS-218 AC6 a ticket others wait on lists them with their states', `${at218('DS-150', 'Holding up')} | ${at218('DS-175', 'Holding up')}`,
   'Holding up  ◌ DS-168 (blocked), ◆ DS-175 (needs you) wait on this ticket | Holding up  · DS-180 (waiting) waits on this ticket');
 const why168 = (s) => { const f = s.frame(), i = f.indexOf('Why lane A'); return f.slice(i + 1, f.indexOf('', i)); };
