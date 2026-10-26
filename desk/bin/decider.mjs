@@ -6,14 +6,14 @@
 // What a pass lists becomes items, each with an id that stays the same while the item does:
 //   - a lane C or D park, and anything naming a config §3 row that is not `yes`, is handed straight on;
 //   - the rest go to the session, unless already handed and not answered since (an answer through
-//     answer.mjs, which the ticket's briefing records);
+//     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason.
 // Handed items live in <state>/handed.json, which the digest lists; one the pass no longer lists is dropped.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { answersSince } from './handoff.mjs';
+import { answerEntriesSince } from './handoff.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -59,14 +59,18 @@ const writeHanded = (state, r) => writeFileSync(handedPath(state), `${JSON.strin
 
 // Has the person answered this ticket since the item was handed on? answer.mjs records every answer,
 // the digest's included, in the ticket's briefing.
-export function answered(state, entry) {
+export function answers(state, entry) {
   const brief = join(state, 'briefings', `${entry.ticket}.md`);
-  if (!existsSync(brief)) return false;
-  return answersSince(readFileSync(brief, 'utf8'), entry.at).length > 0;
+  if (!existsSync(brief)) return [];
+  return answerEntriesSince(readFileSync(brief, 'utf8'), entry.at);
 }
+export const answered = (state, entry) => answers(state, entry).length > 0;
 
-// Items a session may be started for: none handed on and still unanswered.
-export const freshItems = (state, items, handed = readHanded(state)) => items.filter((i) => !handed[i.id] || answered(state, handed[i.id]));
+// Items a session may be started for: none handed on and still unanswered. One answered since it was
+// handed on carries those answers ([{at, text}]), so the session acts on them.
+export const freshItems = (state, items, handed = readHanded(state)) => items
+  .filter((i) => !handed[i.id] || answered(state, handed[i.id]))
+  .map((i) => (handed[i.id] ? { ...i, answers: answers(state, handed[i.id]) } : i));
 
 // Records items handed on and returns the ones newly recorded. One already handed and still
 // unanswered keeps its time, so a later answer still counts; one answered since is handed again from now.
@@ -111,7 +115,12 @@ export function deciderSettings({ bin, state }) {
 }
 
 export function deciderPrompt({ slug, report, items, rules, bin }) {
-  const list = items.map((i) => `- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`).join('\n');
+  const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
+  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...answerLines(i)]).join('\n');
+  // Only when an item has answers, so a prompt without any reads as it always has.
+  const onAnswers = items.some((i) => i.answers?.length) ? [
+    '- an item with an answer under it was handed on and the person has answered it since: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B or E, requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+  ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
     '',
@@ -119,6 +128,7 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B or E: \`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
     '- never requeue a lane C or D park, never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
+    ...onAnswers,
     '',
     '## The items',
     '',

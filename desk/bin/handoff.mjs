@@ -86,13 +86,16 @@ export function resumeCheck({ worktree, key, branch }) {
 
 // The answers recorded in a briefing since `since` (ISO), oldest first: each answer.mjs section's
 // text, its heading being `## Answer from the user (<ISO time>)`.
-export function answersSince(brief, since) {
+export const answersSince = (brief, since) => answerEntriesSince(brief, since).map((a) => a.text);
+
+// The same answers with their times: [{at, text}], `at` as the heading gives it.
+export function answerEntriesSince(brief, since) {
   const t0 = Date.parse(since ?? '');
   return collectAnswers(brief).split(ANSWER_HEAD).slice(1)
     .map((s) => /^ \(([^)]+)\)\n([\s\S]*)$/.exec(s))
     .filter((m) => m && Date.parse(m[1]) >= t0)
-    .map((m) => m[2].trim())
-    .filter(Boolean);
+    .map((m) => ({ at: m[1], text: m[2].trim() }))
+    .filter((a) => a.text);
 }
 
 // The last round's summary: the stage it reached, the park question and its answer, and the branch
