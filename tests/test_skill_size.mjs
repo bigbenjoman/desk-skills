@@ -13,7 +13,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CAP = 20480;
 // The skills over the cap that are not split yet (DS-228's children). Each split takes its skill
 // off; a listed skill is not size-checked, so feature tickets can still grow it until then.
-const UNSPLIT = ['desk-autopilot', 'desk-ci', 'desk-setup'];
+const UNSPLIT = ['desk-autopilot', 'desk-ci'];
 // Reference files install.sh writes from another file in the checkout, so they are not in skills/.
 const INSTALLED = { 'desk-setup/references/desk-config.template.md': 'desk-config.md' };
 
