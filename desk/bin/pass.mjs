@@ -823,7 +823,12 @@ const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudge
 const TURNS = readTurns();
 report.waiting.push(...TURNS.removed);
 const TURN_SELF = `autopilot-${E.repoSlug()}`;
-const wantsWorker = concurrency > 0 && eligible.length > 0 && !held;
+// Only a batch that would start a worker but for memory waits: one at its own number, or with the
+// machine at its worker total, holds no CI slot, since freeing memory would start nothing here.
+const roomForOne = running.length < concurrency && machineBudget({
+  running: running.length, wanted: 1, machine: MACHINE_CAP, queues: MACHINE_CAP != null ? otherQueues({ self: QUEUE_FILE }) : [],
+}).room > 0;
+const wantsWorker = concurrency > 0 && eligible.length > 0 && !held && roomForOne;
 const ciHold = wantsWorker ? ciHolds({ running: running.length, live: TURNS.live, self: TURN_SELF }) : null;
 if (ciHold) report.stalled.push(`memory: CI is waiting for memory, so no new worker starts until its slot has (${running.length} running): ${waitLine(ciHold)}`);
 if (!DRY) {

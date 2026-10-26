@@ -19,8 +19,6 @@ import { lastBeat, liveBeat } from './borrow.mjs';
 export const STALE_MS = 30 * 60 * 1000;
 export const turnsDir = (home = E.deskHome()) => join(home, 'memory-turns');
 
-export const memoryFloor = E.memoryFloor;
-
 // What starting one more slot takes from `avail`: every slot's limit and the VM's own 2 GB, less what
 // the VM already holds, which `avail` has already lost.
 export function slotClaim({ slotGB, running, residentGB, reserveGB = RULES.vmReserveGB }) {
