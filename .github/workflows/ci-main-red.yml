@@ -41,15 +41,20 @@ jobs:
           set -u
           # The latest finished run of each watched workflow on main: tests from pushes, macOS from
           # any trigger. Red is failure, timed_out or startup_failure; a cancelled run says nothing.
-          latest() { gh run list --workflow "$1" --branch main ${2:+--event "$2"} --status completed --limit 10 \
-            --json conclusion,url,headSha --jq '[.[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0] // empty | "\(.conclusion) \(.url) \(.headSha[0:7])"'; }
+          latest() {
+            local q='[.[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0] // empty | "\(.conclusion) \(.url) \(.headSha[0:7])"'
+            if [ -n "${2:-}" ]; then gh run list --workflow "$1" --branch main --event "$2" --status completed --limit 10 --json conclusion,url,headSha --jq "$q"
+            else gh run list --workflow "$1" --branch main --status completed --limit 10 --json conclusion,url,headSha --jq "$q"; fi
+          }
           red=""
-          for w in "tests.yml push" "nightly-macos.yml"; do
-            # shellcheck disable=SC2086  # workflow and optional event, two words
-            l=$(latest $w) || { echo "cannot read runs of $w"; exit 1; }
-            echo "${w%% *}: ${l:-no finished run}"
-            case "${l%% *}" in failure|timed_out|startup_failure) red="$red- ${w%% *}: ${l#* }"$'\n' ;; esac
-          done
+          check() {  # <label> <workflow file> [event]
+            local l
+            l=$(latest "$2" "${3:-}") || { echo "cannot read the runs of $2"; exit 1; }
+            echo "$1: ${l:-no finished run}"
+            case "${l%% *}" in failure|timed_out|startup_failure) red="$red- $1: ${l#* }"$'\n' ;; esac
+          }
+          check tests tests.yml push
+          check "nightly macOS" nightly-macos.yml
           gh label create ci-main-red --color B60205 --description "tests are failing on main or nightly" 2>/dev/null || true
           issue=$(gh issue list --label ci-main-red --state open --limit 1 --json number --jq '.[0].number // empty')
           if [ -n "$red" ]; then
