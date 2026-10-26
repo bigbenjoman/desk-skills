@@ -1215,6 +1215,11 @@ t('DS-218 AC1 a landing PR that merges by itself moves without you', rail217('ho
 const halted218 = Q.loadRepos(NOW).find((r) => r.name === 'halted');
 t('DS-218 AC1 with passes stopped a ready ticket will not move until they resume, and says how',
   railText(Q.ticketScreen(halted218, 'HL-1', { now: NOW })), 'Will not move until passes resume. Run /desk-autopilot in halted.');
+put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch: 'halted', concurrency: 1, tickets: {
+  'HL-1': { state: 'running', stage: '3/9' }, 'HL-2': { ...heldBy('HL-1'), open_questions: 1, outside_blockers: outside(2) } } } });
+t('DS-218 AC1 with passes stopped a ticket blocked outside the batch still says what blocks it, not that passes would move it',
+  railText(Q.ticketScreen(Q.loadRepos(NOW).find((r) => r.name === 'halted'), 'HL-2', { now: NOW })).startsWith('Will not start on its own. 2 Jira tickets outside this batch'), true);
+put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch: 'halted', concurrency: 1, tickets: { 'HL-1': ready } } });
 t('DS-217 AC5 behind a blocker that needs you, failed or is parked: waiting, saying which',
   ['W-5N', 'W-5F', 'W-5P'].map((k) => cells217('hold', k)).join(' / '),
   '· waiting | behind W-3, which needs you / · waiting | behind B-RED, which failed / · waiting | behind B-PARK, which is parked');

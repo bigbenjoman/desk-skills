@@ -362,12 +362,12 @@ function idleNote(r) {
 const MERGED = ' merged tickets';
 const CHECKIN_DATED = ' · waiting-on-you tickets dated at the next check-in';
 const hitWords = (h) => ` shipped before their could-run-to time (last ${h.n} tickets)`;
-const noHitWords = (h) => `${h.n} merged ticket${h.n === 1 ? ' has' : 's have'} a saved first estimate, and a rate needs ${MIN_HITS}`;
 
 // How often the repo's saved first estimates held, for a ships view's header.
 function hitLine(r) {
   const h = hitRate(readEstimates(r.stateDir));
-  return h.pct == null ? `No hit rate yet: ${noHitWords(h)}.` : `${h.pct}%${hitWords(h)}`;
+  return h.pct == null ? `No hit rate yet: ${h.n} merged ticket${h.n === 1 ? ' has' : 's have'} a saved first estimate, and a rate needs ${MIN_HITS}.`
+    : `${h.pct}%${hitWords(h)}`;
 }
 const typical = (F, key) => quantile(durationsFor(F.d, F.sizes[key]).v, 0.5).toFixed(1);
 const listed = (keys) => keys.join(', ');
@@ -574,7 +574,7 @@ function forecastSegs(now, count, checkin, ep, r) {
   return segLine([['forecast  ', GREY], ['from ', GREY], [clock(now), null], [' · ', GREY], [RUNS.toLocaleString('en-GB'), BOLD], [' runs over ', GREY], [String(count), BOLD], [MERGED, GREY],
     ...(ep ? [[` · ${ep.key}: `, GREY], [`${ep.done} of ${ep.total}`, BOLD], [' children done', GREY]] : []),
     ...(checkin ? [[CHECKIN_DATED, GREY]] : []),
-    ...(!h ? [] : [BAR, ['hit rate  ', GREY], ...(h.pct == null ? [['none yet', null], [`: ${noHitWords(h)}`, GREY]]
+    ...(!h ? [] : [BAR, ['hit rate  ', GREY], ...(h.pct == null ? [['none yet', null], [`: ${h.n} of the ${MIN_HITS} saved estimates it needs`, GREY]]
       : [[`${h.pct}%`, BOLD], [hitWords(h), GREY]])])]);
 }
 
@@ -1249,15 +1249,15 @@ function moveOf(r, row, k, t, h, now) {
     if (m.k === 'needs') return { text: `Needs you. ${capital(m.text)}.` };
     return { text: `Moves without you: its PR #${ps.pr} is in CI, ${r.live ? holdingCheck(ps, now)[0] : `${passedOf(ps)} as of ${clock(Date.parse(ps.at))}`}.` };
   }
-  // With passes stopped nothing new starts and no hold is released, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
-    const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
-    return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
-  }
   if (k === 'stuck') {
     const n = outsideOf(t).length;
     return { text: `Will not start on its own. ${n} Jira ticket${n === 1 ? '' : 's'} outside this batch must be done first, and nothing in this batch can release it.`,
       lead: `If it can start without them, say so, in ${r.name}:`, cmds: [answerCmd(t.key)] };
+  }
+  // With passes stopped nothing new starts and no hold is released, so only resuming them moves it.
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
+    const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
+    return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
   if (h) {
     if (h.k === 'waiting') return { text: `Moves without you: ${h.text}.` };
