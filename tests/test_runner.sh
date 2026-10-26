@@ -654,6 +654,11 @@ check "the other repo's jobs cancelled: its idle slots go back, and the job stil
 rm -f "$v/slots"; queue 24 bigbenjoman_other 300 200 150; printf '%s 3\n%s 3\n' "$OT" "$RP" > "$SL"
 STUB_RUNS_FAIL=voicepa run slots
 check "a repo whose queue GitHub will not give keeps its share before the other's jobs take the rest" '[ "$(running "$RP")" -ge 1 ] && [ "$(running)" = 3 ]'
+TH=bigbenjoman/third; rm -f "$v/slots" "$T/runs-queued-bigbenjoman_other.json"
+off_profile; printf '%s 3\n' "$OT" > "$SL"; run slots; on_profile
+printf '%s 3\n%s 3\n%s 3\n' "$OT" "$TH" "$RP" > "$SL"; queue 25 bigbenjoman_third 300 200 150
+STUB_RUNS_FAIL=voicepa run slots
+check "... and when idle slots fill the VM, the share comes from those they give back" '[ "$(running "$OT")" = 0 ] && [ "$(running "$RP")" -ge 1 ] && [ "$(running)" = 3 ]'
 rm -f "$T"/runs-queued-*.json; no_runs; run scale "$OT" 0; run scale "$RP" 0; rm -f "$v/slots" "$SL"
 profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off
 run scale "$RP" 2
