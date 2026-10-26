@@ -126,8 +126,13 @@ t('AC7 with no worker running and the reading 6 minutes old, each interval probe
 const fake = join(T, 'bin', 'claude');
 writeFileSync(fake, `#!/bin/sh\nprintf '%s|%s\\n' "\${ANTHROPIC_API_KEY-unset}" "$*" >> "${join(T, 'calls')}"\n`
   + `echo '{"type":"system"}'\necho '${event([0.23, Math.round(Date.now() / 1000) + 3600], [0.45, Math.round(Date.now() / 1000) + 86400])}'\n`, { mode: 0o755 });
-const run = (now) => new Promise((res) => { P.probe({ claude: fake, env: { ...process.env, ANTHROPIC_API_KEY: 'not-a-real-key' }, now, done: () => res(true) })
-  .then((r) => { if (!r.ran) res(r.why); }); });
+// The probe's child is unref'd, so the test holds the event loop open until it reports back.
+const run = (now) => new Promise((res) => {
+  const hold = setInterval(() => {}, 100);
+  const end = (v) => { clearInterval(hold); res(v); };
+  P.probe({ claude: fake, env: { ...process.env, ANTHROPIC_API_KEY: 'not-a-real-key' }, now, done: () => end(true) })
+    .then((r) => { if (!r.ran) end(r.why); });
+});
 const real = Date.now();
 t('AC7 the probe runs', await run(real), true);
 const got = P.readUsage({ dirs: [], now: Date.now() });
