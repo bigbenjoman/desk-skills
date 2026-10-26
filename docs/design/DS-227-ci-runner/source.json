@@ -1,0 +1,34 @@
+{
+  "url": "https://claude.ai/artifact/EPXGrqoZgDRGE15xdgxeUx",
+  "version": "1792948369-6668",
+  "fetched_at": "2026-10-25T17:24:34.995Z",
+  "dir": "DS-227",
+  "tickets": [
+    {
+      "key": "DS-227",
+      "boards": []
+    },
+    {
+      "key": "DS-254",
+      "boards": []
+    },
+    {
+      "key": "DS-255",
+      "boards": []
+    },
+    {
+      "key": "DS-256",
+      "boards": []
+    },
+    {
+      "key": "DS-257",
+      "boards": []
+    },
+    {
+      "key": "DS-258",
+      "boards": []
+    }
+  ],
+  "boards": [],
+  "files": []
+}
