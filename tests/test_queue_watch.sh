@@ -133,6 +133,20 @@ stop_watch
 out=$(cat "$T/watch.out")
 check "DS-201 AC3 an answered question leaves the row"                      '[ "$(tables)" = 4 ] && [ "$(grep -c "asks: ship it" "$T/watch.out")" = 1 ]'
 
+# A PR opened while its worker carries on, and a merge, are state changes the watch shows.
+q add T-4; q set T-4 state=done result.pr=41
+watch_bg --interval 0.3
+until_tables 1
+q set T-1 draft_pr=40
+until_tables 2
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 a PR opened while its worker runs prints on its row"       '[ "$(tables)" = 2 ] && [[ "$out" == *"RUNNING  T-1       stage 9/9  port 3501  PR #40"* ]]'
+q set T-4 merged_at=2026-10-26T07:00:00.000Z
+until_tables 3
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 a merge prints on its row"                                 '[ "$(tables)" = 3 ] && [ "$(grep -c "DONE     T-4       PR #41 merged" "$T/watch.out")" = 1 ]'
+
 setting quiet
 watch_bg --interval 0.3
 until_tables 1
@@ -143,6 +157,18 @@ n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
 stop_watch
 out=$(cat "$T/watch.out")
 check "DS-201 AC1 quiet: a stage step gets no change line, a state change does" '! grep -q "^T-1 " "$T/watch.out" && grep -q "^T-3 .*PARKED which colour → FAILED" "$T/watch.out" && [ "$(mems)" = 2 ]'
+
+q add T-5; q set T-5 state=running stage=7/9 port=3502
+q add T-6; q set T-6 state=done result.pr=51
+watch_bg --interval 0.3
+until_tables 1
+q set T-5 draft_pr=50
+n=0; while [ "$(mems)" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
+q set T-6 merged_at=2026-10-26T07:00:00.000Z
+n=0; while [ "$(mems)" -lt 3 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
+stop_watch
+out=$(cat "$T/watch.out")
+check "DS-201 AC2 quiet: a PR opened and a merge each get a change line"     'grep -q "^T-5 .*port 3502 → RUNNING port 3502  PR #50$" "$T/watch.out" && grep -q "^T-6 .*DONE PR #51 → DONE PR #51 merged$" "$T/watch.out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

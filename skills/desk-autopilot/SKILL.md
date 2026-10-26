@@ -846,7 +846,9 @@ for the person, a PR landing, a merge, a failure. Not on memory jitter, and not 
 changed nothing. **A worker stepping from one stage to the next no longer wakes you**: each wake
 re-reads your whole context, and desk-q already shows every stage. The table printed on the next
 real change carries each running ticket's current stage. `queue.mjs watch --stages` fires on stage
-steps too, as it used to.
+steps too, as it used to. A draft PR a worker opens while it carries on shows on its running row
+once a pass finds it on GitHub (from Stage 7, kept as `draft_pr`), and a merge (`queue.mjs merged`)
+marks the done row `merged`, so both wake you.
 
 | Ticket | State | Stage | Port | Notes |
 |---|---|---|---|---|

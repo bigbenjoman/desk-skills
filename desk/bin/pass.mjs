@@ -394,6 +394,14 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   const stage = [...h.matchAll(/AUTOPILOT_STAGE:\s*(\S+)/g)].pop()?.[1];
   if (stage && stage !== t.stage) { q('set', t.key, `stage=${stage}`); report.advanced.push(`${t.key} → ${stage}`); }
+  // A worker opens its draft PR at Stage 7 and carries on (review, Jira) before it prints DONE, and
+  // only DONE records result.pr. From Stage 7 on, ask GitHub once a pass until the PR shows, and keep
+  // it as draft_pr, so the status watch shows a PR opened while its worker still runs.
+  if (t.draft_pr == null && t.branch && parseInt(stage ?? t.stage, 10) >= 7) {
+    const opened = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch,
+      '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
+    if (/^\d+$/.test(opened)) { q('set', t.key, `draft_pr=${opened}`); report.advanced.push(`${t.key} opened PR #${opened}`); }
+  }
 
   // ORDER MATTERS, and getting it wrong re-parks finished tickets. A worker that parks, gets
   // answered, posts and exits leaves BOTH markers in the log. Taking the last PARK unconditionally
@@ -1249,7 +1257,7 @@ for (const t of eligible) {
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'result=null', 'images_uploaded=null', 'images_reported=null',
+    'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.

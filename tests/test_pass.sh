@@ -92,7 +92,7 @@ check "DS-193 AC2 a directory with no image runs no upload and reports nothing" 
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
 
 # T-3: round one finished with PR 1 and uploaded; it is requeued for a deliberate re-run.
-q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true
+q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true draft_pr=1
 say "AUTOPILOT_IMAGES: $T/state/images/T-3/" "AUTOPILOT_DONE: pr=1 jira=none" > "$T/state/logs/T-3.log"
 echo older > "$T/state/logs/T-3.log.round1"
 : > "$T/uploads"
@@ -101,6 +101,7 @@ check "the requeued ticket spawns"                      '[ "$(field T-3 state)" 
 check "spawn clears result"                             '[ "$(field T-3 result)" = null ]'
 check "spawn clears images_uploaded"                    '[ "$(field T-3 images_uploaded)" = null ]'
 check "spawn clears images_reported"                    '[ "$(field T-3 images_reported)" = null ]'
+check "DS-201 spawn clears the last round's draft_pr"   '[ "$(field T-3 draft_pr)" = null ]'
 check "spawn moves the log to the next free round, compressed" '! grep -q "pr=1" "$T/state/logs/T-3.log" && gzip -dc "$T/state/logs/T-3.log.round2.gz" | grep -q "pr=1" && [ ! -e "$T/state/logs/T-3.log.round2" ] && grep -qx older "$T/state/logs/T-3.log.round1"'
 check "DS-158 AC3 a preflight that reports no cost leaves it unknown in the spawn line and the new log" 'echo "$out" | grep -q "T-3 port=.*; preflight cost unknown, turns unknown" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":null,\"num_turns\":null" "$T/state/logs/T-3.log"'
 
@@ -176,6 +177,18 @@ gone=no; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SPID" 2>/dev/null || { gone
 check "a DONE log with a live session records the ticket done" '[ "$(field T-10 state)" = "\"done\"" ] && [ "$(field T-10 result.pr)" = 10 ]'
 check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: pr=10 jira=none (session still live after DONE — stopped pid $SPID)"'
 kill "$SPID" 2>/dev/null
+
+# P-1: a live worker that opens its draft PR at Stage 7 and carries on. The stub gh has it open.
+printf '#!/bin/sh\ncase "$*" in *"--head fix/P-1"*) echo 77 ;; esac\n' > "$T/stub/gh"
+q add P-1; q set P-1 state=running branch=fix/P-1 session_id=live-1 stage=5/9
+say "AUTOPILOT_STAGE: 6/9 evidence" > "$T/state/logs/P-1.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-201 AC2 before Stage 7 the pass does not look for the PR"      '[ "$(field P-1 draft_pr)" = null ]'
+say "AUTOPILOT_STAGE: 7/9 pr" >> "$T/state/logs/P-1.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-201 AC2 a PR a running worker opened is kept as draft_pr"      '[ "$(field P-1 draft_pr)" = 77 ] && [ "$(field P-1 state)" = "\"running\"" ] && echo "$out" | grep -q "P-1 opened PR #77"'
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+q drop P-1
 
 # T-11: a finished worker that has gone quiet long enough for the stall killer: done, never wedged.
 # T-12 is the same without the marker, which the stall killer still parks.
