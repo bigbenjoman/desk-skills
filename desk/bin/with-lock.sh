@@ -25,7 +25,11 @@
 # the wait for the lock, never the command, and exits 75 without running anything when it passes.
 set -uo pipefail
 name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
-name="${name,,}"  # PLANTED (throwaway PR): bash 4+ case conversion, "bad substitution" on macOS /bin/bash 3.2
+# PLANTED (throwaway PR): the DS-100 shape, an apostrophe in a heredoc inside $( ); bash 5 parses it, 3.2 does not
+_planted=$(cat <<'NOTE'
+it's here
+NOTE
+)
 timeout=""
 if [ "${1:-}" = "--timeout" ]; then
   case "${2:-}" in ''|*[!0-9]*) echo "with-lock.sh: --timeout needs a whole number of seconds" >&2; exit 2 ;; esac
