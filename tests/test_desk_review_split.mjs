@@ -1,4 +1,5 @@
 // suite: desk-review split (a core of 20 KB or less, and each phase's rules in its own file)
+// covers: skills/** docs/** README.md
 // tests/fixtures/desk-review-before-split.md is desk-review's SKILL.md as one file. Every heading,
 // table row and paragraph of it must still be in the core or one reference file, the core must name
 // the file for each phase, and every citation of a desk-review section must still find it.

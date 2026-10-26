@@ -35,6 +35,7 @@ jobs:
       RUN_URL: ${{ github.event.workflow_run.html_url }}
       RUN_SHA: ${{ github.event.workflow_run.head_sha }}
       RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      RUN_CREATED: ${{ github.event.workflow_run.created_at }}
     steps:
       - name: Open, update or close the issue
         run: |
@@ -42,14 +43,21 @@ jobs:
           # The latest finished run of each watched workflow on main: tests from pushes, macOS from
           # any trigger. Red is failure, timed_out or startup_failure; a cancelled run says nothing.
           latest() {
-            local q='[.[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0] // empty | "\(.conclusion) \(.url) \(.headSha[0:7])"'
-            if [ -n "${2:-}" ]; then gh run list --workflow "$1" --branch main --event "$2" --status completed --limit 10 --json conclusion,url,headSha --jq "$q"
-            else gh run list --workflow "$1" --branch main --status completed --limit 10 --json conclusion,url,headSha --jq "$q"; fi
+            local q='[.[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0] // empty | "\(.conclusion) \(.url) \(.headSha[0:7]) \(.createdAt)"'
+            if [ -n "${2:-}" ]; then gh run list --workflow "$1" --branch main --event "$2" --status completed --limit 10 --json conclusion,url,headSha,createdAt --jq "$q"
+            else gh run list --workflow "$1" --branch main --status completed --limit 10 --json conclusion,url,headSha,createdAt --jq "$q"; fi
           }
           red=""
           check() {  # <label> <workflow file> [event]
             local l
             l=$(latest "$2" "${3:-}") || { echo "cannot read the runs of $2"; exit 1; }
+            # The run that triggered this is the newest of its workflow unless the listing shows a later
+            # one; prefer its own conclusion, which the listing may not show yet.
+            if [ "$1" = "$RUN_NAME" ] && [ "$RUN_CONCLUSION" != cancelled ] && [ "$RUN_CONCLUSION" != skipped ] &&
+               { [ -z "$l" ] || [[ ! "${l##* }" > "$RUN_CREATED" ]]; }; then
+              l="$RUN_CONCLUSION $RUN_URL ${RUN_SHA:0:7} $RUN_CREATED"
+            fi
+            l=${l% *}
             echo "$1: ${l:-no finished run}"
             case "${l%% *}" in failure|timed_out|startup_failure) red="$red- $1: ${l#* }"$'\n' ;; esac
           }

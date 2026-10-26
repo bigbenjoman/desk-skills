@@ -1,0 +1,41 @@
+# Bash 4+ features that bash 3.2 (macOS /bin/bash) parses but fails on when run, or rejects. One ERE
+# per line, for grep -E (GNU and BSD); tests/bash32_check.sh scans shell scripts with them. Lines
+# starting with # and blank lines are skipped. tests/fixtures/bash32-newer.txt holds a case for each.
+# case conversion ${v,,} ${v^^} ${v,} ${v^}
+\$\{[!#]?[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,|\^)
+# transforms ${v@Q}
+\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@[QEPAaUuLKk]\}
+# declare/local/typeset/readonly with -g -n -l -u -N -A, alone or among other flags
+(^|[;&|[:space:](!{])(declare|local|typeset|readonly)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*[gnluNA]
+# local - (save shell options)
+(^|[;&|[:space:](!{])local[[:space:]]+-([[:space:];&|)]|$)
+# exec {fd}> : a file descriptor in a variable
+(^|[^$A-Za-z0-9_])\{[A-Za-z_][A-Za-z0-9_]*\}([<>]|&>)
+# read -t with a fraction
+(^|[;&|[:space:](!{])read[[:space:]][^;|&]*-[a-zA-Z]*t[[:space:]]*[0-9]*\.[0-9]
+# shopt options 3.2 lacks, anywhere in the list
+(^|[;&|[:space:](!{])shopt[[:space:]][^;|&#]*(globstar|lastpipe|inherit_errexit|direxpand|autocd|checkjobs|localvar_inherit|localvar_unset|assoc_expand_once|globasciiranges|patsub_replacement|compat4[0-9])
+# [ -v x ], [[ -v x ]], test -v x
+(\[|(^|[;&|[:space:](!{])test)[[:space:]]+(![[:space:]]+)?-v[[:space:]]
+# a negative array subscript, read or assigned
+\$\{#?[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-[[:space:]]*[0-9]
+(^|[;&|[:space:](!{])[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-[[:space:]]*[0-9]+[[:space:]]*\]\+?=
+# variables added in 4.x and 5.x
+\$\{?(EPOCHSECONDS|EPOCHREALTIME|BASH_ARGV0|BASHPID|SRANDOM)([^A-Za-z0-9_]|$)
+# wait -n, wait -p
+(^|[;&|[:space:](!{])wait[[:space:]][^;|&#]*-[a-zA-Z]*[np]([[:space:]]|$)
+# {a..b..step} and zero-padded {01..10}
+(^|[^$])\{-?[A-Za-z0-9]+\.\.-?[A-Za-z0-9]+\.\.-?[0-9]+\}
+(^|[^$])\{-?0[0-9]+\.\.-?[0-9]+\}
+# printf -v into an array element
+(^|[;&|[:space:](!{])printf[[:space:]]+-v[[:space:]]+['"]?[A-Za-z_][A-Za-z0-9_]*\[
+# mapfile, readarray, coproc
+(^|[;&|[:space:](!{])(mapfile|readarray|coproc)([[:space:]]|$)
+# |& and &>>
+\|&
+&>>
+# ;& and ;;& in case
+;;&
+[^;];&([[:space:]]|$)
+# printf %(fmt)T
+%\([^)]*\)T

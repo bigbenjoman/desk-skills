@@ -1,4 +1,5 @@
 // suite: worker contract (a short core, and each stage's rules in its own file)
+// covers: skills/desk-autopilot/references/**
 // tests/fixtures/worker-contract-before-split.md is the whole contract as one file. Every heading and
 // every paragraph of it must still be in the core or a stage section, so an edit that drops a rule
 // from the split files fails here.

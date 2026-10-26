@@ -1,0 +1,13 @@
+x=${y:-a,b}
+echo "${#arr[@]}" "${arr[1]}" "${!arr[@]}" "${x:1:2}" "${x//a/b}" "${x%%,*}"
+declare -a list=() ; local -r x=1 ; declare -x -i n=2 ; declare -f fn
+echo "$(( ${#a[@]} - 1 ))" "${a[${#a[@]}-1]}"
+read -r -t 5 line
+shopt -s nullglob extglob
+[ -n "$v" ] && test -f x && [[ -z $v ]]
+wait "$pid"; wait
+echo {1..10} {a..e} ${x}>out
+printf -v out '%s' x
+echo a | cat; echo b >> f 2>&1
+case $x in a) echo ;; esac
+out = lines[-1]

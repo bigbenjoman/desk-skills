@@ -10,12 +10,13 @@
 //     suites that walk a directory rather than naming files (globs: `*` within a segment, `**` across).
 //     A glob claims documents and data only: a script must be named to be claimed, so a script no
 //     suite runs is unclaimed, and changing it runs everything;
-//   - a script the suite claims loads it into its own process (an ES import, or a shell `source`),
-//     followed transitively, except through a foundational file (desk-env.mjs; changing it runs all).
-//     A script that a claimed script runs as a separate command is NOT followed: in this repo
-//     pass.mjs, queue.mjs and the merge driver run one another, so following those calls claims every
-//     script for every suite and scopes nothing. A suite that drives a whole flow names the scripts it
-//     depends on, and push to main runs everything, so a miss here turns main red, not silent.
+//   - a script the suite claims loads it (an ES import, a shell `source`) or launches it by a path
+//     built from a directory (`join(BIN, 'x.mjs')`, `"$DIR/x.sh"`; see loads()), followed
+//     transitively, except through a foundational file (desk-env.mjs; changing it runs all). The
+//     orchestration scripts launch one another, so much of desk/bin is claimed by a third or more of
+//     the suites, and changing it runs everything.
+// A suite with a `// claims: imports` (`# claims: imports`) line uses repo file names as test data
+// (the scoping suites themselves): its text names nothing, and only its import statements are followed.
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
 //   full  - tests/run.sh, any other file under tests/ that is not a suite (helpers, stubs, fixtures,
@@ -121,10 +122,11 @@ export function buildMap(files, read) {
     const head = t.split('\n').slice(0, 30);
     const label = (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, '') || s.slice(6);
     const covers = head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/));
-    out.push({ file: s.slice(6), label, covers });
+    const importsOnly = head.some((l) => /^(#|\/\/) claims: imports\b/.test(l));
+    out.push({ file: s.slice(6), label, covers, importsOnly });
     if (ALWAYS.includes(s.slice(6))) continue;
     const seen = new Set();
-    const todo = [...namedBy(s)];
+    const todo = importsOnly ? [...mentions(loads(s, t, { importsOnly }))].flatMap((k) => [...(names.get(k) ?? [])]) : [...namedBy(s)];
     const res = covers.map(globRe);
     for (const f of nodes) if (!isCode(f) && res.some((r) => r.test(f))) todo.push(f);
     while (todo.length) {
@@ -179,13 +181,34 @@ export function decide(changes, map) {
   return { scope: 'some', reason: `${changes.length} changed file(s) reach ${suites.length} of ${all.length} suites`, suites, shells: shellsOf([...changes.map((c) => c.path), ...suites.map((s) => `tests/${s}`), ...claimed]) };
 }
 
-// What a script loads into its own process: ES module imports (static or `import()`) and shell
-// `source` / `.` lines. A script it runs as a separate command is not followed (see the header).
-export function loads(path, text) {
+// What a script loads into its own process (ES imports, static or `import()`, and shell `source` / `.`
+// lines) and what it launches as a command by a path built from a directory: `join(BIN, 'x.mjs')`
+// (and `resolve(...)`, `new URL('./x', import.meta.url)`, Python's `os.path.join`) in JavaScript or
+// Python, `"$DIR/x.sh"`, `${DIR}/x`, `$(dirname "$0")/x` in shell. A name in a message or a comment
+// is neither, so it is not followed.
+const quoted = (s) => [...s.matchAll(/(['"`])([^'"`$]*)\1/g)].map((m) => m[2]);
+export function loads(path, text, { importsOnly = false } = {}) {
   const t = String(text);
-  if (/\.(mjs|cjs|js)$/.test(path)) return [...t.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)(['"`])([^'"`]+)\1/g)].map((m) => m[2]).join('\n');
-  if (/\.py$/.test(path)) return '';
-  return t.split('\n').filter((l) => /^\s*(source|\.)\s/.test(l)).join('\n');
+  const out = [];
+  if (/\.(mjs|cjs|js|py)$/.test(path)) {
+    const code = t.replace(/\/\*[\s\S]*?\*\//g, ' ').split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');
+    if (!/\.py$/.test(path)) {
+      // `import x from './a.mjs'`, `} from './a.mjs'`, `import './a.mjs'`: no quote before the keyword on
+      // its line, so a fixture string that holds an import is not one.
+      for (const m of code.matchAll(/^[^'"`\n]*\b(?:from|import)\s+(['"])([^'"]+)\1/gm)) out.push(m[2]);
+      for (const m of code.matchAll(/\bimport\(\s*(['"`])([^'"`$]+)\1\s*\)/g)) out.push(m[2]);
+    }
+    if (importsOnly) return out.join('\n');
+    for (const m of code.matchAll(/\b(?:join|resolve)\(([^()]*)\)/g)) { const q = quoted(m[1]); if (q.length) out.push(q.join('/')); }
+    for (const m of code.matchAll(/new URL\(\s*(['"`])([^'"`]+)\1\s*,\s*import\.meta\.url/g)) out.push(m[2]);
+    return out.join('\n');
+  }
+  for (const l of t.split('\n')) {
+    if (/^\s*#/.test(l)) continue;
+    if (/^\s*(source|\.)\s/.test(l)) out.push(l);
+    for (const m of l.matchAll(/(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\))\/([A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*)/g)) out.push(m[1]);
+  }
+  return out.join('\n');
 }
 
 const git = (root, args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 64 << 20 });
