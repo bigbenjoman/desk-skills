@@ -823,16 +823,17 @@ const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudge
 const TURNS = readTurns();
 report.waiting.push(...TURNS.removed);
 const TURN_SELF = `autopilot-${E.repoSlug()}`;
-// Only a batch that would start a worker but for memory waits: one at its own number, or with the
-// machine at its worker total, holds no CI slot, since freeing memory would start nothing here.
+const wantsWorker = concurrency > 0 && eligible.length > 0 && !held;
+// Only a batch that would start a worker of its own but for memory leaves a marker: one at its own
+// number, or with the machine at its worker total, holds no CI slot, since freeing memory would start
+// nothing here. CI's wait still holds every spawn, a borrowed one included.
 const roomForOne = running.length < concurrency && machineBudget({
   running: running.length, wanted: 1, machine: MACHINE_CAP, queues: MACHINE_CAP != null ? otherQueues({ self: QUEUE_FILE }) : [],
 }).room > 0;
-const wantsWorker = concurrency > 0 && eligible.length > 0 && !held && roomForOne;
 const ciHold = wantsWorker ? ciHolds({ running: running.length, live: TURNS.live, self: TURN_SELF }) : null;
 if (ciHold) report.stalled.push(`memory: CI is waiting for memory, so no new worker starts until its slot has (${running.length} running): ${waitLine(ciHold)}`);
 if (!DRY) {
-  if (wantsWorker && (lowMemory || ciHold)) {
+  if (wantsWorker && roomForOne && (lowMemory || ciHold)) {
     writeTurn(TURN_SELF, {
       side: 'autopilot', state: STATE, queue: QUEUE_FILE,
       why: lowMemory ? `${eligible.length} ticket(s) ready, ${gateGB.toFixed(1)}G available${reserved}, under the ${MIN_AVAIL_GB}G spawn gate`

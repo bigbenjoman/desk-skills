@@ -1077,6 +1077,10 @@ check "DS-252 a dry run writes no marker" '[ -z "$(ls "$MT"/autopilot-*.json 2>/
 rm -f "$MT/ci.json"
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-252 a batch at its own worker number holds no CI slot, low memory or not" '[ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
+ci_waits 60
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-252 CI's wait holds a batch at its own number too, so a borrowed worker cannot pass it" 'echo "$out" | grep -q "memory: CI is waiting for memory, so no new worker starts until its slot has (2 running)" && [ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
+rm -f "$MT/ci.json"
 q set-batch concurrency=3
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-252 with room for a worker, low memory leaves the batch's marker" 'grep -q "under the 100000G spawn gate" "$MT"/autopilot-*.json'
