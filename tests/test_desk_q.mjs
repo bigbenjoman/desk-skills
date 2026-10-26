@@ -132,7 +132,7 @@ t('AC10 no match exits non-zero listing the repos', zz.code !== 0 && /forewatt/.
 const show = W.run('--plain', 'voicepa', 'show', 'VPL-3');
 const want = ['Long gaps between bookings', 'waiting', '▌ Moves without you: behind VPL-1 (running, stage 4/9).', 'Blockers  2, all in this batch\n  ✓ 1 merged', '  ● VPL-1     running    Running-late sheet', 'lane A', 'Why lane A', 'mechanical once the gap rule is read', 'Files in scope · 2', 'src/gaps.ts', 'Branch    feat/VPL-3-gaps', `Open      log ${join(W.env.HOME, '.desk-autopilot', 'acme__voicepa', 'logs', 'VPL-3.log')}`];
 t('AC11 show prints every field', want.filter((w) => !show.out.includes(w)).join(' | '), '');
-t('AC11 show leaves out the merged blocker', lines(show.out).some((l) => /^\s+VPL-0\b/.test(l)), false);
+t('AC11 show lists the merged blocker under its count, as a does on screen', lines(show.out).some((l) => /^ {2}✓ VPL-0\b/.test(l)), true);
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);
 // ---- AC12: no arguments, output not a terminal: the overview, exit 0
 const bare = W.run();
@@ -1207,6 +1207,14 @@ t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W
 t('DS-217 AC3 and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 })).find((l) => l.startsWith('◆ '))?.includes(' hold 4'), true);
 t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176 will not merge on its own: merge it');
 t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '◆ needs you | #179 will not merge on its own: merge it');
+const rail217 = (name, key) => railText(Q.ticketScreen(repo217(name), key, { now: FIXED }));
+t('DS-218 AC1 a landing PR\'s own page says it needs you where its blockers\' pages would: a draft, one nothing merges, a conflict, a merge hold',
+  ['hold B-DRAFT', 'hold B-READY', 'holdsup B-CONF', 'holdsup B-HOLD'].map((s) => rail217(...s.split(' '))).join(' / '),
+  'Needs you. #175 is a draft: undraft and merge it. / Needs you. #176 will not merge on its own: merge it. / Needs you. #178 conflicts with its base: resolve it. / Needs you. #180 is under a merge hold: merge it.');
+t('DS-218 AC1 a landing PR that merges by itself moves without you', rail217('holdsup', 'B-GREEN').startsWith('Moves without you: its PR #177 is in CI, '), true);
+const halted218 = Q.loadRepos(NOW).find((r) => r.name === 'halted');
+t('DS-218 AC1 with passes stopped a ready ticket will not move until they resume, and says how',
+  railText(Q.ticketScreen(halted218, 'HL-1', { now: NOW })), 'Will not move until passes resume. Run /desk-autopilot in halted.');
 t('DS-217 AC5 behind a blocker that needs you, failed or is parked: waiting, saying which',
   ['W-5N', 'W-5F', 'W-5P'].map((k) => cells217('hold', k)).join(' / '),
   '· waiting | behind W-3, which needs you / · waiting | behind B-RED, which failed / · waiting | behind B-PARK, which is parked');

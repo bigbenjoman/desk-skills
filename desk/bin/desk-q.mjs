@@ -141,16 +141,8 @@ function blockerHold(q, key, b, ctx, seen) {
     if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: release it`, act: releaseCmd(key) };
     const ps = prStatusOf(bt), pr = `#${n}`;
     if (ps.state === 'CLOSED') return { k: 'needs', name: pr, text: `${pr} was closed unmerged: release it`, act: releaseCmd(key) };
-    if (ps.isDraft === true) return { k: 'needs', name: pr, text: `${pr} is a draft: undraft and merge it` };
-    // The merge driver skips a conflicting PR, and nothing in the batch resolves the conflict.
-    if (ps.mergeable === 'CONFLICTING') return { k: 'needs', name: pr, text: `${pr} conflicts with its base: resolve it` };
-    // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
-    if (String(bt.merge_blocked ?? '').startsWith('merge hold:')) return { k: 'needs', name: pr, text: `${pr} is under a merge hold: merge it` };
-    if (!ctx.merges) return { k: 'needs', name: pr, text: `${pr} will not merge on its own: merge it` };
-    const failed = (ps.checks ?? []).find(checkFailed);
-    if (failed) return { k: 'needs', name: pr, text: `${pr}: ${failed.name} failed: fix or re-run it` };
-    const green = (ps.checks ?? []).length > 0 && ps.checks.every((c) => c.status === 'completed');
-    return { k: 'waiting', name: pr, text: `behind ${pr}: ${green ? 'checks passed, merging' : 'checks running, merges when green'}` };
+    const m = prMerge(bt, ps, ctx);
+    return { k: m.k, name: pr, text: m.k === 'needs' ? m.text : `behind ${pr}: ${m.text}` };
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
   if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: release one of them`, act: releaseCmd(key) };
@@ -158,6 +150,22 @@ function blockerHold(q, key, b, ctx, seen) {
   const which = bt.state === 'parked' && !isHeld(bt) && !spinePark(bt) ? 'which is parked'
     : bk === 'needs' ? 'which needs you' : bk === 'failed' ? 'which failed' : bk === 'stuck' ? 'which is blocked' : null;
   return { k: 'waiting', name: b, text: which ? `behind ${b}, ${which}` : `behind ${b}` };
+}
+
+// Whether a done ticket's PR, recorded but not closed, merges without the user, as { k, text }:
+// `needs` names what the user has to do, `waiting` how far its checks are.
+function prMerge(bt, ps, ctx) {
+  const pr = `#${bt.result.pr}`;
+  if (ps?.isDraft === true) return { k: 'needs', text: `${pr} is a draft: undraft and merge it` };
+  // The merge driver skips a conflicting PR, and nothing in the batch resolves the conflict.
+  if (ps?.mergeable === 'CONFLICTING') return { k: 'needs', text: `${pr} conflicts with its base: resolve it` };
+  // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
+  if (String(bt.merge_blocked ?? '').startsWith('merge hold:')) return { k: 'needs', text: `${pr} is under a merge hold: merge it` };
+  if (!ctx.merges) return { k: 'needs', text: `${pr} will not merge on its own: merge it` };
+  const failed = (ps?.checks ?? []).find(checkFailed);
+  if (failed) return { k: 'needs', text: `${pr}: ${failed.name} failed: fix or re-run it` };
+  const green = (ps?.checks ?? []).length > 0 && ps.checks.every((c) => c.status === 'completed');
+  return { k: 'waiting', text: green ? 'checks passed, merging' : 'checks running, merges when green' };
 }
 
 // Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
@@ -350,11 +358,16 @@ function idleNote(r) {
     + `${session ? ` (${session} need${session === 1 ? 's' : ''} an interactive session)` : ''}.`;
 }
 
+// The forecast and hit-rate wording `desk-q ships` and the tabs' forecast line share.
+const MERGED = ' merged tickets';
+const CHECKIN_DATED = ' · waiting-on-you tickets dated at the next check-in';
+const hitWords = (h) => ` shipped before their could-run-to time (last ${h.n} tickets)`;
+const noHitWords = (h) => `${h.n} merged ticket${h.n === 1 ? ' has' : 's have'} a saved first estimate, and a rate needs ${MIN_HITS}`;
+
 // How often the repo's saved first estimates held, for a ships view's header.
 function hitLine(r) {
   const h = hitRate(readEstimates(r.stateDir));
-  return h.pct == null ? `No hit rate yet: ${h.n} merged ticket${h.n === 1 ? ' has' : 's have'} a saved first estimate, and a rate needs ${MIN_HITS}.`
-    : `${h.pct}% shipped before their could-run-to time (last ${h.n} tickets)`;
+  return h.pct == null ? `No hit rate yet: ${noHitWords(h)}.` : `${h.pct}%${hitWords(h)}`;
 }
 const typical = (F, key) => quantile(durationsFor(F.d, F.sizes[key]).v, 0.5).toFixed(1);
 const listed = (keys) => keys.join(', ');
@@ -558,11 +571,11 @@ function tabHead(repos, slug, now) {
 // merged tickets, then with one repo, its hit rate.
 function forecastSegs(now, count, checkin, ep, r) {
   const h = r ? hitRate(readEstimates(r.stateDir)) : null;
-  return segLine([['forecast  ', GREY], ['from ', GREY], [clock(now), null], [' · ', GREY], [RUNS.toLocaleString('en-GB'), BOLD], [' runs over ', GREY], [String(count), BOLD], [' merged tickets', GREY],
+  return segLine([['forecast  ', GREY], ['from ', GREY], [clock(now), null], [' · ', GREY], [RUNS.toLocaleString('en-GB'), BOLD], [' runs over ', GREY], [String(count), BOLD], [MERGED, GREY],
     ...(ep ? [[` · ${ep.key}: `, GREY], [`${ep.done} of ${ep.total}`, BOLD], [' children done', GREY]] : []),
-    ...(checkin ? [[' · waiting-on-you tickets dated at the next check-in', GREY]] : []),
-    ...(!h ? [] : [BAR, ['hit rate  ', GREY], ...(h.pct == null ? [['none yet', null], [`: ${h.n} of the ${MIN_HITS} saved estimates it needs`, GREY]]
-      : [[`${h.pct}%`, BOLD], [` shipped before their could-run-to time (last ${h.n} tickets)`, GREY]])])]);
+    ...(checkin ? [[CHECKIN_DATED, GREY]] : []),
+    ...(!h ? [] : [BAR, ['hit rate  ', GREY], ...(h.pct == null ? [['none yet', null], [`: ${noHitWords(h)}`, GREY]]
+      : [[`${h.pct}%`, BOLD], [hitWords(h), GREY]])])]);
 }
 
 // A ships view's key line: each entry a list of coloured runs, split by a grey bar. Narrower than the
@@ -586,9 +599,9 @@ const statesKey = (ks) => ks.flatMap((k, i) => [...(i ? [['  ', null]] : []), [L
 const lateOf = (sgr) => (sgr == null || sgr === BOLD ? FAINT : `2;${sgr}`);
 const solidBars = (width) => width != null && !process.env.NO_COLOR;
 
-// A ships view's first line; `workers` null leaves the count out, as every repo's view does.
-const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count} merged tickets`
-  + `${workers == null ? '' : ` · ${workers} workers`}${checkin ? ' · waiting-on-you tickets dated at the next check-in' : ''}`;
+// `desk-q ships`' first line: the forecast line's runs, the repo's name and workers added.
+const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count}${MERGED}`
+  + ` · ${workers} workers${checkin ? CHECKIN_DATED : ''}`;
 
 // A ticket row's key and state, the state in its colour.
 const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
@@ -1232,8 +1245,14 @@ function moveOf(r, row, k, t, h, now) {
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${runningStage(r, row)}.` };
   if (k === 'landing') {
-    const ps = prStatusOf(t);
+    const ps = prStatusOf(t), m = prMerge(t, ps, r.ctx);
+    if (m.k === 'needs') return { text: `Needs you. ${capital(m.text)}.` };
     return { text: `Moves without you: its PR #${ps.pr} is in CI, ${r.live ? holdingCheck(ps, now)[0] : `${passedOf(ps)} as of ${clock(Date.parse(ps.at))}`}.` };
+  }
+  // With passes stopped nothing new starts and no hold is released, so only resuming them moves it.
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
+    const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
+    return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
   if (k === 'stuck') {
     const n = outsideOf(t).length;
