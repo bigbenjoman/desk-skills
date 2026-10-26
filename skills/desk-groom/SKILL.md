@@ -42,7 +42,8 @@ open ticket and epic for each of these and proposes the fix with the evidence th
 
 **A fix or a question, never both.** A finding with one correct fix is proposed, never asked. A
 finding with no single correct fix (two tickets that could each own the scope, a DoD item either of
-two children could take, a loose ticket two epics fit equally) is a judgement call: it is asked, with
+two children could take, a loose ticket two epics fit equally, which of a ticket's many blockers it
+truly needs, which link in a Blocks loop to cut) is a judgement call: it is asked, with
 the options and a recommendation, and nothing is proposed for it. A loose ticket is always asked,
 even with one clear home: the user decides where a ticket lives.
 
@@ -75,7 +76,7 @@ it once more with `--json`, redirected to `<scratchpad>/groom-scan.json`, for st
 | `stale` | each `path:line` citation: a file that is gone or moved, a line past the end, a name beside the citation that is no longer at that line; and each premise with no citation, a line outside the criteria, outcome, verification, design and out-of-scope sections that names a function, `--flag` or repo file main does not have and no open ticket adds | the edit (`from -> to`) where the name is a whole word on exactly one line of the file; otherwise, for a file that moved and for every premise, a verifier settles it (step 3) |
 | `field` | a blank §4 Priority or §4 Other fields value | the priority from the ticket's epic, else the one most of its open siblings hold; any other field is judged (a size from desk-jira's scale) |
 | `title` | a title with no area prefix, or a different one, where most of its epic's other children share one | the title with that prefix, in place of any other |
-| `blocker` | a Blocks link to a Done ticket; more than 10 open blockers; a loop of Blocks links | `desk-jira unlink` for a Done blocker; a rescope for the other two, which can never all be Done |
+| `blocker` | a Blocks link to a Done ticket; more than 10 open blockers; a loop of Blocks links | `desk-jira unlink` for a Done blocker. The other two can never all be Done, and are each a question, never a fix: for many blockers, keep the ones the ticket's text names (recommended), unlink them all, or keep them all; for a loop, one option per link to cut, a link whose blocked ticket does not name its blocker recommended |
 
 The epic checks read each open epic's Jira children in rank order, done ones included:
 
@@ -158,7 +159,7 @@ own decision.
 Every `question` finding and every judgement call from step 3 is a question block, never a proposal:
 
 ```
-QUESTION — <loose | coverage | duplicate>
+QUESTION — <loose | blocker | coverage | duplicate>
 target : <KEY>
 evidence:
   <each evidence line>
@@ -172,8 +173,8 @@ The recommendation goes first. For a loose ticket with no home, rewrite the scan
 the outcome the new epic serves ("For <who>, <what>") before asking. Ask them together in one
 question carousel where the session can (`AskUserQuestion`, one question per finding), and move
 nothing until the user answers. Each `coverage` gap the verifier kept is a report line: the epic,
-the DoD item and its text, and that no child covers it. A rescope is a proposal of what the ticket should wait on, with the unlink
-commands for the rest. Nothing here is posted, transitioned or linked, even where §3 says `yes`.
+the DoD item and its text, and that no child covers it. Nothing here is posted, transitioned or
+linked, even where §3 says `yes`.
 
 End with a one-line count per check, the coverage gaps, the open questions, and a `kept open` list: every close candidate step 3 kept open,
 with its reasons. That list is how a wrong guard becomes visible.

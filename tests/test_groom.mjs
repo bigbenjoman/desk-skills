@@ -109,7 +109,7 @@ const issues = {
   // AC3: a bare mention of another ticket, with nothing that orders them
   'KAN-45': iss('notes: a glossary page', 'See KAN-30 for context.'),
   // AC6: held behind a set that keeps growing, and a loop
-  'KAN-60': iss('readme: document every feature', '', { issuelinks: Array.from({ length: 11 }, (_, i) => blocks(`KAN-${70 + i}`)) }),
+  'KAN-60': iss('readme: document every feature', 'Documents the flags KAN-70 and KAN-71 add.', { issuelinks: Array.from({ length: 11 }, (_, i) => blocks(`KAN-${70 + i}`)) }),
   'KAN-61': iss('loop: the first half', '', { issuelinks: [blocks('KAN-62'), blocks('KAN-62', 'new', 'out')] }),
   'KAN-62': iss('loop: the second half', '', { issuelinks: [blocks('KAN-61'), blocks('KAN-61', 'new', 'out')] }),
 
@@ -239,8 +239,15 @@ t('AC5 no field finding where every field is set', found.filter((f) => f.check =
 // AC6
 t('AC6 a Done blocker is unlinked', cmds('blocker', 'KAN-13'), ['desk-jira unlink KAN-13 KAN-14 Blocks'])
 const fan = of('blocker', 'KAN-60')[0] ?? {}
-t('AC6 a set of blockers that keeps growing is rescoped', [fan.rescope, fan.propose?.length], [true, 12])
-t('AC6 a Blocks loop is rescoped, once', found.filter((f) => f.check === 'blocker' && f.rescope && /loop/.test(f.evidence[0])).map((f) => f.ticket), ['KAN-61'])
+t('AC6 a set of blockers that keeps growing is rescoped', fan.rescope, true)
+// DS-239 AC5: which blockers it needs, and which link in a loop goes, are asked, never proposed
+t('DS-239 AC5 a rescope of many blockers is a question that proposes nothing', [fan.kind, fan.question, fan.propose], ['question', 'Which of its 11 open blockers does KAN-60 truly need?', []])
+t('DS-239 AC5 keeping the blockers its text names is recommended', [fan.recommend, fan.options?.length], [`keep KAN-70, KAN-71, which KAN-60 names, and unlink the other 9: ${Array.from({ length: 9 }, (_, i) => `KAN-${72 + i}`).join(', ')}`, 3])
+const loops = found.filter((f) => f.check === 'blocker' && f.rescope && /loop/.test(f.evidence[0]))
+t('AC6 a Blocks loop is rescoped, once', loops.map((f) => f.ticket), ['KAN-61'])
+t('DS-239 AC5 a loop is a question, one option per link, and proposes nothing', [loops[0]?.kind, loops[0]?.options, loops[0]?.recommend, loops[0]?.propose],
+  ['question', ['KAN-61 does not need KAN-62: desk-jira unlink KAN-61 KAN-62 Blocks', 'KAN-62 does not need KAN-61: desk-jira unlink KAN-62 KAN-61 Blocks'],
+    'KAN-61 does not need KAN-62: desk-jira unlink KAN-61 KAN-62 Blocks', []])
 
 // ---- DS-239: the epic checks
 const one = (check, ticket) => of(check, ticket)[0] ?? {}
@@ -295,7 +302,8 @@ t('DS-239 AC7 an epic with only open children is left alone', of('status', 'KAN-
 // AC6: every finding is a fix (proposed), a question (asked, nothing proposed) or a report
 t('DS-239 AC6 every fix is proposed and never asked', found.filter((f) => f.kind === 'fix' && (!f.propose.length || f.options || f.question)).map((f) => `${f.check} ${f.ticket}`), [])
 t('DS-239 AC6 every question has options and a recommendation, and proposes nothing', found.filter((f) => f.kind === 'question' && (!(f.options?.length) || !f.options.includes(f.recommend) || f.propose.length)).map((f) => f.ticket), [])
-t('DS-239 AC6 only loose tickets are asked by the scan', [...new Set(found.filter((f) => f.kind === 'question').map((f) => f.check))], ['loose'])
+t('DS-239 AC6 only loose tickets and blocker rescopes are asked by the scan', [...new Set(found.filter((f) => f.kind === 'question').map((f) => f.check))].sort(), ['blocker', 'loose'])
+t('DS-239 AC6 a Done blocker is a fix, not a question', of('blocker', 'KAN-13').map((f) => f.kind), ['fix'])
 t('DS-239 AC6 every finding has a kind', found.filter((f) => !['fix', 'question', 'report'].includes(f.kind)).length, 0)
 t('DS-239 priority order: P0 first, named priorities, unknown values', ['P0', 'P3', 'Highest', 'low', 'urgent', null].map(priorityRank), [0, 3, 0, 3, null, null])
 // An epic at P3 under a P0 child and three P1s: the P1s raise it to P1, so the P0 comes down only to P1,

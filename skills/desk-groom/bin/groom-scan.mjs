@@ -14,9 +14,10 @@
 //   {check, ticket, other?, evidence: [line], propose: [desk-jira command], verify?: brief}
 // where `check` is landed, duplicate, link, stale, field, title or blocker per ticket, and coverage,
 // children, loose, priority or status per epic (groomEpics). A finding with `verify` is a candidate
-// only: a read-only verifier settles it before anything is proposed (SKILL.md). An epic finding
-// also has `kind`: `fix` (one correct fix, proposed), `question` (no single correct fix: `options`
-// and `recommend`, and nothing proposed) or `report` (a gap to report, nothing to write).
+// only: a read-only verifier settles it before anything is proposed (SKILL.md). Every finding also
+// has `kind`: `fix` (one correct fix, proposed), `question` (no single correct fix: `question`,
+// `options` and `recommend`, and nothing proposed; a loose ticket, a blocker rescope) or `report`
+// (a gap to report, nothing to write).
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
@@ -298,10 +299,21 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
     for (const b of blockers.filter((l) => isDone(l.category))) {
       add({ check: 'blocker', ticket: t.key, other: b.key, evidence: [`blocked by ${b.key}, which is Done`], propose: [`desk-jira unlink ${t.key} ${b.key} Blocks`] })
     }
+    // Which blockers the work truly needs is the user's call (DS-239 AC5): asked, with the ones the
+    // ticket's own text names recommended as the ones to keep.
     const live = blockers.filter((l) => !isDone(l.category))
     if (live.length > BLOCKER_FANIN) {
-      add({ check: 'blocker', ticket: t.key, evidence: [`held behind ${live.length} open blockers (${live.map((l) => l.key).join(', ')}), a set that keeps growing and never all reaches Done`],
-        rescope: true, propose: ['rescope: keep only the blockers the work truly needs, and unlink the rest', ...live.map((l) => `desk-jira unlink ${t.key} ${l.key} Blocks`)] })
+      const keys = live.map((l) => l.key)
+      const named = keys.filter((k) => new RegExp(`\\b${k}\\b`).test(t.text))
+      const keep = named.length && named.length < keys.length
+        ? `keep ${named.join(', ')}, which ${t.key} names, and unlink the other ${keys.length - named.length}: ${keys.filter((k) => !named.includes(k)).join(', ')}` : null
+      const cut = `unlink all ${keys.length}, and link again any one ${t.key} truly waits on`
+      const all = `keep all ${keys.length}: ${t.key} truly waits on every one`
+      add({ check: 'blocker', kind: 'question', ticket: t.key, rescope: true,
+        evidence: [`held behind ${keys.length} open blockers (${keys.join(', ')}), a set that keeps growing and never all reaches Done`,
+          named.length ? `${t.key}'s text names ${named.join(', ')}` : `${t.key}'s text names none of them`],
+        question: `Which of its ${keys.length} open blockers does ${t.key} truly need?`,
+        options: [...(keep ? [keep] : []), cut, all], recommend: keep ?? (named.length ? all : cut), propose: [] })
     }
 
     // ---- missing links: named in prose, or a name another open ticket adds or changes (AC3)
@@ -350,10 +362,16 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       propose: [`desk-jira link ${n.key} duplicates ${o.key}`, `desk-jira transition ${n.key} ${shq(done)}`], verify: 'duplicate' })
   }
 
-  // ---- blocker loops can never all be Done (AC6)
+  // ---- blocker loops can never all be Done (AC6). Which link to cut is the user's call (DS-239 AC5):
+  // one option per link, the first whose blocked ticket's text does not name its blocker recommended.
   for (const loop of blockerCycles(work)) {
-    add({ check: 'blocker', ticket: loop[0], evidence: [`Blocks links loop: ${loop.join(' blocked by ')}`], rescope: true,
-      propose: [`rescope: one of these does not need the other; unlink that pair (desk-jira unlink <KEY> <OTHER> Blocks)`] })
+    const pairs = loop.slice(0, -1).map((k, i) => ({ k, by: loop[i + 1], names: new RegExp(`\\b${loop[i + 1]}\\b`).test(open.get(k).text) }))
+    const opt = (p) => `${p.k} does not need ${p.by}: desk-jira unlink ${p.k} ${p.by} Blocks`
+    add({ check: 'blocker', kind: 'question', ticket: loop[0], rescope: true,
+      evidence: [`Blocks links loop: ${loop.join(' blocked by ')}`,
+        ...pairs.map((p) => `${p.k} ${p.names ? 'names' : 'does not name'} ${p.by} in its text`)],
+      question: `${loop.slice(0, -1).join(', ')} wait on each other in a loop: which link goes?`,
+      options: pairs.map(opt), recommend: opt(pairs.find((p) => !p.names) ?? pairs[0]), propose: [] })
   }
   return out
 }
