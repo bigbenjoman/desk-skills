@@ -15,7 +15,8 @@
 # is a compound command that neither the lock nor the worker allow-list can see into. The directory
 # must be inside the worktree: a relative path, or an absolute one under the worktree root, never
 # with `..`. The `--` after it is optional.
-# The locks are box-wide on purpose, shared by every repo desk runs in: memory is per machine, not per repo.
+# The locks are box-wide on purpose, shared by every repo desk runs in: memory is per machine, not per
+# repo, so two repos running suites at once still take turns.
 #
 # Uses flock(1) where it exists (Linux). Where it does not (stock macOS) it falls back to an atomic
 # `mkdir` lock recording the wrapper's and the command's pids, so a crashed holder is detected and
