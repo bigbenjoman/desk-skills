@@ -352,6 +352,15 @@ only after you log in following a restart. `up` also shows the Mac settings a ru
 sleep, restart after power loss, no automatic macOS update installs) and, in a terminal, changes
 them with `sudo` only if you say yes.
 
+**Sharing the Mac's memory with autopilot.** A slot starts only if the Mac's available memory stays
+at or above the machine profile's `runner-memory-floor-gb` (8 unless set) once it has: each start
+claims the slots' memory limits plus 2 GB for the VM, less what the VM already holds. Autopilot's
+spawn gate starts no worker under the same floor (a repo's §3b gate may start higher, never lower).
+Past CI's first slot and autopilot's first worker, a side waiting for memory holds the other side's
+next start, and when both wait, the one that began waiting first goes first. A slot that waits leaves
+its job queued, and `status` shows who is waiting and since when; a waiting marker not refreshed for
+30 minutes, or left by a VM or batch that has gone, is removed and logged.
+
 The VM has no Mac folders and no forwarded ports, and Softnet blocks every private, shared and
 link-local IPv4 range, the Mac's own address on the VM network included, so the guest resolves names
 through public resolvers. `verify-isolation` proves it each time, from the VM's root shell and from

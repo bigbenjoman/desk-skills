@@ -39,6 +39,11 @@
 # the slot's CPUs and its memory, less 2 GB for the VM, over the slot's memory (machine.mjs slotFit,
 # through desk-env machine slot-fit, so the proposal and this agree). When the repos want
 # more, the slots that fit are shared between them in turn, and status says how many are held back.
+#
+# The Mac's memory is shared with autopilot (mem-turns.mjs): no slot starts that would leave the Mac's
+# available memory under the profile's runner-memory-floor-gb (8 unless set), and past the first slot
+# none starts while an autopilot batch that began waiting for memory earlier still waits. A slot that
+# waits leaves its job queued, holds every repo's next slot for that pass, and status says so.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VM="${DESK_RUNNER_VM:-desk-runner}"
@@ -492,10 +497,13 @@ drop_idle() { # drop_idle <repo> <n> <why> [<busy runner ids>]: reconcile's live
 $(printf '%s\n' "$live" | awk -v r="$1" '$2 == r')
 EOF
 }
+mem_turn() { # mem_turn <slots running in the VM>: go (0) or wait (1) for one more slot, with why (mem-turns.mjs)
+  node "$HERE/mem-turns.mjs" ci --slot-gb "$SLOT_MEM_GB" --running "$1" --pid "$(run_process | awk '{print $1}')" 2>&1
+}
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
   local reason live listed='' id repo rid state busy runners cpus mem gone have n extra rids left private rc=0
-  local rows="" jobs="" t demand="" follow="" busy_ids=""
+  local rows="" jobs="" t demand="" follow="" busy_ids="" turn memwait=""
   [ "$(idle_minutes)" = off ] || follow=1
   # A repo made public since scale gets no new slot, and its slots are drained.
   for repo in $(slot_repos); do
@@ -602,11 +610,19 @@ EOF
       # shellcheck disable=SC2046
       cpus=$(free_cpus "$VM_CPUS" "$SLOT_CPUS" $(printf '%s\n' "$live" | awk '{print $5}'))
       [ -n "$cpus" ] || { say "no free set of $SLOT_CPUS CPUs in $VM for another $repo slot"; break; }
+      # The Mac's free-memory floor and autopilot's turn: a wait holds every repo's next slot this pass.
+      turn=$(mem_turn "$(printf '%s\n' "$live" | awk 'NF' | wc -l | tr -d ' ')") && memwait="" || memwait=1
+      while IFS= read -r t; do [ -n "$t" ] && say "$t"; done <<EOF
+$turn
+EOF
+      [ -z "$memwait" ] || break 2
       start_slot "$repo" "$cpus" || { rc=1; break; }
       live=$(printf '%s\n%s\n' "$live" "new $repo - running $cpus $SLOT_MEM_GB")
       have=$((have + 1))
     done
   done
+  # CI is no longer waiting once a pass starts what it wants, or wants nothing more.
+  [ -n "$memwait" ] || node "$HERE/mem-turns.mjs" ci clear 2>/dev/null
   # With no repo left, no file: keep then stops looking in the VM every minute.
   [ -s "$SLOTS" ] || rm -f "$SLOTS"
   [ -z "$reason" ] || { say "runner slots closed: $reason"; return 1; }
@@ -952,6 +968,7 @@ cmd_status() {
     printf '%s\n' "$live" | awk -v r="$repo" '$2 == r {print "  slot " $1 ": " ($5 == "" ? "no CPU or memory limit (replaced once idle)" : "CPUs " $5 ", " $6 " GB")}'
   done
   [ -s "$SLOTS" ] && held_back
+  node "$HERE/mem-turns.mjs" status 2>&1
   [ "$state" = running ]
 }
 

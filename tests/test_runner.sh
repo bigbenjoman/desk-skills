@@ -13,6 +13,8 @@ S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; T="$(mktemp -d)"
 trap 'rm -rf "$T"; pkill -f "$T/stub/tart run" 2>/dev/null' EXIT
 export HOME="$T/home"; mkdir -p "$HOME" "$T/stub" "$T/tart"
 export DESK_MACHINE="$T/machine.md" DESK_RUNNER_STATE="$T/state" DESK_RUNNER_VM=desk-runner-test DESK_RUNNER_BOOT_WAIT=6
+# The Mac's memory is stubbed roomy, so only the DS-252 checks below meet the free-memory floor.
+export DESK_HOME="$T/desk" DESK_MEM_AVAIL_GB=64 DESK_RUNNER_RESIDENT_GB=0
 R="$SRC/desk/bin/desk-runner"
 PASS=0; FAIL=0; out=""; rc=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -387,6 +389,47 @@ yes_profile
 awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run scale "$RP" 3
 check "the defaults again: 3 slots of 2 CPUs"           '[ "$(awk "\$4 == \"running\" {print \$5}" "$v/slots" | sort | tr "\n" " ")" = "0-1 2-3 4-5 " ]'
+
+# ---- the Mac's free-memory floor, and turns with autopilot (DS-252) ----
+MT="$DESK_HOME/memory-turns"; mkdir -p "$T/ap/orchestrators"
+running_slots(){ awk '$4 == "running"' "$v/slots" | wc -l | tr -d ' '; }
+# A live autopilot batch waiting for memory since <seconds ago>: its marker and its heartbeat.
+ap_waits(){ local now; now=$(date +%s)
+  printf '{"queue":"%s","at":"%s"}\n' "$T/ap/queue.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/ap/orchestrators/o.json"
+  printf '{"side":"autopilot","since":%s,"at":%s,"why":"1 ticket(s) ready","state":"%s","queue":"%s"}\n' \
+    "$(( (now - $1) * 1000 ))" "$(( now * 1000 ))" "$T/ap" "$T/ap/queue.json" > "$MT/autopilot-r.json"; }
+awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+starts=$(wc -l < "$v/slot-starts" | tr -d " ")
+DESK_MEM_AVAIL_GB=12 DESK_RUNNER_RESIDENT_GB=3 run slots
+check "AC1: 12G available, a 6G claim, an 8G floor: no slot starts" '[ "$(wc -l < "$v/slot-starts" | tr -d " ")" = "$starts" ] && [ "$(running_slots)" = 0 ]'
+check "AC1: it says the claim and the floor"            '[[ "$out" == *"a slot waits for memory: 12.0G available, a slot claims 6.0G (1 x 7 + 2 for the VM - 3.0 it holds), which would leave 6.0G, under the 8G floor"* ]]'
+check "AC1: CI keeps a waiting marker on the VM's process" '[ "$(sed -n "s/.*\"pid\":\([0-9]*\).*/\1/p" "$MT/ci.json")" = "$(pgrep -f "$T/stub/tart run desk-runner-test" | head -n 1)" ]'
+DESK_MEM_AVAIL_GB=12 run status
+check "AC1: status says a slot is waiting for memory"   '[[ "$out" =~ "memory: a CI slot waiting for memory since "[0-9]{2}:[0-9]{2}": 12.0G available" ]] && [[ "$out" == *"memory: floor 8G, 12.0G available"* ]]'
+ap_waits 60
+DESK_MEM_AVAIL_GB=20 DESK_RUNNER_RESIDENT_GB=3 run slots
+check "AC4: no slot running, autopilot waiting: one slot starts, the floor kept" '[ "$(running_slots)" = 1 ] && [[ "$out" == *"leaving 14.0G, over the 8G floor"* ]]'
+check "AC4: then the next one waits"                    '[[ "$out" == *"a slot waits for memory: "* ]] && [ -e "$MT/ci.json" ]'
+run slots
+check "AC3: a slot running and autopilot waiting: no more start" '[ "$(running_slots)" = 1 ] && [[ "$out" == *"autopilot'"'"'s turn: autopilot (r) waiting for memory since"* ]]'
+run status
+check "AC3: status says autopilot is waiting"           '[[ "$out" =~ "memory: autopilot (r) waiting for memory since "[0-9]{2}:[0-9]{2}": 1 ticket" ]]'
+ap_waits 60
+printf '{"side":"ci","since":%s,"at":%s,"why":"slot","pid":%s}\n' "$(( ($(date +%s) - 600) * 1000 ))" "$(( $(date +%s) * 1000 ))" "$(pgrep -f "$T/stub/tart run desk-runner-test" | head -n 1)" > "$MT/ci.json"
+run slots
+check "AC5: CI waited first: its slot starts first"    '[ "$(running_slots)" = 2 ] && [ -e "$MT/autopilot-r.json" ]'
+check "... then autopilot, waiting since, has its turn" '[[ "$out" == *"autopilot'"'"'s turn: autopilot (r) waiting"* ]]'
+printf '{"side":"autopilot","since":1,"at":1,"why":"x","state":"%s","queue":"%s"}\n' "$T/ap" "$T/ap/queue.json" > "$MT/autopilot-old.json"
+run status
+check "AC6: a marker 30 minutes old is removed, and said" '[ ! -e "$MT/autopilot-old.json" ] && [[ "$out" == *"memory turns: removed autopilot-old'"'"'s stale waiting marker: not rewritten for"* ]]'
+rm -f "$MT"/*.json
+awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-memory-floor-gb 50
+DESK_MEM_AVAIL_GB=60 run slots
+check "AC7: the profile's floor: 60G available and a 50G floor start one slot, not two" '[ "$(running_slots)" = 1 ] && [[ "$out" == *"under the 50G floor"* ]]'
+yes_profile
+run slots
+check "back at the 8G floor, the slots fill"            '[ "$(running_slots)" = 3 ] && [ ! -e "$MT/ci.json" ]'
 
 busy=$(awk 'NR == 1 {print $3}' "$v/slots")
 STUB_BUSY="$busy" run scale "$RP" 1
