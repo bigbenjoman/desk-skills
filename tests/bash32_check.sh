@@ -17,7 +17,7 @@ for f in "$@"; do [ -f "$f" ] || { echo "FAIL bash-3.2 -n $f: no such file"; exi
 # array index, $EPOCHSECONDS and kin, and printf's %(...)T.
 NEWER='\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,|\^)|\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@[QEPAaUuLK]\}'
 NEWER="$NEWER"'|(^|[;&|[:space:](])(declare|local|typeset|readonly)[[:space:]]+-[a-zA-Z]*A|(^|[;&|[:space:](])(mapfile|readarray|coproc)([[:space:]]|$)'
-NEWER="$NEWER"'|\|&|;;&|[^;];&([[:space:]]|$)|&>>|\[\[[[:space:]]+-v[[:space:]]|wait[[:space:]]+-n|shopt[[:space:]]+-s[[:space:]]+(globstar|lastpipe)'
+NEWER="$NEWER"'|\|&|;;&|[^;];&([[:space:]]|$)|&>>|\[\[[[:space:]]+-v[[:space:]]|wait[[:space:]]+-n|shopt[[:space:]]+-s[[:space:]]+(globstar|lastpipe)'  # bash32: ok (the pattern itself)
 NEWER="$NEWER"'|\$\{[A-Za-z_][A-Za-z0-9_]*\[-[0-9]+\]\}|\$\{?(EPOCHSECONDS|EPOCHREALTIME|BASH_ARGV0)|%\([^)]*\)T'
 scan=0
 for f in "$@"; do
