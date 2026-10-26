@@ -134,7 +134,9 @@ case "$*" in
   "api --paginate repos/"*"/actions/runs/"*"/jobs?"*) r=${3#*/runs/}; jq -r "$5" "$G/jobs-${r%%/*}.json" ;;
   "api --paginate repos/"*"/actions/runs?status="*)
     [ -n "${STUB_RUNS_RC:-}" ] && exit 1
-    f="$G/runs-queued.json"; case $3 in *status=in_progress*) f="$G/runs-progress.json" ;; esac
+    [ -n "${STUB_RUNS_FAIL:-}" ] && [[ $3 == *"/$STUB_RUNS_FAIL/"* ]] && exit 1
+    f=queued; case $3 in *status=in_progress*) f=progress ;; esac
+    r=${3#repos/}; r=${r%%/actions/*}; f="$G/runs-$f"; [ -f "$f-${r%%/*}_${r#*/}.json" ] && f="$f-${r%%/*}_${r#*/}"; f="$f.json"
     [ -s "$f" ] || echo '{"workflow_runs":[]}' > "$f"; jq -r "$5" "$f" ;;
   "api repos/"*" --jq .private") echo "${STUB_PRIVATE:-true}" ;;
   "api -X POST repos/"*"/generate-jitconfig"*)
@@ -165,7 +167,10 @@ next_in(){ read -r _ nx < "$BACKOFF"; echo $(( nx - $(date +%s) )); }
 STUB_GUEST_OUT="$T/guest.out"; STUB_CONTAINER_OUT="$T/container.out"; export STUB_GUEST_OUT STUB_CONTAINER_OUT
 probe_ok(){ printf 'OK %s deny 10.9.9.1:1-1024 (no port connected)\nOK %s allow registry.npmjs.org:443 (connected)\nDONE %s\n' "$1" "$1" "$1"; }
 probe_ok guest > "$STUB_GUEST_OUT"; probe_ok container > "$STUB_CONTAINER_OUT"
-profile(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n'; while [ $# -gt 0 ]; do printf '| `%s` | `%s` | %s |\n' "$1" "$2" "test"; shift 2; done; } > "$DESK_MACHINE"; }
+# The idle timeout is off unless given, so slots keep each repo's wanted number; a value of unset leaves the row out.
+profile(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n'; [[ " $* " == *" runner-idle-minutes "* ]] || printf '| `runner-idle-minutes` | `off` | test |\n'
+  while [ $# -gt 0 ]; do [ "$2" = unset ] || printf '| `%s` | `%s` | %s |\n' "$1" "$2" "test"; shift 2; done; } > "$DESK_MACHINE"; }
+on_profile(){ profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes 10; }
 yes_profile(){ profile runner-possible yes runner-vm-cpus "${1:-8}" runner-vm-memory-gb "${2:-24}" runner-vm-disk-gb "${3:-100}"; }
 
 # ---- usage and the machine profile (AC8) ----
@@ -525,34 +530,36 @@ runs(){ printf '{"workflow_runs":[%s]}\n' "$2" > "$T/runs-$1.json"; }
 job(){ printf '{"jobs":[{"status":"completed","labels":[%s],"created_at":"%s"},{"status":"queued","labels":[%s],"created_at":"%s"}]}\n' "$2" "$(iso_ago 900)" "$2" "$(iso_ago "$3")" > "$T/jobs-$1.json"; }
 no_runs(){ rm -f "$T/runs-queued.json" "$T/runs-progress.json" "$T"/jobs-*.json; }
 idle_for(){ echo $(( $(date +%s) - $1 * 60 )) > "$ACT"; }
-our(){ printf '%s desk-runner-test-voicepa-x online %s\n' "$(awk 'NR == 1 {print $3}' "$v/slots")" "$1" > "$T/gh-runners"; }
+our(){ printf '%s desk-runner-test-voicepa-x online %s\n' "$(awk 'NR == 1 {print $3} END {if (!NR) print 901}' "$v/slots")" "$1" > "$T/gh-runners"; }
 run scale "$RP" 1
-idle_for 30; our true
+on_profile; idle_for 30; our true
 run keep
 check "a slot mid-job keeps the VM up and restarts the idle clock" '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ "$(ago_s "$(cat "$ACT")")" -lt 60 ] && [ ! -e "$ASL" ]'
 idle_for 30; rm -f "$T/gh-runners"; awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
 run keep
 check "a job that just finished keeps the VM up too"     '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ "$(ago_s "$(cat "$ACT")")" -lt 60 ] && [[ "$out" == *"finished; reaped"* ]]'
-profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off
+off_profile(){ profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off; }
+off_profile; run keep
 idle_for 30; our false
 run keep
 check "runner-idle-minutes off: the VM stays up"        '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ] && [ -z "$out" ]'
 run status
 check "status: off, never sleeps"                       '[[ "$out" == *"idle: never sleeps (runner-idle-minutes is off)"* ]]'
-yes_profile
+on_profile
 STUB_RUNNERS_RC=1 run keep
 check "a runner list GitHub would not give: the VM stays up" '[ -f "$v/running" ] && [ ! -e "$ASL" ]'
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes unset
 idle_for 9; run keep
 check "9 idle minutes, under the default 10: stays up"  '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ]'
 idle_for 11; STUB_BUSY="$(awk '{print $1}' "$T/gh-runners")" run keep
 check "a runner that takes a job as the VM would stop: it stays up" '[ -f "$v/running" ] && [ ! -e "$ASL" ] && [[ "$out" == *"took a job; desk-runner-test stays up"* ]]'
-run scale "$RP" 2; idle_for 11
+off_profile; run scale "$RP" 2; on_profile; idle_for 11
 awk '$4 == "running" {print $3, "desk-runner-test-voicepa-" NR, "online", "false"}' "$v/slots" > "$T/gh-runners"
 first=$(awk 'NR == 1 {print $1}' "$T/gh-runners"); second=$(awk 'NR == 2 {print $1}' "$T/gh-runners")
 fsid=$(awk -v r="$first" '$3 == r {print $1}' "$v/slots"); ssid=$(awk -v r="$second" '$3 == r {print $1}' "$v/slots")
 STUB_BUSY="$second" run keep
 check "a runner refused part-way: the slot already deregistered is reaped, the other kept" '[ -f "$v/running" ] && [ ! -e "$ASL" ] && grep -qx "$first" "$T/gh-deleted" && grep -qx "$fsid" "$v/reaped" && ! grep -qx "$ssid" "$v/reaped"'
-run scale "$RP" 1; our false
+off_profile; run scale "$RP" 1; on_profile; our false
 idle_for 11; rid=$(awk '{print $1}' "$T/gh-runners"); sid=$(awk 'NR == 1 {print $1}' "$v/slots")
 run keep
 check "10 idle minutes: runners deregistered, slots reaped, the VM stopped" '[ $rc -eq 0 ] && grep -qx "$rid" "$T/gh-deleted" && grep -qx "$sid" "$v/reaped" && [ ! -f "$v/running" ] && ! pgrep -f "$T/stub/tart run desk-runner-test" >/dev/null'
@@ -598,19 +605,64 @@ starts=$(wc -l < "$v/slot-starts" | tr -d " ")
 runs queued '{"id":9}'; job 9 '"desk-local-pr"' 30
 run keep
 check "a wake after a failed verify runs it again, and opens no slot when it fails" '[ $rc -eq 1 ] && [[ "$out" == *"isolation FAILED"* ]] && [ "$(wc -l < "$v/slot-starts" | tr -d " ")" = "$starts" ] && [ -s "$BACKOFF" ]'
-probe_ok guest > "$STUB_GUEST_OUT"; rm -f "$BACKOFF"; no_runs
+probe_ok guest > "$STUB_GUEST_OUT"; rm -f "$BACKOFF"
 run keep
 check "... and the next passing verify opens them"     '[ $rc -eq 0 ] && [[ "$out" == *"isolation passed"* ]] && [ "$(awk "\$4 == \"running\"" "$v/slots" | wc -l | tr -d " ")" = 1 ]'
-go_to_sleep
+no_runs; go_to_sleep
 profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off
 run keep
 check "asleep when the timeout turns off: brought back with nothing queued" '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ] && [[ "$out" == *"bringing desk-runner-test back"* ]]'
-yes_profile; go_to_sleep
+on_profile; go_to_sleep
 run up
 check "up wakes it and clears asleep"                   '[ $rc -eq 0 ] && [ -f "$v/running" ] && [ ! -e "$ASL" ]'
 go_to_sleep
 run down
 check "down while asleep: stopped, not asleep"         '[ $rc -eq 0 ] && [ ! -e "$ASL" ]'
+
+# ---- slots follow the jobs queued, oldest first (DS-250) ----
+OT=bigbenjoman/other
+# queue <run> <file suffix or ""> <seconds ago...>: that many jobs queued for the pool in one run
+queue(){ local run=$1 who=$2 j="" a; shift 2; for a in "$@"; do j="$j${j:+,}{\"status\":\"queued\",\"labels\":[\"desk-local-pr\"],\"created_at\":\"$(iso_ago "$a")\"}"; done
+  printf '{"jobs":[%s]}\n' "$j" > "$T/jobs-$run.json"; printf '{"workflow_runs":[{"id":%s}]}\n' "$run" > "$T/runs-queued${who:+-$who}.json"; }
+running(){ awk -v r="${1:-}" '$4 == "running" && (r == "" || $2 == r)' "$v/slots" | wc -l | tr -d ' '; }
+on_profile; run up; run scale "$RP" 0; rm -f "$v/slots" "$SL" "$T/gh-runners"; no_runs
+queue 20 "" 120 60
+run scale "$RP" 3
+check "2 jobs queued, 3 wanted: 2 slots open, not 3"  '[ "$(running)" = 2 ] && [[ "$out" == *"$RP: 3 runner slots wanted"* ]]'
+run keep
+check "... and the next pass, with both still queued for those idle slots, opens no third" '[ "$(running)" = 2 ]'
+run status
+check "status: the jobs queued, the slots open and the wanted number" '[[ "$out" == *"slots: $RP wants 3, 2 running (2 CPUs and 7 GB each), 2 jobs queued for desk-local-pr"* ]]'
+no_runs; awk 'NR == 1 {$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+starts=$(wc -l < "$v/slot-starts" | tr -d " ")
+run keep
+check "a slot whose job finished, nothing more queued: reaped, not replaced, and the idle one dropped" '[[ "$out" == *"finished; reaped"* ]] && [[ "$out" == *"removed (no job queued for it)"* ]] && [ "$(running)" = 0 ] && [ "$(wc -l < "$v/slot-starts" | tr -d " ")" = "$starts" ]'
+awk '{$4 = "exited"} {print}' "$v/slots" > "$v/s"; mv "$v/s" "$v/slots"
+queue 21 "" 30
+run keep
+check "a slot whose job finished, another job queued: replaced" '[ "$(running)" = 1 ] && [ "$(wc -l < "$v/slot-starts" | tr -d " ")" = $((starts + 1)) ]'
+no_runs; run scale "$RP" 0; rm -f "$v/slots" "$SL"
+queue 22 bigbenjoman_voicepa 100; queue 23 bigbenjoman_other 300 200 150
+printf '%s 3\n%s 3\n' "$RP" "$OT" > "$SL"
+run slots
+check "jobs in two repos, 3 free slots: the oldest 3 jobs get them, all in the other repo" '[ "$(running "$OT")" = 3 ] && [ "$(running "$RP")" = 0 ]'
+run keep
+check "... and they stay: none dropped for a turn-by-turn share" '[ "$(running "$OT")" = 3 ] && [ "$(running "$RP")" = 0 ] && [[ "$out" != *"more than wanted"* ]]'
+rm -f "$T/runs-queued-bigbenjoman_other.json"
+run keep
+check "the other repo's jobs cancelled: its idle slots go back, and the job still queued gets one" '[ "$(running "$OT")" = 0 ] && [ "$(running "$RP")" = 1 ] && [[ "$out" == *"removed (no job queued for it)"* ]]'
+rm -f "$v/slots"; queue 24 bigbenjoman_other 300 200 150; printf '%s 3\n%s 3\n' "$OT" "$RP" > "$SL"
+STUB_RUNS_FAIL=voicepa run slots
+check "a repo whose queue GitHub will not give keeps its share before the other's jobs take the rest" '[ "$(running "$RP")" -ge 1 ] && [ "$(running)" = 3 ]'
+TH=bigbenjoman/third; rm -f "$v/slots" "$T/runs-queued-bigbenjoman_other.json"
+off_profile; printf '%s 3\n' "$OT" > "$SL"; run slots; on_profile
+printf '%s 3\n%s 3\n%s 3\n' "$OT" "$TH" "$RP" > "$SL"; queue 25 bigbenjoman_third 300 200 150
+STUB_RUNS_FAIL=voicepa run slots
+check "... and when idle slots fill the VM, the share comes from those they give back" '[ "$(running "$OT")" = 0 ] && [ "$(running "$RP")" -ge 1 ] && [ "$(running)" = 3 ]'
+rm -f "$T"/runs-queued-*.json; no_runs; run scale "$OT" 0; run scale "$RP" 0; rm -f "$v/slots" "$SL"
+profile runner-possible yes runner-vm-cpus 8 runner-vm-memory-gb 24 runner-vm-disk-gb 100 runner-idle-minutes off
+run scale "$RP" 2
+check "the timeout off: the wanted number, with nothing queued" '[ "$(running)" = 2 ] && ! grep -q "actions/runs?status" "$T/gh.log"'
 run up; run scale "$RP" 0; rm -f "$v/slots" "$SL" "$T/gh-runners"; no_runs
 
 # ---- status and down (AC9) ----
