@@ -1325,7 +1325,10 @@ function timingFields(r, F, x, h, now) {
   const open = h ? unmergedBlockers(r.q, t).map((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key]))) : [];
   const prs = open.map((b) => b.name).filter((n) => /^#\d+$/.test(n));
   const starts = k === 'running' ? 'running now' : k === 'stuck' ? 'not until its outside blockers are done'
-    : h && h.k === 'needs' ? (open.length && prs.length === open.length ? `at the next pass after ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'}` : 'not until you act')
+    // Once its PRs merge, a pass releases the ticket only where something releases holds (holdOf).
+    : h && h.k === 'needs' ? (open.length && prs.length === open.length
+      ? (r.ctx.releases ? `at the next pass after ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'}` : `once ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'} and you release it`)
+      : 'not until you act')
       : h ? (open.length ? `after ${listed(open.map((b) => b.name))} ${open.length > 1 ? 'merge' : 'merges'}` : 'at the next pass')
         : k === 'needs' ? 'once you answer it' : k === 'failed' ? 'once it is requeued' : r.workers === 0 ? 'not until workers are raised'
           : F?.paused ? 'when passes resume' : '—';

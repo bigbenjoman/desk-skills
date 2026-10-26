@@ -1445,7 +1445,9 @@ t('DS-218 AC4 a Warnings block shows each flag triage or the pass raised, an adv
 t('DS-218 AC4 each flag is amber', f168.some((l) => l.startsWith('\x1b[33m  ▲ \x1b[39m')), true);
 t('DS-218 AC5 a held ticket: Starts says what it waits for, and Ships says no date',
   ['DS-168', 'DS-175', 'DS-180'].map((k) => `${at218(k, 'Starts')} | ${at218(k, 'Ships')}`).join(' / '),
-  'Starts    not until its outside blockers are done | Ships     no date / Starts    at the next pass after #175 merges | Ships     no date / Starts    after DS-175 merges | Ships     no date');
+  'Starts    not until its outside blockers are done | Ships     no date / Starts    once #175 merges and you release it | Ships     no date / Starts    after DS-175 merges | Ships     no date');
+t('DS-218 AC5 behind a PR that needs you, where a supervisor releases holds: Starts at the next pass after it merges',
+  lines(Q.ticketScreen(repo217('holdsup'), 'W-2H', { now: FIXED, width: 120 })).find((l) => l.startsWith('Starts')) ?? '', 'Starts    at the next pass after #180 merges');
 t('DS-218 AC6 a ticket others wait on lists them with their states', `${at218('DS-150', 'Holding up')} | ${at218('DS-175', 'Holding up')}`,
   'Holding up  ◌ DS-168 (blocked), ◆ DS-175 (needs you) wait on this ticket | Holding up  · DS-180 (waiting) waits on this ticket');
 const why168 = (s) => { const f = s.frame(), i = f.indexOf('Why lane A'); return f.slice(i + 1, f.indexOf('', i)); };
