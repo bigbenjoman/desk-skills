@@ -342,7 +342,7 @@ queued), and wakes the VM for the first one. GitHub keeps a queued job for 24 ho
 while it boots. A wake reuses a verify-isolation pass under 25 hours old, since the VM is started
 behind the same Softnet block that pass proved, and its log records when the job queued, when the VM
 answered and when the slot came online; an older or failed pass is run again in full before any slot.
-While it is awake, slots follow the jobs queued for `desk-local-pr`: a repo opens one per queued job, up to the `n` it was scaled to, the oldest jobs across repos take the free slots first, and a finished slot is replaced only while more are queued; `status` shows each repo's queued jobs. A repo whose queue GitHub will not give keeps its share. The nightly check leaves a sleeping VM asleep. `runner-idle-minutes` set to `off` keeps the VM up, with each repo at its `n` slots. FileVault means the VM comes back
+While it is awake, slots follow the jobs queued for `desk-local-pr`: a repo opens one per queued job, up to the `n` it was scaled to, the oldest jobs across repos take the free slots first, a finished slot is replaced only while more are queued, and an idle slot no job is queued for is dropped; `status` shows each repo's queued jobs. A repo whose queue GitHub will not give keeps its share, set aside before the other repos' jobs. The nightly check leaves a sleeping VM asleep. `runner-idle-minutes` set to `off` keeps the VM up, with each repo at its `n` slots. FileVault means the VM comes back
 only after you log in following a restart. `up` also shows the Mac settings a runner needs (never
 sleep, restart after power loss, no automatic macOS update installs) and, in a terminal, changes
 them with `sudo` only if you say yes.

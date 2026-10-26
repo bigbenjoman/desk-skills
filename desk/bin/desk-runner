@@ -478,10 +478,24 @@ trusted() {
 
 # Set by reconcile for keep's idle check: how many slots it started, and whether a runner list failed.
 STARTED=0; RUNNERS_UNKNOWN=""
+drop_idle() { # drop_idle <repo> <n> <why> [<busy runner ids>]: reconcile's live slots for repo down to n
+  local id rid extra
+  extra=$(( $(printf '%s\n' "$live" | awk -v r="$1" '$2 == r' | wc -l) - $2 ))
+  # GitHub refuses to deregister a runner mid-job, so a slot that took one as this ran stays.
+  while [ "$extra" -gt 0 ] && read -r id _ rid _; do
+    [[ " ${4:-} " == *" $rid "* ]] && continue
+    if deregister "$1" "$rid"; then
+      slot reap "$id"; extra=$((extra - 1)); say "slot $id for $1 removed ($3)"
+      live=$(printf '%s\n' "$live" | awk -v i="$id" '$1 != i')
+    fi
+  done <<EOF
+$(printf '%s\n' "$live" | awk -v r="$1" '$2 == r')
+EOF
+}
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
   local reason live listed='' id repo rid state busy runners cpus mem gone have n extra rids left private rc=0
-  local rows="" jobs="" t demand="" follow=""
+  local rows="" jobs="" t demand="" follow="" busy_ids=""
   [ "$(idle_minutes)" = off ] || follow=1
   # A repo made public since scale gets no new slot, and its slots are drained.
   for repo in $(slot_repos); do
@@ -520,21 +534,10 @@ reconcile() { # reap finished slots, drop extra idle ones, start missing ones; s
 $live
 EOF
   live=$(printf '%s\n' "$live" | awk -v gone="$gone" '$4 == "running" && index(gone, " " $1 " ") == 0')
-  # More running than the repo's share, or than it wants when slots follow the queue (the oldest jobs
-  # decide who gets a free slot then): drop the idle ones. GitHub refuses to deregister a runner mid-job.
+  # More running than the repo's share, or than it wants when slots follow the queue: drop the idle ones.
   for repo in $(printf '%s\n' "$live" | awk 'NF {print $2}' | sort -u); do
     if [ -n "$follow" ]; then n=$(wanted "$repo"); else n=$(allotted "$FIT" "$repo"); fi
-    extra=$(( $(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l) - n ))
-    [ "$extra" -gt 0 ] || continue
-    while read -r id _ rid _; do
-      [ "$extra" -gt 0 ] || break
-      if deregister "$repo" "$rid"; then
-        slot reap "$id"; extra=$((extra - 1)); say "slot $id for $repo removed (more than wanted)"
-        live=$(printf '%s\n' "$live" | awk -v i="$id" '$1 != i')
-      fi
-    done <<EOF
-$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r')
-EOF
+    drop_idle "$repo" "$n" "more than wanted"
   done
   for repo in $(slot_repos); do
     # A runner of ours that GitHub lists offline with no slot behind it (the VM stopped or crashed) is deregistered.
@@ -555,24 +558,35 @@ EOF
     fi
     rows="$rows$repo $(wanted "$repo") $have $(printf '%s\n' "$runners" | awk '$3 == "true"' | wc -l | tr -d ' ')
 "
+    busy_ids="$busy_ids $(printf '%s\n' "$runners" | awk '$3 == "true" {printf "%s ", $1}')"
   done
   [ -z "$reason" ] || rows=""
-  # With the VM sleeping when idle, slots follow the jobs queued for the pool: a repo's idle slots take
-  # its oldest jobs, and the VM's free slots go to the oldest of the rest, up to each repo's wanted.
-  # A repo whose queue GitHub would not give is kept at its share, as with the timeout off.
+  # With the VM sleeping when idle, slots follow the jobs queued for the pool. A repo whose queue GitHub
+  # would not give keeps its share, as with the timeout off, and that share is set aside first. A repo's
+  # idle slots take its own jobs; the idle ones beyond those go back to the VM, and its free slots go to
+  # the oldest jobs left, up to each repo's wanted. Slots above a repo's busy and placed jobs are dropped.
   if [ -n "$rows" ] && [ -n "$follow" ]; then
     for repo in $(printf '%s' "$rows" | awk '{print $1}'); do
       if t=$(queued_jobs "$repo"); then jobs="$jobs$(printf '%s\n' "$t" | awk -v r="$repo" 'NF {print "job", $1, r}')
 "
-      else jobs="${jobs}unknown $repo
+      else jobs="${jobs}unknown $repo $(allotted "$FIT" "$repo")
 "; fi
     done
-    demand=$( { printf '%s' "$rows"; printf '%s' "$jobs" | awk '$1 == "job"' | sort -k2; printf '%s' "$jobs" | awk '$1 == "unknown"'; } \
+    demand=$( { printf '%s' "$rows"; printf '%s' "$jobs" | awk '$1 == "unknown"'; printf '%s' "$jobs" | awk '$1 == "job"' | sort -k2; } \
       | awk -v free=$(( FIT - $(printf '%s\n' "$live" | awk 'NF' | wc -l) )) '
-        $1 == "job" {x = $3; if (idle[x] > 0) idle[x]--; else if (free > 0 && have[x] + add[x] < want[x]) {add[x]++; free--}; next}
-        $1 == "unknown" {unk[$2] = 1; next}
-        NF == 4 {r[++m] = $1; want[$1] = $2; have[$1] = $3; idle[$1] = ($3 > $4 ? $3 - $4 : 0); add[$1] = 0}
-        END {for (k = 1; k <= m; k++) print r[k], (r[k] in unk ? "-" : have[r[k]] + add[r[k]])}')
+        $1 == "unknown" {unk[$2] = 1; s = $3 - have[$2]; if (s > free) s = free; if (s > 0) free -= s; next}
+        $1 == "job" {j[++nj] = $3; q[$3]++; next}
+        NF == 4 {r[++m] = $1; want[$1] = $2; have[$1] = $3; busy[$1] = ($4 < $3 ? $4 : $3); n[$1] = busy[$1]}
+        END {
+          for (k = 1; k <= m; k++) {x = r[k]; if (x in unk) continue; i = have[x] - busy[x]; own[x] = (q[x] < i ? q[x] : i); free += i - own[x]}
+          for (k = 1; k <= nj; k++) {x = j[k]; if (x in unk) continue
+            if (own[x] > 0) {own[x]--; n[x]++} else if (free > 0 && n[x] < want[x]) {n[x]++; free--}}
+          for (k = 1; k <= m; k++) print r[k], (r[k] in unk ? "-" : n[r[k]])}')
+    while read -r repo n; do
+      [ -n "$repo" ] && [ "$n" != - ] && drop_idle "$repo" "$n" "no job queued for it" "$busy_ids"
+    done <<EOF
+$demand
+EOF
   fi
   for repo in $(printf '%s' "$rows" | awk '{print $1}'); do
     n=$(printf '%s\n' "$demand" | awk -v r="$repo" '$1 == r {print $2}')
