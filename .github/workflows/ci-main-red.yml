@@ -1,0 +1,68 @@
+name: ci main red
+
+# Red main is visible: one open issue labelled ci-main-red while the latest `tests` push run on main or
+# the latest nightly macOS run is red, updated with each red run, commented and closed once both are
+# green again. It runs on the default branch's copy of this file with an issues-write token, reads
+# only run metadata through gh, and checks out no code.
+on:
+  workflow_run:
+    workflows: [tests, nightly macOS]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-main-red
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: track red main
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_NAME: ${{ github.event.workflow_run.name }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      - name: Open, update or close the issue
+        run: |
+          set -u
+          # The latest finished run of each watched workflow on main: tests from pushes, macOS from
+          # any trigger. Red is failure, timed_out or startup_failure; a cancelled run says nothing.
+          latest() { gh run list --workflow "$1" --branch main ${2:+--event "$2"} --status completed --limit 10 \
+            --json conclusion,url,headSha --jq '[.[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0] // empty | "\(.conclusion) \(.url) \(.headSha[0:7])"'; }
+          red=""
+          for w in "tests.yml push" "nightly-macos.yml"; do
+            # shellcheck disable=SC2086  # workflow and optional event, two words
+            l=$(latest $w) || { echo "cannot read runs of $w"; exit 1; }
+            echo "${w%% *}: ${l:-no finished run}"
+            case "${l%% *}" in failure|timed_out|startup_failure) red="$red- ${w%% *}: ${l#* }"$'\n' ;; esac
+          done
+          gh label create ci-main-red --color B60205 --description "tests are failing on main or nightly" 2>/dev/null || true
+          issue=$(gh issue list --label ci-main-red --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$red" ]; then
+            body="**${RUN_NAME}** finished **${RUN_CONCLUSION}** on main at ${RUN_SHA:0:7}: ${RUN_URL}"$'\n\n'"Red now:"$'\n'"$red"
+            if [ -n "$issue" ]; then
+              case "$RUN_CONCLUSION" in success) ;; *) gh issue comment "$issue" --body "$body" ;; esac
+            else
+              gh issue create --label ci-main-red --title "main is red: tests failing on main or nightly macOS" \
+                --body "$body"$'\n'"This issue closes itself when the latest run of each is green again (.github/workflows/ci-main-red.yml)."
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "Green again: **${RUN_NAME}** passed at ${RUN_SHA:0:7} (${RUN_URL}), and the latest tests and nightly macOS runs on main are both green."
+            gh issue close "$issue"
+          else
+            echo "main is green and no issue is open"
+          fi

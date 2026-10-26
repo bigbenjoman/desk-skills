@@ -1,4 +1,5 @@
 // suite: desk-pr split (a core of 20 KB or less, and the rest in reference files read at their step)
+// covers: skills/** agents/** docs/** README.md
 // tests/fixtures/desk-pr-before-split.md is desk-pr's SKILL.md as one file. Every heading, table row
 // and paragraph of it must still be in the core or one reference file, the core must name the file
 // to read at each step whose rules moved, and every citation of a desk-pr section must still find it.

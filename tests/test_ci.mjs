@@ -210,10 +210,12 @@ const dependabot = wf(`  inverted:
 `);
 t('a Dependabot branch to self-hosted fails; != and fromJSON forms pass', linted(dependabot), 'inverted@5');
 
-// This repo's own workflow: a hosted-only matrix and a hosted label, so nothing to lint.
-const own = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows/tests.yml'), 'utf8');
-t('own workflow classifies', placed(own), 'suite=self-hosted@18 tests=self-hosted@70');
+// This repo's own workflows: hosted labels only, so nothing to lint.
+const ownWf = (f) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows', f), 'utf8');
+const own = ownWf('tests.yml');
+t('own workflow classifies', placed(own), 'tests=self-hosted@24');
 t('own workflow lints clean', linted(own), '');
+t('own nightly and red-main workflows lint clean', linted(ownWf('nightly-macos.yml')) + linted(ownWf('ci-main-red.yml')), '');
 
 // The CLI over a directory: classify lines and summary, ci-lint exit status.
 const dir = mkdtempSync(join(tmpdir(), 'desk-ci-'));

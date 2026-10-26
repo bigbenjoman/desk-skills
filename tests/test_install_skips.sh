@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: install.sh with no terminal (every skipped prompt listed)
+# covers: skills/** vendor/** agents/** commands/**
 # install.sh run with no terminal (as /desk-update runs it: stdin from /dev/null) skips every
 # settings prompt; each skip must be listed at the end with the way to apply it. Runs the whole
 # installer under a throwaway HOME with stub claude, gh and codex. Nothing touches your real ~/.claude.
