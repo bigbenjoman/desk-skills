@@ -27,7 +27,9 @@ jobs:
         exclude:
           - { os: macos-latest, event: push }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # The suite takes ~23 min on hosted macOS (26 Oct: #219 23m15s; #216, #217 and #218 were
+    # killed at 25), so 25 failed PRs at random. Public repo: the extra minutes are free.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
