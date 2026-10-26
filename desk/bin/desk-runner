@@ -481,7 +481,7 @@ STARTED=0; RUNNERS_UNKNOWN=""
 reconcile() { # reap finished slots, drop extra idle ones, start missing ones; silent with no slots file
   [ -e "$SLOTS" ] || return 0
   local reason live listed='' id repo rid state busy runners cpus mem gone have n extra rids left private rc=0
-  local rows="" jobs="" t targets="" follow=""
+  local rows="" jobs="" t demand="" follow=""
   [ "$(idle_minutes)" = off ] || follow=1
   # A repo made public since scale gets no new slot, and its slots are drained.
   for repo in $(slot_repos); do
@@ -567,7 +567,7 @@ EOF
       else jobs="${jobs}unknown $repo
 "; fi
     done
-    targets=$( { printf '%s' "$rows"; printf '%s' "$jobs" | awk '$1 == "job"' | sort -k2; printf '%s' "$jobs" | awk '$1 == "unknown"'; } \
+    demand=$( { printf '%s' "$rows"; printf '%s' "$jobs" | awk '$1 == "job"' | sort -k2; printf '%s' "$jobs" | awk '$1 == "unknown"'; } \
       | awk -v free=$(( FIT - $(printf '%s\n' "$live" | awk 'NF' | wc -l) )) '
         $1 == "job" {x = $3; if (idle[x] > 0) idle[x]--; else if (free > 0 && have[x] + add[x] < want[x]) {add[x]++; free--}; next}
         $1 == "unknown" {unk[$2] = 1; next}
@@ -575,7 +575,7 @@ EOF
         END {for (k = 1; k <= m; k++) print r[k], (r[k] in unk ? "-" : have[r[k]] + add[r[k]])}')
   fi
   for repo in $(printf '%s' "$rows" | awk '{print $1}'); do
-    n=$(printf '%s\n' "$targets" | awk -v r="$repo" '$1 == r {print $2}')
+    n=$(printf '%s\n' "$demand" | awk -v r="$repo" '$1 == r {print $2}')
     case $n in ''|-) n=$(allotted "$FIT" "$repo") ;; esac
     have=$(printf '%s\n' "$live" | awk -v r="$repo" '$2 == r' | wc -l | tr -d ' ')
     while [ "$have" -lt "$n" ]; do
