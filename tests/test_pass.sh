@@ -1053,4 +1053,26 @@ check "DS-222 AC1 pr-ready yes: a clean, green draft at its head is marked ready
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-222 a PR already ready is not undrafted again" '[ "$(grep -c "^pr ready" "$T/gh-calls")" = 0 ]'
 
+# ---- DS-252: a CI slot waiting for memory holds this batch's next spawn
+export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"
+mkdir -p "$T/state-mt/logs"; MT="$DESK_HOME/memory-turns"; mkdir -p "$MT"
+q init mt; q set-batch concurrency=2
+q add M-1; q set M-1 state=running branch=fix/M-1 session_id=live-1
+q add M-2; q set M-2 state=triaged
+# CI waiting since 5 minutes ago, on a process that runs (this shell), rewritten a minute ago.
+ci_waits(){ printf '{"side":"ci","since":%s,"at":%s,"why":"%s","pid":%s}\n' "$(( ($(date +%s) - 300) * 1000 ))" "$(( ($(date +%s) - $1) * 1000 ))" "12.0G available" "$$" > "$MT/ci.json"; }
+ci_waits 60
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-252 AC2 a CI slot waiting for memory: no new worker, one running" '[ "$(field M-2 state)" = "\"triaged\"" ]'
+check "DS-252 AC2 the report says CI is waiting for memory" 'echo "$out" | grep -q "memory: CI is waiting for memory, so no new worker starts until its slot has (1 running): a CI slot waiting for memory since"'
+check "DS-252 the batch keeps a marker of its own, waiting behind CI" '[ -n "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ] && grep -q "held behind CI" "$MT"/autopilot-*.json'
+ci_waits 1860
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-252 a stale CI marker holds nothing: the worker spawns" '[ "$(field M-2 state)" = "\"running\"" ] && [ ! -e "$MT/ci.json" ]'
+check "DS-252 and the report says it was removed" 'echo "$out" | grep -q "memory turns: removed ci.s stale waiting marker: not rewritten for 31 minutes"'
+check "DS-252 a batch no longer waiting drops its marker" '[ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
+q add M-3; q set M-3 state=triaged; ci_waits 60
+out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-252 a dry run writes no marker" '[ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
