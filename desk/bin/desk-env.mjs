@@ -831,7 +831,14 @@ export function spawnGate(row = configValue('spawn-gate')) {
   const hold = num(/below\s*(\d+(?:\.\d+)?)/i) ?? num(/hold\s*(\d+(?:\.\d+)?)/i) ?? Math.min(4, start);
   const dropTo = num(/(?:drop to|drop)\s*(\d+)/i) ?? num(/(\d+)\s*below/i) ?? 1;
   const env = process.env.AUTOPILOT_MIN_AVAIL_GB;
-  return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : start, hold, dropTo };
+  // The machine's free-memory floor is shared with the runner: a repo may start higher, never lower.
+  return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : Math.max(start, memoryFloor()), hold, dropTo };
+}
+// The machine profile's runner-memory-floor-gb, or 8: no new runner slot or autopilot worker starts
+// that would leave `avail` under it (mem-turns.mjs). A value that is not a number above 0 reads as 8.
+export function memoryFloor(value = machineValue('runner-memory-floor-gb')) {
+  const n = Number(value);
+  return value != null && n > 0 ? n : 8;
 }
 
 // ---- ticket ids ------------------------------------------------------------------------------
@@ -893,6 +900,8 @@ function macVmStat() {
   } catch { return null; }
 }
 export function availableGiB() {
+  const stub = Number(process.env.DESK_MEM_AVAIL_GB);
+  if (process.env.DESK_MEM_AVAIL_GB && stub >= 0) return stub; // tests
   const m = linuxMeminfo();
   if (m?.MemAvailable) return m.MemAvailable / GiB;
   const v = platform() === 'darwin' ? macVmStat() : null;
@@ -936,16 +945,19 @@ export function runnerState() {
   let running = false;
   try { running = JSON.parse(execFileSync('tart', ['get', runnerVm(), '--format', 'json'], quiet)).Running === true; } catch { running = false; }
   if (!running) return { running, reservedGiB, residentGiB: 0 };
-  let residentGiB = 0;
+  return { running, reservedGiB, residentGiB: vmResidentGiB() };
+}
+export function vmResidentGiB() {
+  const stub = Number(process.env.DESK_RUNNER_RESIDENT_GB);
+  if (process.env.DESK_RUNNER_RESIDENT_GB && stub >= 0) return stub; // tests
+  const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 };
   try {
     const disk = join(expandHome(process.env.TART_HOME ?? join(HOME, '.tart')), 'vms', runnerVm(), 'disk.img');
     const pids = execFileSync('lsof', ['-t', disk], quiet).split('\n').map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
-    if (pids.length) {
-      const kb = execFileSync('ps', ['-o', 'rss=', '-p', pids.join(',')], quiet).split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0);
-      residentGiB = (kb * 1024) / GiB;
-    }
-  } catch { residentGiB = 0; }
-  return { running, reservedGiB, residentGiB };
+    if (!pids.length) return 0;
+    const kb = execFileSync('ps', ['-o', 'rss=', '-p', pids.join(',')], quiet).split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0);
+    return (kb * 1024) / GiB;
+  } catch { return 0; }
 }
 // `avail` with the runner's reservation held back: what the ladder gates a spawn on.
 export function ladderMemory(avail = availableGiB(), state = runnerState()) {

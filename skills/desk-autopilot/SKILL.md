@@ -1326,6 +1326,14 @@ shows `runner=<n>G reserved (<r>G resident, <h>G held back) ladder=<x>G`; read t
 `ladder=`. Without a running VM, or with no reservation in the profile, nothing is held back and the
 line carries neither.
 
+**The runner and autopilot share one free-memory floor, and take turns.** The machine profile's
+`runner-memory-floor-gb` (8 unless set) raises §3b's `start` band when it is higher, so no worker
+starts under it, and the runner starts no CI slot under it either. A pass with ready work held only
+for memory leaves a waiting marker (`$DESK_HOME/memory-turns/`), which holds the runner's next slot
+until this batch's next worker has spawned. A CI slot that began waiting first holds this batch's
+next spawn instead, and the report says `CI is waiting for memory`. A CI wait never holds the batch's first
+worker, nor a batch's wait CI's first slot. `desk-runner status` lists every wait.
+
 Lowering is silent but **reported**: say which number caused it. Raising back needs the same
 evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the
 guest figure can take the whole VM down and kill every agent mid-flight.

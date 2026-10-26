@@ -33,6 +33,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate } from './gate.mjs';
 import { undraftCall } from './undraft.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
+import { readTurns, writeTurn, clearTurn, ciHolds, waitLine } from './mem-turns.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -815,10 +816,29 @@ const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudge
   : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
   : PACE.hold ? '7-day usage ahead of pace holds every spawn'
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
+// The Mac's memory is shared with the runner VM's CI slots, and the two take turns (mem-turns.mjs). A
+// batch with work held only for memory keeps a waiting marker, so the runner's next slot waits for this
+// batch's next worker; a CI slot that began waiting first holds this batch's next spawn until it has
+// started. The batch keeps its first worker either way.
+const TURNS = readTurns();
+report.waiting.push(...TURNS.removed);
+const TURN_SELF = `autopilot-${E.repoSlug()}`;
+const wantsWorker = concurrency > 0 && eligible.length > 0 && !held;
+const ciHold = wantsWorker ? ciHolds({ running: running.length, live: TURNS.live, self: TURN_SELF }) : null;
+if (ciHold) report.stalled.push(`memory: CI is waiting for memory, so no new worker starts until its slot has (${running.length} running): ${waitLine(ciHold)}`);
+if (!DRY) {
+  if (wantsWorker && (lowMemory || ciHold)) {
+    writeTurn(TURN_SELF, {
+      side: 'autopilot', state: STATE, queue: QUEUE_FILE,
+      why: lowMemory ? `${eligible.length} ticket(s) ready, ${gateGB.toFixed(1)}G available${reserved}, under the ${MIN_AVAIL_GB}G spawn gate`
+        : `${eligible.length} ticket(s) ready, held behind CI's wait`,
+    }, { live: TURNS.live });
+  } else clearTurn(TURN_SELF);
+}
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && !held && !lowMemory) {
+if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && !held && !lowMemory && !ciHold) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -833,7 +853,7 @@ const plan = borrowPlan({
   others, machine: MACHINE_CAP, memory: { avail: gateGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
 });
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, eligible.length), machine: MACHINE_CAP, queues: otherRepos });
-const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room);
+const slots = MAINT.hold || ciHold ? 0 : Math.min(plan.slots, MACHINE.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
 const CEILING = E.memoryCeiling();
 
