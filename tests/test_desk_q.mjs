@@ -661,7 +661,7 @@ N3.ui.finish(0);
 
 const N4 = nav({ kind: 'days', slug: 'acme__tidy' });
 await sleep(20);
-t('DS-164 AC4 the breadcrumb reads desk-q › tidy', N4.frame()[0], 'desk-q › tidy');
+t('DS-164 AC4 (DS-215) the breadcrumb reads desk-q › tidy, then the time', /^desk-q › tidy · \d\d:\d\d$/.test(N4.frame()[0]), true);
 await N4.click(3, 1);
 t('DS-164 AC4 a click on desk-q in the breadcrumb shows every repo\'s By day', where(N4), 'desk-q | 3 By day | days');
 N4.ui.finish(0);
@@ -853,8 +853,8 @@ const Ov = nav({ kind: 'overview', all: false });
 await sleep(20);
 // After LAST PASS, each count; a blocked count is dim (DS-186), so red is failed only.
 t('DS-181 AC1 each non-zero count in its state\'s colour: running, ready, waiting, needs you, failed', coloured(ovRow(Ov, 'hue')).slice(1).join(' '), '32:1 34:1 33:1 35:1 31:1');
-t('DS-181 AC1 (DS-186 AC4) zero counts are dim, the one non-zero count coloured',
-  coloured(ovRow(Ov, 'slow'), true).slice(1, 7).join(' '), '2:0 34:4 2:0 2:0 2:0 2:0');
+t('DS-181 AC1 (DS-186 AC4, DS-215 AC13) zero counts are grey, the one non-zero count coloured',
+  coloured(ovRow(Ov, 'slow'), true).slice(1, 7).join(' '), '38;5;247:0 34:4 38;5;247:0 38;5;247:0 38;5;247:0 38;5;247:0');
 Ov.ui.finish(0);
 
 const Hq = nav({ kind: 'repo', slug: 'acme__hue' });
@@ -1005,7 +1005,7 @@ t('DS-187 AC1 the overview opens with how many need you, each repo\'s count, mos
   lines(NY.run('--plain').out)[0], '◆ 3 tickets need you │ voicepa 2 · pr-ninja 1 │ ◌ 1 blocked');
 const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
-t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('● ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
+t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('◆ ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
 NYs.ui.finish(0);
 
 // mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
@@ -1194,7 +1194,7 @@ t('DS-217 a hold that names no blocker: needs you, since nothing releases it', c
 t('DS-217 its page says so and gives the release command', ['Held behind no recorded blocker, which nothing releases.', 'Release it, in holdsup: node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged']
   .map((s) => Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED }).includes(s)).join(), 'true,true');
 t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W-3'), '◆ needs you | #175 is a draft: undraft and merge it');
-t('DS-217 AC3 and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 }))[0].includes('4 in hold'), true);
+t('DS-217 AC3 and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 })).find((l) => l.startsWith('◆ '))?.includes(' hold 4'), true);
 t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176 will not merge on its own: merge it');
 t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '◆ needs you | #179 will not merge on its own: merge it');
 t('DS-217 AC5 behind a blocker that needs you, failed or is parked: waiting, saying which',
@@ -1277,7 +1277,7 @@ t('DS-215 AC3 a session-run batch set to the supervisor: ▲ session in amber, a
 const bandAt = lines(ov215).indexOf(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on');
 const needsAt = lines(ov215).findIndex((l) => l.startsWith('◆ '));
 t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off in red at once, and the red band above the header names the fix',
-  `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;31m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on \x1b[22;27;39m'))}`, '31:✕ supervisor off · 3m true true');
+  `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;31m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on\x1b[22;27;39m'))}`, '31:✕ supervisor off · 3m true true');
 const halt215 = lines(Q.repoScreen(at215('halt'), { now: NOW }));
 t('DS-215 AC5 a loaded supervisor whose passes stopped: the header reads ■ stopped, then its last log line',
   `${/^■ stopped · 40m {2}last pass \d\d:\d\d │ /.test(halt215[2])} ${halt215.includes("Supervisor's last log line: last tick: skipped, a pass still holds the orchestrator lock")}`, 'true true');

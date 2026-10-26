@@ -845,7 +845,7 @@ function machineLine(running, cap, room, avail) {
 }
 
 // The red band for a batch handed to a supervisor that is not loaded: nothing runs its passes.
-const offBand = (r) => segLine([[` ✕ ${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on `, BAND]]);
+const offBand = (r) => segLine([[` ✕ ${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on`, BAND]]);
 
 // The overview's notes, one per line under a grey "note": a glyph and what it names in its colour,
 // then the text.
