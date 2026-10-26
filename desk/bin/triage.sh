@@ -58,7 +58,7 @@ if [ "$KIND" = work-id ] || [ "$KIND" = slug ] || [ "$KIND" = issue ]; then
 else
   [ "$TRACKER" != none ] || { echo "FAIL: '$TICKET' reads as a tracker key but config §4 Tracker is none" >&2; exit 2; }
   READ_TICKET="Read the ticket with \`desk-jira get $TICKET\` and its comments with \`desk-jira comments $TICKET\` (a later comment can settle or rule out what the description asks for). Its \`parent\` line names the parent and its type (\`-\` when it has none); if it has one (an epic or a story), read the parent's description with \`desk-jira get <that key>\` for context only: this ticket's own criteria are its scope"
-  RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\` and \`unknowns\` (which base to use)"
+  RELATED="If the ticket names another ticket key (\"follow-up from <KEY>\"), check whether that one merged: \`git log --oneline $BASE --grep=<KEY>\` returning nothing means an unmerged dependency — name it in \`prior_art\`. It holds the ticket (plan-batch reads its Jira links); it is not a lane signal"
   TYPE_HINT="Jira issue type"
   STATUS_JSON='"<Jira status>"'
   ASSIGNEE_JSON='"<assignee display name, or null if unassigned>"'
@@ -92,6 +92,16 @@ Things that are not in that file and matter here:
 - **Judge the lane as if every item in \`unknowns\` were already answered.** Missing information
   belongs in \`unknowns\`, never in the lane. A net-new endpoint or a security dimension is
   ordinary engineering, not lane C. Reserve C/D for their structural signals.
+- **Lane C means a person must agree something before code exists**: a feature sized L or XL (the
+  ticket's Size; with none, more than one sitting judged from the code), an intermittent bug, or
+  stated behaviour that looks wrong. Nothing else is lane C:
+  - **Spanning more than one app or package is not lane C at size M or smaller.** Pick A or B, and
+    name the packages in \`lane_reason\`.
+  - **Unmerged blockers are not "more than one sitting".** They hold the ticket until they merge and
+    never change its lane: name them in \`prior_art\`, not in \`unknowns\` or \`lane_reason\`.
+  - **A step from the routing file's "Steps only the user can take" list** goes in \`ben_steps\`, one
+    entry per step, each with a proposed blocker ticket for the user. It does not set the lane: the
+    rest of the ticket keeps the lane it would otherwise get.
 - **\`unknowns\` is only for decisions that are the user's.** Before listing one, check: is it
   already settled by the repo's own instructions ($INSTRUCTIONS) or a memory? Is it really the product
   owner's or the reviewer's call (config §4) — if so say whose call it is. Would any reasonable
@@ -144,11 +154,13 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "change_kind_reason": "<one clause: what it moves, the schema or shared code it changes, or the surface it touches>",
   "unknowns": ["questions only the user can answer. Empty if none."],
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
+  "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
   "needs_db": <true if verifying it needs a database, seed, or integration test>
 }
 
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
+ben_steps is [] when the ticket needs no step only the user can take.
 PROMPT_END
 
 cd "$MAIN"
@@ -166,7 +178,7 @@ if [ ! -f "$OUT" ]; then
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
-node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind");' "$OUT" \
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -220,6 +232,17 @@ The ones that have actually been got wrong, all toward over-escalation:
   repository already writing that relation). If one exists, the work is an extension, not a build
   from nothing, and the size signal probably does not fire. Where the ticket itself defines
   sequenced, independently-mergeable stages, size the FIRST stage — the batch runs that.
+- **Spanning more than one app or package read as lane C.** It is not a C signal on its own: a ticket
+  sized M or smaller (its Size, \`desk-jira get\`'s \`Size\` line where it has one) whose only C
+  signal is that goes to A or B, with the packages named in your reason.
+- **Unmerged blockers read as "more than one sitting".** Blockers hold a ticket until they merge;
+  they never set its lane. A ticket whose only C signal is its blockers goes to A or B.
+- **A step only the user can take read as lane C** (the routing file's list). It goes in the
+  record's \`ben_steps\` as its own blocker ticket, and the rest of the ticket keeps its lane.
+
+Lane C stands only on its own signals: a feature sized L or XL (with no size, more than one sitting
+judged from the code), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
+XL stays C. A lane C ticket with none of these fails the check: downgrade it to A or B.
 
 Downgrade to A, B or E when the change is one you could describe file by file right now.
 

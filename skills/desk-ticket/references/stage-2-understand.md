@@ -15,6 +15,12 @@ that maps a path to the documented claims about it (below, "the knowledge check"
 file in scope and read the claims it names, not whole domain files. Otherwise read the sections of
 the instruction files that cover the paths. If nothing documents the path, say so in one line.
 
+**Commit lane C only on its own signals (Stage 2).** Lane C means a person must agree something before
+code exists: a feature sized L or XL, an intermittent bug, or stated behaviour that looks wrong
+(`desk-ticket-routing.md`). Work at size M or smaller that spans several packages is lane A or B,
+naming the packages; unmerged blockers hold the ticket without changing its lane; and a step only
+the user can take becomes its own blocker ticket while the rest keeps its lane.
+
 ## Red flags at this stage — stop
 
 - Writing code in a documented area without having read what the repo documents about its files

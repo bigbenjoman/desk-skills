@@ -51,7 +51,7 @@ cat > "$T/stub/claude" <<'EOF'
 n=$(ls "$STUB_LOG".* 2>/dev/null | wc -l | tr -d ' ')
 printf '%s\0' "$@" > "$STUB_LOG.$n"
 if [ "$n" = 0 ]; then
-  printf '{"ticket":"fix-thing","lane":"%s","branch":"fix/fix-thing","change_kind":"%s"}' "$STUB_LANE" "${STUB_KIND-surface}" > "$DESK_STATE/triage/fix-thing.json"
+  printf '{"ticket":"fix-thing","lane":"%s","branch":"fix/fix-thing","change_kind":"%s"%s}' "$STUB_LANE" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/fix-thing.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
   printf '%s' "$STUB_CHAL" > "$DESK_STATE/triage/fix-thing.challenge.json"
@@ -154,6 +154,56 @@ for chal in '{"verdict":"INCONCLUSIVE","lane":"C","reason":"could not read","fai
 done
 check "challenge prompt asks for INCONCLUSIVE and failed_reads" \
   'node -e "const a=require(\"fs\").readFileSync(process.argv[1],\"utf8\").split(\"\\0\"); const p=a[a.indexOf(\"-p\")+1]; process.exit(/INCONCLUSIVE/.test(p) && /failed_reads/.test(p) ? 0 : 1)" "$STUB_LOG.1"'
+
+# DS-242: lane C only when a person must agree first. The lanes are the model's call, so the prompts
+# carry the rules, and the record and the merge are checked against fixture outputs.
+P0(){ tr "\0" "\n" < "$STUB_LOG.0"; }
+P1(){ tr "\0" "\n" < "$STUB_LOG.1"; }
+lc_ok(){ [ "$(lc .lane)" = "$1" ]; }
+STEPS='"ben_steps":[{"step":"a cdk deploy","blocker":"deploy the stack, unblocking fix-thing"}]'
+pkgs='"lane_reason":"two packages: apps/web, packages/ui"'
+
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_EXTRA=",$pkgs,$STEPS" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-242 AC1: the first pass is told multi-package work at M or smaller is A or B, packages named" \
+  'P0 | grep -qF "Spanning more than one app or package is not lane C at size M or smaller" && P0 | grep -qF "name the packages in \`lane_reason\`"'
+check "DS-242 AC2: the first pass is told unmerged blockers hold the ticket and never change its lane" \
+  'P0 | grep -qF "Unmerged blockers are not \"more than one sitting\"" && P0 | grep -qF "never change its lane" && ! P0 | grep -qF "and \`unknowns\` (which base to use)"'
+check "DS-242 AC4: the first pass asks for ben_steps from the routing file list, the lane unchanged" \
+  'P0 | grep -qF "\"ben_steps\": [{\"step\"" && P0 | grep -qF "Steps only the user can take" && P0 | grep -qF "rest of the ticket keeps the lane it would otherwise get"'
+check "DS-242 AC1/AC4: a lane A record naming its packages and a person-only step is kept as written, no challenge" \
+  '[ $rc -eq 0 ] && [ ! -f "$STUB_LOG.1" ] && lc_ok A && [ "$(lc .lane_reason)" = "two packages: apps/web, packages/ui" ] && [ "$(lc ".ben_steps[0].step")" = "a cdk deploy" ]'
+for bad in '"ben_steps":"a cdk deploy"' '"ben_steps":[{"step":"a cdk deploy"}]' '"ben_steps":[{"step":"","blocker":"x"}]'; do
+  rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+  out=$(STUB_LANE=A STUB_EXTRA=",$bad" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+  check "DS-242 AC4: ben_steps $bad is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
+done
+
+# The challenge (AC5) on a lane C fixture: its prompt carries AC1 to AC3, a DOWNGRADE moves the ticket
+# to A or B and keeps its ben_steps, and a CONFIRM on an L-sized ticket keeps C (AC3).
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=C STUB_EXTRA=",$STEPS" STUB_CHAL='{"verdict":"DOWNGRADE","lane":"A","reason":"size M, only signal is two packages: apps/web, packages/ui"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-242 AC5: the challenge prompt applies AC1 to AC3" \
+  'P1 | grep -qF "Spanning more than one app or package read as lane C" && P1 | grep -qF "Unmerged blockers read as \"more than one sitting\"" && P1 | grep -qF "A ticket sized L or" && P1 | grep -qF "downgrade it to A or B"'
+check "DS-242 AC5: a lane C ticket failing AC1 is downgraded to A, ben_steps kept" \
+  '[ $rc -eq 0 ] && lc_ok A && [ "$(lc .lane_original)" = C ] && [[ "$(lc .lane_reason)" == "downgraded from C at challenge: size M, only signal is two packages"* ]] && [ "$(lc ".ben_steps[0].step")" = "a cdk deploy" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=C STUB_EXTRA=',"lane_reason":"size L feature: split into three stages"' STUB_CHAL='{"verdict":"CONFIRM","lane":"C","reason":"size L"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-242 AC3: a confirmed L-sized lane C ticket stays C with the split it proposes" \
+  '[ $rc -eq 0 ] && lc_ok C && [ "$(lc .lane_challenge.verdict)" = CONFIRM ] && [ "$(lc .lane_reason)" = "size L feature: split into three stages" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(AUTOPILOT_SKIP_CHALLENGE=1 STUB_LANE=C STUB_EXTRA=",$STEPS" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-242: with AUTOPILOT_SKIP_CHALLENGE set, no challenge runs and the record is kept as written" \
+  '[ $rc -eq 0 ] && [ ! -f "$STUB_LOG.1" ] && lc_ok C && [ "$(lc .lane_challenge)" = null ] && [ "$(lc ".ben_steps[0].step")" = "a cdk deploy" ]'
+
+# AC6: the routing table's lane C row, its Lane C section and Stage 2 carry the same signals.
+RT="$SRC/skills/desk-ticket/references/desk-ticket-routing.md"; S2="$SRC/skills/desk-ticket/references/stage-2-understand.md"
+check "DS-242 AC6: lane C's row names L or XL, intermittent and wrong behaviour, and no package signal" \
+  'row=$(grep "^| \*\*C\*\* |" "$RT") && [[ "$row" == *"sized L or XL"* ]] && [[ "$row" == *intermittent* ]] && [[ "$row" == *"looks wrong"* ]] && [[ "$row" != *package* ]]'
+check "DS-242 AC6: the routing file lists the person-only steps and what is not lane C" \
+  'grep -qF "### Steps only the user can take" "$RT" && grep -qF "a \`cdk deploy\`" "$RT" && grep -qF "**Blockers that have not merged.**" "$RT" && ! grep -qF "one spanning more than one app or package" "$RT"'
+check "DS-242 AC6: Stage 2 commits lane C on the same signals" \
+  'grep -qF "Commit lane C only on its own signals" "$S2" && grep -qF "M or smaller that spans several packages is lane A or B" "$S2"'
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'
