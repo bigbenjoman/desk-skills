@@ -26,6 +26,12 @@ export const VALUES = ['supervisor', 'session'];
 export const NO_LAUNCHD = 'the supervisor needs macOS launchd, so batches run in the session on this computer';
 const RETRY = 'node ~/.claude/desk/bin/supervisor.mjs install';
 
+// The repo's launchd agent: its label, its domain, and whether launchd has it loaded. supervisor.mjs
+// installs under this label and desk-q reads it with one launchctl print per refresh.
+export const supervisorLabel = (slug) => `com.desk-skills.supervisor.${slug}`;
+export const launchdDomain = () => `gui/${process.getuid()}`;
+export const supervisorLoaded = (slug) => spawnSync('launchctl', ['print', `${launchdDomain()}/${supervisorLabel(slug)}`], { stdio: 'ignore' }).status === 0;
+
 // The row's value: `supervisor` or `session`, with a note when it was unset or unreadable.
 //   -> { value, note }
 export function runBySetting(raw = E.configValue('batches-run-by')) {

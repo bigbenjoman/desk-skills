@@ -29,12 +29,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate } from './desk-env.mjs';
+import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
-import { platform, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
+import { platform, runBySetting, supervisorLoaded, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -190,6 +190,14 @@ function triageOf(stateDir, key) {
 export const STAGE_TAIL = 256 * 1024;
 const logStages = new Map();
 
+// A file's last `bytes` as text, read at `size` (its length now unless given). Throws with no file.
+function tailText(path, bytes, size = statSync(path).size) {
+  const n = Math.min(bytes, size), buf = Buffer.alloc(n);
+  let fd;
+  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, size - n); } finally { if (fd != null) closeSync(fd); }
+  return buf.toString('utf8');
+}
+
 // A worker log's last stage marker (harvest.mjs lastStage), from its last STAGE_TAIL bytes only,
 // or null with no log or no marker there. Kept until the log grows, so a refresh rereads nothing.
 export function logStage(path) {
@@ -197,13 +205,10 @@ export function logStage(path) {
   try { st = statSync(path); } catch { return null; }
   const hit = logStages.get(path);
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.s;
-  const n = Math.min(STAGE_TAIL, st.size);
-  const buf = Buffer.alloc(n);
-  let fd;
-  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, st.size - n); } catch { return null; } finally { if (fd != null) closeSync(fd); }
-  let text = buf.toString('utf8');
+  let text;
+  try { text = tailText(path, STAGE_TAIL, st.size); } catch { return null; }
   // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
-  if (st.size > n) text = text.slice(text.indexOf('\n') + 1);
+  if (st.size > STAGE_TAIL) text = text.slice(text.indexOf('\n') + 1);
   const s = lastStage(text);
   if (logStages.size > 256) logStages.clear();
   logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
@@ -246,19 +251,40 @@ export function loadRepos(now = Date.now()) {
     r.landing = rows.filter(landing).map((t) => ({ t, k: 'landing', pos: null, st: rowStage(stateDir, t, r.last) }));
     r.done = rows.length - r.rows.length - r.landing.length;
     r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
+    r.run = r.q ? whoRuns(r) : null;
     return r;
   });
 }
+
+// Whether the batch is not yet finished: a ticket not done, or a PR still landing.
+const unfinished = (r) => r.rows.length > 0 || r.landing.length > 0;
+
+// Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
+// `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
+// `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
+// print per refresh. Off macOS there is no supervisor, so every batch is a session's.
+function whoRuns(r) {
+  if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null };
+  let raw = null;
+  try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
+  const by = r.q.supervised === true ? 'supervisor' : 'session';
+  const agent = by === 'supervisor' && unfinished(r) ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
+  return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent };
+}
+// A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
+const handsOver = (r) => r.run?.by === 'session' && r.run.set === 'supervisor';
+const supervisorOff = (r) => r.run?.agent === 'off';
 
 const count = (r, k) => r.rows.filter((x) => (Array.isArray(k) ? k : [k]).includes(x.k)).length;
 const attention = (r) => count(r, ['needs', 'stuck', 'failed']);
 const hasBatch = (r) => r.q != null || r.error != null;
 
-// Live batches first, freshest first; then quiet ones with something for the user, most first.
+// Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
+// supervisor to turn back on, or an unfinished batch to hand over), most first.
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
-  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0)).sort((a, c) => attention(c) - attention(a));
+  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r) || (handsOver(r) && unfinished(r)))).sort((a, c) => attention(c) - attention(a));
   return [...live, ...quiet];
 }
 
@@ -463,14 +489,19 @@ const epicIn = (r, F, key) => !!F?.epics?.[key] && r.rows.some((x) => F.of[x.t.k
 
 // What z cycles through on the Timeline, auto first.
 export const ZOOMS = ['auto', 'hours', 'days', 'weeks'];
+// A light terminal theme, from COLORFGBG's background: 7 and 9 to 15 are the light ANSI colours.
+export const lightTheme = (v = process.env.COLORFGBG) => { const bg = Number(String(v ?? '').split(';').at(-1)); return bg === 7 || (bg >= 9 && bg <= 15); };
+const LIGHT = lightTheme();
 // A row's colour, as an SGR code, by its shown state; DIM and BOLD for the rails, group rows,
-// headings and secondary detail. Red is for failed only: a blocked ticket is grey.
-const DIM = '2', BOLD = '1';
-// A fixed grey, 256-colour 247, where text must stay readable: the terminal picks dim's shade itself.
-const GREY = '38;5;247';
+// headings, labels and secondary detail. Red is for failed only: a blocked ticket is grey.
+// Every label is a fixed grey rather than dim (SGR 2), whose shade each terminal picks: 256-colour
+// 247 on a dark theme and 240 on a light one, each 4.5:1 or more on the window and the selected row.
+const GREY = LIGHT ? '38;5;240' : '38;5;247';
+const DIM = GREY, BOLD = '1', FAINT = '2';
 const STATE_SGR = { running: '32', landing: '36', ready: '34', queued: null, waiting: '33', stuck: GREY, needs: '35', failed: '31' };
-// The Notices colours: a warning yellow, what needs the user magenta.
-const WARN = '33', YOU = '35';
+// The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).
+// The band, when nothing can run, is bold and reversed on red.
+const WARN = '33', YOU = '35', YOU_BOLD = '1;35', BAND = '1;7;31';
 // A landing PR's cyan, and its checks: passed green, failed red.
 const LANDING = STATE_SGR.landing, GOOD = '32', FAIL = '31';
 // A line of coloured runs that is not a row: a heading, a ticket page's line, a legend.
@@ -759,15 +790,19 @@ function workerGB() {
 // Each pass gates on its own repo's §3b "Spawn gate", so the machine's is the highest of them.
 const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValue(r.slug, 'spawn-gate')).start), spawnGate(null).start);
 
-// LAST PASS: "● live · 4m ago" in green while passes run on time; stopped, how long since the last
-// one, yellow under a day and red beyond.
-const LAST_W = 21;
+// LAST PASS: who runs the batch while passes run on time, "● supervisor · 4m ago" or "● session ·
+// 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
+// when the batch was handed to a supervisor that is not loaded; stopped, how long since the last
+// pass, yellow under a day and red beyond.
+const LAST_W = 26;
 // QUEUE DONE fits "passes stopped".
 const QD_W = 14;
 function lastPass(r, now) {
-  if (r.live) return [`● live · ${ago(r.last == null ? null : now - r.last)}`, STATE_SGR.running];
+  const age = r.last == null ? null : now - r.last;
+  if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, STATE_SGR.failed];
+  if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
-  return [`■ stopped · ${since(now - r.last)}`, now - r.last >= DAY ? STATE_SGR.failed : WARN];
+  return [`■ stopped · ${since(age)}`, age >= DAY ? STATE_SGR.failed : WARN];
 }
 
 const allowedBy = (r) => Math.min(r.workers, r.cap);
@@ -789,27 +824,58 @@ const unslotted = (r) => count(r, 'ready') - Math.max(0, r.workers - count(r, 'r
 const textOf = (l) => (typeof l === 'string' ? l : l.line);
 const joined = (s) => [...s.head, ...s.rows, ...s.foot].map(textOf).join('\n');
 
+// Header segments are split by a grey bar.
+const BAR = [' │ ', GREY];
+// "◆ 3 tickets need you", bold magenta, or grey when none do.
+const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's need'} you`, YOU_BOLD] : ['◆ nothing needs you', GREY]);
+
 // The overview's first line: how many tickets wait on the user, then each repo's share, most first,
-// then how many are blocked.
+// then how many are blocked; labels grey, figures bright.
 function needsLine(list) {
   const ok = list.filter((r) => !r.error);
   const you = ok.reduce((a, r) => a + count(r, 'needs'), 0), stuck = ok.reduce((a, r) => a + count(r, 'stuck'), 0);
-  const per = ok.filter((r) => count(r, 'needs')).sort((a, c) => count(c, 'needs') - count(a, 'needs')).map((r) => `${count(r, 'needs')} in ${r.name}`);
-  const segs = you ? [[`● ${you} ticket${you === 1 ? ' needs' : 's need'} you`, YOU], [`  ${per.join(' · ')}`, YOU]] : [['● Nothing needs you', DIM]];
-  if (stuck) segs.push([`   ${stuck} blocked`, DIM]);
+  const per = ok.filter((r) => count(r, 'needs')).sort((a, c) => count(c, 'needs') - count(a, 'needs'))
+    .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(count(r, 'needs')), BOLD]]);
+  const segs = [needsYou(you), ...(you ? [BAR, ...per] : [])];
+  if (stuck) segs.push(BAR, [`◌ ${stuck} blocked`, GREY]);
   return segLine(segs);
 }
+
+// The overview's second line: workers running, the machine cap and the room it leaves, free memory.
+function machineLine(running, cap, room, avail) {
+  return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY], BAR,
+    ...(cap == null ? [['no machine cap (/desk-setup writes a machine profile)', GREY]] : [['machine cap ', GREY], [String(cap), BOLD]]),
+    [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
+}
+
+// The red band for a batch handed to a supervisor that is not loaded: nothing runs its passes.
+const offBand = (r) => segLine([[` ✕ ${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on`, BAND]]);
+
+// The overview's notes, one per line under a grey "note": a glyph and what it names in its colour,
+// then the text.
+function noteLines(notes, w) {
+  return notes.map((n, i) => segLine([[i ? '    ' : 'note', GREY], ['  ', null], [pad(n.tag, w + 1), n.sgr], ...n.text]));
+}
+
+// The note for a session-run batch the repo sets to the supervisor: running, its next batch hands
+// over; stopped, how to resume it, which hands it over.
+function handOverNote(r) {
+  const text = r.live ? 'set to the supervisor, but a session runs this batch. Its next batch hands over.'
+    : `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.name}; it hands the batch to the supervisor at Stage 4.`;
+  return { tag: `▲ ${r.name}`, sgr: WARN, text: [[text, null]] };
+}
+
+const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKILL.md'));
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
   const list = shownRepos(repos, all);
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   const room = headroom({ running, cap, avail, gate, perWorker });
-  const at = clock(now);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
+    ...list.filter(supervisorOff).map(offBand),
     needsLine(list),
-    `desk-q · ${at} · ${running} worker${running === 1 ? '' : 's'} running · `
-      + `${cap == null ? 'no machine cap (/desk-setup writes a machine profile)' : `machine cap ${cap} workers`}, ${room} free · ${avail.toFixed(1)} GiB free`,
+    machineLine(running, cap, room, avail),
     '',
     bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', QD_W)}  WORKERS`),
   ];
@@ -829,6 +895,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 53 + QD_W)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
   if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
+  const notes = list.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote);
   const seen = new Set();
   for (const r of repos) {
     for (const c of portClashes(r.claim, repos.map((x) => x.claim))) {
@@ -836,15 +903,25 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
-      foot.push(segLine([[`▲ ports overlap: ${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, WARN]]));
+      notes.push({ tag: '▲ ports', sgr: WARN, text: [[`${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, null]] });
     }
   }
+  const you = list.filter((r) => !r.error).reduce((a, r) => a + count(r, 'needs'), 0);
+  if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
+  const unset = repos.filter((r) => r.run?.unset).length;
+  if (unset) {
+    notes.push({ tag: '  setup', sgr: GREY, text: [[`${unset} repo${unset === 1 ? ' has' : 's have'} no "Batches run by" setting, so ${unset === 1 ? 'it runs' : 'they run'} in a session. `, GREY],
+      ['/desk-setup', BOLD], [' sets it.', GREY]] });
+  }
+  if (notes.length) foot.push('', ...noteLines(notes, w));
   return { head, rows, foot };
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
 const clock = (t) => new Date(t).toTimeString().slice(0, 5);
+// The interactive screen's `clock` is its time source, so the breadcrumb's time is read through this.
+const hhmm = clock;
 
 // When the batch's passes run, for a header: the next one while live, else that they have stopped,
 // what that means for its workers, and how to start them again.
@@ -853,13 +930,58 @@ function passLines(r, now) {
     const next = r.next == null ? '' : r.next > now ? ` · next pass ${clock(r.next)}` : ` · next pass due ${clock(r.next)}`;
     return [`orchestrator live, last pass ${ago(now - r.last)}${next}`];
   }
-  const resume = r.q?.supervised === true ? `check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
-    : `run /desk-autopilot in ${r.name}`;
-  return [
-    r.last == null ? 'no pass yet' : `passes stopped ${ago(now - r.last)} (last pass ${clock(r.last)}${r.next != null ? `, next was due ${clock(r.next)}` : ''})`,
-    'Running workers carry on, but nothing new starts and stages are not updated.',
-    `To resume: ${resume}.`,
-  ];
+  return [r.last == null ? 'no pass yet' : `passes stopped ${ago(now - r.last)} (last pass ${clock(r.last)}${r.next != null ? `, next was due ${clock(r.next)}` : ''})`, ...stoppedLines(r)];
+}
+
+// What stopped passes mean for the batch's workers, and how to start them again.
+function stoppedLines(r) {
+  const resume = supervisorOff(r) ? `desk-q ${r.name} supervisor on`
+    : r.run?.by === 'supervisor' ?`check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
+      : `run /desk-autopilot in ${r.name}${handsOver(r) ? '; it hands the batch to the supervisor at Stage 4' : ''}`;
+  return ['Running workers carry on, but nothing new starts and stages are not updated.', `To resume: ${resume}.`];
+}
+
+// The supervisor log's last line, or null with no log: its last 4 KB is read.
+function supervisorLogLine(r) {
+  try { return tailText(join(r.stateDir, 'supervisor.log'), 4096).split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? null; } catch { return null; }
+}
+
+// A repo screen's second header line: who runs the batch (or that passes stopped, or the supervisor is
+// off), the last pass, the workers against the batch's count and cap, and the batch. With passes
+// stopped or the supervisor off, what that means and how to resume follow, and a loaded supervisor's
+// last log line says why it is not passing.
+function passHead(r, now) {
+  const [cell, sgr] = lastPass(r, now);
+  const on = r.live && !supervisorOff(r);
+  const next = r.next == null ? [] : on ? [[r.next > now ? ' · next pass ' : ' · next pass due ', GREY], [clock(r.next), null]] : [[', next was due ', GREY], [clock(r.next), null]];
+  const last = r.last == null ? [['no pass yet', GREY]] : [['last pass ', GREY], [on ? ago(now - r.last) : clock(r.last), null], ...next];
+  const line = segLine([[on ? cell.split(' · ')[0] : cell, sgr], ['  ', null], ...last, BAR,
+    ['workers ', GREY], [`${count(r, 'running')} of ${r.workers}`, BOLD], [' · cap ', GREY], [String(r.cap), BOLD], BAR, [`batch ${r.q.batch ?? '-'}`, GREY]]);
+  if (on) return [line];
+  const log = r.run?.agent === 'loaded' ? supervisorLogLine(r) : null;
+  return [line, ...(supervisorOff(r) ? ['The supervisor is off, so no passes run.'] : []), ...stoppedLines(r), ...(log ? [`Supervisor's last log line: ${log}`] : [])];
+}
+
+// A line of segments split by BAR, broken between segments where it is wider than `width`.
+function barWrap(line, width) {
+  if (line.line.length <= width) return [line];
+  const len = (segs) => segs.reduce((a, [s]) => a + s.length, 0);
+  const out = [];
+  for (const g of line.segs.reduce((gs, s) => { if (s === BAR) gs.push([]); else gs.at(-1).push(s); return gs; }, [[]])) {
+    const cur = out.at(-1);
+    if (cur && len(cur) + BAR[0].length + len(g) <= width) cur.push(BAR, ...g); else out.push([...g]);
+  }
+  return out.map(segLine);
+}
+
+// A repo screen's first header line: what needs the user, each state's count in its colour, then
+// the merged tickets left off the list.
+function countsLine(r) {
+  const segs = [needsYou(count(r, 'needs'))];
+  const each = [['running', 'running', count(r, 'running')], ['landing', 'landing', r.landing.length], ['ready', 'ready', count(r, ['ready', 'queued'])],
+    ['waiting', 'waiting', count(r, 'waiting')], ['stuck', 'blocked', count(r, 'stuck')], ['failed', 'failed', count(r, 'failed')]];
+  for (const [k, word, n] of each) if (n) segs.push(['  ', null], [`${LABEL[k][0]} ${n} ${word}`, STATE_SGR[k]]);
+  return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY]]);
 }
 
 // Why a ready ticket has not started: its batch's worker slots, a running ticket it collides with,
@@ -992,34 +1114,26 @@ const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
 // A repo's Queue in groups, each in queue order: what autopilot is moving first, then what waits on the user.
 const GROUPS = [['Running', ['running']], ['Landing', ['landing']], ['Ready', ['ready', 'queued']], ['Waiting', ['waiting']], ['Needs you', ['needs']], ['Blocked', ['stuck']], ['Failed', ['failed']]];
 
-// The Queue's workers line: running against the batch's count, any PRs still landing, and the
-// merged tickets left off the list.
-function workersLine(r) {
-  const n = r.landing.length;
-  return segLine([[`workers ${count(r, 'running')} running of ${r.workers} (cap ${r.cap}) · `, null],
-    ...(n ? [[`${n} PR${n === 1 ? '' : 's'} landing`, LANDING], [' · ', null]] : []), [`${r.done} merged, not shown`, null]]);
-}
-
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
-// no id, which the selection steps over.
-function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null } = {}) {
+// no id, which the selection steps over. `title` leads with the place and time, as the interactive
+// screen's breadcrumb does.
+function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
-  const [pass, ...stopped] = passLines(r, now);
   const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
-  const head = [
-    `${r.name} · batch ${r.q.batch ?? '-'} · ${pass}`,
-    ...stopped,
-    workersLine(r),
-  ];
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
   const F = forecastOf(r, { now, checkin });
   const ep = epic ? F.epics[epic] : null;
-  if (ep) head.splice(1, 0, `${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`);
+  const head = [
+    ...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []),
+    ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
+    countsLine(r),
+    ...passHead(r, now),
+  ];
   // Wrapped to the terminal, so how to resume passes is never cut.
-  const fit = head.flatMap((s) => (width == null || typeof s !== 'string' ? [s] : wrap(s, width)));
+  const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
   fit.push('', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
   const rows0 = [...r.rows, ...r.landing];
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
@@ -1063,7 +1177,7 @@ function stateKey(list, width) {
   return out.map(segLine);
 }
 
-export const repoScreen = (r, opts) => joined(repoParts(r, opts));
+export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
 const logPath =(r, key) => join(r.stateDir, 'logs', `${key}.log`);
 
@@ -1402,15 +1516,19 @@ function systemOpener(url) {
 // Log text can carry a worker's own escape codes; only printable text reaches the screen.
 const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
 
-// The selected row's background: 256-colour 236, a tint dark enough that grey 247 and every state
-// colour keep 4.5:1 on it.
-const SELECT_BG = '48;5;236';
+// The selected row's background: on a dark theme 256-colour 236, a tint dark enough that grey 247 and
+// every state colour keep 4.5:1 on it; on a light theme 254, on which grey 240 keeps it.
+const SELECT_BG = LIGHT ? '48;5;254' : '48;5;236';
+// What undoes each code that sets more than a colour; a colour alone is undone by 39.
+const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39' };
+// Under NO_COLOR, grey is drawn faint, bold magenta bold and the band reversed.
+const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 
 // A row cut to `w` columns as `cut` would, `›` in its first column when selected, then each coloured
 // run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
 // background holds across the runs, and its erase to the end of the line (ESC [K, which the
 // terminal fills with the current background) carries the tint across the full width.
-// NO_COLOR drops the colours and keeps bold, dim and reverse, and selects in reverse video.
+// NO_COLOR drops the colours and keeps bold, faint and reverse, and selects in reverse video.
 function paint(x, w, selected) {
   const plain = !!process.env.NO_COLOR;
   let segs = (x.segs ?? [[x.line, null]]).map(([s, k]) => [s, k]);
@@ -1421,7 +1539,10 @@ function paint(x, w, selected) {
     for (const [s, k] of segs) { if (room <= 0) break; kept.push([s.slice(0, room), k]); room -= s.length; }
     segs = [...kept, ['…', null]];
   }
-  const out = segs.map(([s, k]) => (k && s && !(plain && ![BOLD, DIM, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${k === BOLD || k === DIM ? '22' : k === REVERSE ? '27' : '39'}m` : s)).join('');
+  const out = segs.map(([s, k0]) => {
+    const k = plain ? NO_COLOR_AS[k0] ?? k0 : k0;
+    return k && s && !(plain && ![BOLD, FAINT, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${OFF[k] ?? '39'}m` : s;
+  }).join('');
   if (!selected) return out;
   return plain ? `${ESC}7m${out}${ESC}27m` : `${ESC}${SELECT_BG}m${out}${ESC}K${ESC}49m`;
 }
@@ -1566,7 +1687,7 @@ export function interactive({
     // line, so its parked note follows the breadcrumb. The breadcrumb's last part, where you are, is
     // bold and the parts above it dim.
     const cp = crumbParts();
-    const crumbs = segLine(cp.flatMap((p, i) => [...(i ? [[' › ', DIM]] : []), [p.label, i === cp.length - 1 ? BOLD : DIM]]));
+    const crumbs = segLine([...cp.flatMap((p, i) => [...(i ? [[' › ', DIM]] : []), [p.label, i === cp.length - 1 ? BOLD : DIM]]), [' · ', DIM], [hhmm(clock()), null]]);
     const pinned = [];
     if (hasTabs()) {
       const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : tabOk(p.id) ? null : DIM]]);
