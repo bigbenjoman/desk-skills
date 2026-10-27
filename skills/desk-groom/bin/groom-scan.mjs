@@ -6,11 +6,20 @@
 //   node groom-scan.mjs scan --repo <root> --default <branch> --project <§4 Jira project key>
 //        [--priority <§4 Priority field>] [--fields <§4 Other fields, comma-separated>]
 //        [--done <§4 Done state>] [--in-progress <§4 In-progress state>] [--size <§4 Size field>]
-//        [--jql <jql>] [--json]
+//        [--jql <jql>] [--queue <DESK_QUEUE>] [--json]   a finding that writes to a ticket the running
+//        batch holds is left alone (kind `left`, nothing proposed)
 //   node groom-scan.mjs verdict <results.json> --scan <scan.json>   verifiers' per-criterion results
 //        in, checked against the criteria the scan (--json) read from each ticket: close or keep open
 //   node groom-scan.mjs preclose <KEY> --scan <scan.json> [--repo <owner/name>]   just before an
 //        approved close is written: the key's open PRs and Jira status read again; exit 0 to close
+//   node groom-scan.mjs approval --scan <scan.json> [--add <settled.json>] [--report] [--json]   every
+//        proposal as one numbered list of desk-jira gate blocks; --report asks nothing (the weekly run)
+//   node groom-scan.mjs held --queue <DESK_QUEUE> <KEY>...   exit 1 when the batch now holds any of them
+//   node groom-scan.mjs readback <approval.json> --approved <all | 1,3-5>   each approved write read back
+//        from Jira, a description's rendered HTML checked for <del; exit 1 when any did not land
+//   node groom-scan.mjs priority <EPIC>... [--queue <DESK_QUEUE>] [--state <DESK_STATE>] [--json]   the
+//        epics' open children and their open blockers not in the queue, in Blocks order, with the
+//        files they share: the message for the batch's orchestrator to admit, or the next batch
 //
 // `scan` prints one block per finding (or a JSON array with --json). A finding is
 //   {check, ticket, other?, evidence: [line], propose: [desk-jira command], verify?: brief}
@@ -614,6 +623,196 @@ export function precloseCheck({ ticket, before, status = null, statusError = nul
   return { ticket, close: reasons.length === 0, reasons, report: reasons.length ? `kept open: ${reasons.join('; ')}` : `close: no open PR on the key, still ${status}` }
 }
 
+// ---- the running batch: what the groom leaves alone ------------------------------------------
+
+// The autopilot queue (queue.mjs) as the groom reads it. The batch holds every ticket it has not
+// finished: queued, triaged, held or parked, running, and failed (a failed one waits on a requeue).
+// `keys` is every ticket in the queue, done ones included, which a priority hand-off never re-sends.
+export function batchOf(q) {
+  const tickets = q?.tickets ?? {}
+  const held = new Map(Object.entries(tickets).filter(([, t]) => t?.state !== 'done').map(([k, t]) => [k, t?.state ?? '?']))
+  return { name: q?.batch ?? null, supervised: q?.supervised === true, running: held.size > 0, held, keys: new Set(Object.keys(tickets)) }
+}
+
+// Every key a finding would write to: the ticket, the other side of a link, and each key its commands
+// and options name.
+const keysOf = (f) => new Set([f.ticket, f.other, ...[...(f.propose ?? []), ...(f.options ?? [])].flatMap((p) => String(p).match(KEY) ?? [])].filter(Boolean))
+
+// A finding that would write to a ticket the batch holds is left alone: no proposal, no question and
+// no verifier, only the line saying why. The batch's worker or orchestrator owns that ticket now.
+export function leaveBatch(findings, batch) {
+  return findings.map((f) => {
+    const hit = [...keysOf(f)].filter((k) => batch.held.has(k))
+    if (!hit.length) return f
+    const { verify, ...rest } = f
+    return { ...rest, kind: 'left', propose: [], left: `${hit.map((k) => `${k} is ${batch.held.get(k)}`).join(', ')} in batch ${batch.name ?? '?'}` }
+  })
+}
+
+// ---- the approval list: every proposal in one list, nothing written before the user approves -----
+
+const NEEDS = { landed: 'jira-close', duplicate: 'jira-close', status: 'jira-transition' }
+export const needsOf = (f) => NEEDS[f.check] ?? 'jira-edit'
+
+// The scan's settled fixes plus the proposals step 3's verifiers settled (`added`, the same finding
+// shape), numbered in one list. A `verify first` candidate with no settled proposal is `unsettled`:
+// listed, so a verifier that never ran is visible rather than silently dropped.
+export function approvalOf(findings, added = []) {
+  const settled = new Set(added.map((a) => `${a.check} ${a.ticket}`))
+  const fixes = [...findings.filter((f) => f.kind === 'fix' && !f.verify && f.propose?.length), ...added.filter((a) => a.propose?.length)]
+  return {
+    items: fixes.map((f, i) => ({ n: i + 1, ...f, kind: 'fix', needs: needsOf(f) })),
+    questions: findings.filter((f) => f.kind === 'question'),
+    gaps: findings.filter((f) => f.kind === 'report'),
+    left: findings.filter((f) => f.kind === 'left'),
+    unsettled: findings.filter((f) => f.kind !== 'left' && f.verify && !settled.has(`${f.check} ${f.ticket}`)),
+  }
+}
+
+// The list as desk-jira gate blocks. A report-only run (the weekly one) says so in every block and
+// asks nothing.
+export function approvalText(a, { report = false } = {}) {
+  const state = report ? 'report only' : 'awaiting approval'
+  const out = []
+  for (const f of a.items) {
+    const op = f.propose.every((p) => /^desk-jira transition\b/.test(p)) ? 'TRANSITION' : 'EDIT'
+    out.push(`[${f.n}] JIRA ${op} — ${state}`, `target : ${f.ticket}`, `check  : ${f.check}`, `needs  : ${f.needs}`, 'evidence:',
+      ...f.evidence.map((e) => `  ${e}`), '---', ...f.propose,
+      ...(f.edit ? [`  from: ${f.edit.from}`, `  to  : ${f.edit.to}`] : []), ...(f.section ?? []).map((l) => `  section: ${l}`), '')
+  }
+  for (const f of a.questions) {
+    const opts = [f.recommend, ...(f.options ?? []).filter((o) => o !== f.recommend)].filter(Boolean)
+    out.push(`QUESTION — ${f.check}`, `target : ${f.ticket}`, 'evidence:', ...f.evidence.map((e) => `  ${e}`), '---', f.question ?? '',
+      ...opts.map((o, i) => `  ${i + 1}. ${o}${i === 0 ? ' (Recommended)' : ''}`), '')
+  }
+  for (const f of a.gaps) out.push(`gap: ${f.ticket}: ${f.evidence[0] ?? f.check}`)
+  for (const f of a.unsettled) out.push(`not settled by a verifier: ${f.check} ${f.ticket}`)
+  for (const f of a.left) out.push(`left alone: ${f.check} ${f.ticket}: ${f.left}`)
+  out.push('', report
+    ? `REPORT ONLY: ${a.items.length} proposals and ${a.questions.length} questions. Nothing is asked and nothing is written.`
+    : `${a.items.length} proposals, ${a.questions.length} questions. Nothing is written until you approve: answer with the numbers to write (all, 1,3-5, or none).`)
+  return out.join('\n')
+}
+
+// "all", "none", or "1,3-5": the approved item numbers, or null for anything else.
+export function approvedNumbers(answer, count) {
+  const s = String(answer).trim().toLowerCase()
+  if (s === 'all') return Array.from({ length: count }, (_, i) => i + 1)
+  if (s === 'none') return []
+  const out = new Set()
+  for (const part of s.split(/\s*,\s*/)) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part)
+    if (!m) return null
+    const [a, b] = [Number(m[1]), Number(m[2] ?? m[1])]
+    if (a < 1 || b > count || a > b) return null
+    for (let i = a; i <= b; i++) out.add(i)
+  }
+  return [...out].sort((x, y) => x - y)
+}
+
+// ---- the read-back: each approved write, read again from Jira after it went -----------------------
+
+// A desk-jira command as its words, the single quotes shq adds undone.
+export function commandWords(cmd) {
+  return [...String(cmd).matchAll(/'((?:[^']|'\\'')*)'|(\S+)/g)].map((m) => (m[1] != null ? m[1].replace(/'\\''/g, "'") : m[2]))
+}
+
+const VERB = { 'blocked-by': 'is blocked by', blocks: 'blocks', 'relates-to': 'relates to', duplicates: 'duplicates', 'duplicated-by': 'is duplicated by' }
+
+// What one written command should now read as on `issue` (desk-jira get --json), and `rendered`,
+// the description's rendered HTML (read for a description edit only). `item` is the approved finding,
+// whose `edit.to` or Children `section` the new description must carry.
+export function readbackOf(cmd, issue, rendered = null, item = {}) {
+  const [, op, key, ...rest] = commandWords(cmd)
+  const t = issue ? ticketOf(issue, []) : null
+  if (!t) return { cmd, ok: false, why: `${key} could not be read back` }
+  const res = (ok, why) => ({ cmd, ok, why })
+  if (op === 'transition') return res(t.status.toLowerCase() === String(rest[0]).toLowerCase(), `status is ${t.status}`)
+  if (op === 'link') {
+    const [verb, other] = rest
+    const want = VERB[verb] ?? verb.replace(/-/g, ' ')
+    return res(t.links.some((l) => l.key === other && l.verb.toLowerCase() === want), `${key} ${t.links.some((l) => l.key === other) ? 'has another link to' : 'has no link to'} ${other}`)
+  }
+  if (op === 'unlink') {
+    const [other, type = 'Blocks'] = rest
+    const left = t.links.some((l) => l.key === other && l.type.toLowerCase() === type.toLowerCase())
+    return res(!left, left ? `${key} still has a ${type} link to ${other}` : `no ${type} link to ${other}`)
+  }
+  if (op === 'edit') {
+    const [, id, value] = /^([^=]+)=(.*)$/s.exec(rest[0] ?? '') ?? []
+    if (id === 'description') {
+      const del = (String(rendered ?? '').match(/<del/g) ?? []).length
+      const want = [...(item.edit?.to ? [item.edit.to] : []), ...(item.section ?? []).flatMap((l) => l.match(KEY) ?? [])]
+      const missing = want.filter((w) => !t.text.includes(w))
+      if (rendered == null) return res(false, 'the rendered description could not be read')
+      return res(!del && !missing.length, [del ? `${del} <del in the rendered HTML: a hyphen read as strikethrough, escape it and edit again` : 'no <del in the rendered HTML',
+        ...missing.map((w) => `missing: ${w}`)].join('; '))
+    }
+    if (id === 'summary') return res(t.summary === value, `summary is ${t.summary}`)
+    const got = ticketOf(issue, [id]).fields[id]
+    return res(String(got) === value, `${id} is ${got ?? 'blank'}`)
+  }
+  return res(false, `no read-back for "desk-jira ${op}"`)
+}
+
+// ---- a priority epic's open work, handed to the batch's orchestrator --------------------------
+
+// Every open child of each priority epic, in rank order, then transitively every open ticket one of
+// them is blocked by, less the tickets already in the batch's queue. `childrenOf(epic)` and `get(key)`
+// read Jira (get gives null for a ticket that could not be read); `filesOf(t)` the files a ticket
+// touches. The list is in Blocks order, every blocker before what it blocks; a Blocks loop keeps its
+// tickets in the order found and is named.
+export function priorityHandoff({ epics, childrenOf, get, batch, filesOf = () => [] }) {
+  const found = new Map(), why = new Map(), unread = []
+  const todo = []
+  for (const e of epics) for (const c of childrenOf(e)) if (!isDone(c.category) && !found.has(c.key)) { found.set(c.key, c); why.set(c.key, `child of ${e}`); todo.push(c.key) }
+  while (todo.length) {
+    const k = todo.shift()
+    for (const l of found.get(k).links) {
+      if (l.type !== 'Blocks' || l.verb !== 'is blocked by' || isDone(l.category) || found.has(l.key) || unread.includes(l.key)) continue
+      const b = get(l.key)
+      if (!b) { unread.push(l.key); continue }
+      if (isDone(b.category)) continue
+      found.set(b.key, b); why.set(b.key, `blocks ${k}`); todo.push(b.key)
+    }
+  }
+  const blockersOf = (k) => found.get(k).links.filter((l) => l.type === 'Blocks' && l.verb === 'is blocked by' && found.has(l.key)).map((l) => l.key)
+  // Blocks order: repeatedly take the first ticket, in the order found, whose blockers are all placed.
+  const order = [], rest = [...found.keys()]
+  while (rest.length) {
+    const i = rest.findIndex((k) => blockersOf(k).every((b) => order.includes(b)))
+    if (i < 0) break
+    order.push(...rest.splice(i, 1))
+  }
+  const loop = [...rest]
+  order.push(...rest)
+  const list = order.filter((k) => !batch.keys.has(k)).map((k) => ({ key: k, summary: found.get(k).summary, why: why.get(k), after: blockersOf(k) }))
+  const byFile = new Map()
+  for (const { key } of list) for (const f of new Set(filesOf(found.get(key)))) byFile.set(f, [...(byFile.get(f) ?? []), key])
+  return {
+    epics, batch: batch.running ? { name: batch.name, supervised: batch.supervised } : null, list,
+    inBatch: order.filter((k) => batch.keys.has(k)), loop, unread,
+    shared: [...byFile].filter(([, ks]) => ks.length > 1).map(([file, keys]) => ({ file, keys })),
+  }
+}
+
+// The files a ticket names: its citations and the repo files its code spans name.
+export const filesNamed = (t) => [...new Set([...citationsOf(t.text).map((c) => c.path),
+  ...t.text.split(/\r?\n/).flatMap((l) => spansOf(l).map((s) => premiseName(s.span)).filter((p) => p?.kind === 'file').map((p) => p.name))])]
+
+// The hand-off as the message the orchestrator reads, or, with no batch running, as the next batch.
+export function handoffText(h) {
+  const to = h.batch ? `for batch ${h.batch.name ?? '?'} to triage and admit` : 'as the next batch: no batch is running'
+  const out = [`Priority work from desk-groom (${h.epics.join(', ')}), ${to}. The groom has not run queue.mjs admit.`, '']
+  if (!h.list.length) out.push('Nothing to add: every open child and blocker is already in the queue.')
+  h.list.forEach((x, i) => out.push(`${i + 1}. ${x.key}  ${x.summary}  (${x.why}${x.after.length ? `; after ${x.after.join(', ')}` : ''})`))
+  if (h.shared.length) out.push('', 'Files they share:', ...h.shared.map((s) => `  ${s.file}: ${s.keys.join(', ')}`))
+  if (h.loop.length) out.push('', `Blocks loop, order not settled: ${h.loop.join(', ')}`)
+  if (h.inBatch.length) out.push('', `Already in the queue: ${h.inBatch.join(', ')}`)
+  if (h.unread.length) out.push('', `Blockers that could not be read: ${h.unread.join(', ')}`)
+  return out.join('\n')
+}
+
 // ---- origin/<default>, read with git ----------------------------------------------------------
 
 export function repoAt(root, branch) {
@@ -712,11 +911,13 @@ function scan(o) {
       if (!children[e.key].some((c) => c.key === r.key) && !(r.key in lookup)) lookup[r.key] = byKey.get(r.key) ?? read(r.key)
     }
   }
-  const findings = [
+  let findings = [
     ...groom({ tickets, siblings, repo: repoAt(o.repo, o.default), fields: ids, priority, done }),
     ...groomEpics({ tickets, children, lookup, priority, size: o.size && o.size !== true && o.size !== 'none' ? o.size : null, done,
       inProgress: o['in-progress'] && o['in-progress'] !== true ? o['in-progress'] : 'In Progress' }),
   ].map((f) => ({ kind: 'fix', ...f }))
+  const batch = batchOf(readQueue(o.queue))
+  findings = leaveBatch(findings, batch)
   if (o.json) { console.log(JSON.stringify(findings, null, 2)); return }
   console.log(`groom-scan: ${tickets.length} open tickets, ${findings.length} findings (origin/${o.default})`)
   for (const f of findings) {
@@ -728,7 +929,70 @@ function scan(o) {
     for (const x of f.options ?? []) console.log(`  option  : ${x}${x === f.recommend ? '   (recommended)' : ''}`)
     for (const p of f.propose) console.log(`  propose : ${p}`)
     for (const l of f.section ?? []) console.log(`  section : ${l}`)
+    if (f.left) console.log(`  left    : ${f.left}`)
   }
+}
+
+// The batch's queue (queue.mjs, `desk-env paths` DESK_QUEUE). None there is no batch; one that will
+// not parse stops the groom, since an unread batch read as none would propose writes to its tickets.
+function readQueue(path) {
+  if (!path || path === true || !existsSync(path)) return null
+  try { return JSON.parse(readFileSync(path, 'utf8')) } catch (err) { die(`could not read the batch queue ${path}: ${err.message}`) }
+}
+const readJson = (p, what) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch (err) { die(`could not read ${what} ${p}: ${err.message}`) } }
+
+// Every proposal as one approval list. --report (the weekly run) prints it and asks nothing.
+function approval(o) {
+  if (!o.scan || o.scan === true) die('approval needs --scan <the scan\'s --json output> [--add <settled proposals.json>] [--report] [--json]')
+  const a = approvalOf(readJson(o.scan, 'the scan'), o.add && o.add !== true ? [].concat(readJson(o.add, 'the settled proposals')) : [])
+  console.log(o.json ? JSON.stringify(a, null, 2) : approvalText(a, { report: !!o.report }))
+}
+
+// Just before the approved list is written: any of these keys the batch now holds is left alone.
+function held(o) {
+  const batch = batchOf(readQueue(o.queue))
+  const hit = o._.filter((k) => batch.held.has(k))
+  for (const k of hit) console.log(`left alone: ${k} is ${batch.held.get(k)} in batch ${batch.name ?? '?'}`)
+  process.exit(hit.length ? 1 : 0)
+}
+
+// After the approved items are written: each one's commands read back from Jira. Exits 1 when any did
+// not land as proposed, or a description's rendered HTML has a <del.
+function readback(o) {
+  const file = o._[0]
+  if (!file || !o.approved || o.approved === true) die('readback needs <the approval --json output> --approved <all | 1,3-5>')
+  const a = readJson(file, 'the approval list')
+  const nums = approvedNumbers(o.approved, a.items.length)
+  if (!nums) die(`--approved ${o.approved}: want all, none or numbers from 1 to ${a.items.length}`)
+  const get = (k) => { try { return jira('get', k) } catch { return null } }
+  const html = (k) => {
+    try { return JSON.parse(execFileSync('desk-jira', ['api', `api/2/issue/${k}?fields=description&expand=renderedFields`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).renderedFields?.description ?? '' } catch { return null }
+  }
+  let bad = 0
+  for (const f of a.items.filter((x) => nums.includes(x.n))) {
+    for (const cmd of f.propose) {
+      const [, op, key, field] = commandWords(cmd)
+      const r = readbackOf(cmd, get(key), op === 'edit' && /^description=/.test(field ?? '') ? html(key) : null, f)
+      if (!r.ok) bad++
+      console.log(`${r.ok ? 'ok  ' : 'FAIL'} [${f.n}] ${cmd}: ${r.why}`)
+    }
+  }
+  process.exit(bad ? 1 : 0)
+}
+
+// A priority epic's open work for the batch's orchestrator (or the next batch). It never admits.
+function priority(o) {
+  const epics = o._.flatMap((e) => e.split(',')).filter(Boolean)
+  if (!epics.length) die('priority needs one or more epic keys [--queue <DESK_QUEUE>] [--state <DESK_STATE>] [--json]')
+  const get = (k) => { try { return ticketOf(jira('get', k)) } catch { return null } }
+  const childrenOf = (e) => jira('children', e).map((c) => ticketOf(c)).map((c) => (isDone(c.category) ? c : get(c.key) ?? c))
+  const filesOf = (t) => {
+    const rec = o.state && o.state !== true ? join(o.state, 'triage', `${t.key}.json`) : null
+    try { const s = rec && JSON.parse(readFileSync(rec, 'utf8')).files_in_scope; if (Array.isArray(s)) return s } catch { /* no triage record */ }
+    return filesNamed(t)
+  }
+  const h = priorityHandoff({ epics, childrenOf, get, batch: batchOf(readQueue(o.queue)), filesOf })
+  console.log(o.json ? JSON.stringify(h, null, 2) : handoffText(h))
 }
 
 function verdict(o) {
@@ -760,7 +1024,7 @@ function preclose(o) {
 const real = (p) => { try { return realpathSync(p) } catch { return p } }
 if (process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))) {
   const [cmd, ...rest] = process.argv.slice(2)
-  const run = { scan, verdict, preclose }[cmd]
-  if (!run) die('usage: groom-scan.mjs scan|verdict|preclose … (see the header)')
+  const run = { scan, verdict, preclose, approval, held, readback, priority }[cmd]
+  if (!run) die('usage: groom-scan.mjs scan|verdict|preclose|approval|held|readback|priority … (see the header)')
   run(args(rest))
 }
