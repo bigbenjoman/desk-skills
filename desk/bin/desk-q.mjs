@@ -588,7 +588,7 @@ const segRow = (id, segs, open) => {
 // and undated of the paused ones, or with `epic`, of that epic only. `head` is the Queue's header
 // then the forecast line; a paused batch's reason and fix are one amber note each in `stopped`, the
 // other reasons plain lines in `notes`. With `width`, each line is wrapped to it.
-function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
+function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsage = false }) {
   const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
   const per = list.map((r) => {
     if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
@@ -607,7 +607,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
   // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
-  const head = [...tabHead(repos, slug, now, solidBars(width)), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
+  const head = [...tabHead(repos, slug, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
   const w = Math.max(12, ...per.map((p) => p.r.name.length + 2));
   const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[`${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
   return { list, per, notes, items, head, stopped };
@@ -615,10 +615,10 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
 
 // A ships view's header: the Queue's, one repo's state counts and who runs it, or every repo's
 // needs-you and machine lines.
-function tabHead(repos, slug, now, solid) {
-  if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid });
+function tabHead(repos, slug, now, solid, pinUsage) {
+  if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
   const r = repos.find((x) => x.slug === slug);
-  return r?.q ? [countsLine(r), passHead(r, now)[0], usageLine(usageOf(repos, now, [r]), { now, solid })] : [];
+  return r?.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : [usageLine(usageOf(repos, now, [r]), { now, solid })])] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
@@ -685,8 +685,8 @@ const EP_NAME = 27, EP_LEAD = 2 + EP_NAME + 5 + 1, EP_NOTE = '  provisional'.len
 // One repo with an open epic is by feature instead: a bar per epic from its first child's start to its
 // last child's ship, then the tickets in no epic under "Other work", each led by its title. `epic` keeps
 // to that epic's tickets.
-function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto', epic = null } = {}) {
-  const s = etaScope(repos, slug, { now, checkin, epic, width });
+function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = false, zoom = 'auto', epic = null, pinUsage = false } = {}) {
+  const s = etaScope(repos, slug, { now, checkin, epic, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: [...s.head, ...(s.head.length ? [''] : []), ...s.notes], rows: [], foot: [] };
   const F0 = slug && !epic ? s.per[0]?.F : null;
@@ -797,8 +797,8 @@ export function shipDay(t, now) {
 
 // Tickets grouped by the day they ship, undated ones last under "No date yet", each with its STARTS,
 // SHIPS and title; an undated one says why in place of its dates.
-function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false, epic = null } = {}) {
-  const s = etaScope(repos, slug, { now, checkin, epic, width });
+function daysParts(repos, slug, { now = Date.now(), width = null, checkin = false, epic = null, pinUsage = false } = {}) {
+  const s = etaScope(repos, slug, { now, checkin, epic, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: [...s.head, ...(s.head.length ? [''] : []), ...s.notes], rows: [], foot: [] };
   const all = !slug;
@@ -831,8 +831,8 @@ export const daysScreen = (repos, slug, opts) => joined(daysParts(repos, slug, o
 // The Epics view: each open epic, soonest first, with a bar of its children done, queued and not
 // queued yet, its SHIPS and the child that sets it. Enter opens the epic.
 const EP_BAR = 16;
-function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null } = {}) {
-  const s = etaScope(repos, slug, { now, checkin, width });
+function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null, pinUsage = false } = {}) {
+  const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
   // A paused batch's epics are listed undated, under its note.
@@ -977,8 +977,8 @@ function windowSegs(label, w, now, held, solid) {
     [reset ? ` · reset ${clock(t)}` : ` ${resetText(t, now)}`, null]];
 }
 export function usageLine({ reading, running, held, heldBy }, { now, solid = false }) {
-  if (reading.at == null) return segLine([['usage no reading yet', GREY]]);
-  const segs = [...windowSegs('5h', reading.five_hour, now, false, solid), [' · ', GREY], ...windowSegs('7d', reading.seven_day, now, held, solid)];
+  if (reading.at == null) return segLine([['Claude usage  no reading yet', GREY]]);
+  const segs = [['Claude usage  ', GREY], ...windowSegs('5h', reading.five_hour, now, false, solid), [' · ', GREY], ...windowSegs('7d', reading.seven_day, now, held, solid)];
   if (running === 0 && now - reading.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(reading.at)}`, GREY]);
   if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
   return segLine(segs.filter(([s]) => s));
@@ -1051,10 +1051,10 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 
 // Every repo's header: a band for each batch no pass can run, what needs the user, the machine, then
 // usage.
-function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB() } = {}) {
+function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false } = {}) {
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   return [...list.flatMap(bandsOf), needsLine(list, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
-    usageLine(usageOf(repos, now, list), { now, solid })];
+    ...(pinUsage ? [] : [usageLine(usageOf(repos, now, list), { now, solid })])];
 }
 
 // Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
@@ -1073,14 +1073,14 @@ function homeLayout(list, w, width, now, checkin) {
   return { ...l, cols: NUM_COLS.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
 }
 
-function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '' } = {}) {
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false } = {}) {
   const list = shownRepos(repos, all);
   const none = repos.filter((r) => !hasBatch(r));
   // REPO fits the names with a row; with a width, only those on screen.
   const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.name.length + 2));
   const lay = homeLayout(list, w, width, now, checkin);
   const head = [
-    ...overviewHead(repos, list, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker }),
+    ...overviewHead(repos, list, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage }),
     '',
     bold(`  ${pad('REPO', w)}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('QUEUE DONE', lay.qdW)}  WORKERS`),
   ];
@@ -1329,7 +1329,7 @@ const GROUPS = [['Running', ['running']], ['Landing', ['landing']], ['Ready', ['
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
 // no id, which the selection steps over. `title` leads with the place and time, as the interactive
 // screen's breadcrumb does.
-function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null } = {}) {
+function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
@@ -1342,7 +1342,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r),
     ...passHead(r, now),
-    usageLine(usage ?? usageOf([r], now), { now, solid: solidBars(width) }),
+    ...(pinUsage ? [] : [usageLine(usage ?? usageOf([r], now), { now, solid: solidBars(width) })]),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
   const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
@@ -1971,21 +1971,25 @@ export function interactive({
     const cmdKeys = `: command · ${esc}q quit`;
     if (view.slug && !r) return { head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: cmdKeys };
     if (!tabOk(tab)) tab = 'timeline';
+    // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
+    // one repo's own, or none for a repo with no batch.
+    const claude = (shown) => (shown ? { usage: usageLine(usageOf(repos, now, shown), { now, solid: !process.env.NO_COLOR }) } : {});
+    const own = r?.q && !r.error ? [r] : null;
     if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
-      const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null };
+      const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null, pinUsage: true };
       const parts = tl ? timelineParts : tab === 'days' ? daysParts : epicsParts;
-      return { badge: badge(r ? [r] : repos), ...parts(repos, view.slug ?? null, opts),
+      return { badge: badge(r ? [r] : repos), ...parts(repos, view.slug ?? null, opts), ...claude(r ? own : shownRepos(repos, false)),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${tl ? 'z scale · ' : ''}c parked dates · ${cmdKeys}` };
     }
     if (view.kind === 'overview') {
       // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
-      return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos) }),
+      return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · ${cmdKeys}` };
     }
-    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, usage: usageOf(repos, now, [r]) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
-    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic, usage: usageOf(repos, now, [r]) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
+    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, pinUsage: true }), ...claude(own), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic, pinUsage: true }), ...claude(own), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
     if (!r.q?.tickets?.[view.key]) return { head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
@@ -2034,8 +2038,9 @@ export function interactive({
     };
     const head = screen.head.flatMap(lay);
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
-    // A message can be longer than the line (a refused raise says what raising the cap takes).
-    const status = [...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit);
+    // A message can be longer than the line (a refused raise says what raising the cap takes). The
+    // Claude usage line stays put above it and the keys, a blank line between.
+    const status = [...(screen.usage ? [fit(screen.usage), ''] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + head.length;
     let top = 0;

@@ -58,7 +58,9 @@ const Q = await import(join(BIN, 'desk-q.mjs'));
 const P = await import(join(BIN, 'usage-probe.mjs'));
 const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-const usageAt = (out) => out.split('\n').find((l) => l.startsWith('5h ') || l.startsWith('usage ')) ?? '';
+// The usage line after its "Claude usage" label (DS-215 AC21).
+const LABEL = 'Claude usage  ';
+const usageAt = (out) => out.split('\n').find((l) => l.startsWith(LABEL))?.slice(LABEL.length) ?? '';
 const home = () => usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }));
 // Home listing every repo with a batch: a quiet one has a row only there.
 const homeAll = () => usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }));
@@ -207,7 +209,7 @@ t('AC11 nor under 5 minutes old', home(), LINE);
 // ---- AC12: the repo screen's header carries the same line
 const repoOut = Q.run(['--plain', 'solo'], { now: FIXED });
 t('AC12 the repo screen carries the same usage line as home', usageAt(repoOut), home());
-t('AC12 under its pass line', repoOut.split('\n').findIndex((l) => l.startsWith('5h ')) > repoOut.split('\n').findIndex((l) => /last pass|no pass yet|stopped/.test(l)), true);
+t('AC12 under its pass line', repoOut.split('\n').findIndex((l) => l.startsWith(LABEL)) > repoOut.split('\n').findIndex((l) => /last pass|no pass yet|stopped/.test(l)), true);
 const S12 = screen({ kind: 'repo', slug: 'acme__solo' });
 await sleep(20);
 S12.ui.finish(0);
@@ -231,6 +233,30 @@ t('AC13 every text colour on the line is 4.5:1 or more on the window and the sel
 const used = [...new Set(bars.map(([, k]) => k))].filter((k) => k !== '38;5;239');
 t('AC13 each bar\'s used colour is 3:1 or more as a graphic: on the window, the selected row and the unused part',
   `${used.sort().join()} ${used.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '31,32,33 ');
+
+// ---- DS-215 AC21: on screen the line is labelled and pinned at the bottom: usage, a blank line, then
+// the keys. Plain output keeps it in its header.
+reading([0.17, at(24, 11, 20)], [0.6, at(25, 15, 0)]);
+const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+const bottom = async (start) => {
+  const S = screen(start);
+  await sleep(20);
+  S.ui.finish(0);
+  const f = S.frame().map(plain);
+  const i = f.findIndex((l) => l.startsWith(LABEL));
+  const keys = f.findIndex((l) => /^(move  |↑↓ )/.test(l));
+  return `${i === f.findLastIndex((l) => l.startsWith(LABEL))} ${keys - i} ${f.slice(i + 2).every((l) => /^(move|act|      )|↑↓|q quit/.test(l))} ${f[i]?.slice(LABEL.length).startsWith('5h ██')}`;
+};
+t('DS-215 AC21 home: the line once, a blank line then the keys under it, and nothing after the keys', await bottom({ kind: 'overview', all: false }), 'true 2 true true');
+t('DS-215 AC21 a repo screen too', await bottom({ kind: 'repo', slug: 'acme__solo' }), 'true 2 true true');
+const SR = screen({ kind: 'repo', slug: 'acme__solo' });
+await sleep(20);
+SR.ui.finish(0);
+const fr = SR.frame().map(plain);
+t('DS-215 AC21 and it is not also in the header, between the counts and the table',
+  fr.slice(0, fr.findIndex((l) => l.includes('TICKET'))).some((l) => l.includes('5h ')), false);
+t('DS-215 AC21 the label is grey', Q.usageLine({ reading: P.readUsage({ now: FIXED }), running: 1, held: false }, { now: FIXED }).segs[0].join('|'), `${LABEL}|38;5;247`);
+t('DS-215 AC21 plain output keeps the labelled line in its header', usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 })), LINE);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q usage checks passed');
 process.exit(fails ? 1 : 0);
