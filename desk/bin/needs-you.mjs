@@ -200,7 +200,7 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now)
   const c = collect({ word, now, repos });
   const where = c.named ? ` in ${c.named.name}` : '';
   const lines = [`desk-q counts ${c.items.length} item${c.items.length === 1 ? '' : 's'} needing you${where}.`];
-  for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.landing.length))) {
+  for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }
   return lines.join('\n');
