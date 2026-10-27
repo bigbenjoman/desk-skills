@@ -714,7 +714,9 @@ function ownMergedPr(t) {
 }
 for (const t of Object.values(queue().tickets)) {
   const c = t.park?.clears_when;
-  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || !c || c.kind === 'none') continue;
+  // A claimed ticket is released only by the claims loop below, once its session is idle and its
+  // worktree clean, so a condition that holds never hands it to a worker under a live session.
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none') continue;
   const what = describeCond(c);
   const r = checkCond(c, clearsRead);
   if (r.error) { report.clears.push(`${t.key}: could not check "${what}" (${r.error}): left parked`); continue; }

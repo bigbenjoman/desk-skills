@@ -569,11 +569,14 @@ t('DS-167 AC7 (DS-218 AC12) the ticket screen still shows the question in full, 
 const claimSid = '0b6c2e1a-claim';
 put(I.T, I.env, 'claimed', { port: 4250, conc: '2 / 3', beat: 1, queue: { batch: 'cl', concurrency: 2, tickets: {
   'CL-1': { state: 'parked', lane: 'A', park: { question: 'worked in another session', since: '2026-10-24T09:00:00Z', claim: { session: claimSid, at: '2026-10-24T09:00:00Z' } } },
-  'CL-2': { state: 'parked', lane: 'A', park: { question: 'its worktree has uncommitted changes (a.txt)', since: '2026-10-25T09:00:00Z', claim: { session: claimSid, at: '2026-10-24T09:00:00Z', dirty_at: '2026-10-25T09:00:00Z' } } } } } });
+  'CL-2': { state: 'parked', lane: 'A', park: { question: 'its worktree has uncommitted changes (a.txt)', since: '2026-10-25T09:00:00Z', claim: { session: claimSid, at: '2026-10-24T09:00:00Z', dirty_at: '2026-10-25T09:00:00Z' } } },
+  'CL-3': { state: 'parked', lane: 'D', park: { question: 'lane D — its canvas is not on main', since: '2026-10-24T09:00:00Z', claim: { session: claimSid, at: '2026-10-24T09:00:00Z' } } } } } });
 const cl1 = lines(Q.repoScreen(repoOf('claimed'), { width: 160 })).find((l) => /CL-1 /.test(l));
 t('DS-244 AC1 desk-q shows a claimed ticket as claimed by its session', cl1.includes(`claimed by session ${claimSid}`), true);
 t('DS-244 AC1 its page names the session and how it goes back to the workers', lines(Q.ticketScreen(repoOf('claimed'), 'CL-1', { width: 160 }))
   .filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ').startsWith(`Claimed by session ${claimSid}, which works it.`), true);
+t('DS-244 a claimed lane D parked on its design never promises a worker', lines(Q.ticketScreen(repoOf('claimed'), 'CL-3', { width: 160 }))
+  .filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ').includes('stays with a person however long that session is idle'), true);
 t('DS-244 AC3 once its worktree is found dirty, the row shows the park instead', lines(Q.repoScreen(repoOf('claimed'), { width: 160 })).find((l) => /CL-2 /.test(l)).includes('uncommitted changes'), true);
 // Gone again, so the overviews below count the repos they were written for.
 for (const d of [join(I.env.DESK_CONFIG_ROOT, 'repos'), join(I.env.DESK_HOME, 'repos'), join(I.env.HOME, '.desk-autopilot')]) rmSync(join(d, 'acme__claimed'), { recursive: true, force: true });
