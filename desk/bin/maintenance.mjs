@@ -11,6 +11,8 @@
 //
 // Every repo's pass calls maintenance() once a pass, and the supervisor's idle tick runs the CLI, so an
 // idle batch still gets its window. A repo with no window row follows a window another repo opened.
+// Between windows the same call installs desk-skills main once it has passed its checks (auto-release,
+// below), so merged work does not wait for the window.
 // The state, the record and the lock are machine-wide, in ~/.desk-autopilot/maintenance/
 // (DESK_MAINT_DIR overrides): maintenance.json and maintenance.log. A window runs at most once a week,
 // and one not opened within START_WITHIN_H hours of its time is missed for that week, so a computer
@@ -27,6 +29,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
+import { readInstalled } from './installed.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
@@ -132,17 +135,31 @@ export function sourceCheckout() {
   try { return readFileSync(join(E.deskHome(), 'source-checkout'), 'utf8').trim() || null; } catch { return null; }
 }
 
+// Why the checkout cannot fast-forward to `to` as it stands, or null: changes to tracked files, or
+// untracked files at a path the incoming commits write (a file there, or one under a directory they
+// add). Untracked files nothing incoming touches stay where they are.
+function incomingBlock(git, dir, to) {
+  if (git('status', '--porcelain', '--untracked-files=no').out) return `${dir} has uncommitted changes to tracked files, so nothing was pulled or installed`;
+  const untracked = git('ls-files', '--others', '--exclude-standard').out.split('\n').filter(Boolean);
+  if (!untracked.length) return null;
+  const incoming = git('diff', '--name-only', '--no-renames', 'HEAD', to).out.split('\n').filter(Boolean);
+  const hit = untracked.filter((u) => incoming.some((p) => u === p || u.startsWith(`${p}/`) || p.startsWith(`${u}/`)));
+  return hit.length ? `${dir} has untracked files the incoming commits would overwrite (${hit.slice(0, 5).join(', ')}${hit.length > 5 ? `, ${hit.length - 5} more` : ''}), so nothing was pulled or installed` : null;
+}
+
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
-// clean `main`. -> {ok, old, new, commits} | {ok: false, why, old}
-export function updateDesk(dir = sourceCheckout()) {
+// clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
+// untracked files in its way block it. -> {ok, old, new, commits} | {ok: false, why, old}
+export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
   const old = git('rev-parse', 'HEAD').out;
   const branch = git('branch', '--show-current').out;
   if (branch !== 'main') return { ok: false, old, why: `${dir} is on ${branch || 'a detached HEAD'}, not main, so nothing was pulled or installed` };
-  if (git('status', '--porcelain').out) return { ok: false, old, why: `${dir} has uncommitted changes, so nothing was pulled or installed` };
-  const pull = git('pull', '--ff-only', '-q', 'origin', 'main');
-  if (!pull.ok) return { ok: false, old, why: `git pull --ff-only failed in ${dir}: ${said(pull)}` };
+  const blocked = to ? incomingBlock(git, dir, to) : git('status', '--porcelain').out ? `${dir} has uncommitted changes, so nothing was pulled or installed` : null;
+  if (blocked) return { ok: false, old, why: blocked };
+  const pull = to ? git('merge', '--ff-only', '-q', to) : git('pull', '--ff-only', '-q', 'origin', 'main');
+  if (!pull.ok) return { ok: false, old, why: `git ${to ? 'merge' : 'pull'} --ff-only failed in ${dir}: ${said(pull)}` };
   const head = git('rev-parse', 'HEAD').out;
   const commits = old === head ? 0 : Number(git('rev-list', '--count', `${old}..${head}`).out) || 0;
   const inst = run(join(dir, 'install.sh'), [], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
@@ -180,11 +197,130 @@ const restart = () => (process.env.DESK_RESTART_CMD
   ? shell(process.env.DESK_RESTART_CMD)
   : run('osascript', ['-e', 'tell application "System Events" to restart']));
 
+// ---- auto-release ------------------------------------------------------------------------------
+// Between windows, a pass installs desk-skills main once origin/main has moved past the installed
+// commit and main's `tests` check passed on it, so merged work runs within minutes. It waits while
+// any repo has a worker at Stage 7 (opening its PR), and does nothing while a window is open. Its
+// state is release.json beside the window's: when origin was last fetched, the last reason recorded
+// for a commit, and the last commit whose failed check was pushed to the person. Tests stand in for
+// the check with DESK_RELEASE_CHECK_CMD (run with sh -c, the commit appended; it prints success,
+// pending or failure).
+export const RELEASE_CHECK = 'tests';
+export const FETCH_EVERY_MS = 5 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 60 * 1000;
+export const releaseFile = (dir) => join(dir, 'release.json');
+const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(dir), 'utf8')) ?? {}; } catch { return {}; } };
+const writeRelease = (dir, s) => { mkdirSync(dir, { recursive: true }); writeFileSync(releaseFile(dir), `${JSON.stringify(s, null, 2)}\n`); };
+
+// main's `tests` check on `sha`: {state: 'success' | 'pending' | 'failure', word} | {error}. A check
+// not started yet is pending; any conclusion but success is a failure.
+export function releaseCheck(dir, sha) {
+  const jq = `[.check_runs[] | select(.name == "${RELEASE_CHECK}")] | sort_by(.started_at) | last | if . == null then "pending" elif .status != "completed" then "pending" else .conclusion end`;
+  const r = process.env.DESK_RELEASE_CHECK_CMD
+    ? shell(`${process.env.DESK_RELEASE_CHECK_CMD} ${sha}`, { cwd: dir })
+    : run('gh', ['api', `repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${RELEASE_CHECK}`, '--jq', jq], { cwd: dir, timeout: FETCH_TIMEOUT_MS });
+  const word = lastLine(r.out).trim().toLowerCase();
+  if (!r.ok || !word) return { error: said(r) };
+  if (word === 'success') return { state: 'success', word };
+  if (['pending', 'queued', 'in_progress', 'waiting', 'requested'].includes(word)) return { state: 'pending', word };
+  return { state: 'failure', word };
+}
+
+// Workers at Stage 7 in any repo's queue, this one included, and the queues that cannot be read: an
+// install waits on both, since a worker there may be pushing.
+function pushingWorkers(selfQueue) {
+  const queues = otherQueues({ self: selfQueue });
+  if (selfQueue && existsSync(selfQueue)) {
+    let slug = 'this repo';
+    try { slug = E.repoSlug(); } catch { /* outside a repo */ }
+    try { queues.unshift({ slug, q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug, error: e.message }); }
+  }
+  const at7 = (t) => t?.state === 'running' && (/^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7'));
+  const out = [];
+  for (const { slug, q, error } of queues) {
+    if (error) out.push(`${slug}'s queue, which cannot be read (${error})`);
+    for (const t of Object.values(q?.tickets ?? {})) if (at7(t)) out.push(`${slug} ${t.key} at Stage 7`);
+  }
+  return out;
+}
+
+// One step of the auto-release. -> {lines, push}: push holds the one notification for a commit whose
+// check failed, made once per commit across every repo's passes.
+export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, src = sourceCheckout() } = {}) {
+  const none = { lines: [], push: [] };
+  if (!src || !existsSync(src)) return none;
+  mkdirSync(dir, { recursive: true });
+  const lock = await takeBorrowLock({ dir, name: 'release.lock.d', waitMs: 0 });
+  if (!lock.ok) return { lines: [`release: skipped, another pass is checking or installing desk-skills (${lock.why})`], push: [] };
+  try {
+    const s = readRelease(dir);
+    const git = (...a) => run('git', ['-C', src, ...a], { timeout: FETCH_TIMEOUT_MS });
+    const since = at - Date.parse(s.fetched_at ?? '');
+    if (!(since >= 0 && since < FETCH_EVERY_MS)) {
+      const f = git('fetch', '-q', 'origin', 'main');
+      if (!f.ok) return { lines: [`release: git fetch failed in ${src}: ${said(f)}; tried again next pass`], push: [] };
+      s.fetched_at = at.toISOString();
+      writeRelease(dir, s);
+    }
+    const head = git('rev-parse', '--verify', '-q', 'refs/remotes/origin/main').out;
+    const base = readInstalled()?.commit ?? git('rev-parse', 'HEAD').out;
+    if (!head || head === base) return none;
+    // Installed at or past origin/main (local commits on main): nothing to release.
+    if (git('merge-base', '--is-ancestor', head, base).ok) return none;
+    const lines = [];
+    const save = () => writeRelease(dir, s);
+    // A reason is recorded, and said, once per commit.
+    const blocked = (why) => {
+      if (s.blocked?.sha === head && s.blocked.why === why) return { lines, push: [] };
+      s.blocked = { sha: head, why };
+      save();
+      record(dir, at, `release: ${short(head)} not installed: ${why}`);
+      lines.push(`release: desk-skills main ${short(head)} not installed: ${why}`);
+      return { lines, push: [] };
+    };
+    if (!git('merge-base', '--is-ancestor', base, head).ok) return blocked(`the installed commit ${short(base)} is not on origin/main, so it was not replaced; run /desk-update`);
+
+    const c = releaseCheck(src, head);
+    if (c.error) return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting, main's ${RELEASE_CHECK} check could not be read (${c.error})`], push: [] };
+    if (c.state === 'pending') return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it`], push: [] };
+    if (c.state === 'failure') {
+      const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed: the installed version stays at ${short(base)}`;
+      lines.push(`release: ${text}`);
+      if (s.notified === head) return { lines, push: [] };
+      s.notified = head;
+      save();
+      record(dir, at, `release: ${text}`);
+      return { lines, push: [{ key: `release-failed-${head}`, text }] };
+    }
+
+    const pushing = pushingWorkers(selfQueue);
+    if (pushing.length) return { lines: [`release: desk-skills main ${short(head)} passed its ${RELEASE_CHECK} check; waiting to install it for ${pushing.join(', ')}`], push: [] };
+
+    const u = updateDesk(src, { to: head });
+    if (!u.ok) return blocked(u.why);
+    delete s.blocked;
+    save();
+    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed`);
+    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it`);
+    return { lines, push: [] };
+  } finally { lock.release(); }
+}
+
 // ---- one step ----------------------------------------------------------------------------------
+// The window's step, then, while no window is open, the auto-release's.
+// -> {hold, lines, push}: hold is true while the window holds every new spawn.
+export async function maintenance(opts = {}) {
+  const dir = opts.dir ?? maintDir();
+  const at = opts.at ?? now();
+  const m = await windowStep({ ...opts, dir, at });
+  if (m.hold || HOLDING.includes(readState(dir)?.phase)) return { ...m, push: [] };
+  const r = await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null });
+  return { hold: false, lines: [...m.lines, ...r.lines], push: r.push };
+}
+
 // Moves the window on as far as it can this pass. `running` is this repo's running tickets; `stop(t)`
 // stops one with its session kept and queues it to resume ({ok, pid} | {ok: false, why}).
-// -> {hold, lines}: hold is true while the window holds every new spawn.
-export async function maintenance({ dir = maintDir(), running = [], stop = () => ({ ok: false, why: 'no way to stop a worker here' }), selfQueue = null, at = now() } = {}) {
+async function windowStep({ dir = maintDir(), running = [], stop = () => ({ ok: false, why: 'no way to stop a worker here' }), selfQueue = null, at = now() } = {}) {
   const w = parseWindow(E.configValue('maintenance-window'));
   const isOpen = (x) => !!x && HOLDING.includes(x.phase);
   let s = readState(dir);
