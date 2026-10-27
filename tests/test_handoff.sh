@@ -147,7 +147,7 @@ transcript "$T/210k.jsonl" 210000
 hook PostToolUse s40 "$T/210k.jsonl"
 check "DS-199 AC3: past 200k of 1M fires at 20"           '[[ "$(ctx)" == *"context is at 21% of a 1,000,000-token window (threshold 20%)"* ]]'
 
-# ---- DS-270: SessionStart's model id has no [1m]; the user's chosen model says it ----
+# ---- SessionStart's model id has no [1m]; the user's chosen model says it ----
 config '`45`' '`10`'
 mkdir -p "$HOME/.claude"; printf '{"model":"opus[1m]"}\n' > "$HOME/.claude/settings.json"
 hook SessionStart s50 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
