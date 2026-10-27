@@ -32,6 +32,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-setup` | Detects this repo's Jira, checks, toolchain and conventions, asks what the skills may do here, then writes this repo's config | `/desk-setup` |
 | `desk-ticket` | One ticket, from triage to merged PR | `/desk-ticket ABC-123` |
 | `desk-autopilot` | A batch of tickets (or an epic's children), one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2`, `/desk-autopilot ABC-900` |
+| `desk-needs-you` | Asks about every item desk-q shows as needing you, in every repo, four at a time with a recommendation each, and records each answer through the commands that already exist | `/desk-needs-you`, `/desk-needs-you <repo>` |
 | `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
 | `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub, leaked memory (scripted scans in `bin/`) | `/desk-cleanup` |
 | `desk-groom` | Checks every open ticket for work already on the default branch, duplicates, missing links, stale citations, blank fields and dead blockers, and every epic for uncovered DoD items, a stale Children list, a child that outranks it and a status its children have moved past; proposes each fix with its evidence, and asks where loose tickets belong and each call with no single correct fix; writes nothing (scripted checks in `bin/`) | `/desk-groom` |
