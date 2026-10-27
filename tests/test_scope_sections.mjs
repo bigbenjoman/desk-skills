@@ -104,7 +104,7 @@ const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.impor
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
 const cw = decide(M('desk/bin/clears-when.mjs'), real);
 t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
-// DS-275: these were unclaimed, so changing one ran everything.
+// A script no suite names is unclaimed, and changing it runs everything: each of these has a claim.
 for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
   ...['claude_activity.py', 'desk_repos.py', 'github_activity.py', 'jira_activity.py', 'window.py'].map((s) => [`skills/desk-checkout/scripts/${s}`, 'test_checkout.mjs'])]) {
   const d = decide(M(f), real);
