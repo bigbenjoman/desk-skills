@@ -31,17 +31,21 @@ export function pacingSetting(raw = E.configValue('usage-pacing')) {
   return { bad: `config §3b "${ROW()}" is "${raw}" — want a number of percentage points, or \`off\`` };
 }
 
-// The 7-day figures in one log's text: every top-level rate_limit_event that carries them, as
-// { utilization, resetsAt }. The same text inside a tool call or its result is not this worker's usage.
-export function sevenDayEvents(text) {
+// Both windows in one log's text: each top-level rate_limit_event as { five_hour, seven_day }, each
+// window { utilization, resetsAt } or null when the event lacks it. The same text inside a tool call
+// or its result is not this worker's usage.
+export const WINDOWS = ['five_hour', 'seven_day'];
+export function windowEvents(text) {
   const out = [];
   for (const line of String(text ?? '').split('\n')) {
     if (!line.startsWith(EVENT)) continue;
-    let w = null;
-    try { w = JSON.parse(line)?.rate_limit_info?.unifiedWindows?.seven_day; } catch { continue; }
-    if (Number.isFinite(w?.utilization) && Number.isFinite(w?.resetsAt) && w.resetsAt > 0) {
-      out.push({ utilization: w.utilization, resetsAt: w.resetsAt });
-    }
+    let u = null;
+    try { u = JSON.parse(line)?.rate_limit_info?.unifiedWindows; } catch { continue; }
+    const e = Object.fromEntries(WINDOWS.map((k) => {
+      const w = u?.[k];
+      return [k, Number.isFinite(w?.utilization) && Number.isFinite(w?.resetsAt) && w.resetsAt > 0 ? { utilization: w.utilization, resetsAt: w.resetsAt } : null];
+    }));
+    if (e.five_hour || e.seven_day) out.push(e);
   }
   return out;
 }
@@ -57,23 +61,45 @@ export function stateDirs({ self = E.stateDir(), root = join(E.HOME, '.desk-auto
 // The newest 7-day reading across every worker log written in the last RECENT_MS, or null. Events
 // carry no time of their own, so "newest" is read from the window: the latest `resetsAt`, and within
 // it the highest utilisation, since usage only rises until the window resets.
-export function newestUsage({ dirs = stateDirs(), now = Date.now() } = {}) {
-  let best = null;
+export const newestUsage = ({ dirs = stateDirs(), now = Date.now() } = {}) => newestReading({ dirs, now }).seven_day;
+
+// The newest reading of each window across every worker log written in the last RECENT_MS, plus any
+// `files` named (the usage probe's output), by the same rule as newestUsage. `at` is when the newest
+// file holding a chosen event was last written, or null with no reading.
+//   -> { five_hour, seven_day, at }
+export function newestReading({ dirs = stateDirs(), files = [], now = Date.now() } = {}) {
+  const best = { five_hour: null, seven_day: null }, from = {};
+  const paths = [...files];
   for (const dir of dirs) {
     const logs = join(dir, 'logs');
-    let names = [];
-    try { names = readdirSync(logs); } catch { continue; }
-    for (const name of names) {
-      const path = join(logs, name);
-      let st;
-      try { st = statSync(path); } catch { continue; }
-      if (!st.isFile() || now - st.mtimeMs > RECENT_MS) continue;
-      for (const e of sevenDayEvents(tail(path, st.size))) {
-        if (!best || e.resetsAt > best.resetsAt || (e.resetsAt === best.resetsAt && e.utilization > best.utilization)) best = e;
+    try { paths.push(...readdirSync(logs).map((name) => join(logs, name))); } catch { /* no logs */ }
+  }
+  for (const path of paths) {
+    let st;
+    try { st = statSync(path); } catch { continue; }
+    if (!st.isFile() || now - st.mtimeMs > RECENT_MS) continue;
+    for (const e of eventsOf(path, st)) {
+      for (const k of WINDOWS) {
+        const w = e[k], b = best[k];
+        if (w && (!b || w.resetsAt > b.resetsAt || (w.resetsAt === b.resetsAt && w.utilization > b.utilization))) {
+          best[k] = w;
+          from[k] = st.mtimeMs;
+        }
       }
     }
   }
-  return best;
+  const at = Object.values(from);
+  return { ...best, at: at.length ? Math.max(...at) : null };
+}
+
+// A log's events, kept while its size and modified time hold: an open desk-q rereads every two seconds.
+const parsed = new Map();
+function eventsOf(path, st) {
+  const had = parsed.get(path);
+  if (had && had.size === st.size && had.mtimeMs === st.mtimeMs) return had.events;
+  const events = windowEvents(tail(path, st.size));
+  parsed.set(path, { size: st.size, mtimeMs: st.mtimeMs, events });
+  return events;
 }
 
 // A log's last TAIL_BYTES, from its first whole line, or the whole log when that holds no event: a

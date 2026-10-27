@@ -259,7 +259,7 @@ function screen(start, columns = 80, clock = Date.now, M = Q) {
   // `resize` holds the screen's resize listener, so a test can change `columns` and call it.
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
-  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock });
+  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }) });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
     input, output, modes, codes, opened, ui, frame,

@@ -38,6 +38,8 @@ import { platform, runBySetting, supervisorLoaded, supervisorRun, supervisorStat
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
+import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
+import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour; "stuck" shows as blocked.
@@ -553,7 +555,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
   // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
-  const head = [...tabHead(repos, slug, now), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
+  const head = [...tabHead(repos, slug, now, solidBars(width)), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
   const w = Math.max(12, ...per.map((p) => p.r.name.length + 2));
   const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[`${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
   return { list, per, notes, items, head, stopped };
@@ -561,10 +563,10 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
 
 // A ships view's header: the Queue's, one repo's state counts and who runs it, or every repo's
 // needs-you and machine lines.
-function tabHead(repos, slug, now) {
-  if (!slug) return overviewHead(repos, shownRepos(repos, false));
+function tabHead(repos, slug, now, solid) {
+  if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid });
   const r = repos.find((x) => x.slug === slug);
-  return r?.q ? [countsLine(r), passHead(r, now)[0]] : [];
+  return r?.q ? [countsLine(r), passHead(r, now)[0], usageLine(usageOf(repos, now), { now, solid })] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
@@ -882,6 +884,45 @@ function machineLine(running, cap, room, avail) {
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
+// The usage reading every header shows: the newest of both windows, how many workers run in every
+// repo here, and whether weekly pace holds new workers in any of them (usage-pace.mjs, each repo by
+// its own §3b row). The hold is judged on the reading a pass judges it on, worker logs alone, so the
+// header never says a pass holds when it would not.
+export function usageOf(repos, now) {
+  const dirs = stateDirs({ self: usageDir() });
+  const reading = readUsage({ dirs, now }), passReading = newestUsage({ dirs, now });
+  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: passReading, now });
+  return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: repos.some((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))) };
+}
+
+// The usage line: a bar for the 5-hour and the 7-day window, each with its reset time; green under
+// 60%, amber to 84% or for a 7-day window while weekly pace holds new workers, red from 85%. A window
+// whose reset has passed reads 0% without a call. With no worker running, a reading over
+// PROBE_EVERY_MS old carries its time. On screen the bars are solid, the unused part in TRACK; in plain
+// text and under NO_COLOR it is ·.
+const USAGE_BAR = 10;
+// The unused part of a bar, a graphic rather than text: 256-colour 239, or 250 on a light theme.
+const TRACK = LIGHT ? '38;5;250' : '38;5;239';
+export const PACE_NOTE = '▲ ahead of pace: no new workers until it slows';
+const usageSgr = (pct, held) => (pct >= 85 ? FAIL : pct >= 60 || held ? WARN : GOOD);
+const resetText = (t, now) => (calendarDays(t, now) === 0 ? clock(t) : `${new Date(t).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(t)}`);
+function windowSegs(label, w, now, held, solid) {
+  if (!w) return [[`${label} no reading`, GREY]];
+  const t = w.resetsAt * 1000, reset = t <= now;
+  const pct = reset ? 0 : Math.round(w.utilization * 100);
+  const used = Math.min(USAGE_BAR, Math.round((pct * USAGE_BAR) / 100));
+  const sgr = usageSgr(pct, held && !reset);
+  return [[`${label} `, GREY], ['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
+    [reset ? ` · reset ${clock(t)}` : ` ${resetText(t, now)}`, null]];
+}
+export function usageLine({ reading, running, held }, { now, solid = false }) {
+  if (reading.at == null) return segLine([['usage no reading yet', GREY]]);
+  const segs = [...windowSegs('5h', reading.five_hour, now, false, solid), [' · ', GREY], ...windowSegs('7d', reading.seven_day, now, held, solid)];
+  if (running === 0 && now - reading.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(reading.at)}`, GREY]);
+  if (held) segs.push([`  ${PACE_NOTE}`, WARN]);
+  return segLine(segs.filter(([s]) => s));
+}
+
 // The red band for a batch handed to a supervisor that is not loaded: nothing runs its passes.
 const offBand = (r) => segLine([[` ✕ ${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on`, BAND]]);
 
@@ -920,17 +961,19 @@ function handOverNote(r) {
 
 const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKILL.md'));
 
-// Every repo's header: a band for each supervisor that is off, what needs the user, then the machine.
-function overviewHead(repos, list, { avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB() } = {}) {
+// Every repo's header: a band for each supervisor that is off, what needs the user, the machine, then
+// usage.
+function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB() } = {}) {
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
-  return [...list.filter(supervisorOff).map(offBand), needsLine(list), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail)];
+  return [...list.filter(supervisorOff).map(offBand), needsLine(list), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
+    usageLine(usageOf(repos, now), { now, solid })];
 }
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
   const list = shownRepos(repos, all);
   const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
   const head = [
-    ...overviewHead(repos, list, { avail, cap, gate, perWorker }),
+    ...overviewHead(repos, list, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker }),
     '',
     bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', QD_W)}  WORKERS`),
   ];
@@ -1175,7 +1218,7 @@ const GROUPS = [['Running', ['running']], ['Landing', ['landing']], ['Ready', ['
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
 // no id, which the selection steps over. `title` leads with the place and time, as the interactive
 // screen's breadcrumb does.
-function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false } = {}) {
+function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
@@ -1188,6 +1231,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r),
     ...passHead(r, now),
+    usageLine(usage ?? usageOf([r], now), { now, solid: solidBars(width) }),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
   const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
@@ -1637,10 +1681,11 @@ export function run(argv, { now = Date.now() } = {}) {
   if (v.kind === 'days') return daysScreen(repos, v.slug, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
-    return `${said}\n\n${repoScreen(loadOrRefuse(now).find((x) => x.slug === v.slug), { now })}`;
+    const after = loadOrRefuse(now);
+    return `${said}\n\n${repoScreen(after.find((x) => x.slug === v.slug), { now, usage: usageOf(after, now) })}`;
   }
   const r = repos.find((x) => x.slug === v.slug);
-  return v.kind === 'repo' ? repoScreen(r, { now }) : ticketScreen(r, v.key, { now });
+  return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now) }) : ticketScreen(r, v.key, { now });
 }
 
 // ---- the interactive screen --------------------------------------------------------------------
@@ -1769,6 +1814,7 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
+  probeMs = PROBE_EVERY_MS, probeWith = probe,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -1779,7 +1825,7 @@ export function interactive({
   // `layout`: where the last draw put the breadcrumb, the tabs and the rows, for a click to find them.
   // `ask`: a change waiting on y or n, shown in place of the keys; nothing else acts until it is answered.
   // `unfold`: what a, y and f show in full on a ticket's page; folded again whenever the place changes.
-  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, done = false, timer = null, checkin = false, zoom = 'auto', layout = null;
+  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, done = false, timer = null, probeTimer = null, checkin = false, zoom = 'auto', layout = null;
   let unfold = new Set();
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
@@ -1826,8 +1872,8 @@ export function interactive({
       return { badge: badge(repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · ${cmdKeys}` };
     }
-    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
-    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
+    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, usage: usageOf(repos, now) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic, usage: usageOf(repos, now) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
     if (!r.q?.tickets?.[view.key]) return { head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);
@@ -1995,6 +2041,7 @@ export function interactive({
     if (done) return;
     done = true;
     clearInterval(timer);
+    clearInterval(probeTimer);
     clearTimeout(flush);
     input.removeListener('data', onData);
     keys.removeListener('keypress', onKey);
@@ -2123,6 +2170,12 @@ export function interactive({
     try { repos = loadOrRefuse(clock()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
+  // Only while this screen is open: the usage probe, when no worker anywhere keeps the reading fresh.
+  probeTimer = setInterval(() => {
+    const now = clock();
+    const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
+    if (probeDue({ running, reading: readUsage({ now }), now })) probeWith({ now, done: () => { if (!done) draw(); } }).catch(() => {});
+  }, probeMs);
   draw();
   return { finish };
 }
