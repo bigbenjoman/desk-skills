@@ -19,7 +19,7 @@
 import { evaluateGate } from './gate.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
-import { parseVerdict as gateVerdict } from '../templates/scripts/desk/review-gate.mjs';
+import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
 // key=value pairs, as the §4 Clean review verdict row writes them.
 export function pairs(text) {
@@ -86,6 +86,8 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
   if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
+  // A desk-review whose marker the review gate cannot read is no verdict, never a plain review.
+  if (String(r.body).split(/\r?\n/)[0].trim() === LOCAL_MARKER) return { clean: false, why: 'its desk-review verdict marker is not one the review gate reads' };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
   const c = clean.toLowerCase();

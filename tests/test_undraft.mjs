@@ -23,6 +23,8 @@ for (const k of ['p2', 'deferred', 'gaps', 'unrefuted', 'partial']) {
   t(`AC1 a marker with ${k}=1 alone is not`, call('no findings', [review(marker(ALL_ZERO.replace(`${k}=0`, `${k}=1`)))])?.why.includes(`${k}=1`), true);
 }
 t('AC1 a marker missing a count is not', call('no findings', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'person');
+const unread = marker('p0=0 p1=0 gaps=0').replace(/\nclean$/, `\n${CLEAN_TEXT}`);
+t('AC1 nor read as a plain review under a heading stating the value', call('no findings', [review(unread)])?.why, 'its desk-review verdict marker is not one the review gate reads');
 t('AC1 a marker for an older head is not', call('no findings', [review(marker(ALL_ZERO, OLD), OLD)])?.why.includes('not the head'), true);
 
 // AC2: no marker, and the latest review at the head states the value.
