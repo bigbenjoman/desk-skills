@@ -10,6 +10,19 @@ first UI edit, and the references each one routes you to, then apply them as an 
 would. `ui-designer` runs against `desk-env list design-system`. A missing file is not a park: build
 without it and name it in `AUTOPILOT_DONE` and the PR's Testing.
 
+**A lane D ticket builds from its saved canvas, and does not stop for agreement.** `plan-batch` runs
+lane D only when every Claude Design canvas the ticket's Design section links is saved under §2
+Design canvases directory on your base, or snapshotted in `$DESK_STATE/designs/` (save it on your
+branch first, `desk-ticket`'s `design-canvas.md`). Follow `desk-ticket-routing.md` Lane D as a repo
+with no design-build agent does: build it in this session from the saved boards, with the design
+skills above, and leave out its "D still stops for agreement first". The agreement moves to the PR
+review: for each board the ticket names, the PR body holds the board's render and the built screen
+at that board's width, with every difference you accepted listed under it (`desk-pr`'s
+`references/screenshots.md`, "A ticket with a saved canvas"). Capturing the built screens needs §3
+`worker-screenshots`; where it is not `yes`, build and push, then park naming that row with the
+rest of the tail (section 6). A design you find is only in Figma, or a canvas not on your base,
+parks as a demotion to D does (core section 2).
+
 ## 6. Command forms that are silently denied
 
 Permission rules match the string you write, not the file it resolves to. Prefer the plain form:

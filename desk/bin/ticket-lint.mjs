@@ -13,11 +13,10 @@
 //   facts     [{line, text}]: the status, priority and size lines desk-jira refuses in a body
 // Prints one `blocking: …` or `advisory: …` line per finding (or a JSON array with --json) and exits
 // 1 when any is blocking, 0 otherwise, 2 on unreadable input.
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalUrl, checkTicket, designDir, sections } from './desk-design.mjs';
+import { checkTicket, designDir, sections, snapshotOf } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
@@ -50,16 +49,6 @@ const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:dat
 const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-off\b/i;
 // The Size fallback, a first line `Size: M`, for a project with no Size field.
 export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
-
-// An artifact autopilot snapshotted into <state>/designs/ before triage: the worker saves it on its
-// branch, so its missing repo copy is not a park.
-function snapshotted(url) {
-  const base = join(stateDir(), 'designs');
-  if (!existsSync(base)) return false;
-  return readdirSync(base).some((d) => {
-    try { return canonicalUrl(JSON.parse(readFileSync(join(base, d, 'source.json'), 'utf8')).url) === canonicalUrl(url); } catch { return false; }
-  });
-}
 
 // §4 Ticket key pattern, else <§4 Jira project>-<n>; null when neither is set.
 function keyRegex() {
@@ -161,7 +150,7 @@ export function lintTicket(t, { root, dir } = {}) {
     const issue = { key: t.key, text: t.text, fields: { parent: t.parent ?? undefined } };
     for (const f of checkTicket(issue, { root, dir })) {
       const url = /artifact (\S+), but no copy is saved/.exec(f.message)?.[1];
-      if (f.severity === 'blocking' && url && snapshotted(url)) add('advisory', 'design', `${f.message}; autopilot has snapshotted it, so the worker saves it`);
+      if (f.severity === 'blocking' && url && snapshotOf(stateDir(), url)) add('advisory', 'design', `${f.message}; autopilot has snapshotted it, so the worker saves it`);
       else add(f.severity, 'design', f.message);
     }
   }

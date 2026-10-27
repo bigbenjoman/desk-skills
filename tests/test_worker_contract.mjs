@@ -42,6 +42,16 @@ t('AC5 and never a carry-on', /never a skip/.test(core), true);
 t('AC2 the core sends the worker to the Stage 4 section before any suite', /about to run any suite, typecheck, lint or build, at any stage[^\n]*\n[^\n]*read the Stage 4 file first/.test(core), true);
 t('AC2 the Stage 4 section holds verification and self-review', read('worker-contract-stage-4.md').includes('## 3. Verification must cover what CI covers') && read('worker-contract-stage-4.md').includes('### Self-review'), true);
 
+// A lane D ticket admitted with its canvas saved builds without stopping, and only one with no saved
+// canvas is a demotion that parks.
+const stage3 = read('worker-contract-stage-3.md');
+t('lane D: the Stage 3 section builds from the saved canvas and does not stop for agreement',
+  stage3.includes('**A lane D ticket builds from its saved canvas, and does not stop for agreement.**') && stage3.includes('as a repo\nwith no design-build agent does'), true);
+t('lane D: the PR holds each board beside the build, with every difference accepted', /board's render and the built screen\nat that board's width, with every difference you accepted/.test(stage3), true);
+t('lane D: the core parks only a demotion to D with no saved canvas', core.includes('**A lane demotion to C, or to D with no saved canvas.**'), true);
+const routing = readFileSync(join(root, 'skills/desk-ticket/references/desk-ticket-routing.md'), 'utf8');
+t('lane D: the routing exempts an autopilot worker from stopping for agreement', routing.includes('**An autopilot worker does not stop**'), true);
+
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));

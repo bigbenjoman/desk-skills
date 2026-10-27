@@ -4,7 +4,8 @@
 // digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
-//   - a lane C or D park, and anything naming a config §3 row that is not `yes`, is handed straight on;
+//   - a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
+//     that is not `yes`, is handed straight on;
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason.
@@ -15,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
+import { needsSession } from './batch-state.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -45,7 +47,7 @@ export function presort(items) {
   const ask = [];
   for (const item of items) {
     const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(item.text);
-    if (item.kind === 'parked' && ['C', 'D'].includes(item.lane)) {
+    if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
@@ -128,15 +130,15 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...answerLines(i)]).join('\n');
   // Only when an item has answers, so a prompt without any reads as it always has.
   const onAnswers = items.some((i) => i.answers?.length) ? [
-    '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B or E, requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+    '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B, D or E, and its park does not start `lane C` or `lane D` (one parked at triage), requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
   ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
     '',
     'What you may do, and nothing else:',
-    `- requeue a ticket whose worker parked asking for more agent work, on lane A, B or E: \`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
+    `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
-    '- never requeue a lane C or D park, never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
+    '- never requeue a lane C ticket or a park that starts `lane C` or `lane D` (parked at triage on its lane), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
     '',

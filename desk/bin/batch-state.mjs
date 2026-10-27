@@ -59,18 +59,41 @@ export function spinePark(t) {
   return s.startsWith(SPINE_APPROVAL_PREFIX) ? 'approval' : s.startsWith(SPINE_SPECS_PREFIX) ? 'specs' : null;
 }
 
-// A lane C or D triage record whose lane challenge could not read the code (triage.sh's INCONCLUSIVE):
-// one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
-export const laneUnchecked = (r) => ['C', 'D'].includes(r?.lane) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
+// Why a triage record's design is not one a worker can build from, or null when its Design section
+// links at least one Claude Design canvas and each is saved on the batch's base or snapshotted
+// (ticket-facts.mjs records `design`).
+export function designGap(r) {
+  if (r?.design_error) return `its design could not be read (${r.design_error})`;
+  const d = r?.design;
+  if (!d) return 'its design was never read: re-run triage';
+  const canvases = d.canvases ?? [];
+  const missing = canvases.filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+  if (missing.length) return `its canvas is not on ${d.ref}: save ${missing.join(', ')} there (desk-design save), or snapshot it`;
+  if (!canvases.length) return d.figma ? 'its only design is a Figma frame, which a worker cannot read' : 'it links no Claude Design canvas';
+  return null;
+}
 
-// The park question for a lane C or D triage record, or null for any other lane. plan-batch and
-// queue.mjs admit both seed a ticket's park from it.
+// Lane C always needs a person before code; lane D only while its design is not saved where a worker
+// can read it.
+export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && designGap(r) !== null);
+
+// A queue ticket only an interactive session takes on: lane C, or one parked at triage on its lane.
+// A lane D ticket whose worker parked is requeued like any other.
+export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '');
+
+// A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
+// INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
+export const laneUnchecked = (r) => needsPersonLane(r) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
+
+// The park question for a lane C or D triage record that needs a person, or null for any other.
+// plan-batch and queue.mjs admit both seed a ticket's park from it.
 export function lanePark(r) {
-  if (!['C', 'D'].includes(r?.lane)) return null;
+  if (!needsPersonLane(r)) return null;
   const reason = String(r.lane_reason ?? 'needs a person');
+  const why = r.lane === 'D' ? `${designGap(r)}; ${reason}` : reason;
   return laneUnchecked(r)
-    ? `lane ${r.lane} UNCHECKED (challenge could not read the code): confirm lane ${r.lane} or re-lane — ${reason.slice(0, 120)}`
-    : `lane ${r.lane} — ${reason.slice(0, 160)}`;
+    ? `lane ${r.lane} UNCHECKED (challenge could not read the code): confirm lane ${r.lane} or re-lane — ${why.slice(0, 120)}`
+    : `lane ${r.lane} — ${why.slice(0, 160)}`;
 }
 
 // A held ticket is still going somewhere only while it can still be released: every predecessor is

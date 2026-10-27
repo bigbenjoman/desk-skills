@@ -532,6 +532,41 @@ export function claudeDesignLinks(section) {
   return out;
 }
 
+// The snapshot folder under <state>/designs/ that holds this artifact, or null. Autopilot snapshots
+// an artifact before triage, and the worker saves it on its branch.
+export function snapshotOf(state, url) {
+  const base = join(state, 'designs');
+  if (!existsSync(base)) return null;
+  const d = readdirSync(base).find((x) => canonicalUrl(readJson(join(base, x, 'source.json'))?.url) === canonicalUrl(url));
+  return d ? join(base, d) : null;
+}
+
+// Every saved canvas under <dir> as committed at <ref>: [{path, url}].
+export function savedAt(root, dir, ref) {
+  const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
+  return git('ls-tree', '-r', '--name-only', ref, '--', `${dir}/`).split('\n')
+    .filter((f) => f.slice(dir.length + 1).split('/').length === 2 && f.endsWith('/source.json'))
+    .map((f) => { let s = null; try { s = JSON.parse(git('show', `${ref}:${f}`)); } catch { /* unreadable */ } return { path: `${dirname(f)}/`, url: s?.url }; })
+    .filter((c) => c.url);
+}
+
+// What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
+// readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under <state>;
+// with no <dir> (the repo saves none) only a snapshot is.
+export function designFact(text, { root, dir, ref, state }) {
+  const section = designSection(String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1'));
+  const saved = dir ? savedAt(root, dir, ref) : [];
+  return {
+    ref,
+    canvases: claudeDesignLinks(section).map((url) => ({
+      url,
+      saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null,
+      snapshot: snapshotOf(state, url),
+    })),
+    figma: /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i.test(section ?? ''),
+  };
+}
+
 // Findings for one ticket: {severity: 'blocking'|'advisory', message}. `issue` is desk-jira's
 // --json issue, or {key, text} for a ticket file. The canvas belongs under the ticket's epic when it
 // has one, else under the ticket itself.
