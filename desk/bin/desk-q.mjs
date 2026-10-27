@@ -317,7 +317,9 @@ function stallOf(r, now) {
     const d = sup.driver;
     let at = null;
     try { at = statSync(join(r.stateDir, 'merge-driver.log')).mtimeMs; } catch { /* no log */ }
-    if (d && !d.pid && (d.failures ?? 0) > 0) driver = { at, reason: String(d.reason ?? 'it wrote nothing to its log') };
+    // A retry the supervisor started after a failure keeps its pid recorded once it dies too, so with
+    // no driver running, failures alone say it stopped.
+    if (d && (d.failures ?? 0) > 0) driver = { at, reason: String(d.reason ?? 'it wrote nothing to its log') };
     else {
       const last = tailLines(join(r.stateDir, 'supervisor.log')).filter((l) => l.includes('merge driver: ')).at(-1) ?? '';
       const m = /merge driver: could not start: (.*)/.exec(last);

@@ -1518,6 +1518,9 @@ state219('drv', 'merge-driver.log', 'FAIL: gh is signed out\nmerge driver exited
 put219('drv2', 5370, { tickets: { 'DT-1': run215 } });
 state219('drv2', 'supervisor.json', '{}');
 state219('drv2', 'supervisor.log', '== tick\nmerge driver: could not start: spawn EACCES\n');
+// A crash loop: the retry the supervisor started after the first failure died too, its pid still recorded.
+put219('drv3', 5420, { tickets: { 'DL-1': run215 } });
+state219('drv3', 'supervisor.json', JSON.stringify({ driver: { pid: 2147483646, started: minsAgo(2), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: no PR for DL-1' } }));
 put219('old', 5380, { tickets: { 'OL-1': run215 } });
 state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
 put219('cant', 5390, { beat: 40, tickets: { 'CA-1': ready } });
@@ -1526,8 +1529,8 @@ writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '
 put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
   'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
 put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
-I.loaded('sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'old', 'cant', 'land');
-const names219 = ['np', 'moved', 'err', 'err1', 'both', 'alone', 'drv', 'drv2', 'old', 'cant', 'land', 'wait'];
+I.loaded('sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land');
+const names219 = ['np', 'moved', 'err', 'err1', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'wait'];
 const ov219 = Q.overview(Q.loadRepos(NOW).filter((r) => names219.includes(r.name)), { now: NOW, avail: 30 });
 const notesOf = (name) => lines(ov219).filter((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${name} +`), ''));
 const cell219 = (name) => (rowOf(ov219, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
@@ -1541,9 +1544,9 @@ t('DS-219 AC2 two errored passes in a row: the red band above the header names t
 t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervisor + session, and one note with both fixes',
   `${cell219('both')} | ${notesOf('both').join(' / ')} | ${cell219('alone')} ${notesOf('alone').length}`,
   '▲ supervisor + session | a session is also running this supervised batch. Close the session, or run: desk-q both supervisor off | ● supervisor · 1m ago 0');
-t('DS-219 AC4 a merge driver that died, or never started: one note with the reason from its log',
-  `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')}`,
-  'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES.');
+t('DS-219 AC4 a merge driver that died, never started, or whose retry died too: one note with the reason from its log',
+  `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')} | ${notesOf('drv3').join(' / ')}`,
+  'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES. | the merge driver stopped: no PR for DL-1.');
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
   notesOf('old').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
 t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
