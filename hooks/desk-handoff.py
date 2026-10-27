@@ -8,8 +8,8 @@ One script, registered by install.sh on four events; it reads `hook_event_name` 
                                  "Handoff at context % on a 1M window" (unset, the first row's value;
                                  `0` disables), inject once: finish the current
                                  step, write the handoff, start no new work.
-  Stop                           After that has fired, and while no handoff newer than the firing
-                                 exists, block the end of the turn once ("write the handoff first").
+  Stop                           After that has fired, and while the handoff it named is unwritten,
+                                 block the end of the turn once ("write the handoff first").
   SessionStart                   source `clear` or `compact`: inject "read .handoffs/<name>.md and
                                  continue from its next step" for the handoff this session was told
                                  to write (else, with none recorded, the newest written one) when
@@ -324,7 +324,11 @@ def on_stop(data, session, root):
     fired = state.get("fired_at")
     if not fired or state.get("blocked"):
         return
-    if any(os.path.getmtime(f) >= fired - 1 for f in handoffs(root)):
+    own = state.get("handoff")
+    if own:
+        if os.path.exists(own) and not is_placeholder(own):
+            return
+    elif any(os.path.getmtime(f) >= fired - 1 for f in handoffs(root)):
         return
     state["blocked"] = True
     save_state(session, state)
@@ -337,7 +341,9 @@ def on_stop(data, session, root):
 
 def recorded_handoff(state, session, root, source):
     """The handoff this session was told to write before its context emptied: from its own state, or
-    after /clear, which mints a new session id, the newest one recorded under the same Claude process."""
+    after /clear, which mints a new session id, the newest one recorded under the same Claude process.
+    Taking one once it is written unlinks it from the process, so a later /clear without a new firing
+    falls back to the newest written handoff."""
     if state.get("handoff"):
         return state["handoff"]
     if source != "clear":
@@ -355,8 +361,19 @@ def recorded_handoff(state, session, root, source):
         if (isinstance(s, dict) and s.get("pid") == pid and s.get("root") == root
                 and s.get("handoff") and time.time() - fired <= FRESH_SECONDS
                 and (best is None or fired > best[0])):
-            best = (fired, s["handoff"])
-    return best and best[1]
+            best = (fired, s["handoff"], p, s)
+    if not best:
+        return None
+    _, path, p, s = best
+    if os.path.exists(path) and not is_placeholder(path):
+        s.pop("pid", None)
+        try:
+            with open(p + ".tmp", "w") as f:
+                json.dump(s, f)
+            os.replace(p + ".tmp", p)
+        except Exception:
+            pass
+    return path
 
 
 def on_session_start(data, session, root):

@@ -216,7 +216,11 @@ hook Stop s3 "$T/side.jsonl"
 check "Stop never blocks a session that has not fired"    '[ -z "$out" ]'
 mkdir -p "$R/.handoffs"; echo "# handoff" > "$R/.handoffs/$DAY.md"
 hook Stop s2 "$T/high.jsonl"
-check "Stop with a handoff newer than the firing: none"   '[ -z "$out" ]'
+check "Stop with another session's handoff written: still blocks" '[[ "$out" == *"write the handoff first"* ]]'
+s5_handoff=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["handoff"])' "$DESK_HOME/handoff/s5.json")
+echo "# handoff" > "$s5_handoff"
+hook Stop s5 "$T/high.jsonl"
+check "Stop with its own handoff written: none"           '[ -z "$out" ] && [ "$s5_handoff" != "$R/.handoffs/$DAY.md" ]'
 hook Stop s4 "$T/500k.jsonl" ',"stop_hook_active":true'
 check "stop_hook_active: never blocks"                    '[ -z "$out" ]'
 hook PostToolUse s11 "$T/high.jsonl"
@@ -273,6 +277,8 @@ check "DS-282 AC5: an unfilled placeholder is not offered" '[ -z "$out" ]'
 PID=a1 hook SessionStart a2 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC5: nor to the session that reserved it"   '[ -z "$out" ]'
 echo "# A" > "$R/.handoffs/$DAY.md"; age "$R/.handoffs/$DAY.md" 60
+hook Stop b1 "$T/high.jsonl"
+check "DS-282: A's written handoff does not release B's Stop" '[[ "$out" == *"write the handoff first"* ]] && [[ "$out" == *"$DAY-2.md"* ]]'
 echo "# B" > "$R/.handoffs/$DAY-2.md"
 PID=a1 hook SessionStart a3 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC3: A's next session reads A's, not B's newer one" '[[ "$(ctx)" == *"read .handoffs/$DAY.md"* ]]'
@@ -281,6 +287,9 @@ check "DS-282 AC3: and B's reads B's"                     '[[ "$(ctx)" == *"read
 echo "# C" > "$R/.handoffs/$DAY-9.md"
 hook SessionStart d1 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC4: no handoff recorded: the newest fresh one" '[[ "$(ctx)" == *"read .handoffs/$DAY-9.md"* ]]'
+age "$R/.handoffs/$DAY-9.md" 30; echo "# A again" > "$R/.handoffs/$DAY-10.md"
+PID=a1 hook SessionStart a4 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC4: A's second /clear, nothing new recorded: the newest" '[[ "$(ctx)" == *"read .handoffs/$DAY-10.md"* ]]'
 
 # ---- never breaks a session ----
 out=$(printf 'not json' | python3 "$HOOK" 2>&1); rc=$?
