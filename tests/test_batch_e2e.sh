@@ -708,6 +708,9 @@ check "AC7: the close-out checks only the criterion with no spec" 'echo "$out" |
 SLICE=5 config
 git -C "$T/repo" push -q origin main:feat/S
 git clone -q "$T/origin.git" "$T/slicework"; git -C "$T/slicework" switch -q feat/S
+# The spine's specs on main are still expected-fail; on this base its children have made them pass.
+printf "import { test } from 'vitest';\ntest('AC1: one', () => {});\n" > "$T/slicework/tests/acceptance/feature.spec.ts"
+git -C "$T/slicework" commit -q -am "the specs pass on the base" && git -C "$T/slicework" push -q origin feat/S
 land(){ for k in "$@"; do echo MERGED > "$T/pr/1${k#T-}"; git -C "$T/slicework" commit -q --allow-empty -m "$k"; done; git -C "$T/slicework" push -q origin feat/S; }
 q init slices; q set-batch base=feat/S epic=E-2 feature=true
 for k in 61 62 63 64 65 66 67; do record "T-$k" "src/s$k.txt"; q admit "T-$k"; q set "T-$k" state=done "result.pr=1$k"; done
