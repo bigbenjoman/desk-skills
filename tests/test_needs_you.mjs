@@ -226,6 +226,12 @@ put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
   'E-1': { state: 'failed', lane: 'A', park: { question: 'tests red', since: minsAgo(15) } },
   'E-2': { state: 'done', lane: 'A', result: { pr: 61 }, pr_status: { pr: 61, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } },
 } });
+put('theta', { port: 3800, beat: 1, supervised: true, tickets: {
+  'H-1': { state: 'running', lane: 'A' },
+  'H-2': { state: 'parked', lane: 'A', held_by: 'H-1', open_questions: 1, outside_blockers: [{ key: 'X-9' }], park: { question: 'held by orchestrator: blocked by H-1 — starts once their PRs merge' } },
+} });
+const h2 = N.collect({ word: 'theta' }).items.find((i) => i.t.key === 'H-2');
+t('DS-279 a held ticket also held outside the batch asks the outside question, and answers it', `${h2?.kind} ${h2?.need} ${h2?.actions[0][0]}`, 'triage held by X-9, outside this batch: start anyway? answer');
 const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,

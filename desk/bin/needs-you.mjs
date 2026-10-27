@@ -60,6 +60,8 @@ function itemOf(r, x) {
   // An unmerged PR: only the person's step on GitHub moves it, as its desk-q row says.
   if (x.pr) return { kind: 'pr', need: `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
+  // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
+  if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
   if (isHeld(t)) {
     const h = holdOf(r.q, t, r.ctx);
     return h.act
