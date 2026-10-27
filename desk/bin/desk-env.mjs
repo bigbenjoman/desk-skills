@@ -445,12 +445,22 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 // reads as no cost sources. costs.mjs is imported only by the `costs` command, so the scripts that
 // copy this file on its own need nothing new.
 export const costsPath = () => expandHome(process.env.DESK_COSTS ?? join(deskConfigRoot(), 'costs.md'));
-// Every configured repo, with its §0 GitHub repo (the slug's, where the row is unset).
+// Every configured repo: its config file and §0 GitHub repo (the slug's, where the row is unset).
 export function configuredRepos(root = deskConfigRoot()) {
   let slugs = [];
   try { slugs = readdirSync(join(root, 'repos')).sort(); } catch { return []; }
-  return slugs.filter((slug) => existsSync(join(root, 'repos', slug, 'config.md')))
-    .map((slug) => ({ slug, ghRepo: repoConfigValue(slug, 'gh-repo', root) ?? slug.replace('__', '/') }));
+  return slugs.map((slug) => ({ slug, config: join(root, 'repos', slug, 'config.md') }))
+    .filter((r) => existsSync(r.config))
+    .map((r) => ({ ...r, ghRepo: repoConfigValue(r.slug, 'gh-repo', root) ?? r.slug.replace('__', '/') }));
+}
+
+// The per-computer files' write: the previous copy kept beside it as <path>.bak.
+function writeWithBackup(path, text) {
+  mkdirSync(dirname(path), { recursive: true });
+  const had = existsSync(path);
+  if (had) copyFileSync(path, `${path}.bak`);
+  writeFileSync(path, text);
+  return `wrote ${path}${had ? ` (previous copy: ${path}.bak)` : ''}`;
 }
 
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
@@ -812,14 +822,10 @@ export function concurrencyLimits(row = configValue('concurrency')) {
 // a port whose block meets no other repo's, and flags this repo's when it already does. A config
 // that leaves the port unset runs on devPort()'s default, so it claims that.
 export function repoPortClaims(root = deskConfigRoot()) {
-  const dir = join(root, 'repos');
-  let slugs = [];
-  try { slugs = readdirSync(dir).sort(); } catch { return []; }
-  return slugs.flatMap((slug) => {
-    const parsed = parseConfigFile(join(dir, slug, 'config.md'));
-    if (!parsed.exists) return [];
+  return configuredRepos(root).map(({ slug, config }) => {
+    const parsed = parseConfigFile(config);
     const port = positiveInt(configValueIn(parsed, 'dev-port')) ?? DEFAULT_DEV_PORT;
-    return [{ slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap }];
+    return { slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap };
   });
 }
 
@@ -1272,11 +1278,7 @@ if (isMain) {
       }
       case 'drift': {
         // One repo's config (the cwd's), or with --all every config under ~/.config/desk/repos/.
-        const repos = args.includes('--all')
-          ? (() => { try { return readdirSync(join(deskConfigRoot(), 'repos')).sort(); } catch { return []; } })()
-            .map((slug) => ({ slug, config: join(deskConfigRoot(), 'repos', slug, 'config.md') }))
-            .filter((r) => existsSync(r.config))
-          : [{ slug: null, config: configPathOrNull() }];
+        const repos = args.includes('--all') ? configuredRepos() : [{ slug: null, config: configPathOrNull() }];
         if (!repos.length) { console.log(`no repo configs under ${join(deskConfigRoot(), 'repos')}`); break; }
         let drift = false;
         for (const { slug, config } of repos) {
@@ -1351,11 +1353,7 @@ if (isMain) {
           break;
         }
         // write: overwrites; /desk-setup runs it only after the user confirms the proposal.
-        mkdirSync(dirname(path), { recursive: true });
-        const had = existsSync(path);
-        if (had) copyFileSync(path, `${path}.bak`);
-        writeFileSync(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10)));
-        console.log(`wrote ${path}${had ? ` (previous copy: ${path}.bak)` : ''}`);
+        console.log(writeWithBackup(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10))));
         break;
       }
       case 'costs': {
@@ -1393,10 +1391,7 @@ if (isMain) {
           break;
         }
         // write: overwrites; /desk-setup costs runs it only after the user confirms the proposal.
-        mkdirSync(dirname(path), { recursive: true });
-        if (saved.exists) copyFileSync(path, `${path}.bak`);
-        writeFileSync(path, C.renderCosts(proposal));
-        console.log(`wrote ${path}${saved.exists ? ` (previous copy: ${path}.bak)` : ''}`);
+        console.log(writeWithBackup(path, C.renderCosts(proposal)));
         break;
       }
       default:
