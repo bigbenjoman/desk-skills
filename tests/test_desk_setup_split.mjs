@@ -16,7 +16,9 @@ const skill = join(root, 'skills/desk-setup');
 const refs = join(skill, 'references');
 const core = readFileSync(join(skill, 'SKILL.md'), 'utf8');
 // permission-rows.md is the interview's row reference, not moved text; it is checked by its own suites.
-const refFiles = readdirSync(refs).filter((f) => f.endsWith('.md') && f !== 'permission-rows.md').sort();
+// mode-costs.md is a mode written after the split, so it holds no moved text either.
+const NOT_MOVED = ['permission-rows.md', 'mode-costs.md'];
+const refFiles = readdirSync(refs).filter((f) => f.endsWith('.md') && !NOT_MOVED.includes(f)).sort();
 const files = ['SKILL.md', ...refFiles];
 const read = (f) => (f === 'SKILL.md' ? core : readFileSync(join(refs, f), 'utf8'));
 const lines = (f) => read(f).split('\n');

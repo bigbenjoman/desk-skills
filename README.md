@@ -183,6 +183,7 @@ the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
 /desk-setup                          first run, or change anything
 /desk-setup permissions              straight to the permission interview
 /desk-setup plugins                  only which plugins this repo needs; changes nothing else
+/desk-setup costs                    where each repo is billed (GitHub, Vercel, AWS), for the whole machine
 /desk-setup from bigbenjoman__voicepa    start from another repo's §1, §3 and §3b answers
 /desk-setup list                     every configured repo; changes nothing
 ```
