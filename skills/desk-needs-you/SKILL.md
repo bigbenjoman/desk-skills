@@ -52,7 +52,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - For `resume`, `answer` and `reject`, the answer text is what gets recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
   not, the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
-  resume, so it never stays parked once answered.
+  resume, so it never stays parked once answered. A `session` item has none either: only `open`
+  moves it.
 - An `override <id>` action takes the user's choice as its text.
 
 Ask the next round only after recording this one.
@@ -68,7 +69,7 @@ Leave `"<text>"` off for `release`, `approve`, `not-now`, `open` and `done`. Eac
 line saying what it recorded. Keep it for the end.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
-  answered but not requeued. `SendMessage` that text to the session named `<name>`. If that name is
+  answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
 - **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`

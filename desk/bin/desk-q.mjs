@@ -93,11 +93,17 @@ function stateOf(q, t, ctx, seen) {
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return holdOf(q, t, ctx, seen).k;
+  if (answeredPark(t, ctx)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, stage: () => null };
+const NOBODY = { releases: false, merges: false, live: false, stage: () => null };
+// A park the person answered through desk-needs-you whose requeue was left to the live session running
+// the batch: it waits on that session, not on them, until the requeue clears the park. With passes
+// stopped nothing will requeue it, so it needs them again.
+const answeredPark = (t, ctx) => t?.state === 'parked' && !!t.park?.answered && ctx?.live === true;
+const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
 const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
@@ -114,7 +120,7 @@ function holdContext(r) {
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
-  return { releases, merges: releases && granted, stage };
+  return { releases, merges: releases && granted, live: r.live, stage };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -1298,6 +1304,7 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'stuck') return [[outsideText(t), null]];
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? LANDING : null]);
   if (k === 'running') return [[runningStage(r, x), null]];
+  if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (k === 'needs' && claimOf(t)) return [[`claimed by session ${claimOf(t).session}`, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`, null]];
@@ -1428,6 +1435,7 @@ function moveOf(r, row, k, t, h, now) {
     if (h.k === 'waiting') return { text: `Moves without you: ${h.text}.` };
     return { text: `Needs you. ${capital(h.text)}.`, ...(h.act ? { lead: `Run, in ${r.name}:`, cmds: h.act.split(/, then /) } : {}) };
   }
+  if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (k === 'needs' && claimOf(t)) {
     if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
     return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
@@ -1711,7 +1719,8 @@ function moveTicket(r, key, verb, to) {
   } else n = { up: i - 1, down: i + 1, top: 1, bottom: last }[verb];
   if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
-  const why = x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
+  const why = answeredPark(x.t, r.ctx) ? ` It is ${answeredText(r.q)}, then starts from here.`
+    : x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
     : x.k === 'stuck' ? ` It is still ${outsideText(x.t).replace('held: ', 'held by ')}: moving it does not unblock it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
   return `${key} → position ${n} of ${last}, placed by you.${why}`;
