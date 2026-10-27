@@ -566,7 +566,11 @@ commits beyond the default branch first gets one empty commit, pushed under §3 
 opening the PR is §3 `pr-open`. It is tried once: a refused push, the rows, or a failed
 `gh pr create` opens nothing, the report names why under `WAITING ON YOU`, and the batch carries on.
 Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n>` so the gate can mark
-it ready.
+it ready. **Once the person merges it while children are still to merge into the base**, the next
+pass opens the next one the same way, titled with its slice (`(slice 2)`), records it as `promotion`
+with `slice`, `since` (the merge time the next slice counts from) and `merged` (the earlier promotion
+PRs), and writes the ledger comment afresh on it. A batch whose every child has merged opens no
+further one.
 
 **The promotion PR carries the batch's ledger.** One comment on it, which only the autopilot writes,
 holds a table with one row per child (key, state, PR link, and the model its worker ran on) between
@@ -579,17 +583,32 @@ written for the ledger, so nothing the person writes there is overwritten; edits
 comment itself are. Comments that cannot be read or written (or the row not granted) are reported
 as `ledger not updated`, the batch carries on, and the next pass tries again.
 
-**The base gate checks the feature as a whole before the promotion PR leaves draft.** When the
-batch would go idle, `pass.mjs` decides:
+**The base gate checks the base before the promotion PR leaves draft, a slice at a time.** A
+feature-mode batch promotes in steps rather than once at the end, so each promotion PR carries 5–10
+children. `pass.mjs` starts the gate on a **slice**:
 
-- A child parked or failed: the gate does not run. `WAITING ON YOU` carries `BASE GATE: not run`
-  with each such child, and the promotion PR stays draft.
+- when §3b "Promotion slice size (children)" (unset is 8; 5 to 10) of children have merged into the
+  base since the last promotion PR merged and since the last gate, whatever the other children are
+  doing (queued, running, open, parked or failed);
+- when a child labelled `milestone` in the tracker merges (ticket-facts records its labels), whatever
+  the count;
+- when every child has merged: the last slice, which the epic close-out follows.
+
+The report names the slice (`slice 2: 8 of 23 children`). A parked or failed child no longer stops a
+slice: the report lists it as `not in this slice`, and it still stops the last slice and the
+close-out. Until a slice is due, the report says how many more children it waits for. Otherwise, at
+the end of the batch:
+
+- A child parked or failed: the last slice does not run. `WAITING ON YOU` carries `BASE GATE: not run`
+  with each such child, and a promotion PR no slice has passed stays draft.
 - A child that finished with no PR, or whose PR was closed without merging: the gate does not run,
   and `WAITING ON YOU` names it to requeue or drop.
 - A child's PR still open: the gate waits for it (under `WAITING ON YOU` when no merge driver is
   running), and the batch is not idle.
-- Every child merged into the base: the pass starts `base-gate.mjs` in the background (it can
-  outlast one pass) and reports `BASE GATE: started`. The batch is not idle while it runs. In the
+- A slice due: the pass starts `base-gate.mjs` in the background (it can
+  outlast one pass) and reports `BASE GATE: started`. The batch is not idle while it runs, and while it
+  runs in the base worktree the pass leaves that worktree alone (no sync, no baseline): new children
+  branch from origin's base as it stands. In the
   base worktree the gate merges §0 Default branch in, runs §4 Install, the §4 Acceptance specs
   command once for each criterion id (the spine's, and any other a spec there is titled with), and
   §4 Typecheck, Lint and Unit tests (Jest and
@@ -598,9 +617,10 @@ batch would go idle, `pass.mjs` decides:
 - **Passed** (every spec and check passed, and no spec under the acceptance directory is still
   marked expected-fail or skipped): the promotion PR is marked ready (§3 `pr-ready`; otherwise
   `WAITING ON YOU` says to undraft it) and the report gives its link. Merging it is the person's.
-- **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft. The fix goes onto the
-  base; the gate runs again on the first idle pass after the base moves (or at once after
-  `queue.mjs set-batch gate=null`).
+  Only the last slice's pass offers the `close-out:` line.
+- **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft, while children keep
+  spawning and merging into the base. The fix goes onto the base; the gate runs again on the first
+  pass after the base moves (or at once after `queue.mjs set-batch gate=null`).
 
 ### Epic close-out
 
@@ -620,7 +640,8 @@ When the batch is idle with no held ticket left:
    it says the criteria could not be read.
 3. With a batch base, the promotion PR (base → default) is the user's to merge. Title it with the epic
    key so `/desk-review` checks the epic's criteria against the whole feature, and say so. In feature
-   mode it is already open, titled that way, and the gate marked it ready.
+   mode it is already open, titled that way, and the last slice's gate marked it ready; earlier
+   slices' promotion PRs may already have merged.
 4. **Never transition the epic**, whatever the result.
 
 ### A design in Claude Design

@@ -30,8 +30,12 @@ trap cleanup EXIT
 git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
 git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
-# config [<Worker models row value>]: no value leaves the row out, which reads as `default`.
-config(){ local models=""; [ -n "${1:-}" ] && models="| Worker models | \`default\` | \`$1\` |"
+# config [<Worker models row value>]: no value leaves the row out, which reads as `default`. $SLICE, when
+# set, is the Promotion slice size row.
+config(){ local models="" slice=""; [ -n "${1:-}" ] && models="| Worker models | \`default\` | \`$1\` |"
+  [ -n "${SLICE:-}" ] && slice="| Promotion slice size (children) | \`8\` | \`$SLICE\` |"
+  [ -n "$slice" ] && models="${models:+$models
+}$slice"
 cat > "$T/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -156,7 +160,7 @@ console.log(JSON.stringify({ type: 'result', is_error: false, num_turns: script.
 fs.unlinkSync(reg);
 EOF
 # The fake gh: `pr view <n>` says the PR is open, or what pr/<n> holds, `pr list` finds no PR, and
-# `pr create` opens PR #200. A PR's comments are pr/<n>.comments (JSON), added by `pr comment` and
+# `pr create` opens PR #200, or the number in pr/next. A PR's comments are pr/<n>.comments (JSON), added by `pr comment` and
 # edited by `api -X PATCH .../issues/comments/<id>`, and unreadable while pr/<n>.unreadable exists.
 # A PR's body is pr/<n>.body, written by `pr edit --body-file -` or `api -X PATCH .../pulls/<n>`, so a
 # body write shows up in the ledger checks. Every call is logged to gh.log.
@@ -191,7 +195,7 @@ if (a[0] === 'pr' && a[1] === 'view') {
   let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {}
   console.log(a.includes('--json') && !a.includes('--jq') ? JSON.stringify({ state: s, url: 'https://github.com/acme/widgets/pull/' + a[2], statusCheckRollup: [] }) : s);
 }
-if (a[0] === 'pr' && a[1] === 'create') console.log('https://github.com/acme/widgets/pull/200');
+if (a[0] === 'pr' && a[1] === 'create') { let n = '200'; try { n = fs.readFileSync('$T/pr/next', 'utf8').trim(); } catch {} console.log('https://github.com/acme/widgets/pull/' + n); }
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
 # The bodies of PR #200's ledger comments, and how many there are.
@@ -697,5 +701,49 @@ pass
 check "AC4: a passing gate marks the promotion PR ready"         '[ "$(bfield gate.state)" = "\"passed\"" ] && grep -q "^pr ready 200 --repo acme/widgets" "$T/gh.log"'
 check "AC4: and the report gives its link"                       '[ $rc -eq 11 ] && echo "$out" | grep -q "Promotion PR #200 is ready for review: https://github.com/acme/widgets/pull/200" && echo "$out" | grep -q "^IDLE"'
 check "AC7: the close-out checks only the criterion with no spec" 'echo "$out" | grep -q "close-out: check only AC3 per criterion"'
+
+# ---- promotion slices: the base gate runs every N children merged, or at a milestone ---------------
+# Seven children, finished straight into the queue rather than through workers. A child "merges" when
+# its pr/<n> says MERGED and a commit lands on the base, as a merge into it would.
+SLICE=5 config
+git -C "$T/repo" push -q origin main:feat/S
+git clone -q "$T/origin.git" "$T/slicework"; git -C "$T/slicework" switch -q feat/S
+land(){ for k in "$@"; do echo MERGED > "$T/pr/1${k#T-}"; git -C "$T/slicework" commit -q --allow-empty -m "$k"; done; git -C "$T/slicework" push -q origin feat/S; }
+q init slices; q set-batch base=feat/S epic=E-2 feature=true
+for k in 61 62 63 64 65 66 67; do record "T-$k" "src/s$k.txt"; q admit "T-$k"; q set "T-$k" state=done "result.pr=1$k"; done
+q set T-67 state=parked 'park={"question":"which copy should the banner use?"}'
+: > "$T/gh.log"
+pass
+check "slices: the batch opens its promotion PR as before"      '[ "$(bfield promotion.pr)" = 200 ] && [ "$(bfield gate)" = null ]'
+land T-61 T-62 T-63 T-64
+pass
+check "AC1: below the slice size the gate does not run"         '[ "$(bfield gate)" = null ] && ! echo "$out" | grep -q "BASE GATE: started"'
+land T-65
+pass
+check "AC1: the fifth child merging starts the gate, with a child still open and one parked" 'echo "$out" | grep -q "BASE GATE: started on feat/S for slice 1: 5 of 7 children, since 5 children merged since the last promotion" && [ "$(bfield gate.slice.keys)" = "[\"T-61\",\"T-62\",\"T-63\",\"T-64\",\"T-65\"]" ]'
+check "AC7: the parked child is named as not in this slice"     'echo "$out" | grep -q "BASE GATE: not in this slice: T-67 (parked: which copy"'
+wait_gate
+pass
+check "AC3: a passing slice gate marks the promotion PR ready, and names the slice" '[ "$(bfield gate.state)" = "\"passed\"" ] && grep -q "^pr ready 200 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -q "BASE GATE: passed on feat/S at [0-9a-f]* (slice 1: 5 of 7 children): .*Promotion PR #200 is ready for review"'
+check "AC6: a slice that is not the last offers no close-out"   '! echo "$out" | grep -q "close-out:"'
+printf '{"ticket": "T-66", "type": "Story", "lane": "A", "size": "S", "branch": "feat/T-66", "files_in_scope": ["src/s66.txt"], "unknowns": [], "labels": ["milestone"]}\n' > "$T/state/triage/T-66.json"
+land T-66
+pass
+check "AC2: a milestone child merging starts the gate whatever the count" 'echo "$out" | grep -q "BASE GATE: started on feat/S again (it moved since the last run, at [0-9a-f]*) for slice 1: 6 of 7 children, since milestone T-66 merged"'
+wait_gate
+echo MERGED > "$T/pr/200"; echo 201 > "$T/pr/next"
+pass
+check "AC5: once the promotion PR merges, the next one opens as a draft and is recorded" 'echo "$out" | grep -q "promotion PR #200 (slice 1) merged into main" && grep -q "^pr create --repo acme/widgets --draft --base main --head feat/S --title E-2: promote feat/S to main (slice 2)" "$T/gh.log" && [ "$(bfield promotion.pr)" = 201 ] && [ "$(bfield promotion.slice)" = 2 ] && [ "$(bfield promotion.merged.0.pr)" = 200 ]'
+check "AC5: the ledger comment is carried over to the new PR"    'grep -q "^pr comment 201" "$T/gh.log"'
+check "AC5: the count starts again from that merge"             '[ "$(bfield gate)" = null ] && echo "$out" | grep -q "BASE GATE: not run, since 1 child(ren) did not finish: T-67"'
+pass
+check "AC5: a merged promotion PR is followed once"             '[ "$(grep -c "^pr create" "$T/gh.log")" = 2 ]'
+q set T-67 state=done result.pr=167 park=null
+land T-67
+pass
+check "AC6: the last child merging runs the last slice"         'echo "$out" | grep -q "BASE GATE: started on feat/S for slice 2: 1 of 7 children, the last"'
+wait_gate
+pass
+check "AC6: the last slice passing offers the epic close-out"   'grep -q "^pr ready 201 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -q "close-out:"'
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
