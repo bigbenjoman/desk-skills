@@ -1120,7 +1120,7 @@ function passLines(r, now) {
 function stoppedLines(r) {
   return ['Running workers carry on, but nothing new starts and stages are not updated.', `To resume: ${resumeOf(r)}.`];
 }
-const resumeOf = (r) => (supervisorOff(r) ? `desk-q ${r.name} supervisor on`
+export const resumeOf = (r) => (supervisorOff(r) ? `desk-q ${r.name} supervisor on`
   : r.run?.by === 'supervisor' ? `check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
     : `run /desk-autopilot in ${r.name}${handsOver(r) ? '; it hands the batch to the supervisor at Stage 4' : ''}`);
 // The same, as a sentence of its own: a bare command follows "Run:".
