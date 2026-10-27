@@ -242,6 +242,17 @@ pj 2026-08-03T06:31:00Z; pj 2026-08-03T06:32:00Z
 check "DS-226 ask with FileVault on is ready to reboot, then log in" 'grep -q "\"ready to reboot\" is in the next check-in" <<< "$out" && grep -q "restart when it suits you, then log in (FileVault is on" <<< "$(digest 6)"'
 q set F-4 state=done
 
+# ---- DS-276: between windows, a pass reports the auto-release and pushes a failed check ---------
+config none ask
+upstream release; rel=$(git -C "$T/seed" rev-parse HEAD)
+printf '#!/bin/sh\ncat "%s/release.state"\n' "$T" > "$T/release.sh"
+echo pending > "$T/release.state"
+DESK_RELEASE_CHECK_CMD="sh $T/release.sh" pj 2026-10-26T09:00:00Z
+check "DS-276 AC2 the pass report says it waits for main's tests check" 'grep -q "^release: desk-skills main ${rel:0:12} is ahead of the installed .*; waiting for main'"'"'s tests check on it" <<< "$out"'
+echo failure > "$T/release.state"
+DESK_RELEASE_CHECK_CMD="sh $T/release.sh" pj 2026-10-26T09:01:00Z
+check "DS-276 AC3 the pass pushes the failed check, naming the commit" 'grep -q "^PUSH: desk-skills main'"'"'s tests check failed (failure) on ${rel:0:12}" <<< "$out" && [ "$(srchead)" != "$rel" ]'
+
 # ---- the row ------------------------------------------------------------------------------------
 config "Someday 25:00" ask
 pj 2026-10-26T06:31:00Z

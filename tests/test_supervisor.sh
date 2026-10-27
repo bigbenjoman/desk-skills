@@ -283,6 +283,12 @@ out=$(tick)
 check "DS-225 AC1/AC3: an idle tick logs why the driver stopped and notifies, running no pass" 'grep -q "^merge driver: stopped (pid 999999, started .*, exit 1): FAIL: gh is signed out while idle$" "$LOG" && [ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "failed 2 starts in a row: FAIL: gh is signed out while idle|$" && [ "$(count "$T/pass.calls")" = 2 ] && [ "$(started)" = "$n" ]'
 out=$(tick)
 check "DS-225: the next idle tick logs nothing new about the driver" '[ "$(grep -c "999999" "$LOG")" = 1 ] && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+# The auto-release's push from an idle tick's maintenance step goes out once.
+echo "console.log(JSON.stringify({ hold: false, lines: ['release: red'], push: [{ key: 'release-failed-abc', text: 'main tests check failed on abc' }] }));" > "$T/bin/maintenance.mjs"
+notified=$(count "$T/notify.calls")
+out=$(tick); out=$(tick)
+check "DS-276 AC3: an idle tick pushes the maintenance step's push, once" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|main tests check failed on abc|$" && grep -q "idle maintenance: notification sent for release-failed-abc" "$LOG"'
+echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
 out=$(sup status)
 check "status says the batch is idle" 'grep -q "batch b1: idle" <<< "$out"'
 mkdir -p "$T/state/closed-out"
@@ -333,6 +339,17 @@ queue true '{}' "$DONE" b5
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)
 check "a pass with no verdict is logged as an error and notified" 'grep -q "(error)" "$LOG" && tail -1 "$T/notify.calls" | grep -q "the pass refused or failed"'
+
+# ---- DS-276 AC3: a pass that refused or failed keeps the keys already sent ----------------------
+REL='{"key":"release-failed-abc","text":"main tests check failed on abc"}'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$REL]}"
+out=$(tick); notified=$(count "$T/notify.calls")
+verdict '{"status":"error","code":2,"message":"REFUSED: something else"}'
+out=$(tick)
+check "DS-276 AC3: a refused pass is still notified" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "the pass refused or failed: REFUSED: something else"'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$REL]}"
+out=$(tick)
+check "DS-276 AC3: the next pass does not push a key sent before the refused one again" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && grep -q "notification: not sent, the last one already named release-failed-abc" "$LOG"'
 
 # ---- DS-224: the agent's version, --reload, and what runs old code ------------------------------
 mkdir -p "$DESK_HOME"; printf '{"commit":"new1"}\n' > "$DESK_HOME/installed.json"
