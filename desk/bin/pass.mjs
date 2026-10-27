@@ -45,14 +45,15 @@ const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: E
 // The queue's `pass` record, for desk-q: who ran the last pass and when, what held its spawns, how many
 // passes in a row have errored and the last error's first line, the last time a ticket started, merged
 // or was released, and the tickets held and merged at that pass (a later pass that finds one no
-// longer held counts it released, and one newly merged counts it merged). It is written once the
-// queue reads, and never by a pass another orchestrator's lock refused.
+// longer held counts it released, and one newly merged counts it merged). `session_at` is the last
+// pass a session ran, kept through the supervisor's, so a session beside the supervisor shows. It is
+// written once the queue reads, and never by a pass another orchestrator's lock refused.
 let RECORDS = false;
 function recordPass(f) {
   if (!RECORDS) return;
   try {
     const prev = readQueue(QUEUE_FILE).pass ?? {};
-    const rec = { ...prev, at: PASS_AT, by: PASS_BY, ...f(prev) };
+    const rec = { ...prev, at: PASS_AT, by: PASS_BY, ...(PASS_BY === 'session' ? { session_at: PASS_AT } : {}), ...f(prev) };
     execFileSync('node', [join(BIN, 'queue.mjs'), 'set-batch', `pass=${JSON.stringify(rec)}`], { stdio: 'ignore' });
   } catch { /* advisory: the verdict still goes out */ }
 }
