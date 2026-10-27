@@ -36,11 +36,15 @@ export function parseVerdict(body) {
   return /^[0-9a-f]{7,40}$/.test(v.sha ?? '') ? v : null;
 }
 
-// The latest verdict among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted:
-// on a public repo anyone can post a review, and only the person's own attests it.
+// The reviews among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted: on a
+// public repo anyone can post a review, and only the person's own attests it.
+function ownReviews(reviews, handle) {
+  return (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
+}
+
+// The latest verdict among the reviews `handle` posted.
 export function latestVerdict(reviews, handle) {
-  const own = (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
-  return own.map((r) => parseVerdict(r.body)).filter(Boolean).pop() ?? null;
+  return ownReviews(reviews, handle).map((r) => parseVerdict(r.body)).filter(Boolean).pop() ?? null;
 }
 
 // What the verdict says about this head: { clean, why, settle } (settle: the verdict is at the head,
@@ -56,35 +60,42 @@ export function verdictAt(v, head, clean) {
 }
 
 // A §4 Clean review verdict that is plain text (`no findings`, as the config template offers) names no
-// counts. A desk-review verdict marker is then read against every count desk-review writes; a review
-// with no marker is clean when it states the value, at the head, and nothing deferred or carried.
+// counts. A desk-review verdict marker is then read against every count desk-review writes. A review
+// with no marker is clean when it is the latest at the head, a line of it opens with the value as its
+// outcome, it states that nothing is deferred or carried, and no line defers, carries or counts an item.
 export const DESK_REVIEW_CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
 const LEFT = '(?:defer(?:s|red|ring|rals?)?|carr(?:y|ies|ied|ying))';
 const LEFT_OVER = new RegExp(`\\b${LEFT}\\b`, 'i');
-// "nothing deferred or carried", "no items carried", "deferred: none", "carried 0"
-const NOTHING_LEFT = new RegExp(`\\b(?:no|nothing|none|not|zero|0)\\s+(?:\\w+\\s+){0,2}${LEFT}(?:\\s+(?:or|and|nor)\\s+${LEFT})?\\b|\\b${LEFT}\\s*(?:items?)?\\s*[:=]?\\s*(?:none|nothing|no|0)\\b`, 'gi');
+// "nothing deferred or carried", "no items carried", "nothing to defer", "deferred: none", "carried 0",
+// but not "deferred: no timeout on retries", which defers an item whose name starts with "no".
+const NOTHING_LEFT = new RegExp(`\\b(?:no|nothing|none|zero|0)\\s+(?:(?:items?|findings?|issues?|is|are|was|were|has|have|been|to)\\s+){0,2}${LEFT}(?:\\s+(?:or|and|nor)\\s+${LEFT})?\\b|\\b${LEFT}\\s*(?:items?|findings?)?\\s*[:=]?\\s*(?:none|nothing|no|0)(?=\\s*(?:[.;,)]|$))`, 'gi');
+// "1 finding", "2 P1s", "3 open issues": a count of items the review still holds open.
+const OPEN = /\b[1-9]\d*\s+(?:(?:blocking|open|new|unresolved)\s+)?(?:p[0-3]s?|findings?|issues?|blockers?|problems?)\b/i;
+const plainLines = (body) => String(body ?? '').split(/\r?\n/).map((l) => l.replace(/^[\s>*#_-]+/, '').replace(/[*_`]/g, '').trim());
 
-// The lines of a plain review that defer or carry something, cut to a readable length.
+// The lines of a plain review that defer, carry or count an open item, cut to a readable length.
 export function leftOver(body) {
-  return String(body ?? '').split(/\r?\n/).map((l) => l.replace(/^[\s>*#-]+/, '').trim())
-    .filter((l) => LEFT_OVER.test(l.replace(NOTHING_LEFT, '')))
+  return plainLines(body).filter((l) => LEFT_OVER.test(l.replace(NOTHING_LEFT, '')) || OPEN.test(l))
     .map((l) => (l.length > 80 ? `${l.slice(0, 79)}…` : l));
 }
 
-// What the latest of `handle`'s reviews that carries a verdict marker or states `clean` says about
-// this head, under a plain-text §4 row: { clean, why, settle, verdict }.
+// What the latest of `handle`'s reviews says about this head, under a plain-text §4 row (`clean`):
+// { clean, why, settle, verdict }. A review with an empty body (GitHub records one for a reply to an
+// inline comment) says nothing and is passed over.
 export function plainVerdictAt(reviews, handle, head, clean) {
-  const said = (b) => String(b ?? '').toLowerCase().includes(clean.toLowerCase());
-  const own = (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
-  const r = own.filter((x) => parseVerdict(x.body) || said(x.body)).pop();
-  const v = r && parseVerdict(r.body);
-  if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
+  const r = ownReviews(reviews, handle).filter((x) => String(x.body ?? '').trim()).pop();
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
+  const v = parseVerdict(r.body);
+  if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
   const at = r.commit?.oid ?? '';
-  if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its review stating "${clean}" is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
+  if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
+  const c = clean.toLowerCase();
+  const stated = plainLines(r.body).find((l) => l.toLowerCase().startsWith(c) && /^(?:[.!]|$)/.test(l.slice(c.length)));
+  if (!stated) return { clean: false, settle: true, why: `its latest review, at ${at.slice(0, 9)}, does not open a line with "${clean}" as its outcome` };
   const left = leftOver(r.body);
-  if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
-  return { clean: true, why: null, verdict: String(r.body).split(/\r?\n/).find(said).replace(/`/g, '').trim() };
+  if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
+  if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
+  return { clean: true, why: null, verdict: stated };
 }
 
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain

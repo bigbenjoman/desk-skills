@@ -828,7 +828,8 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   screenshots are uploaded (or the body says nothing renders differently), and `mergeStateStatus` is
   not `DIRTY`. Where §4 Clean review verdict is plain text (`no findings`) rather than counts, a
   desk-review verdict marker reads clean only with every count it writes at 0, and a review with no
-  marker only when it states that text at the head and defers or carries nothing; an unset row
+  marker only when it is the latest at the head, opens a line with that text as its outcome, states
+  that nothing is deferred or carried, and names no deferred, carried or counted item; an unset row
   leaves every draft to the person. A review gate may pass with gaps open, so a gap count above 0 is a question for the
   user, not a merge: keep it draft, since the driver merges any ready PR that goes green. With §4
   Local review command `none`, there is no verdict: "reviewed" is then the user's call, so report the
