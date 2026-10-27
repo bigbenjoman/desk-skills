@@ -43,7 +43,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
-| `desk-reboot` | Before a reboot: every session, the runner VM, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
+| `desk-reboot` | Before a reboot: every session, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
 | `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget, and holds an autopilot batch's red rate to that baseline; saves and restores branch protection, pins required checks to GitHub Actions and makes the default workflow token read-only, each change shown first and gated on §3 `ci-protection` | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure`, `/desk-ci protection` |
 
 A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), another id you list in
@@ -195,17 +195,17 @@ the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
 ```
 
 **`/desk-reboot`** gets the machine ready to restart. It lists every open Claude session with its
-state (busy, waiting, idle) and age, the desk-runner VM, dev servers and heavy processes, and every
-worktree in each configured repo with uncommitted changes or unpushed commits. Once you confirm, it
-asks each busy or waiting session to finish its step and save a handoff, and runs `desk-runner down`.
-It writes its own handoff, then ends with `READY TO REBOOT` or what still blocks it. It never stops a
+state (busy, waiting, idle) and age, dev servers and heavy processes, and every worktree in each
+configured repo with uncommitted changes or unpushed commits. Once you confirm, it asks each busy or
+waiting session to finish its step and save a handoff. It writes its own handoff, then ends with `READY TO REBOOT` or what still blocks it. It never stops a
 session, never commits anyone's changes, and never reboots. The read-only half runs on its own:
 
 ```
-node ~/.claude/desk/bin/reboot-check.mjs     worktrees across configured repos, the runner, heavy processes
+node ~/.claude/desk/bin/reboot-check.mjs     worktrees across configured repos, heavy processes, FileVault
 ```
 
-**`/desk-ci`** proposes which of a repo's GitHub Actions jobs can move to the self-hosted runner.
+**`/desk-ci`** proposes which of a repo's GitHub Actions jobs can move to a self-hosted runner. CI
+runs on GitHub-hosted runners or a repo's own cloud runners; desk runs no CI on this computer.
 `classify` places a job hosted when it uses a secret other than `GITHUB_TOKEN` (workflow-level env
 included), an environment, `id-token`, a staging or preview URL, a third-party service, an image with
 no arm64 build, or exists for production x64 build parity, and self-hosted otherwise, citing the
@@ -276,99 +276,6 @@ node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> -
 ```json
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
 ```
-
-**`desk-runner`** runs the Linux VM that CI jobs will run in, on a computer whose machine profile
-says a runner is possible (`desk-env machine get runner-possible`). It needs Tart and Softnet
-(`brew install openai/tools/tart openai/tools/softnet`), with Softnet setuid root, which `up` tells
-you how to set once.
-
-```
-desk-runner up                 create the VM at the profile's sizes, start it, verify isolation
-desk-runner verify-isolation   probe from the VM and a container in it; non-zero names each failure
-desk-runner status             the VM's state, the last isolation result with its age, the agents
-desk-runner down               stop the VM, remove its agents, check nothing is left running for it
-desk-runner settings           show the Mac settings a runner needs; change them if you say yes
-desk-runner gate               exit 0 only while a new runner slot may start
-desk-runner keep               wake or bring back the VM, refill the slots, put it to sleep when idle (its launchd agent runs this)
-desk-runner scale <owner/repo> [n]   keep n single-use runners online for a private repo; 0 removes them
-desk-runner slots              reap finished runners and start the missing ones now
-```
-
-**Runner slots.** `scale` gives a private repo `n` runners (the machine profile's
-`runner-slots-per-repo` when `n` is left out); a public repo gets none, since any fork's pull
-request could run on it, and a repo made public later loses its slots on the next pass. `scale`
-to 0 keeps the repo listed until its slots and runners are gone, so a slot mid-job goes once the
-job ends. Each slot is one GitHub Actions runner, labelled `self-hosted`, `linux`,
-`arm64` and `desk-local-pr`, registered from a JIT config that GitHub makes single-use and scoped to
-that runner. It is requested on the Mac with your `gh` login, and only it enters the VM, so your
-token never does. In the VM each slot has its own Docker daemon and network, which the runner
-shares, so a service container mapped to 5432 is on the job's `localhost:5432`, and a `container:`
-job sees the workspace. Slots share no daemon, volume or network, and the slot's Docker daemon
-runs under sysbox, not `--privileged`, so even a privileged container a job starts stays inside
-its slot: it cannot reach the VM's disk, another repo's slot or the slot image. Each slot has CPUs of its own and
-a memory limit, 2 CPUs and 7 GB unless the machine profile sets `runner-slot-cpus` and
-`runner-slot-memory-gb`: `nproc` and Node's `os.availableParallelism()` show the slot's CPUs in a step
-and in a `container:` job, so test runners size themselves to them, and `/sys/fs/cgroup/memory.max`
-shows its memory in a step (a container job's reads `max`, though the slot's limit holds it). A job that runs out of memory fails on its own without taking the VM or
-another slot with it. The VM runs only as many slots as it fits, the smaller of its CPUs over the
-slot's and its memory less 2 GB over the slot's; when the repos want more, the slots are shared
-between them in turn, and `status` lists each slot's CPUs and says how many are held back and why. A slot takes one job; within a
-minute `keep` removes it with its containers and volumes and starts another. `down` deregisters
-every slot's runner first, and the next `up` starts them again. The slot image is Ubuntu 24.04 with
-actions/runner 2.338.0, Node 22.23.3, the Docker 29.9.0 CLI, gh, jq, shellcheck, build tools and
-python3; `setup-node`, `setup-python` and `setup-uv` fetch other versions as on a hosted runner.
-
-**The runs-on switch.** A job reaches a slot only if its `runs-on` names `desk-local-pr`. This one
-sends a job there while the repo variable `DESK_RUNS_ON` is `local`, and to GitHub-hosted otherwise,
-and always sends Dependabot's runs to GitHub-hosted, as `/desk-ci ci-lint` requires:
-
-```yaml
-runs-on: ${{ github.actor == 'dependabot[bot]' && 'ubuntu-latest' || vars.DESK_RUNS_ON == 'local' && 'desk-local-pr' || 'ubuntu-latest' }}
-```
-
-`gh variable set DESK_RUNS_ON --body local -R <owner/repo>` moves every such job to the slots;
-`gh variable delete DESK_RUNS_ON -R <owner/repo>` moves them back, from the next run on. Put it only
-on jobs `/desk-ci classify` places self-hosted: `ci-lint` fails any job it can send to a slot that
-receives a secret. Nothing yet moves a repo back when the Mac is off, so switch it back before the
-Mac sleeps or goes away for long.
-
-Once isolation passes, `up` installs two launchd agents in your login session. One runs
-`desk-runner keep` at login and every minute: if the VM is down, or its last check failed or is
-more than 25 hours old, it starts and verifies the VM, waiting 1, 2, 4… minutes (at most an hour)
-after each failed attempt. The other runs `verify-isolation` every night at 03:30. `gate` stays
-closed, so no new runner slot starts, unless the VM runs behind the block and its last check passed
-within 25 hours. `down` removes both agents before it stops the VM.
-
-**Sleeping when idle.** Once no slot has run a job for the machine profile's `runner-idle-minutes`
-(10 unless set), `keep` deregisters the runners and stops the VM, which gives all its memory back to
-the Mac; `status` shows it `asleep` with the time it stopped. Asleep, `keep` asks GitHub each minute
-for jobs queued for `desk-local-pr` in the repos with slots (two calls a repo when nothing is
-queued), and wakes the VM for the first one. GitHub keeps a queued job for 24 hours, so nothing fails
-while it boots. A wake reuses a verify-isolation pass under 25 hours old, since the VM is started
-behind the same Softnet block that pass proved, and its log records when the job queued, when the VM
-answered and when the slot came online; an older or failed pass is run again in full before any slot.
-While it is awake, slots follow the jobs queued for `desk-local-pr`: a repo opens one per queued job, up to the `n` it was scaled to, the oldest jobs across repos take the free slots first, a finished slot is replaced only while more are queued, and an idle slot no job is queued for is dropped; `status` shows each repo's queued jobs. A repo whose queue GitHub will not give keeps its share, set aside before the other repos' jobs. The nightly check leaves a sleeping VM asleep. `runner-idle-minutes` set to `off` keeps the VM up, with each repo at its `n` slots. FileVault means the VM comes back
-only after you log in following a restart. `up` also shows the Mac settings a runner needs (never
-sleep, restart after power loss, no automatic macOS update installs) and, in a terminal, changes
-them with `sudo` only if you say yes.
-
-**Sharing the Mac's memory with autopilot.** A slot starts only if the Mac's available memory stays
-at or above the machine profile's `runner-memory-floor-gb` (8 unless set) once it has: each start
-claims the slots' memory limits plus 2 GB for the VM, less what the VM already holds. Autopilot's
-spawn gate starts no worker under the same floor (a repo's §3b gate may start higher, never lower).
-Past CI's first slot and autopilot's first worker, a side waiting for memory holds the other side's
-next start, and when both wait, the one that began waiting first goes first. A slot that waits leaves
-its job queued, and `status` shows who is waiting and since when; a waiting marker not refreshed for
-30 minutes, or left by a VM or batch that has gone, is removed and logged.
-
-The VM has no Mac folders and no forwarded ports, and Softnet blocks every private, shared and
-link-local IPv4 range, the Mac's own address on the VM network included, so the guest resolves names
-through public resolvers. `verify-isolation` proves it each time, from the VM's root shell and from
-a container: no port of the Mac's address on the VM network answers (the root shell sweeps all
-65,535), nor DNS there or at the router; nothing answers at the Mac's other addresses (their low
-ports, your listening ports, and a test service on loopback and one on every interface), the router,
-169.254.169.254 or a VM tool's host alias; and registry.npmjs.org and 1.1.1.1 do. Softnet's defaults
-alone leave the Mac's address on the VM network open. It takes about a minute and a half.
 
 ## Subagents
 
@@ -514,8 +421,9 @@ What it does:
 - **Writes without asking** (desk's own files; a copy you edited is backed up first):
   the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
   `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
-  up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-runner`,
-  `desk-q`, `desk-jira` and `skills-upstream` (`~/.local/bin`), and the four hook scripts.
+  up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-q`,
+  `desk-jira` and `skills-upstream` (`~/.local/bin`), and the four hook scripts. It also removes the
+  files an older desk installed for its local CI runner, and that runner's launchd jobs.
 - **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
   always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
   didn't install, registering the Playwright MCP at user level, or disabling the `playwright` plugin.

@@ -1,7 +1,7 @@
 ---
 name: desk-ci
 description: >-
-  Use when deciding which of a repo's GitHub Actions jobs can run on the self-hosted runner and
+  Use when deciding which of a repo's GitHub Actions jobs can run on its self-hosted runners and
   which must stay on GitHub-hosted runners ("which jobs can go self-hosted?", "/desk-ci classify"),
   or when checking that no workflow hands a secret to a self-hosted job ("lint the workflows",
   "/desk-ci ci-lint"). Places every job by a written rule and cites the workflow line that decided
@@ -19,10 +19,11 @@ argument-hint: "classify | ci-lint | profile [<workflow file or directory>...] |
 
 ## Overview
 
-Moving a repo's CI onto the self-hosted runner (the `desk-runner` VM: arm64 Linux on this machine)
-starts from a reviewed proposal, not an edit. `classify` places each job hosted or self-hosted by
-the rule below and cites the line that decided it; `ci-lint` refuses a workflow that would hand a
-secret to a job that can land on the self-hosted runner.
+CI runs on GitHub-hosted runners or on a repo's own cloud runners (self-hosted, arm64 Linux); desk
+runs no CI on this computer. Moving a repo's CI onto its self-hosted runners starts from a reviewed
+proposal, not an edit. `classify` places each job hosted or self-hosted by the rule below and cites
+the line that decided it; `ci-lint` refuses a workflow that would hand a secret to a job that can
+land on a self-hosted runner.
 
 **Core principle: show the proposal, change nothing.** This skill reads workflows and CI history,
 and prints; its only writes are `measure`'s report and `protection snapshot`'s file under
@@ -72,7 +73,7 @@ self-hosted at its `uses:` line; the jobs it runs are placed in that workflow's 
 
 ## ci-lint
 
-For every job whose `runs-on` **can resolve** to the self-hosted runner, `ci-lint` fails when:
+For every job whose `runs-on` **can resolve** to a self-hosted runner, `ci-lint` fails when:
 
 - it would receive a secret other than `GITHUB_TOKEN` (job or inherited workflow-level env), an
   environment, or `id-token`, or a YAML alias that could carry one in;
@@ -102,7 +103,7 @@ summary: findings=<n>
 
 ## measure
 
-A move to the runner starts from the repo's own numbers. `measure` reads a window of the repo's
+A move to self-hosted runners starts from the repo's own numbers. `measure` reads a window of the repo's
 Actions runs, their jobs (every attempt, re-runs included) and its pull requests over the GitHub
 API, and reports:
 

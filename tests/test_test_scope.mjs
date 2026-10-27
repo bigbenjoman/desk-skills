@@ -1,15 +1,13 @@
-// suite: worker test scope and the runner's ladder reservation
+// suite: worker test scope and the memory status line
 // claims: imports (repo file names below are test data, not what this suite runs)
 // What a worker tests before pushing (related tests, or the full suites when a change reaches past the
-// import graph), and the runner VM's memory held back from the autopilot ladder. Scratch repos and
-// fake tart/lsof/ps only; nothing reads this computer's VM.
+// import graph), and the `desk-env mem status` line. Scratch repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decide, runs, parseNameStatus, workspacePackages, sharedPackages, takesFiles, isConfig } from '../desk/bin/test-scope.mjs';
-import { runnerReservation, ladderMemory, runnerSegment } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const T = mkdtempSync(join(tmpdir(), 'desk-test-scope-'));
@@ -106,35 +104,14 @@ t('cli: Related tests none runs Unit tests', scopeCli(noRelated), 'scope=full | 
 writeFileSync(join(repo, 'package.json'), '{"name":"r","type":"module"}\n');
 t('cli: an uncommitted root config change runs the full suites', scopeCli(withRelated), 'scope=full | reason=package.json is root config | changed=3 | .\tpnpm test\t');
 
-// ---- the runner VM's reservation ----------------------------------------------------------------
-t('no runner, nothing reserved', runnerReservation({ running: false, reservedGiB: 24, residentGiB: 0 }), null);
-t('no reservation in the profile, nothing reserved', runnerReservation({ running: true, reservedGiB: 0, residentGiB: 3 }), null);
-t('a running VM holds back its reservation less what it has touched', runnerReservation({ running: true, reservedGiB: 24, residentGiB: 6 }).heldGiB, 18);
-t('a fully resident VM holds back nothing more', runnerReservation({ running: true, reservedGiB: 24, residentGiB: 25 }).heldGiB, 0);
-t('an unread resident size holds back all of it', runnerReservation({ running: true, reservedGiB: 24, residentGiB: NaN }).heldGiB, 24);
-t('the ladder gates on avail less what is held back', ladderMemory(30, { running: true, reservedGiB: 24, residentGiB: 6 }).gate, 12);
-t('the ladder never goes below zero', ladderMemory(5, { running: true, reservedGiB: 24, residentGiB: 0 }).gate, 0);
-t('without a runner the ladder is avail', ladderMemory(30, { running: false, reservedGiB: 24, residentGiB: 0 }).gate, 30);
-t('status segment', runnerSegment(ladderMemory(30, { running: true, reservedGiB: 24, residentGiB: 6 })), ' runner=24.0G reserved (6.0G resident, 18.0G held back) ladder=12.0G');
-t('no status segment without a runner', runnerSegment(ladderMemory(30, { running: false, reservedGiB: 24, residentGiB: 0 })), '');
-
-// `desk-env mem status` with fake tart, lsof and ps on PATH, and a profile reserving 24 GB.
-const fake = join(T, 'bin');
-mkdirSync(fake);
-const script = (name, body) => { writeFileSync(join(fake, name), `#!/bin/sh\n${body}\n`); chmodSync(join(fake, name), 0o755); };
-script('tart', '[ "$1" = get ] && [ "$2" = desk-runner ] && { [ -f "$RUNNING" ] && echo \'{"Running":true}\' || echo \'{"Running":false}\'; exit 0; }; exit 1');
-script('lsof', 'case "$2" in */vms/desk-runner/disk.img) echo 4242 ;; esac');
-script('ps', 'case "$*" in "-o rss= -p 4242") echo 6291456 ;; *) exec /bin/ps "$@" ;; esac'); // 6 GiB in KiB
+// ---- `desk-env mem status` ----------------------------------------------------------------------
+// A profile written while desk had a CI runner still holds its reservation row, which nothing reads.
 const profile = join(T, 'machine.md');
 writeFileSync(profile, '# Machine profile\n\n## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `runner-memory-reserved-gb` | `24` | the runner VM memory |\n');
-const running = join(T, 'running');
 const mem = (machine) => spawnSync('node', [BIN, 'mem', 'status'], { encoding: 'utf8',
-  env: { ...process.env, PATH: `${fake}:${process.env.PATH}`, DESK_CONFIG: noRelated, DESK_MACHINE: machine, HOME: T, RUNNING: running } }).stdout.trim();
-t('mem status: a stopped VM reserves nothing', /^vmmem=\S+ avail=\S+ rss=\S+$/.test(mem(profile)), true);
-writeFileSync(running, '');
-const line = mem(profile);
-t('mem status: a running VM shows its reservation and the ladder figure', /^vmmem=\S+ avail=\S+ rss=\S+ runner=24\.0G reserved \(6\.0G resident, 18\.0G held back\) ladder=\S+G$/.test(line), true);
-t('mem status: no profile reserves nothing', /^vmmem=\S+ avail=\S+ rss=\S+$/.test(mem(join(T, 'none.md'))), true);
+  env: { ...process.env, DESK_CONFIG: noRelated, DESK_MACHINE: machine, HOME: T } }).stdout.trim();
+t('mem status: an old profile\'s runner reservation holds nothing back', /^vmmem=\S+ avail=\S+ rss=\S+$/.test(mem(profile)), true);
+t('mem status: no profile', /^vmmem=\S+ avail=\S+ rss=\S+$/.test(mem(join(T, 'none.md'))), true);
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all test-scope checks passed');

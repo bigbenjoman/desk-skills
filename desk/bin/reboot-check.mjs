@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 // What a reboot of this computer would interrupt or leave behind, read-only: every worktree of every
-// configured repo with uncommitted changes or unpushed commits, the desk-runner VM, the heavy
-// processes desk-env counts, and FileVault, which holds a restarted Mac at the disk unlock screen
-// until someone logs in. Claude sessions are not listed here: /desk-reboot reads them with
-// ListAgents, the only source of their busy, waiting or idle state.
+// configured repo with uncommitted changes or unpushed commits, the heavy processes desk-env counts,
+// and FileVault, which holds a restarted Mac at the disk unlock screen until someone logs in. Claude
+// sessions are not listed here: /desk-reboot reads them with ListAgents, the only source of their
+// busy, waiting or idle state.
 //   node reboot-check.mjs
 //   node reboot-check.mjs --filevault   only the filevault line (what /desk-setup reads)
-// The last line is `summary: dirty=<n> unpushed=<n> runner=<running|stopped|absent|unknown>
-// keep=<loaded|none> heavy=<n> filevault=<on|off|unknown|n/a>`. DESK_FDESETUP_CMD (run with sh -c)
+// The last line is `summary: dirty=<n> unpushed=<n> heavy=<n> filevault=<on|off|unknown|n/a>`. DESK_FDESETUP_CMD (run with sh -c)
 // stands in for `fdesetup status` in tests; without it, FileVault is n/a anywhere but macOS.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
@@ -105,20 +104,6 @@ for (const { slug, config } of configs) {
 console.log(`worktrees: ${configs.length} configured repo${configs.length === 1 ? '' : 's'}, ${total} worktrees; ${dirty} with uncommitted changes, ${unpushed} with unpushed commits, ${clean} clean`);
 for (const l of lines) console.log(l);
 
-// desk-runner status exits 0 only while the VM runs. Its keep agent starts a stopped or absent VM
-// within a minute, and an asleep one when a CI job is queued, so a loaded agent means the VM can be
-// running whatever its state now.
-let runner = 'unknown';
-const rs = run(join(HERE, 'desk-runner'), ['status']);
-const rsLines = rs.out.split('\n').filter(Boolean);
-if (rs.ok) runner = 'running';
-else if (/: stopped /.test(rsLines[0] ?? '')) runner = 'stopped';
-else if (/: asleep /.test(rsLines[0] ?? '')) runner = 'asleep';
-else if (/: absent /.test(rsLines[0] ?? '')) runner = 'absent';
-const keep = rsLines.some((l) => /^agents: restart at login and every minute loaded/.test(l)) ? 'loaded' : 'none';
-console.log(`runner: ${runner}${keep === 'loaded' ? ' (its keep agent is loaded and starts it again within a minute)' : ''}`);
-for (const l of rsLines) console.log(`  ${l}`);
-
 const heavy = heavyProcesses();
 console.log(`heavy: ${heavy.length} (test suites, typechecks, dev servers)`);
 for (const p of heavy) console.log(`  ${p.pid} ${p.args}`);
@@ -126,4 +111,4 @@ for (const p of heavy) console.log(`  ${p.pid} ${p.args}`);
 const fv = fileVault();
 console.log(fv.line);
 
-console.log(`summary: dirty=${dirty} unpushed=${unpushed} runner=${runner} keep=${keep} heavy=${heavy.length} filevault=${fv.state}`);
+console.log(`summary: dirty=${dirty} unpushed=${unpushed} heavy=${heavy.length} filevault=${fv.state}`);
