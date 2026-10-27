@@ -366,6 +366,8 @@ for (const r of order) {
   if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
+  // A step only the person can take is its own blocker ticket, not the ticket's lane.
+  for (const s of Array.isArray(r.ben_steps) ? r.ben_steps : []) say(`  ! your step: ${s.step} — proposed blocker: ${s.blocker}`);
   for (const f of lintBlocking(r)) say(`  ! lint (blocking): ${f.message}`);
   if (r.lint_error) say(`  ! lint did not run: ${r.lint_error}`);
   if (r.lane_original) say(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);
