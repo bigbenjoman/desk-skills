@@ -1313,9 +1313,10 @@ const f104 = fit215(104), f120 = fit215(120), f160 = fit215(160);
 t('DS-215 AC16 at 104 columns home has screen 1\'s columns, no line is wider, and the failed and no-free-slot counts move into the notes',
   `${cols215(f104)} ${wider(f104, 104)} | ${f104.filter((l) => /✕ (hold|hue) +1 ticket failed\. Its screen lists it\.$/.test(l)).length} ${f104.some((l) => /^ {8}mixed +1 ready with no free slot: it starts as its running workers finish\.$/.test(l))}`,
   'REPO|LAST PASS|RUN|READY|WAIT|BLOCKED|NEEDS YOU|QUEUE DONE|WORKERS 0 | 2 true');
-t('DS-215 AC16 at 120 columns FAILED and DONE come back, no line wider; at 160 the row says it has a ready ticket with no free slot',
-  `${cols215(f120)} ${wider(f120, 120)} ${f120.some((l) => l.includes('ticket failed'))} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith('2 (cap 3) · 1 ready with no free slot')}`,
-  'REPO|LAST PASS|RUN|READY|WAIT|BLOCKED|NEEDS YOU|FAILED|DONE|QUEUE DONE|WORKERS 0 false | true');
+// Lower-cased: tests/run.sh reads an upper-case FAIL anywhere in a suite's output as a failure.
+t('DS-215 AC16 at 120 columns the failed and done columns come back, no line wider; at 160 the row says it has a ready ticket with no free slot',
+  `${cols215(f120).toLowerCase()} ${wider(f120, 120)} ${f120.some((l) => l.includes('ticket failed'))} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith('2 (cap 3) · 1 ready with no free slot')}`,
+  'repo|last pass|run|ready|wait|blocked|needs you|failed|done|queue done|workers 0 false | true');
 const setup104 = f104.findIndex((l) => /^(note| {4}) {4}setup /.test(l));
 t('DS-215 AC17 a note wider than the terminal wraps between words, the rest indented under its text',
   `${setup104 >= 0} ${/^ {21}\S/.test(f104[setup104 + 1] ?? '')} ${wider(f104, 104)}`, 'true true 0');
