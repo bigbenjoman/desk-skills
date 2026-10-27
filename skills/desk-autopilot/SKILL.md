@@ -351,6 +351,10 @@ session, an empty one just made by `queue.mjs init` included, gets nothing until
 register is `<state>/intake.json`. Feature-mode epics are never taken in this way: they keep their
 spine and owner-table approval.
 
+**By hand**, `/desk-admit <TICKET>...` makes the same checks now on the tickets the person names and
+admits each that passes into the supervisor's batch (`intake.mjs admit`), with no query needed;
+what fails a check comes back to the person with why, not to the digest.
+
 ## Order the batch by blast radius
 
 `plan-batch` sets the merge order: triage records each ticket's `change_kind` (`relocate`, `schema`,
@@ -1484,6 +1488,7 @@ node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
 node ~/.claude/desk/bin/intake.mjs run --force                        # standing intake now (§3b Intake query); the supervisor runs it every 15 minutes
+node ~/.claude/desk/bin/intake.mjs admit ABC-128 --by ben --front     # /desk-admit: intake's checks on named tickets, into the supervisor's batch; exit 11 refused
 node ~/.claude/desk/bin/intake.mjs forget ABC-127                     # a ticket intake handed to the digest, once fixed: the next intake tries it again
 node ~/.claude/desk/bin/spine-review.mjs brief ABC-126                # the read-only reviewer's prompt for a spine awaiting approval
 node ~/.claude/desk/bin/spine-review.mjs questions ABC-126 <reply>    # one approval question per spec, with the review's findings
