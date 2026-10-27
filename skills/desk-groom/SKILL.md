@@ -154,6 +154,10 @@ node ~/.agents/skills/desk-groom/bin/groom-scan.mjs approval --scan <scratchpad>
 node ~/.agents/skills/desk-groom/bin/groom-scan.mjs approval --scan <scratchpad>/groom-scan.json --add <scratchpad>/settled.json --json
 ```
 
+**A report-only run (`--report`, the weekly one) adds `--report` to the first**: every block reads
+`report only`, the questions are listed and never asked, and the run stops after the list (its rules
+are in `references/approve-write-handoff.md`, *The weekly report-only run*).
+
 Redirect the second to `<scratchpad>/approval.json`, which step 6 reads back from. The list numbers every
 proposal as a desk-jira gate block, **`awaiting approval`**, one per write, the evidence first, then
 the questions, the gaps, any `verify first` candidate no verifier settled, and the findings left to
@@ -220,7 +224,7 @@ over an exit 1.
 ## 6 and 7. Write the approved list; hand priority epics to the batch; the weekly report
 
 Once the user answers the list, when they name priority epics (`--priority`), or on a report-only
-run (`--report`, a schedule or the supervisor), **read `references/approve-write-handoff.md`** and
+run (`--report`, as a schedule runs it), **read `references/approve-write-handoff.md`** and
 follow it: step 6 re-checks the batch, writes only the approved numbers and reads every write back
 (`readback`, the rendered HTML checked for `<del`); step 7 lists a priority epic's open work for the
 batch's orchestrator to admit; a report-only run stops after printing the list with

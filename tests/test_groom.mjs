@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
-  batchOf, approvedNumbers, readbackOf, priorityHandoff, handoffText, filesNamed } from '../skills/desk-groom/bin/groom-scan.mjs'
+  batchOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -430,9 +430,15 @@ t('DS-240 AC1 read-back: escaped, it passes', [back('3').status, back('3').stdou
 sh(R, 'desk-jira', 'edit', 'KAN-12', 'description=something else')
 t('DS-240 AC1 read-back: an edit whose text is missing fails', /missing: the new line/.test(back('3').stdout), true)
 const issue = (fields) => ({ key: 'K-1', fields: { summary: 's', status: { name: 'Done', statusCategory: { key: 'done' } }, ...fields } })
-t('DS-240 read-back: a transition, an unlink', [readbackOf('desk-jira transition K-1 Done', issue({})).ok, readbackOf("desk-jira transition K-1 'In Progress'", issue({})).ok,
-  readbackOf('desk-jira unlink K-1 K-2 Blocks', issue({ issuelinks: [blocks('K-2')] })).ok, readbackOf('desk-jira unlink K-1 K-2 Blocks', issue({ issuelinks: [] })).ok], [true, false, false, true])
+t('DS-240 read-back: a transition', [readbackOf('desk-jira transition K-1 Done', issue({})).ok, readbackOf("desk-jira transition K-1 'In Progress'", issue({})).ok], [true, false])
 t('DS-240 read-back: an issue that could not be read fails', readbackOf('desk-jira transition K-1 Done', null).ok, false)
+t('DS-240 command words: a quote inside a word, and an escaped quote', [commandWords("desk-jira edit K-1 summary='admit: count the rows'"), commandWords("x 'it'\\''s'")],
+  [['desk-jira', 'edit', 'K-1', 'summary=admit: count the rows'], ['x', "it's"]])
+t('DS-240 read-back: a quoted title with spaces that landed passes', [readbackOf("desk-jira edit K-1 summary='admit: count the rows'", issue({ summary: 'admit: count the rows' })).ok,
+  readbackOf("desk-jira edit K-1 summary='admit: count the rows'", issue({ summary: 'admit: count' })).ok], [true, false])
+t('DS-240 read-back: a <value> the user chose passes when set, fails when blank', [readbackOf(`desk-jira edit K-1 ${P}=<value>`, issue({ [P]: { value: 'P2' } })).ok,
+  readbackOf(`desk-jira edit K-1 ${P}=<value>`, issue({})).ok], [true, false])
+t('DS-240 read-back: a link or unlink rests on desk-jira\'s own read-back', [readbackOf('desk-jira link K-1 blocked-by K-2', null), readbackOf('desk-jira unlink K-1 K-2 Blocks', null)].map((r) => r.ok), [true, true])
 
 // AC3: a priority epic's open work, less the queue, in Blocks order, with the files it shares
 const tk = (key, { links = [], text = '', category = 'new' } = {}) => ({ key, summary: `${key} work`, text, category, links: links.map((k) => ({ type: 'Blocks', verb: 'is blocked by', key: k, category: 'new' })) })
@@ -443,6 +449,15 @@ t('DS-240 AC3 every open child and, transitively, every open blocker, in Blocks 
 t('DS-240 AC3 a done child is left out, one in the queue is named apart', [h1.list.some((x) => x.key === 'D'), h1.inBatch], [false, ['F']])
 t('DS-240 AC3 the files they share', h1.shared, [{ file: 'lib/x.mjs', keys: ['C', 'A'] }])
 t('DS-240 AC3 the message goes to the batch to admit, never admitted here', /^Priority work from desk-groom \(E\), for batch b-3 to triage and admit\. The groom has not run queue\.mjs admit\./.test(handoffText(h1)), true)
+// A fake orchestrator: reads the message as it arrives and admits what it lists, in its order
+const orchestrator = (text) => {
+  const to = /for batch (\S+?)[,\s]/.exec(text)?.[1] ?? null
+  const admitted = [...text.matchAll(/^\d+\. (\S+) .*?(?:; after ([^)]+))?\)$/gm)].map((m) => ({ key: m[1], after: m[2] ? m[2].split(', ') : [] }))
+  return { to, admitted: admitted.map((a) => a.key), blockersFirst: admitted.every((a, i) => a.after.every((b) => admitted.findIndex((x) => x.key === b) < i)) }
+}
+t('DS-240 AC3 a fake orchestrator receives the hand-off: its batch, every key, blockers first', orchestrator(handoffText(h1)), { to: 'b-3', admitted: ['C', 'B', 'A'], blockersFirst: true })
+const hs = hand(['E'], { E: ['A'] }, { batch: 'b-4', supervised: true, tickets: { F: { state: 'running' } } })
+t('DS-240 AC3 a supervised batch: the message says no session will receive it', /for batch b-4, which the supervisor runs: no orchestrator session to send it to, so the user admits it\./.test(handoffText(hs)), true)
 const h2 = hand(['E', 'E2'], { E: ['G'], E2: ['H', 'A'] }, null)
 t('DS-240 AC3 two epics, a Blocks loop named', [h2.list.map((x) => x.key), h2.loop], [['C', 'B', 'A', 'G', 'H'], ['G', 'H']])
 t('DS-240 AC3 with no batch running it is offered as the next batch', [h2.batch, /as the next batch: no batch is running/.test(handoffText(h2))], [null, true])

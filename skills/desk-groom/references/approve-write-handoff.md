@@ -29,12 +29,15 @@ A write that fails is reported with its error, never retried by another route.
 When the writes are done, read every one back:
 
 ```bash
-node ~/.agents/skills/desk-groom/bin/groom-scan.mjs readback <scratchpad>/approval.json --approved <the user's answer>
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs readback <scratchpad>/approval.json --approved <the numbers written>
 ```
 
-`approval.json` is step 4's list, written with `approval --json`. For each approved command it reads
-the ticket from Jira again: the status a transition set, the value a field edit set, the link a
-`link` added and the one an `unlink` removed. For a description edit it reads the rendered HTML and
+`--approved` takes the numbers actually written: the user's answer less every item `held` dropped,
+`preclose` kept open or whose write failed, each of which is already reported with its reason.
+`approval.json` is step 4's list, written with `approval --json`. For each of those commands it reads
+the ticket from Jira again: the status a transition set and the value a field edit set (any value,
+where the block proposed `<value>` for the user to choose). A `link` or `unlink` was read back by
+`desk-jira` as it was written, which exits 1 when the link is not as asked. For a description edit it reads the rendered HTML and
 fails on any `<del` (a hyphen Jira read as strikethrough: escape it, `\-`, and edit again), and on
 the new text or Children rows missing. It prints `ok` or `FAIL` per command and exits 1 on any
 `FAIL`. Report every `FAIL` with its line; never report a write as done that did not read back.
@@ -57,17 +60,18 @@ triaged it, else the files its text cites.
 orchestrator session with `ListAgents` (it is named after its batch, which the message names) and
 send the message with `SendMessage`. The orchestrator puts the tickets to the user and admits them
 itself. **Never run `queue.mjs admit`, or any other queue write, from the groom's session.** A batch
-run by the supervisor has no session to send to: print the message and say so, and leave admitting
-to the user.
+run by the supervisor has no session to send to, and the message says so: print it for the user,
+who admits it.
 
 **With no batch running**, the message says so: offer the list to the user as the next batch, in
 that order, and start nothing.
 
 ## The weekly report-only run
 
-A run started by a schedule or the supervisor, or with `--report`, only reports. It runs steps 1 to
-4 as usual, prints the list with `approval --report` (every block `report only`, and a closing line
-that asks nothing), lists any priority hand-off without sending it, and stops. It asks no question,
-writes nothing to Jira, sends no message and runs no step from this file. To run it weekly, schedule
+A run with `--report` only reports. It runs steps 1 to 3 as usual, and at step 4 prints the list with
+`approval --report` (every block `report only`, the questions listed rather than asked, and a closing
+line that asks nothing). Where it was given priority epics it prints step 7's list without sending
+it. Then it stops: it asks no question, writes nothing to Jira, sends no message and runs neither
+step 6 nor step 7's send. To run it weekly, schedule
 `/desk-groom --report` (a `/schedule` routine or a cron job running it headless) in the repo's
 primary checkout.

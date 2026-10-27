@@ -712,32 +712,23 @@ export function approvedNumbers(answer, count) {
 
 // ---- the read-back: each approved write, read again from Jira after it went -----------------------
 
-// A desk-jira command as its words, the single quotes shq adds undone.
+// A desk-jira command as its shell words, the quotes shq adds undone, also inside a word
+// (`summary='a title'`).
 export function commandWords(cmd) {
-  return [...String(cmd).matchAll(/'((?:[^']|'\\'')*)'|(\S+)/g)].map((m) => (m[1] != null ? m[1].replace(/'\\''/g, "'") : m[2]))
+  return (String(cmd).match(/(?:'[^']*'|\\.|[^\s'\\])+/g) ?? []).map((w) => w.replace(/'([^']*)'|\\(.)/g, (_, q, e) => q ?? e))
 }
-
-const VERB = { 'blocked-by': 'is blocked by', blocks: 'blocks', 'relates-to': 'relates to', duplicates: 'duplicates', 'duplicated-by': 'is duplicated by' }
 
 // What one written command should now read as on `issue` (desk-jira get --json), and `rendered`,
 // the description's rendered HTML (read for a description edit only). `item` is the approved finding,
-// whose `edit.to` or Children `section` the new description must carry.
+// whose `edit.to` or Children `section` the new description must carry. `link` and `unlink` are read
+// back by desk-jira itself as they are written, which exits 1 when the link is not as asked.
 export function readbackOf(cmd, issue, rendered = null, item = {}) {
   const [, op, key, ...rest] = commandWords(cmd)
+  if (op === 'link' || op === 'unlink') return { cmd, ok: true, why: `read back by desk-jira ${op} as it was written` }
   const t = issue ? ticketOf(issue, []) : null
   if (!t) return { cmd, ok: false, why: `${key} could not be read back` }
   const res = (ok, why) => ({ cmd, ok, why })
   if (op === 'transition') return res(t.status.toLowerCase() === String(rest[0]).toLowerCase(), `status is ${t.status}`)
-  if (op === 'link') {
-    const [verb, other] = rest
-    const want = VERB[verb] ?? verb.replace(/-/g, ' ')
-    return res(t.links.some((l) => l.key === other && l.verb.toLowerCase() === want), `${key} ${t.links.some((l) => l.key === other) ? 'has another link to' : 'has no link to'} ${other}`)
-  }
-  if (op === 'unlink') {
-    const [other, type = 'Blocks'] = rest
-    const left = t.links.some((l) => l.key === other && l.type.toLowerCase() === type.toLowerCase())
-    return res(!left, left ? `${key} still has a ${type} link to ${other}` : `no ${type} link to ${other}`)
-  }
   if (op === 'edit') {
     const [, id, value] = /^([^=]+)=(.*)$/s.exec(rest[0] ?? '') ?? []
     if (id === 'description') {
@@ -750,6 +741,8 @@ export function readbackOf(cmd, issue, rendered = null, item = {}) {
     }
     if (id === 'summary') return res(t.summary === value, `summary is ${t.summary}`)
     const got = ticketOf(issue, [id]).fields[id]
+    // `<value>`: the scan had nothing to copy and the user chose the value, so any value is the write.
+    if (/^<.*>$/.test(value)) return res(got != null && got !== '', `${id} is ${got ?? 'blank'}`)
     return res(String(got) === value, `${id} is ${got ?? 'blank'}`)
   }
   return res(false, `no read-back for "desk-jira ${op}"`)
@@ -802,7 +795,9 @@ export const filesNamed = (t) => [...new Set([...citationsOf(t.text).map((c) => 
 
 // The hand-off as the message the orchestrator reads, or, with no batch running, as the next batch.
 export function handoffText(h) {
-  const to = h.batch ? `for batch ${h.batch.name ?? '?'} to triage and admit` : 'as the next batch: no batch is running'
+  const to = !h.batch ? 'as the next batch: no batch is running'
+    : h.batch.supervised ? `for batch ${h.batch.name ?? '?'}, which the supervisor runs: no orchestrator session to send it to, so the user admits it`
+      : `for batch ${h.batch.name ?? '?'} to triage and admit`
   const out = [`Priority work from desk-groom (${h.epics.join(', ')}), ${to}. The groom has not run queue.mjs admit.`, '']
   if (!h.list.length) out.push('Nothing to add: every open child and blocker is already in the queue.')
   h.list.forEach((x, i) => out.push(`${i + 1}. ${x.key}  ${x.summary}  (${x.why}${x.after.length ? `; after ${x.after.join(', ')}` : ''})`))
@@ -972,7 +967,7 @@ function readback(o) {
   for (const f of a.items.filter((x) => nums.includes(x.n))) {
     for (const cmd of f.propose) {
       const [, op, key, field] = commandWords(cmd)
-      const r = readbackOf(cmd, get(key), op === 'edit' && /^description=/.test(field ?? '') ? html(key) : null, f)
+      const r = readbackOf(cmd, op === 'link' || op === 'unlink' ? null : get(key), op === 'edit' && /^description=/.test(field ?? '') ? html(key) : null, f)
       if (!r.ok) bad++
       console.log(`${r.ok ? 'ok  ' : 'FAIL'} [${f.n}] ${cmd}: ${r.why}`)
     }
