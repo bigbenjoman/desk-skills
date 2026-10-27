@@ -16,7 +16,8 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, HOME as E_HOME } from './desk-env.mjs';
+import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -423,13 +424,27 @@ switch (cmd) {
     break;
   }
 
+  // --claimed-by <session id>: an interactive session works the ticket. Each pass releases it to a worker
+  // once that session has been idle past config §3b "Release idle claims after (hours)" (claims.mjs).
   case 'park': {
-    const [key, ...rest] = args;
+    const at = args.indexOf('--claimed-by');
+    const session = at < 0 ? null : args[at + 1];
+    const [key, ...rest] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
+    if (at >= 0 && !SESSION_ID.test(session ?? '')) throw new Error('usage: queue.mjs park <TICKET> --claimed-by <session id> [<question>]');
+    // A session name, or a session from another computer, has no transcript to read idleness from.
+    if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${join(E_HOME, '.claude', 'projects')}: --claimed-by wants the session id of a session on this computer`);
     const t = ticket(q, key);
+    const now = new Date().toISOString();
+    if (session && (isHeld(t) || spinePark(t))) throw new Error(`${key} is parked by the orchestrator (${t.park.question}): only its release or approval settles it, so it cannot be claimed`);
+    // A park already there keeps its question, which the requeue guards read (a lane D design, a size,
+    // a dependency cycle), so an idle release can never send it to a worker those guards would refuse.
+    if (session && t.state === 'parked' && rest.length) throw new Error(`${key} is already parked (${t.park?.question ?? '?'}): claim it with no question, which keeps that one`);
+    const kept = session && t.state === 'parked' && t.park ? t.park : null;
     t.state = 'parked';
-    t.park = { question: rest.join(' '), since: new Date().toISOString() };
+    t.park = kept ? { ...kept, claim: { session, at: now } }
+      : { question: rest.join(' ') || (session ? claimQuestion(session) : ''), since: now, ...(session ? { claim: { session, at: now } } : {}) };
     save(q);
-    console.log(`${key} parked`);
+    console.log(session ? `${key} parked, claimed by session ${session}` : `${key} parked`);
     break;
   }
 
