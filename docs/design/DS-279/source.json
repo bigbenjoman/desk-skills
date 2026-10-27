@@ -1,0 +1,68 @@
+{
+  "url": "https://claude.ai/artifact/NuMrYCT4gDogse1HkxqWoh",
+  "version": "1793102041-bc64",
+  "fetched_at": "2026-10-27T12:07:05.983Z",
+  "dir": "DS-279",
+  "tickets": [
+    {
+      "key": "DS-279",
+      "boards": []
+    }
+  ],
+  "boards": [
+    {
+      "name": "1 · Today (11:35, voicepa)",
+      "width": 1400,
+      "file": "Main.dc.html"
+    },
+    {
+      "name": "2 · Approved spec, applied as written (superseded by 5)",
+      "width": 1400,
+      "file": "Proposal.dc.html"
+    },
+    {
+      "name": "3 · Recommended",
+      "width": 1400,
+      "file": "Recommended.dc.html"
+    },
+    {
+      "name": "4 · State model for an open PR (superseded by 5)",
+      "width": 1400,
+      "file": "States.dc.html"
+    },
+    {
+      "name": "5 · End to end: who moves a ticket next",
+      "width": 1400,
+      "file": "Flow.dc.html"
+    },
+    {
+      "name": "6 · A ticket's whole life: plan, build, land",
+      "width": 1400,
+      "file": "Lifecycle.dc.html"
+    },
+    {
+      "name": "7 · Every status word: one meaning each",
+      "width": 1400,
+      "file": "Terms.dc.html"
+    }
+  ],
+  "files": [
+    "Flow.dc.html",
+    "Lifecycle.dc.html",
+    "Main.dc.html",
+    "Proposal.dc.html",
+    "Recommended.dc.html",
+    "States.dc.html",
+    "Terms.dc.html",
+    "canvas.json",
+    "project/Flow.dc.html",
+    "project/Lifecycle.dc.html",
+    "project/Main.dc.html",
+    "project/Proposal.dc.html",
+    "project/Recommended.dc.html",
+    "project/States.dc.html",
+    "project/Terms.dc.html",
+    "project/support.js",
+    "support.js"
+  ]
+}

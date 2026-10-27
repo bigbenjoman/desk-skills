@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q recommended</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#1d1f21}
+a{color:#8abeb7}a:hover{color:#b6e0da}
+</style>
+</helmet>
+<div style="width: 1400px; height: 800px; box-sizing: border-box; background: #1d1f21; color: #c5c8c6; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; line-height: 24px; padding: 20px 28px; overflow: hidden; white-space: pre">
+<div><span style="color: #8a9199">desk-q › </span><span style="font-weight: 700; color: #eaeaea">voicepa</span><span style="color: #8a9199"> · 11:35</span></div>
+<div><span style="background: #eaeaea; color: #1d1f21">1 Queue</span>  2 Timeline  3 By day  4 Epics</div>
+<div> </div>
+<div><span style="color: #b294bb; font-weight: 700">◆ 3 need you</span>  <span style="color: #b5bd68">● 2 running</span>  <span style="color: #81a2be">○ 2 ready</span>  <span style="color: #8abeb7">▸ 1 merging</span>  <span style="color: #f0c674">· 2 waiting</span> <span style="color: #8a9199">│</span> ✓ 42 done<span style="color: #8a9199">, not shown</span></div>
+<div><span style="color: #b5bd68">● supervisor</span>  <span style="color: #8a9199">last pass</span> just now <span style="color: #8a9199">· next pass</span> 11:37 <span style="color: #8a9199">│ workers</span> 2 of 3 <span style="color: #8a9199">· cap</span> 5  <span style="color: #f0c674">▲ ahead of pace: only red PRs get a worker until it slows</span></div>
+<div> </div>
+<div style="display: grid; grid-template-columns: 6ch 10ch 14ch 56ch 12ch 13ch 1fr; font-weight: 700; color: #eaeaea"><span>   #</span><span>TICKET</span><span>STATE</span><span>WHAT IT NEEDS</span><span>STARTS</span><span>SHIPS</span><span>TITLE</span></div>
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="14">
+<sc-if value="{{r.group}}" hint-placeholder-val="{{false}}"><div style="font-weight: 700; color: #eaeaea">  {{r.name}}<span style="color: #8a9199; font-weight: 400"> · {{r.n}}</span></div></sc-if>
+<sc-if value="{{r.row}}" hint-placeholder-val="{{true}}">
+<div style="display: grid; grid-template-columns: 6ch 10ch 14ch 56ch 12ch 13ch 1fr">
+<span>{{r.pos}}</span><span>{{r.key}}</span><span style="color: {{r.sc}}">{{r.st}}</span>
+<span style="overflow: hidden"><sc-for list="{{r.need}}" as="s" hint-placeholder-count="2"><span style="color: {{s.c}}">{{s.t}}</span></sc-for></span>
+<span style="color: {{r.stc}}">{{r.starts}}</span><span>{{r.ships}}</span><span style="overflow: hidden">{{r.title}}</span>
+</div>
+</sc-if>
+</sc-for>
+<div> </div>
+<div><span style="color: #8a9199">key  </span><span style="color: #b5bd68">● running</span><span style="color: #8a9199">: holds a worker │</span> <span style="color: #81a2be">○ ready</span><span style="color: #8a9199">: next free worker takes it │</span> <span style="color: #8abeb7">▸ merging</span><span style="color: #8a9199">: merges by itself once green</span></div>
+<div>     <span style="color: #f0c674">· waiting</span><span style="color: #8a9199">: moves by itself │</span> <span style="color: #b294bb">◆ needs you</span><span style="color: #8a9199">: nothing moves until you act; the row says what to run</span></div>
+<div> </div>
+<div style="color: #8a9199">move  ↑↓ select · enter open · g open the PR · ←→ or 1-4 view · esc back</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1400,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var FG = '#c5c8c6', G = '#b5bd68', C = '#8abeb7', Y = '#f0c674', M = '#b294bb', R = '#cc6666', O = '#de935f', B = '#81a2be', D = '#8a9199';
+    var g = function (name, n) { return { group: true, row: false, name: name, n: n }; };
+    var row = function (pos, key, st, sc, need, starts, ships, title, stc) {
+      return { group: false, row: true, pos: pos, key: key, st: st, sc: sc, need: need.map(function (s) { return { t: s[0], c: s[1] || FG }; }), starts: starts, ships: ships, title: title, stc: stc || FG };
+    };
+    return { rows: [
+      g('Running', 2),
+      row('  *2', 'VPL-366', '● running', G, [['stage 1/9 as of 11:34']], 'running', 'today 13:16', 'CI: commit…'),
+      row('   -', 'VPL-371', '● running', G, [['#705', C], [' · '], ['11 failed: Lint +10', R], [' · a worker repairs it, try 1 of 2']], 'for 6m', '~12:40', 'CI: give e…'),
+      g('Ready', 2),
+      row('   -', 'VPL-482', '○ ready', B, [['#704', C], [' · '], ['conflicts with main', R], [' · next free worker repairs it, try 1 of 2']], '11:37', '~13:05', 'CI: fronte…'),
+      row('   -', 'VPL-507', '○ ready', B, [['#697', C], [' · '], ['Backend tests, Lint failed', R], [' · after #704, try 1 of 2']], 'after #704', '~13:30', 'Insights s…'),
+      g('Merging', 1),
+      row('   -', 'VPL-503', '▸ merging', C, [['#693', C], [' · Backend tests running 4m · 18 of 21 done']], 'for 2h 5m', 'when green', 'Insights R…', Y),
+      g('Waiting', 2),
+      row('   4', 'VPL-508', '· waiting', Y, [['behind '], ['#693', C], [': Backend tests running 4m']], 'after #693', 'today 13:29', 'Insights l…'),
+      row('   3', 'VPL-504', '· waiting', Y, [['behind '], ['#698', C], [', which needs you']], 'after #698', 'no date', 'Launch Dai…'),
+      g('Needs you', 3),
+      row('   1', 'VPL-500', '◆ needs you', M, [['review draft PR '], ['#701', C], [': it is ready for you']], 'for 3h', 'when you act', 'CI: fail t…', D),
+      row('   -', 'VPL-505', '◆ needs you', M, [['#696', C], [' · Flows image missing · run ensure-flows-image.sh']], 'for 1d 3h', 'when you act', 'Insights C…', Y),
+      row('   -', 'VPL-502', '◆ needs you', M, [['#698', C], [' · Flows image missing · run ensure-flows-image.sh']], 'for 1d 1h', 'when you act', 'Launch Dai…', Y)
+    ] };
+  }
+}
+</script>
+</body>
+</html>
