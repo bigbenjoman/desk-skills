@@ -885,9 +885,9 @@ const PACE_HELD = '7-day usage ahead of pace holds every spawn';
 const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
+  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"`
   : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
-  : PACE.hold ? PACE_HELD
-  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
+  : PACE.hold ? PACE_HELD : null;
 // Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
 // it starts within the worker count as any spawn does.
 const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;

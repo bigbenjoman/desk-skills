@@ -1163,6 +1163,10 @@ check "DS-278 ahead of pace, fix tries keep to the worker count" '[ "$(grep -c "
 q set-batch concurrency=1; q set P-3 state=triaged; q set P-1 state=running session_id=live-1
 : > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-278 ahead of pace, a fix try waits for a free worker slot" '[ ! -s "$T/spawns" ] && [ "$(field P-3 state)" = "\"triaged\"" ]'
+sed 's/| `yes` | `yes` |$/| `yes` | `ask` |/' "$T/config-f.md" > "$T/config-pa.md"
+q set-batch concurrency=2; q set P-1 state=triaged session_id=null
+: > "$T/spawns"; out=$(DESK_CONFIG="$T/config-pa.md" env -u AUTOPILOT_USER_APPROVED node "$B/pass.mjs" 2>&1)
+check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[ ! -s "$T/spawns" ] && [ "$(field P-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "autopilot-workers is \"ask\""'
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
 
