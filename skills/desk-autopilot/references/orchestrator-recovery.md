@@ -46,7 +46,7 @@ How to resume, by what was parked:
 | a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
-| a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C or D left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
+| a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C, or a lane D parked at triage on its design, left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when

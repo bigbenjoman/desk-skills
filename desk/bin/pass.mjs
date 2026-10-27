@@ -678,8 +678,8 @@ for (const c of readCloseouts(STATE)) {
 
 // ---- parks whose condition cleared ---------------------------------------------
 // A park that recorded what clears it (clears-when.mjs) is checked each pass, and settled once that
-// holds, as the recovery rules say and with no model: left for a person on lane C or D, closed out
-// where the ticket's own PR merged, requeued otherwise. A check that cannot run leaves the park as it is.
+// holds, as the recovery rules say and with no model: left for a person on lane C or a lane D
+// parked at triage on its design, closed out where the ticket's own PR merged, requeued otherwise. A check that cannot run leaves the park as it is.
 const clearsCache = new Map();
 const cached = (key, read) => {
   if (!clearsCache.has(key)) { try { clearsCache.set(key, { v: read() }); } catch (e) { clearsCache.set(key, { e }); } }

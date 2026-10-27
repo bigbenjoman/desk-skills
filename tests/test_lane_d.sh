@@ -3,7 +3,8 @@
 # ticket-facts.mjs records what a ticket's Design section links and where each Claude Design canvas is
 # saved; plan-batch queues a lane D ticket whose canvas is on the base branch or snapshotted, and parks
 # one whose design is only in Figma or whose canvas is not on the base, naming which. queue.mjs requeues
-# a lane D ticket its own worker parked, never one parked at triage. Scratch HOME, repo and state only.
+# a lane D ticket its own worker parked, never one parked at triage, and the decider's prompt lets it.
+# Scratch HOME, repo and state only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -93,6 +94,19 @@ out=$(node "$B/queue.mjs" requeue on-base 2>&1); rc=$?
 check "a lane D ticket its worker parked is requeued" '[ $rc -eq 0 ] && [ "$(qg on-base .state)" = triaged ]'
 out=$(node "$B/queue.mjs" requeue figma-only 2>&1); rc=$?
 check "a lane D ticket parked at triage on its design is not" '[ $rc -ne 0 ] && [ "$(qg figma-only .state)" = parked ] && grep -q "parked at triage on its design" <<< "$out"'
+
+# The decider: a lane D worker's park goes to its session, which may requeue it; a triage park does not.
+out=$(node --input-type=module -e "
+import { presort, deciderPrompt } from '$B/decider.mjs';
+const { hand, ask } = presort([
+  { id: 'w', ticket: 'W', kind: 'parked', lane: 'D', text: 'which copy for the empty state?' },
+  { id: 't', ticket: 'T', kind: 'parked', lane: 'D', text: 'lane D — its only design is a Figma frame' },
+]);
+console.log('ask=' + ask.map((i) => i.id).join(',') + ' hand=' + hand.map((h) => h.item.id).join(','));
+console.log(deciderPrompt({ slug: 's', report: '', items: ask, rules: '', bin: '/b' }));
+" 2>&1)
+check "decider: a lane D worker's park goes to the session, a triage park is handed on" 'grep -qx "ask=w hand=t" <<< "$out"'
+check "decider: the prompt lets it requeue lane D, and forbids only a triage park" 'grep -q "more agent work, on lane A, B, D or E:" <<< "$out" && grep -q "never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\`" <<< "$out" && ! grep -q "never requeue a lane C or D park" <<< "$out"'
 
 echo "lane D: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

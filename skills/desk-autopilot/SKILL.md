@@ -294,9 +294,9 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   and each green PR the pass lists as `READY TO MERGE` goes to the next check-in digest;
 - when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
   repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
-  It settles what those rules let you do without asking (a requeue of a lane A, B or E park that needs
-  more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
-  A lane C or D park and anything needing a §3 row that is not `yes` go to the digest without a
+  It settles what those rules let you do without asking (a requeue of a lane A, B, D or E worker's park that
+  needs more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
+  A lane C park, a lane D parked at triage on its design, and anything needing a §3 row that is not `yes` go to the digest without a
   session; an item handed on and not answered since starts none, and an answer to one (`answer.mjs`,
   the digest's included) runs a pass again even in an idle batch. A decider still running after 15
   minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
@@ -949,7 +949,8 @@ INCONCLUSIVE park is also a `question`: put it to the user to confirm or re-lane
 re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then
 `queue.mjs requeue <TICKET>`, and, where the ticket is
 genuinely big, scope it in the briefing so what runs really is one sitting. That is a new lane, not
-a requeue of a C or D: a ticket that stays C or D is worked interactively, never by a worker.
+a requeue of a C or D: a ticket that stays C, or D without its canvas saved on the base, is worked
+interactively, never by a worker.
 
 ## Ask or take
 
@@ -995,7 +996,7 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
-  `references/orchestrator-recovery.md` says, with no model: a lane C or D ticket stays for a
+  `references/orchestrator-recovery.md` says, with no model: a lane C ticket, or a lane D parked at triage on its design, stays for a
   person, one whose own PR merged is recorded done, any other is requeued. Each outcome, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
