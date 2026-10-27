@@ -23,11 +23,12 @@ mkdirSync(env.DESK_LOCK_DIR, { recursive: true });
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 
 // One repo's config and queue: `tickets` as { KEY: state }.
-function repo(name, tickets) {
+function repo(name, tickets, pacing = null) {
   const slug = `acme__${name}`;
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
-    '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3100` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n');
+    '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3100` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n'
+    + (pacing ? `| Usage pacing headroom (points) | \`5\` | \`${pacing}\` |\n` : ''));
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   writeFileSync(q, JSON.stringify({ version: 1, batch: name, concurrency: 2, tickets: Object.fromEntries(Object.entries(tickets).map(([k, s]) => [k, { key: k, state: s }])) }));
@@ -59,6 +60,8 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const usageAt = (out) => out.split('\n').find((l) => l.startsWith('5h ') || l.startsWith('usage ')) ?? '';
 const home = () => usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }));
+// Home listing every repo with a batch: a quiet one has a row only there.
+const homeAll = () => usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }));
 
 // The interactive screen on a fixed clock, its probe recorded rather than run.
 function screen(start, { probeMs = 600000 } = {}) {
@@ -99,7 +102,21 @@ t('AC4 at 85% or over they are red, pace hold or not', [colours(win(0.85)), colo
 
 // ---- AC5: weekly pace holding new workers ends the line
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
-t('AC5 ahead of weekly pace, the line ends with the note', home().endsWith('Fri 15:00  ▲ ahead of pace: no new workers until it slows'), true);
+t('AC5 (DS-215 AC20) ahead of weekly pace, the line ends with the note, naming the repo it holds', homeAll().endsWith('Fri 15:00  ▲ solo ahead of pace: no new workers until it slows'), true);
+// DS-215 AC20: pacing is each repo's §3b row. A repo set to off is never held, so home neither
+// warns nor ambers the 7-day bar for it, and a held repo off the screen does not warn on another's.
+repo('calm', { 'C-1': 'triaged' }, 'off');
+const calm = () => Q.loadRepos(FIXED).find((r) => r.name === 'calm');
+t('DS-215 AC20 with solo held and calm set to off, home names solo alone, and not while solo has no row; calm\'s own screen does not warn',
+  `${homeAll().endsWith('▲ solo ahead of pace: no new workers until it slows')} ${!home().includes('ahead of pace')} ${Q.usageOf(Q.loadRepos(FIXED), FIXED, [calm()]).held} ${Q.repoScreen(calm(), { now: FIXED, usage: Q.usageOf(Q.loadRepos(FIXED), FIXED, [calm()]) }).includes('ahead of pace')}`,
+  'true true false false');
+unrepo('solo'); repo('solo', { 'S-1': 'triaged' }, 'off');
+reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
+const offSegs = Q.usageLine(Q.usageOf(Q.loadRepos(FIXED), FIXED), { now: FIXED, solid: true }).segs;
+t('DS-215 AC20 every repo on home set to off: no note, and the 7-day bar at 40% stays green',
+  `${homeAll().includes('ahead of pace')} ${offSegs.slice(offSegs.findIndex(([x]) => x === '7d ')).find(([x]) => /^ \d+%$/.test(x))?.[1]}`, 'false 32');
+unrepo('calm'); unrepo('solo'); repo('solo', { 'S-1': 'triaged' });
+reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
 t('AC3 and the 7-day bar is amber at 40%', colours(win(0.4), true), '33/33');
 // The hold is a pass's, which reads worker logs alone: the same reading from a probe claims none.
 rmSync(join(env.HOME, '.desk-autopilot', 'acme__solo', 'logs'), { recursive: true, force: true });

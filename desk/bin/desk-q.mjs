@@ -618,7 +618,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null }) {
 function tabHead(repos, slug, now, solid) {
   if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid });
   const r = repos.find((x) => x.slug === slug);
-  return r?.q ? [countsLine(r), passHead(r, now)[0], usageLine(usageOf(repos, now), { now, solid })] : [];
+  return r?.q ? [countsLine(r), passHead(r, now)[0], usageLine(usageOf(repos, now, [r]), { now, solid })] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
@@ -943,14 +943,15 @@ function machineLine(running, cap, room, avail) {
 }
 
 // The usage reading every header shows: the newest of both windows, how many workers run in every
-// repo here, and whether weekly pace holds new workers in any of them (usage-pace.mjs, each repo by
-// its own §3b row). The hold is judged on the reading a pass judges it on, worker logs alone, so the
-// header never says a pass holds when it would not.
-export function usageOf(repos, now) {
+// repo here, and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each
+// repo by its own §3b row, so a repo set to off is never held). The hold is judged on the reading a
+// pass judges it on, worker logs alone, so the header never says a pass holds when it would not.
+export function usageOf(repos, now, shown = repos) {
   const dirs = stateDirs({ self: usageDir() });
   const reading = readUsage({ dirs, now }), passReading = newestUsage({ dirs, now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: passReading, now });
-  return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: repos.some((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))) };
+  const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
+  return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: heldBy.length > 0, heldBy };
 }
 
 // The usage line: a bar for the 5-hour and the 7-day window, each with its reset time; green under
@@ -962,6 +963,8 @@ const USAGE_BAR = 10;
 // The unused part of a bar, a graphic rather than text: 256-colour 239, or 250 on a light theme.
 const TRACK = LIGHT ? '38;5;250' : '38;5;239';
 export const PACE_NOTE = '▲ ahead of pace: no new workers until it slows';
+// The note names the repos it holds: "▲ pranicuk ahead of pace: …".
+const paceNote = (heldBy) => (heldBy?.length ? PACE_NOTE.replace('▲ ', `▲ ${heldBy.join(', ')} `) : PACE_NOTE);
 const usageSgr = (pct, held) => (pct >= 85 ? FAIL : pct >= 60 || held ? WARN : GOOD);
 const resetText = (t, now) => (calendarDays(t, now) === 0 ? clock(t) : `${new Date(t).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(t)}`);
 function windowSegs(label, w, now, held, solid) {
@@ -973,11 +976,11 @@ function windowSegs(label, w, now, held, solid) {
   return [[`${label} `, GREY], ['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
     [reset ? ` · reset ${clock(t)}` : ` ${resetText(t, now)}`, null]];
 }
-export function usageLine({ reading, running, held }, { now, solid = false }) {
+export function usageLine({ reading, running, held, heldBy }, { now, solid = false }) {
   if (reading.at == null) return segLine([['usage no reading yet', GREY]]);
   const segs = [...windowSegs('5h', reading.five_hour, now, false, solid), [' · ', GREY], ...windowSegs('7d', reading.seven_day, now, held, solid)];
   if (running === 0 && now - reading.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(reading.at)}`, GREY]);
-  if (held) segs.push([`  ${PACE_NOTE}`, WARN]);
+  if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
   return segLine(segs.filter(([s]) => s));
 }
 
@@ -1051,33 +1054,53 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB() } = {}) {
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   return [...list.flatMap(bandsOf), needsLine(list, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
-    usageLine(usageOf(repos, now), { now, solid })];
+    usageLine(usageOf(repos, now, list), { now, solid })];
 }
 
-function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false } = {}) {
+// Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
+// no free slot" count moves into the notes, LAST PASS and QUEUE DONE narrow to their longest cells,
+// then DONE goes, then FAILED, whose counts move into the notes.
+const NUM_COLS = [['RUN', 'running', 4], ['READY', ['ready', 'queued'], 7, 'ready'], ['WAIT', 'waiting', 6], ['BLOCKED', 'stuck', 9], ['NEEDS YOU', 'needs', 11], ['FAILED', 'failed', 8], ['DONE', 'done', 6]];
+function homeLayout(list, w, width, now, checkin) {
+  const ok = list.filter((r) => !r.error);
+  const workers = (r, slot) => `  ${r.workers} (cap ${r.cap})${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
+  const wide = { lastW: LAST_W, qdW: QD_W, drop: [] }, fit = { lastW: lastFit, qdW: qdFit, slot: false };
+  const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'FAILED'] }];
+  const span = (l) => 2 + w + l.lastW + NUM_COLS.filter(([h]) => !l.drop.includes(h)).reduce((a, c) => a + c[2], 0) + 2 + l.qdW;
+  const fits = (l) => span(l) + Math.max(9, ...ok.map((r) => workers(r, l.slot).length)) <= width;
+  const l = width == null ? steps[0] : steps.find(fits) ?? steps.at(-1);
+  return { ...l, cols: NUM_COLS.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
+}
+
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '' } = {}) {
   const list = shownRepos(repos, all);
-  const w = Math.max(14, ...repos.map((r) => r.name.length + 2));
+  const none = repos.filter((r) => !hasBatch(r));
+  // REPO fits the names with a row; with a width, only those on screen.
+  const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.name.length + 2));
+  const lay = homeLayout(list, w, width, now, checkin);
   const head = [
     ...overviewHead(repos, list, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker }),
     '',
-    bold(`  ${pad('REPO', w)}${pad('LAST PASS', LAST_W)}${rpad('RUN', 4)}${rpad('READY', 7)}${rpad('WAIT', 6)}${rpad('BLOCKED', 9)}${rpad('NEEDS YOU', 11)}${rpad('FAILED', 8)}${rpad('DONE', 6)}  ${pad('QUEUE DONE', QD_W)}  WORKERS`),
+    bold(`  ${pad('REPO', w)}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('QUEUE DONE', lay.qdW)}  WORKERS`),
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     const [last, lastSgr] = lastPass(r, now);
-    // Each state count in its state's colour, a zero dim.
-    const n = (k, cw, sgr = STATE_SGR[k]) => { const c = count(r, k); return [rpad(c, cw), c ? sgr : DIM]; };
+    // Each state count in its state's colour, a zero dim; DONE in the text colour.
+    const n = ([, k, cw, sk]) => { const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[sk ?? k]) : DIM]; };
     const qd = queueDone(r, now, checkin);
-    rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}`, null], [pad(last, LAST_W), lastSgr], n('running', 4), n(['ready', 'queued'], 7, STATE_SGR.ready), n('waiting', 6), n('stuck', 9), n('needs', 11), n('failed', 8),
-      [rpad(r.done, 6), r.done ? null : DIM], ['  ', null], [pad(qd, QD_W), ['passes stopped', 'no history'].includes(qd) ? DIM : null],
-      [`  ${r.workers} (cap ${r.cap})${unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`, null]], { kind: 'repo', slug: r.slug }));
+    rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}`, null], [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
+      ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], { kind: 'repo', slug: r.slug }));
   }
-  const none = repos.filter((r) => !hasBatch(r));
-  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 53 + QD_W)}  cap ${r.cap}`);
+  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
-  if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
+  if (!all && none.length) {
+    const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
+    foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
+  }
   const notes = [...list.filter((r) => !r.error).flatMap(stallNotes), ...list.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   const seen = new Set();
   for (const r of repos) {
@@ -1089,6 +1112,10 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       notes.push({ tag: '▲ ports', sgr: WARN, text: [[`${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, null]] });
     }
   }
+  // What a narrow table left out: failed counts, in red, then ready tickets with no free slot.
+  const ok = list.filter((r) => !r.error);
+  if (lay.drop.includes('FAILED')) for (const r of ok.filter((x) => count(x, 'failed'))) notes.push({ tag: `✕ ${r.name}`, sgr: STATE_SGR.failed, text: [[`${count(r, 'failed')} ticket${count(r, 'failed') === 1 ? '' : 's'} failed. Its screen lists ${count(r, 'failed') === 1 ? 'it' : 'them'}.`, null]] });
+  if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
   const you = list.filter((r) => !r.error).reduce((a, r) => a + count(r, 'needs'), 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
   const unset = repos.filter((r) => r.run?.unset).length;
@@ -1096,7 +1123,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     notes.push({ tag: '  setup', sgr: GREY, text: [[`${unset} repo${unset === 1 ? ' has' : 's have'} no "Batches run by" setting, so ${unset === 1 ? 'it runs' : 'they run'} in a session. `, GREY],
       ['/desk-setup', BOLD], [' sets it.', GREY]] });
   }
-  if (notes.length) foot.push('', ...noteLines(notes, w));
+  if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
+  if (notes.length) foot.push('', ...noteLines(notes, w, width));
   return { head, rows, foot };
 }
 
@@ -1765,10 +1793,10 @@ export function run(argv, { now = Date.now() } = {}) {
   if (isWrite(v)) {
     const said = apply(repos, v);
     const after = loadOrRefuse(now);
-    return `${said}\n\n${repoScreen(after.find((x) => x.slug === v.slug), { now, usage: usageOf(after, now) })}`;
+    return `${said}\n\n${repoScreen(after.find((x) => x.slug === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.slug === v.slug)) })}`;
   }
   const r = repos.find((x) => x.slug === v.slug);
-  return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now) }) : ticketScreen(r, v.key, { now });
+  return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
 }
 
 // ---- the interactive screen --------------------------------------------------------------------
@@ -1952,11 +1980,12 @@ export function interactive({
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${tl ? 'z scale · ' : ''}c parked dates · ${cmdKeys}` };
     }
     if (view.kind === 'overview') {
-      return { badge: badge(repos), ...overviewParts(repos, { all: view.all, now, interactive: true, checkin }),
+      // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
+      return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos) }),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · ${cmdKeys}` };
     }
-    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, usage: usageOf(repos, now) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
-    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic, usage: usageOf(repos, now) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
+    if (view.kind === 'repo') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, usage: usageOf(repos, now, [r]) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${r.q ? `${MOVE_KEYS} · c parked dates · ` : ''}${cmdKeys}` };
+    if (view.kind === 'epic') return { badge: badge([r]), ...repoParts(r, { now, width: w, checkin, epic: view.epic, usage: usageOf(repos, now, [r]) }), keys: `↑↓ select · enter open · ${VIEW_KEYS} · c parked dates · ${cmdKeys}` };
     if (!r.q?.tickets?.[view.key]) return { head: [`${view.key} is no longer in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     if (view.kind === 'log') {
       const p = logPath(r, view.key);

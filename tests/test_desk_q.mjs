@@ -92,7 +92,7 @@ const rowOf = (out, name) => lines(out).find((l) => l.startsWith(`  ${name} `));
 const ov = W.run('--plain');
 const order = lines(ov.out).filter((l) => /^ {2}[a-z]/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
 t('AC1 live batches, then the quiet batch that needs you', order.join(), 'desk-skills,voicepa,pr-ninja');
-t('AC1 one line names the three repos with no batch', lines(ov.out).some((l) => l.startsWith('3 more set up with no batch: forewatt, gygg-platform, yield-index')), true);
+t('AC1 one line names the three repos with no batch', lines(ov.out).some((l) => l.startsWith('  3 more set up with no batch: forewatt, gygg-platform, yield-index')), true);
 t('a fresh heartbeat for another queue file leaves a quiet batch quiet', /^\s+pr-ninja\s+■ stopped · 2h 0m /.test(rowOf(ov.out, 'pr-ninja') ?? ''), true);
 // ---- AC2: a quiet batch whose unfinished tickets all wait is not listed
 t('AC2 quiet batch with only waiting tickets is hidden', rowOf(ov.out, 'pranicuk'), undefined);
@@ -1304,6 +1304,33 @@ t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off 
   `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;31m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on\x1b[22;27;39m'))}`, '31:✕ supervisor off · 3m true true');
 t('DS-215 AC15 home keeps the tab line under the breadcrumb, the Queue in reverse video, and the red band follows it after a blank line',
   `${S215.frame()[1].startsWith('1 Queue  2 Timeline  3 By day  4 Epics')} ${S215.tabOn()} ${S215.frame()[2] === '' && S215.frame()[3].startsWith(' ✕ ')}`, 'true 1 Queue true');
+// DS-215 AC16-19: home fits the terminal. hold and hue each have a failed ticket; mixed has one
+// ready with no free slot.
+const fit215 = (width) => lines(Q.overview(Q.loadRepos(NOW).filter((r) => ['hold', 'hue', 'mixed'].includes(r.name)), { now: NOW, avail: 30, width }));
+const cols215 = (ls) => ls.find((l) => l.startsWith('  REPO ')).trim().split(/ {2,}/).join('|');
+const wider = (ls, w) => ls.filter((l) => [...l].length > w).length;
+const f104 = fit215(104), f120 = fit215(120), f160 = fit215(160);
+t('DS-215 AC16 at 104 columns home has screen 1\'s columns, no line is wider, and the failed and no-free-slot counts move into the notes',
+  `${cols215(f104)} ${wider(f104, 104)} | ${f104.filter((l) => /✕ (hold|hue) +1 ticket failed\. Its screen lists it\.$/.test(l)).length} ${f104.some((l) => /^ {8}mixed +1 ready with no free slot: it starts as its running workers finish\.$/.test(l))}`,
+  'REPO|LAST PASS|RUN|READY|WAIT|BLOCKED|NEEDS YOU|QUEUE DONE|WORKERS 0 | 2 true');
+t('DS-215 AC16 at 120 columns FAILED and DONE come back, no line wider; at 160 the row says it has a ready ticket with no free slot',
+  `${cols215(f120)} ${wider(f120, 120)} ${f120.some((l) => l.includes('ticket failed'))} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith('2 (cap 3) · 1 ready with no free slot')}`,
+  'REPO|LAST PASS|RUN|READY|WAIT|BLOCKED|NEEDS YOU|FAILED|DONE|QUEUE DONE|WORKERS 0 false | true');
+const setup104 = f104.findIndex((l) => /^(note| {4}) {4}setup /.test(l));
+t('DS-215 AC17 a note wider than the terminal wraps between words, the rest indented under its text',
+  `${setup104 >= 0} ${/^ {21}\S/.test(f104[setup104 + 1] ?? '')} ${wider(f104, 104)}`, 'true true 0');
+const S104 = screen({ kind: 'overview', all: false }, 104, () => NOW);
+S104.output.rows = 120; S104.output.resize();
+await sleep(20);
+const f104s = S104.frame();
+t('DS-215 AC18 home\'s tab line carries no parked note; the note is in home\'s notes',
+  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets waiting on you have no date/.test(l))}`, 'true true');
+const more215 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 }));
+const moreAt = more215.findIndex((l) => /^ {2}\d+ more set up with no batch: /.test(l));
+const more104 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30, width: 60 }));
+const more104At = more104.findIndex((l) => /^ {2}\d+ more set up with no batch: /.test(l));
+t('DS-215 AC19 "N more set up with no batch" is indented 2 with a blank line above it, and wraps at the width, indented the same',
+  `${moreAt > 0} ${more215[moreAt - 1]}| ${wider(more104.slice(more104At, more104At + 2), 60)} ${/^ {2}\S/.test(more104[more104At + 1] ?? '')}`, 'true | 0 true');
 const halt215 = lines(Q.repoScreen(at215('halt'), { now: NOW }));
 t('DS-215 AC5 a loaded supervisor whose passes stopped: the header reads ■ stopped, then its last log line',
   `${/^■ stopped · 40m {2}last pass \d\d:\d\d │ /.test(halt215[2])} ${halt215.includes("Supervisor's last log line: last tick: skipped, a pass still holds the orchestrator lock")}`, 'true true');
