@@ -29,6 +29,7 @@ import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs,
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
+import { claimHours, transcriptOf, claimWorktree, uncommitted } from './claims.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment } from './undraft.mjs';
@@ -735,6 +736,41 @@ for (const t of Object.values(queue().tickets)) {
     const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
     report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
   }
+}
+
+// ---- claims by idle sessions ---------------------------------------------------
+// A ticket an interactive session claimed (queue.mjs park --claimed-by) goes back to the workers once
+// that session's transcript has been still past config §3b "Release idle claims after (hours)", counted
+// from the claim at the latest, and its worktree holds no uncommitted change: one push names it. With
+// uncommitted changes it stays claimed, and its park says so once, which the digest shows as new.
+const CLAIMS = claimHours();
+const claimPush = [];
+if (CLAIMS.bad) report.waiting.push(`${CLAIMS.bad} — no claim is released until it is fixed`);
+for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
+  const c = t.park?.claim;
+  if (t.state !== 'parked' || !c?.session) continue;
+  const tr = transcriptOf(c.session);
+  if (!tr) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
+  const since = Math.max(tr.mtimeMs, Date.parse(c.at) || 0);
+  if (Date.now() - since <= CLAIMS.hours * 3600e3) continue;
+  const idle = `session ${c.session} has been idle since ${new Date(since).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  let wt = null, dirty = [];
+  try { wt = claimWorktree(t); dirty = wt ? uncommitted(wt) : []; } catch (e) {
+    report.clears.push(`${t.key}: ${idle}, but its worktree ${wt ?? ''} could not be read (${String(e.message).split('\n')[0]}): left claimed`);
+    continue;
+  }
+  if (dirty.length) {
+    if (c.dirty_at) continue;
+    const files = dirty.length > 5 ? `${dirty.slice(0, 5).join(', ')} and ${dirty.length - 5} more` : dirty.join(', ');
+    const why = `claimed by session ${c.session}, which has been idle past ${CLAIMS.hours}h, but its worktree ${wt} has uncommitted changes (${files}): commit or discard them, or say who carries on`;
+    q('set', t.key, `park.question=${why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`);
+    report.parked.push(`${t.key}: ${why}`);
+    continue;
+  }
+  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  if (!rq.ok) { report.clears.push(`${t.key}: ${idle}, but the requeue was refused (${rq.out.split('\n').pop()}): left claimed`); continue; }
+  report.clears.push(`${t.key}: ${idle}, and its worktree is clean: back to the workers, branch ${t.branch ?? 'none recorded'} kept`);
+  claimPush.push({ key: `claim:${E.repoSlug()}:${t.key}:${c.at}`, text: `desk ${E.repoSlug()}: ${t.key} went back to the workers, since session ${c.session}, which claimed it, has been idle past ${CLAIMS.hours}h` });
 }
 
 // ---- maintenance window ------------------------------------------------------
@@ -1870,7 +1906,7 @@ if (CHECKIN.ok && !DRY) {
   if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
   if (d.push) push.unshift(d.push);
 }
-push.push(...HEALTH.push);
+push.push(...HEALTH.push, ...claimPush);
 for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(HEALTH.line);

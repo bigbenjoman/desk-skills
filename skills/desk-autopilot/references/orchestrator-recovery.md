@@ -47,6 +47,7 @@ How to resume, by what was parked:
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
 | a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C, or a lane D parked at triage on its design, left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
+| a ticket an interactive session works | park it with the session's id, never in free text: `queue.mjs park <TICKET> --claimed-by <session id>` (the `<id>.jsonl` under `~/.claude/projects`). Once that transcript has been still past §3b "Release idle claims after (hours)" (unset 12, `0` never) and the ticket's worktree is clean, a pass requeues it with its branch kept and pushes one notification; with uncommitted changes it stays claimed, and its park names the files once |
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when

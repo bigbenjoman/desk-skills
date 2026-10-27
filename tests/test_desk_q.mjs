@@ -1,7 +1,7 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -564,6 +564,19 @@ const a8 = lines(Q.repoScreen(repoOf('skills8'), { width: 160 })).find((l) => /A
 t('DS-167 AC7 a longer detail is cut to fit it', a8.slice(head8.indexOf('WHAT IT NEEDS'), head8.indexOf('STARTS')), `${LONG_Q.slice(0, 49)}…  `);
 t('DS-167 AC7 (DS-218 AC12) the ticket screen still shows the question in full, on its rail', lines(Q.ticketScreen(repoOf('skills8'), 'A-8', { width: 160 }))
   .filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ').startsWith(`Needs your answer: ${LONG_Q}`), true);
+
+// ---- DS-244: a ticket an interactive session claimed says which session, on its row and its page.
+const claimSid = '0b6c2e1a-claim';
+put(I.T, I.env, 'claimed', { port: 4250, conc: '2 / 3', beat: 1, queue: { batch: 'cl', concurrency: 2, tickets: {
+  'CL-1': { state: 'parked', lane: 'A', park: { question: 'worked in another session', since: '2026-10-24T09:00:00Z', claim: { session: claimSid, at: '2026-10-24T09:00:00Z' } } },
+  'CL-2': { state: 'parked', lane: 'A', park: { question: 'its worktree has uncommitted changes (a.txt)', since: '2026-10-25T09:00:00Z', claim: { session: claimSid, at: '2026-10-24T09:00:00Z', dirty_at: '2026-10-25T09:00:00Z' } } } } } });
+const cl1 = lines(Q.repoScreen(repoOf('claimed'), { width: 160 })).find((l) => /CL-1 /.test(l));
+t('DS-244 AC1 desk-q shows a claimed ticket as claimed by its session', cl1.includes(`claimed by session ${claimSid}`), true);
+t('DS-244 AC1 its page names the session and how it goes back to the workers', lines(Q.ticketScreen(repoOf('claimed'), 'CL-1', { width: 160 }))
+  .filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ').startsWith(`Claimed by session ${claimSid}, which works it.`), true);
+t('DS-244 AC3 once its worktree is found dirty, the row shows the park instead', lines(Q.repoScreen(repoOf('claimed'), { width: 160 })).find((l) => /CL-2 /.test(l)).includes('uncommitted changes'), true);
+// Gone again, so the overviews below count the repos they were written for.
+for (const d of [join(I.env.DESK_CONFIG_ROOT, 'repos'), join(I.env.DESK_HOME, 'repos'), join(I.env.HOME, '.desk-autopilot')]) rmSync(join(d, 'acme__claimed'), { recursive: true, force: true });
 
 // A dated repo whose W-1 title is longer than any row has room for, and W-2's is short.
 dated('wide', 4500, { hours: [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8], tickets: { 'W-1': ready, 'W-2': ready, 'W-3': { state: 'parked', park: { question: 'which copy?' } } } });

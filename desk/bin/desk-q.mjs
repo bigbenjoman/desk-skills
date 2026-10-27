@@ -1299,12 +1299,16 @@ function needSegs(r, x, now = Date.now()) {
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? LANDING : null]);
   if (k === 'running') return [[runningStage(r, x), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
+  if (k === 'needs' && claimOf(t)) return [[`claimed by session ${claimOf(t).session}`, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open`, null]];
   if (k === 'failed') return [[t.park?.question ?? '', null]];
   if (k === 'queued') return [['waiting for triage', null]];
   return [['', null]];
 }
 const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
+// An interactive session's claim on a parked ticket (queue.mjs park --claimed-by). Once a pass finds
+// uncommitted work behind it, the park's question says what to do, so the claim is no longer the news.
+const claimOf = (t) => (t.state === 'parked' && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
 
 // A waiting ticket whose every blocker left is landing starts after their PRs merge.
 function afterPrs(r, x) {
@@ -1423,6 +1427,9 @@ function moveOf(r, row, k, t, h, now) {
   if (h) {
     if (h.k === 'waiting') return { text: `Moves without you: ${h.text}.` };
     return { text: `Needs you. ${capital(h.text)}.`, ...(h.act ? { lead: `Run, in ${r.name}:`, cmds: h.act.split(/, then /) } : {}) };
+  }
+  if (k === 'needs' && claimOf(t)) {
+    return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
   }
   if (k === 'needs') {
     if (needsSession(t)) return { text: q ? `Needs your answer: ${q}` : 'Needs you: it is lane C or D.', lead: `Only an interactive session takes it on. Open one in ${r.name}:`, cmds: [`/desk-ticket ${t.key}`] };
