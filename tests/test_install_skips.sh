@@ -58,6 +58,9 @@ OLD=("$HOME/.claude/desk/bin/$VM" "$HOME/.claude/desk/bin/runner-slot.sh" "$HOME
 mkdir -p "$HOME/.claude/desk/bin" "$HOME/.local/bin" "$HOME/Library/LaunchAgents"
 for f in "${OLD[@]}"; do case "$f" in */runner|*/memory-turns) mkdir -p "$f" ;; *) touch "$f" ;; esac; done
 printf '#!/bin/sh\necho "$@" >> "%s/launchctl.calls"\nexit 1\n' "$T" > "$T/bin/launchctl"; chmod +x "$T/bin/launchctl"
+# Its VM runs outside launchd, so the old tool's own down is what stops it.
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/tart"; chmod +x "$T/bin/tart"
+printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/bin/$VM"; chmod +x "$HOME/.claude/desk/bin/$VM"
 left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
 
 out="$("$SH" "$S/../install.sh" </dev/null 2>&1)"
@@ -85,6 +88,7 @@ check "DS-224 AC6: with nothing running, the summary says so in one line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "nothing to restart: no merge driver or supervisor agent is running")" = 1 ]'
 check "DS-224 AC4: the install records the commit it was installed from" \
   'grep -q "\"commit\": \"$(git -C "$S/.." rev-parse HEAD)\"" "$HOME/.claude/desk/installed.json"'
+check "DS-271 AC6: the running VM is stopped before its tools are removed" '[ "$(cat "$T/runner.calls")" = down ]'
 check "DS-271 AC6: the retired runner's scripts, shim, state and plists are removed" '[ -z "$(left)" ]'
 check "DS-271 AC6: its launchd jobs are unloaded" \
   '[ "$(grep -c "^bootout gui/[0-9]*/com.desk-skills.$VM" "$T/launchctl.calls")" = 2 ]'

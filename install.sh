@@ -461,22 +461,28 @@ if [ -d "$SRC/desk/bin" ]; then
   wrote "desk-env ~/.local/bin/desk-env"
   # retired local CI runner: its scripts, PATH shim, launchd jobs and state go, the VM image stays.
   gone=""
-  for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
-    "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
-    [ -e "$f" ] || continue
-    rm -f "$f"; gone="$gone ${f/#$HOME/~}"
-  done
-  for d in "$DESKDIR/runner" "$DESKDIR/memory-turns"; do
-    [ -d "$d" ] || continue
-    rm -rf "$d"; gone="$gone ${d/#$HOME/~}/"
-  done
-  # Only a job whose plist is under this HOME is unloaded, so a scratch HOME never touches launchd.
-  for label in com.desk-skills.desk-runner com.desk-skills.desk-runner.nightly; do
-    plist="$HOME/Library/LaunchAgents/$label.plist"
-    [ -e "$plist" ] || continue
-    if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
-    rm -f "$plist"; gone="$gone $label"
-  done
+  # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
+  if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
+    && ! "$DESKDIR/bin/desk-runner" down </dev/null >/dev/null 2>&1; then
+    warn "the local CI runner did not stop: its files stay until ~/.claude/desk/bin/desk-runner down succeeds, then /desk-update"
+  else
+    for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
+      "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
+      [ -e "$f" ] || continue
+      rm -f "$f"; gone="$gone ${f/#$HOME/~}"
+    done
+    for d in "$DESKDIR/runner" "$DESKDIR/memory-turns"; do
+      [ -d "$d" ] || continue
+      rm -rf "$d"; gone="$gone ${d/#$HOME/~}/"
+    done
+    # Only a job whose plist is under this HOME is unloaded, so a scratch HOME never touches launchd.
+    for label in com.desk-skills.desk-runner com.desk-skills.desk-runner.nightly; do
+      plist="$HOME/Library/LaunchAgents/$label.plist"
+      [ -e "$plist" ] || continue
+      if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
+      rm -f "$plist"; gone="$gone $label"
+    done
+  fi
   if [ -n "$gone" ]; then
     ok "removed the local CI runner:$gone (its VM image stays: tart delete desk-runner)"
     wrote "removed  local CI runner:$gone"
