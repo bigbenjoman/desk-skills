@@ -79,7 +79,8 @@ say which trigger fired, give the new lane and its cost, and wait:
 ## Cost is stated, not silent
 
 Before starting lanes C or D, say the lane, the specific signal that chose it, and the subagent
-count, then wait for agreement. Lanes A, B and E proceed without asking. How many subagents may run
+count, then wait for agreement. Lanes A, B and E proceed without asking, and so does lane D on an
+autopilot worker, whose canvas is saved (Lane D below). How many subagents may run
 without asking at all is config §3b "Subagents that may run without asking".
 
 Cost is the whole reason lanes exist. "Delete an empty video placeholder" is one line; routed to C
@@ -117,7 +118,12 @@ When a design is the specification:
    for the states, token mapping and wording the design leaves open (`stage-3-implement.md`, Stage 3). It commits
    nothing; ask for the changed files and the diff result. **A repo with no such agent** builds it
    here in this session, following the same skills and the same frame diff; D still stops for
-   agreement first.
+   agreement first. **An autopilot worker does not stop**: `plan-batch` gives it a lane D ticket
+   only when every Claude Design canvas the ticket links is saved on its base or snapshotted (step
+   5), so it builds from the saved boards and the agreement moves to the PR review, where the canvas
+   table shows each board the ticket names beside the build at that board's width, with every
+   difference the worker accepted listed (worker contract, Stage 3 file). A design only in Figma, or
+   a canvas not on the base, still parks at triage, naming which.
 2. Read what it changed before Stage 4, as you would a colleague's diff. Stages 4–9 run here.
 3. Placeholder copy in the design does not block the build (working-style reference).
 4. Reading the frame needs §3 `read-figma` (or the equivalent read for the design tool); without it,

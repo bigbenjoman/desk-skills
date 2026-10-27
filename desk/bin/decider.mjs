@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
+import { needsSession } from './batch-state.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -45,7 +46,7 @@ export function presort(items) {
   const ask = [];
   for (const item of items) {
     const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(item.text);
-    if (item.kind === 'parked' && ['C', 'D'].includes(item.lane)) {
+    if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });

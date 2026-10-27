@@ -77,6 +77,11 @@ Where the page existed before the ticket, a before/after pair in the short form 
 alongside; the canvas table does not replace it. Testing carries the counts per board. A UI PR with
 no saved canvas keeps the short form.
 
+Below the tables, an **Accepted differences** list names every difference you shipped on purpose:
+each `FAIL` left in, and anything the build does differently from a board, with the board, the
+width and why, or `none`. A lane D ticket built by an autopilot worker was not agreed before it was
+built, so this list and the tables are where the reviewer agrees it.
+
 **Capturing.** Playwright at the chosen widths, saved to `<§2 Handoff directory>/<TICKET>/`.
 Pick the cheapest surface that renders real copy — **read `references/screenshot-surfaces.md`**
 before the first capture. It covers local surfaces and §4 Staging (with the token from §4 Staging
