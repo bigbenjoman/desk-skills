@@ -1736,7 +1736,7 @@ t('DS-279 AC12 a draft whose review has a P1, and one whose clean verdict is unr
   `${row279('V-700').includes('#700 · draft · review not clean: 1 P1')} ${rail279('V-702')}`, 'true Needs you: PR #702, draft · review verdict unreadable: set §4 Clean review verdict.');
 t('DS-279 AC13 still red after both fix tries', row279('V-698').includes('#698 · still red after 2 fix tries: Lint'), true);
 const ov279 = lines(Q.overview(repos279, { now: NOW, avail: 30 }));
-t('DS-279 AC14 home counts RUN, READY, MERGING, WAIT, NEEDS YOU and DONE, merged only, and the header counts the Needs you rows',
+t('DS-279 AC14 home counts RUN, READY, MERGING, WAIT, NEEDS YOU and DONE, the merged ticket in DONE and no open PR, and the header counts the Needs you rows',
   `${cols215(ov279)} | ${(rowOf(ov279.join('\n'), 'board') ?? '').trim().split(/\s+/).slice(6, 12).join(' ')} | ${q279[1].startsWith('◆ 6 tickets need you  ● 1 running  ○ 3 ready  ▸ 2 merging  · 1 waiting │ ✓ 1 done')} ${ov279.find((l) => l.startsWith('◆ '))?.startsWith('◆ 7 tickets need you')}`,
   'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|DONE|ALL DONE BY|WORKERS | 1 3 2 1 6 1 | true true');
 t('DS-279 AC15 the key line names each state on screen, in order, with what moves it', q279.find((l) => l.startsWith('key ')),
@@ -1756,23 +1756,35 @@ const fx = {
   'F-4': prOn(804, okChecks(2), { mergeable: 'CONFLICTING' }),
   'F-5': { state: 'parked', park: { question: 'which copy?' }, result: { pr: 805 }, fix: { try: 1, of: 2, pr: 805, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
 };
-put(I.T, I.env, 'fixgo', { port: 5620, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'fixgo', concurrency: 3, supervised: true, base: 'develop', tickets: fx } });
+const grant = { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' };
+put(I.T, I.env, 'fixgo', { port: 5620, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'fixgo', concurrency: 3, supervised: true, base: 'develop', tickets: fx } });
 put(I.T, I.env, 'fixno', { port: 5630, conc: '3 / 5', beat: 1, queue: { batch: 'fixno', concurrency: 3, supervised: true, tickets: { 'F-1': fx['F-1'] } } });
-const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno');
-const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW }));
+put(I.T, I.env, 'fixrr', { port: 5640, conc: '3 / 5', beat: 1, perms: grant, queue: { batch: 'fixrr', concurrency: 3, supervised: true, tickets: { 'F-1': fx['F-1'] } } });
+const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno'), rRr = reposFx.find((r) => r.name === 'fixrr');
+const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW })), qRr = lines(Q.repoScreen(rRr, { now: NOW }));
 const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
 t('DS-279 a red PR the merge driver reruns is merging, and says it is re-run, then repaired, on its first try',
   `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, 1 check failed · re-run, then a worker repairs it, try 1 of 2.');
-t('DS-279 a red PR nothing reruns needs you: fix or re-run it',
-  `${/F-1 +◆ needs you/.test(fxRow(qNo, 'F-1'))} ${rail279('F-1', rNo)}`, 'true Needs you: PR #801, 1 check failed · fix or re-run it.');
-t('DS-279 a PR red or in conflict after both fix tries needs you before the pass records it stuck, never try 3 of 2',
-  `${rail279('F-2', rGo)} | ${rail279('F-3', rGo)}`, 'Needs you: PR #802, still red after 2 fix tries: Lint. | Needs you: PR #803, still in conflict with develop after 2 fix tries.');
+t('DS-279 a red PR nothing reruns needs you: fix or re-run it, with no merge grant or with §3 ci-rerun not yes',
+  `${/F-1 +◆ needs you/.test(fxRow(qNo, 'F-1'))} ${rail279('F-1', rNo)} | ${/F-1 +◆ needs you/.test(fxRow(qRr, 'F-1'))} ${rail279('F-1', rRr)}`,
+  'true Needs you: PR #801, 1 check failed · fix or re-run it. | true Needs you: PR #801, 1 check failed · fix or re-run it.');
+t('DS-279 a red PR after both fix tries is re-run on its new head before the pass records it stuck, never try 3 of 2; a conflict needs you at once',
+  `${rail279('F-2', rGo)} | ${rail279('F-3', rGo)}`, 'Moves without you: PR #802, 1 check failed · re-run; no fix tries left. | Needs you: PR #803, still in conflict with develop after 2 fix tries.');
+t('DS-279 AC9 no row with a failed check leads with a pass count, on PRs red on the plain PR-status path',
+  `${[fxRow(qGo, 'F-1'), fxRow(qNo, 'F-1'), fxRow(qRr, 'F-1')].every((l) => /#801 · 1 check failed/.test(l))} ${[...qGo, ...qNo, ...qRr].filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | ')}`, 'true ');
 t('DS-279 a conflict names the batch\'s base, as its fix try will', rail279('F-4', rGo), 'Moves without you: PR #804, merge conflict with develop · the next pass sends it to a worker, try 1 of 2.');
 t('DS-279 a fix worker that parked needs your answer on its page, as its row says', `${/F-5 +◆ needs you/.test(fxRow(qGo, 'F-5'))} ${rail279('F-5', rGo).startsWith('Needs your answer: which copy?')}`, 'true true');
 const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
-const advCtx = (advisory) => ({ releases: true, merges: true, stage: () => null, base: 'main', required: [], advisory });
+const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
   `${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx(['lint'])).text} | ${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx([])).text}`, 'behind #810: 1 check failed, advisory only | behind #810: 1 check failed');
+// A §4 Required check that never reported, or finished skipped, is not green: the merge driver never
+// merges it and nothing reruns or repairs it, so it needs you rather than "merges at the next pass".
+const reqQ = { tickets: { 'R-1': { key: 'R-1', ...prOn(811, [okCheck('build')]) }, 'R-2': { key: 'R-2', ...prOn(812, [okCheck('build'), { ...okCheck('e2e'), conclusion: 'skipped' }]) } } };
+const reqNeed = (k) => `${Q.shownState(reqQ, reqQ.tickets[k], advCtx([], ['e2e']))} ${Q.holdOf({ tickets: { ...reqQ.tickets, H: { key: 'H', ...heldBy(k) } } }, { key: 'H', ...heldBy(k) }, advCtx([], ['e2e'])).text}`;
+t('DS-279 a required check that never reported or was skipped needs you, naming it',
+  `${reqNeed('R-1')} | ${reqNeed('R-2')}`,
+  'needs #811: required check "e2e" has not reported · fix the check or §4 Required checks | needs #812: required check "e2e" is skipped (skipped does not count) · fix the check or §4 Required checks');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

@@ -49,9 +49,11 @@ export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
 // by who moves the ticket next; the rest are reasons inside one of them: an untriaged ticket is
 // ready, and one held outside the batch or whose worker stopped needs the user.
-const LABEL = { running: '● running', ready: '○ ready', queued: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', stuck: '◆ needs you', failed: '◆ needs you', done: '✓ done' };
 const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs' };
 const groupOf = (k) => GROUP_OF[k] ?? k;
+// A reason key draws as its group: the same glyph, word and colour (STATE_SGR).
+const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] = m[groupOf(k)]; return m; };
+const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -110,7 +112,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, live: false, stage: () => null, base: 'main', required: [], advisory: [] };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, base: 'main', required: [], advisory: [] };
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -142,8 +144,11 @@ function holdContext(r) {
   if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
   // What green means here, as the pass's fix tries read it (config §4 Required and Advisory checks).
   const list = (id) => { try { const v = repoConfigValues(r.slug, id); return v && !isNone(v) ? v : []; } catch { return []; } };
+  // The merge driver reruns a red check only where §3 ci-rerun is yes, and a fix try waits for those reruns.
+  let reruns = false;
+  try { reruns = repoPermission(r.slug, 'ci-rerun') === 'yes'; } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -209,13 +214,18 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   }
   const checks = ps.checks ?? [];
   // Red as the fix tries read it (evaluateGate): a failed advisory check holds nothing and gets no worker.
-  const red = [...new Set(evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [] }).failing.map((f) => f.name))];
+  const gate = evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
+  const red = [...new Set(gate.failing.map((f) => f.name))];
   if (red.length) {
-    if (!triesLeft) return needs([`still red after ${FIX_TRIES_MAX} fix tries: ${red.join(', ')}`, FAIL]);
-    // Only the merge driver reruns a red check, and a fix try waits for its reruns: without it nothing moves.
-    return ctx.merges ? merging([checksFailed(red.length), FAIL], [` · re-run, then a worker repairs it, ${tryOf(t)}`, null])
-      : needs([checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
+    // Only the merge driver reruns a red check, where §3 ci-rerun lets it, and a fix try waits for its
+    // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
+    // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
+    if (!ctx.merges || !ctx.reruns) return needs([checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
+    return merging([checksFailed(red.length), FAIL], [triesLeft ? ` · re-run, then a worker repairs it, ${tryOf(t)}` : ` · re-run; no fix tries left`, null]);
   }
+  // Not red and nothing running, yet not green: a required check that never reported or was skipped.
+  // Nothing reruns or repairs that, so the merge driver never merges it.
+  if (checks.length && (gate.state === 'absent' || gate.state === 'fail')) return needs([gate.reasons[0] ?? 'checks not green', FAIL], [' · fix the check or §4 Required checks', null]);
   const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;
   if (checks.length && done === checks.length) {
@@ -651,7 +661,7 @@ const TRUECOLOR = ['truecolor', '24bit'].includes(process.env.COLORTERM);
 const HUE = LIGHT ? { green: '32', cyan: '36', blue: '34', yellow: '33', magenta: '35', red: '31' }
   : TRUECOLOR ? { green: '38;2;152;195;121', cyan: '38;2;86;182;194', blue: '38;2;97;175;239', yellow: '38;2;229;192;123', magenta: '38;2;208;139;227', red: '38;2;240;124;132' }
     : { green: '38;5;108', cyan: '38;5;73', blue: '38;5;75', yellow: '38;5;180', magenta: '38;5;176', red: '38;5;210' };
-const STATE_SGR = { running: HUE.green, merging: HUE.cyan, ready: HUE.blue, queued: HUE.blue, waiting: HUE.yellow, needs: HUE.magenta, stuck: HUE.magenta, failed: HUE.magenta };
+const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.blue, waiting: HUE.yellow, needs: HUE.magenta });
 // The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).
 // The band, when nothing can run, is bold and reversed on red.
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;

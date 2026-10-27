@@ -10,7 +10,7 @@
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask
 //       answer "<answer>"   answer it only (digest.mjs answer): triage questions
-//       release             release a hold nothing else will (desk-q's release command)
+//       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
 //       requeue             send a ticket whose worker stopped back to a worker (queue.mjs requeue)
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
@@ -65,7 +65,7 @@ function itemOf(r, x) {
   if (isHeld(t)) {
     const h = holdOf(r.q, t, r.ctx);
     return h.act
-      ? { kind: 'held', need: h.text, actions: [['release', 'nothing else releases it, and releasing it lets the next pass start it'], ['not-now']] }
+      ? { kind: 'held', need: h.text, actions: [['start', 'nothing else lets it start, and once you do the next pass can start it'], ['not-now']] }
       : { kind: 'held', need: h.text, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
   if (t.state === 'parked') {
@@ -174,10 +174,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const q = queueCmd(r, ['requeue', ticket]);
       return q.ok ? say(true, 'requeued; the next pass can spawn it.') : say(false, `requeue refused: ${q.out}`);
     }
-    case 'release': {
+    case 'start': {
       const steps = releaseCommand(ticket, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-      for (const s of steps) { const q = queueCmd(r, s); if (!q.ok) return say(false, `release refused: ${q.out}`); }
-      return say(true, 'released; the next pass can start it.');
+      for (const s of steps) { const q = queueCmd(r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
+      return say(true, 'hold lifted; the next pass can start it.');
     }
     // queue.mjs's own lines: they name any undraft or merge left for the person to do.
     case 'approve': { const q = queueCmd(r, ['approve', ticket]); return q.ok ? say(true, `spine approved: ${q.out}`) : say(false, q.out); }
