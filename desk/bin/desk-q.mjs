@@ -34,7 +34,7 @@ import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency } 
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
-import { platform, runBySetting, supervisorLoaded, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
+import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -262,6 +262,7 @@ export function loadRepos(now = Date.now()) {
     r.done = rows.length - r.rows.length - r.landing.length;
     r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
     r.run = r.q ? whoRuns(r) : null;
+    r.stall = r.q ? stallOf(r, now) : null;
     return r;
   });
 }
@@ -272,14 +273,61 @@ const unfinished = (r) => r.rows.length > 0 || r.landing.length > 0;
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
 // `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
 // `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
-// print per refresh. Off macOS there is no supervisor, so every batch is a session's.
+// print per refresh, and `exit` the loaded agent's failed last run, when it cannot start. Off macOS
+// there is no supervisor, so every batch is a session's.
 function whoRuns(r) {
-  if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null };
+  if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
-  const agent = by === 'supervisor' && unfinished(r) ? (supervisorLoaded(r.slug) ? 'loaded' : 'off') : null;
-  return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent };
+  const a = by === 'supervisor' && unfinished(r) ? supervisorAgent(r.slug) : null;
+  return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent: a ? (a.loaded ? 'loaded' : 'off') : null, exit: a?.exit ?? null };
+}
+
+// ---- a batch that has stopped moving -------------------------------------------------------------
+// What the pass record (pass.mjs recordPass) and the supervisor's own files say about a batch whose
+// passes run but move nothing, or cannot run:
+//   noProgress  how long nothing started, merged or was released, once that is NO_PROGRESS_MS or more
+//               while the last pass held something it could have started (`held`, its reason)
+//   errors      { n, error } once ERROR_STREAK passes in a row have errored
+//   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
+//   cannotStart the loaded agent's failed last run, { code, why }, `why` its own log's last line
+//   driver      { at, reason }: the merge driver the supervisor started stopped with a failure, or
+//               could not start, and none runs now
+//   oldCode     which of the supervisor and its running merge driver run older desk code than is installed
+const NO_PROGRESS_MS = HOUR;
+const ERROR_STREAK = 2;
+const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+// A file's last 4 KB as its non-blank lines, or none with no file.
+const tailLines = (p) => { try { return tailText(p, 4096).split('\n').map((l) => l.trim()).filter(Boolean); } catch { return []; } };
+const timeOf = (s) => { const t = Date.parse(s ?? ''); return Number.isFinite(t) ? t : null; };
+function stallOf(r, now) {
+  const rec = r.q.pass && typeof r.q.pass === 'object' ? r.q.pass : {};
+  const sup = r.run?.by === 'supervisor' ? readJson(join(r.stateDir, 'supervisor.json')) : null;
+  const loaded = r.run?.agent === 'loaded';
+  // With no progress recorded yet, the batch has had none since its first ticket was added.
+  const from = timeOf(rec.progress_at) ?? Math.min(...Object.values(r.q.tickets ?? {}).map((t) => timeOf(t.added_at) ?? Infinity));
+  const quiet = r.live && rec.held && Number.isFinite(from) && now - from >= NO_PROGRESS_MS ? now - from : null;
+  const session = timeOf(rec.session_at ?? (rec.by === 'session' ? rec.at : null));
+  const errors = Number(rec.errors) >= ERROR_STREAK ? { n: Number(rec.errors), error: String(rec.error ?? 'no error recorded') } : null;
+  const cannotStart = loaded && r.run.exit ? { ...r.run.exit, why: tailLines(join(r.stateDir, 'supervisor.agent.log')).at(-1) ?? r.run.exit.why } : null;
+  const holder = mergeDriverHolder(r.stateDir);
+  let driver = null;
+  if (sup && holder == null && unfinished(r)) {
+    const d = sup.driver;
+    let at = null;
+    try { at = statSync(join(r.stateDir, 'merge-driver.log')).mtimeMs; } catch { /* no log */ }
+    if (d && !d.pid && (d.failures ?? 0) > 0) driver = { at, reason: String(d.reason ?? 'it wrote nothing to its log') };
+    else {
+      const last = tailLines(join(r.stateDir, 'supervisor.log')).filter((l) => l.includes('merge driver: ')).at(-1) ?? '';
+      const m = /merge driver: could not start: (.*)/.exec(last);
+      if (m) driver = { at: null, reason: m[1], start: true };
+    }
+  }
+  const c = sup?.code;
+  const oldCode = { supervisor: loaded && c?.supervisor?.old_code === true, driver: c?.driver?.old_code === true && holder != null && holder === c.driver.pid };
+  return { noProgress: quiet, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
+    oldCode: oldCode.supervisor || oldCode.driver ? oldCode : null };
 }
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
 const handsOver = (r) => r.run?.by === 'session' && r.run.set === 'supervisor';
@@ -290,11 +338,13 @@ const attention = (r) => count(r, ['needs', 'stuck', 'failed']);
 const hasBatch = (r) => r.q != null || r.error != null;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
-// supervisor to turn back on, or an unfinished batch to hand over), most first.
+// supervisor to turn back on or that cannot start, failing passes, or an unfinished batch to hand
+// over), most first.
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
-  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r) || (handsOver(r) && unfinished(r)))).sort((a, c) => attention(c) - attention(a));
+  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
+    .sort((a, c) => attention(c) - attention(a));
   return [...live, ...quiet];
 }
 
@@ -829,13 +879,16 @@ const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValu
 // LAST PASS: who runs the batch while passes run on time, "● supervisor · 4m ago" or "● session ·
 // 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
 // when the batch was handed to a supervisor that is not loaded; stopped, how long since the last
-// pass, yellow under a day and red beyond.
+// pass, yellow under a day and red beyond. Live but not moving, in amber: a session running passes
+// beside the supervisor, or passes that held everything for NO_PROGRESS_MS.
 const LAST_W = 26;
 // QUEUE DONE fits "passes stopped".
 const QD_W = 14;
 function lastPass(r, now) {
   const age = r.last == null ? null : now - r.last;
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, STATE_SGR.failed];
+  if (r.live && r.stall?.sessionToo) return ['▲ supervisor + session', WARN];
+  if (r.live && r.stall?.noProgress != null) return [`▲ no progress ${since(r.stall.noProgress)}`, WARN];
   if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
   return [`■ stopped · ${since(age)}`, age >= DAY ? STATE_SGR.failed : WARN];
@@ -866,13 +919,16 @@ const BAR = [' │ ', GREY];
 const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's need'} you`, YOU_BOLD] : ['◆ nothing needs you', GREY]);
 
 // The overview's first line: how many tickets wait on the user, then each repo's share, most first,
-// then how many are blocked; labels grey, figures bright.
-function needsLine(list) {
+// then how many are blocked; labels grey, figures bright. The count is followed by how long the
+// oldest of them has waited, from when it parked, else from when it was added.
+function needsLine(list, now) {
   const ok = list.filter((r) => !r.error);
   const you = ok.reduce((a, r) => a + count(r, 'needs'), 0), stuck = ok.reduce((a, r) => a + count(r, 'stuck'), 0);
   const per = ok.filter((r) => count(r, 'needs')).sort((a, c) => count(c, 'needs') - count(a, 'needs'))
     .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(count(r, 'needs')), BOLD]]);
-  const segs = [needsYou(you), ...(you ? [BAR, ...per] : [])];
+  const waited = ok.flatMap((r) => r.rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
+  const oldest = waited.length ? [['  oldest ', GREY], [since(Math.max(0, now - Math.min(...waited))), null]] : [];
+  const segs = [needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])];
   if (stuck) segs.push(BAR, [`◌ ${stuck} blocked`, GREY]);
   return segLine(segs);
 }
@@ -923,8 +979,35 @@ export function usageLine({ reading, running, held }, { now, solid = false }) {
   return segLine(segs.filter(([s]) => s));
 }
 
-// The red band for a batch handed to a supervisor that is not loaded: nothing runs its passes.
-const offBand = (r) => segLine([[` ✕ ${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on`, BAND]]);
+// The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
+// loaded, a loaded one that cannot start, or passes that keep failing.
+const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
+const bandsOf = (r) => [
+  ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on`)] : []),
+  ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start (exit ${r.stall.cannotStart.code}): ${r.stall.cannotStart.why ?? 'it logged nothing'}`)] : []),
+  ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes failed: ${r.stall.errors.error}`)] : []),
+];
+
+// The amber notes for a batch that runs but does not move, each with its fix where there is one.
+function stallNotes(r) {
+  const s = r.stall, tag = `▲ ${r.name}`;
+  if (!s) return [];
+  const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
+  const out = [];
+  if (s.noProgress != null) out.push(note(`nothing started, merged or was released for ${since(s.noProgress)}. Last pass: ${s.held}.`));
+  if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.name} supervisor off`));
+  if (s.driver) {
+    const what = s.driver.start ? 'the merge driver could not start' : `the merge driver stopped${s.driver.at == null ? '' : ` at ${clock(s.driver.at)}`}`;
+    const reason = s.driver.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
+    const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
+    out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
+  }
+  if (s.oldCode) {
+    const who = s.oldCode.supervisor && s.oldCode.driver ? 'the supervisor and its merge driver run' : s.oldCode.supervisor ? 'the supervisor runs' : 'the merge driver runs';
+    out.push(note(`${who} old desk code. `, 'Run ./install.sh in desk-skills.'));
+  }
+  return out;
+}
 
 // The overview's notes, one per line under a grey "note": a glyph and what it names in its colour,
 // then the text.
@@ -961,11 +1044,11 @@ function handOverNote(r) {
 
 const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKILL.md'));
 
-// Every repo's header: a band for each supervisor that is off, what needs the user, the machine, then
+// Every repo's header: a band for each batch no pass can run, what needs the user, the machine, then
 // usage.
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB() } = {}) {
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
-  return [...list.filter(supervisorOff).map(offBand), needsLine(list), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
+  return [...list.flatMap(bandsOf), needsLine(list, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
     usageLine(usageOf(repos, now), { now, solid })];
 }
 
@@ -993,7 +1076,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', LAST_W + 53 + QD_W)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
   if (!all && none.length) foot.push(dim(`${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`));
-  const notes = list.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote);
+  const notes = [...list.filter((r) => !r.error).flatMap(stallNotes), ...list.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   const seen = new Set();
   for (const r of repos) {
     for (const c of portClashes(r.claim, repos.map((x) => x.claim))) {
@@ -1042,9 +1125,7 @@ const resumeOf = (r) => (supervisorOff(r) ? `desk-q ${r.name} supervisor on`
 const resumeLine = (r) => (supervisorOff(r) ? `Run: ${resumeOf(r)}` : capital(resumeOf(r)));
 
 // The supervisor log's last line, or null with no log: its last 4 KB is read.
-function supervisorLogLine(r) {
-  try { return tailText(join(r.stateDir, 'supervisor.log'), 4096).split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? null; } catch { return null; }
-}
+const supervisorLogLine = (r) => tailLines(join(r.stateDir, 'supervisor.log')).at(-1) ?? null;
 
 // A repo screen's second header line: who runs the batch (or that passes stopped, or the supervisor is
 // off), the last pass, the workers against the batch's count and cap, and the batch. With passes

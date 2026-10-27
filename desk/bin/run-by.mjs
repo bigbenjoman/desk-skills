@@ -31,6 +31,17 @@ const RETRY = 'node ~/.claude/desk/bin/supervisor.mjs install';
 export const supervisorLabel = (slug) => `com.desk-skills.supervisor.${slug}`;
 export const launchdDomain = () => `gui/${process.getuid()}`;
 export const supervisorLoaded = (slug) => spawnSync('launchctl', ['print', `${launchdDomain()}/${supervisorLabel(slug)}`], { stdio: 'ignore' }).status === 0;
+// The same print read for why a loaded agent cannot start: `exit` is its last run's exit, as
+// { code, why } with launchctl's name for the code where it prints one, when that was not 0 and the
+// agent is not running now; otherwise null.
+export function supervisorAgent(slug) {
+  const r = spawnSync('launchctl', ['print', `${launchdDomain()}/${supervisorLabel(slug)}`], { encoding: 'utf8' });
+  if (r.status !== 0) return { loaded: false, exit: null };
+  const out = r.stdout ?? '';
+  const m = /^\s*last exit code = (-?\d+)(?::\s*(.*\S))?/m.exec(out);
+  const failed = m && Number(m[1]) !== 0 && !/^\s*state = running\b/m.test(out);
+  return { loaded: true, exit: failed ? { code: Number(m[1]), why: m[2] ?? null } : null };
+}
 
 // The row's value: `supervisor` or `session`, with a note when it was unset or unreadable.
 //   -> { value, note }

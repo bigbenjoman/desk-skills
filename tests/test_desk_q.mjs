@@ -16,9 +16,10 @@ const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 // One fixture world: seven repos by default, or `repos` to override, each { port, conc, queue, beat, triage }.
 function world(overrides = {}) {
   const T = mkdtempSync(join(tmpdir(), 'desk-q-'));
-  // macOS, with a fake launchctl: `print gui/<uid>/<label>` exits 0 for each label in bin/loaded.
+  // macOS, with a fake launchctl: `print gui/<uid>/<label>` exits 0 for each label in bin/loaded,
+  // printing bin/print-<label> where there is one.
   mkdirSync(join(T, 'bin'));
-  writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null\n', { mode: 0o755 });
+  writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\ncat "$(dirname "$0")/print-${2##*/}" 2>/dev/null\nexit 0\n', { mode: 0o755 });
   const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
     DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
   writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
@@ -1499,6 +1500,68 @@ for (const w of [40, 80, 160]) {
 }
 t('DS-218 AC12 at 40, 80 and 160 columns the question wraps in full under the title, and the answer command is whole on its own line', ac12.join(' / '),
   'true true true true / true true true true / true true true true');
+
+// ---- DS-219: a batch that has stopped moving, from the pass record, the supervisor's files and launchd.
+const put219 = (name, port, { supervised = true, beat = 1, pass = null, tickets }) => put(I.T, I.env, name, { port, conc: '2 / 3', beat, runBy: supervised ? 'supervisor' : 'session',
+  queue: { batch: name, concurrency: 2, ...(supervised ? { supervised: true } : {}), ...(pass ? { pass } : {}), tickets } });
+const state219 = (name, file, text) => writeFileSync(join(I.env.HOME, '.desk-autopilot', `acme__${name}`, file), text);
+const held219 = '7-day usage ahead of pace holds every spawn';
+put219('np', 5300, { supervised: false, pass: { at: minsAgo(1), by: 'session', held: held219, errors: 0, progress_at: minsAgo(185) }, tickets: { 'NP-1': ready } });
+put219('moved', 5310, { supervised: false, pass: { at: minsAgo(1), by: 'session', held: held219, errors: 0, progress_at: minsAgo(30) }, tickets: { 'MV-1': ready } });
+put219('err', 5320, { supervised: false, pass: { at: minsAgo(1), by: 'session', errors: 2, error: 'no repo config found for acme/err' }, tickets: { 'ER-1': ready } });
+put219('err1', 5330, { supervised: false, pass: { at: minsAgo(1), by: 'session', errors: 1, error: 'a one-off' }, tickets: { 'EO-1': ready } });
+put219('both', 5340, { pass: { at: minsAgo(1), by: 'supervisor', session_at: minsAgo(3) }, tickets: { 'BO-1': run215 } });
+put219('alone', 5350, { pass: { at: minsAgo(1), by: 'supervisor', session_at: minsAgo(40) }, tickets: { 'AL-1': run215 } });
+put219('drv', 5360, { tickets: { 'DR-1': run215 } });
+state219('drv', 'supervisor.json', JSON.stringify({ driver: { pid: null, started: minsAgo(20), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: gh is signed out' } }));
+state219('drv', 'merge-driver.log', 'FAIL: gh is signed out\nmerge driver exited 1\n');
+put219('drv2', 5370, { tickets: { 'DT-1': run215 } });
+state219('drv2', 'supervisor.json', '{}');
+state219('drv2', 'supervisor.log', '== tick\nmerge driver: could not start: spawn EACCES\n');
+put219('old', 5380, { tickets: { 'OL-1': run215 } });
+state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
+put219('cant', 5390, { beat: 40, tickets: { 'CA-1': ready } });
+state219('cant', 'supervisor.agent.log', 'tick\nsupervisor: no repo config found for acme/cant\n');
+writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '\tstate = not running\n\truns = 12\n\tlast exit code = 1\n');
+put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
+  'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
+put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
+I.loaded('sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'old', 'cant', 'land');
+const names219 = ['np', 'moved', 'err', 'err1', 'both', 'alone', 'drv', 'drv2', 'old', 'cant', 'land', 'wait'];
+const ov219 = Q.overview(Q.loadRepos(NOW).filter((r) => names219.includes(r.name)), { now: NOW, avail: 30 });
+const notesOf = (name) => lines(ov219).filter((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${name} +`), ''));
+const cell219 = (name) => (rowOf(ov219, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
+const needs219 = lines(ov219).findIndex((l) => l.startsWith('◆ '));
+const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
+t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note naming what held them',
+  `${cell219('np')} | ${notesOf('np').join(' / ')} | ${cell219('moved')} ${notesOf('moved').length}`,
+  `▲ no progress 3h 5m | nothing started, merged or was released for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
+t('DS-219 AC2 two errored passes in a row: the red band above the header names the repo and the error\'s first line; one does not',
+  `${bandAt219('err: the last 2 passes failed: no repo config found for acme/err')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
+t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervisor + session, and one note with both fixes',
+  `${cell219('both')} | ${notesOf('both').join(' / ')} | ${cell219('alone')} ${notesOf('alone').length}`,
+  '▲ supervisor + session | a session is also running this supervised batch. Close the session, or run: desk-q both supervisor off | ● supervisor · 1m ago 0');
+t('DS-219 AC4 a merge driver that died, or never started: one note with the reason from its log',
+  `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')}`,
+  'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES.');
+t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
+  notesOf('old').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
+  `${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') >= 0} ${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') < needs219}`, 'true true');
+t('DS-219 AC7 the needs-you count is followed by how long the oldest has waited', /^◆ 2 tickets need you {2}oldest 2h 10m │ wait 2/.test(lines(ov219)[needs219]), true);
+t('DS-219 AC8 a supervised batch with every ticket done and a PR still open: live, not stopped, its rows read by their tickets',
+  `${cell219('land')} ${notesOf('land').length} ${/LD-1 .*landing/.test(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'land'), { now: NOW }))}`, '● supervisor · 1m ago 0 true');
+const S219 = screen({ kind: 'overview', all: true }, 240, () => NOW);
+S219.output.rows = 160; S219.output.resize();
+await sleep(20);
+S219.ui.finish(0);
+const drawn219 = sgrOf([S219.output.buf]);
+const bands219 = [...drawn219].filter((c) => /^1;7;\d+$/.test(c));
+const f219 = lastFrame(S219);
+t('DS-219 AC9 the bands and notes are drawn, and every text colour is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
+  `${f219.some((l) => l.includes('\x1b[1;7;31m ✕ err: ')) && f219.some((l) => l.includes('\x1b[33m▲ np')) && f219.some((l) => l.includes('\x1b[1mRun ./install.sh in desk-skills.\x1b[22m'))} `
+  + `${textCodes(drawn219).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands219.join()} ${bands219.every((c) => contrast(window217, fgOf(c.split(';')[2])) >= 4.5)}`,
+  'true |1;7;31 true');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

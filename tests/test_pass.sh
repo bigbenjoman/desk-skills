@@ -909,10 +909,12 @@ check "DS-221 AC2 an open blocker outside the batch is recorded with its status 
   '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\"}]" ] && [ "$(cat "$T/jira-calls")" = "get J-1 --json" ]'
 check "DS-221 a ticket with no outside blockers records none and is not read from Jira" '[ "$(field J-2 outside_blockers)" = "[]" ]'
 check "DS-221 AC4 a pass a session ran names session" '[ "$(pass_rec by)" = "\"session\"" ] && [ "$(pass_rec errors)" = 0 ]'
-STATUS_AT=$(field J-4 pr_status.at)
+STATUS_AT=$(field J-4 pr_status.at); SESSION_AT=$(pass_rec at)
+check "DS-219 a pass a session ran records its time as the last session pass" '[ "$(pass_rec session_at)" = "$SESSION_AT" ]'
 : > "$T/jira-calls"; touch "$T/gh-down"; out=$(node "$B/pass.mjs" --by supervisor 2>&1)
 check "DS-221 outside blockers are not read from Jira again within the intake interval" '[ ! -s "$T/jira-calls" ]'
 check "DS-221 AC4 a pass the supervisor ran names supervisor" '[ "$(pass_rec by)" = "\"supervisor\"" ]'
+check "DS-219 a pass the supervisor ran keeps the last session pass" '[ "$(pass_rec session_at)" = "$SESSION_AT" ] && [ "$(pass_rec at)" != "$SESSION_AT" ]'
 check "DS-221 AC8 a GitHub read that fails keeps the PR status as it was" '[ "$(field J-4 pr_status.at)" = "$STATUS_AT" ] && [ "$(field J-4 pr_status.isDraft)" = true ]'
 rm -f "$T/gh-down"
 blocked "done"; touch "$T/jira-down"; q set J-1 outside_blockers_read=null
