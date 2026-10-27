@@ -104,6 +104,12 @@ const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.impor
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
 const cw = decide(M('desk/bin/clears-when.mjs'), real);
 t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
+// DS-275: these were unclaimed, so changing one ran everything.
+for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
+  ...['claude_activity.py', 'desk_repos.py', 'github_activity.py', 'jira_activity.py', 'window.py'].map((s) => [`skills/desk-checkout/scripts/${s}`, 'test_checkout.mjs'])]) {
+  const d = decide(M(f), real);
+  t(`${f} runs ${suite}, not everything`, [d.scope, d.suites.includes(suite)], ['some', true]);
+}
 t('merge-driver.sh reaches the merge driver suite', decide(M('desk/bin/merge-driver.sh'), real).suites.includes('test_merge_driver.sh'), true);
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
