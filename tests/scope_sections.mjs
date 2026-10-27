@@ -12,17 +12,15 @@
 //     suite runs is unclaimed, and changing it runs everything;
 //   - a script the suite claims loads it (an ES import, a shell `source`) or launches it by a path
 //     built from a directory (`join(BIN, 'x.mjs')`, `"$DIR/x.sh"`; see loads()), followed
-//     transitively, except through a foundational file (desk-env.mjs; changing it runs all). The
-//     orchestration scripts launch one another, so much of desk/bin is claimed by a third or more of
-//     the suites, and changing it runs everything.
+//     transitively, except through a foundational file (desk-env.mjs; changing it runs all). A file
+//     many suites reach that way runs those suites: they are the ones that can see the change.
 // A suite with a `// claims: imports` (`# claims: imports`) line uses repo file names as test data
 // (the scoping suites themselves): its text names nothing, and only its import statements are followed.
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
 //   full  - tests/run.sh, any other file under tests/ that is not a suite (helpers, stubs, fixtures,
 //           this script), .github/, install.sh, a root file other than README.md, desk-env.mjs or
-//           desk-env.sh, a file claimed by a third or more of the suites (shared), a deleted or renamed
-//           file, or a changed file no suite claims
+//           desk-env.sh, a deleted or renamed file, or a changed file no suite claims
 //   some  - the suites that claim a changed file, plus every changed suite
 //   none  - nothing changed
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
@@ -45,8 +43,6 @@ export const ALWAYS = ['test_lint.sh'];
 const FOUNDATION = [/^tests\/(?!test_[^/]+\.(sh|mjs)$)/, /^\.github\//, /^install\.sh$/, /^desk\/bin\/desk-env\.(mjs|sh)$/];
 // A root file other than these is config for the whole repo (.gitignore, a lockfile, ...).
 const ROOT_DOCS = new Set(['README.md']);
-// A file claimed by this share of the suites or more is foundational in practice.
-export const SHARED_SHARE = 1 / 3;
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;
 const DIR_ROOTS = /^(skills|vendor|docs)\//;
 
@@ -165,7 +161,6 @@ export function decide(changes, map) {
   if (!changes.length) return { scope: 'none', reason: 'nothing changed', suites: [...ALWAYS], shells: [] };
   const gone = changes.find((c) => c.status === 'D' || c.status === 'R');
   if (gone) return full(gone.status === 'D' ? `${gone.path} was deleted` : `${gone.from} was renamed to ${gone.path}`);
-  const limit = Math.ceil((all.length - ALWAYS.length) * SHARED_SHARE);
   const pick = new Set(ALWAYS);
   for (const { path } of changes) {
     if (isSuite(path)) { if (!all.includes(path.slice(6))) return full(`${path} is not a suite tests/run.sh knows`); pick.add(path.slice(6)); continue; }
@@ -173,7 +168,6 @@ export function decide(changes, map) {
     if (!path.includes('/') && !ROOT_DOCS.has(path)) return full(`${path} is a root file`);
     const by = map.claims.get(path);
     if (!by?.size) return full(`no suite claims ${path}`);
-    if (by.size >= limit) return full(`${path} is claimed by ${by.size} suites, a third or more`);
     for (const s of by) pick.add(s);
   }
   const suites = all.filter((s) => pick.has(s));

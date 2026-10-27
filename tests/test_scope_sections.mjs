@@ -84,7 +84,7 @@ t('a workflow runs everything', scope(M('.github/workflows/tests.yml')), 'full: 
 t('a root file runs everything', scope(M('.gitignore')), 'full: .gitignore is a root file');
 t('a deletion runs everything', scope([{ status: 'D', path: 'desk/bin/queue.mjs' }]), 'full: desk/bin/queue.mjs was deleted');
 t('a rename runs everything', scope([{ status: 'R', path: 'desk/bin/q2.mjs', from: 'desk/bin/queue.mjs' }]), 'full: desk/bin/queue.mjs was renamed to desk/bin/q2.mjs');
-t('a file a third of the suites claim runs everything', scope(M('desk/bin/pass.mjs')), 'full: desk/bin/pass.mjs is claimed by 2 suites, a third or more');
+t('a file many suites reach runs those suites, not everything', scope(M('desk/bin/lock.mjs')), 'some: test_data.mjs test_drive.sh test_lint.sh test_pass.mjs');
 t('full runs every suite and checks every shell script', [decide(M('install.sh'), map).suites.length, decide(M('install.sh'), map).shells.length], [6, 7]);
 
 // ---- this repo -----------------------------------------------------------------------------------
