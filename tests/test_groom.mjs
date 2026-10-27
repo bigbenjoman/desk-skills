@@ -336,7 +336,7 @@ const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json')
 t('verdict closes only the fully met scan candidate', v.status === 0 ? JSON.parse(v.stdout).map((x) => [x.ticket, x.close]) : v.stderr, [['KAN-10', true], ['KAN-33', false], ['KAN-31', false]])
 t('verdict refuses without the scan', run('verdict', join(T, 'results.json')).status, 2)
 
-// DS-283: an approved close is checked again just before it is written. A fake gh answers the open-PR
+// preclose: an approved close is checked again just before it is written. A fake gh answers the open-PR
 // search from $T/gh-prs.json, or fails while $T/gh-fail exists; the stub Jira has KAN-10 in To Do.
 const pr = (number, title, headRefName = 'feat/x') => ({ number, title, headRefName, isDraft: true, createdAt: '2026-10-27T10:32:00Z' })
 t('DS-283 AC1 a PR on the key keeps it open, named', precloseCheck({ ticket: 'K-1', before: 'In Progress', status: 'In Progress', prs: [pr(233, 'feat: K-1 the hold flag'), pr(9, 'K-12 other')] }),

@@ -600,8 +600,8 @@ export function closeVerdict(r, expected) {
 }
 
 // The same close, re-checked just before it is written: approval can come an hour after the verdict,
-// and a PR opened on the key in that gap, or a status someone moved, still keeps the ticket open
-// (DS-283). `before` is the status the scan read; `prs` the open PRs `gh pr list` found, null with
+// and a PR opened on the key in that gap, or a status someone moved, still keeps the ticket open.
+// `before` is the status the scan read; `prs` the open PRs `gh pr list` found, null with
 // `prsError` when the search failed, which never reads as "no PR"; `status` likewise with `statusError`.
 export function precloseCheck({ ticket, before, status = null, statusError = null, prs = null, prsError = null }) {
   const reasons = [
