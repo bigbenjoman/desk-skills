@@ -23,11 +23,12 @@ mkdirSync(env.DESK_LOCK_DIR, { recursive: true });
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 
 // One repo's config and queue: `tickets` as { KEY: state }.
-function repo(name, tickets) {
+function repo(name, tickets, pacing = null) {
   const slug = `acme__${name}`;
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
-    '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3100` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n');
+    '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3100` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n'
+    + (pacing ? `| Usage pacing headroom (points) | \`5\` | \`${pacing}\` |\n` : ''));
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   writeFileSync(q, JSON.stringify({ version: 1, batch: name, concurrency: 2, tickets: Object.fromEntries(Object.entries(tickets).map(([k, s]) => [k, { key: k, state: s }])) }));
@@ -57,8 +58,12 @@ const Q = await import(join(BIN, 'desk-q.mjs'));
 const P = await import(join(BIN, 'usage-probe.mjs'));
 const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-const usageAt = (out) => out.split('\n').find((l) => l.startsWith('5h ') || l.startsWith('usage ')) ?? '';
+// The usage line after its "Claude usage" label (DS-215 AC21).
+const LABEL = 'Claude usage  ';
+const usageAt = (out) => out.split('\n').find((l) => l.startsWith(LABEL))?.slice(LABEL.length) ?? '';
 const home = () => usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }));
+// Home listing every repo with a batch: a quiet one has a row only there.
+const homeAll = () => usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }));
 
 // The interactive screen on a fixed clock, its probe recorded rather than run.
 function screen(start, { probeMs = 600000 } = {}) {
@@ -99,7 +104,21 @@ t('AC4 at 85% or over they are red, pace hold or not', [colours(win(0.85)), colo
 
 // ---- AC5: weekly pace holding new workers ends the line
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
-t('AC5 ahead of weekly pace, the line ends with the note', home().endsWith('Fri 15:00  ▲ ahead of pace: no new workers until it slows'), true);
+t('AC5 (DS-215 AC20) ahead of weekly pace, the line ends with the note, naming the repo it holds', homeAll().endsWith('Fri 15:00  ▲ solo ahead of pace: no new workers until it slows'), true);
+// DS-215 AC20: pacing is each repo's §3b row. A repo set to off is never held, so home neither
+// warns nor ambers the 7-day bar for it, and a held repo off the screen does not warn on another's.
+repo('calm', { 'C-1': 'triaged' }, 'off');
+const calm = () => Q.loadRepos(FIXED).find((r) => r.name === 'calm');
+t('DS-215 AC20 with solo held and calm set to off, home names solo alone, and not while solo has no row; calm\'s own screen does not warn',
+  `${homeAll().endsWith('▲ solo ahead of pace: no new workers until it slows')} ${!home().includes('ahead of pace')} ${Q.usageOf(Q.loadRepos(FIXED), FIXED, [calm()]).held} ${Q.repoScreen(calm(), { now: FIXED, usage: Q.usageOf(Q.loadRepos(FIXED), FIXED, [calm()]) }).includes('ahead of pace')}`,
+  'true true false false');
+unrepo('solo'); repo('solo', { 'S-1': 'triaged' }, 'off');
+reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
+const offSegs = Q.usageLine(Q.usageOf(Q.loadRepos(FIXED), FIXED), { now: FIXED, solid: true }).segs;
+t('DS-215 AC20 every repo on home set to off: no note, and the 7-day bar at 40% stays green',
+  `${homeAll().includes('ahead of pace')} ${offSegs.slice(offSegs.findIndex(([x]) => x === '7d ')).find(([x]) => /^ \d+%$/.test(x))?.[1]}`, 'false 32');
+unrepo('calm'); unrepo('solo'); repo('solo', { 'S-1': 'triaged' });
+reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
 t('AC3 and the 7-day bar is amber at 40%', colours(win(0.4), true), '33/33');
 // The hold is a pass's, which reads worker logs alone: the same reading from a probe claims none.
 rmSync(join(env.HOME, '.desk-autopilot', 'acme__solo', 'logs'), { recursive: true, force: true });
@@ -190,7 +209,7 @@ t('AC11 nor under 5 minutes old', home(), LINE);
 // ---- AC12: the repo screen's header carries the same line
 const repoOut = Q.run(['--plain', 'solo'], { now: FIXED });
 t('AC12 the repo screen carries the same usage line as home', usageAt(repoOut), home());
-t('AC12 under its pass line', repoOut.split('\n').findIndex((l) => l.startsWith('5h ')) > repoOut.split('\n').findIndex((l) => /last pass|no pass yet|stopped/.test(l)), true);
+t('AC12 under its pass line', repoOut.split('\n').findIndex((l) => l.startsWith(LABEL)) > repoOut.split('\n').findIndex((l) => /last pass|no pass yet|stopped/.test(l)), true);
 const S12 = screen({ kind: 'repo', slug: 'acme__solo' });
 await sleep(20);
 S12.ui.finish(0);
@@ -214,6 +233,30 @@ t('AC13 every text colour on the line is 4.5:1 or more on the window and the sel
 const used = [...new Set(bars.map(([, k]) => k))].filter((k) => k !== '38;5;239');
 t('AC13 each bar\'s used colour is 3:1 or more as a graphic: on the window, the selected row and the unused part',
   `${used.sort().join()} ${used.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '31,32,33 ');
+
+// ---- DS-215 AC21: on screen the line is labelled and pinned at the bottom: usage, a blank line, then
+// the keys. Plain output keeps it in its header.
+reading([0.17, at(24, 11, 20)], [0.6, at(25, 15, 0)]);
+const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+const bottom = async (start) => {
+  const S = screen(start);
+  await sleep(20);
+  S.ui.finish(0);
+  const f = S.frame().map(plain);
+  const i = f.findIndex((l) => l.startsWith(LABEL));
+  const keys = f.findIndex((l) => /^(move  |↑↓ )/.test(l));
+  return `${i === f.findLastIndex((l) => l.startsWith(LABEL))} ${keys - i} ${f.slice(i + 2).every((l) => /^(move|act|      )|↑↓|q quit/.test(l))} ${f[i]?.slice(LABEL.length).startsWith('5h ██')}`;
+};
+t('DS-215 AC21 home: the line once, a blank line then the keys under it, and nothing after the keys', await bottom({ kind: 'overview', all: false }), 'true 2 true true');
+t('DS-215 AC21 a repo screen too', await bottom({ kind: 'repo', slug: 'acme__solo' }), 'true 2 true true');
+const SR = screen({ kind: 'repo', slug: 'acme__solo' });
+await sleep(20);
+SR.ui.finish(0);
+const fr = SR.frame().map(plain);
+t('DS-215 AC21 and it is not also in the header, between the counts and the table',
+  fr.slice(0, fr.findIndex((l) => l.includes('TICKET'))).some((l) => l.includes('5h ')), false);
+t('DS-215 AC21 the label is grey', Q.usageLine({ reading: P.readUsage({ now: FIXED }), running: 1, held: false }, { now: FIXED }).segs[0].join('|'), `${LABEL}|38;5;247`);
+t('DS-215 AC21 plain output keeps the labelled line in its header', usageAt(Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 })), LINE);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q usage checks passed');
 process.exit(fails ? 1 : 0);

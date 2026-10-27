@@ -1,0 +1,40 @@
+{
+  "url": "https://claude.ai/artifact/YcUkJFqFJXEx6qzgNQnT5T",
+  "version": "1793099599-9a0d",
+  "fetched_at": "2026-10-27T11:23:49.815Z",
+  "dir": "DS-215",
+  "tickets": [
+    {
+      "key": "DS-215",
+      "boards": []
+    },
+    {
+      "key": "DS-277",
+      "boards": []
+    }
+  ],
+  "boards": [
+    {
+      "name": "Now: usage in the header, full-height bars",
+      "width": 880,
+      "file": "Main.dc.html"
+    },
+    {
+      "name": "Proposed: Claude usage at the bottom, full-block bars",
+      "width": 880,
+      "file": "Proposed.dc.html"
+    },
+    {
+      "name": "Bar thickness: the options",
+      "width": 880,
+      "file": "Bars.dc.html"
+    }
+  ],
+  "files": [
+    "Bars.dc.html",
+    "Main.dc.html",
+    "Proposed.dc.html",
+    "canvas.json",
+    "support.js"
+  ]
+}
