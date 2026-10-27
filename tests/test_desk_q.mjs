@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { xterm256, rgbOfSgr } from './sgr_rgb.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -1263,12 +1264,10 @@ t('DS-217 AC10 the key line: each state in its colour, its meaning grey',
 // The default text, plain and bold; every other colour is a 256-colour or 24-bit code, read as drawn.
 const ONE_DARK = { 1: '#e6e9ef', 39: '#abb2bf' };
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-const CUBE = [0, 95, 135, 175, 215, 255];
-const grey256 = (n) => (n >= 232 && n <= 255 ? [0, 0, 0].map(() => 8 + 10 * (n - 232)) : n >= 16 && n <= 231 ? [CUBE[Math.floor((n - 16) / 36)], CUBE[Math.floor((n - 16) / 6) % 6], CUBE[(n - 16) % 6]] : null);
+const grey256 = xterm256;
 const lum = (c) => c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
 const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-const fgOf = (code) => (/^38;5;\d+$/.test(code) ? grey256(Number(code.split(';')[2])) : /^38;2;\d+;\d+;\d+$/.test(code) ? code.split(';').slice(2).map(Number)
-  : ONE_DARK[code] ? rgb(ONE_DARK[code]) : null);
+const fgOf = (code) => rgbOfSgr(code) ?? (ONE_DARK[code] ? rgb(ONE_DARK[code]) : null);
 const hkStart = hkFrame.findIndex((l) => /^\s+# {2}TICKET/.test(l.replace(ANSI, '')));
 const hkLines = hkFrame.slice(hkStart, hkFrame.indexOf(hkKey) + 1);
 const selBg = grey256(Number(/\x1b\[48;5;(\d+)m/.exec(hkLines.join(''))?.[1]));

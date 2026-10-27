@@ -540,9 +540,9 @@ const DIM = GREY, BOLD = '1', FAINT = '2';
 // truecolor and the nearest 256-colour codes elsewhere; red and magenta are One Dark's brighter pair,
 // so each is 4.5:1 or more on the window (#282C34) and the selected row. A light theme keeps the
 // terminal's own 16.
-export const truecolor = (v = process.env.COLORTERM) => v === 'truecolor' || v === '24bit';
+const TRUECOLOR = ['truecolor', '24bit'].includes(process.env.COLORTERM);
 const HUE = LIGHT ? { green: '32', cyan: '36', blue: '34', yellow: '33', magenta: '35', red: '31' }
-  : truecolor() ? { green: '38;2;152;195;121', cyan: '38;2;86;182;194', blue: '38;2;97;175;239', yellow: '38;2;229;192;123', magenta: '38;2;208;139;227', red: '38;2;240;124;132' }
+  : TRUECOLOR ? { green: '38;2;152;195;121', cyan: '38;2;86;182;194', blue: '38;2;97;175;239', yellow: '38;2;229;192;123', magenta: '38;2;208;139;227', red: '38;2;240;124;132' }
     : { green: '38;5;108', cyan: '38;5;73', blue: '38;5;75', yellow: '38;5;180', magenta: '38;5;176', red: '38;5;210' };
 const STATE_SGR = { running: HUE.green, landing: HUE.cyan, ready: HUE.blue, queued: null, waiting: HUE.yellow, stuck: GREY, needs: HUE.magenta, failed: HUE.red };
 // The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).

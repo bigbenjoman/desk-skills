@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { rgbOfSgr } from './sgr_rgb.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -218,13 +219,11 @@ t('AC12 and so does the repo screen drawn', S12.frame().some((l) => l.includes(`
 // ---- AC13: contrast, in the One Dark palette the approved design measured
 // (docs/design/DS-227/index.html; 256-colour greys are 8 + 10 * (n - 232)).
 const ONE_DARK = { 39: '#abb2bf' };
-const CUBE = [0, 95, 135, 175, 215, 255];
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-// A 256-colour code's colour: the greys from 232, the 6x6x6 cube from 16.
-const grey = (code) => { const n = Number(code.split(';')[2]); return n >= 232 ? [0, 0, 0].map(() => 8 + 10 * (n - 232)) : [CUBE[Math.floor((n - 16) / 36)], CUBE[Math.floor((n - 16) / 6) % 6], CUBE[(n - 16) % 6]]; };
+const grey = rgbOfSgr;
 const lum = (c) => c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
 const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-const fg = (code) => (code == null ? rgb(ONE_DARK[39]) : code.startsWith('38;5;') ? grey(code) : code.startsWith('38;2;') ? code.split(';').slice(2).map(Number) : rgb(ONE_DARK[code]));
+const fg = (code) => (code == null ? rgb(ONE_DARK[39]) : rgbOfSgr(code) ?? rgb(ONE_DARK[code]));
 const windowBg = rgb('#282c34'), selected = grey('48;5;236');
 const lineFor = (u, held) => Q.usageLine({ reading: { five_hour: win(u), seven_day: win(u), at: FIXED - 6 * MIN }, running: 0, held }, { now: FIXED, solid: true });
 const all = [0.17, 0.6, 0.88].flatMap((u) => [lineFor(u, false), lineFor(u, true)]);
