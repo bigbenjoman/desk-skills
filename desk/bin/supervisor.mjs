@@ -332,10 +332,15 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
     log([`== ${stamp()} idle check-in: failed (${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-2).join(' / ')})`]);
     return;
   }
-  if (!d.push?.key || s.notified.includes(d.push.key)) return;
-  const err = notify(`desk: ${E.repoSlug()}`, d.push.text);
-  log([`== ${stamp()} idle check-in: ${err ? `notification failed (${err}) for ${d.push.key}; the next tick tries again` : `notification sent for ${d.push.key}`}`]);
-  if (!err) writeState(state, { ...s, notified: [...s.notified, d.push.key] });
+  pushOnce(state, s, log, stamp, 'idle check-in', d.push);
+}
+
+// Sends one push unless its key went out already, and records the key once it has.
+function pushOnce(state, s, log, stamp, what, p) {
+  if (!p?.key || !p.text || s.notified.includes(p.key)) return;
+  const err = notify(`desk: ${E.repoSlug()}`, p.text);
+  log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
+  if (!err) { s.notified.push(p.key); writeState(state, s); }
 }
 
 // An idle batch runs no pass, so the weekly maintenance window and the auto-release are moved on here;
@@ -348,11 +353,7 @@ function idleMaintenance(state, s, log, stamp) {
     return;
   }
   if (m.lines?.length) log([`== ${stamp()} idle maintenance:`, ...m.lines]);
-  for (const p of (Array.isArray(m.push) ? m.push : []).filter((x) => x?.key && x.text && !s.notified.includes(x.key))) {
-    const err = notify(`desk: ${E.repoSlug()}`, p.text);
-    log([`== ${stamp()} idle maintenance: ${err ? `notification failed (${err}) for ${p.key}` : `notification sent for ${p.key}`}`]);
-    if (!err) { s.notified.push(p.key); writeState(state, s); }
-  }
+  for (const p of Array.isArray(m.push) ? m.push : []) pushOnce(state, s, log, stamp, 'idle maintenance', p);
 }
 
 function runPass(state, q, s, log, stamp, intake = []) {

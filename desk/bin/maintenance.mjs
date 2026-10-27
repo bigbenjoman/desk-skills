@@ -99,12 +99,20 @@ const keptNotes = (s) => (s?.notes ?? []).slice(-20);
 // What the window hands the check-in digest: {at, text}, oldest first.
 export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).filter((n) => n?.at && n.text);
 
-// Running tickets in every other repo's queue, and the queues that cannot be read.
-function othersRunning(selfQueue) {
+// This repo's slug, for what the machine-wide state says about it.
+const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'; } };
+
+// Running tickets in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
+// the queues that cannot be read.
+function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
+  const queues = otherQueues({ self: selfQueue });
+  if (self && selfQueue && existsSync(selfQueue)) {
+    try { queues.unshift({ slug: selfSlug(), q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug: selfSlug(), error: e.message }); }
+  }
   const running = []; const unreadable = [];
-  for (const { slug, q, error } of otherQueues({ self: selfQueue })) {
+  for (const { slug, q, error } of queues) {
     if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of Object.values(q?.tickets ?? {})) if (t?.state === 'running') running.push(`${slug} ${t.key}`);
+    for (const t of Object.values(q?.tickets ?? {})) if (t?.state === 'running' && where(t)) running.push(`${slug} ${t.key}`);
   }
   return { running, unreadable };
 }
@@ -135,10 +143,11 @@ export function sourceCheckout() {
   try { return readFileSync(join(E.deskHome(), 'source-checkout'), 'utf8').trim() || null; } catch { return null; }
 }
 
-// Why the checkout cannot fast-forward to `to` as it stands, or null: changes to tracked files, or
-// untracked files at a path the incoming commits write (a file there, or one under a directory they
+// Why the checkout cannot fast-forward to `to` as it stands, or null: commits `to` does not have (an
+// install would carry them unchecked), changes to tracked files, or untracked files at a path the incoming commits write (a file there, or one under a directory they
 // add). Untracked files nothing incoming touches stay where they are.
 function incomingBlock(git, dir, to) {
+  if (!git('merge-base', '--is-ancestor', 'HEAD', to).ok) return `${dir} has commits on main that ${short(to)} does not, so nothing was pulled or installed`;
   if (git('status', '--porcelain', '--untracked-files=no').out) return `${dir} has uncommitted changes to tracked files, so nothing was pulled or installed`;
   const untracked = git('ls-files', '--others', '--exclude-standard').out.split('\n').filter(Boolean);
   if (!untracked.length) return null;
@@ -202,7 +211,7 @@ const restart = () => (process.env.DESK_RESTART_CMD
 // commit and main's `tests` check passed on it, so merged work runs within minutes. It waits while
 // any repo has a worker at Stage 7 (opening its PR), and does nothing while a window is open. Its
 // state is release.json beside the window's: when origin was last fetched, the last reason recorded
-// for a commit, and the last commit whose failed check was pushed to the person. Tests stand in for
+// for a commit, and the last commit whose check failed with the repo that pushes it. Tests stand in for
 // the check with DESK_RELEASE_CHECK_CMD (run with sh -c, the commit appended; it prints success,
 // pending or failure).
 export const RELEASE_CHECK = 'tests';
@@ -226,26 +235,12 @@ export function releaseCheck(dir, sha) {
   return { state: 'failure', word };
 }
 
-// Workers at Stage 7 in any repo's queue, this one included, and the queues that cannot be read: an
-// install waits on both, since a worker there may be pushing.
-function pushingWorkers(selfQueue) {
-  const queues = otherQueues({ self: selfQueue });
-  if (selfQueue && existsSync(selfQueue)) {
-    let slug = 'this repo';
-    try { slug = E.repoSlug(); } catch { /* outside a repo */ }
-    try { queues.unshift({ slug, q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug, error: e.message }); }
-  }
-  const at7 = (t) => t?.state === 'running' && (/^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7'));
-  const out = [];
-  for (const { slug, q, error } of queues) {
-    if (error) out.push(`${slug}'s queue, which cannot be read (${error})`);
-    for (const t of Object.values(q?.tickets ?? {})) if (at7(t)) out.push(`${slug} ${t.key} at Stage 7`);
-  }
-  return out;
-}
+// A worker at Stage 7, which may be pushing.
+const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7');
 
-// One step of the auto-release. -> {lines, push}: push holds the one notification for a commit whose
-// check failed, made once per commit across every repo's passes.
+// One step of the auto-release. -> {lines, push}: push holds the notification for a commit whose
+// check failed. Only the repo whose pass first saw it failed returns it, and on every pass while it
+// stays failed, so whoever sends the pass's pushes sends it once and tries again when sending failed.
 export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, src = sourceCheckout() } = {}) {
   const none = { lines: [], push: [] };
   if (!src || !existsSync(src)) return none;
@@ -286,14 +281,16 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     if (c.state === 'failure') {
       const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed: the installed version stays at ${short(base)}`;
       lines.push(`release: ${text}`);
-      if (s.notified === head) return { lines, push: [] };
-      s.notified = head;
-      save();
-      record(dir, at, `release: ${text}`);
-      return { lines, push: [{ key: `release-failed-${head}`, text }] };
+      if (s.notified?.sha !== head) {
+        s.notified = { sha: head, by: selfSlug() };
+        save();
+        record(dir, at, `release: ${text}`);
+      }
+      return { lines, push: s.notified.by === selfSlug() ? [{ key: `release-failed-${head}`, text }] : [] };
     }
 
-    const pushing = pushingWorkers(selfQueue);
+    const o = othersRunning(selfQueue, { self: true, where: atStage7 });
+    const pushing = [...o.running.map((w) => `${w} at Stage 7`), ...o.unreadable];
     if (pushing.length) return { lines: [`release: desk-skills main ${short(head)} passed its ${RELEASE_CHECK} check; waiting to install it for ${pushing.join(', ')}`], push: [] };
 
     const u = updateDesk(src, { to: head });

@@ -89,7 +89,10 @@ step 2026-10-27T09:07:00Z
 check "AC3 nothing is pulled or installed"                  '[ "$(srchead)" = "$old" ] && [ "$(calls install)" = 0 ]'
 check "AC3 one push names the commit"                       '[ "$(pushes)" = 1 ] && grep -q "release-failed-$new" <<< "$out" && grep -q "check failed (failure) on ${new:0:12}" <<< "$out"'
 step 2026-10-27T09:08:00Z
-check "AC3 a later pass does not push again for it"         '[ "$(pushes)" = 0 ] && [ "$(mlog | grep -c "check failed")" = 1 ]'
+check "AC3 a later pass returns the same push, so a failed send is tried again, and logs nothing new" '[ "$(pushes)" = 1 ] && grep -q "release-failed-$new" <<< "$out" && [ "$(mlog | grep -c "check failed")" = 1 ]'
+git init -q -b main "$T/repo2"; git -C "$T/repo2" commit -q --allow-empty -m init
+out=$(cd "$T/repo2" && DESK_MAINT_NOW=2026-10-27T09:08:30Z node "$B/maintenance.mjs" step 2>&1)
+check "AC3 another repo's pass does not push it"            '[ "$(pushes)" = 0 ] && grep -q "check failed (failure) on ${new:0:12}" <<< "$out"'
 
 # ---- AC4: a worker at Stage 7 ------------------------------------------------------------------
 upstream three; new=$(originhead); echo success > "$T/check.state"
@@ -115,6 +118,10 @@ echo changed >> "$T/desk-src/install.sh"
 step 2026-10-27T09:19:00Z
 check "AC5 tracked changes: nothing installed, said"        '[ "$(calls install)" = 0 ] && grep -q "uncommitted changes to tracked files" <<< "$out"'
 git -C "$T/desk-src" checkout -q -- install.sh
+git -C "$T/desk-src" commit -q --allow-empty -m local
+step 2026-10-27T09:20:00Z
+check "AC5 local commits origin/main lacks: nothing installed, said" '[ "$(calls install)" = 0 ] && grep -q "has commits on main that ${new:0:12} does not" <<< "$out"'
+git -C "$T/desk-src" reset -q --hard "$old"
 upstream four added.txt; new=$(originhead)
 echo mine > "$T/desk-src/added.txt"
 step 2026-10-27T09:25:00Z
