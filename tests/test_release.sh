@@ -93,6 +93,11 @@ check "AC3 a later pass returns the same push, so a failed send is tried again, 
 git init -q -b main "$T/repo2"; git -C "$T/repo2" commit -q --allow-empty -m init
 out=$(cd "$T/repo2" && DESK_MAINT_NOW=2026-10-27T09:08:30Z node "$B/maintenance.mjs" step 2>&1)
 check "AC3 another repo's pass does not push it"            '[ "$(pushes)" = 0 ] && grep -q "check failed (failure) on ${new:0:12}" <<< "$out"'
+sleep 300 & echo $! > "$T/holder"
+mkdir -p "$T/maint/release.lock.d"; cat "$T/holder" > "$T/maint/release.lock.d/pid"
+step 2026-10-27T09:09:00Z
+check "AC3 a pass that cannot take the release lock still returns the push, so its key is kept" '[ "$(pushes)" = 1 ] && grep -q "release-failed-$new" <<< "$out" && grep -q "release: skipped" <<< "$out"'
+kill "$(cat "$T/holder")"; rm -r "$T/maint/release.lock.d"
 
 # ---- AC4: a worker at Stage 7 ------------------------------------------------------------------
 upstream three; new=$(originhead); echo success > "$T/check.state"
@@ -100,6 +105,7 @@ mkdir -p "$T/desk/repos/other"
 printf '{"version":1,"batch":"o","tickets":{"O-1":{"key":"O-1","state":"running","stage":"7/9"},"O-2":{"key":"O-2","state":"running","stage":"4/9"}}}\n' > "$T/desk/repos/other/queue.json"
 step 2026-10-27T09:15:00Z
 check "AC4 the install waits"                               '[ "$(srchead)" = "$old" ] && [ "$(calls install)" = 0 ]'
+check "AC3 once origin/main moves past the failed commit its push stops" '[ "$(pushes)" = 0 ]'
 check "AC4 the report names the worker, and only it"        'grep -q "waiting to install it for other O-1 at Stage 7\"" <<< "$out"'
 rm -r "$T/desk/repos"
 printf '{"version":1,"batch":"r","tickets":{"R-1":{"key":"R-1","state":"running","stage":null,"handoff_stage":7}}}\n' > "$T/queue.json"

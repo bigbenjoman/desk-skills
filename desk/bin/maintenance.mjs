@@ -238,22 +238,31 @@ export function releaseCheck(dir, sha) {
 // A worker at Stage 7, which may be pushing.
 const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7');
 
-// One step of the auto-release. -> {lines, push}: push holds the notification for a commit whose
-// check failed. Only the repo whose pass first saw it failed returns it, and on every pass while it
-// stays failed, so whoever sends the pass's pushes sends it once and tries again when sending failed.
+// The notification for main's failed check, which release.json gives to the repo whose pass first saw
+// it fail. That repo returns it from every pass while origin/main is still at that commit, whatever
+// else the pass did (the lock held elsewhere, a fetch or check read failing, a window open), so
+// whoever sends the pass's pushes keeps its key, sends it once, and tries again when sending failed.
+export function releasePush({ dir = maintDir(), src = sourceCheckout() } = {}) {
+  const n = readRelease(dir).notified;
+  if (!n?.sha || !n.text || n.by !== selfSlug() || !src || !existsSync(src)) return [];
+  const head = run('git', ['-C', src, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/main']).out;
+  return head === n.sha ? [{ key: `release-failed-${n.sha}`, text: n.text }] : [];
+}
+
+// One step of the auto-release. -> {lines}
 export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, src = sourceCheckout() } = {}) {
-  const none = { lines: [], push: [] };
+  const none = { lines: [] };
   if (!src || !existsSync(src)) return none;
   mkdirSync(dir, { recursive: true });
   const lock = await takeBorrowLock({ dir, name: 'release.lock.d', waitMs: 0 });
-  if (!lock.ok) return { lines: [`release: skipped, another pass is checking or installing desk-skills (${lock.why})`], push: [] };
+  if (!lock.ok) return { lines: [`release: skipped, another pass is checking or installing desk-skills (${lock.why})`] };
   try {
     const s = readRelease(dir);
     const git = (...a) => run('git', ['-C', src, ...a], { timeout: FETCH_TIMEOUT_MS });
     const since = at - Date.parse(s.fetched_at ?? '');
     if (!(since >= 0 && since < FETCH_EVERY_MS)) {
       const f = git('fetch', '-q', 'origin', 'main');
-      if (!f.ok) return { lines: [`release: git fetch failed in ${src}: ${said(f)}; tried again next pass`], push: [] };
+      if (!f.ok) return { lines: [`release: git fetch failed in ${src}: ${said(f)}; tried again next pass`] };
       s.fetched_at = at.toISOString();
       writeRelease(dir, s);
     }
@@ -266,32 +275,32 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     const save = () => writeRelease(dir, s);
     // A reason is recorded, and said, once per commit.
     const blocked = (why) => {
-      if (s.blocked?.sha === head && s.blocked.why === why) return { lines, push: [] };
+      if (s.blocked?.sha === head && s.blocked.why === why) return { lines };
       s.blocked = { sha: head, why };
       save();
       record(dir, at, `release: ${short(head)} not installed: ${why}`);
       lines.push(`release: desk-skills main ${short(head)} not installed: ${why}`);
-      return { lines, push: [] };
+      return { lines };
     };
     if (!git('merge-base', '--is-ancestor', base, head).ok) return blocked(`the installed commit ${short(base)} is not on origin/main, so it was not replaced; run /desk-update`);
 
     const c = releaseCheck(src, head);
-    if (c.error) return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting, main's ${RELEASE_CHECK} check could not be read (${c.error})`], push: [] };
-    if (c.state === 'pending') return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it`], push: [] };
+    if (c.error) return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting, main's ${RELEASE_CHECK} check could not be read (${c.error})`] };
+    if (c.state === 'pending') return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it`] };
     if (c.state === 'failure') {
       const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed: the installed version stays at ${short(base)}`;
       lines.push(`release: ${text}`);
       if (s.notified?.sha !== head) {
-        s.notified = { sha: head, by: selfSlug() };
+        s.notified = { sha: head, by: selfSlug(), text };
         save();
         record(dir, at, `release: ${text}`);
       }
-      return { lines, push: s.notified.by === selfSlug() ? [{ key: `release-failed-${head}`, text }] : [] };
+      return { lines };
     }
 
     const o = othersRunning(selfQueue, { self: true, where: atStage7 });
     const pushing = [...o.running.map((w) => `${w} at Stage 7`), ...o.unreadable];
-    if (pushing.length) return { lines: [`release: desk-skills main ${short(head)} passed its ${RELEASE_CHECK} check; waiting to install it for ${pushing.join(', ')}`], push: [] };
+    if (pushing.length) return { lines: [`release: desk-skills main ${short(head)} passed its ${RELEASE_CHECK} check; waiting to install it for ${pushing.join(', ')}`] };
 
     const u = updateDesk(src, { to: head });
     if (!u.ok) return blocked(u.why);
@@ -299,7 +308,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     save();
     record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed`);
     lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it`);
-    return { lines, push: [] };
+    return { lines };
   } finally { lock.release(); }
 }
 
@@ -310,9 +319,9 @@ export async function maintenance(opts = {}) {
   const dir = opts.dir ?? maintDir();
   const at = opts.at ?? now();
   const m = await windowStep({ ...opts, dir, at });
-  if (m.hold || HOLDING.includes(readState(dir)?.phase)) return { ...m, push: [] };
-  const r = await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null });
-  return { hold: false, lines: [...m.lines, ...r.lines], push: r.push };
+  const lines = [...m.lines];
+  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null })).lines);
+  return { ...m, lines, push: releasePush({ dir }) };
 }
 
 // Moves the window on as far as it can this pass. `running` is this repo's running tickets; `stop(t)`
