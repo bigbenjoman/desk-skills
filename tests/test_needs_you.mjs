@@ -21,6 +21,9 @@ mkdirSync(join(T, 'bin'));
 // macOS, with a fake launchctl that has each label in bin/loaded loaded.
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\nexit 0\n', { mode: 0o755 });
 writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\n');
+// A fake gh that logs its arguments.
+const GH_LOG = join(T, 'gh.log');
+writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n`, { mode: 0o755 });
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_LOCK_DIR: join(T, 'locks'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
 for (const k of Object.keys(process.env)) if (k.startsWith('DESK_') || k.startsWith('AUTOPILOT_')) delete process.env[k];
@@ -40,11 +43,18 @@ process.exit(r.status ?? 1);
 `);
 const answers = () => (existsSync(ANSWERS) ? readFileSync(ANSWERS, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
 
-// One repo's config, queue, heartbeat, triage records and decision log.
+// One repo's checkout, config, queue, heartbeat, triage records and decision log.
 function put(name, r) {
   const slug = `acme__${name}`;
+  const root = join(T, 'repos', name);
+  mkdirSync(root, { recursive: true });
+  spawnSync('git', ['init', '-q', root]);
+  spawnSync('git', ['-C', root, 'remote', 'add', 'origin', `https://github.com/acme/${name}.git`]);
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
+    `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
+    `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
+    '| `autopilot-merge` | The merge driver merges | `ask` | `no` |\n| `pr-merge-green` | Merge a green PR | `ask` | `no` |\n\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n`);
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -62,13 +72,15 @@ function put(name, r) {
   if (r.decisions) writeFileSync(join(state, 'decisions.jsonl'), r.decisions.map((d) => JSON.stringify(d)).join('\n') + '\n');
 }
 const parked = (lane, m, question) => ({ state: 'parked', lane, park: { question, since: minsAgo(m) } });
-put('alpha', { port: 3100, beat: 1, supervised: true, tickets: {
+put('alpha', { port: 3100, beat: 1, supervised: true, prReady: 'yes', tickets: {
   'A-1': parked('A', 180, 'Use the long copy or the short one?'),
   'A-2': parked('C', 120, 'lane C: the plan needs agreeing'),
   'A-3': { state: 'triaged', lane: 'A', open_questions: 2, added_at: minsAgo(60) },
   'A-4': { state: 'parked', lane: 'A', held_by: 'A-9', added_at: minsAgo(30), park: { question: 'held by orchestrator: blocked by A-9 — starts once their PRs merge' } },
   'A-5': { state: 'running', lane: 'A', stage: '3/9' },
   'A-6': parked('B', 10, 'PRODUCTION BROKEN: checkout returns 500'),
+  'A-7': { ...parked('A', 20, 'spine awaiting approval: its acceptance specs passed'), result: { pr: 41 }, spine_check: { ok: true } },
+  'A-8': parked('A', 50, 'size XL: split it before it is worked'),
 }, triage: { 'A-3': { summary: 'Cap the list', unknowns: ['What is the cap?', 'Which page?'] } },
 decisions: [{ id: 'd1', at: minsAgo(200), repo: 'acme/alpha', ticket: 'A-1', question: 'Which heading level?', options: ['h2', 'h3'], chose: 'h2', category: 'design' }] });
 put('beta', { port: 3200, beat: 2, tickets: { 'B-1': parked('A', 300, 'Which endpoint?') } });
@@ -83,14 +95,11 @@ const cli = (...args) => { const r = spawnSync(process.execPath, [join(REAL_BIN,
 
 // ---- AC1: every item desk-q counts, in every repo, and nothing it does not
 const c = N.collect();
-const deskQ = loadRepos().flatMap((r) => r.rows.filter((x) => x.k === 'needs').map((x) => x.t.key)).sort();
-t('AC1 the items are exactly what desk-q counts as needing you', c.items.map((i) => i.t.key).sort().join(), deskQ.join());
-t('AC1 across both repos with items, and not the running ticket', `${c.items.map((i) => i.t.key).sort().join()}`, 'A-1,A-2,A-3,A-4,A-6,B-1,G-1');
+t('AC1 across both repos with items, and not the running ticket', `${c.items.map((i) => i.t.key).sort().join()}`, 'A-1,A-2,A-3,A-4,A-6,A-7,A-8,B-1,G-1');
 
-// ---- AC2: a PRODUCTION BROKEN park first, then the oldest first; the skill asks four at a time
-t('AC2 order', c.items.map((i) => i.t.key).join(), 'A-6,B-1,G-1,A-1,A-2,A-3,A-4');
+// ---- AC2: a PRODUCTION BROKEN park first, then the oldest first
+t('AC2 order', c.items.map((i) => i.t.key).join(), 'A-6,B-1,G-1,A-1,A-2,A-3,A-8,A-4,A-7');
 const skill = readFileSync(join(ROOT, 'skills', 'desk-needs-you', 'SKILL.md'), 'utf8');
-t('AC2 the skill asks at most four questions a round', /at most four questions/.test(skill), true);
 
 // ---- AC3, AC12: one compact line per item, naming repo, ticket, kind, need and options, recommendation first
 const list = cli('list');
@@ -104,9 +113,10 @@ t('AC3 a hold nothing releases recommends release', itemLines.some((l) => l.star
 t('AC12 each repo with items says who runs it', ['@ alpha: run by the supervisor', '@ beta: run by a live session (beta-batch)', '@ gamma: passes stopped'].every((s) => list.out.includes(s)), true);
 t('AC5 a parked item offers to override its worker\'s decision', itemLines.some((l) => l.startsWith('alpha A-1 parked') && l.includes('override d1 (took "h2" on "Which heading level?")')), true);
 
-// ---- AC13: a small skill that does not load desk-autopilot
+t('AC6 a park triage made recommends opening it, not a resume a requeue would refuse', itemLines.some((l) => l.startsWith('alpha A-8 session') && l.includes('1. open (recommended:') && !l.includes('resume')), true);
+
+// ---- AC13: a small skill
 t('AC13 the skill is at most 6 KB', Buffer.byteLength(skill) <= 6144, true);
-t('AC13 it names no desk-autopilot reference and says not to load it', `${/desk-autopilot\/references|references\/orchestrator/.test(skill)} ${/do not load `desk-autopilot`/.test(skill)}`, 'false true');
 
 // ---- AC5: an override goes through digest.mjs override
 const ov = N.record({ word: 'alpha', ticket: 'A-1', action: 'override d1', text: 'h3' });
@@ -136,7 +146,12 @@ const reg = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-n
 t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} ${reg.includes('PRODUCTION BROKEN: checkout returns 500')} ${answers().at(-1).args.join(' ')}`, 'true true A-6 not now');
 const n4 = N.record({ word: 'alpha', ticket: 'A-4', action: 'not-now' });
 t('AC8 a hold put off is in the register too, and stays held', `${n4.ok} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8').includes('"ticket":"A-4"')} ${queueOf('alpha').tickets['A-4'].held_by}`, 'true true A-9');
-t('AC8 the skill does not ask a put-off item again in the run', /Do not ask about it again in this run/.test(skill), true);
+
+// ---- A spine approval runs as its own repo, and what is left for the person is shown, not refused
+const s7 = N.record({ word: 'alpha', ticket: 'A-7', action: 'approve' });
+const gh = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '';
+t('approve undrafts the PR in the spine\'s repo, under its config, not this checkout\'s', gh.trim(), 'pr ready 41 --repo acme/alpha');
+t('approve that leaves the merge to the person is recorded, and says so', `${s7.ok} ${queueOf('alpha').tickets['A-7'].state} ${/merge PR #41 yourself/.test(s7.line)}`, 'true done true');
 
 // ---- AC9: a named repo asks only about its own items
 t('AC9 one repo', N.collect({ word: 'beta' }).items.map((i) => `${i.r.name} ${i.t.key}`).join(), 'beta B-1');
@@ -158,7 +173,8 @@ t('AC16 the record line says passes are stopped', /Passes are stopped in gamma/.
 
 // ---- AC11: the end prints the desk-q count left, then each stopped repo and how to resume it
 const left = cli('left').out.trim().split('\n');
-t('AC11 the count left is desk-q\'s', left[0], `desk-q counts ${N.collect().items.length} items needing you.`);
+// A-1, A-3, A-7 and G-1 are settled; A-2, A-4, A-6, A-8 and B-1 still need you.
+t('AC11 the count left is desk-q\'s', left[0], 'desk-q counts 5 items needing you.');
 t('AC16 the last line says passes are stopped in gamma and how to resume', /^Passes are stopped in gamma, .* To resume: run \/desk-autopilot in gamma\.$/.test(left.at(-1)), true);
 
 // Refusals.

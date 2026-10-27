@@ -297,10 +297,10 @@ function whoRuns(r) {
 //   oldCode     which of the supervisor and its running merge driver run older desk code than is installed
 const NO_PROGRESS_MS = HOUR;
 const ERROR_STREAK = 2;
-const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+export const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
 // A file's last 4 KB as its non-blank lines, or none with no file.
 const tailLines = (p) => { try { return tailText(p, 4096).split('\n').map((l) => l.trim()).filter(Boolean); } catch { return []; } };
-const timeOf = (s) => { const t = Date.parse(s ?? ''); return Number.isFinite(t) ? t : null; };
+export const timeOf = (s) => { const t = Date.parse(s ?? ''); return Number.isFinite(t) ? t : null; };
 function stallOf(r, now) {
   const rec = r.q.pass && typeof r.q.pass === 'object' ? r.q.pass : {};
   const sup = r.run?.by === 'supervisor' ? readJson(join(r.stateDir, 'supervisor.json')) : null;
@@ -403,7 +403,7 @@ const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged a
 const stoppedNote = (r, now) => (r.last == null ? 'no pass yet, so no dates until passes start' : `passes stopped ${ago(now - r.last)}, so no dates until they resume`);
 // A parked ticket only an interactive /desk-ticket session can take on: queue.mjs requeues only
 // lanes A, B and E to a headless worker.
-const needsSession = (t) => ['C', 'D'].includes(t.lane) || /^lane [CD]\b/.test(t.park?.question ?? '');
+export const needsSession = (t) => ['C', 'D'].includes(t.lane) || /^lane [CD]\b/.test(t.park?.question ?? '');
 function idleNote(r) {
   const you = attention(r);
   if (!you) return 'Nothing left for autopilot: every ticket is done.';
@@ -1633,13 +1633,21 @@ const QUEUE_MJS = join(dirname(fileURLToPath(import.meta.url)), 'queue.mjs');
 
 // Every change is a queue.mjs command, which takes the queue's lock. Its queue and state directory
 // are the named repo's, passed explicitly: left to itself, queue.mjs picks the repo it is run in.
-function queueCmd(r, args) {
+// A command that reads the repo's config or GitHub repo also needs `at`, its checkout (checkoutOf).
+// { ok, code, out, err, why }: its stdout and stderr, and on a non-zero exit why it failed.
+export function queueRun(r, args, at = { env: process.env }) {
   try {
-    execFileSync(process.execPath, [QUEUE_MJS, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, DESK_QUEUE: r.queuePath, DESK_AUTOPILOT_STATE: r.stateDir } });
+    const out = execFileSync(process.execPath, [QUEUE_MJS, ...args], { cwd: at.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...at.env, DESK_QUEUE: r.queuePath, DESK_AUTOPILOT_STATE: r.stateDir } });
+    return { ok: true, code: 0, out, err: '', why: '' };
   } catch (e) {
-    throw new Usage(String(e.stderr ?? '').trim().replace(/^queue: /, '') || describeCrash(e));
+    const err = String(e.stderr ?? '').trim().replace(/^queue: /, '');
+    return { ok: false, code: e.status ?? null, out: String(e.stdout ?? ''), err, why: err || describeCrash(e) };
   }
+}
+function queueCmd(r, args) {
+  const q = queueRun(r, args);
+  if (!q.ok) throw new Usage(q.why);
 }
 
 // Positions are queue.mjs's (loadRepos), so a place here is the place passed on.
@@ -1695,13 +1703,19 @@ function apply(repos, v) {
 
 export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.';
 
+// The named repo's own checkout, { cwd, env }, so a child run there acts as that repo (its slug,
+// config and GitHub repo) and not as the one this process runs in. `doing` ends the refusal.
+export function checkoutOf(r, doing) {
+  const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
+  if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to ${doing} in. Nothing changed.`);
+  if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
+  return { cwd: root, env: { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root } };
+}
+
 // supervisor.mjs, run in the named repo's own checkout, so its slug, state and queue are that repo's.
 function supervisorRunner(r) {
-  const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
-  if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to run its supervisor in. Nothing changed.`);
-  if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
-  const env = { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath };
-  return (sub, args) => supervisorRun(sub, args, { cwd: root, env });
+  const { cwd, env } = checkoutOf(r, 'run its supervisor');
+  return (sub, args) => supervisorRun(sub, args, { cwd, env: { ...env, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath } });
 }
 
 function supervisorState(r, run = supervisorRunner(r)) {

@@ -17,17 +17,14 @@
 //
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then the longest waiting. Exits 0, or 11 (show the person) on anything it refuses.
-import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, resolveRepo, resumeOf } from './desk-q.mjs';
-import { answer, override, readDecisions, PRODUCTION_BROKEN } from './digest.mjs';
+import { loadRepos, shownRepos, holdOf, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf } from './desk-q.mjs';
+import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath } from './not-now.mjs';
 
-const QUEUE_MJS = join(dirname(fileURLToPath(import.meta.url)), 'queue.mjs');
 // A question longer than this is cut on its line: the session asks it, not reads it in full.
 const QUESTION_MAX = 240;
 // The decisions a parked item offers to override, newest first.
@@ -35,10 +32,10 @@ const DECISIONS_SHOWN = 3;
 
 const one = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const timeOf = (s) => { const t = Date.parse(s ?? ''); return Number.isFinite(t) ? t : null; };
 const since = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
-const sessionLane = (t) => ['C', 'D'].includes(t.lane) || /^lane [CD]\b/.test(t.park?.question ?? '');
-const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+// A park triage made (size, a dependency cycle): queue.mjs requeue refuses it, so it needs a person.
+const triagePark = (t) => /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''));
+const digestList = (r) => [{ slug: r.slug, state: r.stateDir, queue: r.queuePath }];
 
 // Who moves the repo's batch on once an answer is recorded: its supervisor, a live session (named by
 // its batch, as the orchestrator is), or nothing while passes are stopped.
@@ -61,15 +58,16 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (sessionLane(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ['answer'], ['not-now']] };
+    if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ['answer'], ['not-now']] };
+    if (triagePark(t)) return { kind: 'session', need, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     return { kind: 'parked', need, actions: [['resume', `lane ${t.lane ?? '?'}: a worker finishes it once it has your answer`], ['answer'], ['not-now'], ...offer] };
   }
-  const unknowns = readJson(join(r.stateDir, 'triage', `${t.key}.json`))?.unknowns;
-  const need = Array.isArray(unknowns) && unknowns.length ? unknowns.map(one).join(' · ') : `${t.open_questions} triage question(s) open`;
+  // Its questions as the digest page words them, so a put-off entry keys to the same text.
+  const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
   return { kind: 'triage', need, actions: [['answer', 'answering clears its questions, so the next pass can start it'], ['not-now']] };
 }
 
@@ -106,16 +104,16 @@ export function listText(c, now = Date.now()) {
   return lines.join('\n');
 }
 
-// A queue.mjs command against the named repo's queue, as desk-q runs one: { ok, out }.
+// A queue.mjs command run from the named repo's checkout, so the permissions and GitHub repo it reads
+// are that repo's, not those of the repo this session is in: { ok, out }. Exit 11 with nothing on
+// stderr is queue.mjs having recorded it and naming what is left for the person, on stdout.
 function queueCmd(r, args) {
-  try {
-    const out = execFileSync(process.execPath, [QUEUE_MJS, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, DESK_QUEUE: r.queuePath, DESK_AUTOPILOT_STATE: r.stateDir } });
-    return { ok: true, out: one(out) };
-  } catch (e) { return { ok: false, out: one(`${e.stderr ?? ''}`).replace(/^queue: /, '') || e.message }; }
+  let at;
+  try { at = checkoutOf(r, 'record it'); } catch (e) { return { ok: false, out: e.message }; }
+  const q = queueRun(r, args, at);
+  if (q.ok || (q.code === EXIT.SHOW_PERSON && !q.err && q.out.trim())) return { ok: true, out: one(q.out) };
+  return { ok: false, out: one(q.why) };
 }
-
-const digestList = (r) => [{ slug: r.slug, state: r.stateDir, queue: r.queuePath }];
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now) }) {
@@ -151,7 +149,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       for (const s of steps) { const q = queueCmd(r, s); if (!q.ok) return say(false, `release refused: ${q.out}`); }
       return say(true, 'released; the next pass can start it.');
     }
-    case 'approve': { const q = queueCmd(r, ['approve', ticket]); return q.ok ? say(true, 'spine approved.') : say(false, q.out); }
+    // queue.mjs's own lines: they name any undraft or merge left for the person to do.
+    case 'approve': { const q = queueCmd(r, ['approve', ticket]); return q.ok ? say(true, `spine approved: ${q.out}`) : say(false, q.out); }
     case 'reject': {
       const q = queueCmd(r, ['reject', ticket, text]);
       return q.ok ? say(true, 'spine sent back with your note.') : say(false, q.out);
