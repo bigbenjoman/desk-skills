@@ -425,7 +425,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
     out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
-  // or failed checked nothing, so it keeps the keys already sent rather than dropping them (DS-276).
+  // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
   if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;
   else s.notified = sent ? items : s.notified.filter((i) => items.includes(i));
   // Idle is recorded only once its notification is out: until then the next interval passes again.
