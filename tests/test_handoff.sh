@@ -4,7 +4,8 @@
 # throwaway repo: one injection past the §2 threshold and none under it, the main chain only, the
 # window (200k, [1m], a chosen model's [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a
 # single Stop block, the .handoffs/ exclude, /desk-update's one-time offer-1m of a 20% 1M row
-# and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only).
+# and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only),
+# and two sessions in one repo: a reserved name each, and each resuming its own handoff.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -34,9 +35,10 @@ transcript(){
     [ -n "${3:-}" ] && printf '{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":%s,"output_tokens":1}}}\n' "$3"
     printf '{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result"}]}}\n'; } > "$1"
 }
-# hook <event> <session> <transcript> [extra json fields]
+# hook <event> <session> <transcript> [extra json fields]; each session is its own Claude process,
+# unless PID names the one it shares (a /clear keeps the process and mints a new session id)
 hook(){ out=$(printf '{"hook_event_name":"%s","session_id":"%s","transcript_path":"%s","cwd":"%s"%s}' \
-  "$1" "$2" "$3" "$R/sub" "${4:-}" | python3 "$HOOK" 2>&1); rc=$?; }
+  "$1" "$2" "$3" "$R/sub" "${4:-}" | DESK_HANDOFF_PID="${PID:-$2}" python3 "$HOOK" 2>&1); rc=$?; }
 ctx(){ printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])' 2>/dev/null; }
 age(){ python3 -c 'import os,sys,time; t=time.time()-float(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
 
@@ -214,11 +216,19 @@ hook Stop s3 "$T/side.jsonl"
 check "Stop never blocks a session that has not fired"    '[ -z "$out" ]'
 mkdir -p "$R/.handoffs"; echo "# handoff" > "$R/.handoffs/$DAY.md"
 hook Stop s2 "$T/high.jsonl"
-check "Stop with a handoff newer than the firing: none"   '[ -z "$out" ]'
+check "Stop with another session's handoff written: still blocks" '[[ "$out" == *"write the handoff first"* ]]'
+hook PostToolUse s13 "$T/high.jsonl"
+s13_handoff=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("handoff", ""))' "$DESK_HOME/handoff/s13.json")
+check "a fired session's handoff is its own placeholder"  '[ -n "$s13_handoff" ] && grep -q "placeholder.*session s13" "$s13_handoff"'
+echo "# handoff" > "$s13_handoff"
+hook Stop s13 "$T/high.jsonl"
+check "Stop with its own handoff written: none"           '[ -z "$out" ]'
+age "$s13_handoff" 90003
 hook Stop s4 "$T/500k.jsonl" ',"stop_hook_active":true'
 check "stop_hook_active: never blocks"                    '[ -z "$out" ]'
 hook PostToolUse s11 "$T/high.jsonl"
-check "AC3: an existing <date>.md gives <date>-2.md"       '[[ "$(ctx)" == *"$R/.handoffs/$DAY-2.md"* ]]'
+c="$(ctx)"
+check "AC3: an existing <date>.md gives a later <date>-n.md" '[[ "$c" == *"$R/.handoffs/$DAY-"* ]] && [[ "$c" != *"$R/.handoffs/$DAY.md"* ]]'
 
 # ---- AC4: SessionStart on clear and compact ----
 hook SessionStart n1 "$T/low.jsonl" ',"source":"clear"'
@@ -231,7 +241,9 @@ echo "# later" > "$R/.handoffs/$DAY-2.md"
 hook SessionStart n3 "$T/low.jsonl" ',"source":"resume"'
 check "resume injects nothing"                            '[ -z "$out" ]'
 hook SessionStart s1 "$T/low.jsonl" ',"source":"compact"'
-check "compact: injects the newest handoff"               '[[ "$(ctx)" == *"read .handoffs/$DAY-2.md"* ]]'
+check "compact: its own handoff, already consumed, is not offered" '[ -z "$out" ]'
+hook SessionStart s3 "$T/low.jsonl" ',"source":"compact"'
+check "compact with no handoff recorded: injects the newest" '[[ "$(ctx)" == *"read .handoffs/$DAY-2.md"* ]]'
 transcript "$T/compacted.jsonl" 100000
 printf '{"type":"system","subtype":"compact_boundary","isSidechain":false}\n{"type":"user","isSidechain":false,"isCompactSummary":true,"message":{"role":"user","content":"summary"}}\n' >> "$T/compacted.jsonl"
 hook UserPromptSubmit s1 "$T/compacted.jsonl"
@@ -251,6 +263,37 @@ config '`0`'; echo "# fresh" > "$R/.handoffs/fresh.md"
 hook SessionStart n5 "$T/low.jsonl" ',"source":"clear"'
 check "§2 at 0: no SessionStart injection"                '[ -z "$out" ]'
 config '`45`'
+
+# ---- DS-282: two sessions in one repo each keep their own handoff ----
+rm -rf "$R/.handoffs"
+hook PostToolUse a1 "$T/high.jsonl"
+check "DS-282: session A is named <date>.md"              '[[ "$(ctx)" == *"$R/.handoffs/$DAY.md"* ]]'
+hook PostToolUse b1 "$T/high.jsonl"
+c="$(ctx)"
+check "DS-282 AC1: B, before A writes, gets <date>-2.md"  '[[ "$c" == *"$R/.handoffs/$DAY-2.md"* ]] && [[ "$c" != *"$R/.handoffs/$DAY.md"* ]]'
+check "DS-282 AC2: A's name exists at once, one line naming A" '[ "$(wc -l < "$R/.handoffs/$DAY.md")" -eq 1 ] && grep -q "placeholder.*session a1" "$R/.handoffs/$DAY.md"'
+check "DS-282 AC2: and B is told to read it, then replace it" '[[ "$c" == *"placeholder"* ]] && [[ "$c" == *"read it, then replace it whole"* ]]'
+hook Stop a1 "$T/high.jsonl"
+check "DS-282: a placeholder does not count as written at Stop" '[[ "$out" == *"write the handoff first"* ]]'
+hook SessionStart c1 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC5: an unfilled placeholder is not offered" '[ -z "$out" ]'
+PID=a1 hook SessionStart a2 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC5: nor to the session that reserved it"   '[ -z "$out" ]'
+echo "# A" > "$R/.handoffs/$DAY.md"
+hook Stop b1 "$T/high.jsonl"
+check "DS-282: A's written handoff does not release B's Stop" '[[ "$out" == *"write the handoff first"* ]] && [[ "$out" == *"$DAY-2.md"* ]]'
+age "$R/.handoffs/$DAY.md" 60
+echo "# B" > "$R/.handoffs/$DAY-2.md"
+PID=a1 hook SessionStart a3 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC3: A's next session reads A's, not B's newer one" '[[ "$(ctx)" == *"read .handoffs/$DAY.md"* ]]'
+PID=b1 hook SessionStart b2 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC3: and B's reads B's"                     '[[ "$(ctx)" == *"read .handoffs/$DAY-2.md"* ]]'
+echo "# C" > "$R/.handoffs/$DAY-9.md"
+hook SessionStart d1 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC4: no handoff recorded: the newest fresh one" '[[ "$(ctx)" == *"read .handoffs/$DAY-9.md"* ]]'
+age "$R/.handoffs/$DAY-9.md" 30; echo "# A again" > "$R/.handoffs/$DAY-10.md"
+PID=a1 hook SessionStart a4 "$T/low.jsonl" ',"source":"clear"'
+check "DS-282 AC4: A's second /clear, nothing new recorded: the newest" '[[ "$(ctx)" == *"read .handoffs/$DAY-10.md"* ]]'
 
 # ---- never breaks a session ----
 out=$(printf 'not json' | python3 "$HOOK" 2>&1); rc=$?

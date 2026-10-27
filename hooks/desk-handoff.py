@@ -8,12 +8,17 @@ One script, registered by install.sh on four events; it reads `hook_event_name` 
                                  "Handoff at context % on a 1M window" (unset, the first row's value;
                                  `0` disables), inject once: finish the current
                                  step, write the handoff, start no new work.
-  Stop                           After that has fired, and while no handoff newer than the firing
-                                 exists, block the end of the turn once ("write the handoff first").
-  SessionStart                   source `clear` or `compact`: inject "read .handoffs/<latest>.md and
-                                 continue from its next step" when that file is under 24 hours old
-                                 and not yet consumed, then mark it consumed. Any source also records
-                                 the session's model, which says whether the window is 1M.
+  Stop                           After that has fired, and while the handoff it named is unwritten,
+                                 block the end of the turn once ("write the handoff first").
+  SessionStart                   source `clear` or `compact`: inject "read .handoffs/<name>.md and
+                                 continue from its next step" for the handoff this session was told
+                                 to write (else, with none recorded, the newest written one) when
+                                 that file is written, under 24 hours old and not yet consumed, then
+                                 mark it consumed. Any source also records the session's model, which
+                                 says whether the window is 1M.
+
+Naming a handoff creates it, holding a one-line placeholder, so two sessions in one repo are never
+given the same name; a placeholder is not a written handoff.
 
 A desk session is one whose repo has a desk config (`desk-env where` says EXISTS=yes); anywhere else
 the hook is silent. Context used is the last main-chain assistant entry's usage in the transcript
@@ -192,13 +197,50 @@ def handoff_dir(root):
     return os.path.join(root, ".handoffs")
 
 
-def next_handoff(root):
+PLACEHOLDER = "<!-- desk handoff placeholder"
+
+
+def next_handoff(root, session):
+    """Reserve the first free <day>[-n].md by creating it, holding a one-line placeholder, so a
+    second session's search skips it."""
     day = time.strftime("%Y-%m-%d")
-    path, n = os.path.join(handoff_dir(root), day + ".md"), 1
-    while os.path.exists(path):
-        n += 1
-        path = os.path.join(handoff_dir(root), f"{day}-{n}.md")
-    return path
+    os.makedirs(handoff_dir(root), exist_ok=True)
+    n = 1
+    while True:
+        name = day + ".md" if n == 1 else f"{day}-{n}.md"
+        path = os.path.join(handoff_dir(root), name)
+        try:
+            with open(path, "x") as f:
+                f.write(f"{PLACEHOLDER}: reserved by session {session}, not written yet -->\n")
+            return path
+        except FileExistsError:
+            n += 1
+
+
+def is_placeholder(path):
+    try:
+        with open(path) as f:
+            return f.read(len(PLACEHOLDER)) == PLACEHOLDER
+    except Exception:
+        return False
+
+
+def claude_pid():
+    """The Claude process this hook runs under, which outlives /clear's new session id: the hook's
+    parent, or the parent's parent when that is the shell running the hook command.
+    DESK_HANDOFF_PID stands in for it."""
+    if os.environ.get("DESK_HANDOFF_PID"):
+        return os.environ["DESK_HANDOFF_PID"]
+    pid = os.getppid()
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=5).stdout.split(None, 1)
+        if len(out) == 2 and os.path.basename(out[1].strip()).lstrip("-") in (
+                "sh", "bash", "dash", "zsh"):
+            pid = int(out[0])
+    except Exception:
+        pass
+    return str(pid)
 
 
 def exclude_handoffs(root):
@@ -220,8 +262,8 @@ def exclude_handoffs(root):
 
 
 def handoffs(root):
-    """Handoff files, newest first."""
-    files = glob.glob(os.path.join(handoff_dir(root), "*.md"))
+    """Written handoff files, newest first; a placeholder never filled is not one."""
+    files = [f for f in glob.glob(os.path.join(handoff_dir(root), "*.md")) if not is_placeholder(f)]
     return sorted(files, key=os.path.getmtime, reverse=True)
 
 
@@ -259,15 +301,16 @@ def on_context(event, data, session, root):
     if now < pct:
         save_state(session, state)
         return
-    path = next_handoff(root)
     exclude_handoffs(root)
-    state.update(fired_at=time.time(), handoff=path, blocked=False)
+    path = next_handoff(root, session)
+    state.update(fired_at=time.time(), handoff=path, blocked=False, pid=claude_pid())
     save_state(session, state)
     rel = os.path.relpath(path, root)
     inject(event, (
         f"desk handoff: context is at {now:.0f}% of a {w:,}-token window (threshold {pct:g}%). "
         "Finish the step you are on, then write the handoff and start no new work. "
-        f"Write it to {path} (repo-relative: {rel}), following ~/.claude/rules/handoffs.md where it "
+        f"Write it to {path} (repo-relative: {rel}), which holds a one-line placeholder reserving "
+        "the name for this session: read it, then replace it whole. Follow ~/.claude/rules/handoffs.md where it "
         "exists, with these sections: where things stand; the task in progress and its next step; "
         "decisions made; open questions; and last, the paste-in line "
         f"(`Read {rel} and continue from its next step.`). "
@@ -281,15 +324,56 @@ def on_stop(data, session, root):
     fired = state.get("fired_at")
     if not fired or state.get("blocked"):
         return
-    if any(os.path.getmtime(f) >= fired - 1 for f in handoffs(root)):
+    own = state.get("handoff")
+    if own:
+        if os.path.exists(own) and not is_placeholder(own):
+            return
+    elif any(os.path.getmtime(f) >= fired - 1 for f in handoffs(root)):
         return
     state["blocked"] = True
     save_state(session, state)
-    path = state.get("handoff") or next_handoff(root)
+    path = state.get("handoff") or handoff_dir(root)
     print(json.dumps({"decision": "block", "reason": (
         f"desk handoff: write the handoff first. Context passed the threshold; write {path} "
         "(where things stand, the task in progress and its next step, decisions made, open "
         "questions, the paste-in line), then end the turn and tell the user to type /clear.")}))
+
+
+def recorded_handoff(state, session, root, source):
+    """The handoff this session was told to write before its context emptied: from its own state, or
+    after /clear, which mints a new session id, the newest one recorded under the same Claude process.
+    Taking one once it is written unlinks it from the process, so a later /clear without a new firing
+    falls back to the newest written handoff."""
+    if state.get("handoff"):
+        return state["handoff"]
+    if source != "clear":
+        return None
+    pid, best = claude_pid(), None
+    for p in glob.glob(os.path.join(STATE_DIR, "*.json")):
+        if p == state_path(session):
+            continue
+        try:
+            with open(p) as f:
+                s = json.load(f)
+            fired = float(s.get("fired_at") or 0)
+        except Exception:
+            continue
+        if (isinstance(s, dict) and s.get("pid") == pid and s.get("root") == root
+                and s.get("handoff") and time.time() - fired <= FRESH_SECONDS
+                and (best is None or fired > best[0])):
+            best = (fired, s["handoff"], p, s)
+    if not best:
+        return None
+    _, path, p, s = best
+    if os.path.exists(path) and not is_placeholder(path):
+        s.pop("pid", None)
+        try:
+            with open(p + ".tmp", "w") as f:
+                json.dump(s, f)
+            os.replace(p + ".tmp", p)
+        except Exception:
+            pass
+    return path
 
 
 def on_session_start(data, session, root):
@@ -298,7 +382,9 @@ def on_session_start(data, session, root):
         m = data["model"]
         state["model"] = m.get("id") if isinstance(m, dict) else str(m)
     source = data.get("source")
+    recorded = None
     if source in ("clear", "compact"):
+        recorded = recorded_handoff(state, session, root, source)
         # The context just emptied, so the next threshold crossing is a new one.
         for k in ("fired_at", "blocked", "handoff"):
             state.pop(k, None)
@@ -306,10 +392,17 @@ def on_session_start(data, session, root):
     save_state(session, state)
     if source not in ("clear", "compact") or not (pct or pct_1m):
         return
-    files = handoffs(root)
-    if not files or time.time() - os.path.getmtime(files[0]) > FRESH_SECONDS:
+    if recorded:
+        if not os.path.exists(recorded) or is_placeholder(recorded):
+            return
+        latest = recorded
+    else:
+        files = handoffs(root)
+        if not files:
+            return
+        latest = files[0]
+    if time.time() - os.path.getmtime(latest) > FRESH_SECONDS:
         return
-    latest = files[0]
     name = os.path.basename(latest)
     consumed_path = os.path.join(handoff_dir(root), ".consumed")
     try:
