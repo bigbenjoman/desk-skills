@@ -11,6 +11,8 @@ import * as E from './desk-env.mjs';
 export const CLAIM_ROW = E.CONFIG_ROWS['claim-release'].row;
 export const DEFAULT_CLAIM_HOURS = 12;
 export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+// The park question of a ticket claimed with no park of its own and no question given.
+export const claimQuestion = (session) => `claimed by session ${session}: worked there, not by a worker`;
 
 // Config §3b "Release idle claims after (hours)": a number of hours, `0` or `none` never releases,
 // unset is 12.

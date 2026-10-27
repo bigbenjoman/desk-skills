@@ -84,6 +84,18 @@ claimed K-2 sid-dirty; worktree K-2 notes.txt
 claimed K-3 sid-live; worktree K-3
 claimed K-4 sid-gone; worktree K-4; rm "$T/home/.claude/projects/-work-repo/sid-gone.jsonl"
 
+# A park the ticket already had stays its question under a claim, so the requeue guards still read it.
+q add K-5 Story D; q set K-5 state=triaged "branch=feat/K-5"; q park K-5 "lane D — its canvas is not on main: save it there"
+q park K-5 --claimed-by sid-idle; q set K-5 park.claim.at=2026-01-01T00:00:00Z; worktree K-5
+q add K-6 Story A; q set K-6 state=triaged "branch=feat/K-6"; q park K-6 "size XL: split it before a worker takes it"
+q park K-6 --claimed-by sid-dirty; q set K-6 park.claim.at=2026-01-01T00:00:00Z; worktree K-6 draft.md
+check "DS-244 claiming a parked ticket keeps its park's question and adds the claim" '[ "$(field K-5 park.question)" = "\"lane D — its canvas is not on main: save it there\"" ] && [ "$(field K-5 park.claim.session)" = "\"sid-idle\"" ]'
+out=$(node "$B/queue.mjs" park K-5 --claimed-by sid-idle "new words" 2>&1); rc=$?
+check "DS-244 a question given while claiming a parked ticket is refused, keeping its own" '[ $rc -ne 0 ] && grep -q "claim it with no question" <<< "$out" && [ "$(field K-5 park.question)" = "\"lane D — its canvas is not on main: save it there\"" ]'
+q add K-7 Story A; q set K-7 state=parked "park.question=held by orchestrator behind K-1"
+out=$(node "$B/queue.mjs" park K-7 --claimed-by sid-idle 2>&1); rc=$?
+check "DS-244 a held ticket cannot be claimed" '[ $rc -ne 0 ] && grep -q "cannot be claimed" <<< "$out" && [ "$(field K-7 park.claim)" = null ]'
+
 # ---- AC5: the row at 0 never releases -----------------------------------------------------------------
 config 0
 out=$(node "$B/pass.mjs" 2>&1)
@@ -103,6 +115,8 @@ check "DS-244 AC3 uncommitted changes keep the claim, and the park names the fil
 check "DS-244 AC3 it is reported as a park" 'grep -q "K-2: claimed by session sid-dirty, which has been idle past 12h, but its worktree $T/wt/K-2 has uncommitted changes (notes.txt)" <<< "$out"'
 check "DS-244 AC4 a live session's claim is left as it was" '[ "$(field K-3 state)" = "\"parked\"" ] && [ "$(field K-3 park.claim.dirty_at)" = null ] && ! grep -q "K-3: \|K-3 went" <<< "$out"'
 check "DS-244 a claim whose transcript is gone stays, and is named" '[ "$(field K-4 state)" = "\"parked\"" ] && grep -q "K-4: claimed by session sid-gone, whose transcript is gone: left claimed" <<< "$out"'
+check "DS-244 a lane D parked on its design stays claimed however idle the session" '[ "$(field K-5 state)" = "\"parked\"" ] && [ "$(field K-5 park.claim.session)" = "\"sid-idle\"" ] && ! grep -q "K-5 went back" <<< "$out"'
+check "DS-244 a dirty claim on a ticket parked for its size keeps that question in front" 'grep -q "^\"size XL: split it before a worker takes it; claimed by session sid-dirty, .*uncommitted changes (draft.md)" <<< "$(field K-6 park.question)"'
 since=$(field K-2 park.since)
 
 out=$(node "$B/pass.mjs" 2>&1)
@@ -112,5 +126,8 @@ check "DS-244 AC2 a released ticket is not pushed again" '! grep -q "K-1 went ba
 git -C "$T/wt/K-2" clean -qf
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-244 a dirty claim made clean goes back to the workers" '[ "$(field K-2 state)" = "\"triaged\"" ] && grep -q "^PUSH: .*K-2 went back to the workers" <<< "$out"'
+git -C "$T/wt/K-6" clean -qf
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-244 a claim on a ticket parked for its size is never released to a worker, made clean or not" '[ "$(field K-6 state)" = "\"parked\"" ] && ! grep -q "K-6 went back" <<< "$out"'
 
 echo "claims: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

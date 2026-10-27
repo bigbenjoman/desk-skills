@@ -29,7 +29,7 @@ import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs,
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
-import { claimHours, transcriptOf, claimWorktree, uncommitted } from './claims.mjs';
+import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment } from './undraft.mjs';
@@ -749,6 +749,9 @@ if (CLAIMS.bad) report.waiting.push(`${CLAIMS.bad} — no claim is released unti
 for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const c = t.park?.claim;
   if (t.state !== 'parked' || !c?.session) continue;
+  // Held, a spine awaiting its person, or a lane C or D parked at triage: never a headless worker's,
+  // however idle the session (as the clears-when loop above).
+  if (isHeld(t) || spinePark(t) || needsSession(t)) continue;
   const tr = transcriptOf(c.session);
   if (!tr) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
   const since = Math.max(tr.mtimeMs, Date.parse(c.at) || 0);
@@ -763,7 +766,9 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
     if (c.dirty_at) continue;
     const files = dirty.length > 5 ? `${dirty.slice(0, 5).join(', ')} and ${dirty.length - 5} more` : dirty.join(', ');
     const why = `claimed by session ${c.session}, which has been idle past ${CLAIMS.hours}h, but its worktree ${wt} has uncommitted changes (${files}): commit or discard them, or say who carries on`;
-    q('set', t.key, `park.question=${why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`);
+    // A park of the ticket's own keeps its question in front, where the requeue guards read it.
+    const was = t.park.question;
+    q('set', t.key, `park.question=${was && was !== claimQuestion(c.session) ? `${was}; ${why}` : why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`);
     report.parked.push(`${t.key}: ${why}`);
     continue;
   }
