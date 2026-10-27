@@ -217,10 +217,13 @@ check "Stop never blocks a session that has not fired"    '[ -z "$out" ]'
 mkdir -p "$R/.handoffs"; echo "# handoff" > "$R/.handoffs/$DAY.md"
 hook Stop s2 "$T/high.jsonl"
 check "Stop with another session's handoff written: still blocks" '[[ "$out" == *"write the handoff first"* ]]'
-s5_handoff=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["handoff"])' "$DESK_HOME/handoff/s5.json")
-echo "# handoff" > "$s5_handoff"
-hook Stop s5 "$T/high.jsonl"
-check "Stop with its own handoff written: none"           '[ -z "$out" ] && [ "$s5_handoff" != "$R/.handoffs/$DAY.md" ]'
+hook PostToolUse s13 "$T/high.jsonl"
+s13_handoff=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("handoff", ""))' "$DESK_HOME/handoff/s13.json")
+check "a fired session's handoff is its own placeholder"  '[ -n "$s13_handoff" ] && grep -q "placeholder.*session s13" "$s13_handoff"'
+echo "# handoff" > "$s13_handoff"
+hook Stop s13 "$T/high.jsonl"
+check "Stop with its own handoff written: none"           '[ -z "$out" ]'
+age "$s13_handoff" 90003
 hook Stop s4 "$T/500k.jsonl" ',"stop_hook_active":true'
 check "stop_hook_active: never blocks"                    '[ -z "$out" ]'
 hook PostToolUse s11 "$T/high.jsonl"
@@ -276,9 +279,10 @@ hook SessionStart c1 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC5: an unfilled placeholder is not offered" '[ -z "$out" ]'
 PID=a1 hook SessionStart a2 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC5: nor to the session that reserved it"   '[ -z "$out" ]'
-echo "# A" > "$R/.handoffs/$DAY.md"; age "$R/.handoffs/$DAY.md" 60
+echo "# A" > "$R/.handoffs/$DAY.md"
 hook Stop b1 "$T/high.jsonl"
 check "DS-282: A's written handoff does not release B's Stop" '[[ "$out" == *"write the handoff first"* ]] && [[ "$out" == *"$DAY-2.md"* ]]'
+age "$R/.handoffs/$DAY.md" 60
 echo "# B" > "$R/.handoffs/$DAY-2.md"
 PID=a1 hook SessionStart a3 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC3: A's next session reads A's, not B's newer one" '[[ "$(ctx)" == *"read .handoffs/$DAY.md"* ]]'
