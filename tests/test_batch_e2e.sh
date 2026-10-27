@@ -193,7 +193,8 @@ if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && a[3].includes('/issue
 }
 if (a[0] === 'pr' && a[1] === 'view') {
   let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {}
-  console.log(a.includes('--json') && !a.includes('--jq') ? JSON.stringify({ state: s, url: 'https://github.com/acme/widgets/pull/' + a[2], statusCheckRollup: [] }) : s);
+  let m; try { m = fs.readFileSync('$T/pr/' + a[2] + '.merged_at', 'utf8').trim(); } catch {}
+  console.log(a.includes('--json') && !a.includes('--jq') ? JSON.stringify({ state: s, url: 'https://github.com/acme/widgets/pull/' + a[2], statusCheckRollup: [], mergedAt: m }) : s);
 }
 if (a[0] === 'pr' && a[1] === 'create') { let n = '200'; try { n = fs.readFileSync('$T/pr/next', 'utf8').trim(); } catch {} console.log('https://github.com/acme/widgets/pull/' + n); }
 EOF
@@ -733,6 +734,7 @@ printf '{"ticket": "T-66", "type": "Story", "lane": "A", "size": "S", "branch": 
 land T-66
 pass
 check "AC2: a milestone child merging starts the gate whatever the count" 'echo "$out" | grep -q "BASE GATE: started on feat/S again (it moved since the last run, at [0-9a-f]*) for slice 1: 6 of 7 children, since milestone T-66 merged"'
+check "a ready promotion PR goes back to draft once the base moves past its gate" 'grep -q "^pr ready 200 --repo acme/widgets --undo" "$T/gh.log" && echo "$out" | grep -q "Promotion PR #200 is back in draft until it passes"'
 wait_gate
 echo MERGED > "$T/pr/200"; echo 201 > "$T/pr/next"
 pass
@@ -748,5 +750,14 @@ check "AC6: the last child merging runs the last slice"         'echo "$out" | g
 wait_gate
 pass
 check "AC6: the last slice passing offers the epic close-out"   'grep -q "^pr ready 201 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -q "close-out:"'
+# A promotion PR that merged before the last child merged into the base leaves that child to promote.
+echo MERGED > "$T/pr/201"; echo 2000-01-01T00:00:00Z > "$T/pr/201.merged_at"; echo 202 > "$T/pr/next"
+pass
+check "AC5: a child merged after the promotion PR merged is promoted by the next one, even with every child merged" 'grep -q "^pr create --repo acme/widgets --draft --base main --head feat/S --title E-2: promote feat/S to main (slice 3)" "$T/gh.log" && [ "$(bfield promotion.pr)" = 202 ]'
+wait_gate
+pass
+echo MERGED > "$T/pr/202"; echo 2999-01-01T00:00:00Z > "$T/pr/202.merged_at"
+pass
+check "AC6: a promotion PR merged after every child opens no further one" '[ "$(grep -c "^pr create" "$T/gh.log")" = 3 ] && [ "$(bfield promotion.merged.2.pr)" = 202 ]'
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

@@ -569,8 +569,8 @@ Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n>` so t
 it ready. **Once the person merges it while children are still to merge into the base**, the next
 pass opens the next one the same way, titled with its slice (`(slice 2)`), records it as `promotion`
 with `slice`, `since` (the merge time the next slice counts from) and `merged` (the earlier promotion
-PRs), and writes the ledger comment afresh on it. A batch whose every child has merged opens no
-further one.
+PRs), and writes the ledger comment afresh on it. A batch whose every child had merged into the base
+before that promotion merged opens no further one.
 
 **The promotion PR carries the batch's ledger.** One comment on it, which only the autopilot writes,
 holds a table with one row per child (key, state, PR link, and the model its worker ran on) between
@@ -617,7 +617,9 @@ the end of the batch:
 - **Passed** (every spec and check passed, and no spec under the acceptance directory is still
   marked expected-fail or skipped): the promotion PR is marked ready (§3 `pr-ready`; otherwise
   `WAITING ON YOU` says to undraft it) and the report gives its link. Merging it is the person's.
-  Only the last slice's pass offers the `close-out:` line.
+  Only the last slice's pass offers the `close-out:` line. Once the base moves past the commit a
+  ready promotion PR's gate passed on, the pass puts the PR back in draft (`gh pr ready --undo`)
+  until the next slice's gate passes, so a ready PR never holds children no gate has covered.
 - **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft, while children keep
   spawning and merging into the base. The fix goes onto the base; the gate runs again on the first
   pass after the base moves (or at once after `queue.mjs set-batch gate=null`).

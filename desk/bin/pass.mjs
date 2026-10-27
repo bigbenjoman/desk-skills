@@ -1030,7 +1030,10 @@ function nextPromotion(path, p) {
   if (v?.state !== 'MERGED') return;
   const slice = p.slice ?? 1;
   const merged = [...(p.merged ?? []), { pr: p.pr, slice, merged_at: v.mergedAt ?? null }];
-  if (Object.values(fresh.tickets).every((t) => t.merged_at)) {
+  // The last promotion is the one every child had merged into the base before: a child merged after it
+  // still has to be promoted.
+  const at = v.mergedAt ? Date.parse(v.mergedAt) : null;
+  if (Object.values(fresh.tickets).every((t) => t.merged_at && at != null && Date.parse(t.merged_at) <= at)) {
     if (!DRY) q('set-batch', `promotion.merged=${JSON.stringify(merged)}`);
     return;
   }
@@ -1839,10 +1842,17 @@ function baseGate(qx) {
   sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`], { tolerant: true });
   const head = sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
   const moved = !!(g?.sha && head && g.sha !== head);
-  const outside = () => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
+  // A ready promotion PR holds whatever has merged into the base since, so once the base moves past
+  // the sha its gate passed on, it goes back to draft until the next slice's gate passes.
+  if (g?.state === 'passed' && g.ready && moved && g.pr != null && !DRY) {
+    const r = shOut('gh', ['pr', 'ready', String(g.pr), '--repo', GH_REPO, '--undo']);
+    g = { ...g, ready: false, redrafted: r.ok, note: r.ok ? null : `PR #${g.pr} could not go back to draft (${r.out.split('\n').pop()}): gh pr ready ${g.pr} --repo ${GH_REPO} --undo` };
+    q('set-batch', `gate=${JSON.stringify(g)}`);
+  }
+  const outside =() => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
   if (!g || (moved && (g.state === 'failed' || due))) {
     if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
-    const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete, milestones: milestones.map((t) => t.key) };
+    const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };
     q('set-batch', `gate=${JSON.stringify({ state: 'running', pid: null, started: new Date().toISOString(), sha: head, slice })}`);
     mkdirSync(join(STATE, 'logs'), { recursive: true });
     const fd = openSync(GATE_LOG, 'a');
@@ -1851,7 +1861,7 @@ function baseGate(qx) {
     closeSync(fd);
     q('set-batch', `gate.pid=${child.pid}`);
     const why = complete ? '' : milestones.length ? `, since milestone ${milestones.map((t) => t.key).join(', ')} merged` : `, since ${uncovered.length} children merged since the last ${g ? 'gate' : 'promotion'}`;
-    out.push(`BASE GATE: started on ${BASE}${g ? ` again (it moved since the last run, at ${String(g.sha).slice(0, 12)})` : ''} for ${sliceLabel(slice)}${why} (pid ${child.pid}): merges ${SOURCE} in, then runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there; log ${GATE_LOG}`);
+    out.push(`BASE GATE: started on ${BASE}${g ? ` again (it moved since the last run, at ${String(g.sha).slice(0, 12)})` : ''} for ${sliceLabel(slice)}${why} (pid ${child.pid}): merges ${SOURCE} in, then runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there; log ${GATE_LOG}${g?.redrafted ? `. Promotion PR #${g.pr} is back in draft until it passes` : ''}`);
     outside();
     return true;
   }
@@ -1864,6 +1874,8 @@ function baseGate(qx) {
       report.waiting.push(`BASE GATE: passed on ${at}, but the batch has no promotion PR to mark ready (${qx.promotion?.why ?? 'none was recorded'}): open one from ${BASE} to ${SOURCE}`);
     } else if (g.ready) {
       out.push(`BASE GATE: passed on ${at}: every acceptance spec, Typecheck, Lint and Unit tests. Promotion PR #${g.pr} is ready for review: ${link} (merging it is yours)`);
+    } else if (g.redrafted) {
+      out.push(`BASE GATE: passed on ${at}, and ${BASE} has moved since, so promotion PR #${g.pr} is back in draft until the next slice's gate passes: ${link}`);
     } else {
       report.waiting.push(`BASE GATE: passed on ${at}, but promotion PR #${g.pr} is still draft: ${g.note ?? 'it was not marked ready'}. ${link}`);
     }
