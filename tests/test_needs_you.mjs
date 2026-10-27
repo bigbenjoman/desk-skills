@@ -221,6 +221,19 @@ t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue()
 const x3 = N.record({ word: 'alpha', ticket: 'X-3', action: 'resume', text: 'the plain one' });
 t('DS-310 AC3 a repo\'s name finds the batch that holds the ticket', `${x3.ok} ${answers().at(-1).queue === xq} ${xQueue().tickets['X-3'].state} ${queueOf('alpha').tickets['X-3']}`, 'true true triaged undefined');
 
+// ---- DS-279: every row desk-q puts in Needs you is asked about: a worker that gave up, and a PR only you move.
+put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
+  'E-1': { state: 'failed', lane: 'A', park: { question: 'tests red', since: minsAgo(15) } },
+  'E-2': { state: 'done', lane: 'A', result: { pr: 61 }, pr_status: { pr: 61, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } },
+} });
+const e = N.collect({ word: 'eta' });
+const { needsRows } = await import('../desk/bin/desk-q.mjs');
+t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
+  'E-2 pr PR #61: 1 check passed · merge it | E-1 stopped worker stopped: tests red · requeue it | 2');
+const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
+t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
+t('DS-279 a PR only you move is recorded as done', N.record({ word: 'eta', ticket: 'E-2', action: 'done' }).ok, true);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

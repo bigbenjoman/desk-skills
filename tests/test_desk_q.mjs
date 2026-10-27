@@ -1747,5 +1747,32 @@ t('DS-279 AC16 no screen draws a retired word: fixing, stuck, blocked, landing, 
   (drawn279.match(/\b(fixing|stuck|blocked|landing|releas\w*)\b|waiting on you|queue done/gi) ?? []).join(), '');
 t('DS-279 AC16 "failed" is said only of checks', [ov279.join('\n'), q279.join('\n')].join('\n').split('\n').filter((l) => /failed/.test(l) && !/\d+ checks? failed/.test(l)).join(' | '), '');
 
+// A red PR moves by itself only where the merge driver reruns it, both fix tries end with the person,
+// a fix worker that parked needs you on its page as on its row, and a batch base names the conflict.
+const fx = {
+  'F-1': prOn(801, [...okChecks(2), { ...red, name: 'e2e' }]),
+  'F-2': { ...prOn(802, [...okChecks(2), { ...red, name: 'Lint' }]), fix_tries: [{ try: 1 }, { try: 2 }] },
+  'F-3': { ...prOn(803, okChecks(2), { mergeable: 'CONFLICTING' }), fix_tries: [{ try: 1 }, { try: 2 }] },
+  'F-4': prOn(804, okChecks(2), { mergeable: 'CONFLICTING' }),
+  'F-5': { state: 'parked', park: { question: 'which copy?' }, result: { pr: 805 }, fix: { try: 1, of: 2, pr: 805, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
+};
+put(I.T, I.env, 'fixgo', { port: 5620, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'fixgo', concurrency: 3, supervised: true, base: 'develop', tickets: fx } });
+put(I.T, I.env, 'fixno', { port: 5630, conc: '3 / 5', beat: 1, queue: { batch: 'fixno', concurrency: 3, supervised: true, tickets: { 'F-1': fx['F-1'] } } });
+const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno');
+const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW }));
+const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
+t('DS-279 a red PR the merge driver reruns is merging, and says it is re-run, then repaired, on its first try',
+  `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, 1 check failed · re-run, then a worker repairs it, try 1 of 2.');
+t('DS-279 a red PR nothing reruns needs you: fix or re-run it',
+  `${/F-1 +◆ needs you/.test(fxRow(qNo, 'F-1'))} ${rail279('F-1', rNo)}`, 'true Needs you: PR #801, 1 check failed · fix or re-run it.');
+t('DS-279 a PR red or in conflict after both fix tries needs you before the pass records it stuck, never try 3 of 2',
+  `${rail279('F-2', rGo)} | ${rail279('F-3', rGo)}`, 'Needs you: PR #802, still red after 2 fix tries: Lint. | Needs you: PR #803, still in conflict with develop after 2 fix tries.');
+t('DS-279 a conflict names the batch\'s base, as its fix try will', rail279('F-4', rGo), 'Moves without you: PR #804, merge conflict with develop · the next pass sends it to a worker, try 1 of 2.');
+t('DS-279 a fix worker that parked needs your answer on its page, as its row says', `${/F-5 +◆ needs you/.test(fxRow(qGo, 'F-5'))} ${rail279('F-5', rGo).startsWith('Needs your answer: which copy?')}`, 'true true');
+const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
+const advCtx = (advisory) => ({ releases: true, merges: true, stage: () => null, base: 'main', required: [], advisory });
+t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
+  `${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx(['lint'])).text} | ${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx([])).text}`, 'behind #810: 1 check failed, advisory only | behind #810: 1 check failed');
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

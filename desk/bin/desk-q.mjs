@@ -30,14 +30,14 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED } from './gate.mjs';
+import { FAILED, evaluateGate } from './gate.mjs';
 import { FIX_TRIES_MAX } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -110,7 +110,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, live: false, stage: () => null, base: 'main' };
+const NOBODY = { releases: false, merges: false, live: false, stage: () => null, base: 'main', required: [], advisory: [] };
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -137,10 +137,13 @@ function holdContext(r) {
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
-  let base = null;
-  try { base = repoConfigValue(r.slug, 'default-branch'); } catch { /* an unreadable row reads as main */ }
+  // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
+  let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
+  if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
+  // What green means here, as the pass's fix tries read it (config §4 Required and Advisory checks).
+  const list = (id) => { try { const v = repoConfigValues(r.slug, id); return v && !isNone(v) ? v : []; } catch { return []; } };
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), live: r.live, stage, base: String(base ?? '').trim() || 'main' };
+  return { releases, merges: granted && (releases || !r.live), live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -198,15 +201,26 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
   // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
   if (String(t.merge_blocked ?? '').startsWith('merge hold:')) return needs(['merge hold: merge it', null]);
+  // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
+  const triesLeft = (t.fix_tries?.length ?? 0) < FIX_TRIES_MAX;
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
-    return merging([`merge conflict with ${ctx.base ?? 'main'}`, FAIL], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
+    if (!triesLeft) return needs([`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
+    return merging([`merge conflict with ${ctx.base}`, FAIL], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
   }
   const checks = ps.checks ?? [];
-  const failed = checks.filter(checkFailed).length;
-  if (failed) return merging([checksFailed(failed), FAIL], [` · re-run, then a worker repairs it, ${tryOf(t)}`, null]);
+  // Red as the fix tries read it (evaluateGate): a failed advisory check holds nothing and gets no worker.
+  const red = [...new Set(evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [] }).failing.map((f) => f.name))];
+  if (red.length) {
+    if (!triesLeft) return needs([`still red after ${FIX_TRIES_MAX} fix tries: ${red.join(', ')}`, FAIL]);
+    // Only the merge driver reruns a red check, and a fix try waits for its reruns: without it nothing moves.
+    return ctx.merges ? merging([checksFailed(red.length), FAIL], [` · re-run, then a worker repairs it, ${tryOf(t)}`, null])
+      : needs([checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
+  }
+  const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;
   if (checks.length && done === checks.length) {
-    const all = [checks.length === 1 ? '1 check passed' : `all ${checks.length} checks passed`, GOOD];
+    const all = advisory ? [`${checksFailed(advisory)}, advisory only`, WARN]
+      : [checks.length === 1 ? '1 check passed' : `all ${checks.length} checks passed`, GOOD];
     return ctx.merges ? merging(all, [' · merges at the next pass', null]) : needs(all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
@@ -428,7 +442,9 @@ const supervisorOff = (r) => r.run?.agent === 'off';
 
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
-const attention = (r) => count(r, 'needs');
+// The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
+export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
+const attention = (r) => needsRows(r).length;
 const hasBatch = (r) => r.q != null || r.error != null;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
@@ -1395,6 +1411,7 @@ function needSegs(r, x, now = Date.now()) {
   return [['', null]];
 }
 const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
+export { detail as needText };
 // An interactive session's claim on a parked ticket (queue.mjs park --claimed-by). Once a pass finds
 // uncommitted work behind it, the park's question says what to do, so the claim is no longer the news.
 const claimOf = (t) => (t.state === 'parked' && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
@@ -1507,8 +1524,11 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Will not start on its own. ${n} Jira ticket${n === 1 ? '' : 's'} outside this batch must be done first, and nothing in this batch moves it.`,
       lead: `If it can start without them, say so, in ${r.name}:`, cmds: [answerCmd(t.key)] };
   }
-  if (f && !r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
-  if (f) return { text: `Moves without you: ${segText(fixSegs(f, false))}.` };
+  // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
+  if (f && groupOf(k) !== 'needs') {
+    if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
+    return { text: `Moves without you: ${segText(fixSegs(f, false))}.` };
+  }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
   if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
     const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
