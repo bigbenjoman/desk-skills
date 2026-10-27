@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -335,6 +335,35 @@ writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', crite
 const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json'))
 t('verdict closes only the fully met scan candidate', v.status === 0 ? JSON.parse(v.stdout).map((x) => [x.ticket, x.close]) : v.stderr, [['KAN-10', true], ['KAN-33', false], ['KAN-31', false]])
 t('verdict refuses without the scan', run('verdict', join(T, 'results.json')).status, 2)
+
+// DS-283: an approved close is checked again just before it is written. A fake gh answers the open-PR
+// search from $T/gh-prs.json, or fails while $T/gh-fail exists; the stub Jira has KAN-10 in To Do.
+const pr = (number, title, headRefName = 'feat/x') => ({ number, title, headRefName, isDraft: true, createdAt: '2026-10-27T10:32:00Z' })
+t('DS-283 AC1 a PR on the key keeps it open, named', precloseCheck({ ticket: 'K-1', before: 'In Progress', status: 'In Progress', prs: [pr(233, 'feat: K-1 the hold flag'), pr(9, 'K-12 other')] }),
+  { ticket: 'K-1', close: false, reasons: ['PR #233 on the key opened after the verdict'], report: 'kept open: PR #233 on the key opened after the verdict' })
+t('DS-283 AC2 no PR on the key and the same status closes', precloseCheck({ ticket: 'K-1', before: 'In Progress', status: 'in progress', prs: [pr(9, 'K-12 other', 'fix/K-1-2')] }).close, true)
+t('DS-283 AC3 a status moved since the verdict keeps it open, naming it', precloseCheck({ ticket: 'K-1', before: 'To Do', status: 'Done', prs: [] }).report, 'kept open: K-1 is now Done, not To Do as at the verdict')
+t('DS-283 AC4 a failed search is a check that did not run, never no PR', precloseCheck({ ticket: 'K-1', before: 'To Do', status: 'To Do', prs: null, prsError: 'gh pr list failed: HTTP 502' }).report,
+  'kept open: the open-PR check did not run (gh pr list failed: HTTP 502)')
+t('DS-283 a failed Jira read keeps it open', precloseCheck({ ticket: 'K-1', before: 'To Do', status: null, statusError: 'desk-jira get failed: HTTP 500', prs: [] }).close, false)
+t('DS-283 a key the scan named no landed candidate for is never a close', precloseCheck({ ticket: 'K-1', before: null, status: 'To Do', prs: [] }).reasons, ['the scan named no landed candidate for K-1'])
+t('DS-283 the scan records the status each landed verdict rests on', of('landed', 'KAN-10').map((f) => f.status), ['To Do'])
+const fakeBin = join(T, 'fake-bin'); mkdirSync(fakeBin)
+writeFileSync(join(fakeBin, 'gh'), `#!/bin/sh\necho "$@" >> '${join(T, 'gh.log')}'\nif [ -e '${join(T, 'gh-fail')}' ]; then echo 'HTTP 502: Bad Gateway' >&2; exit 1; fi\ncat '${join(T, 'gh-prs.json')}'\n`, { mode: 0o755 })
+const pre = (scanFile = join(T, 'scan.json')) => {
+  const x = spawnSync('node', [SCAN, 'preclose', 'KAN-10', '--scan', scanFile, '--repo', 'acme/groom'], { cwd: R, env: { ...env, PATH: `${fakeBin}:${env.PATH}` }, encoding: 'utf8' })
+  return x.stdout ? { code: x.status, ...JSON.parse(x.stdout) } : { code: x.status, err: x.stderr }
+}
+writeFileSync(join(T, 'gh-prs.json'), JSON.stringify([pr(233, 'feat(admit): KAN-10 hold on admit'), pr(234, 'KAN-100 search')]))
+t('DS-283 AC1 preclose: a PR opened after the verdict keeps it open', [pre().code, pre().report], [1, 'kept open: PR #233 on the key opened after the verdict'])
+t('DS-283 preclose searches the repo\'s open PRs for the key', /pr list --repo acme\/groom --search KAN-10 --state open/.test(spawnSync('cat', [join(T, 'gh.log')], { encoding: 'utf8' }).stdout), true)
+writeFileSync(join(T, 'gh-prs.json'), JSON.stringify([pr(234, 'KAN-100 search')]))
+t('DS-283 AC2 preclose: no PR on the key closes', [pre().code, pre().close], [0, true])
+writeFileSync(join(T, 'scan-moved.json'), JSON.stringify(found.map((f) => (f.check === 'landed' && f.ticket === 'KAN-10' ? { ...f, status: 'In Review' } : f))))
+t('DS-283 AC3 preclose: a status moved since the verdict keeps it open', [pre(join(T, 'scan-moved.json')).code, pre(join(T, 'scan-moved.json')).report], [1, 'kept open: KAN-10 is now To Do, not In Review as at the verdict'])
+writeFileSync(join(T, 'gh-fail'), '')
+t('DS-283 AC4 preclose: a failed search keeps it open and says so', [pre().code, pre().report], [1, 'kept open: the open-PR check did not run (gh pr list failed: HTTP 502: Bad Gateway)'])
+t('DS-283 preclose refuses without the scan', spawnSync('node', [SCAN, 'preclose', 'KAN-10'], { cwd: R, env, encoding: 'utf8' }).status, 2)
 
 console.log(fails ? `${fails} FAILED` : 'all groom checks passed')
 process.exit(fails ? 1 : 0)
