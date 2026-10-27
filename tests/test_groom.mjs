@@ -7,7 +7,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
+  batchOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -364,6 +365,108 @@ t('DS-283 AC3 preclose: a status moved since the verdict keeps it open', [pre(jo
 writeFileSync(join(T, 'gh-fail'), '')
 t('DS-283 AC4 preclose: a failed search keeps it open and says so', [pre().code, pre().report], [1, 'kept open: the open-PR check did not run (gh pr list failed: HTTP 502: Bad Gateway)'])
 t('DS-283 preclose refuses without the scan', spawnSync('node', [SCAN, 'preclose', 'KAN-10'], { cwd: R, env, encoding: 'utf8' }).status, 2)
+
+// ---- DS-240: one approval list, the running batch left alone, a priority epic handed off
+const jiraWrites = () => spawnSync('cat', [join(T, 'requests.log')], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  .filter((q) => q.method !== 'GET' && !q.path.startsWith('/rest/api/3/search/jql')).length
+t('DS-240 AC1 the scan wrote nothing to Jira', jiraWrites(), 0)
+
+// AC2: a queue whose batch runs KAN-21, holds KAN-11 and KAN-30, and finished KAN-14
+const Q = join(T, 'queue.json')
+writeFileSync(Q, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-21': { state: 'running' }, 'KAN-11': { state: 'parked' }, 'KAN-30': { state: 'triaged' }, 'KAN-14': { state: 'done' } } }))
+const rq = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--queue', Q, '--json')
+t('DS-240 AC2 the scan with a queue exits 0', rq.status, 0)
+const inQ = rq.status === 0 ? JSON.parse(rq.stdout) : []
+const names = (f, k) => [f.ticket, f.other, ...f.propose, ...(f.options ?? [])].some((s) => new RegExp(`\\b${k}\\b`).test(s ?? ''))
+const on = (k) => inQ.filter((f) => names(f, k))
+t('DS-240 AC2 a running ticket gets no proposal', on('KAN-21').map((f) => [f.check, f.kind, f.propose.length]), [['duplicate', 'left', 0], ['loose', 'left', 0]])
+t('DS-240 AC2 and says why', on('KAN-21')[0]?.left, 'KAN-21 is running in batch groom-7')
+t('DS-240 AC2 nor does a held one, nor a link to one', [...new Set(on('KAN-11').concat(on('KAN-30')).map((f) => `${f.kind} ${f.propose.length}`))], ['left 0'])
+t('DS-240 AC2 a left candidate gets no verifier', on('KAN-21').some((f) => f.verify), false)
+t('DS-240 AC2 a ticket the batch finished is groomed as before', cmds('blocker', 'KAN-13'), inQ.filter((f) => f.check === 'blocker' && f.ticket === 'KAN-13').flatMap((f) => f.propose))
+t('DS-240 AC2 every other finding is unchanged', inQ.filter((f) => f.kind !== 'left').length, found.filter((f) => !['KAN-21', 'KAN-11', 'KAN-30'].some((k) => names(f, k))).length)
+writeFileSync(join(T, 'bad-queue.json'), '{')
+t('DS-240 AC2 an unreadable queue stops the scan', run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--queue', join(T, 'bad-queue.json')).status, 2)
+t('DS-240 AC2 no queue file is no batch', batchOf(null).running, false)
+t('DS-240 AC2 held: a key the batch now holds exits 1', [run('held', '--queue', Q, 'KAN-12', 'KAN-14').status, run('held', '--queue', Q, 'KAN-12', 'KAN-21').stdout.trim()], [0, 'left alone: KAN-21 is running in batch groom-7'])
+
+// AC1: every proposal in one list, awaiting approval; the weekly run only reports
+writeFileSync(join(T, 'scan-q.json'), JSON.stringify(inQ))
+const ap = run('approval', '--scan', join(T, 'scan-q.json'))
+const apText = ap.stdout
+t('DS-240 AC1 approval prints every settled fix as one numbered list', (apText.match(/^\[\d+\] JIRA /gm) ?? []).length, inQ.filter((f) => f.kind === 'fix' && !f.verify && f.propose.length).length)
+t('DS-240 AC1 every block is awaiting approval', (apText.match(/^\[\d+\] JIRA \w+ — awaiting approval$/gm) ?? []).length, (apText.match(/^\[\d+\] JIRA /gm) ?? []).length)
+t('DS-240 AC1 and it ends by asking for the numbers to write', /Nothing is written until you approve/.test(apText), true)
+t('DS-240 AC1 a block names the §3 row it needs', /check {2}: status\nneeds {2}: jira-transition/.test(apText), true)
+t('DS-240 AC1 a question is asked, its recommendation first', /^QUESTION — loose\ntarget : KAN-140[\s\S]*?\n {2}1\. .* \(Recommended\)$/m.test(apText), true)
+t('DS-240 AC1 a candidate no verifier settled is listed, not dropped', /not settled by a verifier: landed KAN-10/.test(apText), true)
+t('DS-240 AC1 a left finding is listed as left alone', /left alone: duplicate KAN-21: KAN-21 is running in batch groom-7/.test(apText), true)
+const rep = run('approval', '--scan', join(T, 'scan-q.json'), '--report').stdout
+t('DS-240 AC1 --report: no block awaits approval, nothing is asked', [/awaiting approval|answer with the numbers/.test(rep), /^REPORT ONLY: .*Nothing is asked and nothing is written\.$/m.test(rep), /— report only$/m.test(rep)], [false, true, true])
+writeFileSync(join(T, 'settled.json'), JSON.stringify([{ ...of('landed', 'KAN-10')[0], verify: undefined }]))
+const apAdd = JSON.parse(run('approval', '--scan', join(T, 'scan-q.json'), '--add', join(T, 'settled.json'), '--json').stdout)
+t('DS-240 AC1 a verified close joins the list, as jira-close', apAdd.items.filter((i) => i.ticket === 'KAN-10').map((i) => i.needs), ['jira-close'])
+t('DS-240 AC1 and is no longer unsettled', apAdd.unsettled.some((f) => f.ticket === 'KAN-10' && f.check === 'landed'), false)
+t('DS-240 AC1 approval wrote nothing to Jira', jiraWrites(), 0)
+t('DS-240 approved numbers: all, ranges, none, and a bad answer', [approvedNumbers('all', 3), approvedNumbers('1,3-4', 5), approvedNumbers('none', 2), approvedNumbers('2,9', 3), approvedNumbers('yes', 3)], [[1, 2, 3], [1, 3, 4], [], null, null])
+
+// AC1: after approval each write is read back; a description is checked in the rendered HTML
+const items = [
+  { n: 1, check: 'field', ticket: 'KAN-12', evidence: [], propose: [`desk-jira edit KAN-12 ${P}=P2`] },
+  { n: 2, check: 'link', ticket: 'KAN-31', evidence: [], propose: ['desk-jira link KAN-31 blocked-by KAN-30'] },
+  { n: 3, check: 'stale', ticket: 'KAN-12', evidence: [], edit: { from: 'old', to: 'the new line' }, propose: ['desk-jira edit KAN-12 description=@<KAN-12 description with the edit>'] },
+  { n: 4, check: 'field', ticket: 'KAN-15', evidence: [], propose: [`desk-jira edit KAN-15 ${P}=P1`] },
+]
+writeFileSync(join(T, 'approved.json'), JSON.stringify({ items }))
+const back = (nums) => run('readback', join(T, 'approved.json'), '--approved', nums)
+t('DS-240 AC1 read-back: a write that did not go fails', [back('1').status, /^FAIL \[1\] .*customfield_10207 is P3$/m.test(back('1').stdout)], [1, true])
+sh(R, 'desk-jira', 'edit', 'KAN-12', `${P}=P2`); sh(R, 'desk-jira', 'link', 'KAN-31', 'blocked-by', 'KAN-30')
+t('DS-240 AC1 read-back: a field and a link that landed pass', [back('1,2').status, back('1,2').stdout.split('\n').filter((l) => l.startsWith('ok')).length], [0, 2])
+t('DS-240 AC1 read-back: only approved items are read', /\[4\]/.test(back('1,2').stdout), false)
+sh(R, 'desk-jira', 'edit', 'KAN-12', 'description=the new line, a -struck- word')
+t('DS-240 AC1 read-back: a <del in the rendered description fails', [back('3').status, /1 <del in the rendered HTML/.test(back('3').stdout)], [1, true])
+sh(R, 'desk-jira', 'edit', 'KAN-12', 'description=the new line, a \\-struck\\- word')
+t('DS-240 AC1 read-back: escaped, it passes', [back('3').status, back('3').stdout.trim()], [0, 'ok   [3] desk-jira edit KAN-12 description=@<KAN-12 description with the edit>: no <del in the rendered HTML'])
+sh(R, 'desk-jira', 'edit', 'KAN-12', 'description=something else')
+t('DS-240 AC1 read-back: an edit whose text is missing fails', /missing: the new line/.test(back('3').stdout), true)
+const issue = (fields) => ({ key: 'K-1', fields: { summary: 's', status: { name: 'Done', statusCategory: { key: 'done' } }, ...fields } })
+t('DS-240 read-back: a transition', [readbackOf('desk-jira transition K-1 Done', issue({})).ok, readbackOf("desk-jira transition K-1 'In Progress'", issue({})).ok], [true, false])
+t('DS-240 read-back: an issue that could not be read fails', readbackOf('desk-jira transition K-1 Done', null).ok, false)
+t('DS-240 command words: a quote inside a word, and an escaped quote', [commandWords("desk-jira edit K-1 summary='admit: count the rows'"), commandWords("x 'it'\\''s'")],
+  [['desk-jira', 'edit', 'K-1', 'summary=admit: count the rows'], ['x', "it's"]])
+t('DS-240 read-back: a quoted title with spaces that landed passes', [readbackOf("desk-jira edit K-1 summary='admit: count the rows'", issue({ summary: 'admit: count the rows' })).ok,
+  readbackOf("desk-jira edit K-1 summary='admit: count the rows'", issue({ summary: 'admit: count' })).ok], [true, false])
+t('DS-240 read-back: a <value> the user chose passes when set, fails when blank', [readbackOf(`desk-jira edit K-1 ${P}=<value>`, issue({ [P]: { value: 'P2' } })).ok,
+  readbackOf(`desk-jira edit K-1 ${P}=<value>`, issue({})).ok], [true, false])
+t('DS-240 read-back: a link or unlink rests on desk-jira\'s own read-back', [readbackOf('desk-jira link K-1 blocked-by K-2', null), readbackOf('desk-jira unlink K-1 K-2 Blocks', null)].map((r) => r.ok), [true, true])
+
+// AC3: a priority epic's open work, less the queue, in Blocks order, with the files it shares
+const tk = (key, { links = [], text = '', category = 'new' } = {}) => ({ key, summary: `${key} work`, text, category, links: links.map((k) => ({ type: 'Blocks', verb: 'is blocked by', key: k, category: 'new' })) })
+const world = { A: tk('A', { links: ['B'], text: 'In `lib/x.mjs:3`.' }), B: tk('B', { links: ['C'] }), C: tk('C', { text: 'Edits `lib/x.mjs`.' }), D: tk('D', { category: 'done' }), F: tk('F'), G: tk('G', { links: ['H'] }), H: tk('H', { links: ['G'] }) }
+const hand = (epics, kids, queue) => priorityHandoff({ epics, childrenOf: (e) => kids[e].map((k) => world[k]), get: (k) => world[k] ?? null, batch: batchOf(queue), filesOf: filesNamed })
+const h1 = hand(['E'], { E: ['A', 'D', 'F'] }, { batch: 'b-3', tickets: { F: { state: 'triaged' } } })
+t('DS-240 AC3 every open child and, transitively, every open blocker, in Blocks order', h1.list.map((x) => [x.key, x.why, x.after]), [['C', 'blocks B', []], ['B', 'blocks A', ['C']], ['A', 'child of E', ['B']]])
+t('DS-240 AC3 a done child is left out, one in the queue is named apart', [h1.list.some((x) => x.key === 'D'), h1.inBatch], [false, ['F']])
+t('DS-240 AC3 the files they share', h1.shared, [{ file: 'lib/x.mjs', keys: ['C', 'A'] }])
+t('DS-240 AC3 the message goes to the batch to admit, never admitted here', /^Priority work from desk-groom \(E\), for batch b-3 to triage and admit\. The groom has not run queue\.mjs admit\./.test(handoffText(h1)), true)
+// A fake orchestrator: reads the message as it arrives and admits what it lists, in its order
+const orchestrator = (text) => {
+  const to = /for batch (\S+?)[,\s]/.exec(text)?.[1] ?? null
+  const admitted = [...text.matchAll(/^\d+\. (\S+) .*?(?:; after ([^)]+))?\)$/gm)].map((m) => ({ key: m[1], after: m[2] ? m[2].split(', ') : [] }))
+  return { to, admitted: admitted.map((a) => a.key), blockersFirst: admitted.every((a, i) => a.after.every((b) => admitted.findIndex((x) => x.key === b) < i)) }
+}
+t('DS-240 AC3 a fake orchestrator receives the hand-off: its batch, every key, blockers first', orchestrator(handoffText(h1)), { to: 'b-3', admitted: ['C', 'B', 'A'], blockersFirst: true })
+const hs = hand(['E'], { E: ['A'] }, { batch: 'b-4', supervised: true, tickets: { F: { state: 'running' } } })
+t('DS-240 AC3 a supervised batch: the message says no session will receive it', /for batch b-4, which the supervisor runs: no orchestrator session to send it to, so the user admits it\./.test(handoffText(hs)), true)
+const h2 = hand(['E', 'E2'], { E: ['G'], E2: ['H', 'A'] }, null)
+t('DS-240 AC3 two epics, a Blocks loop named', [h2.list.map((x) => x.key), h2.loop], [['C', 'B', 'A', 'G', 'H'], ['G', 'H']])
+t('DS-240 AC3 with no batch running it is offered as the next batch', [h2.batch, /as the next batch: no batch is running/.test(handoffText(h2))], [null, true])
+t('DS-240 AC3 a blocker that cannot be read is named', priorityHandoff({ epics: ['E'], childrenOf: () => [tk('Y', { links: ['Z'] })], get: () => null, batch: batchOf(null) }).unread, ['Z'])
+writeFileSync(Q, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-171': { state: 'running' } } }))
+const pr170 = run('priority', 'KAN-170', '--queue', Q, '--json')
+const pj = pr170.status === 0 ? JSON.parse(pr170.stdout) : {}
+t('DS-240 AC3 priority from Jira: the open child not in the queue', [pr170.status, (pj.list ?? []).map((x) => x.key), pj.inBatch, pj.batch], [0, ['KAN-172'], ['KAN-171'], { name: 'groom-7', supervised: false }])
+t('DS-240 AC3 the queue is not written', spawnSync('cat', [Q], { encoding: 'utf8' }).stdout, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-171': { state: 'running' } } }))
 
 console.log(fails ? `${fails} FAILED` : 'all groom checks passed')
 process.exit(fails ? 1 : 0)
