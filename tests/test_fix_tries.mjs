@@ -75,7 +75,7 @@ const comment = undraftComment(ready.verdict, HEAD, 'p0=0 p1=0 gaps=0');
 t('AC1 the comment says why it left draft', comment.startsWith(`Out of draft: the desk-review verdict posted on this head (\`${HEAD.slice(0, 12)}\`) is clean`), true);
 t('AC1 and quotes the verdict', comment.includes(`> \`sha=${HEAD} p0=0 p1=0 deferred=0 gaps=0\``), true);
 
-// ---- DS-281: a draft whose review at its head found a P0 or P1 goes back to a fix worker, twice
+// ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker, twice
 const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0';
 const reviewBody = (counts, rest = []) => [`<!-- desk-review:local -->`, `<!-- desk-review:verdict v=1 sha=${HEAD} ${counts} deferred=0 gaps=0 vendor=codex round=1 -->`, '**desk-review, round 1**', '', ...rest].join('\n');
 const p1Body = reviewBody('p0=0 p1=1 p2=1', ['P1 (1)', ' packages/core/src/money.ts:12         second currency formatter', '                                       — packages/core/src/format.ts:8 is the original', '', 'P2 (1)', ' apps/web/src/Pager.tsx:1   no consumer', '', '### Requirement gaps', ' AC3: src/csv.ts:4 no VAT column']);
@@ -95,7 +95,7 @@ t('DS-281 AC1 the brief quotes the verdict', brief281.includes(`(\`sha=${HEAD} p
 const p0Body = reviewBody('p0=1 p1=1 p2=0', ['- **P0** `apps/api/routes/invoices.py:67` invoice total rounded per line', '- **P1** `src/b.ts:3` second formatter']);
 t('DS-281 AC1 findings that open with their own severity are read too', reviewFindings(p0Body).map((x) => x.sev).join(','), 'P0,P1');
 t('DS-281 AC1 a capitalised file is a finding, and a capitals heading ends the run', reviewFindings('P1 (2)\n README.md:3  stale\nREQUIREMENT GAPS (1)  DS-9\n AC3: src/a.ts:4 gap').map((x) => x.text).join('|'), 'README.md:3  stale');
-t('DS-281 AC1 a review listing no file:line still sends the worker to read it', fixBrief(tk({ fix: reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: 'nothing here' }).fix })).includes('read it with gh pr view 702 --json reviews'), true);
+t('DS-281 AC1 a review listing no P1 with its file:line (posted inline) is left for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: 'nothing here' }), null);
 const task281 = fixTask(tk({ fix: r1.fix }));
 t('DS-281 AC2 the task reviews the new head and posts it on the PR', task281.includes('review the new head with desk-review and post that review on the PR'), true);
 t('DS-281 AC2 and leaves the PR in draft', task281.includes('leave the PR in draft'), true);
@@ -108,7 +108,7 @@ const p2only = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=2')), ucfg);
 t('DS-281 AC6 only P2s: not a findings call, the person settles them as today', `${p2only?.call} ${p2only?.action}`, 'person settle the findings or gaps on #702');
 t('DS-281 AC6 and reviewFix leaves it alone', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '0', p2: '2' } }), null);
 const mixedTries = [{ try: 1, head: 'b'.repeat(40), kind: 'checks', what: 'red: Lint' }];
-t('DS-281 AC7 a checks try counts: the review try is try 2', reviewFix(tk({ fix_tries: mixedTries }), { pr: 702, head: HEAD, verdict: { p1: '1' } })?.fix.try, 2);
+t('DS-281 AC7 a checks try counts: the review try is try 2', reviewFix(tk({ fix_tries: mixedTries }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: p1Body })?.fix.try, 2);
 t('DS-281 AC7 and a review try counts toward a checks try', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), both, ctx())?.why, 'still red after 2 fix tries: Backend tests, Lint');
 
 process.exit(fails ? 1 : 0);

@@ -8,7 +8,8 @@
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //   findings  the review at its head found a P0 or a P1: the pass sends those to a fix worker
-//           (fix-tries.mjs reviewFix), and only once no try is left does it put them to the person
+//           (fix-tries.mjs reviewFix), and only once no try is left, or its body lists none of them
+//           with a file:line, does it put them to the person (`why` and `action` say what for)
 //
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call), the head has no merge
@@ -37,13 +38,9 @@ export function parseVerdict(body) {
   return /^[0-9a-f]{7,40}$/.test(v.sha ?? '') ? v : null;
 }
 
-// The latest verdict among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted:
-// on a public repo anyone can post a review, and only the person's own attests it.
-export function latestVerdict(reviews, handle) {
-  return latestReview(reviews, handle)?.verdict ?? null;
-}
-
-// The same review with its body, { verdict, body }, for the findings it lists; null when there is none.
+// The latest review carrying a verdict among `reviews` (gh pr view --json reviews: oldest first) that
+// `handle` posted, as { verdict, body }, or null: on a public repo anyone can post a review, and only
+// the person's own attests it. The body is for the findings it lists.
 export function latestReview(reviews, handle) {
   const own = (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
   return own.map((r) => ({ verdict: parseVerdict(r.body), body: r.body })).filter((r) => r.verdict).pop() ?? null;

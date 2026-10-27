@@ -1170,7 +1170,7 @@ check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
 
-# ---- DS-281: a draft whose review at its head found a P0 or P1 goes back to a fix worker twice
+# ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker twice
 # The fake gh answers each PR from $T/fr/<n>.json, a green draft with one review by ben, and records
 # pr ready and pr comment. frx <n> <head> <reviewed sha> <counts>: a P1 count lists one P1 finding.
 cat > "$T/stub/gh" <<EOF
@@ -1228,12 +1228,13 @@ cat > "$T/config-r.md" <<EOF
 EOF
 export DESK_CONFIG="$T/config-r.md" DESK_QUEUE="$T/queue-r.json" DESK_AUTOPILOT_STATE="$T/state-r"
 q init r; q set-batch concurrency=5
-for k in 1 2 3 4 5; do q add "R-$k"; q set "R-$k" state=done lane=A "branch=fix/R-$k" "result.pr=72$k"; done
+for k in 1 2 3 4 5 6; do q add "R-$k"; q set "R-$k" state=done lane=A "branch=fix/R-$k" "result.pr=72$k"; done
 frx 721 "$H1" "$H1" 'p0=0 p1=1 p2=1'
 frx 722 "$H1" "$H1" 'p0=0 p1=0 p2=1'
 q set R-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks","what":"red: Lint"}]'; frx 723 "$H1" "$H1" 'p0=0 p1=1 p2=1'
 q set R-4 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"review"},{"try":2,"head":"'"$H1"'","kind":"checks"}]'; frx 724 "$H2" "$H2" 'p0=0 p1=1 p2=1'
 q set R-5 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"review"}]'; frx 725 "$H1" "$H1" 'p0=0 p1=1 p2=1'
+frx 726 "$H1" "$H1" 'p0=1 p1=0 p2=0'
 : > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-281 AC1 a draft whose review at its head has 1 P1 is requeued once for a fix worker" \
   '[ "$(field R-1 state)" = "\"triaged\"" ] && [ "$(field R-1 fix.kind)" = "\"review\"" ] && [ "$(field R-1 fix.try)" = 1 ] && [ "$(field R-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: R-1 requeued for PR #721 — review not clean: 1 P1"'
@@ -1246,6 +1247,8 @@ check "DS-281 AC5 after 2 fix tries it is not requeued again, and is recorded st
 check "DS-281 AC5 and it is put to the person" 'echo "$out" | grep -q "R-4: STUCK — PR #724: review not clean after 2 fix tries: 1 P1"'
 check "DS-281 AC4 a try already made for this head is not made again" \
   '[ "$(field R-5 state)" = "\"done\"" ] && [ "$(field R-5 fix_tries | jq length)" = 1 ] && [ "$(field R-5 stuck.why)" = "\"review not clean after 1 fix try: 1 P1\"" ]'
+check "DS-281 AC1 a P0 its review body does not list with a file:line is not requeued, and stays draft for the person" \
+  '[ "$(field R-6 state)" = "\"done\"" ] && [ "$(field R-6 fix)" = null ] && echo "$out" | grep -q "R-6: DRAFT — PR #726 stays draft: its review verdict at 111111111 is not clean (p0=1)"'
 
 # The next pass spawns the fix worker, its briefing quoting the P1 and not the P2.
 out=$(node "$B/pass.mjs" 2>&1)

@@ -91,7 +91,9 @@ export function reviewFindings(body) {
 
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
 // found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Only P2s
-// and gaps are left as they are (null). review: { pr, head, verdict, body }.
+// and gaps are left as they are (null), and so is a review whose body lists no P0 or P1 with its
+// file:line (posted inline, which a worker has no `gh api` to read): the person settles those.
+// review: { pr, head, verdict, body }.
 export function reviewFix(t, review) {
   const counts = reviewCounts(review.verdict);
   if (!counts || !review.head) return null;
@@ -99,8 +101,10 @@ export function reviewFix(t, review) {
   if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === review.head)) {
     return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${counts}` };
   }
+  const findings = reviewFindings(review.body);
+  if (!findings.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${counts}`, verdict, findings: reviewFindings(review.body) } };
+  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${counts}`, verdict, findings } };
 }
 
 // The fix worker's briefing section, while its try is open.
@@ -114,7 +118,6 @@ export function fixBrief(t) {
   } else if (f.kind === 'review') {
     lines.push(`Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean (\`${f.verdict}\`). Fix each P0 and P1 finding it lists:`, '');
     for (const x of f.findings ?? []) lines.push(`- ${x.sev}: ${x.text}`);
-    if (!f.findings?.length) lines.push(`- The findings could not be read from the review: read it with gh pr view ${f.pr} --json reviews.`);
     lines.push('', 'Its P2 findings are not part of this try.');
   } else {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
