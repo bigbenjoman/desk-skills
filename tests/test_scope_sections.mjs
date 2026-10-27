@@ -102,6 +102,8 @@ t('a suite with claims: imports claims nothing it only names', [...real.claims.v
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
+const cw = decide(M('desk/bin/clears-when.mjs'), real);
+t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
 t('merge-driver.sh reaches the merge driver suite', decide(M('desk/bin/merge-driver.sh'), real).suites.includes('test_merge_driver.sh'), true);
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
