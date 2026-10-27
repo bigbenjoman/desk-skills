@@ -179,7 +179,8 @@ const betaRow = () => loadRepos().find((r) => r.name === 'beta').rows.find((x) =
 t('DS-297 AC1 the park is marked answered', typeof queueOf('beta').tickets['B-1'].park?.answered, 'string');
 t('DS-297 AC1 desk-q shows it waiting, not needing you', betaRow().k, 'waiting');
 t('DS-297 AC1 desk-needs-you does not ask about it again', N.collect().items.some((i) => i.t.key === 'B-1'), false);
-const { ticketScreen } = await import('../desk/bin/desk-q.mjs');
+const { ticketScreen, shownState } = await import('../desk/bin/desk-q.mjs');
+t('DS-297 AC1 with passes stopped, nothing will requeue it, so it needs you again', shownState(queueOf('beta'), queueOf('beta').tickets['B-1'], { live: false }), 'needs');
 t('DS-297 AC1 its desk-q page says which session it waits on', ticketScreen(loadRepos().find((r) => r.name === 'beta'), 'B-1', { width: 160 }).includes('Moves without you: answered: waiting for session beta-batch to requeue it'), true);
 
 // ---- AC16, AC6: passes stopped: the answer is recorded, requeued, and the end says how to resume
