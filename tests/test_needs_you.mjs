@@ -144,6 +144,10 @@ const o2 = N.record({ word: 'alpha', ticket: 'A-2', action: 'open' });
 t('AC7 resume is refused for a lane C park', `${c2.ok} ${queueOf('alpha').tickets['A-2'].state}`, 'false parked');
 t('AC7 open names the desk-ticket session', /\/desk-ticket A-2/.test(o2.line), true);
 t('AC7 its recommendation is to open it', itemLines.some((l) => l.startsWith('alpha A-2 session') && l.includes('1. open (recommended:')), true);
+// DS-297 AC3: a lane C or D park offers open and not-now only; a bare answer would leave it counted.
+t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. not-now');
+const ca2 = N.record({ word: 'alpha', ticket: 'A-2', action: 'answer', text: 'go' });
+t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not an action for a session item/.test(ca2.line)}`, 'false true');
 
 // ---- AC8: "not now" goes in the not-now register
 const n6 = N.record({ word: 'alpha', ticket: 'A-6', action: 'not-now' });
@@ -170,6 +174,13 @@ t('AC10 nothing anywhere', N.listText(N.collect({ repos: quiet })), 'Nothing nee
 const b1 = cli('record', 'beta', 'B-1', 'resume', 'the v2 one');
 t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 the v2 one');
 t('AC15 the session to message is named, with the requeue', /^MESSAGE beta-batch: B-1 was answered .*queue\.mjs requeue B-1/m.test(b1.out), true);
+// DS-297 AC1: marked answered, so desk-q shows it waiting on the session, and it is not asked again.
+const betaRow = () => loadRepos().find((r) => r.name === 'beta').rows.find((x) => x.t.key === 'B-1');
+t('DS-297 AC1 the park is marked answered', typeof queueOf('beta').tickets['B-1'].park?.answered, 'string');
+t('DS-297 AC1 desk-q shows it waiting, not needing you', betaRow().k, 'waiting');
+t('DS-297 AC1 desk-needs-you does not ask about it again', N.collect().items.some((i) => i.t.key === 'B-1'), false);
+const { ticketScreen } = await import('../desk/bin/desk-q.mjs');
+t('DS-297 AC1 its desk-q page says which session it waits on', ticketScreen(loadRepos().find((r) => r.name === 'beta'), 'B-1', { width: 160 }).includes('Moves without you: answered: waiting for session beta-batch to requeue it'), true);
 
 // ---- AC16, AC6: passes stopped: the answer is recorded, requeued, and the end says how to resume
 const g1 = N.record({ word: 'gamma', ticket: 'G-1', action: 'resume', text: 'retry' });
@@ -178,9 +189,16 @@ t('AC16 the record line says passes are stopped', /Passes are stopped in gamma/.
 
 // ---- AC11: the end prints the desk-q count left, then each stopped repo and how to resume it
 const left = cli('left').out.trim().split('\n');
-// A-1, A-3, A-7 and G-1 are settled; A-2, A-4, A-6, A-8 and B-1 still need you.
-t('AC11 the count left is desk-q\'s', left[0], 'desk-q counts 5 items needing you.');
+// A-1, A-3, A-7, B-1 and G-1 are settled; A-2, A-4, A-6 and A-8 still need you.
+t('AC11 the count left is desk-q\'s', left[0], 'desk-q counts 4 items needing you.');
 t('AC16 the last line says passes are stopped in gamma and how to resume', /^Passes are stopped in gamma, .* To resume: run \/desk-autopilot in gamma\.$/.test(left.at(-1)), true);
+
+// ---- DS-297 AC2: once the session requeues the answered ticket, it moves on as any requeued ticket does
+const rq = spawnSync(process.execPath, [join(REAL_BIN, 'queue.mjs'), 'requeue', 'B-1'], { encoding: 'utf8',
+  env: { ...process.env, DESK_QUEUE: join(env.DESK_HOME, 'repos', 'acme__beta', 'queue.json'), DESK_AUTOPILOT_STATE: join(env.HOME, '.desk-autopilot', 'acme__beta') } });
+const b1q = queueOf('beta').tickets['B-1'];
+t('DS-297 AC2 the session\'s requeue clears the answered park', `${rq.status} ${b1q.state} ${b1q.park}`, '0 triaged null');
+t('DS-297 AC2 desk-q shows it ready', betaRow().k, 'ready');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
