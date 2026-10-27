@@ -5,7 +5,8 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { rgbOfSgr } from './sgr_rgb.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -17,7 +18,7 @@ writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_LOCK_DIR: join(T, 'locks'), DESK_USAGE_DIR: join(T, 'usage'), DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
-  'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'COLORFGBG', 'NO_COLOR']) delete process.env[k];
+  'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'COLORFGBG', 'COLORTERM', 'NO_COLOR']) delete process.env[k];
 Object.assign(process.env, env);
 mkdirSync(env.DESK_LOCK_DIR, { recursive: true });
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
@@ -86,7 +87,7 @@ const drawn1 = S1.frame().find((l) => l.includes('5h ')) ?? '';
 S1.ui.finish(0);
 const G = '\x1b[38;5;247m', TRACK = '\x1b[38;5;239m';
 t('AC1 on screen each bar is solid, the used part in its colour and the rest in 256-colour 239',
-  [`${G}5h \x1b[39m\x1b[32m██\x1b[39m${TRACK}████████\x1b[39m\x1b[32m 17%\x1b[39m 11:20`, `${G}7d \x1b[39m\x1b[33m██████\x1b[39m${TRACK}████\x1b[39m\x1b[33m 60%\x1b[39m Sun 15:00`]
+  [`${G}5h \x1b[39m\x1b[38;5;108m██\x1b[39m${TRACK}████████\x1b[39m\x1b[38;5;108m 17%\x1b[39m 11:20`, `${G}7d \x1b[39m\x1b[38;5;180m██████\x1b[39m${TRACK}████\x1b[39m\x1b[38;5;180m 60%\x1b[39m Sun 15:00`]
     .filter((s) => !drawn1.includes(s)).join(' | '), '');
 
 // ---- AC2 to AC4: the colour of a bar and its percentage, by how full it is
@@ -97,10 +98,10 @@ const colours = (seven, held = false) => {
   const bar = segs.find(([s, k]) => /^█+$/.test(s) && k !== '38;5;239'), pct = segs.find(([s]) => /^ \d+%$/.test(s));
   return `${bar?.[1]}/${pct?.[1]}`;
 };
-t('AC2 under 60% the bar and its percentage are green', [0.05, 0.17, 0.59].map((u) => colours(win(u))).join(' '), '32/32 32/32 32/32');
-t('AC3 at 60% to 84% they are amber', [0.6, 0.72, 0.84].map((u) => colours(win(u))).join(' '), '33/33 33/33 33/33');
-t('AC3 and a 7-day window under 60% while weekly pace holds new workers', colours(win(0.4), true), '33/33');
-t('AC4 at 85% or over they are red, pace hold or not', [colours(win(0.85)), colours(win(0.88)), colours(win(1)), colours(win(0.9), true)].join(' '), '31/31 31/31 31/31 31/31');
+t('AC2 under 60% the bar and its percentage are green', [0.05, 0.17, 0.59].map((u) => colours(win(u))).join(' '), '38;5;108/38;5;108 38;5;108/38;5;108 38;5;108/38;5;108');
+t('AC3 at 60% to 84% they are amber', [0.6, 0.72, 0.84].map((u) => colours(win(u))).join(' '), '38;5;180/38;5;180 38;5;180/38;5;180 38;5;180/38;5;180');
+t('AC3 and a 7-day window under 60% while weekly pace holds new workers', colours(win(0.4), true), '38;5;180/38;5;180');
+t('AC4 at 85% or over they are red, pace hold or not', [colours(win(0.85)), colours(win(0.88)), colours(win(1)), colours(win(0.9), true)].join(' '), '38;5;210/38;5;210 38;5;210/38;5;210 38;5;210/38;5;210 38;5;210/38;5;210');
 
 // ---- AC5: weekly pace holding new workers ends the line
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
@@ -116,10 +117,10 @@ unrepo('solo'); repo('solo', { 'S-1': 'triaged' }, 'off');
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
 const offSegs = Q.usageLine(Q.usageOf(Q.loadRepos(FIXED), FIXED), { now: FIXED, solid: true }).segs;
 t('DS-215 AC20 every repo on home set to off: no note, and the 7-day bar at 40% stays green',
-  `${homeAll().includes('ahead of pace')} ${offSegs.slice(offSegs.findIndex(([x]) => x === '7d ')).find(([x]) => /^ \d+%$/.test(x))?.[1]}`, 'false 32');
+  `${homeAll().includes('ahead of pace')} ${offSegs.slice(offSegs.findIndex(([x]) => x === '7d ')).find(([x]) => /^ \d+%$/.test(x))?.[1]}`, 'false 38;5;108');
 unrepo('calm'); unrepo('solo'); repo('solo', { 'S-1': 'triaged' });
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
-t('AC3 and the 7-day bar is amber at 40%', colours(win(0.4), true), '33/33');
+t('AC3 and the 7-day bar is amber at 40%', colours(win(0.4), true), '38;5;180/38;5;180');
 // The hold is a pass's, which reads worker logs alone: the same reading from a probe claims none.
 rmSync(join(env.HOME, '.desk-autopilot', 'acme__solo', 'logs'), { recursive: true, force: true });
 mkdirSync(env.DESK_USAGE_DIR, { recursive: true });
@@ -213,16 +214,16 @@ t('AC12 under its pass line', repoOut.split('\n').findIndex((l) => l.startsWith(
 const S12 = screen({ kind: 'repo', slug: 'acme__solo' });
 await sleep(20);
 S12.ui.finish(0);
-t('AC12 and so does the repo screen drawn', S12.frame().some((l) => l.includes(`\x1b[32m 17%\x1b[39m 11:20`)), true);
+t('AC12 and so does the repo screen drawn', S12.frame().some((l) => l.includes(`\x1b[38;5;108m 17%\x1b[39m 11:20`)), true);
 
 // ---- AC13: contrast, in the One Dark palette the approved design measured
 // (docs/design/DS-227/index.html; 256-colour greys are 8 + 10 * (n - 232)).
-const ONE_DARK = { 31: '#f07c84', 32: '#98c379', 33: '#e5c07b', 39: '#abb2bf' };
+const ONE_DARK = { 39: '#abb2bf' };
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-const grey = (code) => [0, 0, 0].map(() => 8 + 10 * (Number(code.split(';')[2]) - 232));
+const grey = rgbOfSgr;
 const lum = (c) => c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
 const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-const fg = (code) => (code == null ? rgb(ONE_DARK[39]) : code.startsWith('38;5;') ? grey(code) : rgb(ONE_DARK[code]));
+const fg = (code) => (code == null ? rgb(ONE_DARK[39]) : rgbOfSgr(code) ?? rgb(ONE_DARK[code]));
 const windowBg = rgb('#282c34'), selected = grey('48;5;236');
 const lineFor = (u, held) => Q.usageLine({ reading: { five_hour: win(u), seven_day: win(u), at: FIXED - 6 * MIN }, running: 0, held }, { now: FIXED, solid: true });
 const all = [0.17, 0.6, 0.88].flatMap((u) => [lineFor(u, false), lineFor(u, true)]);
@@ -232,7 +233,15 @@ t('AC13 every text colour on the line is 4.5:1 or more on the window and the sel
   [...new Set(text.map(([, k]) => k))].filter((k) => [windowBg, selected].some((b) => contrast(fg(k), b) < 4.5)).join(), '');
 const used = [...new Set(bars.map(([, k]) => k))].filter((k) => k !== '38;5;239');
 t('AC13 each bar\'s used colour is 3:1 or more as a graphic: on the window, the selected row and the unused part',
-  `${used.sort().join()} ${used.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '31,32,33 ');
+  `${used.sort().join()} ${used.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '38;5;108,38;5;180,38;5;210 ');
+// DS-277 AC3: with truecolor the bars are One Dark's 24-bit colours, as clear as the 256-colour ones.
+process.env.COLORTERM = 'truecolor';
+const QT = await import(`${pathToFileURL(join(BIN, 'desk-q.mjs')).href}?truecolor`);
+delete process.env.COLORTERM;
+const usedT = [...new Set([0.17, 0.6, 0.88].flatMap((u) => QT.usageLine({ reading: { five_hour: win(u), seven_day: win(u), at: FIXED - 6 * MIN }, running: 0, held: false }, { now: FIXED, solid: true })
+  .segs.filter(([s]) => /^█+$/.test(s)).map(([, k]) => k)))].filter((k) => k !== '38;5;239');
+t('DS-277 AC3 with truecolor each bar\'s used colour is One Dark\'s, 3:1 or more on the window, the selected row and the unused part',
+  `${usedT.sort().join(' ')} ${usedT.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '38;2;152;195;121 38;2;229;192;123 38;2;240;124;132 ');
 
 // ---- DS-215 AC21: on screen the line is labelled and pinned at the bottom: usage, a blank line, then
 // the keys. Plain output keeps it in its header.

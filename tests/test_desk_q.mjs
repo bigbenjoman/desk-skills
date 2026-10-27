@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { xterm256, rgbOfSgr } from './sgr_rgb.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -243,8 +244,10 @@ const I = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, jira: 'acme.atl
   'VPL-3': { summary: 'Long gaps', files_in_scope: Array.from({ length: 30 }, (_, i) => `src/gap-${i}.ts`) },
 } } });
 Object.assign(process.env, I.env);
-// A dark terminal theme: COLORFGBG from the shell running the suite would pick the light greys.
+// A dark terminal theme without truecolor: COLORFGBG or COLORTERM from the shell running the suite
+// would pick the light greys or the 24-bit colours.
 delete process.env.COLORFGBG;
+delete process.env.COLORTERM;
 const Q = await import(BIN);
 // The label grey on a dark theme, and a string made safe for a RegExp.
 const G = '\x1b[38;5;247m';
@@ -278,8 +281,8 @@ function screen(start, columns = 80, clock = Date.now, M = Q) {
 const DOWN = '\x1b[B';
 // The last frame's lines as drawn, less the erase-to-end-of-line each ends in.
 const lastFrame = (s) => s.output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => l.replace(/\x1b\[K$/, ''));
-// Each coloured run, as "<SGR>:<text>"; `dim` takes dim and grey (256-colour) runs too.
-const coloured = (l, dim = false) => [...l.matchAll(dim ? /\x1b\[(3[0-8]|2|38;5;\d+)m([^\x1b]*)\x1b\[(?:39|22)m/g : /\x1b\[(3[0-8])m([^\x1b]*)\x1b\[39m/g)].map((m) => `${m[1]}:${m[2].trim()}`);
+// Each coloured run, as "<SGR>:<text>"; `dim` takes dim and the 256-colour greys (232 and up) too.
+const coloured = (l, dim = false) => [...l.matchAll(dim ? /\x1b\[(3[0-7]|2|38;[25];[\d;]+)m([^\x1b]*)\x1b\[(?:39|22)m/g : /\x1b\[(3[0-7]|38;2;[\d;]+|38;5;(?:\d\d?|1\d\d|2[0-2]\d|23[01]))m([^\x1b]*)\x1b\[39m/g)].map((m) => `${m[1]}:${m[2].trim()}`);
 
 const A = screen();
 await sleep(20);
@@ -466,7 +469,7 @@ const Gs = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
 await sleep(20);
 const scaleLine = (s) => s.frame().find((l) => l.startsWith('Scale: ')) ?? '';
 t('DS-163 AC2 the header says the scale, that it is auto, and z', scaleLine(Gs), 'Scale: hours (auto) · z to change');
-t('DS-163 AC1 the state shows in colour', /\x1b\[32m● running/.test(Gs.output.buf) && /\x1b\[34m○ ready/.test(Gs.output.buf), true);
+t('DS-163 AC1 the state shows in colour', /\x1b\[38;5;108m● running/.test(Gs.output.buf) && /\x1b\[38;5;75m○ ready/.test(Gs.output.buf), true);
 const zs = [];
 for (let i = 0; i < 4; i++) { await Gs.press('z'); zs.push(scaleLine(Gs).split(' · ')[0]); }
 t('DS-163 AC3 z cycles hours, days, weeks, auto', zs.join(', '), 'Scale: hours, Scale: days, Scale: weeks, Scale: hours (auto)');
@@ -812,7 +815,7 @@ t('DS-166 AC5 none of an epic\'s tickets is a row of its own', featTl.some((l) =
 const Fa = nav({ kind: 'timeline', slug: 'acme__feat' });
 await sleep(20);
 const rawLine = (s, text) => s.output.buf.split('\x1b[H').at(-1).split('\r\n').find((l) => l.replace(ANSI, '').includes(text)) ?? '';
-t('DS-166 AC3 a provisional epic\'s bar is amber', rawLine(Fa, 'Beats').includes('\x1b[33m█'), true);
+t('DS-166 AC3 a provisional epic\'s bar is amber', rawLine(Fa, 'Beats').includes('\x1b[38;5;180m█'), true);
 for (let i = 0; i < 10 && !Fa.selected().includes('Smart scheduling'); i++) await Fa.press(DOWN);
 await Fa.press('\r');
 const kidRows = Fa.frame().filter((l) => /^[ ›] F-\d /.test(l)).map((l) => l.slice(2, 5));
@@ -858,9 +861,9 @@ const ovRow = (s, name) => lastFrame(s).find((l) => l.replace(ANSI, '').replace(
 const Ov = nav({ kind: 'overview', all: false });
 await sleep(20);
 // After LAST PASS, each count; a blocked count is dim (DS-186), so red is failed only.
-t('DS-181 AC1 each non-zero count in its state\'s colour: running, ready, waiting, needs you, failed', coloured(ovRow(Ov, 'hue')).slice(1).join(' '), '32:1 34:1 33:1 35:1 31:1');
+t('DS-181 AC1 each non-zero count in its state\'s colour: running, ready, waiting, needs you, failed', coloured(ovRow(Ov, 'hue')).slice(1).join(' '), '38;5;108:1 38;5;75:1 38;5;180:1 38;5;176:1 38;5;210:1');
 t('DS-181 AC1 (DS-186 AC4, DS-215 AC13) zero counts are grey, the one non-zero count coloured',
-  coloured(ovRow(Ov, 'slow'), true).slice(1, 7).join(' '), '38;5;247:0 34:4 38;5;247:0 38;5;247:0 38;5;247:0 38;5;247:0');
+  coloured(ovRow(Ov, 'slow'), true).slice(1, 7).join(' '), '38;5;247:0 38;5;75:4 38;5;247:0 38;5;247:0 38;5;247:0 38;5;247:0');
 Ov.ui.finish(0);
 
 const Hq = nav({ kind: 'repo', slug: 'acme__hue' });
@@ -870,7 +873,7 @@ const keys = ['H-1', 'H-2', 'H-3', 'H-4', 'H-5', 'H-6'];
 const queueCells = keys.map((k) => stateCell(Hq, k));
 // DS-186 AC2: each state with its glyph, in its colour; blocked grey (DS-217 AC11), failed red.
 t('DS-181 AC2 (DS-186 AC2) one repo\'s Queue shows each state cell with its glyph in its colour', queueCells.join(' '),
-  '32:● running 34:○ ready 33:· waiting 35:◆ needs you 38;5;247:◌ blocked 31:✕ failed');
+  '38;5;108:● running 38;5;75:○ ready 38;5;180:· waiting 38;5;176:◆ needs you 38;5;247:◌ blocked 38;5;210:✕ failed');
 await Hq.press('2');
 t('DS-181 AC2 (DS-186 AC2) the same on the Timeline', keys.slice(0, 5).map((k) => stateCell(Hq, k)).join(' '), queueCells.slice(0, 5).join(' '));
 await Hq.press('3');
@@ -881,7 +884,7 @@ const selRaw = lastFrame(Hq).find((l) => l.replace(ANSI, '').startsWith('›')) 
 // DS-186 AC5: a 256-colour 236 background opens before the first cell and closes after an erase to
 // the end of the line, which the terminal fills with it; no reverse video, and the state keeps its colour.
 t('DS-186 AC5 the selected row is tinted across its full width, keeping each cell\'s colour',
-  `${selRaw.startsWith('\x1b[48;5;236m›')} ${selRaw.endsWith('\x1b[K\x1b[49m')} ${/\x1b\[(7|27|0)m/.test(selRaw)} ${coloured(selRaw).join()}`, 'true true false 34:○ ready');
+  `${selRaw.startsWith('\x1b[48;5;236m›')} ${selRaw.endsWith('\x1b[K\x1b[49m')} ${/\x1b\[(7|27|0)m/.test(selRaw)} ${coloured(selRaw).join()}`, 'true true false 38;5;75:○ ready');
 t('DS-186 AC5 the tint is not erased again after it', Hq.output.buf.split('\x1b[H').at(-1).includes('\x1b[K\x1b[49m\x1b[K'), false);
 Hq.ui.finish(0);
 
@@ -915,11 +918,11 @@ process.env.NO_COLOR = '1';
 const Hp = nav({ kind: 'repo', slug: 'acme__hue' });
 await sleep(20);
 const hpFrame = lastFrame(Hp).join('\n');
-t('DS-181 AC5 (DS-186 AC6) with NO_COLOR, no colour codes, no tint, and the selected row still in reverse video', `${/\x1b\[(3\d|4\d|48;5;\d+)m/.test(hpFrame)} ${/\x1b\[7m›/.test(hpFrame)}`, 'false true');
+t('DS-181 AC5 (DS-186 AC6) with NO_COLOR, no colour codes, no tint, and the selected row still in reverse video', `${/\x1b\[(?:1;)?(3\d|38;[25];[\d;]+|4\d|48;5;\d+)m/.test(hpFrame)} ${/\x1b\[7m›/.test(hpFrame)}`, 'false true');
 await Hp.press('\x1b');
-t('DS-181 AC5 nor on every repo\'s Queue', `${Hp.crumbs()} ${/\x1b\[3\dm/.test(lastFrame(Hp).join('\n'))}`, 'desk-q false');
+t('DS-181 AC5 nor on every repo\'s Queue', `${Hp.crumbs()} ${/\x1b\[(?:1;)?(3[0-7]|38;[25];[\d;]+)m/.test(lastFrame(Hp).join('\n'))}`, 'desk-q false');
 await Hp.press('2');
-t('DS-181 AC5 nor on the Timeline, which is coloured without NO_COLOR', `${Hp.tabOn()} ${/\x1b\[3\dm/.test(lastFrame(Hp).join('\n'))}`, '2 Timeline false');
+t('DS-181 AC5 nor on the Timeline, which is coloured without NO_COLOR', `${Hp.tabOn()} ${/\x1b\[(?:1;)?(3[0-7]|38;[25];[\d;]+)m/.test(lastFrame(Hp).join('\n'))}`, '2 Timeline false');
 Hp.ui.finish(0);
 delete process.env.NO_COLOR;
 
@@ -932,7 +935,7 @@ const Tp = nav({ kind: 'ticket', slug: 'acme__hue', key: 'H-2' });
 await sleep(20);
 const tp = lastFrame(Tp);
 const tpLine = (text) => tp.find((l) => l.replace(ANSI, '').startsWith(text)) ?? '';
-t('DS-186 AC1 on a ticket\'s page the state after the key is in its colour, with its glyph', tpLine('H-2  ').includes('\x1b[34m○ ready\x1b[39m'), true);
+t('DS-186 AC1 on a ticket\'s page the state after the key is in its colour, with its glyph', tpLine('H-2  ').includes('\x1b[38;5;75m○ ready\x1b[39m'), true);
 t('DS-186 AC1 the Ships date is bold', /Ships {5}\x1b\[39m\x1b\[1m[^\x1b]+\x1b\[22m\x1b\[38;5;247m {2}could run to/.test(tpLine('Ships ')), true);
 t('DS-186 AC1 (DS-215 AC13) the branch, the Jira link and the file paths are grey',
   [tpLine('Branch ').includes(`${G}feat/H-2-x`), tpLine('Open ').includes(`${G}acme.atlassian.net/browse/H-2`), tpLine('  src/a.ts').startsWith(G)].join(), 'true,true,true');
@@ -958,12 +961,12 @@ Lp.output.rows = 80; Lp.output.resize();
 await sleep(20);
 const passCell = (name) => coloured(ovRow(Lp, name))[0] ?? '';
 t('DS-186 AC3 LAST PASS: live in green, stopped under a day in yellow, over a day in red',
-  `${/^32:● session · \d+m ago$/.test(passCell('ontime'))} ${/^33:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^31:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
+  `${/^38;5;108:● session · \d+m ago$/.test(passCell('ontime'))} ${/^38;5;180:■ stopped · 3h 2\dm$/.test(passCell('hours'))} ${/^38;5;210:■ stopped · 2d 2h$/.test(passCell('longgone'))}`, 'true true true');
 // AC8: each ports overlap note's ▲ is yellow; "N tickets need you" is bold magenta.
 const lpRaw = lastFrame(Lp);
 const overlaps = lpRaw.filter((l) => / {2}▲ ports +\S+ \+ /.test(l.replace(ANSI, '')));
-t('DS-186 AC8 each ports overlap note starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.includes('\x1b[33m▲ ports'))}`, 'true true');
-t('DS-186 AC8 (DS-215 AC12) "N tickets need you" is bold magenta', lpRaw.some((l) => /^\x1b\[1;35m◆ \d+ tickets need you\x1b\[22;39m/.test(l)), true);
+t('DS-186 AC8 each ports overlap note starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.includes('\x1b[38;5;180m▲ ports'))}`, 'true true');
+t('DS-186 AC8 (DS-215 AC12) "N tickets need you" is bold magenta', lpRaw.some((l) => /^\x1b\[1;38;5;176m◆ \d+ tickets need you\x1b\[22;39m/.test(l)), true);
 // AC4: the QUEUE DONE notes "passes stopped" and "no history" are grey.
 t('DS-186 AC4 the QUEUE DONE notes passes stopped and no history are grey', `${ovRow(Lp, 'hours').includes(`${G}passes stopped`)} ${ovRow(Lp, 'ontime').includes(`${G}no history`)}`, 'true true');
 Lp.ui.finish(0);
@@ -977,13 +980,13 @@ const legendRaw = lastFrame(Lg).find((l) => l.replace(ANSI, '').startsWith('key 
 t('DS-186 AC9 (DS-218 AC8) the Timeline key line: the bar, the check-ins, then each state shown', legendRaw.replace(ANSI, '').trim(),
   'key   █ starts to ships  █ could run to (1 run in 5 is later) │ ┆ check-ins 08:00 and 17:00 │ ● running  ○ ready  ◌ blocked  ◆ needs you');
 t('DS-186 AC9 each state in its colour, and no "colour shows state"',
-  `${['\x1b[32m● running\x1b[39m', '\x1b[34m○ ready\x1b[39m', '\x1b[38;5;247m◌ blocked\x1b[39m', '\x1b[35m◆ needs you\x1b[39m'].every((s) => legendRaw.includes(s))} ${Lg.output.buf.includes('colour shows state')}`, 'true false');
+  `${['\x1b[38;5;108m● running\x1b[39m', '\x1b[38;5;75m○ ready\x1b[39m', '\x1b[38;5;247m◌ blocked\x1b[39m', '\x1b[38;5;176m◆ needs you\x1b[39m'].every((s) => legendRaw.includes(s))} ${Lg.output.buf.includes('colour shows state')}`, 'true false');
 Lg.ui.finish(0);
 const Le = screen({ kind: 'repo', slug: 'acme__feat' }, 160, () => FIXED);
 Le.output.rows = 80; Le.output.resize();
 await sleep(20);
 await Le.press('4');
-t('DS-186 AC9 the Epics legend\'s swatches are coloured as the bars are', lastFrame(Le).some((l) => l.startsWith('\x1b[38;5;247mkey \x1b[39m  \x1b[32m■\x1b[39m done  \x1b[33m■\x1b[39m in the queue  \x1b[38;5;247m■\x1b[39m not queued yet')), true);
+t('DS-186 AC9 the Epics legend\'s swatches are coloured as the bars are', lastFrame(Le).some((l) => l.startsWith('\x1b[38;5;247mkey \x1b[39m  \x1b[38;5;108m■\x1b[39m done  \x1b[38;5;180m■\x1b[39m in the queue  \x1b[38;5;247m■\x1b[39m not queued yet')), true);
 Le.ui.finish(0);
 
 // AC11: --plain and piped output carry no escape codes, and the glyphs still show.
@@ -1106,18 +1109,18 @@ async function landingRaw(checks, key = 'LD-1', opts) {
 }
 const build = { name: 'build', status: 'completed', conclusion: 'success', started: ago194(20), completed: ago194(12), runner: true };
 const raw194 = await landingRaw([ubuntu, macos]);
-t('DS-194 AC3 the state is cyan, and AC4 a check queued 10 minutes with no runner is yellow', coloured(raw194.l).filter((c) => /landing|#164|runner/.test(c)).join(), '36:◐ landing,36:#164,33:macOS: no runner, 14m');
+t('DS-194 AC3 the state is cyan, and AC4 a check queued 10 minutes with no runner is yellow', coloured(raw194.l).filter((c) => /landing|#164|runner/.test(c)).join(), '38;5;73:◐ landing,38;5;73:#164,38;5;180:macOS: no runner, 14m');
 const e2eRunning = { name: 'e2e', status: 'in_progress', conclusion: null, started: ago194(5), runner: true };
 t('DS-194 AC4 a running check reads its name and age', landRow(landQueue(landRepo([build, e2eRunning])), 'LD-1').includes('#164 · 1 of 2 checks passed · e2e running, 5m '), true);
-t('DS-194 AC4 a failed check reads failed, in red', coloured((await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }])).l).includes('31:e2e failed'), true);
-t('DS-194 AC4 every check passed reads merging, in green', coloured((await landingRaw([build])).l).includes('32:all checks passed · merging'), true);
+t('DS-194 AC4 a failed check reads failed, in red', coloured((await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }])).l).includes('38;5;210:e2e failed'), true);
+t('DS-194 AC4 every check passed reads merging, in green', coloured((await landingRaw([build])).l).includes('38;5;108:all checks passed · merging'), true);
 // AC5: the header counts the landing PR, in cyan.
 t('DS-194 AC5 (DS-215) the counts line counts the PRs landing and the merged tickets', lq[1], '◆ nothing needs you  ● 1 running  ◐ 1 landing  · 2 waiting │ ✓ 2 done, not shown');
-t('DS-194 AC5 the landing count is cyan', coloured(raw194.head).includes('36:◐ 1 landing'), true);
+t('DS-194 AC5 the landing count is cyan', coloured(raw194.head).includes('38;5;73:◐ 1 landing'), true);
 // AC6: a held ticket names its landing blocker by its PR.
 t('DS-194 AC6 (DS-217 AC2) the only blocker left is landing: behind its PR, merging when green, starting after it', /· waiting {4}behind #164: checks running, merges when green +after #164 /.test(landRow(lq, 'LD-2')), true);
 t('DS-194 AC6 with another blocker left, both are listed and STARTS is not after the PR', `${/· waiting {4}behind #164, LD-4 /.test(landRow(lq, 'LD-3'))} ${/after #/.test(landRow(lq, 'LD-3'))}`, 'true false');
-t('DS-194 AC6 the PR is cyan in the row', coloured((await landingRaw([ubuntu, macos], 'LD-2')).l).includes('36:#164'), true);
+t('DS-194 AC6 the PR is cyan in the row', coloured((await landingRaw([ubuntu, macos], 'LD-2')).l).includes('38;5;73:#164'), true);
 // AC7: the held ticket's page lists the landing blocker's checks, then when they were read.
 const p2 = lines(Q.ticketScreen(landRepo([ubuntu, macos]), 'LD-2', { now: NOW }));
 const i7 = p2.findIndex((l) => l.startsWith('Blockers  '));
@@ -1256,14 +1259,15 @@ const hkFrame = lastFrame(Hk);
 Hk.ui.finish(0);
 const hkKey = hkFrame.find((l) => l.replace(ANSI, '').startsWith('key ')) ?? '';
 t('DS-217 AC10 the key line: each state in its colour, its meaning grey',
-  ['\x1b[38;5;247mkey \x1b[39m', '\x1b[33m· waiting\x1b[39m\x1b[38;5;247m: moves by itself\x1b[39m', '\x1b[38;5;247m◌ blocked\x1b[39m\x1b[38;5;247m: held outside this batch\x1b[39m',
-    '\x1b[35m◆ needs you\x1b[39m\x1b[38;5;247m: nothing moves until you act\x1b[39m'].filter((s) => !hkKey.includes(s)).join(' | '), '');
-const ONE_DARK = { 1: '#e6e9ef', 31: '#f07c84', 32: '#98c379', 33: '#e5c07b', 34: '#61afef', 35: '#d08be3', 36: '#56b6c2', 39: '#abb2bf' };
+  ['\x1b[38;5;247mkey \x1b[39m', '\x1b[38;5;180m· waiting\x1b[39m\x1b[38;5;247m: moves by itself\x1b[39m', '\x1b[38;5;247m◌ blocked\x1b[39m\x1b[38;5;247m: held outside this batch\x1b[39m',
+    '\x1b[38;5;176m◆ needs you\x1b[39m\x1b[38;5;247m: nothing moves until you act\x1b[39m'].filter((s) => !hkKey.includes(s)).join(' | '), '');
+// The default text, plain and bold; every other colour is a 256-colour or 24-bit code, read as drawn.
+const ONE_DARK = { 1: '#e6e9ef', 39: '#abb2bf' };
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-const grey256 = (n) => (n >= 232 && n <= 255 ? [0, 0, 0].map(() => 8 + 10 * (n - 232)) : null);
+const grey256 = xterm256;
 const lum = (c) => c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
 const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-const fgOf = (code) => (/^38;5;\d+$/.test(code) ? grey256(Number(code.split(';')[2])) : ONE_DARK[code] ? rgb(ONE_DARK[code]) : null);
+const fgOf = (code) => rgbOfSgr(code) ?? (ONE_DARK[code] ? rgb(ONE_DARK[code]) : null);
 const hkStart = hkFrame.findIndex((l) => /^\s+# {2}TICKET/.test(l.replace(ANSI, '')));
 const hkLines = hkFrame.slice(hkStart, hkFrame.indexOf(hkKey) + 1);
 const selBg = grey256(Number(/\x1b\[48;5;(\d+)m/.exec(hkLines.join(''))?.[1]));
@@ -1293,15 +1297,15 @@ const S215 = screen({ kind: 'overview', all: true }, 240, () => NOW);
 S215.output.rows = 120; S215.output.resize();
 await sleep(20);
 const cell215 = (name) => coloured(ovRow(S215, name))[0] ?? '';
-t('DS-215 AC1 a handed-over batch with its agent loaded, on time: ● supervisor in green', `${cell215('sup')} ${/^ {2}sup +● supervisor · 2m ago {2}/.test(rowOf(ov215, 'sup') ?? '')}`, '32:● supervisor · 2m ago true');
+t('DS-215 AC1 a handed-over batch with its agent loaded, on time: ● supervisor in green', `${cell215('sup')} ${/^ {2}sup +● supervisor · 2m ago {2}/.test(rowOf(ov215, 'sup') ?? '')}`, '38;5;108:● supervisor · 2m ago true');
 t('DS-215 AC2 a session-run batch set to session or unset: ● session in green, and no note names it',
-  `${cell215('sess')} ${notes215.some((l) => /▲ sess\b/.test(l))}`, '32:● session · 1m ago false');
+  `${cell215('sess')} ${notes215.some((l) => /▲ sess\b/.test(l))}`, '38;5;108:● session · 1m ago false');
 t('DS-215 AC3 a session-run batch set to the supervisor: ▲ session in amber, and one amber note', `${cell215('over')} ${notes215.filter((l) => l.includes('▲ over')).join('|')}`,
-  `33:▲ session · 3m ago ${notes215.find((l) => l.includes('▲ over'))?.startsWith('note') ? 'note' : '    '}  ▲ over          set to the supervisor, but a session runs this batch. Its next batch hands over.`);
+  `38;5;180:▲ session · 3m ago ${notes215.find((l) => l.includes('▲ over'))?.startsWith('note') ? 'note' : '    '}  ▲ over          set to the supervisor, but a session runs this batch. Its next batch hands over.`);
 const bandAt = lines(ov215).indexOf(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on');
 const needsAt = lines(ov215).findIndex((l) => l.startsWith('◆ '));
 t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off in red at once, and the red band above the header names the fix',
-  `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;31m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on\x1b[22;27;39m'))}`, '31:✕ supervisor off · 3m true true');
+  `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;38;5;210m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on\x1b[22;27;39m'))}`, '38;5;210:✕ supervisor off · 3m true true');
 t('DS-215 AC15 home keeps the tab line under the breadcrumb, the Queue in reverse video, and the red band follows it after a blank line',
   `${S215.frame()[1].startsWith('1 Queue  2 Timeline  3 By day  4 Epics')} ${S215.tabOn()} ${S215.frame()[2] === '' && S215.frame()[3].startsWith(' ✕ ')}`, 'true 1 Queue true');
 // DS-215 AC16-19: home fits the terminal. hold and hue each have a failed ticket; mixed has one
@@ -1347,7 +1351,7 @@ t('DS-215 AC7 with the desk-needs-you skill installed, one note says /desk-needs
 const Sy = screen({ kind: 'overview', all: false }, 240, () => NOW);
 Sy.output.rows = 120; Sy.output.resize();
 await sleep(20);
-t('DS-215 AC7 the note is magenta, its command bold', lastFrame(Sy).some((l) => l.includes('\x1b[35m◆ needs you    ') && l.includes('\x1b[1m/desk-needs-you\x1b[22m')), true);
+t('DS-215 AC7 the note is magenta, its command bold', lastFrame(Sy).some((l) => l.includes('\x1b[38;5;176m◆ needs you    ') && l.includes('\x1b[1m/desk-needs-you\x1b[22m')), true);
 Sy.ui.finish(0);
 const unsetNote = '4 repos have no "Batches run by" setting, so they run in a session. /desk-setup sets it.';
 t('DS-215 AC8 4 repos with a batch and no row: one grey note on home, none on a repo screen',
@@ -1369,12 +1373,12 @@ const Rs = screen({ kind: 'repo', slug: 'acme__sup' }, 160, () => NOW);
 await sleep(20);
 const rsHead = lastFrame(Rs).find((l) => l.replace(ANSI, '').startsWith('● supervisor')) ?? '';
 t('DS-215 AC11 its label is grey, its figures bright and its segments split by a grey │',
-  [`\x1b[32m● supervisor\x1b[39m  ${G}last pass \x1b[39m2m ago`, `${G} │ \x1b[39m${G}workers \x1b[39m\x1b[1m1 of 2\x1b[22m${G} · cap \x1b[39m\x1b[1m3\x1b[22m`].filter((s) => !rsHead.includes(s)).join(' | '), '');
+  [`\x1b[38;5;108m● supervisor\x1b[39m  ${G}last pass \x1b[39m2m ago`, `${G} │ \x1b[39m${G}workers \x1b[39m\x1b[1m1 of 2\x1b[22m${G} · cap \x1b[39m\x1b[1m3\x1b[22m`].filter((s) => !rsHead.includes(s)).join(' | '), '');
 const s215 = lastFrame(S215);
 t('DS-215 AC12 home: the band, then the needs-you count with each repo\'s, then workers, machine cap, room and free memory',
   `${needsAt === lines(ov215).filter((l) => l.startsWith(' ✕ ')).length} ${/^◆ \d+ tickets need you │ \S+ \d+( · \S+ \d+)*( │ ◌ \d+ blocked)?$/.test(lines(ov215)[needsAt])} ${/^● \d+ workers? running │ machine cap 10 · room for \d+ more │ 30\.0 GiB free$/.test(lines(ov215)[needsAt + 1])}`, 'true true true');
 t('DS-215 AC12 labels grey, values bright, segments split by a grey │',
-  `${s215.some((l) => l.startsWith('\x1b[1;35m◆ ') && /\x1b\[38;5;247m │ \x1b\[39m\x1b\[38;5;247m\S+ \x1b\[39m\x1b\[1m\d+\x1b\[22m/.test(l))} ${s215.some((l) => l.includes(`${G}machine cap \x1b[39m\x1b[1m10\x1b[22m${G} · \x1b[39m${G}room for \x1b[39m\x1b[1m`) && /\x1b\[1m\d+\.\d GiB\x1b\[22m\x1b\[38;5;247m free\x1b\[39m$/.test(l))}`, 'true true');
+  `${s215.some((l) => l.startsWith('\x1b[1;38;5;176m◆ ') && /\x1b\[38;5;247m │ \x1b\[39m\x1b\[38;5;247m\S+ \x1b\[39m\x1b\[1m\d+\x1b\[22m/.test(l))} ${s215.some((l) => l.includes(`${G}machine cap \x1b[39m\x1b[1m10\x1b[22m${G} · \x1b[39m${G}room for \x1b[39m\x1b[1m`) && /\x1b\[1m\d+\.\d GiB\x1b\[22m\x1b\[38;5;247m free\x1b\[39m$/.test(l))}`, 'true true');
 S215.ui.finish(0);
 Rs.ui.finish(0);
 // AC13: no label is drawn dim, and every text colour the home and repo screens draw is 4.5:1 or more
@@ -1383,15 +1387,15 @@ const sgrOf = (bufs) => new Set(bufs.flatMap((b) => [...b.matchAll(/\x1b\[([0-9;
 const RESETS = ['0', '22', '23', '24', '27', '39', '49', '22;39', '22;27;39'];
 // The foreground each code draws text in, bold alone in the default colour; reverse video and
 // backgrounds are not text colours.
-const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && !/^1;7;/.test(c));
+const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && !c.startsWith('1;7;'));
 const textFg = (c) => fgOf(c === '1' ? '39' : c.replace(/^1;/, ''));
 const drawn215 = sgrOf([S215, Rs, Sy].map((s) => s.output.buf));
 const sel215 = grey256(Number([...drawn215].find((c) => c.startsWith('48;5;'))?.split(';')[2]));
-const bands215 = [...drawn215].filter((c) => /^1;7;\d+$/.test(c));
+const bands215 = [...drawn215].filter((c) => c.startsWith('1;7;'));
 t('DS-215 AC13 no screen draws dim (SGR 2)', [S215, Rs, Sy].some((s) => s.output.buf.includes('\x1b[2m')), false);
 t('DS-215 AC13 every text colour drawn is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
-  `${sel215 != null} ${drawn215.has('38;5;247')} ${textCodes(drawn215).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands215.join()} ${bands215.every((c) => contrast(window217, fgOf(c.split(';')[2])) >= 4.5)}`,
-  'true true |1;7;31 true');
+  `${sel215 != null} ${drawn215.has('38;5;247')} ${textCodes(drawn215).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands215.join()} ${bands215.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
+  'true true |1;7;38;5;210 true');
 process.env.COLORFGBG = '0;15';
 const QL = await import(`${pathToFileURL(BIN).href}?light`);
 delete process.env.COLORFGBG;
@@ -1406,6 +1410,35 @@ const selL = grey256(Number([...drawnL].find((c) => c.startsWith('48;5;'))?.spli
 t('DS-215 AC14 a light theme draws labels a darker grey, 4.5:1 or more on its background and its selected row',
   `${greysL.join()} ${selL != null && greysL.every((c) => contrast(fgOf(c), white) >= 4.5 && contrast(fgOf(c), selL) >= 4.5)} ${QL.lightTheme('15;0')} ${QL.lightTheme(undefined)}`,
   '38;5;240 true false false');
+// DS-277: a truecolor terminal draws each state in One Dark's 24-bit colour (AC1), each 4.5:1 or more on
+// the window, the selected row and black, the band's text on red too (AC3). NO_COLOR still drops every
+// colour (AC4), and a light theme keeps the terminal's 16 (AC5).
+const ONE_DARK_24 = ['38;2;152;195;121', '38;2;86;182;194', '38;2;97;175;239', '38;2;229;192;123', '38;2;208;139;227', '38;2;240;124;132'];
+process.env.COLORTERM = 'truecolor';
+const QT = await import(`${pathToFileURL(BIN).href}?truecolor`);
+delete process.env.COLORTERM;
+const tc277 = [screen({ kind: 'overview', all: true }, 240, () => NOW, QT), screen({ kind: 'repo', slug: 'acme__hue' }, 220, () => FIXED, QT)];
+for (const s of tc277) { s.output.rows = 120; s.output.resize(); }
+await sleep(20);
+tc277.forEach((s) => s.ui.finish(0));
+const drawn277 = sgrOf(tc277.map((s) => s.output.buf));
+const hues277 = new Set([...drawn277].map((c) => c.replace(/^(1;7;|1;|2;)/, '')).filter((c) => c.startsWith('38;2;')));
+const legacy277 = [...drawn277].map((c) => c.replace(/^(1;7;|1;|2;)/, '')).filter((c) => /^3[1-6]$/.test(c) || /^38;5;(\d\d?|1\d\d|2[0-2]\d|23[01])$/.test(c));
+t('DS-277 AC1 with truecolor every state is drawn in its One Dark 24-bit colour, and no 16 or 256-colour state code',
+  `${[...hues277].every((c) => ONE_DARK_24.includes(c))} ${hues277.size >= 5} ${legacy277.join()}`, 'true true ');
+const bands277 = [...drawn277].filter((c) => c.startsWith('1;7;'));
+t('DS-277 AC3 with truecolor every text colour is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
+  `${textCodes(drawn277).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands277.join()} ${bands277.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
+  '|1;7;38;2;240;124;132 true');
+process.env.NO_COLOR = '1';
+const Tn277 = screen({ kind: 'repo', slug: 'acme__hue' }, 220, () => FIXED, QT);
+await sleep(20);
+Tn277.ui.finish(0);
+delete process.env.NO_COLOR;
+t('DS-277 AC4 with truecolor and NO_COLOR, no colour codes, the selected row still in reverse video',
+  `${/\x1b\[(?:1;)?(3\d|38;[25];[\d;]+|4\d|48;5;\d+)m/.test(Tn277.output.buf)} ${/\x1b\[7m›/.test(Tn277.output.buf)}`, 'false true');
+t('DS-277 AC5 a light theme keeps the terminal\'s own state colours, never 24-bit or 256-colour ones',
+  `${[...drawnL].some((c) => /^(1;)?3[1-6]$/.test(c))} ${[...drawnL].some((c) => c.includes('38;2;') || /^38;5;(\d\d?|1\d\d|2[0-2]\d|23[01])$/.test(c))}`, 'true false');
 // AC4 holds for a handed-over batch whose open tickets all wait on the user, and once its passes have
 // stopped the batch stays on home, band and all, rather than dropping off with the quiet ones.
 put215('stall', 5260, 50, 'supervisor', true, { 'ST-1': parked215 });
@@ -1457,13 +1490,13 @@ t('DS-218 AC1 the first line under the title, on the rail, says whether it moves
   + ' / true Needs you. #175 is a draft: undraft and merge it. / true Moves without you: behind DS-175, which needs you.');
 const S175 = await ticket218('DS-175'), S168 = await ticket218('DS-168'), S180 = await ticket218('DS-180');
 t('DS-218 AC1 the rail is in the state\'s colour: needs you magenta, blocked grey, waiting amber',
-  [lastFrame(S175).some((l) => l.startsWith('\x1b[35m▌ \x1b[39m')), lastFrame(S168).some((l) => l.startsWith(`${G}▌ \x1b[39m`)), lastFrame(S180).some((l) => l.startsWith('\x1b[33m▌ \x1b[39m'))].join(), 'true,true,true');
+  [lastFrame(S175).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S168).some((l) => l.startsWith(`${G}▌ \x1b[39m`)), lastFrame(S180).some((l) => l.startsWith('\x1b[38;5;180m▌ \x1b[39m'))].join(), 'true,true,true');
 const p168 = lines(page218('DS-168'));
 t('DS-218 AC2 the blockers: merged as one green count, the one needing you with its action, those outside with their Jira status',
   ['Blockers  31 · 4 in this batch, 27 open outside it', '  ✓ 3 in this batch merged', '  ◆ DS-150    #175 is a draft: undraft and merge it', '  ◌ OUT-1     To Do'].filter((s) => !p168.includes(s)).join(' | '), '');
 const f168 = lastFrame(S168);
 t('DS-218 AC2 on screen: the count green, the one needing you magenta with the action bold, the outside ones grey',
-  [f168.some((l) => l.includes('\x1b[32m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175 is a draft: \x1b[1mundraft and merge it\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');
+  [f168.some((l) => l.includes('\x1b[38;5;108m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175 is a draft: \x1b[1mundraft and merge it\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');
 const outsideShown = (s) => s.frame().filter((l) => /^ {2}◌ OUT-\d+ /.test(l)).length;
 const before3 = [outsideShown(S168), S168.frame().includes('    … 22 more outside this batch  · a shows all'), S168.frame().some((l) => /✓ DS-101 /.test(l)), keysLine(S168).includes('a blockers')];
 await S168.press('a');
@@ -1473,7 +1506,7 @@ await S168.press('a');
 t('DS-218 AC4 a Warnings block shows each flag triage or the pass raised, an advisory one left out',
   ['Warnings', "  ▲ Triage's ticket check: names DS-127 with no Blocks link", '  ▲ Open from triage: Should the rewrite wait until the backlog has shipped?'].filter((s) => !p168.includes(s)).join(' | ')
   + ` ${p168.some((l) => l.includes('no saved design copy'))} ${at218('DS-195', '  ▲ ')}`, ' false   ▲ Its branch changes 2 files outside its triaged scope: README.md, docs/guide.md.');
-t('DS-218 AC4 each flag is amber', f168.some((l) => l.startsWith('\x1b[33m  ▲ \x1b[39m')), true);
+t('DS-218 AC4 each flag is amber', f168.some((l) => l.startsWith('\x1b[38;5;180m  ▲ \x1b[39m')), true);
 t('DS-218 AC5 a held ticket: Starts says what it waits for, and Ships says no date',
   ['DS-168', 'DS-175', 'DS-180'].map((k) => `${at218(k, 'Starts')} | ${at218(k, 'Ships')}`).join(' / '),
   'Starts    not until its outside blockers are done | Ships     no date / Starts    once #175 merges and you release it | Ships     no date / Starts    after DS-175 merges | Ships     no date');
@@ -1508,7 +1541,7 @@ t('DS-218 AC8 Timeline, By day and Epics each have the Queue\'s header: state co
 t('DS-218 AC8 the Timeline and By day legends are one key line each, the Timeline\'s with its note under it',
   `${tabs218[0].keys} ${tabs218[1].keys} ${tabs218[0].f[tabs218[0].f.findIndex((l) => l.startsWith('key ')) + 1]}`, '1 1       within a week: day and time; beyond a week, the date');
 t('DS-218 AC9 a Timeline bar on screen: the likely span solid in the state\'s colour, the could-run-to part a dimmer shade of it, no ░',
-  `${tabs218[0].raw.some((l) => /\x1b\[3([0-8])m█+\x1b\[39m\x1b\[2;3\1m█+\x1b\[22;39m/.test(l))} ${tabs218[0].f.some((l) => /^[ ›] +DS-\d+ .*░/.test(l))}`, 'true false');
+  `${tabs218[0].raw.some((l) => /\x1b\[(38;5;\d+)m█+\x1b\[39m\x1b\[2;\1m█+\x1b\[22;39m/.test(l))} ${tabs218[0].f.some((l) => /^[ ›] +DS-\d+ .*░/.test(l))}`, 'true false');
 // AC11: every text colour on these screens is 4.5:1 or more on the window and the selected row; a bar's
 // dimmed part is a graphic, not text. Every coloured line on a ticket's page leads with a glyph.
 const drawn218 = sgrOf([S175, S168, S180, T218].map((s) => s.output.buf));
@@ -1589,12 +1622,12 @@ S219.output.rows = 160; S219.output.resize();
 await sleep(20);
 S219.ui.finish(0);
 const drawn219 = sgrOf([S219.output.buf]);
-const bands219 = [...drawn219].filter((c) => /^1;7;\d+$/.test(c));
+const bands219 = [...drawn219].filter((c) => c.startsWith('1;7;'));
 const f219 = lastFrame(S219);
 t('DS-219 AC9 the bands and notes are drawn, and every text colour is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
-  `${f219.some((l) => l.includes('\x1b[1;7;31m ✕ err: ')) && f219.some((l) => l.includes('\x1b[33m▲ np')) && f219.some((l) => l.includes('\x1b[1mRun ./install.sh in desk-skills.\x1b[22m'))} `
-  + `${textCodes(drawn219).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands219.join()} ${bands219.every((c) => contrast(window217, fgOf(c.split(';')[2])) >= 4.5)}`,
-  'true |1;7;31 true');
+  `${f219.some((l) => l.includes('\x1b[1;7;38;5;210m ✕ err: ')) && f219.some((l) => l.includes('\x1b[38;5;180m▲ np')) && f219.some((l) => l.includes('\x1b[1mRun ./install.sh in desk-skills.\x1b[22m'))} `
+  + `${textCodes(drawn219).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands219.join()} ${bands219.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
+  'true |1;7;38;5;210 true');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
