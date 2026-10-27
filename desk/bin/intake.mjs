@@ -100,11 +100,14 @@ const free = (q) => {
   const rows = Object.values(q.tickets ?? {});
   return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
 };
+// Why no ticket may join this batch now: 'base', 'session' (not handed over), or null.
+const closed = (b) => (!b || free(b) ? null : b.base ? 'base' : b.supervised !== true ? 'session' : null);
 // Why intake admits nothing into this batch now, or null.
-const waitFor = (b) => (!b || free(b) ? null
-  : b.base ? `intake: admits nothing while batch ${b.batch ?? '?'} runs on base ${b.base}: its tickets merge there, and intake's go to the default branch`
-    : b.supervised !== true ? `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`
-      : null);
+const waitFor = (b) => ({
+  base: () => `intake: admits nothing while batch ${b.batch ?? '?'} runs on base ${b.base}: its tickets merge there, and intake's go to the default branch`,
+  session: () => `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`,
+}[closed(b)]?.() ?? null);
+const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? JSON.parse(readFileSync(qf, 'utf8')) : null; };
 
 const queueCmd = (...args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env: process.env });
 
@@ -175,6 +178,31 @@ function admitHeld(key, rec, tickets, by) {
 const laneSize = (rec) => `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}`;
 const heldText = (held) => (held.length ? `, held behind ${held.join(', ')}` : '');
 
+// One triaged ticket into the batch, both paths: the queue read again whole (triage took minutes, and a
+// session may have started its own batch meanwhile), the batch gate, the ticket's checks, a standing
+// batch started where none is live, then the admit. Returns the one thing that happened:
+// {unreadable}, {closed, cur}, {reasons}, {startFailed}, {admitFailed}, or {batch, held, started}.
+// Without mayStart, a free batch is closed as 'free' rather than replaced.
+function placeOne(key, rec, { started, by, now, mayStart = true }) {
+  let cur;
+  try { cur = readQueue(); } catch (e) { return { unreadable: `the queue at ${E.queueFile()} cannot be read (${e.message})` }; }
+  if (closed(cur)) return { closed: closed(cur), cur };
+  // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it.
+  const startNew = !started && free(cur);
+  if (startNew && !mayStart) return { closed: 'free', cur };
+  const tickets = startNew ? {} : cur?.tickets ?? {};
+  const reasons = reasonsAgainst(rec, tickets);
+  if (reasons.length) return { reasons };
+  let batch = cur?.batch;
+  if (startNew) {
+    const st = startStanding(cur, now);
+    if (!st.name) return { startFailed: st.why };
+    batch = started = st.name;
+  }
+  const a = admitHeld(key, rec, tickets, by);
+  return a.held ? { batch, held: a.held, started: startNew ? started : null } : { admitFailed: a.why, started: startNew ? started : null };
+}
+
 function intake({ state, query, reg, now }) {
   const lines = [];
   const admitted = [];
@@ -189,10 +217,8 @@ function intake({ state, query, reg, now }) {
     return done();
   }
 
-  const qf = E.queueFile();
-  const readQ = () => (existsSync(qf) ? JSON.parse(readFileSync(qf, 'utf8')) : null);
   let q;
-  try { q = readQ(); } catch (e) { lines.push(`intake: admits nothing: the queue at ${qf} cannot be read (${e.message})`); return done(); }
+  try { q = readQueue(); } catch (e) { lines.push(`intake: admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done(); }
   // A batch a session is still planning is the session's: intake joins it once it is handed over.
   if (waitFor(q)) { lines.push(waitFor(q)); return done(); }
 
@@ -244,34 +270,22 @@ function intake({ state, query, reg, now }) {
   let started = null;
   for (const key of order) {
     const rec = recs[key];
-    // Read again, whole: triage took minutes, and a session may have started its own batch meanwhile.
-    let cur;
-    try { cur = readQ(); } catch (e) { lines.push(`intake: admits nothing more: the queue at ${qf} cannot be read (${e.message})`); return done({ started }); }
-    if (waitFor(cur)) { lines.push(waitFor(cur)); return done({ started }); }
-    // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it.
-    const startNew = !started && free(cur);
-    const tickets = startNew ? {} : cur?.tickets ?? {};
-    const reasons = reasonsAgainst(rec, tickets);
-    if (reasons.length) { hand(key, reasons.join('; ')); continue; }
-
-    if (startNew) {
-      const s = startStanding(cur, now);
-      if (!s.name) {
-        lines.push(`intake: admits nothing: a standing batch could not be started (${s.why}); the next intake tries again`);
-        reg.last_run = null;
-        writeIntake(state, reg);
-        return done({ started });
-      }
-      started = s.name;
-      cur = { batch: s.name };
-      lines.push(`intake: started standing batch ${s.name}, handed to the supervisor`);
+    const r = placeOne(key, rec, { started, by: 'intake', now });
+    if (r.unreadable) { lines.push(`intake: admits nothing more: ${r.unreadable}`); return done({ started }); }
+    if (r.closed) { lines.push(waitFor(r.cur)); return done({ started }); }
+    if (r.reasons) { hand(key, r.reasons.join('; ')); continue; }
+    if (r.startFailed) {
+      lines.push(`intake: admits nothing: a standing batch could not be started (${r.startFailed}); the next intake tries again`);
+      reg.last_run = null;
+      writeIntake(state, reg);
+      return done({ started });
     }
-    const a = admitHeld(key, rec, tickets, 'intake');
-    if (!a.held) { lines.push(`intake: ${key} not admitted: ${a.why}; the next intake tries again`); continue; }
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(a.held)}` };
+    if (r.started) { started = r.started; lines.push(`intake: started standing batch ${started}, handed to the supervisor`); }
+    if (r.admitFailed) { lines.push(`intake: ${key} not admitted: ${r.admitFailed}; the next intake tries again`); continue; }
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r.held)}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`intake: admitted ${key} by intake into batch ${cur.batch ?? '?'} (${laneSize(rec)})${heldText(a.held)}`);
+    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r.held)}`);
   }
   return done({ started });
 }
@@ -291,17 +305,17 @@ function byHand(keys, { state, by, front, now }) {
   const refused = [];
   const refuse = (key, text) => { refused.push(key); lines.push(`not admitted ${key}: ${text}`); };
   const done = (extra = {}) => ({ ran: true, lines, admitted, refused, ...extra });
-  const qf = E.queueFile();
-  const readQ = () => (existsSync(qf) ? JSON.parse(readFileSync(qf, 'utf8')) : null);
-  // Where the tickets would go, or why nowhere: nothing is triaged for a batch they cannot join.
-  const nowhere = (b) => {
-    if (b?.base) return `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`;
-    if (b && !free(b) && b.supervised !== true) return `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them`;
-    if (free(b) && E.permission('autopilot-workers') !== 'yes') return `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`;
-    return null;
-  };
+  // Starting a standing batch has no plan approval, so it needs what standing intake needs.
+  const mayStart = E.permission('autopilot-workers') === 'yes';
+  // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
+  const said = (code, b) => ({
+    base: () => `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`,
+    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them`,
+    free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
+  }[code]?.() ?? null);
+  const nowhere = (b) => said(closed(b) ?? (free(b) && !mayStart ? 'free' : null), b);
   let q;
-  try { q = readQ(); } catch (e) { lines.push(`admits nothing: the queue at ${qf} cannot be read (${e.message})`); return done({ refused: keys }); }
+  try { q = readQueue(); } catch (e) { lines.push(`admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done({ refused: keys }); }
   const why = nowhere(q);
   if (why) { lines.push(`admits nothing: ${why}`); return done({ refused: keys }); }
 
@@ -312,34 +326,22 @@ function byHand(keys, { state, by, front, now }) {
     if (q?.tickets?.[key]) { lines.push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
-    if (/epic/i.test(String(t.rec.type ?? ''))) { refuse(key, 'an epic: run it as a feature batch with /desk-autopilot'); continue; }
+    if (isEpic({ name: t.rec.type })) { refuse(key, 'an epic: run it as a feature batch with /desk-autopilot'); continue; }
     recs[key] = t.rec;
   }
   let started = null;
   for (const key of blockersFirst(recs)) {
     const rec = recs[key];
-    let cur;
-    try { cur = readQ(); } catch (e) { refuse(key, `the queue at ${qf} cannot be read (${e.message})`); continue; }
-    const w = nowhere(cur);
-    if (w) { refuse(key, w); continue; }
-    const startNew = !started && free(cur);
-    const tickets = startNew ? {} : cur?.tickets ?? {};
-    const reasons = reasonsAgainst(rec, tickets);
-    if (reasons.length) { refuse(key, reasons.join('; ')); continue; }
-    if (startNew) {
-      const st = startStanding(cur, now);
-      if (!st.name) { refuse(key, `a standing batch could not be started (${st.why})`); continue; }
-      started = st.name;
-      cur = { batch: st.name };
-      lines.push(`started standing batch ${st.name}, handed to the supervisor`);
-    }
-    const a = admitHeld(key, rec, tickets, by);
-    if (!a.held) { refuse(key, a.why); continue; }
+    const r = placeOne(key, rec, { started, by, now, mayStart });
+    if (r.started) { started = r.started; lines.push(`started standing batch ${started}, handed to the supervisor`); }
+    const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.reasons?.join('; ')
+      ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
+    if (fail) { refuse(key, fail); continue; }
     const reg = readIntake(state);
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(a.held)}, by ${by}` };
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r.held)}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`admitted ${key} by ${by} into batch ${cur.batch ?? '?'} (${laneSize(rec)})${heldText(a.held)}`);
+    lines.push(`admitted ${key} by ${by} into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r.held)}`);
     if (front) {
       const f = queueCmd('front', key);
       lines.push(f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`);

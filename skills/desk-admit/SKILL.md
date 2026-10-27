@@ -25,7 +25,9 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 - `--by`: the user's first name, lower case, no spaces (from `git config user.name`).
 - `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next").
 
-It triages each ticket afresh, which takes a minute or two each. Exit 0: every ticket was admitted
+It triages each ticket afresh, which takes a minute or two each, and admits none until every triage
+is done: give the call your longest foreground timeout, and if it moves to the background, wait for
+its notification rather than running it again. Exit 0: every ticket was admitted
 or was already in the batch. Print its lines and stop. The supervisor's next tick picks them up, so
 start no pass, loop or driver.
 
