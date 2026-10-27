@@ -165,6 +165,20 @@ check "AC6: the digest lists them with the reason" 'questions | grep -q "^F|park
 check "AC8: the report names the time-out, its cost unknown rather than zero" 'grep -q "decider .*: cost unknown; settled nothing; handed to the digest F (decider timed out)" "$LOG"'
 check "AC6: F handed on starts no new session" '[ "$(calls)" = 1 ]'
 
+# ---- DS-269 AC5: an answer given while its session runs reaches the next one ------------------------
+mark; rm -f "$T/state/handed.json"
+queue '{"H":{"key":"H","state":"parked","lane":"A","park":{"question":"h?","since":"2020-01-01T00:00:00Z"}}}'
+verdict "$(parked H "h?")"; echo "hang" > "$T/claude.mode"
+out=$(tick)
+PID=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).decider.pid)' "$T/state/supervisor.json")
+sleep 1
+printf '\n## Answer from the user (%s)\n\nuse the blue one\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/state/briefings/H.md"
+kill "$PID"; i=0; while kill -0 "$PID" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+echo "hand" > "$T/claude.mode"
+out=$(tick); settle
+P=$(grep -l "use the blue one" "$T"/claude.args.* 2>/dev/null | head -1)
+check "DS-269 AC5 the session reaped after the answer hands H on from its start, so the next one gets the answer" '[ "$(calls)" = 2 ] && [ -n "$P" ] && grep -A1 "· H · parked · lane A: h?$" "$P" | grep -q "answered .*: use the blue one"'
+
 # ---- a batch-level line has no ticket to answer, and goes once no pass lists it ---------------------
 mark; queue '{}'; echo "hand" > "$T/claude.mode"
 verdict '{"status":"show_person","code":11,"message":"x","waiting":["BASE GATE: failed on main. Fix it on main"],"parked":[],"notify":true,"push":[]}'

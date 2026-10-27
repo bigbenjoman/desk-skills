@@ -306,9 +306,12 @@ verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"n
 : > "$T/pass.calls"
 out=$(tick); out=$(tick)
 check "DS-269 an idle batch with a failed ticket runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+# The first idle is 4s old by the recheck, so a 3s interval runs a pass after it only if that pass
+# did not record the idle again.
+sleep 4
 out=$(DESK_IDLE_RECHECK_MS=1 tick)
 check "DS-269 AC1 once the interval has passed, the next tick runs a pass anyway" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "a park is answered, or 30 minutes pass with anything parked or failed" "$LOG"'
-out=$(tick)
+out=$(DESK_IDLE_RECHECK_MS=3000 tick)
 check "DS-269 AC1 that pass starts the interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}}}' b3
 out=$(tick); out=$(DESK_IDLE_RECHECK_MS=1 tick)

@@ -28,7 +28,7 @@ import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, describeCond, checkCond, settleAction } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate } from './gate.mjs';
 import { undraftCall } from './undraft.mjs';
@@ -717,7 +717,7 @@ for (const t of Object.values(queue().tickets)) {
   const r = checkCond(c, clearsRead);
   if (r.error) { report.clears.push(`${t.key}: could not check "${what}" (${r.error}): left parked`); continue; }
   if (!r.holds) continue;
-  if (settleAction({ lane: t.lane }) === 'stay') {
+  if (['C', 'D'].includes(t.lane)) {
     report.clears.push(`${t.key}: "${what}" holds, but it is lane ${t.lane}: left parked for a person, never requeued for a headless worker`);
     continue;
   }
@@ -726,7 +726,7 @@ for (const t of Object.values(queue().tickets)) {
     report.clears.push(`${t.key}: "${what}" holds, but whether its own PR merged could not be read (${e.message}): left parked`);
     continue;
   }
-  if (settleAction({ lane: t.lane, ownMerged: own != null }) === 'closeout') {
+  if (own != null) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own} merged`, `result.pr=${own}`);
     if (report.failed.length === before) report.clears.push(`${t.key}: "${what}" holds and its PR #${own} merged: recorded done`);

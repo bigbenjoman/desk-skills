@@ -505,7 +505,9 @@ function reapDecider(state, s, now = new Date()) {
   let q = {};
   try { q = readQueue(E.queueFile()); } catch { /* every park reads as still parked */ }
   const o = outcome(rec, result, q);
-  handItems(state, o.handed, now);
+  // Handed on from the session's start, to the second answers are stamped at: an answer given while it
+  // ran never reached it, so it still counts as one since the hand-over and reaches the next session.
+  handItems(state, o.handed, new Date(Math.floor((Date.parse(rec.started) || now.getTime()) / 1000) * 1000));
   noteOutcome(state, o, now);
   s.decider = null;
   s.settled = o.settled.map((x) => x.item.id);

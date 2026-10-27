@@ -56,10 +56,3 @@ export function checkCond(c, read) {
     }
   } catch (e) { return { error: String(e?.message ?? e).trim().split('\n').pop() || 'the check failed' }; }
 }
-
-// What a pass does with a park whose condition holds, as the recovery rules say: a lane C or D ticket
-// stays for a person, one whose own work merged is closed out, and any other is requeued.
-export function settleAction({ lane, ownMerged }) {
-  if (['C', 'D'].includes(lane)) return 'stay';
-  return ownMerged ? 'closeout' : 'requeue';
-}
