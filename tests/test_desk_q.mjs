@@ -1302,6 +1302,8 @@ const bandAt = lines(ov215).indexOf(' ✕ off: the supervisor is off, so no pass
 const needsAt = lines(ov215).findIndex((l) => l.startsWith('◆ '));
 t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off in red at once, and the red band above the header names the fix',
   `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;31m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on\x1b[22;27;39m'))}`, '31:✕ supervisor off · 3m true true');
+t('DS-215 AC15 home keeps the tab line under the breadcrumb, the Queue in reverse video, and the red band follows it after a blank line',
+  `${S215.frame()[1].startsWith('1 Queue  2 Timeline  3 By day  4 Epics')} ${S215.tabOn()} ${S215.frame()[2] === '' && S215.frame()[3].startsWith(' ✕ ')}`, 'true 1 Queue true');
 const halt215 = lines(Q.repoScreen(at215('halt'), { now: NOW }));
 t('DS-215 AC5 a loaded supervisor whose passes stopped: the header reads ■ stopped, then its last log line',
   `${/^■ stopped · 40m {2}last pass \d\d:\d\d │ /.test(halt215[2])} ${halt215.includes("Supervisor's last log line: last tick: skipped, a pass still holds the orchestrator lock")}`, 'true true');
