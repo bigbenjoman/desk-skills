@@ -13,7 +13,8 @@
 // conflict (GitHub says MERGEABLE), the checks are green (gate.mjs's one definition), the screenshots are in the body (none
 // the pass could not upload, no `_drag <file>_` placeholder left), and only then the grant: §3 pr-ready `yes`, or `ask` with the
 // batch's Stage 3 approval (queue approved.undraft). A feature spine is never undrafted here:
-// queue.mjs approve does that once the person has approved its specs.
+// queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
+// verdict it read, for the comment the PR gets on leaving draft (undraftComment).
 import { evaluateGate } from './gate.mjs';
 
 export const LOCAL_MARKER = '<!-- desk-review:local -->';
@@ -53,6 +54,12 @@ export function verdictAt(v, head, clean) {
   return { clean: true, why: null };
 }
 
+// The comment on a PR the pass took out of draft: why, and the verdict it read, quoted.
+export function undraftComment(verdict, head, clean) {
+  const line = Object.entries(verdict ?? {}).map(([k, x]) => `${k}=${x}`).join(' ');
+  return `Out of draft: the desk-review verdict posted on this head (\`${String(head ?? '').slice(0, 12)}\`) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
+}
+
 // t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks } (checks as
 // pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey }.
 export function undraftCall(t, pr, cfg) {
@@ -73,13 +80,14 @@ export function undraftCall(t, pr, cfg) {
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   if (gate.state !== 'pass') return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);
-  const v = verdictAt(latestVerdict(pr.reviews, cfg.handle), pr.head, cfg.clean);
+  const verdict = latestVerdict(pr.reviews, cfg.handle);
+  const v = verdictAt(verdict, pr.head, cfg.clean);
   if (!v.clean) return person(v.why, v.settle ? `settle the findings or gaps on #${n}` : `review #${n} at its head`);
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
-  if (cfg.perm === 'yes') return { call: 'ready', why: null, note: null };
+  if (cfg.perm === 'yes') return { call: 'ready', why: null, note: null, verdict };
   if (cfg.perm === 'ask' && cfg.approved) {
-    return { call: 'ready', why: null, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` };
+    return { call: 'ready', why: null, verdict, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` };
   }
   return person(`it is clean and green, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`);
 }

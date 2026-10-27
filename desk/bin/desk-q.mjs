@@ -1575,6 +1575,11 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     wrap(text, ww - FIELD_W).forEach((l, i) => out.push(segLine([[pad(i ? '' : label, FIELD_W), DIM], [l, i ? DIM : segs[0][1]]])));
   };
   if (row && k !== 'landing') { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
+  // The PR's fix try and whether it is stuck, as the last pass recorded them on the ticket.
+  const stuck = t.stuck && !t.merged_at ? t.stuck : null;
+  if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
+  if (stuck) field('Stuck', [[stuck.why, WARN]]);
+  if (t.fix || stuck) out.push('');
   // Why lane and the file list fold to FOLD_LINES, from `short` (lines that leave room for the note
   // on the last one shown), and that last line says how much more there is and how to unfold it.
   const folded = (id, lines, short, more) => {

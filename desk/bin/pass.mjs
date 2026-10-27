@@ -30,8 +30,9 @@ import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate } from './gate.mjs';
-import { undraftCall } from './undraft.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
+import { undraftCall, undraftComment } from './undraft.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
@@ -793,7 +794,7 @@ for (const s of HEALTH.stalls) personStall(s);
 // read holds every spawn until it is fixed, as a malformed budget does.
 const PACE = usagePace();
 if (PACE.bad) personStall(`${PACE.bad} — not spawning until it is fixed`);
-else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on)`);
+else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on; fix tries still start)`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -880,16 +881,21 @@ if (blockedByDone.length) {
 // repo (machineBudget), counted under the same lock when it can be taken.
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
+const PACE_HELD = '7-day usage ahead of pace holds every spawn';
 const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
+  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"`
   : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
-  : PACE.hold ? '7-day usage ahead of pace holds every spawn'
-  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
+  : PACE.hold ? PACE_HELD : null;
+// Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
+// it starts within the worker count as any spawn does.
+const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
+const spawnHeld = held === PACE_HELD && spawnable.length ? null : held;
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && !held && !lowMemory) {
+if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -900,10 +906,10 @@ if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && 
 const otherRepos = MACHINE_CAP != null || borrowLock ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const plan = borrowPlan({
-  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: eligible.length,
-  others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
+  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: spawnable.length,
+  others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
-const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, eligible.length), machine: MACHINE_CAP, queues: otherRepos });
+const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
 const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
 const CEILING = E.memoryCeiling();
@@ -923,7 +929,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
   const featureMode = fresh.feature === true;
-  const willSpawn = slots > 0 && eligible.length > 0;
+  const willSpawn = slots > 0 && spawnable.length > 0;
   const blocked = (why) => {
     report.waiting.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands'}`);
     if (featureMode) baseHold = true;
@@ -1184,6 +1190,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     // notes, or to the end of the file, so nothing but answers may follow one.
     h,
     ownedBrief(t, wt),
+    fixBrief(t),
     baselineBrief(),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     notes && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
@@ -1257,7 +1264,7 @@ async function spawnHandoff(t) {
   return undefined;
 }
 
-for (const t of eligible) {
+for (const t of spawnable) {
   if (baseHold || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
@@ -1342,6 +1349,8 @@ for (const t of eligible) {
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(resumed.stage ? { AUTOPILOT_START_STAGE: resumed.stage } : {}),
+      // A fix try's worker is given the fix as its task, in place of working the ticket from Stage 0.
+      ...(t.fix && !t.fix.finished && !resumed.stage ? { AUTOPILOT_TASK: fixTask(t) } : {}),
       ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
@@ -1352,7 +1361,7 @@ for (const t of eligible) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}${t.fix && !t.fix.finished ? ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})` : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.
@@ -1449,16 +1458,17 @@ const prStates = {};
 // merged_at yet.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
   // gh writes a time GitHub has not set as the zero time, 0001-01-01.
   const time = (s) => (s && !s.startsWith('0001-') ? s : null);
-  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued' }));
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null }));
   return {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, mergeable: v.mergeable ?? null,
+    mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null,
     checks, at: new Date().toISOString(),
   };
 }
@@ -1468,6 +1478,8 @@ const merges = [];
 const drafts = [];
 const undrafted = [];
 for (const t of Object.values(qNow.tickets)) {
+  // A fix try is over once its worker has finished: later spawns are no longer that try's.
+  if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) { q('set', t.key, `fix.finished=${PASS_AT}`); t.fix.finished = PASS_AT; }
   const n = t.state === 'done' ? t.result?.pr : null;
   if (n == null) continue;
   let s = null;
@@ -1528,6 +1540,8 @@ if (drafts.length) {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
       if (r.ok) {
         out.push(`undrafted: PR #${n} (${t.key}) at ${String(v.headRefOid).slice(0, 12)}; the merge driver merges it once it is green`);
+        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean)]);
+        if (!said.ok) out.push(`undraft: PR #${n} (${t.key}) left draft, but its comment was not posted (${said.out.split('\n').pop()})`);
         if (c.note) {
           if (!existsSync(notesFile)) writeFileSync(notesFile, '# Batch notes\n\n');
           appendFileSync(notesFile, `${c.note}\n`);
@@ -1542,6 +1556,63 @@ if (drafts.length) {
     const was = t.undraft ?? {};
     if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
+}
+
+// ---- fix tries -----------------------------------------------------------
+// A ready PR the merge driver cannot merge, red after its two reruns or in conflict with its base,
+// goes back to a fix worker on the same branch, at most twice (fix-tries.mjs). What no worker can
+// fix, a §4 Checks workers can't fix check or a third failure, is recorded on the ticket as `stuck`
+// and put to the person. The driver's per-head rerun record is read from its state directory.
+const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
+if (operatorRow.errors.length && undrafted.length) {
+  out.push(`fix tries: none this pass, since config §4 Checks workers can't fix does not parse: ${operatorRow.errors.join(', ')} (want \`<check>: <what fixes it>\`). Run /desk-setup`);
+}
+const flakyRow = parseFlaky(E.configValues('flaky-checks'));
+const DRIVER_DIR = join(STATE, 'merge-driver');
+const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
+// The files a PR conflicts on, as git works them out against the base; null when it cannot.
+function conflictFiles(branch) {
+  if (!branch) return null;
+  if (!shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, branch]).ok) return null;
+  let o;
+  try { o = execFileSync('git', ['-C', MAIN, 'merge-tree', '--write-tree', '--name-only', '--no-messages', `origin/${DEFAULT_BRANCH}`, `origin/${branch}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch (e) { o = e.status === 1 ? String(e.stdout ?? '') : null; }
+  const files = o?.split('\n').slice(1).filter(Boolean) ?? [];
+  return files.length ? files : null;
+}
+for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
+  const n = s.pr;
+  const ctx = {
+    repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), operator: operatorRow.checks,
+    reruns: (name) => driverLines(`reruns-${n}-${s.head}`).filter((l) => l === name).length,
+    cooledDown: (() => { const at = Number(driverLines(`cooldown-${n}`)[0]) || 0; return Date.now() / 1000 - at >= RERUN_COOLDOWN_S; })(),
+    // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
+    waived: (names) => {
+      if (flakyRow.errors.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
+      const files = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files: files.split('\n').filter(Boolean) })?.applies === true;
+    },
+    conflictFiles: () => conflictFiles(t.branch),
+  };
+  const c = fixCall(t, s, ctx);
+  if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
+  if (c.call === 'stuck') {
+    report.waiting.push(`${t.key}: STUCK — PR #${n}: ${c.why}`);
+    if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== s.head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head: s.head, at: PASS_AT })}`);
+    continue;
+  }
+  const f = c.fix;
+  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for try ${f.try} of ${f.of} on PR #${n} — ${f.what}`); continue; }
+  // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
+  q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
+  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  if (!rq.ok) {
+    q('set', t.key, 'fix=null');
+    report.waiting.push(`${t.key}: STUCK — PR #${n} ${f.what}, and its fix try could not be requeued (${rq.out.split('\n').pop()})`);
+    continue;
+  }
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, at: PASS_AT }])}`, 'stuck=null');
+  out.push(`fix try ${f.try} of ${f.of}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
