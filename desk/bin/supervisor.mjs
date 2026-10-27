@@ -40,7 +40,7 @@
 //     or, with anything parked or failed, DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch
 //     went idle, so a pass sees what cleared a park outside the queue. Each idle tick still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
-//     window on (maintenance.mjs step).
+//     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
 // this agent and the running merge driver started at an older one (`old_code`).
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
@@ -321,7 +321,7 @@ function runIntake() {
 // The check-in reads Jira and GitHub; one that hangs is killed so the tick still ends.
 const CHECKIN_TIMEOUT_MS = Number(process.env.DESK_CHECKIN_TIMEOUT_MS) || 5 * 60 * 1000;
 function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
-  if (maintenance) idleMaintenance(log, stamp);
+  if (maintenance) idleMaintenance(state, s, log, stamp);
   const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CHECKIN_TIMEOUT_MS, killSignal: 'SIGKILL' });
   if (r.error?.code === 'ETIMEDOUT') {
     log([`== ${stamp()} idle check-in: timed out after ${CHECKIN_TIMEOUT_MS / 1000}s and was killed; the next tick tries again`]);
@@ -332,14 +332,20 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
     log([`== ${stamp()} idle check-in: failed (${`${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').slice(-2).join(' / ')})`]);
     return;
   }
-  if (!d.push?.key || s.notified.includes(d.push.key)) return;
-  const err = notify(`desk: ${E.repoSlug()}`, d.push.text);
-  log([`== ${stamp()} idle check-in: ${err ? `notification failed (${err}) for ${d.push.key}; the next tick tries again` : `notification sent for ${d.push.key}`}`]);
-  if (!err) writeState(state, { ...s, notified: [...s.notified, d.push.key] });
+  pushOnce(state, s, log, stamp, 'idle check-in', d.push);
 }
 
-// An idle batch runs no pass, so the weekly maintenance window is moved on here; its log says the rest.
-function idleMaintenance(log, stamp) {
+// Sends one push unless its key went out already, and records the key once it has.
+function pushOnce(state, s, log, stamp, what, p) {
+  if (!p?.key || !p.text || s.notified.includes(p.key)) return;
+  const err = notify(`desk: ${E.repoSlug()}`, p.text);
+  log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
+  if (!err) { s.notified.push(p.key); writeState(state, s); }
+}
+
+// An idle batch runs no pass, so the weekly maintenance window and the auto-release are moved on here;
+// their log says the rest. What the step pushes goes out once per key, as a pass's push would.
+function idleMaintenance(state, s, log, stamp) {
   const r = spawnSync(process.execPath, [join(HERE, 'maintenance.mjs'), 'step'], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS });
   let m;
   try { m = JSON.parse(String(r.stdout ?? '').trim()); } catch {
@@ -347,6 +353,7 @@ function idleMaintenance(log, stamp) {
     return;
   }
   if (m.lines?.length) log([`== ${stamp()} idle maintenance:`, ...m.lines]);
+  for (const p of Array.isArray(m.push) ? m.push : []) pushOnce(state, s, log, stamp, 'idle maintenance', p);
 }
 
 function runPass(state, q, s, log, stamp, intake = []) {
@@ -417,8 +424,10 @@ function runPass(state, q, s, log, stamp, intake = []) {
     sent = !err;
     out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
-  // A failed notification records nothing new, so the next pass sends it again.
-  s.notified = sent ? items : s.notified.filter((i) => items.includes(i));
+  // A failed notification records nothing new, so the next pass sends it again. A pass that refused
+  // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
+  if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;
+  else s.notified = sent ? items : s.notified.filter((i) => items.includes(i));
   // Idle is recorded only once its notification is out: until then the next interval passes again.
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);

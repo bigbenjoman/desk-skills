@@ -5,8 +5,9 @@
 //
 //   needs-you.mjs list [<repo>]                       one line per repo with items, then one per item
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
-//       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or name the session to ask
-//       answer "<answer>"   answer it only (digest.mjs answer): triage questions, or a lane C or D park
+//       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
+//                           name the session to ask
+//       answer "<answer>"   answer it only (digest.mjs answer): triage questions
 //       release             release a hold nothing else will (desk-q's release command)
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
@@ -58,7 +59,7 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ['answer'], ['not-now']] };
+    if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ['not-now']] };
     if (triagePark(t)) return { kind: 'session', need, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
@@ -139,6 +140,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (w.by === 'session') {
+        // Marked answered, so desk-q shows it waiting on that session rather than needing the person.
+        const m = queueCmd(r, ['set', ticket, `park.answered=${new Date(now).toISOString()}`]);
+        if (!m.ok) return say(false, `answer recorded, but marking it answered was refused: ${m.out}`);
         return say(true, `answer recorded; not requeued, because a live session runs ${r.name}: message it to requeue ${ticket}.`,
           { to: w.name, text: `${ticket} was answered through desk-needs-you: requeue it (node ~/.claude/desk/bin/queue.mjs requeue ${ticket}).` });
       }

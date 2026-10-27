@@ -1922,6 +1922,7 @@ if (CHECKIN.ok && !DRY) {
   if (d.push) push.unshift(d.push);
 }
 push.push(...HEALTH.push, ...claimPush);
+push.push(...(MAINT.push ?? []));
 for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(HEALTH.line);

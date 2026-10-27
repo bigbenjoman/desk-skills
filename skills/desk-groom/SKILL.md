@@ -7,8 +7,9 @@ description: >-
   "fix the Children lists", "which tickets have no epic", "does anything outrank its epic". Checks
   every open ticket and epic against the default branch and the rest of the backlog, proposes each
   fix as a desk-jira gate block with its evidence, and asks the user each call with no single correct
-  fix. It writes nothing.
-argument-hint: "[--jql <jql>]"
+  fix. Also "these epics are the priority", "send this epic to the batch", and the weekly report-only
+  groom. It writes only what the user approves from one list, and reads every write back.
+argument-hint: "[--jql <jql>] [--priority <EPIC>...] [--report]"
 ---
 
 # desk-groom
@@ -37,9 +38,12 @@ item nobody owns, a Children list that missed a split, loose tickets outside any
 outranks the epic it serves, an epic still in To Do with its children done. desk-groom checks every
 open ticket and epic for each of these and proposes the fix with the evidence that justifies it.
 
-**Core principle: no evidence, no proposal; nothing is written.** Every block this skill prints is
-`awaiting approval`, whatever §3 says. Writing the approved list is a separate step, and every
-approved `landed` close in it is checked again first (step 5).
+**Core principle: no evidence, no proposal; nothing is written before the user approves.** Every
+proposal arrives in one list, every block `awaiting approval`, whatever §3 says. Writing the approved
+items is a separate step (step 6), every approved `landed` close is checked again first (step 5), and
+every write is read back. A ticket the running autopilot batch holds is left alone, and a priority
+epic's work goes to the batch's orchestrator to admit, never admitted here (step 7). The weekly run
+only reports.
 
 **A fix or a question, never both.** A finding with one correct fix is proposed, never asked. A
 finding with no single correct fix (two tickets that could each own the scope, a DoD item either of
@@ -60,8 +64,12 @@ before the scan, and stop if the SHAs still differ after a fetch.
 `desk-jira`, the repo through `git`.
 
 ```bash
-node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project key> --priority <§4 Priority> --fields <§4 Other fields, comma-separated> --size <§4 Size field> --done '<§4 Done state>' --in-progress '<§4 In-progress state>'
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project key> --priority <§4 Priority> --fields <§4 Other fields, comma-separated> --size <§4 Size field> --done '<§4 Done state>' --in-progress '<§4 In-progress state>' --queue <DESK_QUEUE>
 ```
+
+`--queue` is the autopilot queue `desk-env paths` prints as `DESK_QUEUE`. Every finding that would
+write to a ticket the batch holds (queued, triaged, held, parked, running or failed) is `left`: no
+proposal, no question and no verifier, only the line naming the ticket and its state.
 
 Run it from inside the repo, so `desk-jira` resolves this repo's Jira. It covers every open ticket in
 the project (`--jql` narrows it: one epic, a key range). More than 100 open tickets is refused rather
@@ -135,15 +143,31 @@ with both as options. A judgement call never becomes a proposal in step 4, only 
 Read what each verifier returns as you would a colleague's finding: a verdict with no `file:line`
 behind it is NOT MET.
 
-## 4. Propose
+## 4. Propose: one list
 
-Print every surviving proposal as a desk-jira gate block, **`awaiting approval`**, one per write, the
-evidence first:
+Write every proposal step 3 settled (a close `verdict` allowed, a verified duplicate or stale edit) to
+`<scratchpad>/settled.json` with the Write tool, as findings of the scan's shape with their `propose`
+commands and no `verify`. Then print the whole list once, and once more as JSON for step 6:
+
+```bash
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs approval --scan <scratchpad>/groom-scan.json --add <scratchpad>/settled.json
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs approval --scan <scratchpad>/groom-scan.json --add <scratchpad>/settled.json --json
+```
+
+**A report-only run (`--report`, the weekly one) adds `--report` to the first**: every block reads
+`report only`, the questions are listed and never asked, and the run stops after the list (its rules
+are in `references/approve-write-handoff.md`, *The weekly report-only run*).
+
+Redirect the second to `<scratchpad>/approval.json`, which step 6 reads back from. The list numbers every
+proposal as a desk-jira gate block, **`awaiting approval`**, one per write, the evidence first, then
+the questions, the gaps, any `verify first` candidate no verifier settled, and the findings left to
+the batch, and ends by asking for the numbers to write. Each block reads:
 
 ```
-JIRA <EDIT | TRANSITION> — awaiting approval
+[<n>] JIRA <EDIT | TRANSITION> — awaiting approval
 target : <KEY>
 check  : <landed | duplicate | link | stale | field | title | blocker | children | priority | status>
+needs  : <jira-edit | jira-close | jira-transition>
 evidence:
   <each evidence line the scan or verifier gave, with file:line or commit>
 ---
@@ -151,9 +175,9 @@ evidence:
 ```
 
 For `children`, the after text is the epic's description with the Children section replaced by the
-scan's `section` lines. The §3 row each one would need when written: a link, unlink, field, title
-or description edit is `jira-edit`; a close as already fixed or duplicate is `jira-close`; an epic's
-status move is `jira-transition`. Name it in the block so the person approving sees what it unlocks.
+scan's `section` lines. `needs` is the §3 row the write would need: a link, unlink, field, title or
+description edit is `jira-edit`; a close as already fixed or duplicate is `jira-close`; an epic's
+status move is `jira-transition`. It shows the person approving what each number unlocks.
 A priority proposal whose value is in §4 Priorities only you set says so: its write needs the user's
 own decision.
 
@@ -197,6 +221,15 @@ is reported as a check that did not run, never as no PR found. Put its `report` 
 #<n> on the key opened after the verdict`) on the `kept open` list. Never write the close by hand
 over an exit 1.
 
+## 6 and 7. Write the approved list; hand priority epics to the batch; the weekly report
+
+Once the user answers the list, when they name priority epics (`--priority`), or on a report-only
+run (`--report`, as a schedule runs it), **read `references/approve-write-handoff.md`** and
+follow it: step 6 re-checks the batch, writes only the approved numbers and reads every write back
+(`readback`, the rendered HTML checked for `<del`); step 7 lists a priority epic's open work for the
+batch's orchestrator to admit; a report-only run stops after printing the list with
+`approval --report`.
+
 ## Keep them posted
 
 Say what is running before the scan and before the fan-out, and report as each verifier returns.
@@ -204,7 +237,11 @@ Never work through the whole backlog in silence and present a wall at the end.
 
 ## Red flags: stop
 
-- About to run a `desk-jira` write (`edit`, `link`, `unlink`, `transition`, `comment`) from this skill
+- About to run a `desk-jira` write (`edit`, `link`, `unlink`, `transition`, `comment`) the user has not
+  approved by number from the list, or any write in a report-only run
+- Proposing a write to a ticket the running batch holds, or writing one `held` names
+- About to run `queue.mjs admit`, or any queue write, for a priority epic's tickets
+- Reporting a write as done without its `readback` line reading `ok`
 - Proposing a close without a verdict from step 3, or overriding one
 - Writing an approved close without step 5's `preclose` exiting 0 just before it
 - Proposing a link because two tickets "look related", with no line that shows it

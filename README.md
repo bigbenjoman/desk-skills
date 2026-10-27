@@ -32,6 +32,7 @@ Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> 
 | `desk-setup` | Detects this repo's Jira, checks, toolchain and conventions, asks what the skills may do here, then writes this repo's config | `/desk-setup` |
 | `desk-ticket` | One ticket, from triage to merged PR | `/desk-ticket ABC-123` |
 | `desk-autopilot` | A batch of tickets (or an epic's children), one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2`, `/desk-autopilot ABC-900` |
+| `desk-admit` | Admits tickets into the batch the supervisor runs, after the checks standing intake makes (fresh triage, lane, blocking lint, open questions, size, blockers outside the batch); refuses what fails one, with why and what to do | `/desk-admit ABC-1 ABC-2`, `--front` to jump the queue |
 | `desk-needs-you` | Asks about every item desk-q shows as needing you, in every repo, four at a time with a recommendation each, and records each answer through the commands that already exist | `/desk-needs-you`, `/desk-needs-you <repo>` |
 | `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
 | `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub, leaked memory (scripted scans in `bin/`) | `/desk-cleanup` |

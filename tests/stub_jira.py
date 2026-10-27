@@ -93,6 +93,10 @@ class H(BaseHTTPRequestHandler):
             if not authed:
                 return self._send(404, {"errorMessages": ["nope"]})
             i = issue(m.group(1))
+            if i and "renderedFields" in parse_qs(urlparse(self.path).query).get("expand", [""])[0]:
+                # Jira's wiki renderer, as far as a read-back counts it: -text- is strikethrough.
+                d = i["fields"].get("description") or ""
+                i["renderedFields"] = {"description": "<p>" + re.sub(r"(?<![\w\\-])-(\S[^-\n]*?\S|\S)-(?![\w-])", r"<del>\1</del>", d) + "</p>"}
             return self._send(200, i) if i else self._send(404, {"errorMessages": ["Issue does not exist"]})
         if m and self.command == "PUT":
             # Kept so a read-back sees it, except fields named in "edit_drop", which a project ignores.
