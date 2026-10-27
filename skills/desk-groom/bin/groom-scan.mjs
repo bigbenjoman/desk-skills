@@ -9,6 +9,8 @@
 //        [--jql <jql>] [--json]
 //   node groom-scan.mjs verdict <results.json> --scan <scan.json>   verifiers' per-criterion results
 //        in, checked against the criteria the scan (--json) read from each ticket: close or keep open
+//   node groom-scan.mjs preclose <KEY> --scan <scan.json> [--repo <owner/name>]   just before an
+//        approved close is written: the key's open PRs and Jira status read again; exit 0 to close
 //
 // `scan` prints one block per finding (or a JSON array with --json). A finding is
 //   {check, ticket, other?, evidence: [line], propose: [desk-jira command], verify?: brief}
@@ -24,7 +26,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { keyMatches } from '../../desk-cleanup/bin/cleanup-scan.mjs'
+import { keyMatches, prsForKey } from '../../desk-cleanup/bin/cleanup-scan.mjs'
 
 // desk-design.mjs's `sections`, the one reading of a ticket's headings. It sits in desk/bin, installed
 // at ~/.claude/desk/bin by install.sh; DESK_ENV_MJS or DESK_HOME point elsewhere, and a source
@@ -213,6 +215,8 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
           ...present.map((s) => `\`${s}\`, which ${t.key} says it adds, is already on main`),
         ],
         criteria: criteriaOf(t.text),
+        // The status the verdict rests on: `preclose` refuses the close if Jira has moved since.
+        status: t.status,
         propose: [`desk-jira transition ${t.key} ${shq(done)}`],
         verify: 'landed',
       })
@@ -595,6 +599,21 @@ export function closeVerdict(r, expected) {
   return { ticket: r.ticket, close: reasons.length === 0, reasons }
 }
 
+// The same close, re-checked just before it is written: approval can come an hour after the verdict,
+// and a PR opened on the key in that gap, or a status someone moved, still keeps the ticket open.
+// `before` is the status the scan read; `prs` the open PRs `gh pr list` found, null with
+// `prsError` when the search failed, which never reads as "no PR"; `status` likewise with `statusError`.
+export function precloseCheck({ ticket, before, status = null, statusError = null, prs = null, prsError = null }) {
+  const reasons = [
+    ...(before ? [] : [`the scan named no landed candidate for ${ticket}`]),
+    ...(prs ? prsForKey(prs, ticket).map((p) => `PR #${p.number} on the key opened after the verdict`)
+      : [`the open-PR check did not run (${prsError || 'gh pr list failed'})`]),
+    ...(status == null ? [`the Jira status check did not run (${statusError || 'desk-jira get failed'})`]
+      : before && status.toLowerCase() !== before.toLowerCase() ? [`${ticket} is now ${status}, not ${before} as at the verdict`] : []),
+  ]
+  return { ticket, close: reasons.length === 0, reasons, report: reasons.length ? `kept open: ${reasons.join('; ')}` : `close: no open PR on the key, still ${status}` }
+}
+
 // ---- origin/<default>, read with git ----------------------------------------------------------
 
 export function repoAt(root, branch) {
@@ -721,10 +740,27 @@ function verdict(o) {
   console.log(JSON.stringify(out, null, 2))
 }
 
+// Run just before each approved close is written: the key's open PRs and its Jira status, read again
+// now. Exits 0 only when the close may go out; 1 keeps the ticket open, its `report` saying why.
+function preclose(o) {
+  const ticket = o._[0]
+  if (!ticket || !o.scan || o.scan === true) die('preclose needs a ticket key and --scan <the scan\'s --json output>')
+  const before = JSON.parse(readFileSync(o.scan, 'utf8')).find((f) => f.check === 'landed' && f.ticket === ticket)?.status ?? null
+  const gh = spawnSync('gh', ['pr', 'list', ...(o.repo && o.repo !== true ? ['--repo', o.repo] : []), '--search', ticket, '--state', 'open',
+    '--limit', '100', '--json', 'number,title,headRefName,isDraft,createdAt'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+  let prs = null, prsError = null
+  try { if (gh.status === 0) prs = JSON.parse(gh.stdout); else prsError = `gh pr list failed: ${String(gh.stderr || gh.error?.message || '').trim().split('\n')[0]}` } catch { prsError = 'gh pr list gave no JSON' }
+  let status = null, statusError = null
+  try { status = jira('get', ticket).fields?.status?.name ?? null; if (!status) statusError = 'desk-jira get gave no status' } catch (err) { statusError = `desk-jira get failed: ${String(err.stderr || err.message).trim().split('\n')[0]}` }
+  const out = precloseCheck({ ticket, before, status, statusError, prs, prsError })
+  console.log(JSON.stringify(out, null, 2))
+  process.exit(out.close ? 0 : 1)
+}
+
 const real = (p) => { try { return realpathSync(p) } catch { return p } }
 if (process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))) {
   const [cmd, ...rest] = process.argv.slice(2)
-  const run = { scan, verdict }[cmd]
-  if (!run) die('usage: groom-scan.mjs scan|verdict … (see the header)')
+  const run = { scan, verdict, preclose }[cmd]
+  if (!run) die('usage: groom-scan.mjs scan|verdict|preclose … (see the header)')
   run(args(rest))
 }
