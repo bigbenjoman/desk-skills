@@ -104,9 +104,7 @@ t('AC7 an archived batch does not hold its keys', holding('OLD-1').out, 'none');
 const dup = holding('DUP-1');
 t('AC7 a key in two batches fails', dup.code !== 0, true);
 t('AC7 the failure names both', /the standing batch, X-1/.test(dup.err), true);
-const cli = spawnSync('node', [join(BIN, 'batches.mjs'), 'holding', 'X-4'], { encoding: 'utf8', env: base });
-t('AC7 CLI holding', `${cli.status} ${cli.stdout.trim()}`, '0 X-3');
-t('AC7 CLI no batch exits 3', spawnSync('node', [join(BIN, 'batches.mjs'), 'holding', 'NOPE-1'], { encoding: 'utf8', env: base }).status, 3);
+t('AC7 X-4 is in X-3', holding('X-4').out, 'X-3');
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

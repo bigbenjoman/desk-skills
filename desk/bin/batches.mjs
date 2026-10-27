@@ -1,9 +1,8 @@
 // A repo's batches: its standing batch, then one named batch per epic in `batches/<name>/` beside its
 // queue. An archived batch sits under `batches/.done/` and is not listed. A ticket's key finds the one
 // batch that holds it.
-import { existsSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
@@ -32,24 +31,3 @@ export function batchHolding(key, slug = E.repoSlug()) {
 }
 
 export const label = (b) => b.name ?? 'the standing batch';
-
-const isMain = () => {
-  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
-};
-if (isMain()) {
-  const [cmd, key] = process.argv.slice(2);
-  try {
-    if (cmd === 'list') for (const b of listBatches()) console.log(`${b.name ?? '-'}\t${b.queue}\t${b.state}`);
-    else if (cmd === 'holding' && key) {
-      const b = batchHolding(key);
-      if (!b) process.exit(3);
-      console.log(b.name ?? '-');
-    } else {
-      console.error('usage: batches.mjs list | holding <KEY>');
-      process.exit(2);
-    }
-  } catch (e) {
-    console.error(e.message);
-    process.exit(e instanceof E.DeskConfigError ? 4 : 1);
-  }
-}
