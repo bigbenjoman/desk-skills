@@ -6,7 +6,7 @@
 //   needs-you.mjs list [<repo>]                       one line per repo with items, then one per item
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or name the session to ask
-//       answer "<answer>"   answer it only (digest.mjs answer)
+//       answer "<answer>"   answer it only (digest.mjs answer): triage questions, or a lane C or D park
 //       release             release a hold nothing else will (desk-q's release command)
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
@@ -64,7 +64,8 @@ function itemOf(r, x) {
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
-    return { kind: 'parked', need, actions: [['resume', `lane ${t.lane ?? '?'}: a worker finishes it once it has your answer`], ['answer'], ['not-now'], ...offer] };
+    // No bare answer: it would leave the ticket parked, and desk-q still counting it.
+    return { kind: 'parked', need, actions: [['resume', `lane ${t.lane ?? '?'}: a worker finishes it once it has your answer`], ['not-now'], ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;

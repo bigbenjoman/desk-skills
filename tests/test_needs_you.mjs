@@ -123,6 +123,11 @@ const ov = N.record({ word: 'alpha', ticket: 'A-1', action: 'override d1', text:
 const log = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'decisions.jsonl'), 'utf8');
 t('AC5 the override is in the decision log', `${ov.ok} ${log.includes('"override_of":"d1"') && log.includes('"chose":"h3"')}`, 'true true');
 
+// ---- AC4: a parked lane A, B or E item offers no bare answer, which would leave it parked and counted
+t('AC4 a parked item offers resume, not answer', itemLines.some((l) => l.startsWith('alpha A-1 parked') && l.includes('1. resume (recommended:') && !/\d\. answer\b/.test(l)), true);
+const an1 = N.record({ word: 'alpha', ticket: 'A-1', action: 'answer', text: 'the short one' });
+t('AC4 answer on a parked item is refused and records nothing', `${an1.ok} ${answers().length} ${N.collect().items.some((i) => i.t.key === 'A-1')}`, 'false 0 true');
+
 // ---- AC4, AC6, AC14: an answer goes through digest.mjs answer; a resume requeues; a supervised repo needs nothing more
 const res = N.record({ word: 'alpha', ticket: 'A-1', action: 'resume', text: 'the short one' });
 const a1 = queueOf('alpha').tickets['A-1'];

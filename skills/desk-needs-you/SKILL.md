@@ -51,7 +51,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
   is always added.
 - For `resume`, `answer` and `reject`, the answer text is what gets recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
-  not, the user types it in "Other", and a typed answer to a `parked` item is a resume.
+  not, the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
+  resume, so it never stays parked once answered.
 - An `override <id>` action takes the user's choice as its text.
 
 Ask the next round only after recording this one.
