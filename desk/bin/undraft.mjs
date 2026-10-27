@@ -1,5 +1,5 @@
 // Stage 7's undraft rule, scripted, so a batch nobody is watching undrafts exactly what a session would
-// (desk-autopilot SKILL.md, Stage 7, "Undraft only once the PR is done and reviewed with no findings").
+// (desk-autopilot references/merging.md, Stage 7, "Undraft only once the PR is done and reviewed with no findings").
 // pass.mjs reads each done ticket's open draft PR and asks undraftCall what to do with it:
 //
 //   ready   every fact holds and config §3 pr-ready allows it: gh pr ready, then the merge driver
