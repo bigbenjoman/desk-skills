@@ -340,6 +340,17 @@ printf 'not json\n' > "$T/verdict.json"
 out=$(tick)
 check "a pass with no verdict is logged as an error and notified" 'grep -q "(error)" "$LOG" && tail -1 "$T/notify.calls" | grep -q "the pass refused or failed"'
 
+# ---- DS-276 AC3: a pass that refused or failed keeps the keys already sent ----------------------
+REL='{"key":"release-failed-abc","text":"main tests check failed on abc"}'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$REL]}"
+out=$(tick); notified=$(count "$T/notify.calls")
+verdict '{"status":"error","code":2,"message":"REFUSED: something else"}'
+out=$(tick)
+check "DS-276 AC3: a refused pass is still notified" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "the pass refused or failed: REFUSED: something else"'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$REL]}"
+out=$(tick)
+check "DS-276 AC3: the next pass does not push a key sent before the refused one again" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && grep -q "notification: not sent, the last one already named release-failed-abc" "$LOG"'
+
 # ---- DS-224: the agent's version, --reload, and what runs old code ------------------------------
 mkdir -p "$DESK_HOME"; printf '{"commit":"new1"}\n' > "$DESK_HOME/installed.json"
 n=$(grep -c "^bootstrap" "$T/launchctl.calls")
