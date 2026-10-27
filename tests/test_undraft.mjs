@@ -9,7 +9,7 @@ const ALL_ZERO = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
 const CLEAN_TEXT = 'No findings. Nothing deferred or carried.';
 const green = [{ name: 'tests', status: 'completed', conclusion: 'success' }];
 const tk = { key: 'T-1' };
-const marker = (counts, sha = HEAD) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} ${counts} -->\nclean`;
+const marker = (counts, sha = HEAD) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} ${counts} vendor=codex-cross round=1 -->\nclean`;
 const review = (body, oid = HEAD, login = 'ben') => ({ author: { login }, body, commit: { oid } });
 const call = (clean, reviews) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks: green },
   { perm: 'yes', localReview: '/code-review', clean, handle: 'ben', required: ['tests'] });
@@ -53,7 +53,8 @@ t('AC2 a later review at the head that reports findings wins', call('no findings
 t('AC2 the latest verdict wins over an earlier clean one', call('no findings', [review(CLEAN_TEXT), review(marker('p0=1 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'))])?.call, 'person');
 
 // AC3: key=value counts read as before; a review with no marker is no verdict.
-t('AC3 key=value counts still undraft a clean marker', call('p0=0 p1=0 gaps=0', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'ready');
+t('AC3 key=value counts still undraft a clean marker', call('p0=0 p1=0 gaps=0', [review(marker(ALL_ZERO))])?.call, 'ready');
+t('AC3 but not a marker the review gate rejects', call('p0=0 p1=0 gaps=0', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'person');
 t('AC3 and still ignore a plain review', call('p0=0 p1=0 gaps=0', [review(CLEAN_TEXT)])?.why, 'no desk-review verdict is posted on it');
 
 // AC4: unset or not filled in.
