@@ -859,8 +859,7 @@ marks the done row `merged`, so both wake you.
 
 - **Every ticket in the batch, every time**: parked and queued rows included.
 - **Mark what changed** (an arrow, a bold cell) so the delta is findable without diffing.
-- **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers,
-  and the `runner=` and `ladder=` figures whenever the pass line carries them.
+- **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers.
 - **Notes stay to one line.** The full park reason lives in the queue.
 
 **Quiet: config §3b "Orchestrator status table" `quiet`** (`desk-env get status-table`; unset is
@@ -1091,10 +1090,8 @@ a killed worker"); workers in a repo whose passes are not running are waited on 
 Then one pass pulls the desk-skills checkout fast-forward on a clean `main` and runs `install.sh`,
 and runs `reboot-check.mjs`. Where §3 `machine-reboot` is `yes` and the check found no blocker
 (anything heavy running, a worker still running in any repo, or FileVault on or unreadable, since a
-restarted Mac then waits at the unlock screen until someone logs in), it runs `desk-runner down` if the
-runner was up and restarts the computer; the supervisor brings passes back at login, the first pass
-runs `desk-runner up` again (as does a restart that fails or never happens), and the stopped workers
-resume. At `ask` (unset), or at `yes` with FileVault the only blocker, it does not restart and puts
+restarted Mac then waits at the unlock screen until someone logs in), it restarts the computer; the
+supervisor brings passes back at login, and the stopped workers resume. At `ask` (unset), or at `yes` with FileVault the only blocker, it does not restart and puts
 "ready to reboot" in the next check-in, naming FileVault where it is on; at `no`
 it stops there. A failed update goes in the check-in too, and does not restart. Every step, with the
 old and new commit and the check's summary, goes in `~/.desk-autopilot/maintenance/maintenance.log`.
@@ -1336,22 +1333,6 @@ the bands):
 | 4–8 GiB | hold: finish what is running, spawn nothing new this pass |
 | < 4 GiB | drop to 1 (`set-batch concurrency=1`, and leave `concurrency_by` as it is); a worker mid-suite will drain, so wait a pass before touching anything |
 | < 2 GiB **and** sustained | reclaim (where §3 `autopilot-reclaim` is `yes`): kill an orphaned dev server or a stale typecheck first, never a worker mid-commit, never a process another session owns |
-
-**On a computer running the runner VM, its memory is a fixed reservation.** While the desk-runner VM
-runs, the machine profile's `runner-memory-reserved-gb` is held back from `avail` before the ladder
-reads it, less what the VM already holds (which `avail` has already lost), because CI can fill the
-rest at any moment. `pass.mjs` gates on that figure and its memory line, like `desk-env mem status`,
-shows `runner=<n>G reserved (<r>G resident, <h>G held back) ladder=<x>G`; read the bands against
-`ladder=`. Without a running VM, or with no reservation in the profile, nothing is held back and the
-line carries neither.
-
-**The runner and autopilot share one free-memory floor, and take turns.** The machine profile's
-`runner-memory-floor-gb` (8 unless set) raises §3b's `start` band when it is higher, so no worker
-starts under it, and the runner starts no CI slot under it either. A pass with ready work held only
-for memory leaves a waiting marker (`$DESK_HOME/memory-turns/`), which holds the runner's next slot
-until this batch's next worker has spawned. A CI slot that began waiting first holds this batch's
-next spawn instead, and the report says `CI is waiting for memory`. A CI wait never holds the batch's first
-worker, nor a batch's wait CI's first slot. `desk-runner status` lists every wait.
 
 Lowering is silent but **reported**: say which number caused it. Raising back needs the same
 evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the

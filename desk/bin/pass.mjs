@@ -34,7 +34,6 @@ import { normaliseRollup, latestPerCheck, evaluateGate } from './gate.mjs';
 import { undraftCall } from './undraft.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
-import { readTurns, writeTurn, clearTurn, ciHolds, waitLine } from './mem-turns.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -819,21 +818,15 @@ const concurrency = CONC.n;
 // between `hold` and `start` nothing new starts; below `hold` the batch is meant to run at `dropTo`
 // workers, so nothing new starts until it has drained to that. AUTOPILOT_MIN_AVAIL_GB overrides
 // `start` (0 disables the gate).
-// While the runner VM runs, its machine-profile memory is a fixed reservation held back from
-// `avail` (less what the VM already holds, which `avail` has already lost): CI can fill it at any
-// moment, so the ladder reads the rest. Without a runner nothing is held back.
 const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
-const LADDER = E.ladderMemory();
-const availGB = LADDER.avail;
-const gateGB = LADDER.gate;
-const reserved = LADDER.reservation ? ` after the runner's ${LADDER.reservation.heldGiB.toFixed(1)}G held back` : '';
-const lowMemory = MIN_AVAIL_GB > 0 && gateGB < MIN_AVAIL_GB;
+const availGB = E.availableGiB();
+const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
 if (lowMemory) {
-  report.stalled.push(gateGB < GATE.hold
-    ? `memory: ${gateGB.toFixed(1)}G available${reserved}, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
+  report.stalled.push(availGB < GATE.hold
+    ? `memory: ${availGB.toFixed(1)}G available, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
       `holding spawns (${running.length} running; a worker mid-suite will drain)`
-    : `memory: ${gateGB.toFixed(1)}G available${reserved}, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
+    : `memory: ${availGB.toFixed(1)}G available, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
       `(${running.length} running; a worker mid-suite will drain)`);
 }
 const runningKeys = new Set(running.map((r) => r.key));
@@ -892,35 +885,10 @@ const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudge
   : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
   : PACE.hold ? '7-day usage ahead of pace holds every spawn'
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"` : null;
-// The Mac's memory is shared with the runner VM's CI slots, and the two take turns (mem-turns.mjs). A
-// batch with work held only for memory keeps a waiting marker, so the runner's next slot waits for this
-// batch's next worker; a CI slot that began waiting first holds this batch's next spawn until it has
-// started. The batch keeps its first worker either way.
-const TURNS = readTurns();
-report.waiting.push(...TURNS.removed);
-const TURN_SELF = `autopilot-${E.repoSlug()}`;
-const wantsWorker = concurrency > 0 && eligible.length > 0 && !held;
-// Only a batch that would start a worker of its own but for memory leaves a marker: one at its own
-// number, or with the machine at its worker total, holds no CI slot, since freeing memory would start
-// nothing here. CI's wait still holds every spawn, a borrowed one included.
-const roomForOne = running.length < concurrency && machineBudget({
-  running: running.length, wanted: 1, machine: MACHINE_CAP, queues: MACHINE_CAP != null ? otherQueues({ self: QUEUE_FILE }) : [],
-}).room > 0;
-const ciHold = wantsWorker ? ciHolds({ running: running.length, live: TURNS.live, self: TURN_SELF }) : null;
-if (ciHold) report.stalled.push(`memory: CI is waiting for memory, so no new worker starts until its slot has (${running.length} running): ${waitLine(ciHold)}`);
-if (!DRY) {
-  if (wantsWorker && roomForOne && (lowMemory || ciHold)) {
-    writeTurn(TURN_SELF, {
-      side: 'autopilot', state: STATE, queue: QUEUE_FILE,
-      why: lowMemory ? `${eligible.length} ticket(s) ready, ${gateGB.toFixed(1)}G available${reserved}, under the ${MIN_AVAIL_GB}G spawn gate`
-        : `${eligible.length} ticket(s) ready, held behind CI's wait`,
-    }, { live: TURNS.live });
-  } else clearTurn(TURN_SELF);
-}
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && !held && !lowMemory && !ciHold) {
+if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && eligible.length && !held && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -932,10 +900,10 @@ const otherRepos = MACHINE_CAP != null || borrowLock ? otherQueues({ self: QUEUE
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const plan = borrowPlan({
   on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: eligible.length,
-  others, machine: MACHINE_CAP, memory: { avail: gateGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
+  others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held, lock: lockWhy,
 });
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, eligible.length), machine: MACHINE_CAP, queues: otherRepos });
-const slots = MAINT.hold || ciHold ? 0 : Math.min(plan.slots, MACHINE.room);
+const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
 const CEILING = E.memoryCeiling();
 
@@ -1835,7 +1803,7 @@ for (const p of push) lines.push(`PUSH: ${p.text}`);
 lines.push(out.length ? out.join('\n') : 'no change this pass');
 lines.push(HEALTH.line);
 lines.push(PACE.line);
-lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G${E.runnerSegment(LADDER)}`);
+lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`);
 lines.push(CEILING.line);
 lines.push(CONC.line);
 lines.push(machineLine);
@@ -1855,7 +1823,7 @@ if (idle) {
 // Why nothing spawned while something could have: the first hold that applied this pass.
 const heldWhy = report.spawned.length || !eligible.length ? null
   : held ?? (baseHold ? 'the batch base sync holds every spawn'
-  : lowMemory ? `memory: ${gateGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+  : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
   : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
