@@ -94,8 +94,8 @@ parked E-1 A "waiting on PR 77" "pr 77 merged"
 parked E-2 A "a product call" "none"
 parked E-3 A "waiting on ABC-404" "ticket ABC-404 done"
 parked E-4 A "waiting on ABC-10" "ticket ABC-10 done"; jira ABC-10 "In Progress" indeterminate
-parked V-1 A "set DESK_RUNS_ON=local" "variable DESK_RUNS_ON set"; q set V-1 draft_pr=699
-pr 699 MERGED false; echo '[{"name":"DESK_RUNS_ON"}]' > "$T/gh/vars.json"
+parked V-1 A "set DESK_DEPLOY_ON=local" "variable DESK_DEPLOY_ON set"; q set V-1 draft_pr=699
+pr 699 MERGED false; echo '[{"name":"DESK_DEPLOY_ON"}]' > "$T/gh/vars.json"
 parked W-1 B "waiting on review of #706" "pr 706 ready"; pr 706 OPEN false; echo 707 > "$T/gh/merged-feat_W-1"; pr 707 MERGED false
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
 check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, or none" <<< "$out"'
@@ -110,7 +110,7 @@ check "DS-269 AC4 a lane C park whose condition holds stays, and the report says
 check "DS-269 AC6 a failed gh check leaves the park and is named" '[ "$(field E-1 state)" = "\"parked\"" ] && grep -q "E-1: could not check \"PR #77 merged\" (gh pr view 77: gh: HTTP 502 for PR 77): left parked" <<< "$out"'
 check "DS-269 AC6 a failed Jira check leaves the park and is named" '[ "$(field E-3 state)" = "\"parked\"" ] && grep -q "E-3: could not check \"ABC-404 done\" (desk-jira get ABC-404: desk-jira: unreachable): left parked" <<< "$out"'
 check "DS-269 AC6 a park with none is left alone and not reported" '[ "$(field E-2 state)" = "\"parked\"" ] && ! grep -q "E-2: \"\|E-2: could not" <<< "$out"'
-check "DS-269 AC7 a variable set and its own PR merged: recorded done, no person" '[ "$(field V-1 state)" = "\"done\"" ] && [ "$(field V-1 result.pr)" = 699 ] && [ "$(field V-1 park)" = null ] && grep -q "V-1: \"repo variable DESK_RUNS_ON set\" holds and its PR #699 merged: recorded done" <<< "$out"'
+check "DS-269 AC7 a variable set and its own PR merged: recorded done, no person" '[ "$(field V-1 state)" = "\"done\"" ] && [ "$(field V-1 result.pr)" = 699 ] && [ "$(field V-1 park)" = null ] && grep -q "V-1: \"repo variable DESK_DEPLOY_ON set\" holds and its PR #699 merged: recorded done" <<< "$out"'
 check "DS-269 AC3 an own PR found merged from the branch closes it out" '[ "$(field W-1 state)" = "\"done\"" ] && [ "$(field W-1 result.pr)" = 707 ] && grep -q "W-1: \"PR #706 out of draft\" holds and its PR #707 merged: recorded done" <<< "$out"'
 check "DS-269 the report groups them under clears-when" 'grep -q "^clears-when:$" <<< "$out"'
 

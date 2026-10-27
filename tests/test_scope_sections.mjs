@@ -84,7 +84,7 @@ t('a workflow runs everything', scope(M('.github/workflows/tests.yml')), 'full: 
 t('a root file runs everything', scope(M('.gitignore')), 'full: .gitignore is a root file');
 t('a deletion runs everything', scope([{ status: 'D', path: 'desk/bin/queue.mjs' }]), 'full: desk/bin/queue.mjs was deleted');
 t('a rename runs everything', scope([{ status: 'R', path: 'desk/bin/q2.mjs', from: 'desk/bin/queue.mjs' }]), 'full: desk/bin/queue.mjs was renamed to desk/bin/q2.mjs');
-t('a file a third of the suites claim runs everything', scope(M('desk/bin/pass.mjs')), 'full: desk/bin/pass.mjs is claimed by 2 suites, a third or more');
+t('a file many suites reach runs those suites, not everything', scope(M('desk/bin/lock.mjs')), 'some: test_data.mjs test_drive.sh test_lint.sh test_pass.mjs');
 t('full runs every suite and checks every shell script', [decide(M('install.sh'), map).suites.length, decide(M('install.sh'), map).shells.length], [6, 7]);
 
 // ---- this repo -----------------------------------------------------------------------------------
@@ -102,6 +102,14 @@ t('a suite with claims: imports claims nothing it only names', [...real.claims.v
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
+const cw = decide(M('desk/bin/clears-when.mjs'), real);
+t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
+// A script no suite names is unclaimed, and changing it runs everything: each of these has a claim.
+for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
+  ...['claude_activity.py', 'desk_repos.py', 'github_activity.py', 'jira_activity.py', 'window.py'].map((s) => [`skills/desk-checkout/scripts/${s}`, 'test_checkout.mjs'])]) {
+  const d = decide(M(f), real);
+  t(`${f} runs ${suite}, not everything`, [d.scope, d.suites.includes(suite)], ['some', true]);
+}
 t('merge-driver.sh reaches the merge driver suite', decide(M('desk/bin/merge-driver.sh'), real).suites.includes('test_merge_driver.sh'), true);
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });

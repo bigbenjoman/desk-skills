@@ -154,6 +154,7 @@ ul { margin: 0; padding-left: 20px; } li { margin-bottom: 6px; }
   <section>
     <h2 class="prose">1 · Home, a normal morning</h2>
     <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>07:05
+<span class="tab">1 Queue</span>  2 Timeline  3 By day  4 Epics
 
 <span class="m bold">◆ 51 tickets need you</span><span class="d">  oldest </span><span class="new">16h</span><span class="d"> │ </span><span class="d">pr-ninja </span><span class="bold">28</span><span class="d"> · </span><span class="d">pranicuk </span><span class="bold">18</span><span class="d"> · </span><span class="d">voicepa </span><span class="bold">4</span><span class="d"> · </span><span class="d">desk-skills </span><span class="bold">1</span><span class="d"> │ </span><span class="d">◌ 12 blocked</span>
 <span class="ok">● 6 workers running</span><span class="d"> │ </span><span class="d">machine cap </span><span class="bold">18</span><span class="d"> · </span><span class="d">room for </span><span class="bold">1 more</span><span class="d"> │ </span><span class="bold">12.1 GiB</span><span class="d"> free</span>
@@ -176,12 +177,14 @@ ul { margin: 0; padding-left: 20px; } li { margin-bottom: 6px; }
 
 <span class="d">move</span>  ↑↓ select · <span class="bold">enter</span> open · <span class="bold">↔</span> or <span class="bold">1-4</span> view · <span class="bold">esc</span> back
 <span class="d">act </span>  <span class="bold">s</span> supervisor · <span class="bold">:</span> command · <span class="bold">q</span> quit</pre></div></div>
-    <p class="cap prose">Your queues: desk-skills as it would read at 07:05 under the new states (below), the other repos as at 06:59. The two voicepa notes are real: its supervisor is loaded while a session also runs the batch, and the installed desk code has no decider. Usage is the reading taken at 07:20: 5h at 17% is green, 7d at 60% is amber. With workers running it carries no age; with none, a reading over 5 minutes old shows <span class="k">as of HH:MM</span> in dim text until the next automatic check.</p>
+    <p class="cap prose">The tab line under the breadcrumb is the same as on every repo screen: <span class="k">1-4</span> or <span class="k">↔</span> switch home between every repo's Queue, Timeline, By day and Epics. Your queues: desk-skills as it would read at 07:05 under the new states (below), the other repos as at 06:59. The two voicepa notes are real: its supervisor is loaded while a session also runs the batch, and the installed desk code has no decider. Usage is the reading taken at 07:20: 5h at 17% is green, 7d at 60% is amber. With workers running it carries no age; with none, a reading over 5 minutes old shows <span class="k">as of HH:MM</span> in dim text until the next automatic check.</p>
   </section>
 
   <section>
     <h2 class="prose">2 · Home, when something is wrong</h2>
     <div class="win"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>desk-q</div><div class="scr"><pre><span class="bold">desk-q</span><span class="d"> · </span>09:12
+<span class="tab">1 Queue</span>  2 Timeline  3 By day  4 Epics
+
 <span class="band"> ✕ voicepa: the supervisor is off, so no passes run. Run: desk-q voicepa supervisor on </span>
 <span class="m bold">◆ 4 tickets need you</span><span class="d">  oldest </span>2h 10m<span class="d"> │ </span><span class="d">voicepa </span><span class="bold">4</span><span class="d"> │ </span><span class="d">◌ 1 blocked</span>
 <span class="ok">● 3 workers running</span><span class="d"> │ </span><span class="d">machine cap </span><span class="bold">18</span><span class="d"> · </span><span class="d">room for </span><span class="bold">6 more</span><span class="d"> │ </span><span class="bold">21.4 GiB</span><span class="d"> free</span>
@@ -528,6 +531,7 @@ workers 0 running of 2 (cap 3) · 86 done, not shown
   <section class="approve prose">
     <h2>Approved</h2>
     <p>Approved as is on 24 Oct 2026, with Option A. Four desk-q stories go under DS-127: who runs the batch (U cases), linked to DS-204 and DS-205; what a waiting ticket waits on (W cases); the ticket screen (T cases, plus screen 5's Timeline, By day and Epics restyle); and keeping it running (R cases), with the pass and supervisor changes they read from as their own tickets.</p>
+    <p class="cap">Corrected 27 Oct 2026: home (screens 1 and 2) now shows the tab line, 1 Queue, 2 Timeline, 3 By day, 4 Epics, under the breadcrumb. The earlier mock-ups left it out; desk-q already draws it, and DS-215 AC15 keeps it there.</p>
   </section>
 </main>
 

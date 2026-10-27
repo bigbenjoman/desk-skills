@@ -38,7 +38,8 @@ outranks the epic it serves, an epic still in To Do with its children done. desk
 open ticket and epic for each of these and proposes the fix with the evidence that justifies it.
 
 **Core principle: no evidence, no proposal; nothing is written.** Every block this skill prints is
-`awaiting approval`, whatever §3 says. Writing the approved list is a separate step.
+`awaiting approval`, whatever §3 says. Writing the approved list is a separate step, and every
+approved `landed` close in it is checked again first (step 5).
 
 **A fix or a question, never both.** A finding with one correct fix is proposed, never asked. A
 finding with no single correct fix (two tickets that could each own the scope, a DoD item either of
@@ -179,6 +180,23 @@ linked, even where §3 says `yes`.
 End with a one-line count per check, the coverage gaps, the open questions, and a `kept open` list: every close candidate step 3 kept open,
 with its reasons. That list is how a wrong guard becomes visible.
 
+## 5. Before each approved close: check the key again
+
+Approval can come an hour after the verdict, and a PR opened on the key in that gap is work still in
+review. So whoever writes the approved list runs this **immediately before each `landed` close**, one
+key at a time, and writes the close only when it exits 0:
+
+```bash
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs preclose <KEY> --scan <scratchpad>/groom-scan.json --repo <§0 GitHub repo>
+```
+
+It runs desk-cleanup's open-PR search for the key again (whole-key matches only, drafts included) and
+reads the ticket's Jira status. It exits 1, and the ticket is left as it is, when a PR on the key is
+open, when the status is no longer the one the scan read, or when either read fails: a failed search
+is reported as a check that did not run, never as no PR found. Put its `report` line (`kept open: PR
+#<n> on the key opened after the verdict`) on the `kept open` list. Never write the close by hand
+over an exit 1.
+
 ## Keep them posted
 
 Say what is running before the scan and before the fan-out, and report as each verifier returns.
@@ -188,6 +206,7 @@ Never work through the whole backlog in silence and present a wall at the end.
 
 - About to run a `desk-jira` write (`edit`, `link`, `unlink`, `transition`, `comment`) from this skill
 - Proposing a close without a verdict from step 3, or overriding one
+- Writing an approved close without step 5's `preclose` exiting 0 just before it
 - Proposing a link because two tickets "look related", with no line that shows it
 - Proposing a size or a priority you cannot point to a source for, as if the scan had found it
 - Scanning against a stale or shallow `origin/<default branch>`

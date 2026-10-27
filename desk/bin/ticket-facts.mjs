@@ -22,12 +22,15 @@
 // question: an unread link list must never read as "no blockers".
 // A key that is not a tracker key gets links: "n/a".
 // Every ticket also gets lint, desk-jira lint's findings [{severity, rule, message}] (a ticket file
-// or GitHub issue is linted here, with no size), or lint_error when the lint could not run.
+// or GitHub issue is linted here, with no size), or lint_error when the lint could not run; and
+// design, desk-design's designFact for its Design section read against the batch's base, or
+// design_error when it could not be read.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
+import { batchBase, defaultBranch, ghRepo, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
+import { designFact } from './desk-design.mjs';
 import { SIZES, epicFact } from './desk-q-eta.mjs';
 
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
@@ -94,7 +97,18 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'other_links', 'size', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error']) delete rec[f];
+for (const f of ['blockers', 'other_links', 'size', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+
+// The design fact, read against the base a worker branches from, as origin has it where fetched.
+function design(text) {
+  try {
+    const { root = process.cwd(), dir = null } = designRoot();
+    const base = batchBase() ?? defaultBranch();
+    let ref = base;
+    try { execFileSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `origin/${base}`], { stdio: 'ignore' }); ref = `origin/${base}`; } catch { /* no remote copy */ }
+    rec.design = designFact(text, { root, dir, ref, state: stateDir() });
+  } catch (e) { rec.design_error = lastLine(e) || 'design not read'; }
+}
 
 const asSize = (v) => {
   const s = String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim().toUpperCase();
@@ -111,7 +125,7 @@ if (kind.kind !== 'tracker') {
     catch (e) { rec.lint_error = lastLine(e) || 'gh issue view failed'; }
   } else if (existsSync(file)) text = readFileSync(file, 'utf8');
   else rec.lint_error = `no ticket file at ${file}`;
-  if (text !== null) rec.lint = lintTicket({ key, text, wiki: false }, designRoot());
+  if (text !== null) { rec.lint = lintTicket({ key, text, wiki: false }, designRoot()); design(text); }
 } else {
   let issue = null;
   try {
@@ -128,6 +142,7 @@ if (kind.kind !== 'tracker') {
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
       ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
     Object.assign(rec, epicOf(issue));
+    design(issue.fields?.description);
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint
     // that did not run.
     try { rec.lint = jira(['lint', key]); }

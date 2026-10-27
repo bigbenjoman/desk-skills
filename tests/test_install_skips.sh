@@ -48,6 +48,21 @@ C="$HOME/.config/desk/repos/o__r"; mkdir -p "$C"
 printf '## 2. Paths on your machine\n\n| Field | Value | Notes |\n|---|---|---|\n| Primary repo root | `%s` | x |\n' "$R" > "$C/config.md"
 printf '{"rules":[{"list":"allow","rule":"Bash(gh pr merge * --squash)","rows":["pr-merge-green"],"added":"2026-01-01"}]}\n' > "$C/harness-rules.json"
 
+# retired local CI runner: a desk installed while it shipped one, with its scripts, shim, state and
+# launchd jobs, each of which the install removes.
+VM=desk-runner
+OLD=("$HOME/.claude/desk/bin/$VM" "$HOME/.claude/desk/bin/runner-slot.sh" "$HOME/.claude/desk/bin/runner-probe.sh"
+  "$HOME/.claude/desk/bin/mem-turns.mjs" "$HOME/.local/bin/$VM" "$HOME/.claude/desk/runner" "$HOME/.claude/desk/memory-turns"
+  "$HOME/Library/LaunchAgents/com.desk-skills.$VM.plist" "$HOME/Library/LaunchAgents/com.desk-skills.$VM.nightly.plist")
+# end retired local CI runner
+mkdir -p "$HOME/.claude/desk/bin" "$HOME/.local/bin" "$HOME/Library/LaunchAgents"
+for f in "${OLD[@]}"; do case "$f" in */runner|*/memory-turns) mkdir -p "$f" ;; *) touch "$f" ;; esac; done
+printf '#!/bin/sh\necho "$@" >> "%s/launchctl.calls"\nexit 1\n' "$T" > "$T/bin/launchctl"; chmod +x "$T/bin/launchctl"
+# Its VM runs outside launchd, so the old tool's own down is what stops it.
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/tart"; chmod +x "$T/bin/tart"
+printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/bin/$VM"; chmod +x "$HOME/.claude/desk/bin/$VM"
+left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
+
 out="$("$SH" "$S/../install.sh" </dev/null 2>&1)"
 # shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
 rc=$?
@@ -73,6 +88,12 @@ check "DS-224 AC6: with nothing running, the summary says so in one line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "nothing to restart: no merge driver or supervisor agent is running")" = 1 ]'
 check "DS-224 AC4: the install records the commit it was installed from" \
   'grep -q "\"commit\": \"$(git -C "$S/.." rev-parse HEAD)\"" "$HOME/.claude/desk/installed.json"'
+check "DS-271 AC6: the running VM is stopped before its tools are removed" '[ "$(cat "$T/runner.calls")" = down ]'
+check "DS-271 AC6: the retired runner's scripts, shim, state and plists are removed" '[ -z "$(left)" ]'
+check "DS-271 AC6: its launchd jobs are unloaded" \
+  '[ "$(grep -c "^bootout gui/[0-9]*/com.desk-skills.$VM" "$T/launchctl.calls")" = 2 ]'
+check "DS-271 AC6: the install says so in one line" \
+  '[ "$(printf "%s\n" "$out" | grep -c "ok    removed the local CI runner:.*tart delete $VM)$")" = 1 ]'
 check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec --sandbox read-only"* ]]'
 check "deny-rule skip carries the harness-rules command" '[[ "$summary" == *"harness-rules.py\" --settings"*"baseline"* ]]'
 check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install vercel@claude-plugins-official --scope user"* ]]'

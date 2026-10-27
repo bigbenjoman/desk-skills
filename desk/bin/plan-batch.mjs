@@ -12,7 +12,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation } from './desk-env.mjs';
 import { SIZES } from './desk-q-eta.mjs';
 
@@ -53,13 +53,15 @@ const isOwner = (a) => (noTracker ? String(a).toLowerCase() === OWNER.toLowerCas
 const notOurs = records.filter((r) => r.assignee && !isOwner(r.assignee));
 const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));
 
-// Admission. C and D park at triage: both need a person before any code. C needs an agreed
-// plan or a product answer, and D a design build checked against its frame. A ticket sized L or XL
-// parks too: it is to be split, not run whole. Those parks always win over a dependency hold, so a
-// release can never send one to a headless worker.
-const laneOk = (r) => ['A', 'B', 'E'].includes(r.lane);
+// Admission. C parks at triage: it needs an agreed plan or a product answer before any code. D runs
+// when every Claude Design canvas its Design section links is saved on the base or snapshotted, since
+// the worker builds from it and the PR's canvas table is where it is agreed; a design only in Figma,
+// or a canvas not on the base, parks. A ticket sized L or XL parks too: it is to be split, not run
+// whole. Those parks always win over a dependency hold, so a release can never send one to a
+// headless worker.
+const laneOk = (r) => ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
 const sizeParked = (r) => laneOk(r) && ['L', 'XL'].includes(String(r.size ?? '').toUpperCase());
-const parked = ours.filter((r) => ['C', 'D'].includes(r.lane));
+const parked = ours.filter(needsPersonLane);
 // A C or D whose challenge could not read the code is shown as unchecked and asked about.
 const unchecked = parked.filter(laneUnchecked);
 const failedReads = (r) => (r.lane_challenge?.failed_reads ?? []).join('; ') || 'none listed';
@@ -353,7 +355,7 @@ if (notOurs.length) {
 }
 
 const ticketVerdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
-  : ['C', 'D'].includes(r.lane) ? `PARK (lane ${r.lane} — run manually)`
+  : needsPersonLane(r) ? `PARK (lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually)`
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
   : onCycle.has(r.ticket) ? `PARK (dependency cycle: ${onCycle.get(r.ticket)})`
   : held(r.ticket) ? `HELD (blocked by ${preds[r.ticket].join(', ')} — starts once their PRs merge)`
@@ -407,9 +409,9 @@ if (sized.length) {
   for (const r of sized) say(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
 }
 if (parked.length) {
-  say(`\n${'='.repeat(60)}\nPARKED AT TRIAGE (${parked.length}) — lanes C and D need a person, not run unattended:`);
+  say(`\n${'='.repeat(60)}\nPARKED AT TRIAGE (${parked.length}) — lane C, and lane D without a saved canvas, need a person, not run unattended:`);
   for (const r of parked) {
-    say(`  ${r.ticket}: ${r.lane_reason}`);
+    say(`  ${r.ticket}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${r.lane_reason}`);
     // A park is only trustworthy if the challenge actually ran. UNAVAILABLE means
     // it did not, so the lane is one unreviewed opinion — say so rather than let
     // it read as double-checked.

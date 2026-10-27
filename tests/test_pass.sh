@@ -980,7 +980,8 @@ if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('state,')) {
 } else if (a[0] === 'pr' && a[1] === 'ready') {
   if (has('.fail')) { console.error('GraphQL: Something went wrong while executing your query.'); process.exit(1); }
   fs.writeFileSync('$T/u/' + n + '.ready', '');
-} else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+} else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
@@ -1052,39 +1053,136 @@ uconfig yes; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-222 AC7 the next pass tries again, and the error is gone from the record" '[ "$(readied 707)" = 1 ] && [ "$(pass_rec undraft_errors)" = "[]" ]'
 check "DS-222 AC1 pr-ready yes: a clean, green draft at its head is marked ready, with no batch-notes line" \
   '[ "$(readied 701)" = 1 ] && [ "$(grep -c "undrafted #701" "$T/state-ud/batch-notes.md")" = 1 ]'
+check "DS-278 AC1 the undrafted PR gets one comment: why it left draft, on its head" \
+  '[ "$(grep -c "^pr comment 701 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.aaaaaaaaaaaa.) is clean" "$T/gh-calls")" = 1 ]'
+check "DS-278 AC1 and the comment quotes the verdict" 'grep -q "^> .sha=$HEAD_A p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1.$" "$T/gh-calls"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-222 a PR already ready is not undrafted again" '[ "$(grep -c "^pr ready" "$T/gh-calls")" = 0 ]'
+check "DS-278 AC1 nor commented on again" '[ "$(grep -c "^pr comment" "$T/gh-calls")" = 0 ]'
 
-# ---- DS-252: a CI slot waiting for memory holds this batch's next spawn
+# ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
+# The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver
+# writes it: one line per check per rerun, in <state>/merge-driver/reruns-<n>-<head>.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \${AUTOPILOT_TASK:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
+cat > "$T/config-f.md" <<EOF
+## 0. Repo
+| Field | Value |
+|---|---|
+| GitHub repo | \`acme/widgets\` |
+| Default branch | \`main\` |
+
+## 2. Paths
+| Field | Value |
+|---|---|
+| Primary repo root | \`$T/repo\` |
+| Worktrees directory | \`$T/wt\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+
+## 4. Checks
+| Field | Value |
+|---|---|
+| Required checks | \`tests\` |
+| Checks workers can't fix | \`Flows image missing: build it: ensure-flows-image.sh\` |
+EOF
+export DESK_CONFIG="$T/config-f.md" DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
+mkdir -p "$T/state-f/logs" "$T/state-f/merge-driver" "$T/fx"
+# fx <n> <head> <mergeable> <check>:<conclusion>[:<run id>]...: PR #n open and out of draft.
+fx(){
+  node -e 'const [dir, n, head, mergeable, ...cs] = process.argv.slice(1);
+    const checks = cs.map((c) => { const [name, conclusion, run] = c.split(":"); return { __typename: "CheckRun", name, status: "COMPLETED", conclusion, detailsUrl: run ? `https://github.com/acme/widgets/actions/runs/${run}/job/1` : "" }; });
+    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable, mergeStateStatus: mergeable === "CONFLICTING" ? "DIRTY" : "BLOCKED", headRefOid: head, statusCheckRollup: checks }))' "$T/fx" "$@"
+}
+reran(){ printf '%s\n' "${@:3}" "${@:3}" > "$T/state-f/merge-driver/reruns-$1-$2"; }   # reran <n> <head> <check>...: two reruns each
+H1=1111111111111111111111111111111111111111; H2=2222222222222222222222222222222222222222; H3=3333333333333333333333333333333333333333
+q init f; q set-batch concurrency=5
+for k in 1 2 3 4 5; do q add "F-$k"; q set "F-$k" state=done lane=A "branch=fix/F-$k"; done
+q set F-1 result.pr=697; fx 697 "$H1" MERGEABLE tests:SUCCESS "Backend tests:FAILURE:901" Lint:FAILURE:902; reran 697 "$H1" "Backend tests" Lint
+q set F-2 result.pr=704; fx 704 "$H1" CONFLICTING tests:SUCCESS
+q set F-3 result.pr=696; fx 696 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903"
+q set F-4 result.pr=698; fx 698 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903" Lint:FAILURE:904; reran 698 "$H1" "Flows image missing" Lint
+q set F-5 result.pr=699; fx 699 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:905; printf 'Lint\n' > "$T/state-f/merge-driver/reruns-699-$H1"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-278 AC2 red after the driver's two reruns: requeued once for a fix worker, try 1" \
+  '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 fix.try)" = 1 ] && [ "$(field F-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: F-1 requeued for PR #697 — red: Backend tests, Lint"'
+check "DS-278 AC2 a check with one rerun so far is left to the driver" '[ "$(field F-5 state)" = "\"done\"" ] && [ "$(field F-5 fix)" = null ]'
+check "DS-278 AC3 a DIRTY PR is requeued once for the conflict" '[ "$(field F-2 state)" = "\"triaged\"" ] && [ "$(field F-2 fix.kind)" = "\"conflict\"" ] && [ "$(field F-2 fix.what)" = "\"conflicts with main\"" ]'
+check "DS-278 AC6 red only on a check no worker can fix: never requeued, stuck with its command" \
+  '[ "$(field F-3 state)" = "\"done\"" ] && [ "$(field F-3 fix)" = null ] && [ "$(field F-3 stuck.why)" = "\"Flows image missing · build it: ensure-flows-image.sh\"" ]'
+check "DS-278 AC6 and it is put to the person" 'echo "$out" | grep -q "F-3: STUCK — PR #696: Flows image missing · build it: ensure-flows-image.sh"'
+check "DS-278 AC7 red on both: requeued for the fixable check only" '[ "$(field F-4 state)" = "\"triaged\"" ] && [ "$(field F-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field F-4 fix.not_mine | jq -r ".[0].name")" = "Flows image missing" ]'
+
+# The next pass spawns the fix workers, each given the fix as its task and in its briefing.
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-278 AC2 the fix worker's task is the fix try on the same PR" 'grep -q "^F-1 .*Your task is fix try 1 of 2 on PR #697" "$T/spawns"'
+check "DS-278 AC2 its briefing names each failing check and its run URL" \
+  'grep -q "^- Backend tests: https://github.com/acme/widgets/actions/runs/901$" "$T/state-f/briefings/F-1.md" && grep -q "^- Lint: https://github.com/acme/widgets/actions/runs/902$" "$T/state-f/briefings/F-1.md"'
+check "DS-278 AC3 the conflict worker's briefing says it conflicts with the base" 'grep -q "it conflicts with main" "$T/state-f/briefings/F-2.md"'
+check "DS-278 AC7 the briefing says the other check is not the worker's to fix" 'grep -q "^- Flows image missing is red too, and it is not yours to fix: build it: ensure-flows-image.sh" "$T/state-f/briefings/F-4.md"'
+check "DS-278 AC4 a running fix worker's PR is not requeued again" '[ "$(field F-1 fix_tries | jq length)" = 1 ] && [ "$(grep -c "^F-1 " "$T/spawns")" = 1 ]'
+
+# F-1's worker pushes a new head that is still red after its reruns: try 2. F-2's left its head where it was.
+q set F-1 state=done session_id=null result.pr=697; fx 697 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:906; reran 697 "$H2" Lint
+q set F-2 state=done session_id=null result.pr=704
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-278 AC2 a new head still red after its reruns gets try 2" '[ "$(field F-1 fix.try)" = 2 ] && [ "$(field F-1 fix_tries | jq length)" = 2 ] && [ "$(field F-1 fix_tries | jq -r ".[1].head")" = "$H2" ]'
+check "DS-278 AC4 a try already made for this head is not made again: stuck" \
+  '[ "$(field F-2 state)" = "\"done\"" ] && [ "$(field F-2 fix_tries | jq length)" = 1 ] && [ "$(field F-2 stuck.why)" = "\"still in conflict with main after 1 fix try\"" ]'
+q set F-1 state=done session_id=null result.pr=697; fx 697 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:907; reran 697 "$H3" Lint
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-278 AC5 after 2 fix tries it is not requeued again" '[ "$(field F-1 state)" = "\"done\"" ] && [ "$(field F-1 fix_tries | jq length)" = 2 ]'
+check "DS-278 AC5 the ticket records it stuck, and it is put to the person" \
+  '[ "$(field F-1 stuck.why)" = "\"still red after 2 fix tries: Lint\"" ] && echo "$out" | grep -q "F-1: STUCK — PR #697: still red after 2 fix tries: Lint"'
+# Ahead of pace: new tickets hold, and a fix try still starts within the worker count.
+export DESK_QUEUE="$T/queue-p.json" DESK_AUTOPILOT_STATE="$T/state-p"
+mkdir -p "$T/state-p/logs"
+node -e 'console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1 }, seven_day: { utilization: 0.99, resetsAt: Math.round(Date.now() / 1000) + 6 * 86400 } } } }))' > "$T/state-p/logs/OLD-1.log"
+q init p; q set-batch concurrency=2
+q add P-1; q set P-1 state=triaged lane=A branch=fix/P-1 'fix={"try":1,"of":2,"pr":800,"head":"x","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}]}'
+q add P-2; q set P-2 state=triaged lane=A branch=fix/P-2
+q add P-3; q set P-3 state=triaged lane=A branch=fix/P-3 'fix={"try":1,"of":2,"pr":801,"head":"x","kind":"conflict","what":"conflicts with main","base":"main"}'
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-278 ahead of pace, a fix try still starts" '[ "$(field P-1 state)" = "\"running\"" ] && grep -q "^P-1 .*fix try 1 of 2 on PR #800" "$T/spawns" && echo "$out" | grep -q "holding spawns (0 running carry on; fix tries still start)"'
+check "DS-278 ahead of pace, a new ticket still holds" '[ "$(field P-2 state)" = "\"triaged\"" ] && ! grep -q "^P-2" "$T/spawns"'
+check "DS-278 ahead of pace, fix tries keep to the worker count" '[ "$(grep -c "" "$T/spawns")" = 2 ]'
+q set-batch concurrency=1; q set P-3 state=triaged; q set P-1 state=running session_id=live-1
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-278 ahead of pace, a fix try waits for a free worker slot" '[ ! -s "$T/spawns" ] && [ "$(field P-3 state)" = "\"triaged\"" ]'
+sed 's/| `yes` | `yes` |$/| `yes` | `ask` |/' "$T/config-f.md" > "$T/config-pa.md"
+q set-batch concurrency=2; q set P-1 state=triaged session_id=null
+: > "$T/spawns"; out=$(DESK_CONFIG="$T/config-pa.md" env -u AUTOPILOT_USER_APPROVED node "$B/pass.mjs" 2>&1)
+check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[ ! -s "$T/spawns" ] && [ "$(field P-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "autopilot-workers is \"ask\""'
+export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
+check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
+
+# ---- DS-271: no CI runner shares the memory ladder
+# A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"
 mkdir -p "$T/state-mt/logs"; MT="$DESK_HOME/memory-turns"; mkdir -p "$MT"
 q init mt; q set-batch concurrency=2
 q add M-1; q set M-1 state=running branch=fix/M-1 session_id=live-1
 q add M-2; q set M-2 state=triaged
-# CI waiting since 5 minutes ago, on a process that runs (this shell), rewritten a minute ago.
-ci_waits(){ printf '{"side":"ci","since":%s,"at":%s,"why":"%s","pid":%s}\n' "$(( ($(date +%s) - 300) * 1000 ))" "$(( ($(date +%s) - $1) * 1000 ))" "12.0G available" "$$" > "$MT/ci.json"; }
-ci_waits 60
+printf '{"side":"ci","since":%s,"at":%s,"why":"12.0G available","pid":%s}\n' "$(( ($(date +%s) - 300) * 1000 ))" "$(( ($(date +%s) - 60) * 1000 ))" "$$" > "$MT/ci.json"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-252 AC2 a CI slot waiting for memory: no new worker, one running" '[ "$(field M-2 state)" = "\"triaged\"" ]'
-check "DS-252 AC2 the report says CI is waiting for memory" 'echo "$out" | grep -q "memory: CI is waiting for memory, so no new worker starts until its slot has (1 running): a CI slot waiting for memory since"'
-check "DS-252 the batch keeps a marker of its own, waiting behind CI" '[ -n "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ] && grep -q "held behind CI" "$MT"/autopilot-*.json'
-ci_waits 1860
-out=$(node "$B/pass.mjs" 2>&1)
-check "DS-252 a stale CI marker holds nothing: the worker spawns" '[ "$(field M-2 state)" = "\"running\"" ] && [ ! -e "$MT/ci.json" ]'
-check "DS-252 and the report says it was removed" 'echo "$out" | grep -q "memory turns: removed ci.s stale waiting marker: not rewritten for 31 minutes"'
-check "DS-252 a batch no longer waiting drops its marker" '[ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
-q add M-3; q set M-3 state=triaged; ci_waits 60
-out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
-check "DS-252 a dry run writes no marker" '[ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
-rm -f "$MT/ci.json"
+check "DS-271 AC3 an old CI waiting marker holds nothing: the worker spawns" '[ "$(field M-2 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CI is waiting"'
+check "DS-271 AC3 the memory line has no runner segment" 'echo "$out" | grep -qE "memory: vmmem=[0-9.]+G avail=[0-9.]+G$"'
+q add M-3; q set M-3 state=triaged; q set-batch concurrency=3
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
-check "DS-252 a batch at its own worker number holds no CI slot, low memory or not" '[ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
-ci_waits 60
-out=$(node "$B/pass.mjs" 2>&1)
-check "DS-252 CI's wait holds a batch at its own number too, so a borrowed worker cannot pass it" 'echo "$out" | grep -q "memory: CI is waiting for memory, so no new worker starts until its slot has (2 running)" && [ -z "$(ls "$MT"/autopilot-*.json 2>/dev/null)" ]'
-rm -f "$MT/ci.json"
-q set-batch concurrency=3
-out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
-check "DS-252 with room for a worker, low memory leaves the batch's marker" 'grep -q "under the 100000G spawn gate" "$MT"/autopilot-*.json'
+check "DS-271 AC3 held for memory, the pass writes no waiting marker" '[ "$(field M-3 state)" = "\"triaged\"" ] && [ "$(ls "$MT")" = ci.json ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

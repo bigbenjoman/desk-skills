@@ -129,8 +129,8 @@ call (section 1) or a shared-state write rather than a difficulty: missing produ
 data, any write to staging or a shared index. Plus, specific to running unattended:
 
 - **A merge conflict.** Any. Never resolve one.
-- **A lane demotion to C or D.** Both need a person before code: C an agreed plan or a product
-  answer, D a design build checked against its frame.
+- **A lane demotion to C, or to D with no saved canvas.** C needs an agreed plan or a product
+  answer, and D a canvas to build from (Stage 3 file).
 - **A priority in config §4 Priorities only you set.** `desk-jira` refuses it to you, with or
   without `--approved`. Set the next value down, finish the ticket's other steps, then park last
   with the case for the higher one; the user decides, and their decision goes on the ticket.

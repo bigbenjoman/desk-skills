@@ -9,14 +9,15 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, waitingOnMerge, lanePark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, HOME as E_HOME } from './desk-env.mjs';
+import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -211,12 +212,13 @@ function requeue(q, key) {
   if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
-  // dependency cycle) or a lane C or D would slip by. A worker's own park never has open questions:
+  // dependency cycle), a lane C, or a lane D parked on its design would slip by. A worker's own park never has open questions:
   // it spawned only once they reached 0.
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
-  if (!['A', 'B', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+  if (t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
+  if (!['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
   // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
   // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
   // worker never ran (a failed preflight or spawn): that was not the model falling short.
@@ -422,13 +424,27 @@ switch (cmd) {
     break;
   }
 
+  // --claimed-by <session id>: an interactive session works the ticket. Each pass releases it to a worker
+  // once that session has been idle past config §3b "Release idle claims after (hours)" (claims.mjs).
   case 'park': {
-    const [key, ...rest] = args;
+    const at = args.indexOf('--claimed-by');
+    const session = at < 0 ? null : args[at + 1];
+    const [key, ...rest] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
+    if (at >= 0 && !SESSION_ID.test(session ?? '')) throw new Error('usage: queue.mjs park <TICKET> --claimed-by <session id> [<question>]');
+    // A session name, or a session from another computer, has no transcript to read idleness from.
+    if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${join(E_HOME, '.claude', 'projects')}: --claimed-by wants the session id of a session on this computer`);
     const t = ticket(q, key);
+    const now = new Date().toISOString();
+    if (session && (isHeld(t) || spinePark(t))) throw new Error(`${key} is parked by the orchestrator (${t.park.question}): only its release or approval settles it, so it cannot be claimed`);
+    // A park already there keeps its question, which the requeue guards read (a lane D design, a size,
+    // a dependency cycle), so an idle release can never send it to a worker those guards would refuse.
+    if (session && t.state === 'parked' && rest.length) throw new Error(`${key} is already parked (${t.park?.question ?? '?'}): claim it with no question, which keeps that one`);
+    const kept = session && t.state === 'parked' && t.park ? t.park : null;
     t.state = 'parked';
-    t.park = { question: rest.join(' '), since: new Date().toISOString() };
+    t.park = kept ? { ...kept, claim: { session, at: now } }
+      : { question: rest.join(' ') || (session ? claimQuestion(session) : ''), since: now, ...(session ? { claim: { session, at: now } } : {}) };
     save(q);
-    console.log(`${key} parked`);
+    console.log(session ? `${key} parked, claimed by session ${session}` : `${key} parked`);
     break;
   }
 

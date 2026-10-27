@@ -56,6 +56,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
+| §4 "Checks workers can't fix" | checks the pass never sends back to a fix worker: a PR red only on one is stuck, with what fixes it (*Fix tries*) |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
 | §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |
@@ -213,7 +214,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 | 2 | Plan | `plan-batch.mjs --json`: ownership, admission, collisions, and the question batch. Its exit and `needs_person` say what goes to the user before Stage 3 (*What a script's exit tells you*): a `lint` entry is a ticket a worker would park on, so fix the ticket or put the finding to the user at Stage 3 before it spawns. Report its merge order and any contradiction: see *Order the batch by blast radius*. Admit only work the batch can finish whole: a ticket that is doable except for a call *Ask or take* keeps (a missing design, copy or product fact, or a call with no recommendation) is a question, not a partial run. In feature mode, draft the spine ticket and the owner table here and re-plan (*Feature mode*). |
 | 3 | Ask once | Every unknown across every ticket that *Ask or take* keeps as a question, in **one** round, **always via `AskUserQuestion`**, never as prose in the report. Include any §3 `ask` the batch will hit (headless workers, upload, merge, pushing to a batch base, undrafting), each as one question for the whole batch, and in feature mode the drafted spine and owner table for approval. Leave out what you take instead: a call outside the ask categories that has a recommendation, and any write §3 grants (a Jira comment, edit or transition under a `yes` row), which you make and then log. Wait. This is the whole promise. See *Asking*. |
 | 4 | Run | **Who runs the batch is config §3b "Batches run by"**: run `run-by.mjs stage4` and follow its `by`. **At `supervisor`** (the row says `supervisor` and the supervisor is installed and loaded, or was just installed: the row is the consent, so never ask), hand the batch to it and start neither `/loop` nor a `nohup` merge driver: `queue.mjs set-batch supervised=true`, plus `approved.workers=true` and `approved.base_push=true` for exactly the Stage 3 approvals the user gave, and `approved.merge` as the user answered the merge question (*The supervisor*); then write the handoff and end the session (*Handing a batch to the supervisor*). **At `session`**, whatever is installed, run the batch here as below, and say its `note` once when it has one (an unset row: `/desk-setup` can set it). Exit 11 is an install that failed: run the batch here, and put its `error` and `retry` command in the report. Stages 0 to 3 run in this session whatever the row says. In the session: `pass.mjs --json`, self-paced via `/loop`; **each time you schedule the next pass, record it** with `queue.mjs next-pass +<the delay in seconds>`, or desk-q shows the batch as stopped once 15 minutes pass with no pass (the supervisor records its own). It preflights, spawns, harvests, reports, and its exit says what comes next (*What a script's exit tells you*). **Re-read the ladder at the top of every pass**: concurrency is a per-pass decision, not a batch setting. In the session, start the merge driver now, before the first worker finishes. |
-| 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C or D park is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). For a *running* worker, `SendMessage` it. |
+| 5 | Answer | `answer.mjs <TICKET> "..."` records the answer in the ticket's briefing (and in the mailbox only if a worker is live and waiting) and lowers its open-question count, so a `triaged` ticket blocked on Stage 3 answers becomes eligible at the next pass. **It never un-parks**: resuming a `parked` ticket is your decision. A ticket whose worker parked: the worker has already exited, so verify the real state, then finish the parked step yourself or requeue it (`queue.mjs requeue <TICKET>`, details in `references/orchestrator-recovery.md`). **A lane C park, or a lane D one parked at triage on its design, is never requeued for a headless worker**: answering it does not make it one sitting. It goes to an interactive `desk-ticket` session, unless the user rules the lane itself wrong (*A lane is a proposal*). A lane D ticket whose canvas is saved under §2 Design canvases directory on the base, or in your snapshot, is not parked at all: `plan-batch` queues it, its worker builds from the canvas without stopping for agreement (`desk-ticket-routing.md` Lane D), and its PR's canvas table is where the design is agreed. A lane D park that names a Figma-only design or a canvas not on the base clears once the canvas is saved there and the ticket is triaged and planned again. A lane D ticket whose own worker parked is requeued like any other. For a *running* worker, `SendMessage` it. |
 | 6 | Images | Where config §3 `pr-images` is `yes`, `pass.mjs` runs `upload-images.mjs` when a worker prints `AUTOPILOT_IMAGES:` naming a directory that holds a screenshot (a missing or empty one is no images: a finished ticket gets `images_uploaded=none` and nothing is reported): serialised, one PR at a time, never a worker. There is **one signed-in browser profile machine-wide** (config §2), so claim it from peer sessions by message first and release it the moment you are done. Only `0 placeholder(s) left` counts as uploaded. Placeholders left (uploader exit 4) or none matched (exit 3) sets `images_uploaded=partial`, saves the output to `<state>/images/<TICKET>.upload.log` and reports it under `WAITING ON YOU`: fix the body's `_drag <file>_` cells from the saved tags, do not re-upload (the assets already exist). |
 | 6b | Notify | Push only what a pass's `push` lists, whatever its exit: send **one** `PushNotification` carrying the `text` of each entry whose `key` the last notification did not already carry (where §3b "Push notification when a batch needs you" is `yes`). That is the check-in digest, once a §3b "Check-in times" slot has passed, a park reading `PRODUCTION BROKEN: …`, at once, and a health check newly failing. Everything else waiting on the person reaches them in the next digest (*The check-in digest*), so a park, a failure or a finished batch is shown in the session and never pushed on its own. |
 | 6c | Relay a gate | When a worker parks on a write config §3 did not grant (most often the Jira comment), reproduce `desk-jira`'s block **verbatim**: `JIRA COMMENT — awaiting approval` (or `JIRA TICKET`/`EDIT`/`TRANSITION`), target, fields, then the exact body. Never paraphrase it. The user must read the exact string that is about to be public; a summary defeats the gate while looking like it honoured it. The same holds for a parked PR body or review report. |
@@ -294,9 +295,9 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   and each green PR the pass lists as `READY TO MERGE` goes to the next check-in digest;
 - when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
   repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
-  It settles what those rules let you do without asking (a requeue of a lane A, B or E park that needs
-  more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
-  A lane C or D park and anything needing a §3 row that is not `yes` go to the digest without a
+  It settles what those rules let you do without asking (a requeue of a lane A, B, D or E worker's park that
+  needs more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
+  A lane C park, a lane D parked at triage on its design, and anything needing a §3 row that is not `yes` go to the digest without a
   session; an item handed on and not answered since starts none, and an answer to one (`answer.mjs`,
   the digest's included) runs a pass again even in an idle batch. A decider still running after 15
   minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
@@ -746,6 +747,24 @@ put that under `WAITING ON YOU`. It never waives:
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
 
+**Fix tries: what the driver cannot merge goes back to a worker, twice.** Each pass reads every
+ready batch PR (`pass.mjs`, `fix-tries.mjs`). One still red after the driver's two reruns at its
+head, and not waived above, or one GitHub reports in conflict with its base, has its ticket
+requeued for a fix worker on the same branch and PR. That worker's briefing names each failing
+check with its run URL, or the conflict with the files git lists, and the worker gets the fix as its
+task (`AUTOPILOT_TASK`). The try is kept on the ticket as `fix` (`try`, `of`, `what`, `head`) and
+appended to `fix_tries`, and a head gets one try at most. After two tries, or a try whose worker
+left the head where it was, the PR is not requeued again: the ticket records `stuck`
+(`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A check
+§4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
+`<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
+and its briefing says the other is not the worker's to fix. desk-q shows each ticket's try and
+what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
+tickets wait and fix tries still start, within the batch's worker count.
+
+When the pass takes a PR out of draft, it comments on it: why it left draft, quoting the clean
+verdict it read on that head.
+
 **Start the merge driver at Stage 4, before the first worker finishes, unless the batch is handed
 to the supervisor (it starts one itself): do not merge off your own turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
 unmerged: nothing undrafts, merges or retriggers it until the orchestrator's next turn.
@@ -859,8 +878,7 @@ marks the done row `merged`, so both wake you.
 
 - **Every ticket in the batch, every time**: parked and queued rows included.
 - **Mark what changed** (an arrow, a bold cell) so the delta is findable without diffing.
-- **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers,
-  and the `runner=` and `ladder=` figures whenever the pass line carries them.
+- **Carry `vmmem=` and `avail=`** with it, since the ladder decision is read from those two numbers.
 - **Notes stay to one line.** The full park reason lives in the queue.
 
 **Quiet: config §3b "Orchestrator status table" `quiet`** (`desk-env get status-table`; unset is
@@ -907,8 +925,8 @@ are `start-up`. A worker whose log has no usage figures reads `unknown` there to
 
 Triage is one `claude -p` pass forming one opinion, and for A, B and E that is fine: the worker
 commits its own lane at `desk-ticket` Stage 2 and demotes if it was wrong, so a bad guess costs
-minutes. **C and D are different, because they are terminal here**: `plan-batch` parks them, no
-worker ever runs, and the ticket sits until the user reads a question. A wrongly parked ticket
+minutes. **C and D are different, because they are terminal here**: `plan-batch` parks them (a D
+only when its canvas is not saved on the base or snapshotted), no worker ever runs, and the ticket sits until the user reads a question. A wrongly parked ticket
 costs a whole batch cycle and looks exactly like a correctly parked one. So here
 **C-or-D-when-really-A** is the expensive direction, and the challenge only ever runs downhill.
 
@@ -950,7 +968,8 @@ INCONCLUSIVE park is also a `question`: put it to the user to confirm or re-lane
 re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then
 `queue.mjs requeue <TICKET>`, and, where the ticket is
 genuinely big, scope it in the briefing so what runs really is one sitting. That is a new lane, not
-a requeue of a C or D: a ticket that stays C or D is worked interactively, never by a worker.
+a requeue of a C or D: a ticket that stays C, or D without its canvas saved on the base, is worked
+interactively, never by a worker.
 
 ## Ask or take
 
@@ -996,7 +1015,7 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
-  `references/orchestrator-recovery.md` says, with no model: a lane C or D ticket stays for a
+  `references/orchestrator-recovery.md` says, with no model: a lane C ticket, or a lane D parked at triage on its design, stays for a
   person, one whose own PR merged is recorded done, any other is requeued. Each outcome, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
@@ -1091,10 +1110,8 @@ a killed worker"); workers in a repo whose passes are not running are waited on 
 Then one pass pulls the desk-skills checkout fast-forward on a clean `main` and runs `install.sh`,
 and runs `reboot-check.mjs`. Where §3 `machine-reboot` is `yes` and the check found no blocker
 (anything heavy running, a worker still running in any repo, or FileVault on or unreadable, since a
-restarted Mac then waits at the unlock screen until someone logs in), it runs `desk-runner down` if the
-runner was up and restarts the computer; the supervisor brings passes back at login, the first pass
-runs `desk-runner up` again (as does a restart that fails or never happens), and the stopped workers
-resume. At `ask` (unset), or at `yes` with FileVault the only blocker, it does not restart and puts
+restarted Mac then waits at the unlock screen until someone logs in), it restarts the computer; the
+supervisor brings passes back at login, and the stopped workers resume. At `ask` (unset), or at `yes` with FileVault the only blocker, it does not restart and puts
 "ready to reboot" in the next check-in, naming FileVault where it is on; at `no`
 it stops there. A failed update goes in the check-in too, and does not restart. Every step, with the
 old and new commit and the check's summary, goes in `~/.desk-autopilot/maintenance/maintenance.log`.
@@ -1336,22 +1353,6 @@ the bands):
 | 4–8 GiB | hold: finish what is running, spawn nothing new this pass |
 | < 4 GiB | drop to 1 (`set-batch concurrency=1`, and leave `concurrency_by` as it is); a worker mid-suite will drain, so wait a pass before touching anything |
 | < 2 GiB **and** sustained | reclaim (where §3 `autopilot-reclaim` is `yes`): kill an orphaned dev server or a stale typecheck first, never a worker mid-commit, never a process another session owns |
-
-**On a computer running the runner VM, its memory is a fixed reservation.** While the desk-runner VM
-runs, the machine profile's `runner-memory-reserved-gb` is held back from `avail` before the ladder
-reads it, less what the VM already holds (which `avail` has already lost), because CI can fill the
-rest at any moment. `pass.mjs` gates on that figure and its memory line, like `desk-env mem status`,
-shows `runner=<n>G reserved (<r>G resident, <h>G held back) ladder=<x>G`; read the bands against
-`ladder=`. Without a running VM, or with no reservation in the profile, nothing is held back and the
-line carries neither.
-
-**The runner and autopilot share one free-memory floor, and take turns.** The machine profile's
-`runner-memory-floor-gb` (8 unless set) raises §3b's `start` band when it is higher, so no worker
-starts under it, and the runner starts no CI slot under it either. A pass with ready work held only
-for memory leaves a waiting marker (`$DESK_HOME/memory-turns/`), which holds the runner's next slot
-until this batch's next worker has spawned. A CI slot that began waiting first holds this batch's
-next spawn instead, and the report says `CI is waiting for memory`. A CI wait never holds the batch's first
-worker, nor a batch's wait CI's first slot. `desk-runner status` lists every wait.
 
 Lowering is silent but **reported**: say which number caused it. Raising back needs the same
 evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the

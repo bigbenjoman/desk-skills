@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # suite: maintenance (the weekly window drains, updates, checks and restarts, then resumes)
 # The real pass.mjs on a fixed clock (DESK_MAINT_NOW), with a running worker whose session is a real
-# process, a fake desk-skills checkout cloned from a scratch origin, a fake reboot check, a fake
-# desk-runner and a fake restart command that each record their calls. One week per case, so each
+# process, a fake desk-skills checkout cloned from a scratch origin, a fake reboot check and a fake
+# restart command that records its calls. One week per case, so each
 # window starts fresh. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -78,15 +78,14 @@ upstream(){ git -C "$T/seed" commit -q --allow-empty -m "$1"; git -C "$T/seed" p
 # Dates are in the past: the check-in digest lists only notes made before now.
 srchead(){ git -C "$T/desk-src" rev-parse HEAD; }
 
-# reboot-check's summary line, as the fake check prints it: checkout_says <runner> <heavy> [<filevault>].
-checkout_says(){ printf 'worktrees: 1 configured repo\nsummary: dirty=0 unpushed=0 runner=%s keep=none heavy=%s filevault=%s\n' "$1" "$2" "${3:-off}" > "$T/check.out"; }
-checkout_says stopped 0
-printf '#!/bin/sh\necho "$1" >> "%s/runner.calls"; echo "desk-runner: $1 done"\n' "$T" > "$T/runner.sh"
+# reboot-check's summary line, as the fake check prints it: checkout_says <heavy> [<filevault>].
+checkout_says(){ printf 'worktrees: 1 configured repo\nsummary: dirty=0 unpushed=0 heavy=%s filevault=%s\n' "$1" "${2:-off}" > "$T/check.out"; }
+checkout_says 0
 
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test AUTOPILOT_HEALTH_CHECKS=off \
   DESK_DIGEST_DIR="$T/digest-pass" DESK_SOURCE_CHECKOUT="$T/desk-src" DESK_REBOOT_CHECK_CMD="cat $T/check.out" \
-  DESK_RUNNER_CMD="sh $T/runner.sh" DESK_RESTART_CMD="echo restart >> $T/restart.calls" DESK_BOOT_TIME=2026-09-01T00:00:00Z \
+  DESK_RESTART_CMD="echo restart >> $T/restart.calls" DESK_BOOT_TIME=2026-09-01T00:00:00Z \
   DESK_MAINT_DIR="$T/maint"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
@@ -131,7 +130,7 @@ check "AC2 the report names it"                             'grep -q "^maintenan
 check "AC3 desk-skills is pulled fast-forward"              '[ "$(srchead)" = "$new" ]'
 check "AC3 and installed"                                   '[ "$(calls install)" = 1 ]'
 check "AC3 the log records the old and new commit"          'mlog | grep -q "update: desk-skills ${old:0:12} -> ${new:0:12} (1 commit(s)), pulled fast-forward and installed"'
-check "AC5 the log records the reboot check summary"        'mlog | grep -q "reboot check: summary: dirty=0 unpushed=0 runner=stopped keep=none heavy=0 filevault=off; no blocker"'
+check "AC5 the log records the reboot check summary"        'mlog | grep -q "reboot check: summary: dirty=0 unpushed=0 heavy=0 filevault=off; no blocker"'
 check "AC7 ask: no restart"                                 '[ "$(calls restart)" = 0 ]'
 check "AC7 ask: spawning resumes in the same pass"          '[ "$(field M-1 state)" = running ] && grep -q "M-0 resumed after the maintenance window" <<< "$out"'
 check "AC7 the report says so"                              'grep -q "maintenance: config §3 machine-reboot is \"ask\", so no restart: \"ready to reboot\" is in the next check-in; spawning resumes" <<< "$out"'
@@ -169,20 +168,18 @@ check "AC4 the failure is in the check-in digest"           'grep -q "desk-skill
 git -C "$T/desk-src" clean -fq; q set M-4 state=done
 
 # ---- AC6: machine-reboot yes and no blocker, FileVault off --------------------------------------
-checkout_says running 0 off
+checkout_says 0 off
 q add M-5; q set M-5 state=triaged branch=fix/M-5
 pj 2026-09-28T06:31:00Z; pj 2026-09-28T06:32:00Z
-check "AC6 the runner is stopped first"                     'grep -qx down "$T/runner.calls"'
 check "AC6 the computer is restarted"                       '[ "$(calls restart)" = 1 ]'
-check "DS-226 AC3 FileVault off is no blocker"              'mlog | grep -q "reboot check: summary: dirty=0 unpushed=0 runner=running keep=none heavy=0 filevault=off; no blocker"'
+check "DS-226 AC3 FileVault off is no blocker"              'mlog | grep -q "reboot check: summary: dirty=0 unpushed=0 heavy=0 filevault=off; no blocker"'
 check "AC6 nothing spawns while it restarts"                '[ "$(field M-5 state)" = triaged ] && grep -q "maintenance: restarting the computer" <<< "$out"'
 DESK_BOOT_TIME=2026-09-28T06:40:00Z pj 2026-09-28T06:45:00Z
-check "AC6 after login the runner is started again"         'grep -qx up "$T/runner.calls"'
 check "AC6 after login spawning resumes"                    '[ "$(field M-5 state)" = running ] && grep -q "maintenance: restarted at 2026-09-28T06:40:00Z; spawning resumes" <<< "$out"'
 q set M-5 state=done
 
 # ---- machine-reboot yes, but the check found a blocker ------------------------------------------
-checkout_says stopped 2
+checkout_says 2
 q add M-6; q set M-6 state=triaged branch=fix/M-6
 pj 2026-10-05T06:31:00Z; pj 2026-10-05T06:32:00Z
 check "a blocker stops the restart, and spawning resumes"    '[ "$(calls restart)" = 1 ] && [ "$(field M-6 state)" = running ]'
@@ -191,7 +188,7 @@ q set M-6 state=done
 
 # ---- AC8: machine-reboot no --------------------------------------------------------------------
 config "Mon 06:30 UTC" no
-checkout_says stopped 0
+checkout_says 0
 q add M-7; q set M-7 state=triaged branch=fix/M-7
 pj 2026-10-12T06:31:00Z; pj 2026-10-12T06:32:00Z
 check "AC8 no: no restart"                                  '[ "$(calls restart)" = 1 ]'
@@ -214,7 +211,7 @@ rm -r "$T/desk/repos"; q set M-8 state=done
 # ---- FileVault holds a restarted Mac at the unlock screen ----------------------------------------
 # Earlier weeks than the cases above, so each opens its own window and its notes are in the past.
 config "Mon 06:30 UTC" yes
-checkout_says stopped 0 on
+checkout_says 0 on
 q add F-1; q set F-1 state=triaged branch=fix/F-1
 pj 2026-08-10T06:31:00Z; pj 2026-08-10T06:32:00Z
 check "DS-226 AC1 FileVault on is listed as a blocker"     'mlog | grep -q "blockers: FileVault is on: after a restart nothing runs until someone logs in$"'
@@ -224,14 +221,14 @@ page=$(digest 4)
 check "DS-226 AC2 the check-in says ready to reboot, naming FileVault" 'grep -q "ready to reboot: the maintenance window drained, updated desk-skills and found no other blocker, but did not restart itself because FileVault is on: after a restart nothing runs until someone logs in" <<< "$page"'
 q set F-1 state=done
 
-checkout_says stopped 0 unknown
+checkout_says 0 unknown
 q add F-2; q set F-2 state=triaged branch=fix/F-2
 pj 2026-08-17T06:31:00Z; pj 2026-08-17T06:32:00Z
 check "DS-226 AC4 an unreadable FileVault counts as on and says so" 'mlog | grep -q "blockers: could not tell whether FileVault is on (fdesetup status failed or is missing), so it counts as on" && [ "$(calls restart)" = 1 ]'
 q set F-2 state=done
 
 # FileVault with another blocker: not ready, and every blocker is named.
-checkout_says stopped 2 on
+checkout_says 2 on
 q add F-3; q set F-3 state=triaged branch=fix/F-3
 pj 2026-08-24T06:31:00Z; pj 2026-08-24T06:32:00Z
 check "DS-226 FileVault and a heavy process: not restarted, both named" 'grep -q "not restarted: config §3 machine-reboot is \"yes\", but the reboot check found 2 heavy process(es) running (test suites, typechecks, dev servers); FileVault is on" <<< "$(digest 5)" && [ "$(calls restart)" = 1 ]'
@@ -239,7 +236,7 @@ q set F-3 state=done
 
 # At ask, FileVault alone leaves the computer ready for a restart a person makes.
 config "Mon 06:30 UTC" ask
-checkout_says stopped 0 on
+checkout_says 0 on
 q add F-4; q set F-4 state=triaged branch=fix/F-4
 pj 2026-08-03T06:31:00Z; pj 2026-08-03T06:32:00Z
 check "DS-226 ask with FileVault on is ready to reboot, then log in" 'grep -q "\"ready to reboot\" is in the next check-in" <<< "$out" && grep -q "restart when it suits you, then log in (FileVault is on" <<< "$(digest 6)"'

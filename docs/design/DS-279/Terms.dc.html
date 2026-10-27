@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk terms</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+td,th{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid #3e4451}
+th{color:#dcdfe4;font-weight:700}
+</style>
+</helmet>
+<div style="width: 1400px; height: 1180px; box-sizing: border-box; padding: 64px; background: #282c34; color: #abb2bf; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; line-height: 18px; display: flex; flex-direction: column; gap: 16px">
+<div style="font-size: 24px; line-height: 32px; font-weight: 700; color: #dcdfe4">Every status word, where it means two things, and the one word to use</div>
+<div style="font-size: 14px; line-height: 20px; color: #9e9e9e">Rule: one word, one meaning, everywhere Ben reads it: desk-q, notes, the digest, Jira. Internal queue names can stay if the screen never shows them.</div>
+<table style="border-collapse: collapse; width: 100%">
+<thead><tr><th style="width: 150px">Word today</th><th style="width: 330px">What it means, and where</th><th style="width: 330px">Why it's unclear</th><th>Use instead</th></tr></thead>
+<tbody>
+<tr><td><b style="color: #dcdfe4">done</b></td><td>queue: the worker opened its PR · DONE column: merged · Jira Done: should be merged</td><td>Three meanings. DS-215 showed Done in Jira while #233 was still open</td><td><span style="color: #dcdfe4">✓ Done</span> = merged, and only that. Jira moves to Done on merge</td></tr>
+<tr><td><b style="color: #dcdfe4">parked</b></td><td>queue: waiting for your answer, or held behind another ticket</td><td>One stored word for "you act" and "it moves by itself"</td><td>Never on screen: <span style="color: #d08be3">◆ Needs you</span> or <span style="color: #e5c07b">· Waiting</span></td></tr>
+<tr><td><b style="color: #dcdfe4">blocked / stuck</b></td><td>desk-q BLOCKED column (stuck in code): held by a Jira ticket outside the batch with a question open</td><td>Only you can unblock it, so it is needs you under another name</td><td><span style="color: #d08be3">◆ Needs you</span> "blocked by DS-12, outside this batch: start anyway?"</td></tr>
+<tr><td><b style="color: #dcdfe4">waiting</b></td><td>desk-q: moves by itself · needs-you detail text: "waiting on you"</td><td>The same word for opposite things</td><td><span style="color: #e5c07b">· Waiting</span> only when it moves by itself. Needs-you text says "needs your answer"</td></tr>
+<tr><td><b style="color: #dcdfe4">held / release</b></td><td>held = waiting behind a ticket · "release it" = let it start</td><td>"Release" reads as shipping</td><td><span style="color: #e5c07b">· Waiting</span> · the command says "let it start"</td></tr>
+<tr><td><b style="color: #dcdfe4">queued / queue</b></td><td>queued: not triaged yet · the queue: every ticket in the batch · QUEUE DONE: when the batch finishes</td><td>Three meanings</td><td><span style="color: #61afef">○ Ready</span> for untriaged too, detail "triaging" · column: ALL DONE BY</td></tr>
+<tr><td><b style="color: #dcdfe4">failed</b></td><td>a worker gave up · a CI check failed · "fix failed"</td><td>A ticket and a check share the word, and only the first needs you</td><td><span style="color: #d08be3">◆ Needs you</span> "worker stopped: reason". "failed" only for checks</td></tr>
+<tr><td><b style="color: #dcdfe4">landing / merging</b></td><td>landing: PR open · "checks passed, merging" · here the merge also waits for you</td><td>Two words for one step. ◐ reads as halfway</td><td><span style="color: #56b6c2">▸ Merging</span> while checks run. Green and waiting for your OK: <span style="color: #d08be3">◆ Needs you</span> "merge it"</td></tr>
+<tr><td><b style="color: #dcdfe4">ready</b></td><td>desk-q: waiting for a worker · GitHub: ready for review (undraft)</td><td>Same word for a ticket and for a PR</td><td><span style="color: #61afef">○ Ready</span> for tickets only. For PRs say "undraft"</td></tr>
+<tr><td><b style="color: #dcdfe4">running</b></td><td>a worker · "checks running" · the supervisor</td><td>Only the first is a ticket state</td><td><span style="color: #98c379">● Running</span> for workers. Checks are "in progress", the supervisor is "on"</td></tr>
+<tr><td><b style="color: #dcdfe4">pass / passed</b></td><td>a supervisor pass · checks passed</td><td>"The last pass" sits next to "2 of 3 passed"</td><td>Checks keep "passed". The supervisor's run gets its own word (open, see below)</td></tr>
+</tbody>
+</table>
+<div style="font-size: 14px; line-height: 20px; color: #9e9e9e">Open: a word for one supervisor run (today "pass"). "Check-in" is taken by the 08:00 and 17:00 digest. Candidates: "round", "sweep".</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1400,"height":1180}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

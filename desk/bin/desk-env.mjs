@@ -33,8 +33,7 @@
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
-//   node desk-env.mjs mem <avail|used|rss|status>   status adds runner= and ladder= while the runner VM
-//                                             runs with a reservation in the machine profile
+//   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
 //                                             reason=, changed=, then DIR<TAB>CMD<TAB>FILES per suite to run
 //   node desk-env.mjs baseline typecheck|lint  run §4 Typecheck or Lint here; with §4 Baseline checks on and a
@@ -53,11 +52,9 @@
 //                                             an unattended batch parks on (STALLS), a dontAsk settings file
 //                                             (DONTASK); "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
-//   node desk-env.mjs machine propose [--runner]  print the sizes the rules propose, with the arithmetic;
-//                                             the runner is off by default; --runner sizes it on
-//   node desk-env.mjs machine write [--runner]    write ~/.config/desk/machine.md (only after the user confirms)
+//   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
+//   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
-//   node desk-env.mjs machine slot-fit <VM CPUs> <VM GB>   how many runner slots that VM runs, with the slot size
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -275,6 +272,7 @@ export const CONFIG_ROWS = Object.freeze({
   'branch-protection': { section: '4', row: 'Branch protection' },
   'advisory-checks': { section: '4', row: 'Advisory checks' },
   'flaky-checks': { section: '4', row: 'Known flaky checks' },
+  'operator-checks': { section: '4', row: "Checks workers can't fix" },
   'repo-merge-settings': { section: '4', row: 'Repo merge settings' },
   vercel: { section: '4', row: 'Vercel' },
   'staging-bypass': { section: '4', row: 'Staging bypass token location' },
@@ -286,6 +284,7 @@ export const CONFIG_ROWS = Object.freeze({
   'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
   'resume-killed': { section: '3b', row: 'Resume a killed worker (times)' },
   'disk-floor': { section: '3b', row: 'Free disk floor (GB)' },
+  'claim-release': { section: '3b', row: 'Release idle claims after (hours)' },
   'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
@@ -831,14 +830,7 @@ export function spawnGate(row = configValue('spawn-gate')) {
   const hold = num(/below\s*(\d+(?:\.\d+)?)/i) ?? num(/hold\s*(\d+(?:\.\d+)?)/i) ?? Math.min(4, start);
   const dropTo = num(/(?:drop to|drop)\s*(\d+)/i) ?? num(/(\d+)\s*below/i) ?? 1;
   const env = process.env.AUTOPILOT_MIN_AVAIL_GB;
-  // The machine's free-memory floor is shared with the runner: a repo may start higher, never lower.
-  return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : Math.max(start, memoryFloor()), hold, dropTo };
-}
-// The machine profile's runner-memory-floor-gb, or 8: no new runner slot or autopilot worker starts
-// that would leave `avail` under it (mem-turns.mjs). A value that is not a number above 0 reads as 8.
-export function memoryFloor(value = machineValue('runner-memory-floor-gb')) {
-  const n = Number(value);
-  return value != null && n > 0 ? n : 8;
+  return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : start, hold, dropTo };
 }
 
 // ---- ticket ids ------------------------------------------------------------------------------
@@ -921,57 +913,9 @@ export function rssGiB() {
     return out.split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0) * 1024 / GiB;
   } catch { return NaN; }
 }
-// The runner VM's reservation, which the autopilot ladder holds back from `avail`. Where the
-// desk-runner VM runs, its memory from the machine profile (`runner-memory-reserved-gb`) is a fixed
-// reservation: CI can fill it at any moment, so a worker spawned into it is spawned into memory
-// that is already promised. A VM's guest memory comes out of the Mac only as the guest touches it,
-// so what it has touched is already missing from `avail`; holding back the whole reservation on top
-// would count that part twice. Held back is the reservation less the VM's resident memory. Without
-// a running VM, or with no reservation in the profile, nothing is held back.
-// -> null | { reservedGiB, residentGiB, heldGiB }
-export function runnerReservation({ running, reservedGiB, residentGiB }) {
-  if (!running || !(reservedGiB > 0)) return null;
-  const resident = Number.isFinite(residentGiB) && residentGiB > 0 ? residentGiB : 0;
-  return { reservedGiB, residentGiB: resident, heldGiB: Math.max(0, reservedGiB - resident) };
-}
-const runnerVm = () => process.env.DESK_RUNNER_VM || 'desk-runner';
-// Whether the VM runs (`tart get`), and the resident memory of the process holding its disk image
-// open (the Virtualization framework's VM process). An unreadable size reads as 0 resident, so the
-// whole reservation is held back: a wrong read only ever delays a spawn.
-export function runnerState() {
-  const reservedGiB = Number(machineValue('runner-memory-reserved-gb'));
-  if (!(reservedGiB > 0)) return { running: false, reservedGiB: 0, residentGiB: 0 };
-  const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 };
-  let running = false;
-  try { running = JSON.parse(execFileSync('tart', ['get', runnerVm(), '--format', 'json'], quiet)).Running === true; } catch { running = false; }
-  if (!running) return { running, reservedGiB, residentGiB: 0 };
-  return { running, reservedGiB, residentGiB: vmResidentGiB() };
-}
-export function vmResidentGiB() {
-  const stub = Number(process.env.DESK_RUNNER_RESIDENT_GB);
-  if (process.env.DESK_RUNNER_RESIDENT_GB && stub >= 0) return stub; // tests
-  const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 };
-  try {
-    const disk = join(expandHome(process.env.TART_HOME ?? join(HOME, '.tart')), 'vms', runnerVm(), 'disk.img');
-    const pids = execFileSync('lsof', ['-t', disk], quiet).split('\n').map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
-    if (!pids.length) return 0;
-    const kb = execFileSync('ps', ['-o', 'rss=', '-p', pids.join(',')], quiet).split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0);
-    return (kb * 1024) / GiB;
-  } catch { return 0; }
-}
-// `avail` with the runner's reservation held back: what the ladder gates a spawn on.
-export function ladderMemory(avail = availableGiB(), state = runnerState()) {
-  const reservation = runnerReservation(state);
-  return { avail, reservation, gate: Math.max(0, avail - (reservation?.heldGiB ?? 0)) };
-}
-// The status-line segment for a ladderMemory() result, or '' with no reservation.
-export const runnerSegment = ({ reservation: r, gate }) => (r
-  ? ` runner=${r.reservedGiB.toFixed(1)}G reserved (${r.residentGiB.toFixed(1)}G resident, ${r.heldGiB.toFixed(1)}G held back) ladder=${gate.toFixed(1)}G`
-  : '');
 // The `mem status` line, which `queue.mjs watch` prints under its table too.
 export function memStatusLine() {
-  const l = ladderMemory();
-  return `vmmem=${usedGiB().toFixed(1)}G avail=${l.avail.toFixed(1)}G rss=${rssGiB().toFixed(1)}G${runnerSegment(l)}`;
+  return `vmmem=${usedGiB().toFixed(1)}G avail=${availableGiB().toFixed(1)}G rss=${rssGiB().toFixed(1)}G`;
 }
 
 export const memCeilingGiB = () => memoryCeiling().gb;
@@ -1349,7 +1293,7 @@ if (isMain) {
       case 'machine': {
         // The subcommand is always the first word, so a worker's `machine write` deny rule holds.
         const [sub, ...rest] = args;
-        const key = rest.find((a) => a !== '--runner');
+        const [key] = rest;
         const path = machineProfilePath();
         if (sub === 'get' || sub === 'why') {
           const v = sub === 'get' ? machineValue(String(key ?? '').toLowerCase()) : machineWhy(String(key ?? '').toLowerCase());
@@ -1357,36 +1301,13 @@ if (isMain) {
           console.log(v);
           break;
         }
-        if (sub === 'slot-fit') {
-          // <fit> <slot cpus> <slot GB> <reserve GB> <why>, tab-separated, for desk-runner.
-          const [vmCpus, vmGB] = rest.map(Number);
-          if (rest.length !== 2 || ![vmCpus, vmGB].every((n) => Number.isInteger(n) && n >= 0)) {
-            console.error('usage: desk-env.mjs machine slot-fit <VM CPUs> <VM memory GB>');
-            process.exit(2);
-          }
-          for (const k of ['runner-slot-cpus', 'runner-slot-memory-gb']) {
-            const v = machineValue(k);
-            if (v != null && !/^[1-9][0-9]*$/.test(v)) { console.error(`the machine profile's ${k} is '${v}', not a whole number above 0`); process.exit(2); }
-          }
-          const f = M.slotFit(vmCpus, vmGB, M.slotChosen(machineProfile()));
-          console.log([f.fit, f.cpus, f.memoryGB, f.reserveGB, f.why].join('\t'));
-          break;
-        }
-        if (sub === 'idle-minutes') {
-          const v = machineValue('runner-idle-minutes');
-          const idle = M.idleChosen(machineProfile());
-          if (v != null && idle === undefined) { console.error(`the machine profile's runner-idle-minutes is '${v}', not a number of minutes or off`); process.exit(2); }
-          console.log(idle ?? M.RULES.idleMinutes);
-          break;
-        }
         if (!['detect', 'propose', 'write'].includes(sub)) {
-          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>|slot-fit <VM CPUs> <VM GB>|idle-minutes');
+          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>');
           process.exit(2);
         }
         const hw = M.gather();
         const profile = machineProfile();
-        // The runner is off unless --runner asks for it or the profile already has one.
-        const proposal = M.propose(hw, { runner: M.runnerChosen(profile, rest.includes('--runner')), slot: M.slotChosen(profile), idle: M.idleChosen(profile) });
+        const proposal = M.propose(hw);
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }

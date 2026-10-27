@@ -20,8 +20,8 @@
 //   node maintenance.mjs step     one step now, outside a pass (the supervisor's idle tick); prints JSON
 //
 // Tests stand in for the clock and the commands: DESK_MAINT_NOW (ISO), DESK_BOOT_TIME (ISO or epoch
-// seconds), DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD, DESK_RUNNER_CMD and
-// DESK_RESTART_CMD (each run with sh -c, the runner command with its subcommand appended).
+// seconds), DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD and DESK_RESTART_CMD
+// (each run with sh -c).
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { uptime } from 'node:os';
@@ -178,7 +178,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
 
 // The reboot check's summary, and what stops an unattended restart: anything heavy still running (a
 // suite, a typecheck, a dev server: a session is behind it) and any worker running in another repo.
-// Uncommitted and unpushed work is on disk, so a restart keeps it; the runner is stopped first.
+// Uncommitted and unpushed work is on disk, so a restart keeps it.
 // FileVault on, or not readable, blocks it too: the restarted Mac waits at the disk unlock screen, so
 // no supervisor loads until someone logs in. That one is `loginWait` as well, since the computer is
 // otherwise ready for a restart a person makes.
@@ -198,10 +198,9 @@ export function rebootCheck({ selfQueue = null } = {}) {
     : fv === 'unknown' ? 'could not tell whether FileVault is on (fdesetup status failed or is missing), so it counts as on: after a restart nothing runs until someone logs in'
       : null;
   if (loginWait) blockers.push(loginWait);
-  return { summary, runner: field('runner'), keep: field('keep'), blockers, loginWait };
+  return { summary, blockers, loginWait };
 }
 
-const runner = (sub) => (process.env.DESK_RUNNER_CMD ? shell(`${process.env.DESK_RUNNER_CMD} ${sub}`) : run(join(E.binDir(), 'desk-runner'), [sub]));
 const restart = () => (process.env.DESK_RESTART_CMD
   ? shell(process.env.DESK_RESTART_CMD)
   : run('osascript', ['-e', 'tell application "System Events" to restart']));
@@ -374,13 +373,6 @@ function step(s, { dir, at, running, stop, selfQueue }) {
   const log = (text) => record(dir, at, text);
   const note = (text) => save({ notes: [...(s.notes ?? []), { at: at.toISOString(), text }] });
   const finish = (line) => { save({ phase: 'done', done_at: at.toISOString() }); log(`window done: ${line}`); lines.push(`maintenance: ${line}; spawning resumes`); return { hold: false, lines }; };
-  // The runner the window stopped is started again on every way out of a restart.
-  const runnerBack = (why) => {
-    if (!s.runner_was_up) return;
-    const up = runner('up');
-    log(`desk-runner up: ${up.ok ? lastLine(up.out) || 'ok' : said(up)}`);
-    if (!up.ok) note(`${why}, desk-runner up failed: ${said(up)}. Run desk-runner up`);
-  };
 
   if (s.phase === 'draining') {
     const limit = drainLimit(E.configValue('maintenance-drain'));
@@ -439,22 +431,11 @@ function step(s, { dir, at, running, stop, selfQueue }) {
     const key = E.permissionKey('machine-reboot');
     const c = s.check ?? { blockers: [] };
     if (perm === 'yes' && !c.blockers.length) {
-      if (c.runner === 'running' || c.keep === 'loaded') {
-        save({ runner_was_up: true });
-        const down = runner('down');
-        log(`desk-runner down: ${down.ok ? lastLine(down.out) || 'ok' : said(down)}`);
-        if (!down.ok) {
-          note(`not restarted: desk-runner down failed in the maintenance window (${said(down)})`);
-          runnerBack('after desk-runner down failed');
-          return finish('desk-runner down failed, so no restart');
-        }
-      }
       save({ phase: 'rebooting', restart_at: at.toISOString() });
       const r = restart();
       if (!r.ok) {
         log(`restart failed: ${said(r)}`);
         note(`not restarted: the restart command failed in the maintenance window (${said(r)})`);
-        runnerBack('after the restart failed');
         return finish('the restart command failed');
       }
       log('restarting the computer');
@@ -483,12 +464,10 @@ function step(s, { dir, at, running, stop, selfQueue }) {
   if (s.phase === 'rebooting') {
     const asked = Date.parse(s.restart_at);
     if (bootMs() > asked) {
-      runnerBack('after the maintenance restart');
       return finish(`restarted at ${stamp(new Date(bootMs()))}`);
     }
     if (at - asked > RESTART_GRACE_MS) {
       note(`the maintenance window asked the computer to restart at ${s.restart_at}, and it did not`);
-      runnerBack('after a restart that did not happen');
       return finish('the computer did not restart');
     }
     lines.push(`maintenance: restarting the computer, asked at ${s.restart_at}`);

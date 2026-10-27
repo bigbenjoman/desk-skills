@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Places each job in a repo's GitHub Actions workflows on the self-hosted runner (the desk-runner
-// arm64 Linux VM) or a GitHub-hosted one by a written rule, and lints workflows so no job that can
-// land on a self-hosted runner receives a secret. Read-only: it never writes a workflow.
+// Places each job in a repo's GitHub Actions workflows on a self-hosted runner (the repo's own arm64
+// Linux cloud runners) or a GitHub-hosted one by a written rule, and lints workflows so no job that
+// can land on a self-hosted runner receives a secret. Read-only: it never writes a workflow.
 //   node desk-ci.mjs classify [<workflow file or directory>...]   default .github/workflows
 //   node desk-ci.mjs ci-lint  [<workflow file or directory>...]   exits 1 on any finding
 // classify prints `<file>:<line>  <job>  <hosted|self-hosted>  <reason>` per job, the line being
@@ -180,7 +180,7 @@ function serviceHits(job) {
   return [];
 }
 
-// Images published for amd64 only, which the arm64 runner VM cannot run natively.
+// Images published for amd64 only, which an arm64 self-hosted runner cannot run natively.
 const AMD64_ONLY = [/^(docker\.io\/)?postgis\/postgis(:|$)/i, /^mcr\.microsoft\.com\/mssql\/server(:|$)/i];
 // Every line of a job's `container:` and `services:` blocks, with the image it names, if any.
 function imageLines(job) {

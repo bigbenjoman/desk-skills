@@ -120,7 +120,7 @@ done. Both are here, read by every run that reaches them:
   The profile's figure (`desk-env machine get memory-ceiling-gb`) is a hard limit across every repo:
   a row set above it reads as the machine's anyway. So when the row already holds a figure above the
   machine's, propose the machine's figure in its place and say why: "the machine profile limits
-  every repo to <machine> GB (memory less 8 for the OS and the runner VM's reservation), and a repo
+  every repo to <machine> GB (memory less 8 for the OS), and a repo
   row may be lower but never higher". A figure at or below the machine's stays as it is.
 
 **Then §3b** (five rounds): subagents without asking, autopilot worker concurrency, memory ceiling,

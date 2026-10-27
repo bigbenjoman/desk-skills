@@ -41,12 +41,13 @@ How to resume, by what was parked:
 | Parked on | Resume by |
 |---|---|
 | a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
-| triage lane C or D | **never requeued for a headless worker**: it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
+| triage lane C, or lane D parked on its design (only in Figma, or a canvas not on the base) | **never requeued for a headless worker** (a lane D whose canvas is then saved on the base is triaged and planned again, and runs): it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
 | a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload |
 | a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
-| a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C or D left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
+| a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C, or a lane D parked at triage on its design, left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
+| a ticket an interactive session works | park it with the session's id, never in free text: `queue.mjs park <TICKET> --claimed-by <session id>` (the `<id>.jsonl` under `~/.claude/projects`). Once that transcript has been still past §3b "Release idle claims after (hours)" (unset 12, `0` never) and the ticket's worktree is clean, a pass requeues it with its branch kept and pushes one notification; with uncommitted changes it stays claimed, and its park names the files once. A ticket already parked keeps its park's question under the claim, so a lane C, a lane D parked on its design, or a size or dependency-cycle park is never released to a worker; a held ticket or a spine cannot be claimed |
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when

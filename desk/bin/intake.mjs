@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
+import { designGap, needsPersonLane } from './batch-state.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -62,7 +63,7 @@ export const handedByIntake = (state) => Object.entries(readIntake(state).ticket
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 export function intakeReasons(r) {
   const out = [];
-  if (['C', 'D'].includes(r.lane)) out.push(`lane ${r.lane}: ${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
+  if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
   for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}`);
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);

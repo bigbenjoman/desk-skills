@@ -138,7 +138,7 @@ rec X-1 A '"size":"XL"'
 search A-1 C-1 D-1 L-1; out=$(intake)
 check "AC3: a lane C ticket is not admitted" '[ "$(qget tickets.C-1)" = undefined ]'
 check "AC3: it goes to the digest with its lane and reason" '[ "$(handed C-1)" = "handed: lane C: needs a plan" ]'
-check "AC3: so does lane D" '[ "$(qget tickets.D-1)" = undefined ] && [ "$(handed D-1)" = "handed: lane D: needs a plan" ]'
+check "AC3: so does lane D with no saved canvas, saying why" '[ "$(qget tickets.D-1)" = undefined ] && [ "$(handed D-1)" = "handed: lane D: its design was never read: re-run triage; needs a plan" ]'
 check "AC4: a blocking lint finding is not admitted, and goes to the digest with the finding" '[ "$(qget tickets.L-1)" = undefined ] && [ "$(handed L-1)" = "handed: lint (blocking): no acceptance criteria" ]'
 check "the report names each ticket handed on" 'grep -q "intake: handed C-1 to the digest: lane C: needs a plan" <<< "$out"'
 search Q-1 X-1; out=$(intake)
