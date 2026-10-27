@@ -990,10 +990,12 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   checks the register when it harvests the run. While the park stays put off, each pass reads its
   `pr-head` (the branch's head on origin) and `config:<row id>` inputs again, and asks the question
   as soon as one has changed; any other input is compared only when a session asks again.
-- **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` (`pr <n>
-  merged`, `pr <n> ready`, `ticket <KEY> done`, `variable <NAME> set` or `none`), or
+- **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
+  line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
+  `variable <NAME> set` for a repo Actions variable, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
-  `clears_when` (`clears-when.mjs`). Each pass checks it, and once it holds settles the park as
+  `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
+  left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
   `references/orchestrator-recovery.md` says, with no model: a lane C or D ticket stays for a
   person, one whose own PR merged is recorded done, any other is requeued. Each outcome, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.

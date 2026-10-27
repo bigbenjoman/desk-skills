@@ -364,6 +364,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const reaped = reapDecider(state, s);
   // The next tick is this agent's interval away, so the pass records it as its next.
   const every = Number(installedInterval(slug));
+  // An answer recorded while the pass runs is after it started, so it still ends the idle it reports.
+  const startedAt = new Date().toISOString();
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
@@ -420,7 +422,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // Idle is recorded only once its notification is out: until then the next interval passes again.
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
-    s.idle_at = new Date().toISOString();
+    s.idle_at = startedAt;
     out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked or failed`);
   }
   writeState(state, s);

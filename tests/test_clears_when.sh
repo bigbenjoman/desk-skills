@@ -89,7 +89,7 @@ out=$(node "$B/queue.mjs" clears-when C-1 "pr 41 merged" 2>&1); rc=$?
 check "queue.mjs clears-when refuses a ticket that is not parked" '[ $rc -ne 0 ] && grep -q "is not parked" <<< "$out"'
 
 # ---- AC4: lane C or D stays; AC6: a failed check or none leaves the park; AC7: VPL-555's case -------
-parked D-1 C "which of two layouts?" "ticket ABC-9 done"; jira ABC-9 Done done
+parked D-1 C "which of two layouts?" "ticket ABC-9 done"; jira ABC-9 Done "done"
 parked E-1 A "waiting on PR 77" "pr 77 merged"
 parked E-2 A "a product call" "none"
 parked E-3 A "waiting on ABC-404" "ticket ABC-404 done"
