@@ -411,12 +411,12 @@
         "path": "skills/docker-expert"
       },
       "pin": {
-        "commit": "e0bcf882d",
-        "date": "2026-10-14"
+        "commit": "bbfc66fe6",
+        "date": "2026-10-23"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 8 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 7). Installed via `npx ski",
-      "tree_sha256": "3a15a37feeeb061591740837246b8010a658781caa2cf16f00fd66ba5c94062b"
+      "tree_sha256": "7f96ee3d4a7e877c367d5171bdf772ca81b20296a5c6595811bb64746776d94a"
     },
     "fastapi-pro": {
       "source": {
