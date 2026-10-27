@@ -35,8 +35,10 @@
 //   - first, where config §3b "Intake query" names a query, runs standing intake (intake.mjs) at most
 //     every 15 minutes: it admits the new tickets a worker can take, starting a batch handed over at
 //     once if none is live, and its lines go into the tick's report;
-//   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes:
-//     a new batch, or a ticket admitted or requeued into this one. Each idle tick still runs the
+//   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes
+//     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
+//     or, with anything parked or failed, DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch
+//     went idle, so a pass sees what cleared a park outside the queue. Each idle tick still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window on (maintenance.mjs step).
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
@@ -60,6 +62,9 @@ const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
+// How long an idle batch with anything parked or failed goes without a pass: each pass checks what
+// clears its parks, and is script-only.
+const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
 // Location roots an install passes on to the agent, so the tick reads the same config and scripts.
 const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
 
@@ -264,12 +269,20 @@ function interval() {
     }
     return;
   }
-  // An answer to an item handed on leaves its ticket parked, so it does not change the fingerprint:
-  // it ends idle by itself, so a pass lists it and a decider can act on the answer.
-  const answeredNow = Object.values(readHanded(state)).some((e) => answered(state, e));
+  // An answer leaves its ticket parked, so it does not change the fingerprint: an answer to an item
+  // handed on, or to any park since the batch went idle, ends idle by itself, so a pass lists it and a
+  // decider can act on the answer.
+  const idleAt = Date.parse(s.idle_at ?? '') || 0;
+  const answeredNow = Object.values(readHanded(state)).some((e) => answered(state, e))
+    || Object.values(q.tickets ?? {}).some((t) => t.state === 'parked' && !isHeld(t)
+      && answered(state, { ticket: t.key, at: new Date(Math.max(idleAt, Date.parse(t.park?.since ?? '') || 0)).toISOString() }));
   // So does an interactive close-out's note: only a pass turns it into a done ticket.
   const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
-  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut) {
+  // And, for a batch with anything parked or failed, the recheck interval passing: what clears a park
+  // outside the queue (a PR merged by hand, a variable set) is only seen by a pass.
+  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed')
+    && Date.now() - idleAt >= IDLE_RECHECK_MS;
+  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck) {
     intakeAlone();
     // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
@@ -351,6 +364,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const reaped = reapDecider(state, s);
   // The next tick is this agent's interval away, so the pass records it as its next.
   const every = Number(installedInterval(slug));
+  // An answer recorded while the pass runs is after it started, so it still ends the idle it reports.
+  const startedAt = new Date().toISOString();
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
@@ -407,7 +422,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // Idle is recorded only once its notification is out: until then the next interval passes again.
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no pass and no merge driver until a new batch starts or a ticket is added to this one`);
+    s.idle_at = startedAt;
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked or failed`);
   }
   writeState(state, s);
   log(out);
@@ -489,7 +505,9 @@ function reapDecider(state, s, now = new Date()) {
   let q = {};
   try { q = readQueue(E.queueFile()); } catch { /* every park reads as still parked */ }
   const o = outcome(rec, result, q);
-  handItems(state, o.handed, now);
+  // Handed on from the session's start, to the second answers are stamped at: an answer given while it
+  // ran never reached it, so it still counts as one since the hand-over and reaches the next session.
+  handItems(state, o.handed, new Date(Math.floor((Date.parse(rec.started) || now.getTime()) / 1000) * 1000));
   noteOutcome(state, o, now);
   s.decider = null;
   s.settled = o.settled.map((x) => x.item.id);

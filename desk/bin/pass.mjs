@@ -28,6 +28,7 @@ import { usageLimit, resetText } from './usage-limit.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
+import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate } from './gate.mjs';
 import { undraftCall } from './undraft.mjs';
@@ -186,7 +187,7 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [] };
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -326,6 +327,21 @@ function againstRegister(t, question, log) {
   if (!p.ok) report.waiting.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
   const inputs = p.ok ? p.inputs : {};
   return { inputs, ...lookup(REGISTER, { question, inputs }) };
+}
+
+// What clears a worker's park, from the `AUTOPILOT_PARK_CLEARS_WHEN:` after its last park (clears-when.mjs).
+// None given, or one that does not read, is none: the park waits for a person.
+function clearsWhenOf(t, log) {
+  let raw = null;
+  try {
+    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
+      if (k === 'AUTOPILOT_PARK') raw = null;
+      else if (k === 'AUTOPILOT_PARK_CLEARS_WHEN') raw = v;
+    }
+  } catch { /* no log, no condition */ }
+  const p = parseClearsWhen(raw);
+  if (!p.ok) report.clears.push(`${t.key}: unreadable clears-when (${p.why}), recorded as none`);
+  return p.ok ? p.cond : { kind: 'none' };
 }
 
 // A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
@@ -557,7 +573,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // answer given before this pass saw the park still counts as its answer.
     q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
     const reg = againstRegister(t, park.trim(), log);
-    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`);
+    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(clearsWhenOf(t, log))}`);
     if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
     else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
     logDecisions(t, log, null);
@@ -658,6 +674,66 @@ for (const c of readCloseouts(STATE)) {
     report.done.push(`${t.key}: ${how}`);
   }
   try { unlinkSync(c.file); } catch { /* gone */ }
+}
+
+// ---- parks whose condition cleared ---------------------------------------------
+// A park that recorded what clears it (clears-when.mjs) is checked each pass, and settled once that
+// holds, as the recovery rules say and with no model: left for a person on lane C or D, closed out
+// where the ticket's own PR merged, requeued otherwise. A check that cannot run leaves the park as it is.
+const clearsCache = new Map();
+const cached = (key, read) => {
+  if (!clearsCache.has(key)) { try { clearsCache.set(key, { v: read() }); } catch (e) { clearsCache.set(key, { e }); } }
+  const c = clearsCache.get(key);
+  if (c.e) throw c.e;
+  return c.v;
+};
+const readOrThrow = (what, cmd, args) => {
+  const r = shOut(cmd, args);
+  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
+  return r.out;
+};
+const clearsRead = {
+  pr: (n) => cached(`pr:${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,isDraft']))),
+  ticket: (key) => cached(`ticket:${key}`, () => {
+    const c = JSON.parse(readOrThrow(`desk-jira get ${key}`, 'desk-jira', ['get', key, '--json']))?.fields?.status?.statusCategory?.key;
+    if (!c) throw new Error(`desk-jira get ${key}: no status category`);
+    return c;
+  }),
+  variable: (name) => cached('variables', () => JSON.parse(readOrThrow('gh variable list', 'gh', ['variable', 'list', '--repo', GH_REPO, '--json', 'name'])))
+    .some((v) => v?.name === name),
+};
+// The ticket's own PR, if it merged: the one it recorded, else a merged PR from its branch.
+function ownMergedPr(t) {
+  const known = [...new Set([t.result?.pr, t.draft_pr].filter((n) => n != null).map(Number))];
+  for (const n of known) if (clearsRead.pr(n).state === 'MERGED') return n;
+  if (known.length || !t.branch) return null;
+  const n = readOrThrow(`gh pr list --head ${t.branch}`, 'gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'merged', '--json', 'number', '-q', '.[0].number']);
+  return /^\d+$/.test(n) ? Number(n) : null;
+}
+for (const t of Object.values(queue().tickets)) {
+  const c = t.park?.clears_when;
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || !c || c.kind === 'none') continue;
+  const what = describeCond(c);
+  const r = checkCond(c, clearsRead);
+  if (r.error) { report.clears.push(`${t.key}: could not check "${what}" (${r.error}): left parked`); continue; }
+  if (!r.holds) continue;
+  if (['C', 'D'].includes(t.lane)) {
+    report.clears.push(`${t.key}: "${what}" holds, but it is lane ${t.lane}: left parked for a person, never requeued for a headless worker`);
+    continue;
+  }
+  let own;
+  try { own = ownMergedPr(t); } catch (e) {
+    report.clears.push(`${t.key}: "${what}" holds, but whether its own PR merged could not be read (${e.message}): left parked`);
+    continue;
+  }
+  if (own != null) {
+    const before = report.failed.length;
+    q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own} merged`, `result.pr=${own}`);
+    if (report.failed.length === before) report.clears.push(`${t.key}: "${what}" holds and its PR #${own} merged: recorded done`);
+  } else {
+    const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+    report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
+  }
 }
 
 // ---- maintenance window ------------------------------------------------------
@@ -1711,6 +1787,7 @@ for (const t of Object.values(queue().tickets)) {
   report.parked.push(`${t.key}: ${t.park.question} — ${lookup(REGISTER, { question: t.park.question, inputs: now }).line}`);
 }
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
+if (report.clears.length) out.push(`clears-when:\n  ${report.clears.join('\n  ')}`);
 if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 

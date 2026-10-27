@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { isHeld, spinePark, waitingOnMerge, lanePark, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
@@ -247,7 +248,7 @@ function requeue(q, key) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged'];
 
 try {
 if (WRITES.includes(cmd)) lock();
@@ -428,6 +429,21 @@ switch (cmd) {
     t.park = { question: rest.join(' '), since: new Date().toISOString() };
     save(q);
     console.log(`${key} parked`);
+    break;
+  }
+
+  // What clears a parked ticket's park (clears-when.mjs), so a pass can settle it without a model.
+  case 'clears-when': {
+    const [key, ...rest] = args;
+    if (!key || !rest.length) throw new Error(`usage: queue.mjs clears-when <TICKET> <${CLEARS_WHEN_FORMS}>`);
+    const t = ticket(q, key);
+    if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked for its own reason (state ${t.state}), so it has no park to clear`);
+    const p = parseClearsWhen(rest.join(' '));
+    if (!p.ok) throw new Error(p.why);
+    t.park.clears_when = p.cond;
+    t.updated_at = new Date().toISOString();
+    save(q);
+    console.log(`${key}: its park clears when ${describeCond(p.cond)}`);
     break;
   }
 
@@ -655,7 +671,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

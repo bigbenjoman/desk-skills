@@ -94,7 +94,8 @@ still parks (section 2). Where `autopilot-judgement` is not `yes`, product, desi
 park as before.
 
 **Check a step before asking if it was done**, and after a park print
-`AUTOPILOT_PARK_INPUTS: {…}`: `desk-autopilot` *Ask or take* says how.
+`AUTOPILOT_PARK_INPUTS: {…}`, plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` where a script can read
+what settles it: `desk-autopilot` *Ask or take* says how.
 
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 

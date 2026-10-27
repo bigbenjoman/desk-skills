@@ -301,6 +301,34 @@ queue true '{}' "$DONE" b2
 out=$(tick)
 check "a new batch runs passes again" '[ "$(count "$T/pass.calls")" = 5 ]'
 
+# ---- DS-269: an idle batch rechecks on a timer, and any answer to a park wakes it -------------------
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+: > "$T/pass.calls"
+out=$(tick); out=$(tick)
+check "DS-269 an idle batch with a failed ticket runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+# The first idle is 4s old by the recheck, so a 3s interval runs a pass after it only if that pass
+# did not record the idle again.
+sleep 4
+out=$(DESK_IDLE_RECHECK_MS=1 tick)
+check "DS-269 AC1 once the interval has passed, the next tick runs a pass anyway" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "a park is answered, or 30 minutes pass with anything parked or failed" "$LOG"'
+out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+check "DS-269 AC1 that pass starts the interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}}}' b3
+out=$(tick); out=$(DESK_IDLE_RECHECK_MS=1 tick)
+check "DS-269 AC1 a batch with nothing parked or failed still runs none" '[ "$(count "$T/pass.calls")" = 3 ]'
+queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"P":{"key":"P","state":"parked","lane":"A","park":{"question":"which colour?","since":"2020-01-01T09:00:00.000Z"}}}' b4
+mkdir -p "$T/state/briefings"
+printf '# Briefing for P\n\n## Answer from the user (2020-01-01T09:30:00Z)\n\nan answer the last pass already had\n' > "$T/state/briefings/P.md"
+out=$(tick); out=$(tick)
+check "DS-269 AC5 an answer older than the idle wakes nothing" '[ "$(count "$T/pass.calls")" = 4 ]'
+sleep 1
+printf '\n## Answer from the user (%s)\n\nblue\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$T/state/briefings/P.md"
+out=$(tick)
+check "DS-269 AC5 an answer to a park never handed on ends the idle: a pass runs" '[ "$(count "$T/pass.calls")" = 5 ]'
+out=$(tick)
+check "DS-269 AC5 once a pass has run, the same answer wakes it no more" '[ "$(count "$T/pass.calls")" = 5 ]'
+queue true '{}' "$DONE" b5
+
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)
