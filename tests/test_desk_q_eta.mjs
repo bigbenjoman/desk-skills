@@ -203,6 +203,8 @@ t('DS-161 AC1: the running and ready rows carry a start and a ship time', [/^ {2
 t('DS-161 AC1: when is an alias of ships', cli('when', 'desk-skills', '--plain').stdout.split('\n').filter((l) => /^ {2}DS-\d+ /.test(l)).length, 4);
 
 Object.assign(process.env, zenv);
+delete process.env.COLORFGBG;
+delete process.env.COLORTERM;
 const Q = await import(DESK_Q);
 const { forecast, when } = await import('../desk/bin/desk-q-eta.mjs');
 const alpha = Q.loadRepos(FIXED).find((r) => r.name === 'alpha');
@@ -529,7 +531,7 @@ const sep = sepRaw.replace(ANSI_ETA, '').split('\r\n');
 const sepNote = sep.findIndex((l) => l.startsWith('note  ▲ stalledep')), sepRow = sep.findIndex((l) => /^[ ›] {1,2}EP-5 .*no date while passes are stopped$/.test(l));
 t('DS-184 AC6 (DS-218 AC10): and Epics lists its epics undated, then the one note', [sepRow >= 0, sepNote > sepRow, sep.filter((l) => l.includes('passes stopped 20m ago')).length], [true, true, 1]);
 t('DS-218 AC10: on Epics, "no date while passes are stopped" is grey, and the note\'s tag amber with its fix bold',
-  [sepRaw.includes('\x1b[38;5;247mno date while passes are stopped\x1b[39m'), sepRaw.includes('\x1b[33m▲ stalledep'), sepRaw.includes('\x1b[1mRun /desk-autopilot in stalledep.\x1b[22m'), /\x1b\[35mno date/.test(sepRaw), sep.filter((l) => l.startsWith('key ')).length],
+  [sepRaw.includes('\x1b[38;5;247mno date while passes are stopped\x1b[39m'), sepRaw.includes('\x1b[38;5;180m▲ stalledep'), sepRaw.includes('\x1b[1mRun /desk-autopilot in stalledep.\x1b[22m'), /\x1b\[38;5;176mno date/.test(sepRaw), sep.filter((l) => l.startsWith('key ')).length],
   [true, true, true, false, 1]);
 
 // AC7: at a width narrower than the note, it wraps at word boundaries; AC8: with no width it is one line.
