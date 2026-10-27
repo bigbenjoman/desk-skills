@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
+import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -28,6 +29,7 @@ export function deciderItems(v, q = {}) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => ({
     id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
+    since: tickets[p.key]?.park?.since ?? null,
   }));
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
@@ -67,10 +69,16 @@ export function answers(state, entry) {
 export const answered = (state, entry) => answers(state, entry).length > 0;
 
 // Items a session may be started for: none handed on and still unanswered. One answered since it was
-// handed on carries those answers ([{at, text}]), so the session acts on them.
-export const freshItems = (state, items, handed = readHanded(state)) => items
-  .filter((i) => !handed[i.id] || answered(state, handed[i.id]))
-  .map((i) => (handed[i.id] ? { ...i, answers: answers(state, handed[i.id]) } : i));
+// handed on carries those answers ([{at, text}]), so the session acts on them, and so does a park
+// never handed on that was answered since it parked.
+export function freshItems(state, items, handed = readHanded(state)) {
+  return items
+    .filter((i) => !handed[i.id] || answered(state, handed[i.id]))
+    .map((i) => {
+      const got = handed[i.id] ? answers(state, handed[i.id]) : i.kind === 'parked' && i.since ? answers(state, { ticket: i.ticket, at: i.since }) : [];
+      return got.length ? { ...i, answers: got } : i;
+    });
+}
 
 // Records items handed on and returns the ones newly recorded. One already handed and still
 // unanswered keeps its time, so a later answer still counts; one answered since is handed again from now.
@@ -102,6 +110,7 @@ export function deciderSettings({ bin, state }) {
     permissions: {
       allow: [
         `Bash(node ${join(bin, 'queue.mjs')} requeue:*)`,
+        `Bash(node ${join(bin, 'queue.mjs')} clears-when:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} render)`,
         `Bash(node ${join(bin, 'answer.mjs')}:*)`,
         'Bash(desk-jira get:*)',
@@ -119,7 +128,7 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...answerLines(i)]).join('\n');
   // Only when an item has answers, so a prompt without any reads as it always has.
   const onAnswers = items.some((i) => i.answers?.length) ? [
-    '- an item with an answer under it was handed on and the person has answered it since: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B or E, requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+    '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B or E, requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
   ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
@@ -128,6 +137,7 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B or E: \`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
     '- never requeue a lane C or D park, never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
+    `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
     '',
     '## The items',

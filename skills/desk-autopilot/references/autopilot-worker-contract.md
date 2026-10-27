@@ -96,6 +96,12 @@ park as before.
 **Check a step before asking if it was done**, and after a park print
 `AUTOPILOT_PARK_INPUTS: {…}`: `desk-autopilot` *Ask or take* says how.
 
+**Say what clears the park, when a script can read it**: on the line after it, print
+`AUTOPILOT_PARK_CLEARS_WHEN: <condition>`, one of `pr <n> merged`, `pr <n> ready` (out of draft),
+`ticket <KEY> done`, `variable <NAME> set` (a repo Actions variable) or `none`. A pass checks it and
+settles the park once it holds, with no model and no person. Name the one fact the park waits on,
+never a guess; leave it out (or `none`) when only a person can settle it.
+
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
 1. **Print the question**, at the start of a line and never inside a code fence:
