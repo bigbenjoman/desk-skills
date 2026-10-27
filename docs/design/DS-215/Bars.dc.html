@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Usage bar thickness</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13px;line-height:18px;color:#abb2bf;white-space:pre}
+.g{color:#9e9e9e}.b{color:#dcdfe4;font-weight:700}.gr{color:#98c379}.am{color:#e5c07b}.tk{color:#4e4e4e}
+.ln{height:18px;white-space:pre}
+</style>
+</helmet>
+<div style="width: 880px; height: 420px; box-sizing: border-box; background: #282c34; padding: 40px 34px">
+<div class="t">
+<div class="ln"><span class="b">Now      █ full block</span></div>
+<div class="ln"><span class="g">Claude usage  5h </span><span class="gr">█</span><span class="tk">█████████</span><span class="gr"> 8%</span> 15:20<span class="g"> · 7d </span><span class="am">███████</span><span class="tk">███</span><span class="am"> 69%</span> Sun 15:00</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="b">A        ▄ lower half block</span></div>
+<div class="ln"><span class="g">Claude usage  5h </span><span class="gr">▄</span><span class="tk">▄▄▄▄▄▄▄▄▄</span><span class="gr"> 8%</span> 15:20<span class="g"> · 7d </span><span class="am">▄▄▄▄▄▄▄</span><span class="tk">▄▄▄</span><span class="am"> 69%</span> Sun 15:00</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="b">B        ━ heavy line  (recommended)</span></div>
+<div class="ln"><span class="g">Claude usage  5h </span><span class="gr">━</span><span class="tk">━━━━━━━━━</span><span class="gr"> 8%</span> 15:20<span class="g"> · 7d </span><span class="am">━━━━━━━</span><span class="tk">━━━</span><span class="am"> 69%</span> Sun 15:00</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="b">C        ─ light line</span></div>
+<div class="ln"><span class="g">Claude usage  5h </span><span class="gr">─</span><span class="tk">─────────</span><span class="gr"> 8%</span> 15:20<span class="g"> · 7d </span><span class="am">───────</span><span class="tk">───</span><span class="am"> 69%</span> Sun 15:00</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="b">B, with weekly pace holding a repo on screen</span></div>
+<div class="ln"><span class="g">Claude usage  5h </span><span class="gr">━</span><span class="tk">━━━━━━━━━</span><span class="gr"> 8%</span> 15:20<span class="g"> · 7d </span><span class="am">━━━━━━━</span><span class="tk">━━━</span><span class="am"> 69%</span> Sun 15:00<span class="am">  ▲ pranicuk ahead of pace: no new workers until it slows</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":420}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
