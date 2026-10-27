@@ -1842,14 +1842,23 @@ function baseGate(qx) {
   sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`], { tolerant: true });
   const head = sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
   const moved = !!(g?.sha && head && g.sha !== head);
-  // A ready promotion PR holds whatever has merged into the base since, so once the base moves past
-  // the sha its gate passed on, it goes back to draft until the next slice's gate passes.
-  if (g?.state === 'passed' && g.ready && moved && g.pr != null && !DRY) {
-    const r = shOut('gh', ['pr', 'ready', String(g.pr), '--repo', GH_REPO, '--undo']);
-    g = { ...g, ready: false, redrafted: r.ok, note: r.ok ? null : `PR #${g.pr} could not go back to draft (${r.out.split('\n').pop()}): gh pr ready ${g.pr} --repo ${GH_REPO} --undo` };
-    q('set-batch', `gate=${JSON.stringify(g)}`);
+  // A promotion PR holds whatever has merged into the base, so once a child no gate covered merges, or
+  // a gate fails, it is put back to draft until the next slice's gate passes, however it left draft
+  // (the gate, or the person). A refused undo is reported and tried again next pass.
+  let undoFailed = false;
+  if (g && g.pr != null && !g.redrafted && ((g.state === 'passed' && uncovered.length) || g.state === 'failed') && !DRY) {
+    let v = null;
+    try { v = JSON.parse(sh('gh', ['pr', 'view', String(g.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* reported below */ }
+    const r = !v ? { ok: false, out: 'it could not be read' } : v.state !== 'OPEN' || v.isDraft ? { ok: true } : shOut('gh', ['pr', 'ready', String(g.pr), '--repo', GH_REPO, '--undo']);
+    if (r.ok) {
+      g = { ...g, ready: false, redrafted: true, note: null };
+      q('set-batch', `gate=${JSON.stringify(g)}`);
+    } else {
+      undoFailed = true;
+      report.waiting.push(`BASE GATE: promotion PR #${g.pr} holds ${g.state === 'failed' ? 'a base whose gate failed' : `${uncovered.map((t) => t.key).join(', ')}, which no gate has covered`}, and could not go back to draft (${r.out.split('\n').pop()}): gh pr ready ${g.pr} --repo ${GH_REPO} --undo. The next pass tries again`);
+    }
   }
-  const outside =() => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
+  const outside = () => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
   if (!g || (moved && (g.state === 'failed' || due))) {
     if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
     const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };
@@ -1872,11 +1881,11 @@ function baseGate(qx) {
     const link = qx.promotion?.url ?? (g.pr != null ? `https://github.com/${GH_REPO}/pull/${g.pr}` : null);
     if (g.pr == null) {
       report.waiting.push(`BASE GATE: passed on ${at}, but the batch has no promotion PR to mark ready (${qx.promotion?.why ?? 'none was recorded'}): open one from ${BASE} to ${SOURCE}`);
-    } else if (g.ready) {
+    } else if (g.ready && !undoFailed) {
       out.push(`BASE GATE: passed on ${at}: every acceptance spec, Typecheck, Lint and Unit tests. Promotion PR #${g.pr} is ready for review: ${link} (merging it is yours)`);
     } else if (g.redrafted) {
-      out.push(`BASE GATE: passed on ${at}, and ${BASE} has moved since, so promotion PR #${g.pr} is back in draft until the next slice's gate passes: ${link}`);
-    } else {
+      out.push(`BASE GATE: passed on ${at}, and ${uncovered.length} child(ren) no gate has covered merged into ${BASE} since, so promotion PR #${g.pr} is in draft until the next slice's gate passes: ${link}`);
+    } else if (!undoFailed) {
       report.waiting.push(`BASE GATE: passed on ${at}, but promotion PR #${g.pr} is still draft: ${g.note ?? 'it was not marked ready'}. ${link}`);
     }
     // The epic's close-out follows the last slice only.
@@ -1888,7 +1897,7 @@ function baseGate(qx) {
     }
   } else {
     for (const f of g.failures ?? []) report.waiting.push(`BASE GATE: ${f}`);
-    report.waiting.push(`BASE GATE: failed on ${at}${g.pr != null ? `, so promotion PR #${g.pr} stays draft` : ''}. Fix it on ${BASE}: the gate runs again once ${BASE} moves, or now with queue.mjs set-batch gate=null`);
+    report.waiting.push(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}. Fix it on ${BASE}: the gate runs again once ${BASE} moves, or now with queue.mjs set-batch gate=null`);
   }
   return waits;
 }

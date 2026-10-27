@@ -194,9 +194,12 @@ if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH' && a[3].includes('/issue
 if (a[0] === 'pr' && a[1] === 'view') {
   let s = 'OPEN'; try { s = fs.readFileSync('$T/pr/' + a[2], 'utf8').trim(); } catch {}
   let m; try { m = fs.readFileSync('$T/pr/' + a[2] + '.merged_at', 'utf8').trim(); } catch {}
-  console.log(a.includes('--json') && !a.includes('--jq') ? JSON.stringify({ state: s, url: 'https://github.com/acme/widgets/pull/' + a[2], statusCheckRollup: [], mergedAt: m }) : s);
+  console.log(a.includes('--json') && !a.includes('--jq') ? JSON.stringify({ state: s, url: 'https://github.com/acme/widgets/pull/' + a[2], statusCheckRollup: [], mergedAt: m, isDraft: fs.existsSync('$T/pr/' + a[2] + '.draft') ? true : fs.existsSync('$T/pr/' + a[2] + '.ready') ? false : undefined }) : s);
 }
-if (a[0] === 'pr' && a[1] === 'create') { let n = '200'; try { n = fs.readFileSync('$T/pr/next', 'utf8').trim(); } catch {} console.log('https://github.com/acme/widgets/pull/' + n); }
+// A PR opened as a draft, or marked ready, says so; one this stub never opened reads as before.
+const mark = (n, k) => { for (const x of ['draft', 'ready']) fs.rmSync('$T/pr/' + n + '.' + x, { force: true }); fs.writeFileSync('$T/pr/' + n + '.' + k, ''); };
+if (a[0] === 'pr' && a[1] === 'ready') mark(a[2], a.includes('--undo') ? 'draft' : 'ready');
+if (a[0] === 'pr' && a[1] === 'create') { let n = '200'; try { n = fs.readFileSync('$T/pr/next', 'utf8').trim(); } catch {} if (a.includes('--draft')) mark(n, 'draft'); console.log('https://github.com/acme/widgets/pull/' + n); }
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
 # The bodies of PR #200's ledger comments, and how many there are.

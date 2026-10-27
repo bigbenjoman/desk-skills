@@ -617,10 +617,12 @@ the end of the batch:
 - **Passed** (every spec and check passed, and no spec under the acceptance directory is still
   marked expected-fail or skipped): the promotion PR is marked ready (§3 `pr-ready`; otherwise
   `WAITING ON YOU` says to undraft it) and the report gives its link. Merging it is the person's.
-  Only the last slice's pass offers the `close-out:` line. Once the base moves past the commit a
-  ready promotion PR's gate passed on, the pass puts the PR back in draft (`gh pr ready --undo`)
-  until the next slice's gate passes, so a ready PR never holds children no gate has covered.
-- **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft, while children keep
+  Only the last slice's pass offers the `close-out:` line. Once a child no gate has covered merges
+  into the base, the pass puts the PR back in draft (`gh pr ready --undo`), whoever undrafted it,
+  until the next slice's gate passes, so a ready PR never holds an untested child. A refused undo is
+  under `WAITING ON YOU` and tried again each pass.
+- **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft (put back, as above, if
+  it had left draft), while children keep
   spawning and merging into the base. The fix goes onto the base; the gate runs again on the first
   pass after the base moves (or at once after `queue.mjs set-batch gate=null`).
 
