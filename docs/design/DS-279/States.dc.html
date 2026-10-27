@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PR state model</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#1d1f21}
+a{color:#8abeb7}a:hover{color:#b6e0da}
+</style>
+</helmet>
+<div style="width: 1400px; height: 1040px; box-sizing: border-box; background: #1d1f21; color: #c5c8c6; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; line-height: 21px; padding: 40px 48px; display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-size: 30px; line-height: 38px; color: #eaeaea; font-weight: 700">An open PR is always in one of three states</h1>
+<p style="margin: 0; color: #8a9199">Every pass reclassifies each PR, so a row's state is always the most recent pass's reading, and never a leftover label.</p>
+</div>
+
+<div style="display: flex; align-items: stretch; gap: 10px">
+<div style="flex: 1; border: 1px solid #3a3f45; padding: 12px; display: flex; flex-direction: column; gap: 4px"><span style="color: #8a9199">worker done</span><span style="color: #eaeaea">PR opened, ready</span></div>
+<div style="align-self: center; color: #8a9199">→</div>
+<div style="flex: 1.2; border: 2px solid #8abeb7; padding: 12px; display: flex; flex-direction: column; gap: 4px"><span style="color: #8abeb7; font-weight: 700">◐ merging</span><span>checks run</span></div>
+<div style="align-self: center; color: #8a9199">→</div>
+<div style="flex: 1.4; border: 2px solid #8abeb7; padding: 12px; display: flex; flex-direction: column; gap: 4px"><span style="color: #8abeb7; font-weight: 700">◐ merging</span><span>red: driver reruns 1, 2</span><span style="color: #8a9199">the check is named</span></div>
+<div style="align-self: center; color: #8a9199">→</div>
+<div style="flex: 1.2; border: 2px solid #de935f; padding: 12px; display: flex; flex-direction: column; gap: 4px"><span style="color: #de935f; font-weight: 700">↻ fixing</span><span>try 1 of 2</span></div>
+<div style="align-self: center; color: #8a9199">→</div>
+<div style="flex: 1.2; border: 2px solid #de935f; padding: 12px; display: flex; flex-direction: column; gap: 4px"><span style="color: #de935f; font-weight: 700">↻ fixing</span><span>try 2 of 2</span></div>
+<div style="align-self: center; color: #8a9199">→</div>
+<div style="flex: 1.4; border: 2px solid #b294bb; padding: 12px; display: flex; flex-direction: column; gap: 4px"><span style="color: #b294bb; font-weight: 700">◆ needs you</span><span>still red after 2 fixes</span><span style="color: #8a9199">goes into the digest</span></div>
+</div>
+<div style="display: flex; gap: 10px; margin-top: -16px; color: #8a9199"><span style="color: #b5bd68">✓ green at any point →</span> held one loop at the same head, then merged by the driver. A pushed fix sends the PR back to ◐ merging at the new head.</div>
+
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 32px; row-gap: 6px">
+<div style="color: #eaeaea; font-weight: 700; grid-column: 1 / -1; margin-bottom: 4px">Shortcuts: a PR can skip straight to a state</div>
+<div><span style="color: #de935f">↻</span> conflicts with main → fixing <span style="color: #8a9199">(if it's only behind, the driver updates it and it stays ◐)</span></div>
+<div><span style="color: #b294bb">◆</span> red only on an operator-only check → needs you, at once, with the command</div>
+<div><span style="color: #de935f">↻</span> review has a P0 or P1 → fixing</div>
+<div><span style="color: #b294bb">◆</span> draft whose verdict can't be read → needs you: set §4 Clean review verdict</div>
+<div><span style="color: #8abeb7">◐</span> draft with a clean verdict → the pass undrafts it → merging</div>
+<div><span style="color: #b294bb">◆</span> merge not approved, held, or no driver running → needs you: merge it</div>
+<div><span style="color: #8abeb7">◐</span> red only on a waived §4 known-flaky check → merging</div>
+<div><span style="color: #f0c674">▲</span> merging with no change for 2h → amber age, and it goes into the digest</div>
+</div>
+
+<div style="display: flex; flex-direction: column; border-top: 1px solid #3a3f45">
+<div style="display: grid; grid-template-columns: 13ch 15ch 34ch 26ch 1fr; column-gap: 20px; padding: 10px 0; color: #eaeaea; font-weight: 700; border-bottom: 1px solid #3a3f45"><span>STATE</span><span>WHO MOVES IT</span><span>ENTERS WHEN</span><span>LEAVES WHEN</span><span>WHAT IT NEEDS (copy)</span></div>
+<div style="display: grid; grid-template-columns: 13ch 15ch 34ch 26ch 1fr; column-gap: 20px; padding: 12px 0; border-bottom: 1px solid #3a3f45">
+<span style="color: #8abeb7; font-weight: 700">◐ merging</span>
+<span>merge driver</span>
+<span>ready, no conflict, merge allowed and a driver up; checks running, green, or red within the 2 reruns</span>
+<span>merged → done · red after reruns, or a conflict → fixing</span>
+<span style="display: flex; flex-direction: column; gap: 2px"><span>all 23 checks passed · merges at 11:37</span><span>Backend tests running 4m · 18 of 21 done</span><span><span style="color: #cc6666">Lint failed</span> · rerun 1 of 2 at 11:47</span></span>
+</div>
+<div style="display: grid; grid-template-columns: 13ch 15ch 34ch 26ch 1fr; column-gap: 20px; padding: 12px 0; border-bottom: 1px solid #3a3f45">
+<span style="color: #de935f; font-weight: 700">↻ fixing</span>
+<span>pass.mjs and a worker</span>
+<span>red after 2 reruns (not waived, not operator-only), a conflict, or a review with a P0 or P1</span>
+<span>fix pushed → merging · 2 tries spent → needs you</span>
+<span style="display: flex; flex-direction: column; gap: 2px"><span><span style="color: #cc6666">11 failed: Lint +10</span> · worker on it, try 1 of 2</span><span><span style="color: #cc6666">conflicts with main</span> · fix queued, try 1 of 2</span><span><span style="color: #cc6666">review: 1 P1 open</span> · worker on it, try 2 of 2</span></span>
+</div>
+<div style="display: grid; grid-template-columns: 13ch 15ch 34ch 26ch 1fr; column-gap: 20px; padding: 12px 0; border-bottom: 1px solid #3a3f45">
+<span style="color: #b294bb; font-weight: 700">◆ needs you</span>
+<span>you</span>
+<span>operator-only check, 2 fix tries spent, verdict unreadable, or merge not allowed</span>
+<span>you act → the next pass reclassifies it</span>
+<span style="display: flex; flex-direction: column; gap: 2px"><span>Flows image missing · run ensure-flows-image.sh</span><span>Lint still red after 2 fixes · g opens the run</span><span>draft, verdict unreadable · set §4 Clean review verdict</span><span>will not merge on its own · merge it</span></span>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1400,"height":1040}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-27T12:10:00Z"
+  },
+  "title": "desk-q PR states",
+  "launch": {
+    "view": "canvas"
+  },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1400,
+      "h": 800,
+      "title": "1 · Today (11:35, voicepa)"
+    },
+    "Proposal.dc.html": {
+      "x": 1480,
+      "y": 0,
+      "w": 1400,
+      "h": 800,
+      "title": "2 · Approved spec, applied as written (superseded by 5)"
+    },
+    "Recommended.dc.html": {
+      "x": 0,
+      "y": 1180,
+      "w": 1400,
+      "h": 800,
+      "title": "3 · Recommended"
+    },
+    "States.dc.html": {
+      "x": 1480,
+      "y": 1180,
+      "w": 1400,
+      "h": 1040,
+      "title": "4 · State model for an open PR (superseded by 5)"
+    },
+    "Flow.dc.html": {
+      "x": 0,
+      "y": 2600,
+      "w": 1400,
+      "h": 900,
+      "title": "5 · End to end: who moves a ticket next"
+    },
+    "Lifecycle.dc.html": {
+      "x": 0,
+      "y": 3880,
+      "w": 1400,
+      "h": 1180,
+      "title": "6 · A ticket's whole life: plan, build, land"
+    },
+    "Terms.dc.html": {
+      "x": 1480,
+      "y": 3880,
+      "w": 1400,
+      "h": 1180,
+      "title": "7 · Every status word: one meaning each"
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Proposal.dc.html",
+    "Recommended.dc.html",
+    "States.dc.html",
+    "Flow.dc.html",
+    "Lifecycle.dc.html",
+    "Terms.dc.html"
+  ],
+  "notes": {
+    "row1": {
+      "x": 0,
+      "y": -300,
+      "text": "Today, and the approved Merging / Fixing / Stuck",
+      "kind": "title1",
+      "maxW": 2880
+    },
+    "row4": {
+      "x": 0,
+      "y": 3620,
+      "text": "The whole lifecycle, and one meaning per word",
+      "kind": "title1",
+      "maxW": 2880
+    },
+    "row3": {
+      "x": 0,
+      "y": 2340,
+      "text": "End to end: five states, named by who moves it next",
+      "kind": "title1",
+      "maxW": 2880
+    },
+    "row2": {
+      "x": 0,
+      "y": 880,
+      "text": "Recommended: the five states from board 5",
+      "kind": "title1",
+      "maxW": 2880
+    },
+    "s1": {
+      "x": 2960,
+      "y": 0,
+      "w": 380,
+      "fill": "red",
+      "text": "1 · Where today's board misleads\n\n• 6 rows say landing, but none is moving. The ◐ half-moon reads as halfway there.\n• '12 of 23 checks passed' hides the 11 that failed.\n• STARTS says 'started' and SHIPS says '—' for a PR that has sat for a day.\n• The header says 2 need you. In reality 5 do.\n• The ticket page knows (prMerge says 'Needs you'), but the row doesn't."
+    },
+    "s2": {
+      "x": 2960,
+      "y": 440,
+      "w": 380,
+      "fill": "orange",
+      "text": "2 · Gaps in the approved spec\n\n• Stuck and Needs you are both 'until someone acts', and you're the only someone. The #698 Flows image shows up in both.\n• Stuck takes the grey of today's 'blocked'.\n• A red PR in the driver's rerun window has no group.\n• A queued fix shows as Fixing while the pace gate holds it.\n• Merging doesn't say whether anything will merge it.\n• No AC2 string covers a draft with red checks (#705)."
+    },
+    "s3": {
+      "x": 2960,
+      "y": 1180,
+      "w": 380,
+      "fill": "green",
+      "text": "3 · What changes\n\n• Stuck folds into Needs you. Each row gives the reason, then the command.\n• A red PR goes back to a worker: Running while one holds it, Ready while it waits for one.\n• Merging includes reruns (red, named, 'rerun 1 of 2').\n• STARTS and SHIPS show how long a row has been in its group, and when it moves next.\n• A ticket behind a PR that needs you waits, so it's counted once.\n• The header counts actions, and puts them first."
+    },
+    "s4": {
+      "x": 2960,
+      "y": 1640,
+      "w": 380,
+      "fill": "blue",
+      "text": "4 · Built into the state model\n\n• Fix loop in pass.mjs, so the supervisor and the interactive orchestrator both get it.\n• A Merging row that hasn't changed in 2h turns amber and goes into the digest.\n• A review with P0 or P1 findings goes back to a worker, not to you.\n• An unreadable verdict needs you: it's config, not code."
+    }
+  },
+  "designSystems": []
+}
