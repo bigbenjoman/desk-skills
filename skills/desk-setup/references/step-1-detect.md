@@ -149,6 +149,12 @@ How to turn what you find into rows:
   failed on most of them (it merged red, so it is not gating in practice), with the failure count,
   e.g. "`Run e2e tests` failed on 14 of 15". Never propose a required check. The user confirms each;
   `none` is the default. Everything not listed must pass for "green".
+- **Checks workers can't fix.** Search the repo instructions and the workflows for checks that fail
+  until a person does something outside the code: an image built by hand, a credential, a service
+  only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing").
+  Propose each as `` `<check>: <what fixes it>` ``, the check named exactly as GitHub shows it; the
+  user confirms each, and `none` is the default. Say that autopilot never sends a PR red only on one
+  of these back to a worker: it is put to the user as stuck, with what fixes it.
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
   changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the

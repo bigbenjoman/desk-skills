@@ -1132,6 +1132,15 @@ t('DS-194 AC7 the landing blocker, one line per check, then when the last pass r
   `${lead194}checked by the last pass, 1m ago · https://github.com/acme/land/pull/164`].join('\n'));
 const p2f = lines(Q.ticketScreen(landRepo([build, e2eRunning, { name: 'lint', status: 'completed', conclusion: 'failure', started: ago194(9), completed: ago194(8), runner: true }]), 'LD-2', { now: NOW }));
 t('DS-194 AC7 a running check with its age, and a failed one', [`${'e2e'.padEnd(26)}running 5m`, `${'lint'.padEnd(26)}failed`].every((s) => p2f.some((l) => l.endsWith(s))), true);
+// DS-278 AC8: a ticket's fix try and what it is fixing, and a PR no worker can fix, read from the queue alone.
+put(I.T, I.env, 'land', { port: 4900, conc: '2 / 3', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'land', concurrency: 2, supervised: true, tickets: {
+  'LD-1': { state: 'triaged', lane: 'A', result: { pr: 164 }, fix: { try: 1, of: 2, pr: 164, what: 'red: Backend tests, Lint' } },
+  'LD-5': { state: 'done', result: { pr: 165 }, fix: { try: 2, of: 2, pr: 165, what: 'conflicts with main', finished: ago194(5) }, stuck: { why: 'still in conflict with main after 2 fix tries', pr: 165 } },
+} }, triage: {} });
+const r278 = Q.loadRepos(NOW).find((r) => r.name === 'land');
+t('DS-278 AC8 the ticket shows its try number and what the try is fixing', lines(Q.ticketScreen(r278, 'LD-1', { width: 120, now: NOW })).includes('Fix try   1 of 2 · red: Backend tests, Lint'), true);
+const p278 = lines(Q.ticketScreen(r278, 'LD-5', { width: 120, now: NOW }));
+t('DS-278 AC8 a stuck PR shows its last try and why it is stuck', p278.includes('Fix try   2 of 2 · conflicts with main') && p278.includes('Stuck     still in conflict with main after 2 fix tries'), true);
 landRepo([ubuntu, macos]);
 const G7 = screen({ kind: 'ticket', slug: 'acme__land', key: 'LD-2' }, 140, () => NOW);
 await sleep(20);

@@ -26,7 +26,8 @@
 #   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
 #                                            unless §3 merge-feedback-first is explicitly `no`
 #                                            (unset, ask and yes are all the strict default)
-#   - DIRTY                                  a conflict needs resolving and a fresh review
+#   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
+#                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
 #   - not green                              "green" is desk-config.md's one definition, evaluated by
@@ -46,6 +47,8 @@
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
+# A check still red after both goes back to a fix worker: pass.mjs reads reruns-<n>-<sha> and
+# cooldown-<n> in <state>/merge-driver for that, so their names and contents are shared with it.
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
 # armed auto-merge on a held PR, or one with feedback outstanding, is disarmed.
 #
@@ -336,7 +339,7 @@ rerun(){ # rerun <n> <sha> <gate json>
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     cnt=$(reruns_at "$1" "$2" "$name")
-    if [ "${cnt:-0}" -ge "$RERUNS_MAX" ]; then log "#$1 \"$name\" still red after $RERUNS_MAX reruns at ${2:0:9} — not rerunning again; report it"; return; fi
+    if [ "${cnt:-0}" -ge "$RERUNS_MAX" ]; then log "#$1 \"$name\" still red after $RERUNS_MAX reruns at ${2:0:9} — not rerunning again; the pass sends it to a fix worker, or reports it stuck"; return; fi
   done <<EOF_NAMES
 $names
 EOF_NAMES
@@ -464,7 +467,7 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   fi
 
   case "$ms" in
-    DIRTY) log "#$n DIRTY — needs a conflict resolution and a fresh review"; return 1 ;;
+    DIRTY) log "#$n DIRTY — the pass sends it to a fix worker for the conflict, or reports it stuck"; return 1 ;;
     BEHIND) behind "$n" "$sha" "$key"; return 1 ;;
   esac
 

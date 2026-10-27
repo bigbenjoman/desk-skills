@@ -56,6 +56,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
+| §4 "Checks workers can't fix" | checks the pass never sends back to a fix worker: a PR red only on one is stuck, with what fixes it (*Fix tries*) |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
 | §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |
@@ -745,6 +746,24 @@ put that under `WAITING ON YOU`. It never waives:
 
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
+
+**Fix tries: what the driver cannot merge goes back to a worker, twice.** Each pass reads every
+ready batch PR (`pass.mjs`, `fix-tries.mjs`). One still red after the driver's two reruns at its
+head, and not waived above, or one GitHub reports in conflict with its base, has its ticket
+requeued for a fix worker on the same branch and PR. That worker's briefing names each failing
+check with its run URL, or the conflict with the files git lists, and the worker gets the fix as its
+task (`AUTOPILOT_TASK`). The try is kept on the ticket as `fix` (`try`, `of`, `what`, `head`) and
+appended to `fix_tries`, and a head gets one try at most. After two tries, or a try whose worker
+left the head where it was, the PR is not requeued again: the ticket records `stuck`
+(`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A check
+§4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
+`<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
+and its briefing says the other is not the worker's to fix. desk-q shows each ticket's try and
+what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
+tickets wait and fix tries still start, within the batch's worker count.
+
+When the pass takes a PR out of draft, it comments on it: why it left draft, quoting the clean
+verdict it read on that head.
 
 **Start the merge driver at Stage 4, before the first worker finishes, unless the batch is handed
 to the supervisor (it starts one itself): do not merge off your own turn cadence.** Merging tied to when a monitor happens to wake you is how a PR sits green and
