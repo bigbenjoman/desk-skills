@@ -2,7 +2,7 @@
 # suite: context handoff hook (threshold, Stop block, clear/compact resume)
 # The context handoff hook (hooks/desk-handoff.py), fed hook inputs and fixture transcripts in a
 # throwaway repo: one injection past the §2 threshold and none under it, the main chain only, the
-# window (200k, [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a
+# window (200k, [1m], a chosen model's [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a
 # single Stop block, the .handoffs/ exclude, /desk-update's one-time offer-1m of a 20% 1M row
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only).
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -146,6 +146,26 @@ check "DS-199 AC3: a 1M row at 20, 190k of 1M: nothing"   '[ -z "$out" ]'
 transcript "$T/210k.jsonl" 210000
 hook PostToolUse s40 "$T/210k.jsonl"
 check "DS-199 AC3: past 200k of 1M fires at 20"           '[[ "$(ctx)" == *"context is at 21% of a 1,000,000-token window (threshold 20%)"* ]]'
+
+# ---- SessionStart's model id has no [1m]; the user's chosen model says it ----
+config '`45`' '`10`'
+mkdir -p "$HOME/.claude"; printf '{"model":"opus[1m]"}\n' > "$HOME/.claude/settings.json"
+hook SessionStart s50 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+hook PostToolUse s50 "$T/high.jsonl"
+check "DS-270 AC1: settings opus[1m], id claude-opus-5-5: 1M" '[[ "$(ctx)" == *"context is at 10% of a 1,000,000-token window (threshold 10%)"* ]]'
+hook SessionStart s51 "$T/high.jsonl" ',"source":"startup","model":"claude-sonnet-5-5"'
+hook PostToolUse s51 "$T/high.jsonl"
+check "DS-270: settings opus[1m], a sonnet session: 200k"  '[[ "$(ctx)" == *"context is at 50% of a 200,000-token window (threshold 45%)"* ]]'
+out=$(printf '{"hook_event_name":"PostToolUse","session_id":"s52","transcript_path":"%s","cwd":"%s"}' "$T/low.jsonl" "$R" | DESK_CONTEXT_WINDOW=100000 python3 "$HOOK")
+check "DS-270 AC3: DESK_CONTEXT_WINDOW wins over settings" '[[ "$(ctx)" == *"context is at 50% of a 100,000-token window (threshold 45%)"* ]]'
+printf '{"model":"opus"}\n' > "$HOME/.claude/settings.json"
+hook SessionStart s53 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+hook PostToolUse s53 "$T/high.jsonl"
+check "DS-270 AC2: no [1m] anywhere: 200k"                 '[[ "$(ctx)" == *"context is at 50% of a 200,000-token window (threshold 45%)"* ]]'
+hook SessionStart s54 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+out=$(printf '{"hook_event_name":"PostToolUse","session_id":"s54","transcript_path":"%s","cwd":"%s"}' "$T/high.jsonl" "$R/sub" | ANTHROPIC_MODEL='claude-opus-5-5[1m]' python3 "$HOOK")
+check "DS-270 AC1: ANTHROPIC_MODEL [1m] wins over settings" '[[ "$(ctx)" == *"of a 1,000,000-token window (threshold 10%)"* ]]'
+rm -f "$HOME/.claude/settings.json"
 config '`45`'
 
 # ---- /desk-update offers to lower a 1M threshold of 45 to 20, once ----

@@ -18,8 +18,9 @@ One script, registered by install.sh on four events; it reads `hook_event_name` 
 A desk session is one whose repo has a desk config (`desk-env where` says EXISTS=yes); anywhere else
 the hook is silent. Context used is the last main-chain assistant entry's usage in the transcript
 since its last compaction (input + cache creation + cache read tokens), divided by the window: DESK_CONTEXT_WINDOW if set,
-else 1,000,000 for a `[1m]` model (or once usage has passed 200,000, which no smaller window
-allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
+else 1,000,000 for a `[1m]` model (SessionStart's model id, or ANTHROPIC_MODEL or settings.json's
+`model` for the same family, since that id drops the suffix; or once usage has passed 200,000,
+which no smaller window allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
 added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session id>.json, which is
 also the marker that stops a second injection or a second Stop block.
 
@@ -144,9 +145,8 @@ def context_used(transcript):
     return None
 
 
-def model_hint(state):
-    if state.get("model"):
-        return str(state["model"])
+def configured_model():
+    """The model the user chose: ANTHROPIC_MODEL, else ~/.claude/settings.json's `model`."""
     if os.environ.get("ANTHROPIC_MODEL"):
         return os.environ["ANTHROPIC_MODEL"]
     try:
@@ -156,6 +156,26 @@ def model_hint(state):
         return ""
 
 
+def family(model):
+    """`opus` for `opus[1m]` and `claude-opus-5-5` alike: the first part not `claude` or a number."""
+    for part in model.lower().replace("[1m]", "").split("-"):
+        if part and part != "claude" and not part.isdigit():
+            return part
+    return ""
+
+
+def is_1m(state):
+    """Whether the session runs on a 1M window. SessionStart's model id carries no `[1m]` even on a
+    1M session, so a `[1m]` the user chose counts too, for the same model family."""
+    model = str(state.get("model") or "")
+    if "[1m]" in model.lower():
+        return True
+    chosen = configured_model()
+    if "[1m]" not in chosen.lower():
+        return False
+    return not model or family(chosen) == family(model)
+
+
 def window(state, used):
     try:
         w = int(os.environ.get("DESK_CONTEXT_WINDOW") or 0)
@@ -163,7 +183,7 @@ def window(state, used):
             return w
     except ValueError:
         pass
-    if "[1m]" in model_hint(state).lower() or used > SMALL_WINDOW:
+    if is_1m(state) or used > SMALL_WINDOW:
         return LARGE_WINDOW
     return SMALL_WINDOW
 
