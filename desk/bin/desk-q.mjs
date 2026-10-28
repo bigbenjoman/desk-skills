@@ -40,6 +40,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { startRefresh } from './cost-cache.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour; "stuck" shows as blocked.
@@ -1966,7 +1967,7 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
-  probeMs = PROBE_EVERY_MS, probeWith = probe,
+  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -2328,11 +2329,13 @@ export function interactive({
     try { repos = loadOrRefuse(clock()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
-  // Only while this screen is open: the usage probe, when no worker anywhere keeps the reading fresh.
+  // Only while this screen is open: the usage probe, when no worker anywhere keeps the reading fresh,
+  // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
     const now = clock();
     const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
     if (probeDue({ running, reading: readUsage({ now }), now })) probeWith({ now, done: () => { if (!done) draw(); } }).catch(() => {});
+    try { costWith({ now }); } catch { /* the next check tries again */ }
   }, probeMs);
   draw();
   return { finish };
