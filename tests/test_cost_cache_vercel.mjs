@@ -174,7 +174,7 @@ await C.refresh({ costs, now: H4 });
 const v6 = cache().vercel;
 t('AC5 a 403 keeps the team\'s last good figures', `${v6.teams[PR_NINJA].total} ${v6.teams[PR_NINJA].at === OCT27}`, '21.25 true');
 t('AC5 and records it with its time and reason', `${v6.teams[PR_NINJA].failed.at === H4} ${v6.teams[PR_NINJA].failed.why}`,
-  'true HTTP 403: the Vercel login has expired or cannot read this team\'s billing: run vercel login');
+  'true HTTP 403: the Vercel login has expired or has no access: run vercel login');
 t('AC5 the plain HTTP call sends the CLI\'s token, and the other teams read', `${seen[0].split(' ')[0]} ${seen[0].split(' ')[1]} ${v6.teams[VOICE_PA].at === H4} ${v6.names.voicepa}`, 'Bearer tok_fixture true 46.82');
 writeFileSync(env.DESK_VERCEL_AUTH, '{}');
 const H6 = OCT27 + 6 * 3600000;
@@ -183,6 +183,16 @@ const v7 = cache().vercel;
 t('AC5 with no Vercel login, every team keeps its figures and says why', `${v7.teams[VOICE_PA].total} ${v7.teams[VOICE_PA].failed.why}`, '46.82 not signed in to Vercel: run vercel login');
 t('AC5 and Vercel is not called', seen.length, 3);
 writeFileSync(env.DESK_VERCEL_AUTH, JSON.stringify({ token: 'tok_fixture' }));
+
+// ---- another supplier written while the Vercel reading is in flight is kept, not overwritten
+const H8 = OCT27 + 8 * 3600000;
+const meanwhile = async (path) => {
+  const c = cache();
+  if (!c.github) writeFileSync(C.cachePath(), JSON.stringify({ ...c, github: { at: H8 } }));
+  return vercel(path);
+};
+await C.refresh({ costs, vercel: meanwhile, now: H8 });
+t('a GitHub reading written during the Vercel reading survives it', `${cache().github?.at === H8} ${cache().vercel.at === H8}`, 'true true');
 
 // ---- AC6 end to end: desk-q's check starts one background reading and does not wait
 const childDir = join(T, 'child-costs');

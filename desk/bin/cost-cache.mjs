@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readCosts, vercelApi, vercelAuthPath } from './costs.mjs';
+import { readCosts, vercelText, vercelToken } from './costs.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 
 export const READ_EVERY_MS = 60 * 60 * 1000;
@@ -153,7 +153,6 @@ async function lastMonthOf({ sources, last, period, gh, now }) {
 }
 
 // ---- Vercel ----------------------------------------------------------------------------------
-export const VERCEL_TIMEOUT_MS = 30 * 1000;
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v
   : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
 
@@ -241,18 +240,12 @@ export function vercelTotals(teams) {
   return { names: Object.fromEntries(Object.entries(names).map(([n, v]) => [n, cents(v)])), shared: cents(shared) };
 }
 
-// One plain HTTP GET with the Vercel CLI's token: the charges endpoint answers JSONL, which
-// `vercel api` cannot parse.  -> the body as text; throws with the reason
-export async function vercelGet(path, { auth = vercelAuthPath(), timeoutMs = VERCEL_TIMEOUT_MS } = {}) {
-  let token = null;
-  try { token = JSON.parse(readFileSync(auth, 'utf8')).token; } catch { /* unreadable reads as signed out */ }
-  if (typeof token !== 'string' || !token) throw new Error('not signed in to Vercel: run vercel login');
-  let r;
-  try { r = await fetch(`${vercelApi()}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) }); }
-  catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${timeoutMs / 1000}s` : `could not reach Vercel: ${e?.message ?? e}`); }
-  if (r.status === 401 || r.status === 403) throw new Error(`HTTP ${r.status}: the Vercel login has expired or cannot read this team's billing: run vercel login`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  try { return await r.text(); } catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${timeoutMs / 1000}s` : `could not read Vercel's answer: ${e?.message ?? e}`); }
+// One GET with the Vercel CLI's token, the body kept as text: the charges endpoint answers JSONL.
+//   -> the body as text; throws with the reason
+export async function vercelGet(path) {
+  const token = vercelToken();
+  if (!token) throw new Error('not signed in to Vercel: run vercel login');
+  return vercelText(path, token);
 }
 
 // One Vercel reading folded into the last one (`last`, the cache's `vercel`, or null). One call per
@@ -325,8 +318,9 @@ export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = 
     try {
       const cache = readCache(dir) ?? { v: 1 };
       if (!force && !dueSuppliers({ costs, cache, now }).includes(supplier)) { out[supplier] = 'read under an hour ago'; continue; }
-      cache[supplier] = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, now });
-      writeCache(cache, dir);
+      const reading = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, now });
+      // Read again before writing: another caller may have written another supplier meanwhile.
+      writeCache({ ...(readCache(dir) ?? { v: 1 }), [supplier]: reading }, dir);
       out[supplier] = 'read';
     } finally { lock.release(); }
   }
