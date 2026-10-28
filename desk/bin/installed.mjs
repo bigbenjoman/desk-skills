@@ -93,11 +93,9 @@ function runningDrivers(root) {
 // The update runs from any shell, perhaps one that worked another repo's batch, so the restarted
 // driver keeps none of its per-repo values: the repo's own config and queue decide them, as they do
 // for the supervisor's driver. An inherited DESK_DEFAULT_BRANCH would have it watch another base.
-export const PER_REPO_ENV = ['DESK_QUEUE', 'DESK_STATE', 'DESK_SLUG', 'DESK_BATCH', 'DESK_DEFAULT_BRANCH', 'DESK_WORKTREES_DIR',
-  'DESK_MEMORY_DIR', 'DESK_GH_REPO', 'DESK_PG_CONTAINER', 'DESK_DEV_PORT', 'DESK_WORKER_PORT_FLOOR', 'DESK_GITHUB_HANDLE', 'DESK_JIRA_NAME'];
 export function driverEnv(env = process.env) {
   const out = E.otherRepoEnv(env);
-  for (const k of PER_REPO_ENV) delete out[k];
+  for (const k of E.PER_REPO_ENV) delete out[k];
   return out;
 }
 
