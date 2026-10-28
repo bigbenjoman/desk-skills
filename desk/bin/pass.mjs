@@ -32,7 +32,7 @@ import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
-import { maintenance, stopForWindow } from './maintenance.mjs';
+import { maintenance, stopForWindow, runningHere } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
@@ -828,8 +828,7 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
 // kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
   selfQueue: QUEUE_FILE,
-  // A cloud session runs away from this computer, so the window neither waits for it nor stops it.
-  running: Object.values(queue().tickets).filter((t) => t.state === 'running' && t.location !== 'cloud'),
+  running: Object.values(queue().tickets).filter(runningHere),
   stop: (t) => stopForWindow(t, {
     live: registryOk ? live : null,
     kill: (pid) => sh('kill', [String(pid)], { tolerant: true }),
@@ -1403,6 +1402,15 @@ function spawnCloud(t) {
     q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
   };
+  // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
+  // fix brief, and the PR it has would no longer count as its result. The person chooses where it runs.
+  if (t.result?.pr != null) {
+    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
+      `which a new cloud session cannot be given. Run it on this computer: queue.mjs set ${t.key} location=null, then queue.mjs requeue ${t.key}`;
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+    return;
+  }
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }

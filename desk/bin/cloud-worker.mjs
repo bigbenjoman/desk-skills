@@ -14,11 +14,14 @@ import { spawnSync } from 'node:child_process';
 // cloud. The triage record decides: `renders` (Stage 5 screenshots need the browser lock and a local
 // dev server), `needs_db` (a local database) and `needs_local` (anything else only here, such as
 // stub binaries a check runs or a dev server). A record written before triage asked `needs_local`
-// runs locally, so a ticket is never sent to the cloud on a question nobody answered.
+// runs locally, so a ticket is never sent to the cloud on a question nobody answered. `feature` is the
+// ticket's part in a feature batch, when it has one: the spine and a child owning acceptance specs
+// are checked in a local worktree when they finish, so either runs locally.
 //   -> { where: 'local' | 'cloud', why: string | null }
-export function placement(rec, location) {
+export function placement(rec, location, { feature = null } = {}) {
   if (location !== 'cloud') return { where: 'local', why: null };
   const why = [];
+  if (feature) why.push(feature);
   if (rec?.lane === 'D' || rec?.renders === true) why.push('it renders: its screenshots need the browser lock and a local dev server');
   if (rec?.needs_db === true) why.push('it needs a local database');
   if (typeof rec?.needs_local === 'string' && rec.needs_local.trim()) why.push(rec.needs_local.trim());

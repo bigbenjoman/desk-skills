@@ -350,7 +350,10 @@ const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blockin
 let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location)]));
+const featureRole = (k) => (!feature?.on ? null
+  : k === feature.spine ? 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval'
+    : Object.values(feature.plan?.owners ?? {}).includes(k) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null);
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket) })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {

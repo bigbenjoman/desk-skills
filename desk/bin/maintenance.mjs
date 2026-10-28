@@ -102,6 +102,10 @@ export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).f
 // This repo's slug, for what the machine-wide state says about it.
 const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'; } };
 
+// A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so the
+// window neither waits for one nor stops it, in any repo.
+export const runningHere = (t) => t?.state === 'running' && t.location !== 'cloud';
+
 // Running tickets in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
 // the queues that cannot be read.
 function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
@@ -112,7 +116,7 @@ function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
   const running = []; const unreadable = [];
   for (const { slug, q, error } of queues) {
     if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of Object.values(q?.tickets ?? {})) if (t?.state === 'running' && where(t)) running.push(`${slug} ${t.key}`);
+    for (const t of Object.values(q?.tickets ?? {})) if (runningHere(t) && where(t)) running.push(`${slug} ${t.key}`);
   }
   return { running, unreadable };
 }
@@ -492,7 +496,7 @@ if (isMain) {
   const qf = E.queueFile();
   let q = null;
   try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch { /* no queue: nothing running */ }
-  const running = Object.values(q?.tickets ?? {}).filter((t) => t.state === 'running');
+  const running = Object.values(q?.tickets ?? {}).filter(runningHere);
   let live;
   const stop = (t) => {
     if (live === undefined) { try { live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' })); } catch { live = null; } }

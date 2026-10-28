@@ -9,6 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost } from '../desk/bin/worker-cost.mjs';
+import { runningHere } from '../desk/bin/maintenance.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -28,6 +29,12 @@ t('AC3 triage\'s own reason (stub binaries) is the plan\'s reason', at(rec({ nee
   'local: its checks run the stub gh and claude binaries in tests/');
 t('AC3 every reason is given', at(rec({ renders: true, needs_db: true })).split('; ').length, 2);
 t('AC3 a record that never answered needs_local stays local, and says so', at({ ticket: 'K-1', lane: 'A' }).includes('re-run triage.sh'), true);
+const spine = placement(rec({}), 'cloud', { feature: 'it is the feature spine' });
+t('AC3 a feature spine or spec owner runs locally, and says so', `${spine.where}: ${spine.why}`, 'local: it is the feature spine');
+
+// ---- the maintenance window counts only workers on this computer --------------
+t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
+t('a local worker is', runningHere({ state: 'running', location: null }), true);
 
 // ---- the prompt carries the ticket (AC2) ------------------------------------
 const prompt = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] });
@@ -42,6 +49,7 @@ t('AC2 and its URL', started.url, 'https://claude.ai/code/session_01Vy49H7Z4T3CS
 t('AC2 terminal noise around it is ignored', parseCloudStart(`\x1b[?25l${fixture('created.txt').replace(/\n/g, '\r\n')}\x1b[0m`).session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
 t('AC2 so is the ^D and backspaces BSD script echoes when its input ends', parseCloudStart(`^D\b\b${fixture('created.txt')}`).session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
 t('AC4 print mode\'s refusal is an error, word for word', parseCloudStart(fixture('print-refused.txt')).error, 'Error: --cloud cannot be combined with --print.');
+t('AC4 stream-json\'s refusal is an error, word for word', parseCloudStart(fixture('stream-json-refused.txt')).error, 'Error: --cloud <session_id> does not support --output-format stream-json');
 t('AC4 a message queued to a session is not a start', !!parseCloudStart(fixture('send-json.json')).error, true);
 t('AC4 no output at all is an error', parseCloudStart('').error, 'it printed nothing');
 
