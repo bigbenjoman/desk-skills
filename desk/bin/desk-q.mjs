@@ -29,7 +29,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { HOME, expandHome, otherRepoEnv, deskHome, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -245,8 +245,7 @@ export function loadRepos(now = Date.now()) {
   const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
   return claims.map((c, i) => {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
-    const stateDir = join(HOME, '.desk-autopilot', c.slug);
-    const queuePath = join(deskHome(), 'repos', c.slug, 'queue.json');
+    const { state: stateDir, queue: queuePath } = batchPaths(c.slug);
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
     const r = { name, slug: c.slug, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
     if (existsSync(queuePath)) {

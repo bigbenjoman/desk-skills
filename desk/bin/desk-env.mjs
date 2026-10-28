@@ -703,12 +703,37 @@ export const repoSlug = () => {
   if (!s) throw new DeskConfigError(`desk: not inside a git repo, so there is no repo config to read. ${configPathHint()}`);
   return s;
 };
-export const defaultBranch = () => resolve({ env: 'DESK_DEFAULT_BRANCH', id: 'default-branch', fallback: 'main' });
+// A named batch (DESK_BATCH) is one batch's queue: its base is this process's default branch, as the
+// standing batch's is once an autopilot entry point has applied it. An exported DESK_DEFAULT_BRANCH
+// still wins.
+export const defaultBranch = () => {
+  const base = unset(process.env.DESK_DEFAULT_BRANCH) && batchName() ? batchBase() : null;
+  return base ?? resolve({ env: 'DESK_DEFAULT_BRANCH', id: 'default-branch', fallback: 'main' });
+};
 export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
 export const binDir = () => join(deskHome(), 'bin');
-// Batch state is per repo, so autopilot can run in two repos at once without sharing a queue.
-export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? join(HOME, '.desk-autopilot', repoSlug()));
-export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? join(deskHome(), 'repos', repoSlug(), 'queue.json'));
+// Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
+// holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under
+// them in `batches/<name>/`, so a reader that takes each top-level state folder for a repo slug never
+// meets a batch. An explicit DESK_QUEUE or DESK_AUTOPILOT_STATE wins over both.
+export const BATCHES_DIR = 'batches';
+// DESK_BATCH, or null for the standing batch. It names a directory, so a value that is not a safe id
+// is refused before any path is built from it.
+export function batchName() {
+  const b = process.env.DESK_BATCH;
+  if (b == null || b === '') return null;
+  if (!SAFE_ID.test(b) || b.includes('..')) {
+    throw new DeskConfigError(`desk: DESK_BATCH "${b}" is not a batch name (letters, digits, . _ - only; no ..). Unset it for the standing batch.`);
+  }
+  return b;
+}
+// Where a batch's queue and state live by default, without the environment's overrides.
+export function batchPaths(slug, batch = null) {
+  const tail = batch ? [BATCHES_DIR, batch] : [];
+  return { queue: join(deskHome(), 'repos', slug, ...tail, 'queue.json'), state: join(HOME, '.desk-autopilot', slug, ...tail) };
+}
+export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? batchPaths(repoSlug(), batchName()).state);
+export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(repoSlug(), batchName()).queue);
 
 // Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
 // blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
@@ -871,6 +896,8 @@ export function spawnGate(row = configValue('spawn-gate')) {
 //   slug      lower-case kebab with §4 Tracker none           -> text from $DESK_STATE/tickets/<id>.md
 // -> { ok: true, kind } | { ok: false, error }
 export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+// Every desk script loads this module first, so a bad DESK_BATCH stops it before it touches a file.
+try { batchName(); } catch (e) { console.error(e.message); process.exit(4); }
 const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
 export function ticketKind(key) {
   const k = String(key ?? '');
