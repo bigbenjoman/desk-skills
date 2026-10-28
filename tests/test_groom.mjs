@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
-  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed } from '../skills/desk-groom/bin/groom-scan.mjs'
+  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -97,6 +97,9 @@ const issues = {
   'KAN-34': iss('supervisor: skip paused tickets', 'Also reads {{queue.mjs pause}}, after KAN-30.', { issuelinks: [relates('KAN-30')] }),
   'KAN-35': iss('parse: skip blank lines', 'Rework {{parseRow()}} to skip blank lines.'),
   'KAN-36': iss('parse: keep quoted commas in one cell', 'Fix {{parseRow()}} so quoted commas stay in one cell.'),
+  // AC3: ordering words about something else in the same paragraph; the key as the subject that reads
+  'KAN-37': iss('retry: send review findings back to a fix worker', 'h2. Outcome\nFor Ben, running supervised batches. KAN-31 sends a red check or a conflict back to a fix worker, but a draft PR whose posted review found a P0 or P1 still waits for Ben (KAN-30 AC12 draws it in Needs you as {{draft · review not clean: 1 P1}}). A review finding is a code change a worker can make. After this, the pass sends it back to a fix worker with the findings in its briefing, at most twice, re-reviews the new head, and only a finding still open after the second try reaches Ben.'),
+  'KAN-38': iss('records: write the fix and stuck records', 'h2. Out of scope\n* KAN-30 and KAN-31 read the {{fix}} and {{stuck}} records this writes.'),
   // AC4: a moved function, a moved file, a line past the end
   'KAN-40': iss('import: read the header once', 'The rule lives in {{parseRow()}} at {{lib/parse.mjs:3}}.'),
   'KAN-41': iss('render: pad the table', 'Rendering starts in {{src/render.mjs:2}}.'),
@@ -207,6 +210,15 @@ t('AC3 two tickets that change the same function relate', cmds('link', 'KAN-35')
 t('AC3 nothing without evidence', of('link', 'KAN-33').length, 0)
 t('AC3 nothing from a bare mention of another ticket', found.filter((f) => f.check === 'link' && [f.ticket, f.other].includes('KAN-45')).length, 0)
 t('AC3 nothing where a link already exists', found.filter((f) => f.check === 'link' && [f.ticket, f.other].includes('KAN-34')).length, 0)
+t('AC3 ordering words about something else in the paragraph link nothing', of('link', 'KAN-37').length, 0)
+t('AC3 a key that reads what this writes is blocked by it', cmds('link', 'KAN-38'), ['desk-jira link KAN-38 blocks KAN-30', 'desk-jira link KAN-38 blocks KAN-31'])
+t('order: wording before the key, in its clause', ['Build on DS-279\'s `stateOf`.', 'Ship it after DS-279 merges.', 'Reads the stuck record from DS-279.', 'Lands before DS-279.'].map((l) => orderOf(l, 'DS-279')),
+  ['blocked-by', 'blocked-by', 'blocked-by', 'blocks'])
+t('order: the key as the subject of a dependency', ['DS-279 reads the records this writes.', 'DS-280 and DS-279 need this.'].map((l) => orderOf(l, 'DS-279')), ['blocks', 'blocks'])
+t('order: a word in another sentence, after the key or in brackets orders nothing',
+  ['This waits for review. DS-279 is in scope.', 'DS-279 lands after this.', 'It still waits for Ben (DS-279 draws it); after this it moves.', 'See DS-279 for context.'].map((l) => orderOf(l, 'DS-279')),
+  [null, null, null, null])
+t('order: the nearest word before the key wins', orderOf('Once merged, this goes before DS-279.', 'DS-279'), 'blocks')
 
 // AC4
 const moved = of('stale', 'KAN-40')[0] ?? {}
@@ -329,7 +341,7 @@ t('the scan wrote nothing to Jira', writes, '0')
 
 // The text form and the verdict command
 const text = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S)
-t('the text form counts the tickets', /^groom-scan: 44 open tickets, \d+ findings/.test(text.stdout), true)
+t('the text form counts the tickets', /^groom-scan: 46 open tickets, \d+ findings/.test(text.stdout), true)
 t('the text form marks a question and its recommended option', /\nloose +KAN-141 +\[question\]\n(?:.*\n)*? {2}option {2}: KAN-150 .*\(recommended\)/.test(text.stdout), true)
 writeFileSync(join(T, 'scan.json'), r.stdout)
 writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }, { ticket: 'KAN-31', criteria: [met('AC1')] }]))
