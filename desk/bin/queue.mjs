@@ -18,6 +18,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, HOME as E_HOME } from './desk-env.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
+import { belongsElsewhere } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -322,6 +323,8 @@ switch (cmd) {
     // The key names files (logs, parks, briefings, worker settings): never a path.
     if (!SAFE_ID.test(key) || key.includes('..')) throw new Error(`'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
     if (q.tickets[key]) { console.log(`${key} already in the queue (${q.tickets[key].state}) — not re-adding`); break; }
+    const elsewhere = belongsElsewhere(key);
+    if (elsewhere) throw new Error(elsewhere.why);
     q.tickets[key] = {
       key, type, lane, state: 'queued',
       worktree: null, branch: null, database: null, port: null,
@@ -372,6 +375,8 @@ switch (cmd) {
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
     const r = readTriage(stateDir(), key);
+    const elsewhere = belongsElsewhere(key, r, QUEUE);
+    if (elsewhere) throw new Error(elsewhere.why);
     const size = String(r.size ?? '').toUpperCase();
     const park = lanePark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
     const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);

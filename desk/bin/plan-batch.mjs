@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation } from './desk-env.mjs';
 import { SIZES } from './desk-q-eta.mjs';
+import { belongsElsewhere } from './batches.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 const plan = [];
@@ -37,6 +38,8 @@ for (const t of tickets) {
   if (!SAFE_ID.test(t) || t.includes('..')) refuse(`'${t}' is not usable as a ticket id`);
   if (!existsSync(join(STATE, 'triage', `${t}.json`))) refuse(`missing triage record for ${t} — run triage.sh ${t}`);
   records.push(readTriage(STATE, t));
+  const elsewhere = belongsElsewhere(t, records.at(-1), queueFile());
+  if (elsewhere) refuse(`${elsewhere.why}: leave it out of this plan`);
 }
 
 // Ownership boundary, the ticket equivalent of desk-clearance's "only your own PRs".

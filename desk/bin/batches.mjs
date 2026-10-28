@@ -2,7 +2,8 @@
 // queue. An archived batch sits under `batches/.done/` and is not listed. A ticket's key finds the one
 // batch that holds it.
 import { existsSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
@@ -36,3 +37,52 @@ export function batchHolding(key, slug = E.repoSlug()) {
 }
 
 export const label = (b) => b.name ?? 'the standing batch';
+
+// A PR whose state cannot be read counts as open. A merged or closed one stays so, and is not asked again.
+const shut = new Set();
+export function prOpen(n) {
+  if (shut.has(String(n))) return false;
+  let repo;
+  try { repo = E.ghRepo(); } catch { return true; }
+  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
+  const open = !(r.status === 0 && ['MERGED', 'CLOSED'].includes(r.stdout.trim()));
+  if (!open) shut.add(String(n));
+  return open;
+}
+// Finished: every ticket done with no PR still open. A failed ticket waits on the person, a queue with no
+// tickets is a session's between `queue.mjs init` and its plan, and a batch on a base still has its gate
+// and promotion to come: none of those is finished. Nothing archives a finished batch, so its queue stays
+// listed, and must not keep its keys or its epic's children out of every other batch.
+export function finished(q) {
+  const rows = Object.values(q.tickets ?? {});
+  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
+}
+const peek = (b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
+const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
+
+// Whether the named batch `name` is listed, readable and not finished.
+export function liveBatch(name) {
+  let b;
+  try { b = listBatches().find((x) => x.name === name); } catch { return false; }
+  const { q } = b ? peek(b) : {};
+  return !!q && !finished(q);
+}
+
+// Why `key` may not join the batch whose queue is `own`, or null: another unfinished batch holds it, or
+// its triage record `rec` names an epic whose feature batch is unfinished. -> {batch, why},
+// with `unreadable` set when another batch's queue cannot be read, so the key cannot be checked. Never
+// throws: callers check one key of many. Outside a repo there are no batches to list.
+export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
+  let others;
+  try { others = listBatches().filter((b) => resolve(b.queue) !== resolve(own) && existsSync(b.queue)); } catch { return null; }
+  const read = others.map((b) => ({ b, ...peek(b) }));
+  const bad = read.find((x) => x.unreadable);
+  if (bad) return { batch: label(bad.b), unreadable: true, why: `${key} cannot be checked against ${where(bad.b)}, whose queue cannot be read (${bad.unreadable})` };
+  const live = read.filter((x) => !finished(x.q));
+  const held = live.find((x) => x.q.tickets?.[key]);
+  if (held) return { batch: label(held.b), why: `${key} is in ${where(held.b)}: a ticket is in one batch at most` };
+  const epic = rec?.epic?.key;
+  const feature = epic && live.find((x) => x.b.name === epic);
+  if (feature) return { batch: epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
+  return null;
+}

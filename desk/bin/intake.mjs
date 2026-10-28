@@ -10,8 +10,9 @@
 //                                            /desk-admit: the same checks on tickets the person names, now
 //
 // Each ticket the query finds, once (the register is <state>/intake.json):
-//   - already in the queue, or already admitted or handed on: nothing;
+//   - already in the queue or another batch, or already admitted or handed on: nothing;
 //   - an epic: handed to the digest untriaged (a feature batch, planned in a session);
+//   - a child of an epic whose feature batch is live: not admitted, the report naming that batch;
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
 //     or XL, or a blocker that is not done and not in the batch;
@@ -34,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 import { designGap, needsPersonLane } from './batch-state.mjs';
+import { belongsElsewhere, liveBatch, finished, prOpen } from './batches.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -53,7 +55,8 @@ export function intakeQuery(raw = E.configValue('intake-query')) {
 }
 
 // ---- the register ------------------------------------------------------------------------------
-// {last_run, tickets: {KEY: {at, outcome: admitted | handed | triage_failed, text, tries}}}
+// {last_run, tickets: {KEY: {at, outcome: admitted | handed | triage_failed | elsewhere, text, tries, batch}}}
+// `batch` is the other batch an `elsewhere` ticket belongs to.
 export const intakePath = (state) => join(state, 'intake.json');
 export function readIntake(state) {
   const r = readJson(intakePath(state), null);
@@ -84,22 +87,10 @@ export function intakeReasons(r) {
 const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key);
 
 // ---- the batch ---------------------------------------------------------------------------------
-// A PR whose state cannot be read counts as open.
-export function prOpen(n) {
-  let repo;
-  try { repo = E.ghRepo(); } catch { return true; }
-  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
-  return !(r.status === 0 && ['MERGED', 'CLOSED'].includes(r.stdout.trim()));
-}
-// Free for a standing batch: no queue, or one whose every ticket is done with no PR still open. A failed
-// ticket waits on the person, a queue with no tickets is a session's between `queue.mjs init` and its
-// plan, and a batch on a base still has its gate and promotion to come: none of those is free.
-// queue.mjs init --standing checks the same under its lock.
-const free = (q) => {
-  if (!q) return true;
-  const rows = Object.values(q.tickets ?? {});
-  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
-};
+export { prOpen };
+// Free for a standing batch: no queue, or a finished one (batches.mjs). queue.mjs init --standing checks
+// the same under its lock.
+const free = (q) => !q || finished(q);
 // Why no ticket may join this batch now: 'base', 'session' (not handed over), or null.
 const closed = (b) => (!b || free(b) ? null : b.base ? 'base' : b.supervised !== true ? 'session' : null);
 // Why intake admits nothing into this batch now, or null.
@@ -181,12 +172,14 @@ const heldText = (held) => (held.length ? `, held behind ${held.join(', ')}` : '
 // One triaged ticket into the batch, both paths: the queue read again whole (triage took minutes, and a
 // session may have started its own batch meanwhile), the batch gate, the ticket's checks, a standing
 // batch started where none is live, then the admit. Returns the one thing that happened:
-// {unreadable}, {closed, cur}, {reasons}, {startFailed}, {admitFailed}, or {batch, held, started}.
+// {unreadable}, {closed, cur}, {elsewhere}, {reasons}, {startFailed}, {admitFailed}, or {batch, held, started}.
 // Without mayStart, a free batch is closed as 'free' rather than replaced.
 function placeOne(key, rec, { started, by, now, mayStart = true }) {
   let cur;
   try { cur = readQueue(); } catch (e) { return { unreadable: `the queue at ${E.queueFile()} cannot be read (${e.message})` }; }
   if (closed(cur)) return { closed: closed(cur), cur };
+  const away = belongsElsewhere(key, rec, E.queueFile());
+  if (away) return { elsewhere: away };
   // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it.
   const startNew = !started && free(cur);
   if (startNew && !mayStart) return { closed: 'free', cur };
@@ -242,10 +235,18 @@ function intake({ state, query, reg, now }) {
     handed.push(key);
     lines.push(`intake: handed ${key} to the digest: ${text}`);
   };
-  const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome);
+  // A ticket another batch holds is that batch's: never triaged, admitted or handed on here. One skipped
+  // for its epic's feature batch is skipped while that batch is live. One that cannot be checked, because
+  // another batch's queue cannot be read, waits for the next intake and is said to.
+  const unchecked = new Map();
+  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch);
+  const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
+  const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
+    && !skipped(reg.tickets[k]) && !away(k);
   // An epic is a feature batch's, with its spine and owner table approved first: never a worker's.
   for (const i of found.filter((x) => isNew(x.key) && isEpic(x.fields?.issuetype))) hand(i.key, 'an epic: run it as a feature batch in a session');
   const fresh = found.map((i) => i.key).filter(isNew);
+  for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
   const triageNow = fresh.slice(0, MAX_TRIAGE);
   if (fresh.length > triageNow.length) lines.push(`intake: ${fresh.length - triageNow.length} more ticket(s) wait for the next intake (${fresh.slice(MAX_TRIAGE).join(', ')}): ${MAX_TRIAGE} are triaged a run`);
@@ -273,6 +274,13 @@ function intake({ state, query, reg, now }) {
     const r = placeOne(key, rec, { started, by: 'intake', now });
     if (r.unreadable) { lines.push(`intake: admits nothing more: ${r.unreadable}`); return done({ started }); }
     if (r.closed) { lines.push(waitFor(r.cur)); return done({ started }); }
+    if (r.elsewhere?.unreadable) { lines.push(`intake: not admitted: ${r.elsewhere.why}; the next intake tries again`); continue; }
+    if (r.elsewhere) {
+      reg.tickets[key] ={ at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: r.elsewhere.why };
+      writeIntake(state, reg);
+      lines.push(`intake: ${key} not admitted: ${r.elsewhere.why}`);
+      continue;
+    }
     if (r.reasons) { hand(key, r.reasons.join('; ')); continue; }
     if (r.startFailed) {
       lines.push(`intake: admits nothing: a standing batch could not be started (${r.startFailed}); the next intake tries again`);
@@ -324,6 +332,8 @@ function byHand(keys, { state, by, front, now }) {
   for (const key of keys) {
     if (!E.SAFE_ID.test(key)) { refuse(key, 'not a ticket id'); continue; }
     if (q?.tickets?.[key]) { lines.push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
+    const away = belongsElsewhere(key, null, E.queueFile());
+    if (away) { refuse(key, away.why); continue; }
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
     if (isEpic({ name: t.rec.type })) { refuse(key, 'an epic: run it as a feature batch with /desk-autopilot'); continue; }
@@ -334,7 +344,7 @@ function byHand(keys, { state, by, front, now }) {
     const rec = recs[key];
     const r = placeOne(key, rec, { started, by, now, mayStart });
     if (r.started) { started = r.started; lines.push(`started standing batch ${started}, handed to the supervisor`); }
-    const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.reasons?.join('; ')
+    const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.elsewhere?.why ?? r.reasons?.join('; ')
       ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
     if (fail) { refuse(key, fail); continue; }
     const reg = readIntake(state);

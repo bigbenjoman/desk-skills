@@ -45,6 +45,8 @@ below as `(Recommended)`, with its reason as the description:
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
 | `blocked by <B>, which is not done and not in the batch` | Admit `<B>` with it | Run step 1 with both |
 | `an epic` | Plan it as a feature batch: `/desk-autopilot <TICKET>` | |
+| `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most | Admit nothing for it |
+| `is a child of epic <E>, whose feature batch <E> is running` | Leave it to that feature batch: the standing batch never takes an epic's child while its batch runs | Admit nothing for it |
 | `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
