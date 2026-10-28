@@ -1186,7 +1186,9 @@ if (a[0] === 'api' && a[1] === 'graphql') {
   let c = '[]';
   try { c = fs.readFileSync('$T/fr/' + (id ? id.slice(7) : 'none') + '.comments', 'utf8'); } catch {}
   if (c.startsWith('ERROR')) { process.stderr.write(c); process.exit(1); }
-  process.stdout.write(c);
+  // As gh does, the whole response unless --jq picks the list out of it.
+  const jq = a[a.indexOf('--jq') + 1];
+  process.stdout.write(a.includes('--jq') && jq === '.data.node.comments.nodes' ? c : JSON.stringify({ data: { node: { comments: { nodes: JSON.parse(c) } } } }));
 }
 else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync(f, 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));

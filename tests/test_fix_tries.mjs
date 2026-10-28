@@ -123,8 +123,9 @@ const both299 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '1', p1: '
   { path: 'packages/core/src/money.ts', line: 12, body: '**P1** second currency formatter' },
   { path: 'packages/core/src/money.ts', line: 1, body: '**P1** a different line' },
   { path: 'apps/api/routes/invoices.py', line: 67, body: '**P0:** invoice total rounded per line' },
+  { path: 'packages/core/src/format.ts', line: 8, body: '**P1** rounds half down' },
 ] });
-t('DS-299 AC2 a finding in the body and inline is quoted once, and the rest each once', both299?.fix.findings.map((x) => `${x.sev} ${x.text.split(' ')[0]}`).join('|'), 'P1 packages/core/src/money.ts:12|P1 packages/core/src/money.ts:1|P0 apps/api/routes/invoices.py:67');
+t('DS-299 AC2 a finding in the body and inline is quoted once, and the rest each once, one the body only cites as evidence included', both299?.fix.findings.map((x) => `${x.sev} ${x.text.split(' ')[0]}`).join('|'), 'P1 packages/core/src/money.ts:12|P1 packages/core/src/money.ts:1|P0 apps/api/routes/invoices.py:67|P1 packages/core/src/format.ts:8');
 t('DS-299 AC3 inline comments that could not be read leave an inline-only review for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: null }), null);
 t('DS-299 AC4 inline comments holding only P2s are not requeued', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: [{ path: 'src/a.ts', line: 3, body: '**P2** naming' }, { path: 'src/b.ts', line: 4, body: 'a reply, no severity' }] }), null);
 t('DS-299 inline comments are read only once a try is left', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, comments: () => { throw new Error('read'); } })?.call, 'stuck');
