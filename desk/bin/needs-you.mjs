@@ -3,7 +3,9 @@
 // and the one command that records each answer. The desk-needs-you skill reads `list`, asks, and
 // records through `record`; it reads no queue, log, briefing or digest page itself.
 //
-//   needs-you.mjs list [<repo>]                       one line per repo with items, then one per item
+//   needs-you.mjs list [<repo>]                       one line per batch with items, then one per item
+//       <repo> is a repo's name (all its batches) or <repo>:<name> (one named batch), as each item
+//       line starts
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask
@@ -36,7 +38,13 @@ const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const since = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
 // A park triage made (size, a dependency cycle): queue.mjs requeue refuses it, so it needs a person.
 const triagePark = (t) => /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''));
-const digestList = (r) => [{ slug: r.slug, state: r.stateDir, queue: r.queuePath }];
+const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
+
+// The batches `word` names: a repo's name is all of its batches, `<repo>:<name>` one named batch.
+function batchesNamed(repos, word) {
+  const r = resolveRepo(repos, word);
+  return { named: r, scope: r.batch ? [r] : repos.filter((x) => x.slug === r.slug) };
+}
 
 // Who moves the repo's batch on once an answer is recorded: its supervisor, a live session (named by
 // its batch, as the orchestrator is), or nothing while passes are stopped.
@@ -73,9 +81,9 @@ function itemOf(r, x) {
   return { kind: 'triage', need, actions: [['answer', 'answering clears its questions, so the next pass can start it'], ['not-now']] };
 }
 
-// Every item desk-q counts as needing the person, in the repos `word` names (all when null).
+// Every item desk-q counts as needing the person, in the batches `word` names (all when null).
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
-  const scope = word ? [resolveRepo(repos, word)] : shownRepos(repos, false);
+  const { named = null, scope } = word ? batchesNamed(repos, word) : { scope: shownRepos(repos, false) };
   const items = [];
   for (const r of scope.filter((x) => !x.error && x.q)) {
     for (const x of r.rows.filter((y) => y.k === 'needs')) {
@@ -83,7 +91,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
     }
   }
   items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
-  return { repos, scope, items, named: word ? scope[0] : null };
+  return { repos, scope, items, named };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -100,9 +108,10 @@ export function listText(c, now = Date.now()) {
   const lines = repos.map(runLine);
   for (const i of c.items) {
     const waited = i.since == null ? '' : ` ${since(now - i.since)}`;
-    lines.push(`${i.r.name} ${i.t.key} ${i.kind}${waited} | ${cut(i.need, QUESTION_MAX)} | ${i.actions.map(actionText).join(' | ')}`);
+    lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${cut(i.need, QUESTION_MAX)} | ${i.actions.map(actionText).join(' | ')}`);
   }
-  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${repos.length} repo${repos.length === 1 ? '' : 's'}.`);
+  const n = new Set(repos.map((r) => r.slug)).size;
+  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.`);
   return lines.join('\n');
 }
 
@@ -119,7 +128,9 @@ function queueCmd(r, args) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now) }) {
-  const r = resolveRepo(repos, word);
+  // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
+  const { named, scope } = batchesNamed(repos, word);
+  const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
   const x = r.rows?.find((y) => y.t.key === ticket && y.k === 'needs');
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
@@ -189,7 +200,7 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now)
   const c = collect({ word, now, repos });
   const where = c.named ? ` in ${c.named.name}` : '';
   const lines = [`desk-q counts ${c.items.length} item${c.items.length === 1 ? '' : 's'} needing you${where}.`];
-  for (const r of (c.named ? [c.named] : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.landing.length))) {
+  for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.landing.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }
   return lines.join('\n');
