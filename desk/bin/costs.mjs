@@ -27,6 +27,24 @@ export function vercelAuthPath(plat = osPlatform()) {
 }
 export const awsConfigPath = () => process.env.AWS_CONFIG_FILE || join(HOME, '.aws', 'config');
 const vercelApi = () => (process.env.DESK_VERCEL_API || 'https://api.vercel.com').replace(/\/$/, '');
+export const VERCEL_TIMEOUT_MS = 30 * 1000;
+
+// The Vercel CLI's token, or null: an unreadable file reads as signed out.
+export function vercelToken(auth = vercelAuthPath()) {
+  let token = null;
+  try { token = JSON.parse(readFileSync(auth, 'utf8')).token; } catch { /* unreadable reads as signed out */ }
+  return typeof token === 'string' && token ? token : null;
+}
+
+// One GET with the token.  -> the body as text; throws with the reason
+export async function vercelText(path, token) {
+  let r;
+  try { r = await fetch(`${vercelApi()}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(VERCEL_TIMEOUT_MS) }); }
+  catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${VERCEL_TIMEOUT_MS / 1000}s` : `could not reach Vercel: ${e?.message ?? e}`); }
+  if (r.status === 401 || r.status === 403) throw new Error(`HTTP ${r.status}: the Vercel login has expired or has no access: run vercel login`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  try { return await r.text(); } catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${VERCEL_TIMEOUT_MS / 1000}s` : `could not read Vercel's answer: ${e?.message ?? e}`); }
+}
 
 // ---- parsing ---------------------------------------------------------------------------------
 // `[default]` and `[profile x]`; other sections (`[sso-session x]`, `[services x]`) are not profiles.
@@ -72,19 +90,13 @@ const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return nul
 
 export const ghLogin = () => run('gh', ['api', 'user', '--jq', '.login']).trim() || null;
 
-async function vercelGet(path, token) {
-  const r = await fetch(`${vercelApi()}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(`GET ${path}: HTTP ${r.status}`);
-  return r.json();
-}
+const vercelGet = async (path, token) => JSON.parse(await vercelText(path, token));
 
 // -> { auth, teams: [{ id, slug, name, plan, projects: [name] }], error }
 export async function detectVercel() {
   const auth = vercelAuthPath();
-  const raw = read(auth);
-  let token = null;
-  try { token = raw == null ? null : JSON.parse(raw).token; } catch { /* unreadable reads as signed out */ }
-  if (typeof token !== 'string' || !token) return { auth, teams: [], error: `not signed in (no token in ${tilde(auth)}): run vercel login` };
+  const token = vercelToken(auth);
+  if (!token) return { auth, teams: [], error: `not signed in (no token in ${tilde(auth)}): run vercel login` };
   try {
     const { teams, skipped } = parseVercelTeams(await vercelGet('/v2/teams?limit=100', token));
     for (const t of teams) {
