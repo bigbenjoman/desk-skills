@@ -884,6 +884,13 @@ await Rc.press(RIGHT);
 t('DS-290 AC7 a repo\'s tab line dims 5 Costs, and 5 or → from Epics leave the view as it is',
   `${repoTabs} || ${after5} || ${where(Rc)}`, 'true | true || desk-q › tidy | 4 Epics | epics | true || desk-q › tidy | 4 Epics | epics');
 Rc.ui.finish(0);
+// With five tabs the parked note no longer fits after them at 104 columns, so it takes its own line.
+const Rn = screen(tidyQ, 104, () => FIXED);
+await sleep(20);
+await Rn.press('c');
+t('a repo\'s parked note too long for the tab line at 104 columns goes on its own line, key and all',
+  `${Rn.frame()[1].trimEnd()} | ${Rn.frame()[2].trimEnd()}`, `${ALL_TABS} | Waiting-on-you tickets dated at the next check-in · c to undo`);
+Rn.ui.finish(0);
 
 const everyFeat = lines(Q.timelineScreen(featRepos, null, { now: FIXED }));
 t('DS-166 AC10 every repo\'s Timeline stays one bar per ticket, grouped by repo', `${everyFeat.includes('  feat · 6 tickets')} ${['F-1', 'F-2', 'F-4', 'F-6'].every((k) => everyFeat.some((l) => l.startsWith(`  ${pad10(k)}`)))} ${everyFeat.some((l) => /Other work|Smart scheduling/.test(l))}`,

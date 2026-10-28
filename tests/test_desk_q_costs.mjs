@@ -94,7 +94,8 @@ const lines3 = f2.slice(at2 + 3, at2 + 2 + TABLE.length - 1).map((l) => l.trim()
 const sum3 = lines3.filter((a) => a !== '–').reduce((a, s) => a + cents(s), 0);
 const total3 = cents(f2[at2 + 1 + TABLE.length].trim().split(/\s+/).at(-1));
 t('AC3 the rows sum to the total row and to the charged line, in cents', `${sum3} ${total3} ${cents(/charged (\S+)/.exec(f2[at2])[1])}`, '89997 89997 89997');
-t('AC3 the suppliers sum to the charged line too', ['620.52', '175.88', '103.57'].reduce((a, s) => a + cents(s), 0), 89997);
+const bySupplier = [...f2[at2].matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]+)/g)].map((m) => m[1]);
+t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySupplier.reduce((a, s) => a + cents(s), 0)}`, '3 89997');
 
 // ---- AC8: the Claude usage line above the keys, and none of home's batch lines
 t('AC8 the Claude usage line sits above the keys, a blank line between', `${f2[keysAt(f2) - 2]?.startsWith('Claude usage  ')} ${f2[keysAt(f2) - 1]}`, 'true ');

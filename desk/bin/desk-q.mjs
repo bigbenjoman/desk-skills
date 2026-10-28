@@ -2303,8 +2303,11 @@ export function interactive({
     const pinned = [];
     if (hasTabs()) {
       const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : tabOk(p.id) ? null : DIM]]);
-      if (screen.badge) segs.push([`    ${screen.badge}`, null]);
-      pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false));
+      // A parked note too long to follow the tabs goes on its own line below them, so its key is kept.
+      const tabsWide = segs.map((s) => s[0]).join('').length;
+      const own = screen.badge && tabsWide + 4 + screen.badge.length > w;
+      if (screen.badge && !own) segs.push([`    ${screen.badge}`, null]);
+      pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false), ...(own ? [fit(screen.badge)] : []));
     } else pinned.push(fit(screen.badge ? segLine([...crumbs.segs, [`    ${screen.badge}`, null]]) : crumbs));
     // A command to copy (`whole`) wider than the terminal is not cut: it runs on into the rows below,
     // which the terminal wraps it onto, so a copy takes it whole. Each row it runs on to is a SPILL.
