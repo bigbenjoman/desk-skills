@@ -1,13 +1,16 @@
 // The cost cache: this month's charges from each supplier, kept on disk so a screen never waits on
-// one, and the check that keeps it fresh while desk-q is open. GitHub is read here; one month
-// summary call per repo, and one for the whole account whose remainder is the shared line. Vercel
-// is one charges call per team, split into a line per project with builds apart, and the team's
-// plan and seats, each charged to a name or to shared.
+// one, and the check that keeps it fresh while desk-q is open. GitHub is read with one month summary
+// call per repo, and one for the whole account whose remainder is the shared line. Vercel is one
+// charges call per team, split into a line per project with builds apart, and the team's plan and
+// seats, each charged to a name or to shared. AWS is read with one Cost Explorer query per profile,
+// grouped by service and record type.
 //
 // A reading covers the month of yesterday (UTC), to yesterday: every supplier lags at least a day.
 // GitHub's month summary cannot stop at yesterday, so its figures include today so far. Only what
 // was charged after discounts is kept, never list price. A failed call keeps the last good figures
-// beside the failure; a reading, failed or not, is not tried again for READ_EVERY_MS.
+// beside the failure. GitHub and Vercel are not read again for READ_EVERY_MS, failed or not. Every
+// Cost Explorer request is billed, so an AWS profile is read at most once a UTC day, and after a
+// failure not again for READ_EVERY_MS.
 //
 //   node cost-cache.mjs refresh [--force]   read every supplier that is due, under its lock
 //   node cost-cache.mjs show                print the cache
@@ -21,6 +24,8 @@ import { takeBorrowLock } from './borrow.mjs';
 
 export const READ_EVERY_MS = 60 * 60 * 1000;
 export const GH_TIMEOUT_MS = 30 * 1000;
+export const AWS_TIMEOUT_MS = 60 * 1000;
+export const AWS_MAX_PAGES = 2;
 const DAY = 24 * 60 * 60 * 1000;
 export const costDir = () => E.expandHome(process.env.DESK_COST_DIR ?? join(E.HOME, '.desk-autopilot', 'costs'));
 export const cachePath = (dir = costDir()) => join(dir, 'cache.json');
@@ -82,17 +87,20 @@ export function sharedItems(account, repos) {
 export const summaryPath = (login, { year, month }, repo) =>
   `/users/${login}/settings/billing/usage/summary?year=${year}&month=${month}${repo ? `&repository=${repo}` : ''}`;
 
-// One `gh api` call.  -> parsed JSON; throws with the reason
-export const ghApi = (path) => new Promise((res, rej) => {
-  execFile('gh', ['api', path], { timeout: GH_TIMEOUT_MS, maxBuffer: 8 << 20 }, (err, out, errOut) => {
+// One CLI call that prints JSON.  -> parsed JSON; throws with the reason
+const cliJson = (cmd, args, timeout, env = process.env) => new Promise((res, rej) => {
+  execFile(cmd, args, { timeout, maxBuffer: 8 << 20, env }, (err, out, errOut) => {
     if (err) {
-      const why = err.killed ? `timed out after ${GH_TIMEOUT_MS / 1000}s` : String(errOut || err.message).trim().split('\n')[0];
-      rej(new Error(why || `gh exited ${err.code}`));
+      const why = err.killed ? `timed out after ${timeout / 1000}s` : String(errOut || err.message).trim().split('\n')[0];
+      rej(new Error(why || `${cmd} exited ${err.code}`));
       return;
     }
     try { res(JSON.parse(out)); } catch { rej(new Error('unexpected response: not JSON')); }
   });
 });
+
+// One `gh api` call.  -> parsed JSON; throws with the reason
+export const ghApi = (path) => cliJson('gh', ['api', path], GH_TIMEOUT_MS);
 
 async function summary(gh, login, period, repo) {
   try { return { items: parseSummary(await gh(summaryPath(login, period, repo))) }; }
@@ -278,6 +286,118 @@ export async function readVercel({ sources, last = null, vercel = vercelGet, now
   return { at: now, period, teams, ...vercelTotals(teams) };
 }
 
+// ---- AWS -------------------------------------------------------------------------------------
+const utcDay = (t) => new Date(t).toISOString().slice(0, 10);
+const nextDay = (ymd) => utcDay(Date.parse(`${ymd}T00:00:00Z`) + DAY);
+const TAX = 'Tax';
+
+// One Cost Explorer query for a profile's period, grouped by service and record type. End is
+// exclusive, so a period to the 31st ends on the 1st. --no-paginate keeps it to one request.
+export const ceArgs = (profile, { from, to }, token = null) => ['ce', 'get-cost-and-usage', '--profile', profile,
+  '--time-period', `Start=${from},End=${nextDay(to)}`, '--granularity', 'MONTHLY', '--metrics', 'UnblendedCost',
+  '--group-by', 'Type=DIMENSION,Key=SERVICE', 'Type=DIMENSION,Key=RECORD_TYPE', '--output', 'json', '--no-paginate',
+  ...(token ? ['--next-page-token', token] : [])];
+
+// One page of that query. A group without its two keys or a USD amount is refused rather than read
+// as nothing charged.  -> { groups: [{ service, type, amount }], next: page token | null }
+export function parseCostAndUsage(body) {
+  if (!Array.isArray(body?.ResultsByTime)) throw new Error('unexpected response: no ResultsByTime');
+  const groups = [];
+  for (const r of body.ResultsByTime) {
+    if (!Array.isArray(r?.Groups)) throw new Error('unexpected response: a period without Groups');
+    for (const g of r.Groups) {
+      const [service, type] = Array.isArray(g?.Keys) ? g.Keys : [];
+      if (typeof service !== 'string' || typeof type !== 'string') throw new Error('unexpected response: a group without a service and record type');
+      const m = g.Metrics?.UnblendedCost;
+      const amount = typeof m?.Amount === 'string' && m.Amount.trim() !== '' ? Number(m.Amount) : NaN;
+      if (!Number.isFinite(amount)) throw new Error('unexpected response: a group without an UnblendedCost amount');
+      if (amount !== 0 && m.Unit !== 'USD') throw new Error(`unexpected response: a cost in ${m.Unit ?? 'no unit'}, not USD`);
+      groups.push({ service, type, amount });
+    }
+  }
+  return { groups, next: typeof body.NextPageToken === 'string' && body.NextPageToken ? body.NextPageToken : null };
+}
+
+// Each service's use, what credits covered and what was charged, in dollars to the cent; every Tax
+// record is one line of its own. charged is the net of all record types, so used is charged plus
+// credits.  -> [{ service, used, credits, charged, tax? }], largest use first and tax last
+export function awsLines(groups) {
+  const by = new Map();
+  for (const g of groups) {
+    const service = g.type === TAX ? TAX : g.service;
+    const l = by.get(service) ?? { service, net: 0, credit: 0 };
+    l.net += g.amount;
+    if (g.type === 'Credit') l.credit -= g.amount;
+    by.set(service, l);
+  }
+  return [...by.values()]
+    .map(({ service, net, credit }) => {
+      const [charged, credits] = [cents(net), cents(credit)];
+      return { service, used: cents(charged + credits), credits, charged, ...(service === TAX ? { tax: true } : {}) };
+    })
+    .filter((l) => l.used || l.credits || l.charged)
+    .sort((a, b) => Number(!!a.tax) - Number(!!b.tax) || b.used - a.used || a.service.localeCompare(b.service));
+}
+
+// One `aws` call.  -> parsed JSON; throws with the reason
+export const awsCli = (args) => cliJson('aws', args, AWS_TIMEOUT_MS, { ...process.env, AWS_PAGER: '' });
+
+// A profile's groups for the period, in at most AWS_MAX_PAGES requests.
+async function costAndUsage(aws, profile, period) {
+  const groups = [];
+  let token = null;
+  for (let page = 0; page < AWS_MAX_PAGES; page++) {
+    const got = parseCostAndUsage(await aws(ceArgs(profile, period, token)));
+    groups.push(...got.groups);
+    token = got.next;
+    if (!token) return groups;
+  }
+  throw new Error(`more than ${AWS_MAX_PAGES} pages of results`);
+}
+
+// Due when the profile has no good reading this UTC day and no failed attempt in the last READ_EVERY_MS.
+export const profileDue = (rec, now) => !(rec?.at != null && utcDay(rec.at) === utcDay(now))
+  && !(rec?.failed && now - rec.failed.at < READ_EVERY_MS);
+
+// One AWS reading folded into the last one (`last`, the cache's `aws`, or null): each due profile is
+// read (with force, every one) and every other keeps its record. An organisation profile's figures
+// include its linked accounts. sources: costs.md's AWS entries. aws(args) -> parsed body.
+//   -> the new `aws`: { at, profiles: { <profile>: { profile, name, repo, credit, at, period, total, lines, failed } } }
+export async function readAws({ sources, last = null, aws = awsCli, now, force = false }) {
+  const profiles = {};
+  for (const s of sources) {
+    const had = last?.profiles?.[s.key];
+    const base = { profile: s.key, name: s.name, repo: s.repo ?? null, credit: s.credit ?? null };
+    if (!force && !profileDue(had, now)) { profiles[s.key] = { ...had, ...base }; continue; }
+    const period = readingPeriod(now);
+    try {
+      const lines = awsLines(await costAndUsage(aws, s.key, period));
+      profiles[s.key] = { ...base, at: now, period, total: totalOf(lines), lines, failed: null };
+    } catch (e) {
+      const keep = had?.lines ? { at: had.at, period: had.period, total: had.total, lines: had.lines } : {};
+      profiles[s.key] = { ...base, ...keep, failed: { at: now, why: e.message || String(e) } };
+    }
+  }
+  return { at: now, profiles };
+}
+
+// The AWS figures per name, its profiles' lines merged by service.
+//   -> { <name>: { repo, profiles: [profile], total, lines } }
+export function awsByName(aws) {
+  const out = {};
+  for (const p of Object.values(aws?.profiles ?? {})) {
+    const n = (out[p.name] ??= { repo: p.repo, profiles: [], total: 0, lines: [] });
+    n.profiles.push(p.profile);
+    for (const l of p.lines ?? []) {
+      const m = n.lines.find((x) => x.service === l.service);
+      if (!m) { n.lines.push({ ...l }); continue; }
+      for (const k of ['used', 'credits', 'charged']) m[k] = cents(m[k] + l[k]);
+    }
+    n.total = totalOf(n.lines);
+  }
+  return out;
+}
+
 // ---- the cache -------------------------------------------------------------------------------
 export function readCache(dir = costDir()) {
   try { return JSON.parse(readFileSync(cachePath(dir), 'utf8')); } catch { return null; }
@@ -289,26 +409,37 @@ function writeCache(cache, dir) {
   renameSync(part, cachePath(dir));
 }
 
-// Each supplier's sources in costs.md; AWS is not read yet.
+// Each supplier's sources in costs.md.
 const sourcesOf = (costs) => ({
   github: costs.entries.filter((e) => e.supplier === 'github'),
   vercel: costs.entries.filter((e) => e.supplier === 'vercel' && e.teamId),
+  aws: costs.entries.filter((e) => e.supplier === 'aws'),
 });
 
-// A supplier is due when it has sources and no reading, failed or not, in the last READ_EVERY_MS.
-// Workers running or not makes no difference.  -> ['github', …]
+// GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS; AWS when any
+// profile is.
+const hourly = (sources, had, now) => !(now - (had?.at ?? 0) < READ_EVERY_MS);
+const DUE = {
+  github: hourly,
+  vercel: hourly,
+  aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now)),
+};
+const NOT_DUE = { github: 'read under an hour ago', vercel: 'read under an hour ago', aws: 'every profile read today, or failed under an hour ago' };
+
+// The suppliers with sources that are due. Workers running or not makes no difference.
+//   -> ['github', 'aws', …]
 export function dueSuppliers({ costs = readCosts(E.costsPath()), cache = readCache(), now }) {
   if (!costs.exists) return [];
   return Object.entries(sourcesOf(costs))
-    .filter(([s, list]) => list.length && !(now - (cache?.[s]?.at ?? 0) < READ_EVERY_MS))
+    .filter(([s, list]) => list.length && DUE[s](list, cache?.[s], now))
     .map(([s]) => s);
 }
 
-const READERS = { github: readGithub, vercel: readVercel };
+const READERS = { github: readGithub, vercel: readVercel, aws: readAws };
 
 // Read every due supplier, one at a time per supplier however many callers race: each takes its
 // supplier's lock and checks it is still due under it.  -> { github: 'read' | why not, … }
-export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, vercel = vercelGet, now = Date.now(), force = false } = {}) {
+export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, vercel = vercelGet, aws = awsCli, now = Date.now(), force = false } = {}) {
   const out = {};
   if (!costs.exists) return out;
   for (const [supplier, sources] of Object.entries(sourcesOf(costs))) {
@@ -317,8 +448,8 @@ export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = 
     if (!lock.ok) { out[supplier] = 'another reading is running'; continue; }
     try {
       const cache = readCache(dir) ?? { v: 1 };
-      if (!force && !dueSuppliers({ costs, cache, now }).includes(supplier)) { out[supplier] = 'read under an hour ago'; continue; }
-      const reading = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, now });
+      if (!force && !dueSuppliers({ costs, cache, now }).includes(supplier)) { out[supplier] = NOT_DUE[supplier]; continue; }
+      const reading = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, aws, now, force });
       // Read again before writing: another caller may have written another supplier meanwhile.
       writeCache({ ...(readCache(dir) ?? { v: 1 }), [supplier]: reading }, dir);
       out[supplier] = 'read';
