@@ -17,10 +17,11 @@
 # Ids are case-sensitive as written.
 set -euo pipefail
 
-TICKET="${1:?usage: triage.sh <TICKET>}"
-
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+desk_take_batch "$@" || exit 2
+set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
+TICKET="${1:?usage: triage.sh [--batch <name>] <TICKET>}"
 KIND="$(node "$DESK_ENV_MJS" ticket-kind "$TICKET")" || exit 2
 desk_apply_batch_base || exit 1
 desk_load_paths || exit 1

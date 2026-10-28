@@ -22,13 +22,15 @@
 # when a requeue resumes the round its worker parked in.
 set -euo pipefail
 
-TICKET="${1:?usage: spawn-worker.sh <TICKET> <worktree> <session-uuid|preflight> [briefing-file]}"
+# shellcheck source=desk-env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+desk_take_batch "$@" || exit 2
+set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
+TICKET="${1:?usage: spawn-worker.sh [--batch <name>] <TICKET> <worktree> <session-uuid|preflight> [briefing-file]}"
 WT="${2:?worktree required}"
 SID="${3:?session uuid required}"
 BRIEFING="${4:-}"
 
-# shellcheck source=desk-env.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
 desk_load_paths || exit 1
 desk_require_headless || exit 1
 node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2

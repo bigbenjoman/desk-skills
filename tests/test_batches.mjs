@@ -179,5 +179,59 @@ t('DS-307 an unreadable batch refuses the key, naming that batch', r.code !== 0 
 const away = run({}, "console.log(JSON.stringify(B.belongsElsewhere('Z-2')))");
 t('DS-307 belongsElsewhere returns it rather than throwing', away.code === 0 && json(away).unreadable, true);
 
+// DS-303: `--batch <name>` on a command names its batch as DESK_BATCH does.
+const qcli = (args, env = {}) => {
+  const r = spawnSync('node', [join(BIN, 'queue.mjs'), ...args], { encoding: 'utf8', env: { ...base, ...env } });
+  return { code: r.status, out: r.stdout, err: r.stderr };
+};
+const x1Render = qcli(['render'], { DESK_BATCH: 'X-1' });
+t('DS-303 AC1 DESK_BATCH=X-1 renders X-1', x1Render.code === 0 && x1Render.out.includes('X-2') && !x1Render.out.includes('S-1'), true);
+for (const args of [['render', '--batch', 'X-1'], ['--batch', 'X-1', 'render'], ['render', '--batch=X-1']]) {
+  t(`DS-303 AC1 queue.mjs ${args.join(' ')} renders X-1's queue`, qcli(args).out, x1Render.out);
+}
+t('DS-303 AC1 no --batch still renders the standing queue', qcli(['render']).out.includes('S-1'), true);
+t('DS-303 AC1 the same name both ways is fine', qcli(['render', '--batch', 'X-1'], { DESK_BATCH: 'X-1' }).out, x1Render.out);
+const setOut = qcli(['--batch', 'X-3', 'set', 'X-4', 'note=hi']);
+t('DS-303 AC1 the other arguments parse as before', setOut.code === 0 && JSON.parse(readFileSync(namedQ('X-3'), 'utf8')).tickets['X-4'].note, 'hi');
+t('DS-303 AC1 an unsafe --batch is refused as DESK_BATCH is', qcli(['render', '--batch', '../x']).code, 4);
+t('DS-303 AC1 --batch with no name is refused', qcli(['render', '--batch']).code, 4);
+
+// AC2: two names, one each way or two flags, exit naming both and write nothing (init would write a queue).
+for (const [why, args, env, names] of [
+  ['DESK_BATCH and --batch', ['init', 'b', '--batch', 'NEW-2'], { DESK_BATCH: 'NEW-1' }, ['NEW-1', 'NEW-2']],
+  ['two --batch flags', ['--batch', 'NEW-1', 'init', 'b', '--batch=NEW-2'], {}, ['NEW-1', 'NEW-2']],
+]) {
+  const before = readdirSync(join(DESK_HOME, 'repos', SLUG, 'batches')).sort().join(',');
+  const r = qcli(args, env);
+  t(`DS-303 AC2 ${why}: config error exit`, r.code, 4);
+  t(`DS-303 AC2 ${why}: names both`, names.every((n) => r.err.includes(`"${n}"`)), true);
+  t(`DS-303 AC2 ${why}: writes nothing`, readdirSync(join(DESK_HOME, 'repos', SLUG, 'batches')).sort().join(','), before);
+}
+
+// The shell side: desk_take_batch takes --batch out of a script's arguments and exports it.
+const ENV_SH = join(BIN, 'desk-env.sh');
+const sh = (args, env = {}) => {
+  const src = `. '${ENV_SH}' || exit 9; desk_take_batch "$@" || exit $?; set -- \${DESK_ARGS[@]+"\${DESK_ARGS[@]}"}; desk_load_paths || exit 8; printf '%s|%s|%s\\n' "$DESK_BATCH" "$DESK_QUEUE" "$*"`;
+  const r = spawnSync('bash', ['-c', src, 'sh', ...args], { encoding: 'utf8', env: { ...base, DESK_REPO_ROOT: T, ...env } });
+  return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+};
+t('DS-303 shell --batch is taken out and exported', sh(['--for-worker', '--batch', 'X-1', 'T-1', 'fix/T-1']).out, `X-1|${namedQ('X-1')}|--for-worker T-1 fix/T-1`);
+t('DS-303 shell --batch=<name> too', sh(['T-1', '--batch=X-1']).out, `X-1|${namedQ('X-1')}|T-1`);
+t('DS-303 shell arguments after -- are left alone', sh(['T-1', '--', '--batch', 'X-1']).out, `|${standingQ}|T-1 -- --batch X-1`);
+t('DS-303 shell no --batch keeps the standing batch', sh(['T-1']).out, `|${standingQ}|T-1`);
+const shBoth = sh(['--batch', 'B'], { DESK_BATCH: 'A' });
+t('DS-303 AC2 shell DESK_BATCH and --batch: refused', shBoth.code, 4);
+t('DS-303 AC2 shell names both', shBoth.err.includes('"A"') && shBoth.err.includes('"B"'), true);
+t('DS-303 shell --batch with no name is refused', sh(['T-1', '--batch']).code, 4);
+
+// AC3, the merge driver: `--batch X-1` writes its log in X-1's state folder, not the standing one.
+const mdConfig = join(T, 'config-md.md');
+writeFileSync(mdConfig, '## 0. Repo\n\n| Field | Value |\n|---|---|\n| Default branch | `main` |\n\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `X-[0-9]+` |\n');
+const md = spawnSync('bash', [join(BIN, 'merge-driver.sh'), '--tickets', 'X-2', '--batch', 'X-1', '--log'], { encoding: 'utf8', env: { ...base, DESK_CONFIG: mdConfig, DESK_REPO_ROOT: T } });
+const mdLog = (dir) => { try { return readFileSync(join(dir, 'merge-driver.log'), 'utf8'); } catch { return null; } };
+t('DS-303 AC3 merge-driver.sh --batch X-1 logs to X-1 state', /merge driver exited/.test(mdLog(namedS('X-1')) ?? ''), true);
+t('DS-303 AC3 and not to the standing state', mdLog(standingS), null);
+t('DS-303 AC3 merge-driver.sh takes its other arguments as before', md.status, 1);
+
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');
