@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraSearch, jiraLine, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraSearch, jiraLine, repos, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
 import { addPutOff, putOffEntry } from '../desk/bin/not-now.mjs';
 import { takeBorrowLock } from '../desk/bin/borrow.mjs';
 let fails = 0;
@@ -212,6 +212,38 @@ const page9 = readFileSync(r9.page, 'utf8');
 t('DS-180 AC6 the repo with no Jira lists every park and says it was not checked', page9.includes('`N-1` (parked)') && page9.includes('Jira status was not checked for acme__nodone (its §4 Tracker is none), so its parks are listed as usual.'), true);
 t('DS-180 AC6 and other repos are checked as normal', `${page9.includes('`VPL-259` (parked)')} ${searches.map((s) => s.keys.join(',')).join(' ')}`, 'false VPL-259,VPL-271,VPL-300');
 t('DS-180 AC7 no queue changed across every run', [VP, ND].map((r) => readFileSync(r.queue, 'utf8')).every((s, i) => s === before[i]), true);
+
+// DS-306: every batch in a repo. acme__x has a standing batch and a named one, X-1, with a park in
+// each, plus an archived batch; acme__y has only a named batch with a decision log.
+const H = join(root, 'h'); const SR = join(root, 's');
+const nest = (slug, batch, tickets, decisions = []) => {
+  const tail = batch ? ['batches', batch] : [];
+  mkdirSync(join(SR, slug, ...tail, 'triage'), { recursive: true });
+  if (tickets) { mkdirSync(join(H, 'repos', slug, ...tail), { recursive: true }); writeFileSync(join(H, 'repos', slug, ...tail, 'queue.json'), JSON.stringify({ batch: batch ?? 'standing', tickets })); }
+  if (decisions.length) writeFileSync(join(SR, slug, ...tail, 'decisions.jsonl'), decisions.map((d) => `${JSON.stringify(d)}\n`).join(''));
+};
+nest('acme__x', null, { 'S-1': { key: 'S-1', state: 'parked', park: { question: 'which standing copy?' } } });
+nest('acme__x', 'X-1', { 'X-2': { key: 'X-2', state: 'parked', park: { question: 'which feature copy?' } } });
+nest('acme__x', '.done', { 'X-9': { key: 'X-9', state: 'parked', park: { question: 'archived?' } } });
+nest('acme__y', 'Y-1', null, [dec('y1', 'Y-2', at('2026-10-27', '12:00').toISOString())]);
+const two = repos({ home: H, root: SR });
+t('DS-306 every batch is listed, the standing one first, an archived one not', two.map((r) => `${r.slug}/${r.batch ?? '-'}`).join(' '), 'acme__x/- acme__x/X-1 acme__y/Y-1');
+t('DS-306 a named batch reads its own queue and state folder', `${two[1].queue} ${two[1].state}`, `${join(H, 'repos', 'acme__x', 'batches', 'X-1', 'queue.json')} ${join(SR, 'acme__x', 'batches', 'X-1')}`);
+const selfX1 = repos({ home: H, root: SR, self: { slug: 'acme__x', batch: 'X-1', state: two[1].state, queue: two[1].queue, self: true } });
+t('DS-306 the calling batch stays its own entry, and its repo\'s other batches are the caller\'s too', selfX1.map((r) => `${r.slug}/${r.batch ?? '-'}/${r.self ?? false}`).join(' '), 'acme__x/-/true acme__x/X-1/true acme__y/Y-1/false');
+const r10 = await checkin({ times: DEFAULT_TIMES, now: at('2026-10-27', '17:01'), dir, list: two, bin: BIN, self: 'acme__x', promote: () => null, checkJira: () => null });
+const page10 = readFileSync(r10.page, 'utf8');
+const section = (h) => { const from = page10.indexOf(`${h}\n`); if (from < 0) return ''; const next = page10.indexOf('\n## ', from + 1); return page10.slice(from, next < 0 ? undefined : next); };
+t('DS-306 AC1 the named batch\'s park is listed under the repo and X-1', section('## acme__x, batch X-1').includes('`X-2` (parked): which feature copy?'), true);
+t('DS-306 AC2 the standing batch\'s park is listed under the repo too', section('## acme__x').includes('`S-1` (parked): which standing copy?') && !section('## acme__x').includes('X-2'), true);
+t('DS-306 AC2 a named batch\'s decision log is read', section('## acme__y, batch Y-1').includes('id `y1`'), true);
+t('DS-306 an archived batch asks nothing', page10.includes('X-9'), false);
+t('DS-306 the push counts repos, not batches', /2 question\(s\), 1 decision\(s\) across 2 repo\(s\)/.test(r10.push?.text), true);
+const ansX = answer({ slug: 'acme__x', ticket: 'X-2', text: 'Use "Coming soon"', dir, list: two, bin: BIN, now: new Date('2026-10-27T17:10:00.000Z') });
+t('DS-306 an answer reaches the batch that holds the ticket', `${ansX.ok} ${existsSync(join(two[1].state, 'briefings', 'X-2.md'))} ${existsSync(join(two[0].state, 'briefings', 'X-2.md'))}`, 'true true false');
+t('DS-306 and marks it under that batch\'s heading', readFileSync(r10.page, 'utf8').includes('- [x] `X-2` (parked): which feature copy? — answered'), true);
+const ovY = override({ slug: 'acme__y', id: 'y1', choice: 'b', dir, list: two, by: 'Ben', now: new Date('2026-10-27T17:12:00.000Z') });
+t('DS-306 an override is logged in the batch whose log took the call', `${ovY.ok} ${readDecisions(two[2].state).overrides[0]?.override_of}`, 'true y1');
 
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);

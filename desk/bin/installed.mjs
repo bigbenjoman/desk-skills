@@ -75,20 +75,27 @@ export function driverArgs(args) {
   return out.tickets.length ? out : null;
 }
 
-// The state directories under ~/.desk-autopilot whose merge driver is alive.
+// The batch state directories under ~/.desk-autopilot whose merge driver is alive: each repo's standing
+// batch (`batch` null), then its named batches under `batches/<name>/`.
 function runningDrivers(root) {
   const out = [];
   for (const slug of existsSync(root) ? readdirSync(root).sort() : []) {
-    const dir = join(root, slug);
-    const pid = lockPid(dir);
-    if (pid && alive(pid)) out.push({ slug, dir, pid });
+    const nested = join(root, slug, E.BATCHES_DIR);
+    let names = [];
+    try { names = readdirSync(nested, { withFileTypes: true }).filter((d) => d.isDirectory() && E.SAFE_ID.test(d.name)).map((d) => d.name).sort(); } catch { /* no named batches */ }
+    for (const batch of [null, ...names]) {
+      const dir = batch ? join(nested, batch) : join(root, slug);
+      const pid = lockPid(dir);
+      if (pid && alive(pid)) out.push({ slug, batch, dir, pid });
+    }
   }
   return out;
 }
 
 // One line saying what became of a running driver.
-function restartDriver({ slug, dir, pid }, ps) {
-  const name = `merge driver for ${slug} (pid ${pid})`;
+function restartDriver({ slug, batch = null, dir, pid }, ps) {
+  const who = batch ? `${slug} batch ${batch}` : slug;
+  const name = `merge driver for ${who} (pid ${pid})`;
   const me = ps.find((p) => p.pid === pid);
   const args = me && driverArgs(me.args);
   if (!args) return `${name}: left running on the old code, its command line names no tickets to start it again with`;
@@ -103,7 +110,9 @@ function restartDriver({ slug, dir, pid }, ps) {
   for (const p of [pid, ...kids.map((k) => k.pid)]) { try { process.kill(p, 'SIGTERM'); } catch { /* gone */ } }
   if (!waitFor(() => !alive(pid) && lockPid(dir) !== pid)) return `${name}: did not stop within ${WAIT_MS / 1000}s of SIGTERM, so it was not started again`;
   const env = { ...process.env, DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
-  for (const k of ['DESK_QUEUE', 'DESK_STATE', 'DESK_SLUG', 'DESK_REPO_ROOT']) delete env[k];
+  for (const k of ['DESK_QUEUE', 'DESK_STATE', 'DESK_SLUG', 'DESK_REPO_ROOT', 'DESK_BATCH']) delete env[k];
+  // A named batch's driver acts on that batch's queue, and reads its base as the batch does.
+  if (batch) Object.assign(env, { DESK_BATCH: batch, DESK_QUEUE: E.batchPaths(slug, batch).queue });
   const argv = ['--tickets', args.tickets.join(' '), ...(args.deps.length ? ['--deps', args.deps.join(' ')] : []), '--log'];
   let fd;
   try {
@@ -115,7 +124,7 @@ function restartDriver({ slug, dir, pid }, ps) {
   finally { if (fd !== undefined) closeSync(fd); }
   const now = waitFor(() => { const p = lockPid(dir); return Boolean(p && p !== pid && alive(p)); }) ? lockPid(dir) : null;
   return now
-    ? `merge driver for ${slug}: restarted on the new code (pid ${pid} -> ${now}) for ${args.tickets.join(' ')}`
+    ? `merge driver for ${who}: restarted on the new code (pid ${pid} -> ${now}) for ${args.tickets.join(' ')}`
     : `${name}: stopped and started again, but no new driver holds the lock yet; see ${join(dir, 'merge-driver.log')}`;
 }
 

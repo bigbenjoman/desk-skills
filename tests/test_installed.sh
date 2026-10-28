@@ -10,7 +10,7 @@ set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"
 T="$(cd "$(mktemp -d)" && pwd -P)"
 cleanup(){
-  for f in "$T"/home/.desk-autopilot/*/merge-driver.lock.d/pid; do
+  for f in "$T"/home/.desk-autopilot/*/merge-driver.lock.d/pid "$T"/home/.desk-autopilot/*/batches/*/merge-driver.lock.d/pid; do
     [ -f "$f" ] || continue
     p="$(cat "$f")"; kill "$p" 2>/dev/null; pkill -P "$p" 2>/dev/null
   done
@@ -19,7 +19,7 @@ cleanup(){
 trap cleanup EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/desk"
 export HOME="$T/home"
-unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_QUEUE DESK_AUTOPILOT_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO
+unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_QUEUE DESK_AUTOPILOT_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO DESK_BATCH
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" DESK_RESTART_WAIT_MS=5000
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -45,6 +45,7 @@ for f in supervisor.mjs desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs 
 cat > "$T/bin/merge-driver.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$(pwd) \$*" >> "$T/driver.calls"
+echo "\$DESK_AUTOPILOT_STATE|\${DESK_QUEUE:-}|\${DESK_BATCH:-}" >> "$T/driver.env"
 D="\$DESK_AUTOPILOT_STATE/merge-driver.lock.d"
 mkdir -p "\$D"; echo \$\$ > "\$D/pid"
 trap 'rm -rf "\$D"; exit 143' TERM
@@ -63,13 +64,14 @@ chmod +x "$T/bin/merge-driver.sh" "$T/fakes/launchctl"
 export PATH="$T/fakes:$PATH"
 
 ST="$HOME/.desk-autopilot/acme__widgets"; mkdir -p "$ST"
-LOCKPID="$ST/merge-driver.lock.d/pid"
+# The batch state directory the next driver() uses: the standing batch's unless DST names another.
+DST=""
 count(){ if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
-held(){ cat "$LOCKPID" 2>/dev/null; }
+held(){ cat "${DST:-$ST}/merge-driver.lock.d/pid" 2>/dev/null; }
 # A driver started as a tick leaves it: detached, so it is no child of this shell. Waits for its lock.
 driver(){
-  rm -rf "$ST/merge-driver.lock.d"
-  (cd "$T/repo" && DESK_AUTOPILOT_STATE="$ST" "$T/bin/merge-driver.sh" "$@" </dev/null >/dev/null 2>&1 &)
+  rm -rf "${DST:-$ST}/merge-driver.lock.d"
+  (cd "$T/repo" && DESK_AUTOPILOT_STATE="${DST:-$ST}" "$T/bin/merge-driver.sh" "$@" </dev/null >/dev/null 2>&1 &)
   i=0; while [ -z "$(held)" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
   # and for it to reach its sleep (or, busy, its tail)
   i=0; while ! pgrep -P "$(held)" >/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
@@ -103,6 +105,7 @@ check "AC1: the old driver is stopped" '! kill -0 "$old" 2>/dev/null'
 check "AC1: a new driver holds the lock" '[ -n "$new" ] && [ "$new" != "$old" ] && kill -0 "$new"'
 check "AC1: it is started from the repo root with the same tickets and deps, logging" '[ "$(tail -1 "$T/driver.calls")" = "$T/repo --tickets A B --deps B:A,C D:A --log" ]'
 check "AC1: the line names it as restarted on the new code" 'grep -q "^merge driver for acme__widgets: restarted on the new code (pid $old -> $new) for A B$" <<< "$out"'
+check "DS-306 AC5: the standing batch's driver gets its state folder and no queue or batch of its own, as before" '[ "$(tail -1 "$T/driver.env")" = "$ST||" ]'
 
 kill "$new" 2>/dev/null; pkill -P "$new"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
@@ -116,6 +119,21 @@ check "AC2: the line names it and says when it moves to the new code" 'grep -q "
 kill "$busy" 2>/dev/null; pkill -P "$busy"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 rm -rf "$ST/merge-driver.lock.d"
+
+# ---- DS-306 AC3: a named batch's driver is restarted on that batch's queue and state folder ------
+DST="$ST/batches/X-1"; mkdir -p "$DST" "$ST/batches/.done"
+driver --tickets "X-2 X-3" --log
+old="$(held)"
+out=$(restart); rc=$?
+new="$(held)"
+check "DS-306 AC3: the named batch's driver is stopped and a new one holds its lock" '[ $rc -eq 0 ] && ! kill -0 "$old" 2>/dev/null && [ -n "$new" ] && [ "$new" != "$old" ] && kill -0 "$new"'
+check "DS-306 AC3: it acts on X-1's state folder and queue, as batch X-1" '[ "$(tail -1 "$T/driver.env")" = "$DST|$T/desk/repos/acme__widgets/batches/X-1/queue.json|X-1" ]'
+check "DS-306 AC3: with the same tickets, from the repo root" '[ "$(tail -1 "$T/driver.calls")" = "$T/repo --tickets X-2 X-3 --log" ]'
+check "DS-306 AC3: the line names the batch" 'grep -q "^merge driver for acme__widgets batch X-1: restarted on the new code (pid $old -> $new) for X-2 X-3$" <<< "$out"'
+check "DS-306 AC3: and it is the only driver restarted" '[ "$(grep -c "^merge driver" <<< "$out")" = 1 ]'
+kill "$new" 2>/dev/null; pkill -P "$new"
+i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+rm -rf "$DST/merge-driver.lock.d"; DST=""
 
 # ---- AC3: a loaded supervisor agent is rewritten with this node and reloaded --------------------
 AG="$HOME/Library/LaunchAgents"; PL="$AG/com.desk-skills.supervisor.acme__widgets.plist"; mkdir -p "$AG"
