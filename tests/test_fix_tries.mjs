@@ -77,7 +77,7 @@ t('AC1 and quotes the verdict', comment.includes(`> \`sha=${HEAD} p0=0 p1=0 p2=0
 
 // ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker, twice
 const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0';
-const reviewBody = (counts, rest = []) => [`<!-- desk-review:local -->`, `<!-- desk-review:verdict v=1 sha=${HEAD} ${counts} deferred=0 gaps=0 vendor=codex round=1 -->`, '**desk-review, round 1**', '', ...rest].join('\n');
+const reviewBody = (counts, rest = []) => [`<!-- desk-review:local -->`, `<!-- desk-review:verdict v=1 sha=${HEAD} ${counts} deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, '**desk-review, round 1**', '', ...rest].join('\n');
 const p1Body = reviewBody('p0=0 p1=1 p2=1', ['P1 (1)', ' packages/core/src/money.ts:12         second currency formatter', '                                       — packages/core/src/format.ts:8 is the original', '', 'P2 (1)', ' apps/web/src/Pager.tsx:1   no consumer', '', '### Requirement gaps', ' AC3: src/csv.ts:4 no VAT column']);
 const draft = (body, o = {}) => ({ number: 702, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'BLOCKED', body: '', reviews: [{ author: { login: 'ben' }, body }], checks: [ok('tests')], ...o });
 const ucfg = { perm: 'yes', localReview: '/desk-review', clean: CLEAN, handle: 'ben', required: ['tests'] };
@@ -95,7 +95,7 @@ t('DS-281 AC1 the brief quotes the verdict', brief281.includes(`(\`sha=${HEAD} p
 const p0Body = reviewBody('p0=1 p1=1 p2=0', ['- **P0** `apps/api/routes/invoices.py:67` invoice total rounded per line', '- **P1** `src/b.ts:3` second formatter']);
 t('DS-281 AC1 findings that open with their own severity are read too', reviewFindings(p0Body).map((x) => x.sev).join(','), 'P0,P1');
 t('DS-281 AC1 a capitalised file is a finding, and a capitals heading ends the run', reviewFindings('P1 (2)\n README.md:3  stale\nREQUIREMENT GAPS (1)  DS-9\n AC3: src/a.ts:4 gap').map((x) => x.text).join('|'), 'README.md:3  stale');
-t('DS-281 AC1 a review listing no P1 with its file:line (posted inline) is left for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: 'nothing here' }), null);
+t('DS-281 AC1 a review listing no P1 with its file:line, in its body or inline, is left for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: 'nothing here' }), null);
 const task281 = fixTask(tk({ fix: r1.fix }));
 t('DS-281 AC2 the task reviews the new head and posts it on the PR', task281.includes('review the new head with desk-review and post that review on the PR'), true);
 t('DS-281 AC2 and leaves the PR in draft', task281.includes('leave the PR in draft'), true);
@@ -110,5 +110,24 @@ t('DS-281 AC6 and reviewFix leaves it alone', reviewFix(tk(), { pr: 702, head: H
 const mixedTries = [{ try: 1, head: 'b'.repeat(40), kind: 'checks', what: 'red: Lint' }];
 t('DS-281 AC7 a checks try counts: the review try is try 2', reviewFix(tk({ fix_tries: mixedTries }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: p1Body })?.fix.try, 2);
 t('DS-281 AC7 and a review try counts toward a checks try', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), both, ctx())?.why, 'still red after 2 fix tries: Backend tests, Lint');
+
+// ---- a review whose P0s and P1s are posted inline goes to a fix worker too
+const inlineBody = reviewBody('p0=0 p1=1 p2=0', ['P2 (0)']);
+const inlineP1 = { path: 'src/money.ts', line: 12, body: '**P1** second currency formatter\nsrc/format.ts:8 is the original' };
+t('DS-299 the undraft call carries the review\'s id', undraftCall(tk(), draft(inlineBody, { reviews: [{ id: 'PRR_1', author: { login: 'ben' }, body: inlineBody }] }), ucfg)?.reviewId, 'PRR_1');
+const r299 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' }, body: inlineBody, comments: [inlineP1] });
+t('DS-299 AC1 an inline P1 and none in the body is requeued for try 1', `${r299?.call} ${r299?.fix.try} ${r299?.fix.kind}`, 'requeue 1 review');
+t('DS-299 AC1 the finding is quoted with its file and line', JSON.stringify(r299?.fix.findings), JSON.stringify([{ sev: 'P1', text: 'src/money.ts:12 second currency formatter src/format.ts:8 is the original' }]));
+t('DS-299 AC1 and the brief quotes it', fixBrief(tk({ fix: r299.fix })).includes('- P1: src/money.ts:12 second currency formatter'), true);
+const both299 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '1', p1: '1' }, body: p1Body, comments: [
+  { path: 'packages/core/src/money.ts', line: 12, body: '**P1** second currency formatter' },
+  { path: 'packages/core/src/money.ts', line: 1, body: '**P1** a different line' },
+  { path: 'apps/api/routes/invoices.py', line: 67, body: '**P0:** invoice total rounded per line' },
+] });
+t('DS-299 AC2 a finding in the body and inline is quoted once, and the rest each once', both299?.fix.findings.map((x) => `${x.sev} ${x.text.split(' ')[0]}`).join('|'), 'P1 packages/core/src/money.ts:12|P1 packages/core/src/money.ts:1|P0 apps/api/routes/invoices.py:67');
+t('DS-299 AC3 inline comments that could not be read leave an inline-only review for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: null }), null);
+t('DS-299 AC4 inline comments holding only P2s are not requeued', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: [{ path: 'src/a.ts', line: 3, body: '**P2** naming' }, { path: 'src/b.ts', line: 4, body: 'a reply, no severity' }] }), null);
+t('DS-299 inline comments are read only once a try is left', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, comments: () => { throw new Error('read'); } })?.call, 'stuck');
+t('DS-299 and read when one is', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] })?.fix.findings.length, 1);
 
 process.exit(fails ? 1 : 0);

@@ -89,11 +89,31 @@ export function reviewFindings(body) {
   return found;
 }
 
+// The P0 and P1 findings among a review's inline comments ({ path, line, body }), as { sev, text, at }
+// with the text opening `at`, its `path:line`, as a body finding does. A comment's severity opens its
+// body (`**P1** …`); one with none, or a P2, is not a finding here.
+export function inlineFindings(comments) {
+  return (comments ?? []).flatMap((c) => {
+    const [first = '', ...rest] = String(c?.body ?? '').trim().split(/\r?\n/);
+    const own = /^[#>*_\s-]*(P[0-3])\b[*_:\s—-]*/.exec(first);
+    if (!own || (own[1] !== 'P0' && own[1] !== 'P1') || !c.path) return [];
+    const said = [first.slice(own[0].length), ...rest].map((l) => l.trim()).filter(Boolean).join(' ');
+    const at = c.line != null ? `${c.path}:${c.line}` : c.path;
+    return [{ sev: own[1], text: `${at} ${said}`.trim(), at }];
+  });
+}
+
+// A finding's text names `path:line` as its own: the same path and line, not a longer one.
+const names = (text, at) => new RegExp(`(^|[^\\w./-])${at.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`).test(text);
+
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
 // found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Only P2s
-// and gaps are left as they are (null), and so is a review whose body lists no P0 or P1 with its
-// file:line (posted inline, which a worker has no `gh api` to read): the person settles those.
-// review: { pr, head, verdict, body }.
+// and gaps are left as they are (null), and so is a review that lists no P0 or P1 with its file:line
+// in its body or its inline comments: the person settles those. An inline finding the body also
+// lists at the same file:line is quoted once, from the body.
+// review: { pr, head, verdict, body, comments } (comments as inlineFindings reads them, or a function
+// returning them, called only once a try is left; null when they could not be read, so only the body
+// counts).
 export function reviewFix(t, review) {
   const counts = reviewCounts(review.verdict);
   if (!counts || !review.head) return null;
@@ -101,7 +121,10 @@ export function reviewFix(t, review) {
   if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === review.head)) {
     return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${counts}` };
   }
-  const findings = reviewFindings(review.body);
+  const listed = reviewFindings(review.body);
+  const comments = typeof review.comments === 'function' ? review.comments() : review.comments;
+  const inline = inlineFindings(comments).filter((x) => !listed.some((b) => names(b.text, x.at)));
+  const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   if (!findings.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
   return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${counts}`, verdict, findings } };
