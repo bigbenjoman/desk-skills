@@ -89,7 +89,7 @@ put('delta', { port: 3400, beat: 3, tickets: { 'D-1': { state: 'running', lane: 
 put('epsilon', { port: 3600 });
 
 const N = await import('../desk/bin/needs-you.mjs');
-const { loadRepos } = await import('../desk/bin/desk-q.mjs');
+const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
 const queueOf = (name) => JSON.parse(readFileSync(join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), 'utf8'));
 const cli = (...args) => { const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
 
@@ -385,6 +385,29 @@ const l1 = rowText(lr, lr.rows.find((x) => x.t.key === 'L-1'));
 t(`DS-344 AC1 desk-q shows a paused worker on the weekly limit with its reset day and time (${l1})`, /^paused on the weekly usage limit until \S+ \d+ \S+ \d\d:\d\d, then resumes by itself$/.test(l1), true);
 put('lambda', { port: 4100, beat: 1, supervised: true, tickets: { 'L-1': { state: 'running', lane: 'A', stage: '4/9' } } });
 t('DS-344 AC5 with no hold there is no usage item', N.collect({ word: 'lambda' }).items.length, 0);
+
+// ---- DS-314 AC2: a PR the person put back to draft (the pass recorded `undraft` held) needs them
+const landed = (n, more = {}) => ({ state: 'done', lane: 'A', result: { pr: n }, pr_status: { pr: n, state: 'OPEN', isDraft: true, mergeable: 'MERGEABLE', checks: [], at: minsAgo(1), ...more } });
+put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
+  'E-1': { ...landed(51), undraft: { call: 'held', why: 'it was put back to draft by ben', action: 'undraft #51 to release it', sha: 'a', pr: 51 } },
+  'E-2': { ...landed(52), undraft: { call: 'wait', why: 'checks running', sha: 'a', pr: 52 } },
+  'E-3': { ...landed(53, { isDraft: false }), undraft: { call: 'held', why: 'it was put back to draft', action: 'undraft #53 to release it', sha: 'a', pr: 53 } },
+} });
+const ce = N.collect({ word: 'iota' });
+const e1 = ce.items.find((i) => i.t.key === 'E-1');
+t('DS-314 AC2 only the PR the person put back to draft is held; one out of draft is an ordinary PR item, one being undrafted is none',
+  ce.items.map((i) => `${i.t.key}:${i.kind}`).sort().join(), 'E-1:held,E-3:pr');
+t('DS-314 AC2 it is held by them on its PR, undrafting it the release',
+  `${e1?.kind} | ${e1?.need} | ${e1?.actions.map(([a]) => a).join()}`,
+  'held | you put PR #51 back to draft, so nothing undrafts or merges it: undraft it to release it (gh pr ready 51 --repo acme/iota) | done,not-now');
+const er = loadRepos().find((x) => x.slug === 'acme__iota');
+t('DS-314 AC2 desk-q counts it as needing you, and the one being undrafted as merging', [...er.rows, ...er.prs].map((x) => `${x.t.key}:${x.k}`).join(), 'E-1:needs,E-2:merging,E-3:needs');
+const eScreen = repoScreen(er);
+t('DS-314 AC2 desk-q\'s Queue lists it under Needs you, held by them on its PR',
+  /Needs you · 2/.test(eScreen) && /E-1 +◆ needs you +#51 · held by you in draft · undraft it to release/.test(eScreen), true);
+t('DS-314 AC2 its ticket page says how to release it',
+  /Held by you: you put its PR #51 back to draft/.test(ticketScreen(er, 'E-1')) && ticketScreen(er, 'E-1').includes('gh pr ready 51 --repo acme/iota'), true);
+t('DS-314 AC2 done records nothing', N.record({ word: 'iota', ticket: 'E-1', action: 'done' }).ok, true);
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

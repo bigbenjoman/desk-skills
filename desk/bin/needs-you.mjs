@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
@@ -75,6 +75,11 @@ const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true 
 function itemOf(r, x) {
   const t = x.t;
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
+  if (heldDraft(t)) {
+    const n = t.result.pr;
+    return { kind: 'held', need: `you put PR #${n} back to draft, so nothing undrafts or merges it: undraft it to release it (gh pr ready ${n} --repo ${r.slug.replace('__', '/')})`,
+      actions: [['done', 'only you can undraft it; say done once you have'], ['not-now']] };
+  }
   // An unmerged PR: only the person's step on GitHub moves it, as its desk-q row says. A draft whose
   // review left gaps also takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
