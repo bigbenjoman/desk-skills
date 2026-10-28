@@ -187,19 +187,20 @@ const WAITS = /^(?:\s*(?:,|and|or)\s*[A-Z][A-Z0-9]*-\d+)*\s+(?:reads?|needs?|req
 const linked = (t, other) => t.links.some((l) => l.key === other)
 
 // How a line orders its ticket against `key`: `blocked-by`, `blocks` or null. Only the clause holding
-// the key counts (split at sentence ends, semicolons and brackets), and only wording before the key,
-// or the key as the subject of a dependency verb; the nearest ordering word before the key wins.
+// each mention of the key counts (split at sentence ends, semicolons and brackets): the nearest
+// ordering word before the key, else the key as the subject of a dependency verb. Mentions that
+// disagree order nothing.
 export function orderOf(line, key) {
-  const text = String(line), at = text.search(new RegExp(`\\b${key}\\b`))
-  if (at < 0) return null
-  const cut = /[.!?](?=\s|$)|[;()[\]]/g
-  let start = 0, end = text.length
-  for (const m of text.matchAll(cut)) { if (m.index < at) start = m.index + 1; else { end = m.index; break } }
-  const before = text.slice(start, at), after = text.slice(at + key.length, end)
-  if (WAITS.test(after)) return 'blocks'
-  const last = (re) => Math.max(-1, ...[...before.matchAll(new RegExp(re.source, 'gi'))].map((m) => m.index))
-  const dep = last(DEPENDS), feed = last(FEEDS)
-  return dep < 0 && feed < 0 ? null : dep > feed ? 'blocked-by' : 'blocks'
+  const text = String(line), cuts = [...text.matchAll(/[.!?](?=\s|$)|[;()[\]]/g)].map((m) => m.index)
+  const last = (s, re) => Math.max(-1, ...[...s.matchAll(new RegExp(re.source, 'gi'))].map((m) => m.index))
+  const found = new Set()
+  for (const { index: at } of text.matchAll(new RegExp(`\\b${key}\\b`, 'g'))) {
+    const start = Math.max(-1, ...cuts.filter((c) => c < at)) + 1, end = cuts.find((c) => c > at) ?? text.length
+    const before = text.slice(start, at), dep = last(before, DEPENDS), feed = last(before, FEEDS)
+    const verb = dep > feed ? 'blocked-by' : feed > dep ? 'blocks' : WAITS.test(text.slice(at + key.length, end)) ? 'blocks' : null
+    if (verb) found.add(verb)
+  }
+  return found.size === 1 ? [...found][0] : null
 }
 
 // Blocks links that form a loop through open tickets: [[A, B, …, A]], each loop once.

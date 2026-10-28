@@ -219,6 +219,10 @@ t('order: a word in another sentence, after the key or in brackets orders nothin
   ['This waits for review. DS-279 is in scope.', 'DS-279 lands after this.', 'It still waits for Ben (DS-279 draws it); after this it moves.', 'See DS-279 for context.'].map((l) => orderOf(l, 'DS-279')),
   [null, null, null, null])
 t('order: the nearest word before the key wins', orderOf('Once merged, this goes before DS-279.', 'DS-279'), 'blocks')
+t('order: wording before the key outranks a verb after it', ['Ship after DS-279 reads the records.', 'Once DS-279 reads its config, wire it in.', 'This needs what DS-279 reads.'].map((l) => orderOf(l, 'DS-279')),
+  ['blocked-by', 'blocked-by', 'blocked-by'])
+t('order: every mention of the key is read', orderOf('See DS-279 for context. Ship after DS-279 merges.', 'DS-279'), 'blocked-by')
+t('order: mentions that disagree order nothing', orderOf('Lands before DS-279. Then after DS-279 merges, retry.', 'DS-279'), null)
 
 // AC4
 const moved = of('stale', 'KAN-40')[0] ?? {}
