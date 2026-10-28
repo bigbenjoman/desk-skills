@@ -763,15 +763,16 @@ views10.ticket = keysLine(N10r);
 N10r.ui.finish(0);
 const has = (line, k) => line.includes(k);
 const want10 = {
-  'every queue': { yes: ['←→ or 1–4 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
-  'every timeline': { yes: ['←→ or 1–4 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
-  'every days': { yes: ['←→ or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'every epics': { yes: ['←→ or 1–4 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'repo queue': { yes: ['←→ or 1–4 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
-  'repo timeline': { yes: ['←→ or 1–4 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
-  'repo days': { yes: ['←→ or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  'repo epics': { yes: ['←→ or 1–4 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–4 view', 'z scale', 'a all repos'] },
+  'every queue': { yes: ['←→ or 1–5 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
+  'every timeline': { yes: ['←→ or 1–5 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
+  'every days': { yes: ['←→ or 1–5 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'every epics': { yes: ['←→ or 1–5 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'every costs': { yes: ['←→ or 1–5 view', '↑↓ select'], no: ['enter open', 'esc back', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'repo queue': { yes: ['←→ or 1–5 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
+  'repo timeline': { yes: ['←→ or 1–5 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
+  'repo days': { yes: ['←→ or 1–5 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  'repo epics': { yes: ['←→ or 1–5 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–5 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
   ...yes.filter((k) => !has(views10[v] ?? '', k)).map((k) => `${v} lacks ${k}`), ...no.filter((k) => has(views10[v] ?? '', k)).map((k) => `${v} lists ${k}`)]).join(' | '), '');
@@ -782,9 +783,9 @@ await sleep(20);
 // The act line is itself wider than 80, so it carries on, indented, under its label.
 const k80 = N80.frame().slice(N80.frame().findIndex((l) => l.startsWith('move  ')));
 t('DS-164 AC10 (DS-186 AC10) at 80 columns the Queue\'s keys go on a move line and an act line, none lost',
-  `${k80[0] === 'move  ↑↓ select · enter open · ←→ or 1–4 view · esc back'} ${k80[1].startsWith('act   shift+↑↓ move · ')} ${k80.slice(2).every((l) => l.startsWith('      '))} ${k80.at(-1).endsWith('q quit')} ${k80.every((l) => l.length <= 80)}`,
+  `${k80[0] === 'move  ↑↓ select · enter open · ←→ or 1–5 view · esc back'} ${k80[1].startsWith('act   shift+↑↓ move · ')} ${k80.slice(2).every((l) => l.startsWith('      '))} ${k80.at(-1).endsWith('q quit')} ${k80.every((l) => l.length <= 80)}`,
   'true true true true true');
-t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–4', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
+t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–5', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
 N80.ui.finish(0);
 
 // A row clicked is selected and opened; a click report cut across two reads is still one click.
@@ -861,7 +862,28 @@ await Fa.press('\t'); await Fa.press('\t'); await Fa.press('\t');
 t('Tab in an epic skips the Epics view', where(Fa), 'desk-q › feat › Smart scheduling, your day | 1 Queue | queue');
 await Fa.press('3'); await Fa.press(RIGHT); await Fa.press(SS3_RIGHT);
 t('DS-182 AC3 → on By day in an epic stays on By day', `${where(Fa)} | ${Fa.frame().includes(Q.NO_EPICS_HERE)}`, 'desk-q › feat › Smart scheduling, your day | 3 By day | days | false');
+// DS-290 AC4-AC6: Costs are home's only.
+const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
+const tabLine = (s) => s.output.buf.split('\x1b[H').at(-1).split('\r\n')[1] ?? '';
+t('DS-290 AC4 an epic\'s tab line dims 5 Costs', `${Fa.frame()[1].startsWith(ALL_TABS)} | ${tabLine(Fa).includes(`${G}5 Costs\x1b[39m`)}`, 'true | true');
+await Fa.press('5');
+t('DS-290 AC5 5 in an epic leaves the view as it is, and says why', `${where(Fa)} | ${Fa.frame().includes(Q.NO_COSTS_HERE)}`, 'desk-q › feat › Smart scheduling, your day | 3 By day | days | true');
+await Fa.press('\t');
+const tabbed = where(Fa);
+await Fa.press('\x1b[Z');
+t('DS-290 AC6 Tab and shift+Tab in an epic skip Costs', `${tabbed} || ${where(Fa)}`, 'desk-q › feat › Smart scheduling, your day | 1 Queue | queue || desk-q › feat › Smart scheduling, your day | 3 By day | days');
 Fa.ui.finish(0);
+
+// DS-290 AC7: a repo's tab line dims 5 Costs too, and 5 there changes nothing.
+const Rc = nav(tidyQ);
+await sleep(20);
+const repoTabs = `${Rc.frame()[1].startsWith(ALL_TABS)} | ${tabLine(Rc).includes(`${G}5 Costs\x1b[39m`)}`;
+await Rc.press('4'); await Rc.press('5');
+const after5 = `${where(Rc)} | ${Rc.frame().includes(Q.NO_COSTS_HERE)}`;
+await Rc.press(RIGHT);
+t('DS-290 AC7 a repo\'s tab line dims 5 Costs, and 5 or → from Epics leave the view as it is',
+  `${repoTabs} || ${after5} || ${where(Rc)}`, 'true | true || desk-q › tidy | 4 Epics | epics | true || desk-q › tidy | 4 Epics | epics');
+Rc.ui.finish(0);
 
 const everyFeat = lines(Q.timelineScreen(featRepos, null, { now: FIXED }));
 t('DS-166 AC10 every repo\'s Timeline stays one bar per ticket, grouped by repo', `${everyFeat.includes('  feat · 6 tickets')} ${['F-1', 'F-2', 'F-4', 'F-6'].every((k) => everyFeat.some((l) => l.startsWith(`  ${pad10(k)}`)))} ${everyFeat.some((l) => /Other work|Smart scheduling/.test(l))}`,
@@ -1356,7 +1378,7 @@ S104.output.rows = 120; S104.output.resize();
 await sleep(20);
 const f104s = S104.frame();
 t('DS-215 AC18 home\'s tab line carries no parked note; the note is in home\'s notes',
-  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets that need your answer have no date/.test(l))}`, 'true true');
+  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets that need your answer have no date/.test(l))}`, 'true true');
 const more215 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 }));
 const moreAt = more215.findIndex((l) => /^ {2}\d+ more set up with no batch: /.test(l));
 const more104 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30, width: 60 }));

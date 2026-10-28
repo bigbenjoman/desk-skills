@@ -415,6 +415,53 @@ function writeCache(cache, dir) {
   renameSync(part, cachePath(dir));
 }
 
+// ---- what was charged, by name -------------------------------------------------------------------
+// Where each supplier's reading keeps its figures, each entry `{ name?, total, … }` keyed by its
+// source (a GitHub repo, an AWS profile), or for Vercel a figure keyed by name; an entry with no
+// `name` bills its key. Each supplier's `shared` is what no name owns: a figure, or entries keyed by
+// account. An entry with no `total` (can't read, or no good reading yet) has no figure.
+const BILLED_BY = { github: 'repos', vercel: 'names', aws: 'profiles' };
+const figure = (e) => (typeof e === 'number' ? e : e?.total);
+const monthOf = (p) => p.year * 12 + p.month;
+
+// This month's charges by name, from the newest reading's month: suppliers read for an earlier month
+// are left out. Every sum is taken in whole cents, so the lines add up to the total exactly.
+// names: every name the cost sources list, so one with no figure still has a row.
+//   -> { period, total, suppliers: [{ supplier, total }], names: [{ name, total | null }], shared | null },
+//      most charged first; null with no reading
+export function chargesByName({ cache, names = [] }) {
+  const read = Object.keys(BILLED_BY).filter((s) => cache?.[s]?.period);
+  if (!read.length) return null;
+  const period = read.map((s) => cache[s].period).reduce((a, p) => (monthOf(p) > monthOf(a) || (monthOf(p) === monthOf(a) && p.to > a.to) ? p : a));
+  const by = new Map(names.map((n) => [n, null]));
+  const suppliers = [];
+  let shared = null;
+  for (const s of read.filter((x) => samePeriod(cache[x].period, period))) {
+    let sum = 0;
+    for (const [key, e] of Object.entries(cache[s][BILLED_BY[s]] ?? {})) {
+      const name = e?.name ?? key;
+      if (!by.has(name)) by.set(name, null);
+      if (typeof figure(e) !== 'number') continue;
+      const c = Math.round(figure(e) * 100);
+      by.set(name, (by.get(name) ?? 0) + c);
+      sum += c;
+    }
+    const sh = cache[s].shared;
+    for (const e of typeof sh === 'number' ? [sh] : Object.values(sh ?? {})) {
+      if (typeof figure(e) !== 'number') continue;
+      const c = Math.round(figure(e) * 100);
+      shared = (shared ?? 0) + c;
+      sum += c;
+    }
+    suppliers.push({ supplier: s, total: sum });
+  }
+  const total = suppliers.reduce((a, s) => a + s.total, 0);
+  const rows = [...by].map(([name, c]) => ({ name, total: c == null ? null : c / 100 }))
+    .sort((a, b) => (b.total ?? -1) - (a.total ?? -1) || a.name.localeCompare(b.name));
+  return { period, total: total / 100, suppliers: suppliers.map((s) => ({ ...s, total: s.total / 100 })).sort((a, b) => b.total - a.total),
+    names: rows, shared: shared == null ? null : shared / 100 };
+}
+
 // Each supplier's sources in costs.md.
 const sourcesOf = (costs) => ({
   github: costs.entries.filter((e) => e.supplier === 'github'),
