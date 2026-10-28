@@ -55,6 +55,14 @@
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
+//   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
+//                                             profiles this computer can see
+//   node desk-env.mjs costs propose [edits]   print which name each source would be saved under, merged
+//                                             with ~/.config/desk/costs.md; writes nothing
+//   node desk-env.mjs costs write [edits]     write ~/.config/desk/costs.md (only after the user confirms);
+//                                             edits: --name <supplier>:<key>=<name>, --drop <supplier>:<key>,
+//                                             --actions-budget <usd>, --credit <profile>=<usd>@<YYYY-MM-DD>
+//   node desk-env.mjs costs show [--json]     print the saved cost sources; a missing file is "no cost sources"
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -432,6 +440,30 @@ export function machineValue(key) {
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 
+// ---- cost sources --------------------------------------------------------------------------
+// One per computer, beside the machine profile: which GitHub repo, Vercel team and AWS profile bill
+// each name, across every repo. Read it with costs.mjs's readCosts(costsPath()); a missing file
+// reads as no cost sources. costs.mjs is imported only by the `costs` command, so the scripts that
+// copy this file on its own need nothing new.
+export const costsPath = () => expandHome(process.env.DESK_COSTS ?? join(deskConfigRoot(), 'costs.md'));
+// Every configured repo: its config file and §0 GitHub repo (the slug's, where the row is unset).
+export function configuredRepos(root = deskConfigRoot()) {
+  let slugs = [];
+  try { slugs = readdirSync(join(root, 'repos')).sort(); } catch { return []; }
+  return slugs.map((slug) => ({ slug, config: join(root, 'repos', slug, 'config.md') }))
+    .filter((r) => existsSync(r.config))
+    .map((r) => ({ ...r, ghRepo: repoConfigValue(r.slug, 'gh-repo', root) ?? r.slug.replace('__', '/') }));
+}
+
+// The per-computer files' write: the previous copy kept beside it as <path>.bak.
+function writeWithBackup(path, text) {
+  mkdirSync(dirname(path), { recursive: true });
+  const had = existsSync(path);
+  if (had) copyFileSync(path, `${path}.bak`);
+  writeFileSync(path, text);
+  return `wrote ${path}${had ? ` (previous copy: ${path}.bak)` : ''}`;
+}
+
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
@@ -791,14 +823,10 @@ export function concurrencyLimits(row = configValue('concurrency')) {
 // a port whose block meets no other repo's, and flags this repo's when it already does. A config
 // that leaves the port unset runs on devPort()'s default, so it claims that.
 export function repoPortClaims(root = deskConfigRoot()) {
-  const dir = join(root, 'repos');
-  let slugs = [];
-  try { slugs = readdirSync(dir).sort(); } catch { return []; }
-  return slugs.flatMap((slug) => {
-    const parsed = parseConfigFile(join(dir, slug, 'config.md'));
-    if (!parsed.exists) return [];
+  return configuredRepos(root).map(({ slug, config }) => {
+    const parsed = parseConfigFile(config);
     const port = positiveInt(configValueIn(parsed, 'dev-port')) ?? DEFAULT_DEV_PORT;
-    return [{ slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap }];
+    return { slug, port, last: port + concurrencyLimits(configValueIn(parsed, 'concurrency')).cap };
   });
 }
 
@@ -1251,11 +1279,7 @@ if (isMain) {
       }
       case 'drift': {
         // One repo's config (the cwd's), or with --all every config under ~/.config/desk/repos/.
-        const repos = args.includes('--all')
-          ? (() => { try { return readdirSync(join(deskConfigRoot(), 'repos')).sort(); } catch { return []; } })()
-            .map((slug) => ({ slug, config: join(deskConfigRoot(), 'repos', slug, 'config.md') }))
-            .filter((r) => existsSync(r.config))
-          : [{ slug: null, config: configPathOrNull() }];
+        const repos = args.includes('--all') ? configuredRepos() : [{ slug: null, config: configPathOrNull() }];
         if (!repos.length) { console.log(`no repo configs under ${join(deskConfigRoot(), 'repos')}`); break; }
         let drift = false;
         for (const { slug, config } of repos) {
@@ -1330,15 +1354,49 @@ if (isMain) {
           break;
         }
         // write: overwrites; /desk-setup runs it only after the user confirms the proposal.
-        mkdirSync(dirname(path), { recursive: true });
-        const had = existsSync(path);
-        if (had) copyFileSync(path, `${path}.bak`);
-        writeFileSync(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10)));
-        console.log(`wrote ${path}${had ? ` (previous copy: ${path}.bak)` : ''}`);
+        console.log(writeWithBackup(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10))));
+        break;
+      }
+      case 'costs': {
+        // The subcommand is always the first word, so a worker's `costs write` deny rule holds.
+        const [sub, ...rest] = args;
+        const C = await import('./costs.mjs');
+        const path = costsPath();
+        const saved = C.readCosts(path);
+        if (sub === 'show') {
+          if (!saved.exists) { console.log(`no cost sources (no file at ${path}): /desk-setup costs records them`); break; }
+          if (rest.includes('--json')) { console.log(JSON.stringify({ names: C.costsByName(saved), budget: saved.budget, logins: saved.logins }, null, 2)); break; }
+          for (const l of C.proposalLines(saved)) console.log(l);
+          break;
+        }
+        if (!['detect', 'propose', 'write'].includes(sub)) {
+          console.error('usage: desk-env.mjs costs detect|propose|write|show [--name <supplier>:<key>=<name>] [--drop <supplier>:<key>] [--actions-budget <usd>] [--credit <profile>=<usd>@<YYYY-MM-DD>]');
+          process.exit(2);
+        }
+        const edits = C.parseEdits(sub === 'detect' ? [] : rest);
+        const found = await C.detect({ repos: configuredRepos() });
+        if (sub === 'detect') {
+          console.log(`github (gh signed in as ${found.login ?? 'nobody: gh auth login'}):`);
+          for (const r of found.repos) console.log(`  ${r.ghRepo}  (repo ${r.slug})`);
+          console.log(`vercel (${found.vercel.auth}):${found.vercel.error ? ` ${found.vercel.error}` : ''}`);
+          for (const t of found.vercel.teams) console.log(`  ${t.slug}  ${t.id}  plan ${t.plan}  projects: ${t.projects.join(', ') || 'none'}`);
+          console.log(`aws (${found.aws.path}):${found.aws.error ? ` ${found.aws.error}` : ''}`);
+          for (const p of found.aws.profiles) console.log(`  ${p}`);
+          break;
+        }
+        const proposal = C.propose({ found, saved, edits, today: new Date().toISOString().slice(0, 10) });
+        if (sub === 'propose') {
+          for (const w of [found.vercel.error && `vercel: ${found.vercel.error}`, found.aws.error && `aws: ${found.aws.error}`].filter(Boolean)) console.log(`warning: ${w}`);
+          for (const l of C.proposalLines(proposal)) console.log(l);
+          console.log(`\nnothing written: desk-env costs write with the same options saves this to ${path}`);
+          break;
+        }
+        // write: overwrites; /desk-setup costs runs it only after the user confirms the proposal.
+        console.log(writeWithBackup(path, C.renderCosts(proposal)));
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|machine');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|machine|costs');
         process.exit(2);
     }
   } catch (e) {

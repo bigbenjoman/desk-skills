@@ -9,10 +9,10 @@
 // The last line is `summary: dirty=<n> unpushed=<n> heavy=<n> filevault=<on|off|unknown|n/a>`. DESK_FDESETUP_CMD (run with sh -c)
 // stands in for `fdesetup status` in tests; without it, FileVault is n/a anywhere but macOS.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HOME, deskConfigRoot, expandHome, heavyProcesses } from './desk-env.mjs';
+import { HOME, configuredRepos, expandHome, heavyProcesses } from './desk-env.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const tilde = (p) => (p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p);
@@ -73,11 +73,7 @@ function treeState(path, hasRemote) {
   };
 }
 
-const configs = (() => {
-  const dir = join(deskConfigRoot(), 'repos');
-  try { return readdirSync(dir).sort().map((slug) => ({ slug, config: join(dir, slug, 'config.md') })).filter((c) => existsSync(c.config)); }
-  catch { return []; }
-})();
+const configs = configuredRepos();
 
 let dirty = 0; let unpushed = 0; let clean = 0; let total = 0;
 const lines = [];
