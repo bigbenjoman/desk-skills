@@ -33,8 +33,9 @@ const grp = (service, type, amount) => ({ Keys: [service, type], Metrics: { Unbl
 const page = (groups, next) => ({ GroupDefinitions: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'RECORD_TYPE' }],
   ResultsByTime: [{ TimePeriod: { Start: '2026-10-01', End: '2026-10-27' }, Total: {}, Groups: groups, Estimated: true }],
   DimensionValueAttributes: [], ...(next ? { NextPageToken: next } : {}) });
-const FOREWATT = [grp('Amazon Simple Storage Service', 'Usage', '3.4512'), grp('Amazon Route 53', 'Usage', '1.0100000001'),
-  grp('AWS Lambda', 'Usage', '0.0000012'), grp('Amazon Route 53', 'Tax', '0.2'), grp('Tax', 'Tax', '0.69')];
+// Out of order, so only the sort puts the lines largest first and tax last.
+const FOREWATT = [grp('Tax', 'Tax', '0.69'), grp('Amazon Route 53', 'Usage', '1.0100000001'), grp('Amazon Simple Storage Service', 'Usage', '3.4512'),
+  grp('AWS Lambda', 'Usage', '0.0000012'), grp('Amazon Route 53', 'Tax', '0.2')];
 const PRNINJA = [grp('Amazon Elastic Compute Cloud - Compute', 'Usage', '30.3312'), grp('Amazon Elastic Compute Cloud - Compute', 'Credit', '-30.3312'),
   grp('EC2 - Other', 'Usage', '20.17'), grp('EC2 - Other', 'Credit', '-20.17'),
   grp('Amazon Simple Storage Service', 'Usage', '5'), grp('Amazon Simple Storage Service', 'Credit', '-3'),
@@ -104,6 +105,14 @@ const twin = twins.names.twin;
 t('AC7 a name\'s profiles merge into one line per service', `${twin.profiles.join()} ${twin.lines.map((l) => `${l.service} ${l.charged}`).join(' | ')}`,
   'twin-a,twin-b Amazon Simple Storage Service 0.66 | AWS Lambda 0.33 | Amazon CloudFront 0.33');
 t('AC7 and the name\'s total is its lines added up, not its raw amounts', twin.total, 1.32);
+// On 2 November twin-b's login has expired and it still holds October: November's total for the
+// name is twin-a's alone, and twin-b is named as left out.
+const NOV2 = utc(11, 2);
+const lateTwins = await C.readAws({ sources: [{ supplier: 'aws', key: 'twin-a', name: 'twin', repo: null, credit: null }, { supplier: 'aws', key: 'twin-b', name: 'twin', repo: null, credit: null }],
+  last: twins, aws: async (args) => { if (arg(args, '--profile') === 'twin-b') throw new Error('Token has expired'); return third('AWS Lambda')[0]; }, now: NOV2 });
+const late = lateTwins.names.twin;
+t('AC7 a profile still holding last month is left out of the name\'s total', `${late.period.month} ${late.total} ${late.lines.map((l) => l.service).join()}`, '11 0.33 AWS Lambda');
+t('AC7 and named as stale and failed', `${late.stale.join()} ${late.failed.join()} ${lateTwins.profiles['twin-b'].period.month}`, 'twin-b twin-b 10');
 t('AC8 the profile\'s saved credit comes with its figures', JSON.stringify(pn.credit), '{"usd":61,"ends":"2027-03-31","entered":"2026-10-27"}');
 t('AC8 a profile with none saved has none', fw.credit, null);
 
@@ -189,7 +198,7 @@ mkdirSync(join(T, 'bin'));
 const fakeAws = join(T, 'bin', 'aws');
 const awsLog = join(T, 'aws-calls');
 writeFileSync(join(T, 'answer.json'), JSON.stringify(page(FOREWATT)));
-writeFileSync(fakeAws, `#!/bin/sh\necho "$*" >> "${awsLog}"\nsleep 0.2\ncat "${join(T, 'answer.json')}"\n`);
+writeFileSync(fakeAws, `#!/bin/sh\necho "attempts=$AWS_MAX_ATTEMPTS $*" >> "${awsLog}"\nsleep 0.2\ncat "${join(T, 'answer.json')}"\n`);
 chmodSync(fakeAws, 0o755);
 // The child runs on the real clock, so it gets a cache of its own.
 const childDir = join(T, 'child-costs');
@@ -204,6 +213,7 @@ await new Promise((r) => { setTimeout(r, 1500); });
 const awsCalls = () => (existsSync(awsLog) ? readFileSync(awsLog, 'utf8').trim().split('\n') : []);
 t('AC9 the background reading writes the cache', C.readCache(childDir)?.aws?.profiles?.forewatt?.total, 5.45);
 t('AC9 two started together make one request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map((p) => awsCalls().filter((l) => l.includes(`--profile ${p} `)).length).join(), '1,1,1');
+t('AC6 each aws call runs with the CLI\'s retries off, so one call is one request', awsCalls().length > 0 && awsCalls().every((l) => l.startsWith('attempts=1 ')), true);
 t('AC9 with that reading made today, the next check starts nothing', C.startRefresh({ due: C.dueSuppliers({ costs, cache: C.readCache(childDir), now: Date.now() }), env: childEnv }).started, false);
 
 console.log(fails ? `${fails} FAILED` : 'all AWS cost cache checks passed');

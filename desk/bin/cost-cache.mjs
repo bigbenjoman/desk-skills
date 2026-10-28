@@ -339,8 +339,9 @@ export function awsLines(groups) {
     .sort((a, b) => Number(!!a.tax) - Number(!!b.tax) || b.used - a.used || a.service.localeCompare(b.service));
 }
 
-// One `aws` call.  -> parsed JSON; throws with the reason
-export const awsCli = (args) => cliJson('aws', args, AWS_TIMEOUT_MS, { ...process.env, AWS_PAGER: '' });
+// One `aws` call, with the CLI's own retries off: each retry is another billed request.
+//   -> parsed JSON; throws with the reason
+export const awsCli = (args) => cliJson('aws', args, AWS_TIMEOUT_MS, { ...process.env, AWS_PAGER: '', AWS_MAX_ATTEMPTS: '1' });
 
 // A profile's groups for the period, in at most AWS_MAX_PAGES requests.
 async function costAndUsage(aws, profile, period) {
@@ -379,16 +380,20 @@ export async function readAws({ sources, last = null, aws = awsCli, now, force =
       profiles[s.key] = { ...base, ...keep, failed: { at: now, why: e.message || String(e) } };
     }
   }
-  return { at: now, profiles, names: awsByName({ profiles }) };
+  return { at: now, profiles, names: awsByName({ profiles }, readingPeriod(now)) };
 }
 
-// The AWS figures per name, its profiles' lines merged by service.
-//   -> { <name>: { repo, profiles: [profile], total, lines } }
-export function awsByName(aws) {
+// The AWS figures per name for one period, its profiles' lines merged by service. A profile whose
+// last good figures are from another month is left out of the total and named under stale; one whose
+// last attempt failed is named under failed.
+//   -> { <name>: { repo, period, profiles: [profile], stale: [profile], failed: [profile], total, lines } }
+export function awsByName(aws, period) {
   const out = {};
   for (const p of Object.values(aws?.profiles ?? {})) {
-    const n = (out[p.name] ??= { repo: p.repo, profiles: [], total: 0, lines: [] });
+    const n = (out[p.name] ??= { repo: p.repo, period, profiles: [], stale: [], failed: [], total: 0, lines: [] });
     n.profiles.push(p.profile);
+    if (p.failed) n.failed.push(p.profile);
+    if (p.lines && !samePeriod(p.period, period)) { n.stale.push(p.profile); continue; }
     for (const l of p.lines ?? []) {
       const m = n.lines.find((x) => x.service === l.service);
       if (!m) { n.lines.push({ ...l }); continue; }
