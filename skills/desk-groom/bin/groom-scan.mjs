@@ -40,16 +40,18 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { keyMatches, prsForKey } from '../../desk-cleanup/bin/cleanup-scan.mjs'
 
-// desk-design.mjs's `sections`, the one reading of a ticket's headings. It sits in desk/bin, installed
-// at ~/.claude/desk/bin by install.sh; DESK_ENV_MJS or DESK_HOME point elsewhere, and a source
-// checkout of desk-skills finds its own copy.
+// desk-design.mjs's `sections`, the one reading of a ticket's headings, and batches.mjs's
+// `namedBatches`, the one listing of a repo's named batches. They sit in desk/bin, installed at
+// ~/.claude/desk/bin by install.sh; DESK_ENV_MJS or DESK_HOME point elsewhere, and a source checkout of
+// desk-skills finds its own copy. A desk/bin missing either is older than this script, so it is passed over.
+const DESK_MODULES = ['desk-design.mjs', 'batches.mjs']
 const deskBin = [
   process.env.DESK_ENV_MJS && dirname(process.env.DESK_ENV_MJS),
   process.env.DESK_HOME && join(process.env.DESK_HOME, 'bin'),
   join(homedir(), '.claude', 'desk', 'bin'),
   join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'desk', 'bin'),
-].filter(Boolean).find((d) => existsSync(join(d, 'desk-design.mjs')))
-if (!deskBin) { console.error('groom-scan: desk-design.mjs not found in desk/bin. Run install.sh from desk-skills.'); process.exit(2) }
+].filter(Boolean).find((d) => DESK_MODULES.every((f) => existsSync(join(d, f))))
+if (!deskBin) { console.error(`groom-scan: ${DESK_MODULES.join(' and ')} not found in desk/bin. Run install.sh from desk-skills.`); process.exit(2) }
 const { sections } = await import(pathToFileURL(join(deskBin, 'desk-design.mjs')).href)
 const { namedBatches } = await import(pathToFileURL(join(deskBin, 'batches.mjs')).href)
 const { BATCHES_DIR } = await import(pathToFileURL(join(deskBin, 'desk-env.mjs')).href)

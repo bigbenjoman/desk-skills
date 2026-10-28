@@ -41,7 +41,7 @@ EOF
 # behaves as the real one does at rest: it holds the lock, sleeps between loops, and on TERM drops the
 # lock once its sleep returns. With $T/busy it is mid-loop instead (its child is not `sleep`).
 cp "$B/installed.mjs" "$T/bin/"
-for f in supervisor.mjs desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in supervisor.mjs desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/merge-driver.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$(pwd) \$*" >> "$T/driver.calls"
