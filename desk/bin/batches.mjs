@@ -32,17 +32,35 @@ export function batchHolding(key, slug = E.repoSlug()) {
 
 export const label = (b) => b.name ?? 'the standing batch';
 
-// Why `key` may not join the batch whose queue is `own`, or null: another batch holds it, or its triage
-// record `rec` names an epic whose feature batch is live (listed, so not archived). -> {batch, why}.
-// Outside a repo there are no batches to list, so nothing is refused.
+// A batch is finished once every ticket in its queue is done. Nothing archives a finished batch, so its
+// queue stays listed, and must not keep its keys or its epic's children out of every other batch. A queue
+// with no tickets is a session's between `queue.mjs init` and its plan: not finished.
+const finished = (q) => { const rows = Object.values(q.tickets ?? {}); return rows.length > 0 && rows.every((t) => t.state === 'done'); };
+const peek = (b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
+const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
+
+// Whether the named batch `name` is listed, readable and not finished.
+export function liveBatch(name) {
+  let b;
+  try { b = listBatches().find((x) => x.name === name); } catch { return false; }
+  const { q } = b ? peek(b) : {};
+  return !!q && !finished(q);
+}
+
+// Why `key` may not join the batch whose queue is `own`, or null: another batch holds it and has not
+// finished it, or its triage record `rec` names an epic whose feature batch is live. -> {batch, why},
+// with `unreadable` set when another batch's queue cannot be read, so the key cannot be checked. Never
+// throws: callers check one key of many. Outside a repo there are no batches to list.
 export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
-  let slug;
-  try { slug = E.repoSlug(); } catch { return null; }
-  const mine = (b) => resolve(b.queue) === resolve(own);
-  const held = batchHolding(key, slug);
-  if (held && !mine(held)) return { batch: label(held), why: `${key} is in ${held.name ? `batch ${held.name}` : 'the standing batch'}: a ticket is in one batch at most` };
+  let others;
+  try { others = listBatches().filter((b) => resolve(b.queue) !== resolve(own) && existsSync(b.queue)); } catch { return null; }
+  const read = others.map((b) => ({ b, ...peek(b) }));
+  const bad = read.find((x) => x.unreadable);
+  if (bad) return { batch: label(bad.b), unreadable: true, why: `${key} cannot be checked against ${where(bad.b)}, whose queue cannot be read (${bad.unreadable})` };
+  const held = read.find((x) => x.q.tickets?.[key] && x.q.tickets[key].state !== 'done');
+  if (held) return { batch: label(held.b), why: `${key} is in ${where(held.b)}: a ticket is in one batch at most` };
   const epic = rec?.epic?.key;
-  const feature = epic && listBatches(slug).find((b) => b.name === epic);
-  if (feature && !mine(feature)) return { batch: epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
+  const feature = epic && read.find((x) => x.b.name === epic && !finished(x.q));
+  if (feature) return { batch: epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
   return null;
 }

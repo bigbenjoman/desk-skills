@@ -2,7 +2,7 @@
 // desk-env's queue, state and default-branch resolution under DESK_BATCH, and batches.mjs listing and
 // lookup, against fixture queues in a throwaway HOME and DESK_HOME. Each resolution runs in a child,
 // because desk-env reads HOME once at load.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -139,9 +139,38 @@ t('DS-307 the child is not refused by its own feature batch', r.code === 0 && JS
 r = cli('queue.mjs', ['admit', 'N-1']);
 t('DS-307 AC6 a ticket in no other batch is admitted as before', r.code === 0 && JSON.parse(read(standingQ)).tickets['N-1']?.state, 'triaged');
 
-r = cli('plan-batch.mjs', ['X-2']);
+// plan-batch seeds only with AUTOPILOT_WRITE_QUEUE set and an owner to admit for, so the seeding is real.
+// It seeds through DESK_HOME's bin.
+symlinkSync(BIN, join(DESK_HOME, 'bin'));
+const seedConfig = join(T, 'seed-config.md');
+writeFileSync(seedConfig, `${read(config)}\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | \`me\` |\n| Jira display name | \`Me\` |\n\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`[A-Z]+-[0-9]+\` |\n| Local database | \`none\` |\n`);
+const seed = (keys) => cli('plan-batch.mjs', keys, { DESK_CONFIG: seedConfig, AUTOPILOT_WRITE_QUEUE: '1' });
+before = read(standingQ);
+r = seed(['X-2']);
 t('DS-307 AC5 a plan seeding a key another batch holds is refused naming it', r.code !== 0 && r.out.includes('X-2 is in batch X-1'), true);
-t('DS-307 AC5 nothing was seeded', JSON.parse(read(standingQ)).tickets['X-2'], undefined);
+t('DS-307 AC5 nothing was seeded', read(standingQ), before);
+rec('P-1');
+r = seed(['P-1']);
+t('DS-307 AC5 the same plan seeds a key no other batch holds', JSON.parse(read(standingQ)).tickets['P-1']?.state, 'triaged');
+
+// A finished batch (every ticket done) is still listed, since nothing archives it, but holds nothing.
+mkdirSync(dirname(namedQ('F-1')), { recursive: true });
+writeFileSync(namedQ('F-1'), JSON.stringify({ version: 1, batch: 'F-1', tickets: { 'F-2': { key: 'F-2', state: 'done' } } }));
+rec('F-2'); rec('F-3', { epic: { key: 'F-1', summary: 'a shipped feature' } });
+r = cli('queue.mjs', ['admit', 'F-2']);
+t('DS-307 a done ticket in a finished batch may join another', r.code === 0 && JSON.parse(read(standingQ)).tickets['F-2']?.state, 'triaged');
+r = cli('queue.mjs', ['admit', 'F-3']);
+t('DS-307 a child of an epic whose feature batch finished is admitted', r.code === 0 && JSON.parse(read(standingQ)).tickets['F-3']?.state, 'triaged');
+
+// Another batch's queue that cannot be read refuses the key naming it, never a crash.
+mkdirSync(dirname(namedQ('Z-1')), { recursive: true });
+writeFileSync(namedQ('Z-1'), '{ not json');
+before = read(standingQ);
+rec('Z-2');
+r = cli('queue.mjs', ['admit', 'Z-2']);
+t('DS-307 an unreadable batch refuses the key, naming that batch', r.code !== 0 && r.out.includes('Z-2 cannot be checked against batch Z-1') && read(standingQ) === before, true);
+const away = run({}, "console.log(JSON.stringify(B.belongsElsewhere('Z-2')))");
+t('DS-307 belongsElsewhere returns it rather than throwing', away.code === 0 && json(away).unreadable, true);
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

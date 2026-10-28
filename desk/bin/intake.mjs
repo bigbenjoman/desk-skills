@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 import { designGap, needsPersonLane } from './batch-state.mjs';
-import { belongsElsewhere, listBatches } from './batches.mjs';
+import { belongsElsewhere, liveBatch } from './batches.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -248,13 +248,17 @@ function intake({ state, query, reg, now }) {
     lines.push(`intake: handed ${key} to the digest: ${text}`);
   };
   // A ticket another batch holds is that batch's: never triaged, admitted or handed on here. One skipped
-  // for its epic's feature batch is skipped while that batch is live.
-  const skipped = (e) => e?.outcome === 'elsewhere' && listBatches().some((b) => b.name === e.batch);
+  // for its epic's feature batch is skipped while that batch is live. One that cannot be checked, because
+  // another batch's queue cannot be read, waits for the next intake and is said to.
+  const unchecked = new Map();
+  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch);
+  const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
-    && !skipped(reg.tickets[k]) && !belongsElsewhere(k, null, E.queueFile());
+    && !skipped(reg.tickets[k]) && !away(k);
   // An epic is a feature batch's, with its spine and owner table approved first: never a worker's.
   for (const i of found.filter((x) => isNew(x.key) && isEpic(x.fields?.issuetype))) hand(i.key, 'an epic: run it as a feature batch in a session');
   const fresh = found.map((i) => i.key).filter(isNew);
+  for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
   const triageNow = fresh.slice(0, MAX_TRIAGE);
   if (fresh.length > triageNow.length) lines.push(`intake: ${fresh.length - triageNow.length} more ticket(s) wait for the next intake (${fresh.slice(MAX_TRIAGE).join(', ')}): ${MAX_TRIAGE} are triaged a run`);
