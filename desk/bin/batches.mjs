@@ -6,17 +6,22 @@ import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
+// The named batches' folders under a standing batch's queue or state folder `dir`, sorted. A name that
+// is not a safe id, `.done` included, is not a batch.
+export function namedBatches(dir) {
+  try {
+    return readdirSync(join(dir, E.BATCHES_DIR), { withFileTypes: true })
+      .filter((d) => d.isDirectory() && E.SAFE_ID.test(d.name))
+      .map((d) => d.name)
+      .sort();
+  } catch { return []; /* no named batches */ }
+}
+
 // -> [{ name: null | '<epic key>', queue, state }], the standing batch first, then named ones by name.
 export function listBatches(slug = E.repoSlug()) {
   const standing = E.batchPaths(slug);
-  const dir = join(dirname(standing.queue), E.BATCHES_DIR);
-  let names = [];
-  try {
-    names = readdirSync(dir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && E.SAFE_ID.test(d.name) && existsSync(join(dir, d.name, 'queue.json')))
-      .map((d) => d.name)
-      .sort();
-  } catch { /* no named batches */ }
+  const dir = dirname(standing.queue);
+  const names = namedBatches(dir).filter((n) => existsSync(join(dir, E.BATCHES_DIR, n, 'queue.json')));
   return [{ name: null, ...standing }, ...names.map((name) => ({ name, ...E.batchPaths(slug, name) }))];
 }
 

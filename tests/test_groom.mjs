@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
-  batchOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed } from '../skills/desk-groom/bin/groom-scan.mjs'
+  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -389,6 +389,21 @@ writeFileSync(join(T, 'bad-queue.json'), '{')
 t('DS-240 AC2 an unreadable queue stops the scan', run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--queue', join(T, 'bad-queue.json')).status, 2)
 t('DS-240 AC2 no queue file is no batch', batchOf(null).running, false)
 t('DS-240 AC2 held: a key the batch now holds exits 1', [run('held', '--queue', Q, 'KAN-12', 'KAN-14').status, run('held', '--queue', Q, 'KAN-12', 'KAN-21').stdout.trim()], [0, 'left alone: KAN-21 is running in batch groom-7'])
+
+// DS-306: a named batch beside the standing queue holds its tickets too; an archived one does not.
+const Q2 = join(T, 'two', 'queue.json')
+mkdirSync(join(T, 'two', 'batches', 'X-1'), { recursive: true })
+mkdirSync(join(T, 'two', 'batches', '.done', 'X-0'), { recursive: true })
+writeFileSync(Q2, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-21': { state: 'running' } } }))
+writeFileSync(join(T, 'two', 'batches', 'X-1', 'queue.json'), JSON.stringify({ batch: 'X-1', tickets: { 'KAN-13': { state: 'running' }, 'KAN-12': { state: 'done' } } }))
+writeFileSync(join(T, 'two', 'batches', '.done', 'X-0', 'queue.json'), JSON.stringify({ batch: 'X-0', tickets: { 'KAN-12': { state: 'parked' } } }))
+t('DS-306 AC4 held: a key the named batch holds exits 1, naming that batch', [run('held', '--queue', Q2, 'KAN-13').status, run('held', '--queue', Q2, 'KAN-13', 'KAN-21').stdout.trim()], [1, 'left alone: KAN-13 is running in batch X-1\nleft alone: KAN-21 is running in batch groom-7'])
+t('DS-306 AC4 a ticket a named batch finished, or an archived batch holds, is not held', run('held', '--queue', Q2, 'KAN-12').status, 0)
+const rq2 = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--queue', Q2, '--json')
+const inQ2 = rq2.status === 0 ? JSON.parse(rq2.stdout) : []
+t('DS-306 AC4 the scan leaves the named batch\'s ticket alone, naming its batch', inQ2.filter((f) => f.check === 'blocker' && f.ticket === 'KAN-13').map((f) => [f.kind, f.propose.length, /KAN-13 is running in batch X-1/.test(f.left)]), [['left', 0, true]])
+t('DS-306 AC4 and still the standing batch\'s', on('KAN-21').map((f) => f.left).join(' | '), inQ2.filter((f) => names(f, 'KAN-21')).map((f) => f.left).join(' | '))
+t('DS-306 batchesOf keeps the standing batch\'s name for a hand-off, and every batch\'s keys', (() => { const b = batchesOf([{ batch: 's', tickets: {} }, { batch: 'X-1', tickets: { 'A-1': { state: 'done' } } }]); return [b.name, b.running, [...b.keys]] })(), ['s', false, ['A-1']])
 
 // AC1: every proposal in one list, awaiting approval; the weekly run only reports
 writeFileSync(join(T, 'scan-q.json'), JSON.stringify(inQ))

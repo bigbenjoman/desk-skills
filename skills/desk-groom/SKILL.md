@@ -67,9 +67,10 @@ before the scan, and stop if the SHAs still differ after a fetch.
 node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project key> --priority <§4 Priority> --fields <§4 Other fields, comma-separated> --size <§4 Size field> --done '<§4 Done state>' --in-progress '<§4 In-progress state>' --queue <DESK_QUEUE>
 ```
 
-`--queue` is the autopilot queue `desk-env paths` prints as `DESK_QUEUE`. Every finding that would
-write to a ticket the batch holds (queued, triaged, held, parked, running or failed) is `left`: no
-proposal, no question and no verifier, only the line naming the ticket and its state.
+`--queue` is the autopilot queue `desk-env paths` prints as `DESK_QUEUE`; each named batch's queue
+beside it (`batches/<name>/`) is read too. Every finding that would write to a ticket any batch holds
+(queued, triaged, held, parked, running or failed) is `left`: no proposal, no question and no
+verifier, only the line naming the ticket, its state and its batch.
 
 Run it from inside the repo, so `desk-jira` resolves this repo's Jira. It covers every open ticket in
 the project (`--jql` narrows it: one epic, a key range). More than 100 open tickets is refused rather

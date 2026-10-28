@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
+import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
@@ -73,21 +74,34 @@ const lastFile = (dir) => join(dir, 'last.json');
 const answeredFile = (dir) => join(dir, 'answered.json');
 const questionKey = (slug, ticket, text) => `${slug}/${ticket}/${createHash('sha256').update(String(text)).digest('hex').slice(0, 12)}`;
 
-// Every repo with a queue or a decision log: {slug, state, queue}. `self` names the calling repo's
-// paths, which environment overrides can move away from the defaults, with `self: true`.
+// Every batch with a queue or a decision log: {slug, batch, state, queue}, where `batch` is null for a
+// repo's standing batch and the name of each named batch under `batches/<name>/`; a repo's standing
+// batch sorts first. `self` names the calling batch's paths, which environment overrides can move
+// away from the defaults; every batch of the calling repo carries `self: true`.
 export function repos({ home = E.deskHome(), root = stateRoot(), self = null } = {}) {
   const found = new Map();
-  const add = (slug, r) => { if (!found.has(slug)) found.set(slug, r); };
-  if (self) add(self.slug, self);
+  const add = (r) => { const k = `${r.slug}\0${r.batch ?? ''}`; if (!found.has(k)) found.set(k, r); };
+  if (self) add({ ...self, batch: self.batch ?? null });
   const qdir = join(home, 'repos');
-  for (const slug of existsSync(qdir) ? readdirSync(qdir) : []) {
-    if (existsSync(join(qdir, slug, 'queue.json'))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
+  const list = (dir) => (existsSync(dir) ? readdirSync(dir) : []);
+  for (const slug of new Set([...list(qdir), ...list(root)])) {
+    for (const batch of [null, ...new Set([...namedBatches(join(qdir, slug)), ...namedBatches(join(root, slug))])]) {
+      const tail = batch ? [E.BATCHES_DIR, batch] : [];
+      const r = { slug, batch, state: join(root, slug, ...tail), queue: join(qdir, slug, ...tail, 'queue.json'), ...(self?.slug === slug ? { self: true } : {}) };
+      // A batch whose only news is what standing intake handed on has no queue or decision log yet.
+      if (existsSync(r.queue) || ['decisions.jsonl', 'intake.json'].some((f) => existsSync(join(r.state, f)))) add(r);
+    }
   }
-  for (const slug of existsSync(root) ? readdirSync(root) : []) {
-    // A repo whose only news is what standing intake handed on has no queue or decision log yet.
-    if (['decisions.jsonl', 'intake.json'].some((f) => existsSync(join(root, slug, f)))) add(slug, { slug, state: join(root, slug), queue: join(qdir, slug, 'queue.json') });
-  }
-  return [...found.values()].sort((a, b) => a.slug.localeCompare(b.slug));
+  return [...found.values()].sort((a, b) => a.slug.localeCompare(b.slug) || (a.batch ?? '').localeCompare(b.batch ?? ''));
+}
+
+// The page's heading for a batch: its repo, and the batch's name for a named one.
+export const batchHeading = (r) => `## ${r.slug}${r.batch ? `, batch ${r.batch}` : ''}`;
+
+// The batch of `slug` an answer about `ticket` goes to: the one whose queue holds it, else the standing one.
+function batchFor(list, slug, ticket) {
+  const inRepo = list.filter((x) => x.slug === slug);
+  return inRepo.find((x) => readJson(x.queue, null)?.tickets?.[ticket]) ?? inRepo.find((x) => !x.batch) ?? inRepo[0] ?? null;
 }
 
 // The decision log split into taken calls, checks made instead of asking, and the overrides recorded
@@ -249,7 +263,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     lines.push('');
   }
   for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira))) {
-    lines.push(`## ${g.slug}`, '');
+    lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
     const p = g.promotion;
@@ -322,8 +336,9 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const inWindow = (d) => (!since || d.at > since) && d.at <= now.toISOString();
     const name = slot.id.replace(':', '');
     // Going to production is asked once a day, in the last slot; nothing merged asks nothing.
+    // Promotion is the repo's, so only its standing batch asks it.
     const promotionOf = (r) => {
-      if (!promotionSlot(times, slot.id)) return null;
+      if (r.batch || !promotionSlot(times, slot.id)) return null;
       let p;
       try { p = promote(r); } catch (e) { p = { why: `the promotion range could not be read: ${e.message}` }; }
       if (!p || p.empty) return null;
@@ -341,6 +356,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       const done = new Set(jira?.done ?? []);
       return {
         slug: r.slug,
+        batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
         checks: checks.filter(inWindow),
@@ -359,7 +375,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.promotion?.key).length;
+    const repoCount = new Set(groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.promotion?.key).map((g) => g.slug)).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const push = nd || nm || fresh.length
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }
@@ -393,7 +409,7 @@ const who = () => {
 
 // Records an answer through the named repo's answer.mjs, as an answer given there would be.
 export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.binDir(), now = new Date() }) {
-  const r = list.find((x) => x.slug === slug);
+  const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
   let out;
@@ -413,19 +429,21 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
   return { ok: true, out, marked };
 }
 
-// True when the page line sits under the `## <slug>` heading.
+// True when the page line sits under a heading of the repo's: its standing batch's or a named one's.
 function pageRepo(dir, line, slug) {
   const page = readJson(lastFile(dir), null)?.page;
   const lines = readFileSync(page, 'utf8').split('\n');
   const heading = lines.slice(0, lines.indexOf(line)).reverse().find((l) => l.startsWith('## '));
-  return heading === `## ${slug}`;
+  return heading === batchHeading({ slug }) || Boolean(heading?.startsWith(`${batchHeading({ slug })}, batch `));
 }
 
 // Records an override of a taken call in its repo's decision log, with who and when. The next pass
 // in that repo lists the ticket under WAITING ON YOU (pass.mjs).
 export function override({ slug, id, choice, dir = digestDir(), list = repos(), by = who(), now = new Date() }) {
-  const r = list.find((x) => x.slug === slug);
-  if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
+  const inRepo = list.filter((x) => x.slug === slug);
+  if (!inRepo.length) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
+  // The batch whose log took the call, else the standing one.
+  const r = inRepo.find((x) => readDecisions(x.state).taken.some((d) => d.id === id)) ?? inRepo.find((x) => !x.batch) ?? inRepo[0];
   const { taken, overrides } = readDecisions(r.state);
   const d = taken.find((x) => x.id === id);
   if (!d) return { ok: false, why: `no decision ${id} in ${slug}'s log` };
@@ -443,7 +461,7 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
 // A "go" on a promotion question: recorded in that repo's batch notes with the range, and marked on
 // the page. What runs next is the repo's own promotion steps, never a skill.
 export function promote({ slug, range, text, dir = digestDir(), list = repos(), by = who(), now = new Date() }) {
-  const r = list.find((x) => x.slug === slug);
+  const r = list.find((x) => x.slug === slug && !x.batch) ?? list.find((x) => x.slug === slug);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   if (!/^go$/i.test(String(text ?? '').trim())) return { ok: false, why: `only "go" is recorded; anything else, leave it and the next promotion window asks again` };
   const a = approve({ slug, state: r.state, range, by, now });
@@ -454,7 +472,7 @@ export function promote({ slug, range, text, dir = digestDir(), list = repos(), 
 
 // Takes a parked ticket's put-off question out of its repo's register, so it is asked again.
 export function askAgain({ slug, ticket, list = repos() }) {
-  const r = list.find((x) => x.slug === slug);
+  const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = readJson(r.queue, null)?.tickets?.[ticket]?.park?.question;
   if (!question) return { ok: false, why: `${ticket} has no parked question in ${slug}` };
@@ -476,7 +494,7 @@ if (isMain) {
     const times = checkinTimes(checkinRow());
     if (!times.ok) refuse(times.why);
     const self = E.repoSlug();
-    console.log(JSON.stringify(await checkin({ times: times.times, self, list: repos({ self: { slug: self, state: E.stateDir(), queue: E.queueFile(), self: true } }) })));
+    console.log(JSON.stringify(await checkin({ times: times.times, self, list: repos({ self: { slug: self, batch: E.batchName(), state: E.stateDir(), queue: E.queueFile(), self: true } }) })));
     process.exit(0);
   }
   if (cmd === 'ask-again' && slug && target) {

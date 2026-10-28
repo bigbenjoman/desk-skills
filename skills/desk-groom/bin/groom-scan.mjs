@@ -14,7 +14,10 @@
 //        approved close is written: the key's open PRs and Jira status read again; exit 0 to close
 //   node groom-scan.mjs approval --scan <scan.json> [--add <settled.json>] [--report] [--json]   every
 //        proposal as one numbered list of desk-jira gate blocks; --report asks nothing (the weekly run)
-//   node groom-scan.mjs held --queue <DESK_QUEUE> <KEY>...   exit 1 when the batch now holds any of them
+//   node groom-scan.mjs held --queue <DESK_QUEUE> <KEY>...   exit 1 when a batch now holds any of them
+//
+// `--queue` is the standing batch's queue; each named batch's queue in `batches/<name>/` beside it is
+// read too, so a ticket any of the repo's batches holds is left alone.
 //   node groom-scan.mjs readback <approval.json> --approved <all | 1,3-5>   each approved write read back
 //        from Jira, a description's rendered HTML checked for <del; exit 1 when any did not land
 //   node groom-scan.mjs priority <EPIC>... [--queue <DESK_QUEUE>] [--state <DESK_STATE>] [--json]   the
@@ -37,17 +40,21 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { keyMatches, prsForKey } from '../../desk-cleanup/bin/cleanup-scan.mjs'
 
-// desk-design.mjs's `sections`, the one reading of a ticket's headings. It sits in desk/bin, installed
-// at ~/.claude/desk/bin by install.sh; DESK_ENV_MJS or DESK_HOME point elsewhere, and a source
-// checkout of desk-skills finds its own copy.
+// desk-design.mjs's `sections`, the one reading of a ticket's headings, and batches.mjs's
+// `namedBatches`, the one listing of a repo's named batches. They sit in desk/bin, installed at
+// ~/.claude/desk/bin by install.sh; DESK_ENV_MJS or DESK_HOME point elsewhere, and a source checkout of
+// desk-skills finds its own copy. A desk/bin missing either is older than this script, so it is passed over.
+const DESK_MODULES = ['desk-design.mjs', 'batches.mjs']
 const deskBin = [
   process.env.DESK_ENV_MJS && dirname(process.env.DESK_ENV_MJS),
   process.env.DESK_HOME && join(process.env.DESK_HOME, 'bin'),
   join(homedir(), '.claude', 'desk', 'bin'),
   join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'desk', 'bin'),
-].filter(Boolean).find((d) => existsSync(join(d, 'desk-design.mjs')))
-if (!deskBin) { console.error('groom-scan: desk-design.mjs not found in desk/bin. Run install.sh from desk-skills.'); process.exit(2) }
+].filter(Boolean).find((d) => DESK_MODULES.every((f) => existsSync(join(d, f))))
+if (!deskBin) { console.error(`groom-scan: ${DESK_MODULES.join(' and ')} not found in desk/bin. Run install.sh from desk-skills.`); process.exit(2) }
 const { sections } = await import(pathToFileURL(join(deskBin, 'desk-design.mjs')).href)
+const { namedBatches } = await import(pathToFileURL(join(deskBin, 'batches.mjs')).href)
+const { BATCHES_DIR } = await import(pathToFileURL(join(deskBin, 'desk-env.mjs')).href)
 
 // ---- pure parts (exported for tests/test_groom.mjs) ------------------------------------------
 
@@ -634,6 +641,20 @@ export function batchOf(q) {
   return { name: q?.batch ?? null, supervised: q?.supervised === true, running: held.size > 0, held, keys: new Set(Object.keys(tickets)) }
 }
 
+// The standing batch (first) with each named batch's tickets folded into `held` and `keys`, so a
+// ticket any batch holds is left alone and never handed on again. `of` names the batch holding each
+// held key; `name`, `running` and `supervised` stay the standing batch's, which a hand-off goes to.
+export function batchesOf(qs) {
+  const [first, ...rest] = qs.map(batchOf)
+  const of = new Map([...first.held.keys()].map((k) => [k, first.name]))
+  for (const b of rest) {
+    for (const [k, s] of b.held) { first.held.set(k, s); of.set(k, b.name) }
+    for (const k of b.keys) first.keys.add(k)
+  }
+  return { ...first, of }
+}
+const batchName = (batch, k) => batch.of?.get(k) ?? batch.name ?? '?'
+
 // Every key a finding would write to: the ticket, the other side of a link, and each key its commands
 // and options name.
 const keysOf = (f) => new Set([f.ticket, f.other, ...[...(f.propose ?? []), ...(f.options ?? [])].flatMap((p) => String(p).match(KEY) ?? [])].filter(Boolean))
@@ -645,7 +666,9 @@ export function leaveBatch(findings, batch) {
     const hit = [...keysOf(f)].filter((k) => batch.held.has(k))
     if (!hit.length) return f
     const { verify, ...rest } = f
-    return { ...rest, kind: 'left', propose: [], left: `${hit.map((k) => `${k} is ${batch.held.get(k)}`).join(', ')} in batch ${batch.name ?? '?'}` }
+    const names = [...new Set(hit.map((k) => batchName(batch, k)))]
+    const left = names.map((n) => `${hit.filter((k) => batchName(batch, k) === n).map((k) => `${k} is ${batch.held.get(k)}`).join(', ')} in batch ${n}`).join('; ')
+    return { ...rest, kind: 'left', propose: [], left }
   })
 }
 
@@ -911,7 +934,7 @@ function scan(o) {
     ...groomEpics({ tickets, children, lookup, priority, size: o.size && o.size !== true && o.size !== 'none' ? o.size : null, done,
       inProgress: o['in-progress'] && o['in-progress'] !== true ? o['in-progress'] : 'In Progress' }),
   ].map((f) => ({ kind: 'fix', ...f }))
-  const batch = batchOf(readQueue(o.queue))
+  const batch = readBatches(o.queue)
   findings = leaveBatch(findings, batch)
   if (o.json) { console.log(JSON.stringify(findings, null, 2)); return }
   console.log(`groom-scan: ${tickets.length} open tickets, ${findings.length} findings (origin/${o.default})`)
@@ -934,6 +957,18 @@ function readQueue(path) {
   if (!path || path === true || !existsSync(path)) return null
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch (err) { die(`could not read the batch queue ${path}: ${err.message}`) }
 }
+// The repo's batches from its standing queue's path: that queue, then each named batch's queue in
+// `batches/<name>/` beside it (an archived one, under `.done`, is not a batch), as batchesOf reads them.
+function readBatches(path) {
+  const named = []
+  if (path && path !== true) {
+    for (const n of namedBatches(dirname(path))) {
+      const q = readQueue(join(dirname(path), BATCHES_DIR, n, 'queue.json'))
+      if (q) named.push({ ...q, batch: q.batch ?? n })
+    }
+  }
+  return batchesOf([readQueue(path), ...named])
+}
 const readJson = (p, what) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch (err) { die(`could not read ${what} ${p}: ${err.message}`) } }
 
 // Every proposal as one approval list. --report (the weekly run) prints it and asks nothing.
@@ -945,9 +980,9 @@ function approval(o) {
 
 // Just before the approved list is written: any of these keys the batch now holds is left alone.
 function held(o) {
-  const batch = batchOf(readQueue(o.queue))
+  const batch = readBatches(o.queue)
   const hit = o._.filter((k) => batch.held.has(k))
-  for (const k of hit) console.log(`left alone: ${k} is ${batch.held.get(k)} in batch ${batch.name ?? '?'}`)
+  for (const k of hit) console.log(`left alone: ${k} is ${batch.held.get(k)} in batch ${batchName(batch, k)}`)
   process.exit(hit.length ? 1 : 0)
 }
 
@@ -986,7 +1021,7 @@ function priority(o) {
     try { const s = rec && JSON.parse(readFileSync(rec, 'utf8')).files_in_scope; if (Array.isArray(s)) return s } catch { /* no triage record */ }
     return filesNamed(t)
   }
-  const h = priorityHandoff({ epics, childrenOf, get, batch: batchOf(readQueue(o.queue)), filesOf })
+  const h = priorityHandoff({ epics, childrenOf, get, batch: readBatches(o.queue), filesOf })
   console.log(o.json ? JSON.stringify(h, null, 2) : handoffText(h))
 }
 
