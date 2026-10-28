@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
+import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
@@ -83,11 +84,8 @@ export function repos({ home = E.deskHome(), root = stateRoot(), self = null } =
   if (self) add({ ...self, batch: self.batch ?? null });
   const qdir = join(home, 'repos');
   const list = (dir) => (existsSync(dir) ? readdirSync(dir) : []);
-  const named = (dir) => {
-    try { return readdirSync(join(dir, E.BATCHES_DIR), { withFileTypes: true }).filter((d) => d.isDirectory() && E.SAFE_ID.test(d.name)).map((d) => d.name); } catch { return []; }
-  };
   for (const slug of new Set([...list(qdir), ...list(root)])) {
-    for (const batch of [null, ...new Set([...named(join(qdir, slug)), ...named(join(root, slug))])]) {
+    for (const batch of [null, ...new Set([...namedBatches(join(qdir, slug)), ...namedBatches(join(root, slug))])]) {
       const tail = batch ? [E.BATCHES_DIR, batch] : [];
       const r = { slug, batch, state: join(root, slug, ...tail), queue: join(qdir, slug, ...tail, 'queue.json'), ...(self?.slug === slug ? { self: true } : {}) };
       // A batch whose only news is what standing intake handed on has no queue or decision log yet.

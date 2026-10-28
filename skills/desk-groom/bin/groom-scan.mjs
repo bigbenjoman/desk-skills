@@ -34,7 +34,7 @@
 // (a gap to report, nothing to write).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -51,6 +51,8 @@ const deskBin = [
 ].filter(Boolean).find((d) => existsSync(join(d, 'desk-design.mjs')))
 if (!deskBin) { console.error('groom-scan: desk-design.mjs not found in desk/bin. Run install.sh from desk-skills.'); process.exit(2) }
 const { sections } = await import(pathToFileURL(join(deskBin, 'desk-design.mjs')).href)
+const { namedBatches } = await import(pathToFileURL(join(deskBin, 'batches.mjs')).href)
+const { BATCHES_DIR } = await import(pathToFileURL(join(deskBin, 'desk-env.mjs')).href)
 
 // ---- pure parts (exported for tests/test_groom.mjs) ------------------------------------------
 
@@ -958,11 +960,8 @@ function readQueue(path) {
 function readBatches(path) {
   const named = []
   if (path && path !== true) {
-    const dir = join(dirname(path), 'batches')
-    let names = []
-    try { names = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('.')).map((d) => d.name).sort() } catch { /* no named batches */ }
-    for (const n of names) {
-      const q = readQueue(join(dir, n, 'queue.json'))
+    for (const n of namedBatches(dirname(path))) {
+      const q = readQueue(join(dirname(path), BATCHES_DIR, n, 'queue.json'))
       if (q) named.push({ ...q, batch: q.batch ?? n })
     }
   }

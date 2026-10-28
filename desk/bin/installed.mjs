@@ -14,6 +14,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { namedBatches } from './batches.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WAIT_MS = Number(process.env.DESK_RESTART_WAIT_MS) || 10_000;
@@ -80,11 +81,8 @@ export function driverArgs(args) {
 function runningDrivers(root) {
   const out = [];
   for (const slug of existsSync(root) ? readdirSync(root).sort() : []) {
-    const nested = join(root, slug, E.BATCHES_DIR);
-    let names = [];
-    try { names = readdirSync(nested, { withFileTypes: true }).filter((d) => d.isDirectory() && E.SAFE_ID.test(d.name)).map((d) => d.name).sort(); } catch { /* no named batches */ }
-    for (const batch of [null, ...names]) {
-      const dir = batch ? join(nested, batch) : join(root, slug);
+    for (const batch of [null, ...namedBatches(join(root, slug))]) {
+      const dir = batch ? join(root, slug, E.BATCHES_DIR, batch) : join(root, slug);
       const pid = lockPid(dir);
       if (pid && alive(pid)) out.push({ slug, batch, dir, pid });
     }
