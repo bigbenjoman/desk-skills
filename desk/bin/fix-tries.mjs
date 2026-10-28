@@ -103,9 +103,13 @@ export function inlineFindings(comments) {
   });
 }
 
-// A body finding's own `path:line`: the first its text names. Any later one is evidence it cites (the
-// original it duplicates), which may be another finding's own.
-const ownAt = (text) => /[\w./-]+:\d+/.exec(text)?.[0] ?? null;
+// A body finding's text names `path:line` as its own: the same path and line, not a longer one, and
+// no `path:line` before it. A later one is evidence it cites (the original it duplicates), which may
+// be another finding's own. The path is matched whole, so one holding `[id]` or `(shop)` still is.
+const owns = (text, at) => {
+  const m = new RegExp(`(^|[^\\w./-])${at.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`).exec(text);
+  return m != null && m.index + m[1].length <= (/[\w./-]+:\d+/.exec(text)?.index ?? Infinity);
+};
 
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
 // found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Only P2s
@@ -124,7 +128,7 @@ export function reviewFix(t, review) {
   }
   const listed = reviewFindings(review.body);
   const comments = typeof review.comments === 'function' ? review.comments() : review.comments;
-  const inline = inlineFindings(comments).filter((x) => !listed.some((b) => ownAt(b.text) === x.at));
+  const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   if (!findings.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
