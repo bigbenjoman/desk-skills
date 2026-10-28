@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 import { designGap, needsPersonLane } from './batch-state.mjs';
-import { belongsElsewhere, liveBatch } from './batches.mjs';
+import { belongsElsewhere, liveBatch, finished, prOpen } from './batches.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -87,22 +87,10 @@ export function intakeReasons(r) {
 const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key);
 
 // ---- the batch ---------------------------------------------------------------------------------
-// A PR whose state cannot be read counts as open.
-export function prOpen(n) {
-  let repo;
-  try { repo = E.ghRepo(); } catch { return true; }
-  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
-  return !(r.status === 0 && ['MERGED', 'CLOSED'].includes(r.stdout.trim()));
-}
-// Free for a standing batch: no queue, or one whose every ticket is done with no PR still open. A failed
-// ticket waits on the person, a queue with no tickets is a session's between `queue.mjs init` and its
-// plan, and a batch on a base still has its gate and promotion to come: none of those is free.
-// queue.mjs init --standing checks the same under its lock.
-const free = (q) => {
-  if (!q) return true;
-  const rows = Object.values(q.tickets ?? {});
-  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
-};
+export { prOpen };
+// Free for a standing batch: no queue, or a finished one (batches.mjs). queue.mjs init --standing checks
+// the same under its lock.
+const free = (q) => !q || finished(q);
 // Why no ticket may join this batch now: 'base', 'session' (not handed over), or null.
 const closed = (b) => (!b || free(b) ? null : b.base ? 'base' : b.supervised !== true ? 'session' : null);
 // Why intake admits nothing into this batch now, or null.
@@ -286,8 +274,9 @@ function intake({ state, query, reg, now }) {
     const r = placeOne(key, rec, { started, by: 'intake', now });
     if (r.unreadable) { lines.push(`intake: admits nothing more: ${r.unreadable}`); return done({ started }); }
     if (r.closed) { lines.push(waitFor(r.cur)); return done({ started }); }
+    if (r.elsewhere?.unreadable) { lines.push(`intake: not admitted: ${r.elsewhere.why}; the next intake tries again`); continue; }
     if (r.elsewhere) {
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: r.elsewhere.why };
+      reg.tickets[key] ={ at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: r.elsewhere.why };
       writeIntake(state, reg);
       lines.push(`intake: ${key} not admitted: ${r.elsewhere.why}`);
       continue;

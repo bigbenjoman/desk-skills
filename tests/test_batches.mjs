@@ -161,6 +161,13 @@ r = cli('queue.mjs', ['admit', 'F-2']);
 t('DS-307 a done ticket in a finished batch may join another', r.code === 0 && JSON.parse(read(standingQ)).tickets['F-2']?.state, 'triaged');
 r = cli('queue.mjs', ['admit', 'F-3']);
 t('DS-307 a child of an epic whose feature batch finished is admitted', r.code === 0 && JSON.parse(read(standingQ)).tickets['F-3']?.state, 'triaged');
+// A feature batch on a base still has its promotion to come, so it holds its epic's children.
+mkdirSync(dirname(namedQ('G-1')), { recursive: true });
+writeFileSync(namedQ('G-1'), JSON.stringify({ version: 1, batch: 'G-1', base: 'feat/g', tickets: { 'G-2': { key: 'G-2', state: 'done' } } }));
+rec('G-3', { epic: { key: 'G-1', summary: 'a feature awaiting promotion' } });
+before = read(standingQ);
+r = cli('queue.mjs', ['admit', 'G-3']);
+t('DS-307 a feature batch done but unpromoted keeps its epic\'s child', r.code !== 0 && r.out.includes('G-3 is a child of epic G-1') && read(standingQ) === before, true);
 
 // Another batch's queue that cannot be read refuses the key naming it, never a crash.
 mkdirSync(dirname(namedQ('Z-1')), { recursive: true });
