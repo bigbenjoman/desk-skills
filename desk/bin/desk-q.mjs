@@ -35,7 +35,7 @@ import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, n
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
-import { namedBatches } from './batches.mjs';
+import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
@@ -252,9 +252,7 @@ export function loadRepos(now = Date.now()) {
   return claims.flatMap((c, i) => {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
-    const standing = batchPaths(c.slug);
-    const named = namedBatches(dirname(standing.queue)).filter((b) => existsSync(batchPaths(c.slug, b).queue));
-    return [null, ...named].map((batch) => loadBatch(c, name, batch, limits, now));
+    return listBatches(c.slug).map((b) => loadBatch(c, name, b.name, limits, now));
   });
 }
 
@@ -1754,7 +1752,7 @@ function moveTicket(r, key, verb, to) {
 function setWorkers(repos, r, word) {
   const n = /^\d+$/.test(word) ? Number(word) : NaN;
   if (!Number.isInteger(n)) throw new Usage(`Workers must be a whole number from 0 to ${r.cap}. Nothing changed.`);
-  const total = liveAllowed(repos.filter((x) => x.slug !== r.slug)) + n;
+  const total = liveAllowed(repos.filter((x) => x !== r)) + n;
   const cap = machineCap();
   if (n > r.cap) {
     const block = { slug: r.slug, port: r.claim.port, last: r.claim.port + n };

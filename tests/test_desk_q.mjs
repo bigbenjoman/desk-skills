@@ -1676,6 +1676,8 @@ const x310 = W310.run('--plain', 'desk-skills:X-1');
 t('DS-310 AC1 desk-q <repo>:<name> opens the named batch, and only its tickets', `${x310.code} ${/X-2/.test(x310.out)} ${/X-3/.test(x310.out)} ${/DS-1/.test(x310.out)}`, '0 true true false');
 t('DS-310 AC4 the repo\'s name still opens its standing batch, as before', W310.run('--plain', 'desk-skills').out, repo310a);
 t('DS-310 a ticket in the named batch is shown from it', /which copy\?/.test(W310.run('--plain', 'desk-skills:X-1', 'show', 'X-3').out), true);
+const over310 = W310.run('desk-skills:X-1', 'workers', '4');
+t('DS-310 a named batch\'s workers past the cap counts its sibling batch in the machine total', `${over310.code !== 0} ${/live batches would then allow 6 /.test(over310.out + over310.err)}`, 'true true');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
