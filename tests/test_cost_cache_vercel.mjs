@@ -77,7 +77,7 @@ const sources = [
 ];
 writeFileSync(env.DESK_COSTS, renderCosts({ entries: sources, budget: { actionsUsd: null }, logins: { vercel: env.DESK_VERCEL_AUTH } }));
 const costs = readCosts(env.DESK_COSTS);
-t('fixture costs.md reads back with five Vercel projects on three teams', `${costs.entries.filter((e) => e.supplier === 'vercel').length} ${new Set(costs.entries.map((e) => e.teamId)).size}`, '5 3');
+t('fixture costs.md reads back with six Vercel projects on three teams', `${costs.entries.filter((e) => e.supplier === 'vercel').length} ${new Set(costs.entries.map((e) => e.teamId)).size}`, '6 3');
 
 // A fake reader: answers each team's fixture, records each path, and can fail for one team.
 const calls = [];
