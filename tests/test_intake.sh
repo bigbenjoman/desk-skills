@@ -47,7 +47,7 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists.
 cat > "$T/fakes/desk-jira" <<EOF
 #!/bin/sh
@@ -265,6 +265,28 @@ check "admit: with no batch and autopilot-workers not yes, it points at /desk-au
 config yes '`none`'
 out=$(admit H-7)
 check "admit: with no batch and autopilot-workers yes, it starts a standing batch handed to the supervisor" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget supervised)" = true ] && [ "$(qget tickets.H-7.state)" = triaged ]'
+
+# ---- two batches: a ticket is in one batch at most (DS-307) --------------------------------------
+NB="$DESK_HOME/repos/acme__widgets/batches/X-1"; mkdir -p "$NB"
+printf '{"version":1,"batch":"X-1","tickets":{"X-2":{"key":"X-2","state":"running"}}}\n' > "$NB/queue.json"
+config yes; running_batch; rm -f "$T/state/intake.json"
+rec X-2 A; rec X-3 A '"epic":{"key":"X-1","summary":"a feature"}'; rec X-4 A '"epic":{"key":"X-1","summary":"a feature"}'
+n=$(count "$T/triage.calls")
+search X-2; out=$(intake)
+check "DS-307 AC2: a ticket in another batch is not triaged, admitted or handed on" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.X-2)" = undefined ] && [ "$(handed X-2)" = none ]'
+search X-3; out=$(intake)
+check "DS-307 AC3: a new child of an epic with a live feature batch is not admitted" '[ "$(qget tickets.X-3)" = undefined ] && grep -q "^elsewhere: " <<< "$(handed X-3)"'
+check "DS-307 AC3: the intake line names the feature batch" 'grep -q "intake: X-3 not admitted: X-3 is a child of epic X-1, whose feature batch X-1 is running" <<< "$out"'
+n=$(count "$T/triage.calls"); out=$(intake)
+check "DS-307 AC3: it is not triaged again while that batch is live" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
+before=$(cat "$DESK_QUEUE")
+out=$(admit X-4); rc=$?
+check "DS-307 AC4: /desk-admit refuses a live epic's child, naming its feature batch" '[ $rc -eq 11 ] && grep -q "^not admitted X-4: X-4 is a child of epic X-1, whose feature batch X-1 is running" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+n=$(count "$T/triage.calls"); out=$(admit X-2); rc=$?
+check "DS-307 AC4: /desk-admit refuses a ticket in another batch before any triage" '[ $rc -eq 11 ] && grep -q "^not admitted X-2: X-2 is in batch X-1" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"
+out=$(intake)
+check "DS-307: once the feature batch is archived, its child is taken as any other" '[ "$(qget tickets.X-3.state)" = triaged ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

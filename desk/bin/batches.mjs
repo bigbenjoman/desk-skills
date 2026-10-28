@@ -2,7 +2,7 @@
 // queue. An archived batch sits under `batches/.done/` and is not listed. A ticket's key finds the one
 // batch that holds it.
 import { existsSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
@@ -31,3 +31,18 @@ export function batchHolding(key, slug = E.repoSlug()) {
 }
 
 export const label = (b) => b.name ?? 'the standing batch';
+
+// Why `key` may not join the batch whose queue is `own`, or null: another batch holds it, or its triage
+// record `rec` names an epic whose feature batch is live (listed, so not archived). -> {batch, why}.
+// Outside a repo there are no batches to list, so nothing is refused.
+export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
+  let slug;
+  try { slug = E.repoSlug(); } catch { return null; }
+  const mine = (b) => resolve(b.queue) === resolve(own);
+  const held = batchHolding(key, slug);
+  if (held && !mine(held)) return { batch: label(held), why: `${key} is in ${held.name ? `batch ${held.name}` : 'the standing batch'}: a ticket is in one batch at most` };
+  const epic = rec?.epic?.key;
+  const feature = epic && listBatches(slug).find((b) => b.name === epic);
+  if (feature && !mine(feature)) return { batch: epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
+  return null;
+}
