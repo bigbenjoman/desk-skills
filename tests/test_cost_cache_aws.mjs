@@ -92,11 +92,18 @@ t('AC2 credited tax is a tax line charged $0.00', ((l) => `${l.used} ${l.credits
 t('AC2 the profile\'s total is what was charged', pn.total, 2);
 const fs = a.profiles.fansurge;
 t('AC3 a profile with no repo in desk is kept under its own name', `${fs.name} ${fs.repo} ${fs.total}`, 'fansurge null 0.42');
-t('AC3 and stands as a name of its own', Object.keys(C.awsByName(a)).sort().join(), 'fansurge,forewatt,pr-ninja');
+t('AC3 and stands as a name of its own in the cache', `${Object.keys(a.names).sort().join()} ${a.names.fansurge.repo} ${a.names.fansurge.total}`, 'fansurge,forewatt,pr-ninja null 0.42');
 t('AC6 one Cost Explorer request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map(of).join(), '1,1,1');
 t('AC7 forewatt\'s lines add up to its total to the cent', `${sum(fw.lines)} ${fw.total}`, '5.35 5.35');
-const names = C.awsByName(a);
-t('AC7 each name\'s lines add up to that name\'s total', Object.values(names).every((n) => sum(n.lines) === n.total), true);
+// Two profiles under one name, each service a third of a cent over: the rounded lines add to 1.32
+// where the raw amounts would round to 1.34.
+const third = (...services) => [page(services.map((s) => grp(s, 'Usage', '0.334')))];
+const twins = await C.readAws({ sources: [{ supplier: 'aws', key: 'twin-a', name: 'twin', repo: null, credit: null }, { supplier: 'aws', key: 'twin-b', name: 'twin', repo: null, credit: null }],
+  aws: async (args) => ({ 'twin-a': third('Amazon Simple Storage Service', 'AWS Lambda'), 'twin-b': third('Amazon Simple Storage Service', 'Amazon CloudFront') })[arg(args, '--profile')][0], now: OCT27 });
+const twin = twins.names.twin;
+t('AC7 a name\'s profiles merge into one line per service', `${twin.profiles.join()} ${twin.lines.map((l) => `${l.service} ${l.charged}`).join(' | ')}`,
+  'twin-a,twin-b Amazon Simple Storage Service 0.66 | AWS Lambda 0.33 | Amazon CloudFront 0.33');
+t('AC7 and the name\'s total is its lines added up, not its raw amounts', twin.total, 1.32);
 t('AC8 the profile\'s saved credit comes with its figures', JSON.stringify(pn.credit), '{"usd":61,"ends":"2027-03-31","entered":"2026-10-27"}');
 t('AC8 a profile with none saved has none', fw.credit, null);
 
@@ -148,6 +155,26 @@ const a10 = cache().aws;
 t('AC10 every profile is due on 1 November', `${of('forewatt')} ${of('prninja-admin')} ${of('fansurge')}`, '1 1 1');
 t('AC10 and asks for 1 October to 1 November, End exclusive', calls.every((c) => arg(c, '--time-period') === 'Start=2026-10-01,End=2026-11-01'), true);
 t('AC10 the cache gives it as October, 1–31', `${a10.profiles.forewatt.period.month} ${a10.profiles.forewatt.period.from}..${a10.profiles.forewatt.period.to}`, '10 2026-10-01..2026-10-31');
+
+// ---- a GitHub reading that ends after an AWS one does not undo it, nor send AWS again
+reset();
+const BOTH = join(T, 'both.md');
+writeFileSync(BOTH, renderCosts({ entries: [{ supplier: 'github', key: 'benjo/voicepa', name: 'voicepa', repo: 'benjo__voicepa', account: 'benjo', readable: true }, ...sources],
+  budget: { actionsUsd: null }, logins: { aws: '~/.aws/config' } }));
+const both = readCosts(BOTH);
+const raceDir = join(T, 'race-costs');
+let open;
+const gate = new Promise((r) => { open = r; });
+const slowGh = async () => { await gate; throw new Error('gh: offline'); };
+const ghFirst = C.refresh({ dir: raceDir, costs: both, gh: slowGh, aws, now: NOV1 });
+await new Promise((r) => { setTimeout(r, 50); });
+const awsMeanwhile = await C.refresh({ dir: raceDir, costs: both, gh: slowGh, aws, now: NOV1 });
+open();
+const ghLater = await ghFirst;
+t('race: the second refresh reads AWS while the first holds GitHub', `${both.entries.length} ${awsMeanwhile.github} | ${awsMeanwhile.aws}`, '4 another reading is running | read');
+t('race: the first then writes GitHub and finds AWS already read', `${ghLater.github} | ${ghLater.aws}`, 'read | every profile read today, or failed under an hour ago');
+t('race: both readings are in the cache', `${!!C.readCache(raceDir).github?.repos?.['benjo/voicepa']} ${C.readCache(raceDir).aws?.profiles?.forewatt?.total}`, 'true 5.45');
+t('race: one Cost Explorer request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map(of).join(), '1,1,1');
 
 // ---- AC9: desk-q's check starts one background reading per profile and does not wait
 mkdirSync(join(T, 'bin'));

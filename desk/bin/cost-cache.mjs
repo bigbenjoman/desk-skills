@@ -362,7 +362,8 @@ export const profileDue = (rec, now) => !(rec?.at != null && utcDay(rec.at) === 
 // One AWS reading folded into the last one (`last`, the cache's `aws`, or null): each due profile is
 // read (with force, every one) and every other keeps its record. An organisation profile's figures
 // include its linked accounts. sources: costs.md's AWS entries. aws(args) -> parsed body.
-//   -> the new `aws`: { at, profiles: { <profile>: { profile, name, repo, credit, at, period, total, lines, failed } } }
+//   -> the new `aws`: { at, profiles: { <profile>: { profile, name, repo, credit, at, period, total, lines, failed } },
+//        names: awsByName's figures per name }
 export async function readAws({ sources, last = null, aws = awsCli, now, force = false }) {
   const profiles = {};
   for (const s of sources) {
@@ -378,7 +379,7 @@ export async function readAws({ sources, last = null, aws = awsCli, now, force =
       profiles[s.key] = { ...base, ...keep, failed: { at: now, why: e.message || String(e) } };
     }
   }
-  return { at: now, profiles };
+  return { at: now, profiles, names: awsByName({ profiles }) };
 }
 
 // The AWS figures per name, its profiles' lines merged by service.
@@ -438,7 +439,9 @@ export function dueSuppliers({ costs = readCosts(E.costsPath()), cache = readCac
 const READERS = { github: readGithub, vercel: readVercel, aws: readAws };
 
 // Read every due supplier, one at a time per supplier however many callers race: each takes its
-// supplier's lock and checks it is still due under it.  -> { github: 'read' | why not, … }
+// supplier's lock and checks it is still due under it. Another supplier may be read meanwhile, so
+// the reading goes into the cache as it is on disk then, under the cache's own lock.
+//   -> { github: 'read' | why not, … }
 export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, vercel = vercelGet, aws = awsCli, now = Date.now(), force = false } = {}) {
   const out = {};
   if (!costs.exists) return out;
@@ -449,9 +452,10 @@ export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = 
     try {
       const cache = readCache(dir) ?? { v: 1 };
       if (!force && !dueSuppliers({ costs, cache, now }).includes(supplier)) { out[supplier] = NOT_DUE[supplier]; continue; }
-      const reading = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, aws, now, force });
-      // Read again before writing: another caller may have written another supplier meanwhile.
-      writeCache({ ...(readCache(dir) ?? { v: 1 }), [supplier]: reading }, dir);
+      const read = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, aws, now, force });
+      const write = await takeBorrowLock({ dir: lockDir, name: 'desk-cost-cache.lock.d', waitMs: 10000 });
+      if (!write.ok) { out[supplier] = 'the cache stayed locked'; continue; }
+      try { writeCache({ ...(readCache(dir) ?? { v: 1 }), [supplier]: read }, dir); } finally { write.release(); }
       out[supplier] = 'read';
     } finally { lock.release(); }
   }
