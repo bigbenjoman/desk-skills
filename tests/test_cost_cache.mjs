@@ -92,7 +92,7 @@ t('AC3 minutes every repo accounts for leave nothing shared', sh.items.map((i) =
 t('AC3 read with one account call, no repository', calls.filter((p) => !p.includes('repository=') && p.includes('month=10')).length, 1);
 t('AC4 a repo on another account is never called', calls.some((p) => p.includes('acme-co')), false);
 t('AC4 and is marked can\'t read with the account it bills to', JSON.stringify(g.repos['acme-co/site']), '{"name":"site","cantRead":{"account":"acme-co"}}');
-t('AC9 the cache says the figures cover 1 to 26 October, days in UTC', `${g.period.from}..${g.period.to} ${C.coverLabel(g.period)}`, '2026-10-01..2026-10-26 1–26 October 2026 (UTC)');
+t('AC9 the cache says the figures cover 1 to 26 October, days in UTC', `${g.period.from}..${g.period.to}`, '2026-10-01..2026-10-26');
 t('AC9 a reading just after midnight UTC still covers to yesterday', C.readingPeriod(Date.UTC(2026, 9, 27, 0, 5)).to, '2026-10-26');
 t('AC12 with no last month in the cache, the first reading also reads September', calls.filter((p) => p.includes('month=9&')).length, 2);
 t('AC12 and keeps its charged total per repo', `${g.lastMonth.period.month} ${g.lastMonth.repos['benjo/voicepa'].total} ${g.lastMonth.repos['benjo/pr-ninja'].total}`, '9 7.2 0');
@@ -136,12 +136,12 @@ t('AC7 and the one that waited finds it read under the lock', (await C.refresh({
 
 // ---- AC8: 1 November reads October in full; November's first reading is on 2 November
 reset();
-t('AC8 on 1 November the period is October, 1–31', C.coverLabel(C.readingPeriod(NOV1)), '1–31 October 2026 (UTC)');
+t('AC8 on 1 November the period is October, 1–31', (({ month, from, to }) => `${month} ${from}..${to}`)(C.readingPeriod(NOV1)), '10 2026-10-01..2026-10-31');
 await C.refresh({ costs, gh, now: NOV1 });
 const g8 = cache().github;
 t('AC8 the reading asks GitHub for October', calls.filter((p) => p.includes('repository=')).every((p) => p.includes('month=10&')), true);
 t('AC8 and the cache gives it as October, 1–31', `${g8.period.month} ${g8.period.from}..${g8.period.to}`, '10 2026-10-01..2026-10-31');
-t('AC8 November\'s first reading is on 2 November', `${C.readingPeriod(NOV2).month} ${C.coverLabel(C.readingPeriod(NOV2))}`, '11 1–1 November 2026 (UTC)');
+t('AC8 November\'s first reading is on 2 November', (({ month, from, to }) => `${month} ${from}..${to}`)(C.readingPeriod(NOV2)), '11 2026-11-01..2026-11-01');
 
 // ---- AC11: this month's first reading keeps last month's charged total per repo
 reset();
@@ -155,6 +155,12 @@ const part = { ...g8, period: { ...g8.period, to: '2026-10-30' }, lastMonth: nul
 reset();
 const gp = await C.readGithub({ sources: costs.entries, last: part, gh, now: NOV2 });
 t('AC11 October read only to the 30th is read again in full rather than carried', `${calls.filter((p) => p.includes('month=10&')).length} ${gp.lastMonth.repos['benjo/voicepa'].total}`, '2 12.26');
+// A repo whose 1 November call failed holds figures from part of October: it is read again, not carried.
+const stale = { ...g8, repos: { ...g8.repos, 'benjo/voicepa': { ...g8.repos['benjo/voicepa'], total: 5, failed: { at: NOV1, why: 'timed out after 30s' } } }, lastMonth: null };
+reset();
+const gs = await C.readGithub({ sources: costs.entries, last: stale, gh, now: NOV2 });
+t('AC11 a repo whose last October call failed is read again for October rather than carried', `${calls.filter((p) => p.includes('month=10&')).join()} ${gs.lastMonth.repos['benjo/voicepa'].total} ${gs.lastMonth.repos['benjo/pr-ninja'].total}`,
+  '/users/benjo/settings/billing/usage/summary?year=2026&month=10&repository=benjo/voicepa 12.26 0.16');
 
 // ---- AC6 and AC7 end to end: desk-q's check starts one background reading and does not wait
 mkdirSync(join(T, 'bin'));

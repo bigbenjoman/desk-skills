@@ -38,13 +38,6 @@ export function readingPeriod(now) {
   return { ...p, to: y.toISOString().slice(0, 10) };
 }
 
-// "1–26 October 2026 (UTC)"
-export function coverLabel(p) {
-  if (!p) return null;
-  const name = new Date(Date.UTC(p.year, p.month - 1, 1)).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' });
-  return `1–${Number(p.to.slice(8))} ${name} ${p.year} (UTC)`;
-}
-
 // ---- GitHub ----------------------------------------------------------------------------------
 const cents = (n) => Math.round(n * 100) / 100;
 const qty = (n) => Math.round(n * 1000) / 1000;
@@ -139,13 +132,14 @@ export async function readGithub({ sources, last = null, gh = ghApi, now }) {
 }
 
 // Last month's charged total per repo, for comparison: carried over when the previous reading was
-// last month in full, kept once read, and read once for any repo that has none.
+// last month in full, kept once read, and read once for any repo that has none. A repo whose last
+// call failed holds figures from part of the month, so it is read again rather than carried.
 async function lastMonthOf({ sources, last, period, gh, now }) {
   const want = prevMonth(period);
   let lm = samePeriod(last?.lastMonth?.period, want) ? last.lastMonth : null;
   if (!lm && samePeriod(last?.period, want) && isFull(last.period)) {
     lm = { period: want, repos: Object.fromEntries(Object.entries(last.repos ?? {})
-      .filter(([, r]) => r.total != null).map(([k, r]) => [k, { name: r.name, total: r.total, at: r.at }])) };
+      .filter(([, r]) => r.total != null && !r.failed).map(([k, r]) => [k, { name: r.name, total: r.total, at: r.at }])) };
   }
   const repos = { ...(lm?.repos ?? {}) };
   for (const s of sources) {
