@@ -58,5 +58,6 @@ When the batch is idle with no held ticket left:
    it says the criteria could not be read.
 3. With a batch base, the promotion PR (base → default) is the user's to merge. Title it with the epic
    key so `/desk-review` checks the epic's criteria against the whole feature, and say so. In feature
-   mode it is already open, titled that way, and the gate marked it ready.
+   mode it is already open, titled that way, and the last slice's gate marked it ready; earlier
+   slices' promotion PRs may already have merged.
 4. **Never transition the epic**, whatever the result.

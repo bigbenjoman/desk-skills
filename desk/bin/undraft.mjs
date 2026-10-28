@@ -7,6 +7,9 @@
 //   wait    nothing for anyone to do yet: checks still running, or GitHub has not worked out whether
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
+//   findings  the review at its head found a P0 or a P1: the pass sends those to a fix worker
+//           (fix-tries.mjs reviewFix), and only once no try is left, or its body lists none of them
+//           with a file:line, does it put them to the person (`why` and `action` say what for)
 //
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call; a row of plain text such
@@ -17,23 +20,22 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment).
 import { evaluateGate } from './gate.mjs';
+// The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
+// install.sh installs it at this same relative path; /desk-setup copies it into each repo.
+import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
-export const LOCAL_MARKER = '<!-- desk-review:local -->';
-const VERDICT_LINE = /^<!--\s*desk-review:verdict\s+v=1\s+(.*?)\s*-->$/;
-
-// key=value pairs, as a verdict marker or the §4 Clean review verdict row writes them.
+// key=value pairs, as the §4 Clean review verdict row writes them.
 export function pairs(text) {
   return Object.fromEntries([...String(text ?? '').matchAll(/([a-z0-9_]+)=(\S+)/gi)].map((m) => [m[1], m[2]]));
 }
 
-// A posted desk-review's verdict, or null: the body opens with the local marker and the verdict marker.
+// A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
+// marker order, as the §4 Clean review verdict row compares them; the heading is left out.
 export function parseVerdict(body) {
-  const lines = String(body ?? '').split(/\r?\n/);
-  if (lines[0]?.trim() !== LOCAL_MARKER) return null;
-  const m = VERDICT_LINE.exec(lines[1]?.trim() ?? '');
-  if (!m) return null;
-  const v = pairs(m[1]);
-  return /^[0-9a-f]{7,40}$/.test(v.sha ?? '') ? v : null;
+  const v = gateVerdict(String(body ?? ''));
+  if (!v) return null;
+  const { heading, ...marker } = v;
+  return Object.fromEntries(Object.entries(marker).map(([k, x]) => [k, String(x)]));
 }
 
 // The reviews among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted: on a
@@ -42,9 +44,10 @@ function ownReviews(reviews, handle) {
   return (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
 }
 
-// The latest verdict among the reviews `handle` posted.
-export function latestVerdict(reviews, handle) {
-  return ownReviews(reviews, handle).map((r) => parseVerdict(r.body)).filter(Boolean).pop() ?? null;
+// The latest review carrying a verdict among the reviews `handle` posted, as { verdict, body }, or
+// null. The body is for the findings it lists.
+export function latestReview(reviews, handle) {
+  return ownReviews(reviews, handle).map((r) => ({ verdict: parseVerdict(r.body), body: r.body })).filter((r) => r.verdict).pop() ?? null;
 }
 
 // What the verdict says about this head: { clean, why, settle } (settle: the verdict is at the head,
@@ -87,6 +90,8 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
   if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
+  // A desk-review whose marker the review gate cannot read is no verdict, never a plain review.
+  if (String(r.body).split(/\r?\n/)[0].trim() === LOCAL_MARKER) return { clean: false, why: 'its desk-review verdict marker is not one the review gate reads' };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
   const c = clean.toLowerCase();
@@ -121,6 +126,17 @@ export function undraftCall(t, pr, cfg) {
   }
   const plain = !Object.keys(pairs(clean)).length;
   if (!cfg.handle) return person('§1 GitHub handle is not set, so no review verdict can be attested', 'set it with /desk-setup');
+  // A review at the head that found a P0 or a P1 is a code change for a fix worker, whatever else is
+  // wrong with the PR: the pass sends it back (fix-tries.mjs reviewFix) with the review's body.
+  // Under a plain-text row the latest review may still be a desk-review verdict (plainVerdictAt reads
+  // it against desk-review's own counts), and its P0s and P1s go the same way.
+  const review = latestReview(pr.reviews, cfg.handle);
+  const verdict = plain ? null : review?.verdict ?? null;
+  const v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
+  const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
+  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0)) {
+    return { ...person(v.why, `settle the findings on #${n}`), call: 'findings', verdict: found, review: review.body };
+  }
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {
     return person(`it has a merge conflict with its base`, `resolve the conflict on #${n}; it then needs a fresh review`);
   }
@@ -128,8 +144,6 @@ export function undraftCall(t, pr, cfg) {
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   if (gate.state !== 'pass') return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);
-  const verdict = plain ? null : latestVerdict(pr.reviews, cfg.handle);
-  const v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
   if (!v.clean) return person(v.why, v.settle ? `settle the findings or gaps on #${n}` : `review #${n} at its head`);
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);

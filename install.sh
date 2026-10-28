@@ -448,6 +448,8 @@ if [ -d "$SRC/desk/bin" ]; then
     chmod +x "$DESKDIR/bin/$(basename "$f")"
     count=$((count + 1))
   done
+  # undraft.mjs reads review verdicts with the review gate's parser, from ../templates beside bin.
+  install_file "$SRC/desk/templates/scripts/desk/review-gate.mjs" "$DESKDIR/templates/scripts/desk/review-gate.mjs"
   ok "$count scripts (queue.json, workers/ and batch state are never touched)"
   wrote "scripts  ~/.claude/desk/bin ($count)"
   # desk-env on PATH: the skills run `desk-env where` to find the current repo's config.

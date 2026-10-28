@@ -7,7 +7,8 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
+import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, parseVerdict, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
+import { parseVerdict as undraftVerdict, verdictAt } from '../desk/bin/undraft.mjs';
 import * as oldGate from './fixtures/review-gate-v1.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 
@@ -87,6 +88,28 @@ for (const [name, findings, clean] of CASES) {
   t(`gate copy before carrying, ${name}: still parses the verdict`, oldGate.parseVerdict(b) !== null, true);
 }
 t('the old copy reads the round-3 heading without a mismatch', oldGate.headingMismatch(oldGate.parseVerdict(printed([fnd()]))), null);
+
+// The pass's undraft step reads the same bodies the same way: the same sha and counts where this
+// gate reads a verdict, and nothing it can call clean where this gate reads none.
+const marker = (rest) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} ${rest} -->\nclean`;
+const CLEAN_ROW = COUNTS.map((k) => `${k}=0`).join(' ');
+const BODIES = [
+  ['clean', body()],
+  ['findings', body({ p1: 2, gaps: 1, heading: '2 P1' })],
+  ['a round-3 carried verdict', printed([fnd()])],
+  ['a count missing', marker('p0=0 p1=0 deferred=0 gaps=0 vendor=codex round=1')],
+  ['counts out of order', marker(`p1=0 p0=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1`)],
+  ['a count not a number', marker(`p0=0 p1=x p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1`)],
+  ['a reply marker', body().replace('desk-review:local', 'desk-review:reply')],
+  ['no local marker', body().split('\n').slice(1).join('\n')],
+];
+for (const [name, b] of BODIES) {
+  const g = parseVerdict(b);
+  const u = undraftVerdict(b);
+  t(`undraft reads ${name} as the gate does`, JSON.stringify(u && [u.sha, ...COUNTS.map((k) => Number(u[k]))]),
+    JSON.stringify(g && [g.sha, ...COUNTS.map((k) => g[k])]));
+  if (!g) t(`undraft never reads ${name} as clean`, verdictAt(u, HEAD, CLEAN_ROW).clean, false);
+}
 
 // CLAUDE.md size: characters, not bytes.
 t('20,000 characters passes', checkClaudeMd([{ path: 'CLAUDE.md', text: 'x'.repeat(20000) }]).ok, true);

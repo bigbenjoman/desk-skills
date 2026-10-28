@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The base gate: the check a feature-mode batch's base passes before its promotion PR leaves draft.
 //
-// pass.mjs starts it in the background once every child has merged into the base, because the base's
+// pass.mjs starts it in the background on each slice (a set number of children merged into the base,
+// a milestone child merged, or every child merged), because the base's
 // full suites can outlast the Bash tool's 10-minute limit, and reads its result from the queue on
 // later passes. In the base worktree it merges the default branch in (as every sync does), then runs
 // every acceptance spec and the repo's Typecheck, Lint and Unit tests. It passes only when each one
@@ -9,8 +10,9 @@
 // promotion PR is marked ready (config §3 pr-ready). Merging the promotion PR stays the person's.
 //
 // The result is the queue's `gate`: { state: 'passed' | 'failed', sha, started, finished, failures,
-// close_out, pr, ready, note }. `close_out` is the epic's criteria no spec covers, which the close-out
-// checks one by one; null when the criteria could not be read.
+// close_out, pr, ready, note, slice }. `close_out` is the epic's criteria no spec covers, which the
+// close-out checks one by one; null when the criteria could not be read. `slice` is pass.mjs's record
+// of the children the run covers, kept as it was.
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -60,7 +62,7 @@ function finish(extra = {}) {
   }
   const gate = {
     state: failures.length ? 'failed' : 'passed', sha, started, finished: new Date().toISOString(), pid: process.pid,
-    failures, close_out: null, pr, ready, note, ...extra,
+    failures, close_out: null, pr, ready, note, slice: Q.gate?.slice ?? null, ...extra,
   };
   execFileSync('node', [join(BIN, 'queue.mjs'), 'set-batch', `gate=${JSON.stringify(gate)}`], { stdio: ['ignore', 'ignore', 'inherit'] });
   console.log(`base gate ${gate.state} at ${sha ?? '?'}${failures.length ? `:\n  ${failures.join('\n  ')}` : ''}${note ? `\n${note}` : ''}`);

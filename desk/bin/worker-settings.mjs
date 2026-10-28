@@ -334,9 +334,11 @@ if (mode === 'triage') {
     ...bash('git', ...GIT_DENY_WT),
     ...bash('gh', ...GH_DENY),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
-    // The one desk-env subcommand that writes: the machine profile is the user's to confirm.
-    'Bash(desk-env machine write:*)', `Bash(${E.HOME}/.local/bin/desk-env machine write:*)`, 'Bash(~/.local/bin/desk-env machine write:*)',
-    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs machine write:*)`, `Bash(node ${b}/desk-env.mjs machine write:*)`]),
+    // The desk-env subcommands that write: the machine profile and the cost sources are the user's to confirm.
+    ...['machine write', 'costs write'].flatMap((w) => [
+      `Bash(desk-env ${w}:*)`, `Bash(${E.HOME}/.local/bin/desk-env ${w}:*)`, `Bash(~/.local/bin/desk-env ${w}:*)`,
+      ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs ${w}:*)`, `Bash(node ${b}/desk-env.mjs ${w}:*)`]),
+    ]),
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/merge-driver.sh:*)`, `Bash(bash ${b}/merge-driver.sh:*)`, `Bash(${b}/pass.mjs:*)`, `Bash(node ${b}/pass.mjs:*)`,
       `Bash(${b}/answer.mjs:*)`, `Bash(node ${b}/answer.mjs:*)`, `Bash(${b}/queue.mjs:*)`, `Bash(node ${b}/queue.mjs:*)`,
       `Bash(${b}/decisions.mjs:*)`, `Bash(node ${b}/decisions.mjs:*)`, `Bash(${b}/not-now.mjs:*)`, `Bash(node ${b}/not-now.mjs:*)`]),

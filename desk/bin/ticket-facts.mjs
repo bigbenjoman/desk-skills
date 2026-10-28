@@ -18,6 +18,7 @@
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
 //                children list is left out, with epic_error, when it could not be read
+//   labels       the issue's labels, as written (a feature-mode batch promotes when a `milestone` merges)
 // or, when the read fails, facts_error instead (and no blockers), which plan-batch turns into a
 // question: an unread link list must never read as "no blockers".
 // A key that is not a tracker key gets links: "n/a".
@@ -97,7 +98,7 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'other_links', 'size', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+for (const f of ['blockers', 'other_links', 'size', 'labels', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
 
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
@@ -141,6 +142,7 @@ if (kind.kind !== 'tracker') {
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
       ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
+    rec.labels = Array.isArray(issue.fields?.labels) ? issue.fields.labels.map(String) : [];
     Object.assign(rec, epicOf(issue));
     design(issue.fields?.description);
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint

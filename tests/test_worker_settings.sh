@@ -61,6 +61,7 @@ check "bash <repo script>: exact command allowed"         'allows "Bash(bash tes
 check "bash <repo script>: probed with bash --version"    '[[ "$out" == *"TOOLCHAIN_PROBE: bash --version"* ]] && allows "Bash(bash --version)"'
 check "bash <repo script>: no wholesale bash rule"        '! allows "Bash(bash:*)"'
 check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env:*)" && jq -e ".permissions.deny | index(\"Bash(desk-env machine write:*)\")" "$T/ws.json" >/dev/null'
+check "desk-env costs write denied"                       'jq -e ".permissions.deny | index(\"Bash(desk-env costs write:*)\") and index(\"Bash(node $B/desk-env.mjs costs write:*)\")" "$T/ws.json" >/dev/null'
 check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
