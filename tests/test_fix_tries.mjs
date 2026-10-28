@@ -67,13 +67,13 @@ const brief7 = fixBrief(tk({ fix: c7.fix }));
 t('AC7 the brief says the other check is not the worker\'s', brief7.includes('Flows image missing is red too, and it is not yours to fix: build it: ensure-flows-image.sh') && !brief7.includes('- Flows image missing: https'), true);
 
 // AC1: the undraft call carries the verdict it read, and the comment quotes it.
-const verdictBody = `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 deferred=0 gaps=0 -->\nclean`;
+const verdictBody = `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\nclean`;
 const ready = undraftCall(tk(), { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'CLEAN', body: '', reviews: [{ author: { login: 'ben' }, body: verdictBody }], checks: [ok('tests')] },
   { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'] });
 t('AC1 a ready call carries its verdict', ready?.verdict?.sha, HEAD);
 const comment = undraftComment(ready.verdict, HEAD, 'p0=0 p1=0 gaps=0');
 t('AC1 the comment says why it left draft', comment.startsWith(`Out of draft: the desk-review verdict posted on this head (\`${HEAD.slice(0, 12)}\`) is clean`), true);
-t('AC1 and quotes the verdict', comment.includes(`> \`sha=${HEAD} p0=0 p1=0 deferred=0 gaps=0\``), true);
+t('AC1 and quotes the verdict', comment.includes(`> \`sha=${HEAD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1\``), true);
 
 // ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker, twice
 const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0';

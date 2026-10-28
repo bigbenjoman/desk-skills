@@ -20,23 +20,22 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment).
 import { evaluateGate } from './gate.mjs';
+// The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
+// install.sh installs it at this same relative path; /desk-setup copies it into each repo.
+import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
-export const LOCAL_MARKER = '<!-- desk-review:local -->';
-const VERDICT_LINE = /^<!--\s*desk-review:verdict\s+v=1\s+(.*?)\s*-->$/;
-
-// key=value pairs, as a verdict marker or the §4 Clean review verdict row writes them.
+// key=value pairs, as the §4 Clean review verdict row writes them.
 export function pairs(text) {
   return Object.fromEntries([...String(text ?? '').matchAll(/([a-z0-9_]+)=(\S+)/gi)].map((m) => [m[1], m[2]]));
 }
 
-// A posted desk-review's verdict, or null: the body opens with the local marker and the verdict marker.
+// A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
+// marker order, as the §4 Clean review verdict row compares them; the heading is left out.
 export function parseVerdict(body) {
-  const lines = String(body ?? '').split(/\r?\n/);
-  if (lines[0]?.trim() !== LOCAL_MARKER) return null;
-  const m = VERDICT_LINE.exec(lines[1]?.trim() ?? '');
-  if (!m) return null;
-  const v = pairs(m[1]);
-  return /^[0-9a-f]{7,40}$/.test(v.sha ?? '') ? v : null;
+  const v = gateVerdict(String(body ?? ''));
+  if (!v) return null;
+  const { heading, ...marker } = v;
+  return Object.fromEntries(Object.entries(marker).map(([k, x]) => [k, String(x)]));
 }
 
 // The reviews among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted: on a
@@ -91,6 +90,8 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
   if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
+  // A desk-review whose marker the review gate cannot read is no verdict, never a plain review.
+  if (String(r.body).split(/\r?\n/)[0].trim() === LOCAL_MARKER) return { clean: false, why: 'its desk-review verdict marker is not one the review gate reads' };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
   const c = clean.toLowerCase();
