@@ -1,7 +1,7 @@
 {
   "url": "https://claude.ai/artifact/YcUkJFqFJXEx6qzgNQnT5T",
-  "version": "1793099599-9a0d",
-  "fetched_at": "2026-10-27T11:23:49.815Z",
+  "version": "1793100346-93c1",
+  "fetched_at": "2026-10-27T17:20:28.348Z",
   "dir": "DS-215",
   "tickets": [
     {
@@ -11,6 +11,23 @@
     {
       "key": "DS-277",
       "boards": []
+    },
+    {
+      "key": "DS-285",
+      "boards": [
+        "Home with costs",
+        "5 Costs: every repo",
+        "voicepa by supplier",
+        "voicepa: GitHub",
+        "voicepa: Vercel",
+        "forewatt: AWS",
+        "pr-ninja by supplier\\",
+        "AWS on credits",
+        "pr-ninja: AWS\\",
+        "on credits",
+        "Every repo\\",
+        "one bill not read for 2 days"
+      ]
     }
   ],
   "boards": [
@@ -28,10 +45,64 @@
       "name": "Bar thickness: the options",
       "width": 880,
       "file": "Bars.dc.html"
+    },
+    {
+      "name": "Home with costs",
+      "width": 880,
+      "file": "CostHome.dc.html"
+    },
+    {
+      "name": "5 Costs: every repo",
+      "width": 880,
+      "file": "CostRepos.dc.html"
+    },
+    {
+      "name": "voicepa by supplier",
+      "width": 880,
+      "file": "CostVoicepa.dc.html"
+    },
+    {
+      "name": "voicepa: GitHub",
+      "width": 880,
+      "file": "CostVoicepaGitHub.dc.html"
+    },
+    {
+      "name": "voicepa: Vercel",
+      "width": 880,
+      "file": "CostVoicepaVercel.dc.html"
+    },
+    {
+      "name": "forewatt: AWS",
+      "width": 880,
+      "file": "CostForewattAWS.dc.html"
+    },
+    {
+      "name": "pr-ninja by supplier, AWS on credits",
+      "width": 880,
+      "file": "CostPrNinja.dc.html"
+    },
+    {
+      "name": "pr-ninja: AWS, on credits",
+      "width": 880,
+      "file": "CostPrNinjaAWS.dc.html"
+    },
+    {
+      "name": "Every repo, one bill not read for 2 days",
+      "width": 880,
+      "file": "CostReposStale.dc.html"
     }
   ],
   "files": [
     "Bars.dc.html",
+    "CostForewattAWS.dc.html",
+    "CostHome.dc.html",
+    "CostPrNinja.dc.html",
+    "CostPrNinjaAWS.dc.html",
+    "CostRepos.dc.html",
+    "CostReposStale.dc.html",
+    "CostVoicepa.dc.html",
+    "CostVoicepaGitHub.dc.html",
+    "CostVoicepaVercel.dc.html",
     "Main.dc.html",
     "Proposed.dc.html",
     "canvas.json",
