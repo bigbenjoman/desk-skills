@@ -26,7 +26,7 @@ export function vercelAuthPath(plat = osPlatform()) {
   return join(process.env.XDG_DATA_HOME || join(HOME, '.local', 'share'), 'com.vercel.cli', 'auth.json');
 }
 export const awsConfigPath = () => process.env.AWS_CONFIG_FILE || join(HOME, '.aws', 'config');
-const vercelApi = () => (process.env.DESK_VERCEL_API || 'https://api.vercel.com').replace(/\/$/, '');
+export const vercelApi = () => (process.env.DESK_VERCEL_API || 'https://api.vercel.com').replace(/\/$/, '');
 
 // ---- parsing ---------------------------------------------------------------------------------
 // `[default]` and `[profile x]`; other sections (`[sso-session x]`, `[services x]`) are not profiles.

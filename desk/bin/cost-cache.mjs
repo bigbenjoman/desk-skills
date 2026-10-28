@@ -1,6 +1,8 @@
 // The cost cache: this month's charges from each supplier, kept on disk so a screen never waits on
 // one, and the check that keeps it fresh while desk-q is open. GitHub is read here; one month
-// summary call per repo, and one for the whole account whose remainder is the shared line.
+// summary call per repo, and one for the whole account whose remainder is the shared line. Vercel
+// is one charges call per team, split into a line per project with builds apart, and the team's
+// plan and seats, each charged to a name or to shared.
 //
 // A reading covers the month of yesterday (UTC), to yesterday: every supplier lags at least a day.
 // GitHub's month summary cannot stop at yesterday, so its figures include today so far. Only what
@@ -14,7 +16,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readCosts } from './costs.mjs';
+import { readCosts, vercelApi, vercelAuthPath } from './costs.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 
 export const READ_EVERY_MS = 60 * 60 * 1000;
@@ -150,6 +152,139 @@ async function lastMonthOf({ sources, last, period, gh, now }) {
   return { period: want, repos };
 }
 
+// ---- Vercel ----------------------------------------------------------------------------------
+export const VERCEL_TIMEOUT_MS = 30 * 1000;
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v
+  : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+
+// The charges endpoint's window for a period: its first day to the start of today, UTC. `from` is
+// required (a 400 without it).
+export function chargesWindow({ from, to }) {
+  return { from: `${from}T00:00:00.000Z`, to: new Date(Date.parse(`${to}T00:00:00.000Z`) + DAY).toISOString() };
+}
+export const chargesPath = (teamId, { from, to }) =>
+  `/v1/billing/charges?teamId=${encodeURIComponent(teamId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+
+// GET /v1/billing/charges: JSONL in the FOCUS shape, one charge per day per SKU; each day runs 07:00
+// to 07:00 UTC. A line that is not JSON, a charge without its ServiceName, ChargePeriodStart or a
+// numeric BilledCost, or one billed in another currency, is refused rather than read as nothing
+// charged. BilledCost is what was charged; Tags.ProjectName names the project, if any.
+//   -> [{ service, category, start, project, charged, quantity, unit }]
+export function parseCharges(text) {
+  const out = [];
+  for (const [n, line] of String(text ?? '').split('\n').entries()) {
+    if (!line.trim()) continue;
+    let c;
+    try { c = JSON.parse(line); } catch { throw new Error(`unexpected response: line ${n + 1} is not JSON`); }
+    const charged = num(c?.BilledCost);
+    const bad = typeof c?.ServiceName !== 'string' ? 'ServiceName'
+      : Number.isNaN(Date.parse(c.ChargePeriodStart)) ? 'ChargePeriodStart' : charged == null ? 'BilledCost' : null;
+    if (bad) throw new Error(`unexpected response: a charge without ${bad}`);
+    if (c.BillingCurrency != null && c.BillingCurrency !== 'USD') throw new Error(`unexpected response: a charge in ${c.BillingCurrency}`);
+    const project = typeof c.Tags?.ProjectName === 'string' && c.Tags.ProjectName ? c.Tags.ProjectName : null;
+    out.push({ service: c.ServiceName, category: String(c.ChargeCategory ?? ''), start: Date.parse(c.ChargePeriodStart), project, charged,
+      quantity: num(c.ConsumedQuantity) ?? num(c.PricingQuantity) ?? 0, unit: String(c.ConsumedUnit ?? c.PricingUnit ?? '') });
+  }
+  return out;
+}
+
+const isBuild = (c) => /build/i.test(c.service);
+const isSeat = (c) => /seat/i.test(c.service);
+const isPlan = (c) => /\bplan\b|subscription/i.test(c.service) || /^purchase$/i.test(c.category);
+export const planLabel = (plan) => (plan ? `${plan[0].toUpperCase()}${plan.slice(1)}` : 'Unknown');
+
+// One team's charges as lines, each charged to a name, or to shared as name null. A project's line
+// keeps its build charge apart from its other use; a project no name claims is still a line, under
+// its own project name. The plan, seats and any other charge with no project go to the team's owner.
+//   owner: the one name the team bills, else null   names: { project: name }
+//   -> [{ kind: 'plan', label, name, charged } | { kind: 'seats', label, name, quantity, charged }
+//       | { kind: 'team', label, name, charged }
+//       | { kind: 'project', project, name, build, buildQuantity, buildUnit, other, charged }]
+export function teamLines(charges, { plan, owner, names }) {
+  const planLine = { kind: 'plan', label: planLabel(plan), name: owner, charged: 0 };
+  const team = new Map();
+  const projects = new Map();
+  for (const c of charges) {
+    if (c.project) {
+      const p = projects.get(c.project) ?? { kind: 'project', project: c.project, name: names[c.project] ?? null, build: 0, buildQuantity: 0, buildUnit: '', other: 0 };
+      if (isBuild(c)) { p.build += c.charged; p.buildQuantity += c.quantity; p.buildUnit ||= c.unit; } else p.other += c.charged;
+      projects.set(c.project, p);
+    } else if (isSeat(c)) {
+      // Seats are held, not used up: the count is the most charged at once.
+      const s = team.get(`seats\u0000${c.service}`) ?? { kind: 'seats', label: c.service, name: owner, quantity: 0, charged: 0 };
+      s.quantity = Math.max(s.quantity, c.quantity);
+      s.charged += c.charged;
+      team.set(`seats\u0000${c.service}`, s);
+    } else if (isPlan(c)) planLine.charged += c.charged;
+    else {
+      const o = team.get(`team\u0000${c.service}`) ?? { kind: 'team', label: c.service, name: owner, charged: 0 };
+      o.charged += c.charged;
+      team.set(`team\u0000${c.service}`, o);
+    }
+  }
+  const byProject = [...projects.values()].sort((a, b) => a.project.localeCompare(b.project)).map((p) => {
+    const [build, other] = [cents(p.build), cents(p.other)];
+    return { ...p, build, buildQuantity: qty(p.buildQuantity), other, charged: cents(build + other) };
+  });
+  return [planLine, ...team.values(), ...byProject].map((l) => ({ ...l, charged: cents(l.charged) }));
+}
+
+// Each name's Vercel total, and shared's, added up from the lines they are charged.
+//   -> { names: { name: usd }, shared: usd }
+export function vercelTotals(teams) {
+  const names = {};
+  let shared = 0;
+  for (const l of Object.values(teams).flatMap((t) => t.lines ?? [])) {
+    if (l.name == null) shared += l.charged;
+    else names[l.name] = (names[l.name] ?? 0) + l.charged;
+  }
+  return { names: Object.fromEntries(Object.entries(names).map(([n, v]) => [n, cents(v)])), shared: cents(shared) };
+}
+
+// One plain HTTP GET with the Vercel CLI's token: the charges endpoint answers JSONL, which
+// `vercel api` cannot parse.  -> the body as text; throws with the reason
+export async function vercelGet(path, { auth = vercelAuthPath(), timeoutMs = VERCEL_TIMEOUT_MS } = {}) {
+  let token = null;
+  try { token = JSON.parse(readFileSync(auth, 'utf8')).token; } catch { /* unreadable reads as signed out */ }
+  if (typeof token !== 'string' || !token) throw new Error('not signed in to Vercel: run vercel login');
+  let r;
+  try { r = await fetch(`${vercelApi()}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) }); }
+  catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${timeoutMs / 1000}s` : `could not reach Vercel: ${e?.message ?? e}`); }
+  if (r.status === 401 || r.status === 403) throw new Error(`HTTP ${r.status}: the Vercel login has expired or cannot read this team's billing: run vercel login`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  try { return await r.text(); } catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${timeoutMs / 1000}s` : `could not read Vercel's answer: ${e?.message ?? e}`); }
+}
+
+// One Vercel reading folded into the last one (`last`, the cache's `vercel`, or null). One call per
+// team; a team whose call fails keeps its last good lines beside the failure.
+// sources: costs.md's Vercel entries. vercel(path) -> the body as text.
+//   -> the new `vercel`: { at, period, teams: { teamId: { team, plan, owner, at, total, lines, failed } }, names, shared }
+export async function readVercel({ sources, last = null, vercel = vercelGet, now }) {
+  const period = readingPeriod(now);
+  const before = samePeriod(last?.period, period) ? last : null;
+  const win = chargesWindow(period);
+  const [from, to] = [Date.parse(win.from), Date.parse(win.to)];
+  const byTeam = new Map();
+  for (const s of sources) byTeam.set(s.teamId, [...(byTeam.get(s.teamId) ?? []), s]);
+  const teams = {};
+  for (const [teamId, list] of byTeam) {
+    const names = [...new Set(list.map((e) => e.name))];
+    const base = { team: list[0].team, plan: list[0].plan, owner: names.length === 1 ? names[0] : null };
+    let got;
+    try { got = { charges: parseCharges(await vercel(chargesPath(teamId, win))) }; }
+    catch (e) { got = { why: e.message || String(e) }; }
+    if (got.charges) {
+      const lines = teamLines(got.charges.filter((c) => c.start >= from && c.start < to),
+        { plan: base.plan, owner: base.owner, names: Object.fromEntries(list.filter((e) => e.project).map((e) => [e.project, e.name])) });
+      teams[teamId] = { ...base, at: now, total: totalOf(lines), lines, failed: null };
+    } else {
+      const had = before?.teams?.[teamId];
+      teams[teamId] = { ...base, ...(had?.lines ? { at: had.at, total: had.total, lines: had.lines } : {}), failed: { at: now, why: got.why } };
+    }
+  }
+  return { at: now, period, teams, ...vercelTotals(teams) };
+}
+
 // ---- the cache -------------------------------------------------------------------------------
 export function readCache(dir = costDir()) {
   try { return JSON.parse(readFileSync(cachePath(dir), 'utf8')); } catch { return null; }
@@ -161,8 +296,11 @@ function writeCache(cache, dir) {
   renameSync(part, cachePath(dir));
 }
 
-// Each supplier's sources in costs.md; only GitHub is read so far.
-const sourcesOf = (costs) => ({ github: costs.entries.filter((e) => e.supplier === 'github') });
+// Each supplier's sources in costs.md; AWS is not read yet.
+const sourcesOf = (costs) => ({
+  github: costs.entries.filter((e) => e.supplier === 'github'),
+  vercel: costs.entries.filter((e) => e.supplier === 'vercel' && e.teamId),
+});
 
 // A supplier is due when it has sources and no reading, failed or not, in the last READ_EVERY_MS.
 // Workers running or not makes no difference.  -> ['github', …]
@@ -173,11 +311,11 @@ export function dueSuppliers({ costs = readCosts(E.costsPath()), cache = readCac
     .map(([s]) => s);
 }
 
-const READERS = { github: readGithub };
+const READERS = { github: readGithub, vercel: readVercel };
 
 // Read every due supplier, one at a time per supplier however many callers race: each takes its
 // supplier's lock and checks it is still due under it.  -> { github: 'read' | why not, … }
-export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, now = Date.now(), force = false } = {}) {
+export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, vercel = vercelGet, now = Date.now(), force = false } = {}) {
   const out = {};
   if (!costs.exists) return out;
   for (const [supplier, sources] of Object.entries(sourcesOf(costs))) {
@@ -187,7 +325,7 @@ export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = 
     try {
       const cache = readCache(dir) ?? { v: 1 };
       if (!force && !dueSuppliers({ costs, cache, now }).includes(supplier)) { out[supplier] = 'read under an hour ago'; continue; }
-      cache[supplier] = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, now });
+      cache[supplier] = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, now });
       writeCache(cache, dir);
       out[supplier] = 'read';
     } finally { lock.release(); }
