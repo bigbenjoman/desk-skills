@@ -266,7 +266,7 @@ config yes '`none`'
 out=$(admit H-7)
 check "admit: with no batch and autopilot-workers yes, it starts a standing batch handed to the supervisor" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget supervised)" = true ] && [ "$(qget tickets.H-7.state)" = triaged ]'
 
-# ---- two batches: a ticket is in one batch at most (DS-307) --------------------------------------
+# ---- two batches: a ticket is in one batch at most ----------------------------------------------
 NB="$DESK_HOME/repos/acme__widgets/batches/X-1"; mkdir -p "$NB"
 printf '{"version":1,"batch":"X-1","tickets":{"X-2":{"key":"X-2","state":"running"}}}\n' > "$NB/queue.json"
 config yes; running_batch; rm -f "$T/state/intake.json"

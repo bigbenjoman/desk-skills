@@ -106,7 +106,7 @@ t('AC7 a key in two batches fails', dup.code !== 0, true);
 t('AC7 the failure names both', /the standing batch, X-1/.test(dup.err), true);
 t('AC7 X-4 is in X-3', holding('X-4').out, 'X-3');
 
-// DS-307: a ticket is in one batch at most, and a live epic's child joins no other batch. queue.mjs
+// A ticket is in one batch at most, and a live epic's child joins no other batch. queue.mjs
 // and plan-batch.mjs run on the fixtures above, with triage records in their own state folder.
 const STATE = join(T, 'triage-state');
 mkdirSync(join(STATE, 'triage'), { recursive: true });
