@@ -45,8 +45,13 @@ export function cloudPrompt({ key, repo, base, branch, text, tests }) {
   ].join('\n');
 }
 
-// What `claude --cloud` printed, terminal noise removed.
-const clean = (s) => String(s ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r/g, '');
+// What `claude --cloud` printed, terminal noise removed: escape sequences, carriage returns, and
+// what a backspace erases, such as the `^D` BSD script echoes when its input ends.
+const clean = (s) => {
+  let out = String(s ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r/g, '');
+  while (/[^\x08\n]\x08/.test(out)) out = out.replace(/[^\x08\n]\x08/g, '');
+  return out.replace(/\x08/g, '');
+};
 
 // -> { session, url, title } from a start that worked, or { error } naming what the CLI said.
 export function parseCloudStart(out) {
@@ -56,7 +61,8 @@ export function parseCloudStart(out) {
   const session = /claude --teleport (session_\w+)/.exec(s)?.[1] ?? /\/(session_\w+)/.exec(url ?? '')?.[1];
   if (title != null && url && session) return { session, url, title };
   const lines = s.split('\n').map((l) => l.trim()).filter(Boolean);
-  return { error: lines.find((l) => /^Error\b/i.test(l)) ?? (lines.slice(-3).join(' ') || 'it printed nothing') };
+  const err = lines.find((l) => /\bError\b/.test(l));
+  return { error: err ? err.slice(err.search(/\bError\b/)) : (lines.slice(-3).join(' ') || 'it printed nothing') };
 }
 
 // Starts one cloud session. `claude --cloud` will not run in print mode, so `script` gives it a

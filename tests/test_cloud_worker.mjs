@@ -40,6 +40,7 @@ const started = parseCloudStart(fixture('created.txt'));
 t('AC2 the recorded start gives the session id', started.session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
 t('AC2 and its URL', started.url, 'https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj?from=cli&m=0');
 t('AC2 terminal noise around it is ignored', parseCloudStart(`\x1b[?25l${fixture('created.txt').replace(/\n/g, '\r\n')}\x1b[0m`).session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
+t('AC2 so is the ^D and backspaces BSD script echoes when its input ends', parseCloudStart(`^D\b\b${fixture('created.txt')}`).session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
 t('AC4 print mode\'s refusal is an error, word for word', parseCloudStart(fixture('print-refused.txt')).error, 'Error: --cloud cannot be combined with --print.');
 t('AC4 a message queued to a session is not a start', !!parseCloudStart(fixture('send-json.json')).error, true);
 t('AC4 no output at all is an error', parseCloudStart('').error, 'it printed nothing');
@@ -48,7 +49,7 @@ t('AC4 no output at all is an error', parseCloudStart('').error, 'it printed not
 const fake = (name, body) => { const p = join(S, name); writeFileSync(p, `#!/bin/sh\n${body}\n`); chmodSync(p, 0o755); return p; };
 const ok = fake('claude-ok', `[ "$1" = --cloud ] || exit 9\nprintf '%s\\n' "$2" > "${join(S, 'prompt.txt')}"\ncat "${join(FIX, 'created.txt')}"`);
 const real = startCloud(prompt, { claude: ok, timeout: 30_000 });
-t('AC2 spawned without a terminal, the session is read through script', real.session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
+t('AC2 spawned without a terminal, the session is read through script', real.session ?? JSON.stringify(real), 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
 let sent = '';
 try { sent = readFileSync(join(S, 'prompt.txt'), 'utf8'); } catch { /* not run */ }
 t('AC2 and the whole prompt reached claude --cloud as one argument', sent.includes('AC1: it works') && sent.includes('Work ticket K-1'), true);
