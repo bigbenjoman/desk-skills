@@ -286,7 +286,8 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-115 AC7 concurrency 0 pauses spawns and says so, not IDLE" '[ "$(field P-1 state)" = "\"triaged\"" ] && ! echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "paused: new spawns are paused by the batch.s worker count (concurrency 0); 1 triaged ticket(s) wait"'
 
 # AC3–AC6: the ladder rows in desk-autopilot keep a count the user set.
-SK="$SRC/skills/desk-autopilot/SKILL.md"
+# The ladder moved to its reference file with DS-202's split.
+SK="$SRC/skills/desk-autopilot/references/concurrency-and-memory.md"
 row=$(grep -E '^\| > 8 GiB \|' "$SK")
 check "DS-115 AC3 the > 8 GiB row keeps a count the user set" 'echo "$row" | grep -q "a count the user set (\`concurrency_by\` is \`user\`): keep that number"'
 check "DS-115 AC4 otherwise the §3b default, one higher only after an idle pass" 'echo "$row" | grep -q "Otherwise use the §3b default, going one higher, up to the cap, only after a slot sat idle a whole pass" && ! grep -qE "concurrency 2[;,]" "$SK"'

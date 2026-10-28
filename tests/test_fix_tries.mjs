@@ -77,7 +77,7 @@ t('AC1 and quotes the verdict', comment.includes(`> \`sha=${HEAD} p0=0 p1=0 p2=0
 
 // ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker, twice
 const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0';
-const reviewBody = (counts, rest = []) => [`<!-- desk-review:local -->`, `<!-- desk-review:verdict v=1 sha=${HEAD} ${counts} deferred=0 gaps=0 vendor=codex round=1 -->`, '**desk-review, round 1**', '', ...rest].join('\n');
+const reviewBody = (counts, rest = []) => [`<!-- desk-review:local -->`, `<!-- desk-review:verdict v=1 sha=${HEAD} ${counts} deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, '**desk-review, round 1**', '', ...rest].join('\n');
 const p1Body = reviewBody('p0=0 p1=1 p2=1', ['P1 (1)', ' packages/core/src/money.ts:12         second currency formatter', '                                       — packages/core/src/format.ts:8 is the original', '', 'P2 (1)', ' apps/web/src/Pager.tsx:1   no consumer', '', '### Requirement gaps', ' AC3: src/csv.ts:4 no VAT column']);
 const draft = (body, o = {}) => ({ number: 702, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'BLOCKED', body: '', reviews: [{ author: { login: 'ben' }, body }], checks: [ok('tests')], ...o });
 const ucfg = { perm: 'yes', localReview: '/desk-review', clean: CLEAN, handle: 'ben', required: ['tests'] };

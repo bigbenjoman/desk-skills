@@ -150,8 +150,9 @@ out=$(grep -E '^\| `autopilot-workers` \|' "$ROWS")
 check "AC5 autopilot-workers allows pr-watch.mjs" '[[ "$out" == *"\`Bash(node ~/.claude/desk/bin/pr-watch.mjs *)\`"* ]]'
 
 # AC6: the skill names the watches and forbids the loops.
-SK="$S/../skills/desk-autopilot/SKILL.md"
-out=$(cat "$SK")
+# The core and its reference files: the watches moved to references/ with DS-202's split.
+SK="$S/../skills/desk-autopilot"
+out=$(cat "$SK/SKILL.md" "$SK"/references/*.md)
 named=1
 for w in "pr-watch.mjs checks <n>" "pr-watch.mjs head <n> <sha>" "pr-watch.mjs merged <n>" "node ~/.claude/desk/bin/pr-watch.mjs checks" "node ~/.claude/desk/bin/queue.mjs watch"; do
   [[ "$out" == *"$w"* ]] || named=0

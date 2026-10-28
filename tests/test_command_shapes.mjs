@@ -52,7 +52,8 @@ for (const e of autopilot) console.log(`FAIL exempted in desk-autopilot: ${e.fil
 t('AC8 desk-autopilot carries no exemptions', autopilot.length, 0);
 
 // ---- AC9 and AC10: the two rewrites the shapes pointed at ---------------------------------------
-const auto = readFileSync(join(R, 'skills/desk-autopilot/SKILL.md'), 'utf8');
+// The core and its reference files: the seeding rule moved to references/ with DS-202's split.
+const auto = markdownFiles([join(R, 'skills/desk-autopilot')]).map((f) => readFileSync(f, 'utf8')).join('\n');
 // Each mention of the header with the line after it: the instruction wraps.
 const seed = auto.split('\n').map((l, i, all) => `${l} ${all[i + 1] ?? ''}`).filter((l) => l.includes('batch-notes-header.md'));
 t('AC9 seeding batch-notes.md names the Write or Edit tool or a desk/bin script',
