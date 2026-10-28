@@ -180,7 +180,28 @@ export function sharedPrefix(siblings, self) {
 
 const DEPENDS = /\b(?:after|needs?|requires?|depends? on|blocked by|build(?:s)? on|builds on|waits? for|once|until|on top of|follows?|reads? .{0,30} from)\b/i
 const FEEDS = /\b(?:before|blocks|unblocks|feeds|is needed by)\b/i
+// The key as the subject of a dependency, `DS-2 reads …` or `DS-2 and DS-3 need …`: it waits on this one.
+const HEAD_DEPENDS = /^(?:build(?:s)? on|depends? on|blocked by|needs|requires|waits? for)\b/i
+const HEAD_FEEDS = /^(?:blocks|unblocks|feeds)\b/i
+const WAITS = /^(?:\s*(?:,|and|or)\s*[A-Z][A-Z0-9]*-\d+)*\s+(?:reads?|needs?|requires?|depends? on|builds? on|waits? for|is blocked by|follows?)\b/i
 const linked = (t, other) => t.links.some((l) => l.key === other)
+
+// How a line orders its ticket against `key`: `blocked-by`, `blocks` or null. Only the clause holding
+// each mention of the key counts (split at sentence ends, semicolons and brackets): the nearest
+// ordering word before the key, else the key as the subject of a dependency verb. Mentions that
+// disagree order nothing.
+export function orderOf(line, key) {
+  const text = String(line), cuts = [...text.matchAll(/[.!?](?=\s|$)|[;()[\]]/g)].map((m) => m.index)
+  const last = (s, re) => Math.max(-1, ...[...s.matchAll(new RegExp(re.source, 'gi'))].map((m) => m.index))
+  const found = new Set()
+  for (const { index: at } of text.matchAll(new RegExp(`\\b${key}\\b`, 'g'))) {
+    const start = Math.max(-1, ...cuts.filter((c) => c < at)) + 1, end = cuts.find((c) => c > at) ?? text.length
+    const before = text.slice(start, at), dep = last(before, DEPENDS), feed = last(before, FEEDS)
+    const verb = dep > feed ? 'blocked-by' : feed > dep ? 'blocks' : WAITS.test(text.slice(at + key.length, end)) ? 'blocks' : null
+    if (verb) found.add(verb)
+  }
+  return found.size === 1 ? [...found][0] : null
+}
 
 // Blocks links that form a loop through open tickets: [[A, B, …, A]], each loop once.
 export function blockerCycles(tickets) {
@@ -341,9 +362,10 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
       for (const k of new Set(l.text.match(KEY) ?? [])) {
         if (k === t.key || k === t.parent || !open.has(k) || isEpic(open.get(k)) || linked(t, k)) continue
         if (out.some((f) => f.check === 'link' && f.ticket === t.key && f.other === k)) continue
-        // Only wording that orders the two is evidence; a bare mention proposes nothing.
+        // Only wording that orders the two is evidence; a bare mention proposes nothing. A heading
+        // such as `Build on` orders every key under it that its own clause leaves unordered.
         const where = `${s.name || 'description'}: ${l.text}`
-        const verb = DEPENDS.test(where) ? 'blocked-by' : FEEDS.test(l.text) ? 'blocks' : null
+        const verb = orderOf(l.text, k) ?? (HEAD_DEPENDS.test(s.name) ? 'blocked-by' : HEAD_FEEDS.test(s.name) ? 'blocks' : null)
         if (!verb) continue
         add({ check: 'link', ticket: t.key, other: k, evidence: [`${t.key} names ${k} in ${quote(where)}`], propose: [`desk-jira link ${t.key} ${verb} ${k}`] })
       }
