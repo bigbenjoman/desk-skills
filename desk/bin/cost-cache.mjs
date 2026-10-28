@@ -417,13 +417,15 @@ const sourcesOf = (costs) => ({
   aws: costs.entries.filter((e) => e.supplier === 'aws'),
 });
 
-// GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS; AWS when any
-// profile is.
+// GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS. AWS is due
+// when any profile is, or when a profile's credit in costs.md differs from the cache's: that alone
+// makes no AWS request, since readAws carries a profile that is not due over with costs.md's credit.
 const hourly = (sources, had, now) => !(now - (had?.at ?? 0) < READ_EVERY_MS);
+const creditMoved = (s, rec) => rec != null && JSON.stringify(rec.credit ?? null) !== JSON.stringify(s.credit ?? null);
 const DUE = {
   github: hourly,
   vercel: hourly,
-  aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now)),
+  aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now) || creditMoved(s, had?.profiles?.[s.key])),
 };
 const NOT_DUE = { github: 'read under an hour ago', vercel: 'read under an hour ago', aws: 'every profile read today, or failed under an hour ago' };
 

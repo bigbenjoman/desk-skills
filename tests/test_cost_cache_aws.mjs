@@ -112,6 +112,14 @@ reset();
 t('AC4 later the same day nothing is due', C.dueSuppliers({ costs, cache: cache(), now: OCT27 + 12 * 3600000 }).length, 0);
 t('AC4 and a refresh says so', (await C.refresh({ costs, aws, now: OCT27 + 12 * 3600000 })).aws, 'every profile read today, or failed under an hour ago');
 t('AC4 with no AWS request', calls.length, 0);
+const topUp = { usd: 120, ends: '2027-06-30', entered: '2026-10-27' };
+const topped = { ...costs, entries: costs.entries.map((e) => (e.key === 'prninja-admin' ? { ...e, credit: topUp } : e)) };
+t('AC8 a credit saved later the same day is due', C.dueSuppliers({ costs: topped, cache: cache(), now: OCT27 + 13 * 3600000 }).join(), 'aws');
+t('AC8 and reaches the cache with no AWS request', `${(await C.refresh({ costs: topped, aws, now: OCT27 + 13 * 3600000 })).aws} ${calls.length} ${JSON.stringify(cache().aws.profiles['prninja-admin'].credit)} ${cache().aws.profiles['prninja-admin'].total}`,
+  `read 0 ${JSON.stringify(topUp)} 2`);
+t('AC8 with the cache as costs.md has it, nothing is due', C.dueSuppliers({ costs: topped, cache: cache(), now: OCT27 + 13 * 3600000 }).length, 0);
+await C.refresh({ costs, aws, now: OCT27 + 13 * 3600000 });
+t('AC8 putting the credit back costs no AWS request either', `${calls.length} ${cache().aws.profiles['prninja-admin'].credit?.usd}`, '0 61');
 t('AC4 the next UTC day it is due again', C.dueSuppliers({ costs, cache: cache(), now: utc(10, 28, 0) }).join(), 'aws');
 
 // ---- AC5: a failed call or an expired login keeps the last good figures, retried no sooner than an hour on
