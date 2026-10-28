@@ -1760,9 +1760,10 @@ check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/C-2" ] && ! echo "$out" | grep -q "C-2 port="'
 # Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
 rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket C-3
-q set C-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}'
+q set C-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field C-3 state)" = "\"parked\"" ] && field C-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
+check "DS-124 and names the session to resume, never a local requeue" 'field C-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field C-3 park.question | grep -q "location=null"'
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/C-3" ] && ! echo "$out" | grep -q "C-3 port="'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

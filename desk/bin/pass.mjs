@@ -1403,10 +1403,13 @@ function spawnCloud(t) {
     report.parked.push(`${t.key}: ${line}`);
   };
   // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
-  // fix brief, and the PR it has would no longer count as its result. The person chooses where it runs.
+  // fix brief, and the PR it has would no longer count as its result. Nor can a local worker take it:
+  // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
+  // base. The person resumes the session, or fixes the branch.
   if (t.result?.pr != null) {
     const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
-      `which a new cloud session cannot be given. Run it on this computer: queue.mjs set ${t.key} location=null, then queue.mjs requeue ${t.key}`;
+      `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
+      `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
     q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
     return;
