@@ -89,13 +89,16 @@ t('AC2 a REPO / CHARGED table, one row per name, largest first, then shared, the
 t('AC2 the first name\'s row is selected', f2[at2 + 3].startsWith('› voicepa'), true);
 
 // ---- AC3: the rows add up to the total row and the charged line, to the cent
+// Read from what is drawn, the charged line found by its shape, so a sum that drifts fails here.
 const cents = (s) => Math.round(Number(s.replace(/[$,]/g, '')) * 100);
-const lines3 = f2.slice(at2 + 3, at2 + 2 + TABLE.length - 1).map((l) => l.trim().split(/\s+/).at(-1));
-const sum3 = lines3.filter((a) => a !== '–').reduce((a, s) => a + cents(s), 0);
-const total3 = cents(f2[at2 + 1 + TABLE.length].trim().split(/\s+/).at(-1));
-t('AC3 the rows sum to the total row and to the charged line, in cents', `${sum3} ${total3} ${cents(/charged (\S+)/.exec(f2[at2])[1])}`, '89997 89997 89997');
-const bySupplier = [...f2[at2].matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]+)/g)].map((m) => m[1]);
-t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySupplier.reduce((a, s) => a + cents(s), 0)}`, '3 89997');
+const at3 = f2.findIndex((l) => l.startsWith('charged '));
+const charged3 = cents(/^charged (\S+)/.exec(f2[at3] ?? '')?.[1] ?? 'NaN');
+const lines3 = f2.slice(at3 + 3).filter((l) => /^[ ›] \S/.test(l)).map((l) => l.slice(1).trim().split(/\s+/));
+const sum3 = lines3.filter(([n, a]) => n !== 'total' && a !== '–').reduce((a, [, s]) => a + cents(s), 0);
+const total3 = cents(lines3.find(([n]) => n === 'total')?.[1] ?? 'NaN');
+t('AC3 the rows sum to the total row and to the charged line, in cents', `${sum3 === total3} ${total3 === charged3} ${lines3.length}`, `true true ${TABLE.length - 1}`);
+const bySupplier = [...(f2[at3] ?? '').matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]+)/g)].map((m) => cents(m[1]));
+t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySupplier.reduce((a, c) => a + c, 0) === charged3}`, '3 true');
 
 // ---- AC8: the Claude usage line above the keys, and none of home's batch lines
 t('AC8 the Claude usage line sits above the keys, a blank line between', `${f2[keysAt(f2) - 2]?.startsWith('Claude usage  ')} ${f2[keysAt(f2) - 1]}`, 'true ');
