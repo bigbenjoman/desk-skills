@@ -1654,5 +1654,30 @@ t('DS-219 AC9 the bands and notes are drawn, and every text colour is 4.5:1 or m
   + `${textCodes(drawn219).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands219.join()} ${bands219.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
   'true |1;7;38;5;210 true');
 
+// ---- DS-310: a named batch beside the standing one has its own row, and the repo's cap is shown once
+const W310 = world({ voicepa: null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null });
+const ov310a = W310.run('--plain').out;
+const repo310a = W310.run('--plain', 'desk-skills').out;
+const named310 = (dir) => join(dir, 'acme__desk-skills', 'batches', 'X-1');
+const q310 = join(named310(join(W310.env.DESK_HOME, 'repos')), 'queue.json');
+const s310 = named310(join(W310.env.HOME, '.desk-autopilot'));
+mkdirSync(dirname(q310), { recursive: true });
+mkdirSync(join(s310, 'orchestrators'), { recursive: true });
+writeFileSync(q310, JSON.stringify({ version: 1, batch: 'x1', base: 'feat/x', concurrency: 1, tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'which copy?' } } } }));
+writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: minsAgo(3) }));
+const ov310 = W310.run('--plain').out;
+t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s2 \(cap 3\)$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
+t('DS-310 AC1 the standing batch keeps its row and its own last pass', /^ {2}desk-skills +● session · 1m ago /.test(rowOf(ov310, 'desk-skills') ?? ''), true);
+t('DS-310 AC1 the named batch has a row of its own, named with its base, and its own last pass',
+  /^ {2}desk-skills · X-1 \(feat\/x\) +● session · 3m ago +1 +0 +0 +0 +1 /.test(rowOf(ov310, 'desk-skills · X-1') ?? ''), true);
+t('DS-310 AC2 the repo\'s cap is shown once, as shared', `${/\s2 \(cap 3, shared\)$/.test(rowOf(ov310, 'desk-skills') ?? '')} ${/\s1 \(cap shared\)$/.test(rowOf(ov310, 'desk-skills · X-1') ?? '')}`, 'true true');
+t('DS-310 AC1 the needs-you line names the named batch', lines(ov310)[0].includes('desk-skills · X-1 (feat/x) 1'), true);
+const x310 = W310.run('--plain', 'desk-skills:X-1');
+t('DS-310 AC1 desk-q <repo>:<name> opens the named batch, and only its tickets', `${x310.code} ${/X-2/.test(x310.out)} ${/X-3/.test(x310.out)} ${/DS-1/.test(x310.out)}`, '0 true true false');
+t('DS-310 AC4 the repo\'s name still opens its standing batch, as before', W310.run('--plain', 'desk-skills').out, repo310a);
+t('DS-310 a ticket in the named batch is shown from it', /which copy\?/.test(W310.run('--plain', 'desk-skills:X-1', 'show', 'X-3').out), true);
+const over310 = W310.run('desk-skills:X-1', 'workers', '4');
+t('DS-310 a named batch\'s workers past the cap counts its sibling batch in the machine total', `${over310.code !== 0} ${/live batches would then allow 6 /.test(over310.out + over310.err)}`, 'true true');
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

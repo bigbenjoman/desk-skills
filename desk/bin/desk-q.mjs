@@ -16,7 +16,8 @@
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //   desk-q <repo> supervisor [on|off]    the repo's supervisor: its status, or install or uninstall it
 //
-// A repo is named by its short name or any unique prefix of it. In a terminal, without --plain,
+// A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
+// batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–4 for a place's Queue,
 // Timeline, By day and Epics, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
@@ -34,6 +35,7 @@ import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, n
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
+import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED } from './gate.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
@@ -239,38 +241,49 @@ function rowStage(stateDir, t, last) {
   return s ? { ...s, log: true } : { stage: t.stage ?? null, label: t.stage ?? null, at: last, log: false };
 }
 
-// Every set-up repo, with its batch where it has one. A queue that will not parse is reported on
-// its repo rather than stopping the rest.
+// Every set-up repo's standing batch, with its queue where it has one, each followed by the repo's
+// named batches. A queue that will not parse is reported on its batch rather than stopping the rest.
+// `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
+// `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
+// repo's own name, which the repo-wide commands (the supervisor) take.
 export function loadRepos(now = Date.now()) {
   const claims = repoPortClaims();
   const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
-  return claims.map((c, i) => {
+  return claims.flatMap((c, i) => {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
-    const { state: stateDir, queue: queuePath } = batchPaths(c.slug);
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
-    const r = { name, slug: c.slug, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
-    if (existsSync(queuePath)) {
-      try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
-    }
-    const beat = lastBeat(stateDir, queuePath);
-    r.last = beat?.at ?? null;
-    r.next = beat?.next ?? null;
-    r.live = liveBeat(beat, now);
-    r.ctx = r.q ? holdContext(r) : NOBODY;
-    const rows = Object.values(r.q?.tickets ?? {});
-    // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
-    // keeps its slot and has no place.
-    let place = 0;
-    r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t, r.ctx), pos: t.state === 'failed' ? null : ++place, st: rowStage(stateDir, t, r.last) }));
-    r.places = place;
-    // A done ticket whose PR is still open has no place and no date: only the Queue shows it.
-    r.landing = rows.filter(landing).map((t) => ({ t, k: 'landing', pos: null, st: rowStage(stateDir, t, r.last) }));
-    r.done = rows.length - r.rows.length - r.landing.length;
-    r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
-    r.run = r.q ? whoRuns(r) : null;
-    r.stall = r.q ? stallOf(r, now) : null;
-    return r;
+    return listBatches(c.slug).map((b) => loadBatch(c, name, b.name, limits, now));
   });
+}
+
+function loadBatch(c, repoName, batch, limits, now) {
+  const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
+  const r = { name: repoName, repo: repoName, word: repoName, id: c.slug, slug: c.slug, batch, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
+  if (existsSync(queuePath)) {
+    try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
+  }
+  if (batch) {
+    const base = typeof r.q?.base === 'string' && r.q.base.trim() ? ` (${r.q.base.trim()})` : '';
+    Object.assign(r, { name: `${repoName} · ${batch}${base}`, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` });
+  }
+  const beat = lastBeat(stateDir, queuePath);
+  r.last = beat?.at ?? null;
+  r.next = beat?.next ?? null;
+  r.live = liveBeat(beat, now);
+  r.ctx = r.q ? holdContext(r) : NOBODY;
+  const rows = Object.values(r.q?.tickets ?? {});
+  // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
+  // keeps its slot and has no place.
+  let place = 0;
+  r.rows = rows.filter((t) => t.state !== 'done').map((t) => ({ t, k: shownState(r.q, t, r.ctx), pos: t.state === 'failed' ? null : ++place, st: rowStage(stateDir, t, r.last) }));
+  r.places = place;
+  // A done ticket whose PR is still open has no place and no date: only the Queue shows it.
+  r.landing = rows.filter(landing).map((t) => ({ t, k: 'landing', pos: null, st: rowStage(stateDir, t, r.last) }));
+  r.done = rows.length - r.rows.length - r.landing.length;
+  r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
+  r.run = r.q ? whoRuns(r) : null;
+  r.stall = r.q ? stallOf(r, now) : null;
+  return r;
 }
 
 // Whether the batch is not yet finished: a ticket not done, or a PR still landing.
@@ -378,7 +391,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
-  const id = JSON.stringify([r.slug, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
+  const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
@@ -601,7 +614,7 @@ const segRow = (id, segs, open) => {
 // then the forecast line; a paused batch's reason and fix are one amber note each in `stopped`, the
 // other reasons plain lines in `notes`. With `width`, each line is wrapped to it.
 function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsage = false }) {
-  const list = slug ? repos.filter((r) => r.slug === slug) : repos.filter(hasBatch);
+  const list = slug ? repos.filter((r) => r.id === slug) : repos.filter(hasBatch);
   const per = list.map((r) => {
     if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
     if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
@@ -629,7 +642,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
 // needs-you and machine lines.
 function tabHead(repos, slug, now, solid, pinUsage) {
   if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
-  const r = repos.find((x) => x.slug === slug);
+  const r = repos.find((x) => x.id === slug);
   return r?.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : [usageLine(usageOf(repos, now, [r]), { now, solid })])] : [];
 }
 
@@ -681,7 +694,7 @@ const whyCell = (s, cell, tw) => {
   return [cut(s, n - 2).padEnd(n), tw - (n - cell)];
 };
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
-const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.slug, key: i.x.t.key, ...(epic ? { epic } : {}) });
+const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.id, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
@@ -748,13 +761,13 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     const r = s.per[0].r;
     for (const { e, d } of epics) {
       const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
-      const open = { kind: 'epic', slug: r.slug, epic: e.key };
-      if (!d) { rows.push(segRow(`${r.slug} ${e.key}`, [...name, [epicWhy(r, F0, e, checkin), whyColour(F0)]], open)); continue; }
+      const open = { kind: 'epic', slug: r.id, epic: e.key };
+      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F0, e, checkin), whyColour(F0)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
-      rows.push(segRow(`${r.slug} ${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
+      rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
         [` ${pad(epicStarts(r, F0, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
     }
-    if (items.length) rows.push(segRow(`${r.slug} other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
+    if (items.length) rows.push(segRow(`${r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
   // By epic, a ticket is led by its title and has no TITLE column.
   const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
@@ -763,17 +776,17 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     const mine = (list) => list.filter((i) => i.r === r);
     if (!slug) {
       const n = mine(s.items).length;
-      rows.push(segRow(`repo ${r.slug}`, [[`  ${r.name}`, BOLD], [` · ${n} ticket${n === 1 ? '' : 's'}`, DIM]], { kind: 'timeline', slug: r.slug }));
+      rows.push(segRow(`repo ${r.id}`, [[`  ${r.name}`, BOLD], [` · ${n} ticket${n === 1 ? '' : 's'}`, DIM]], { kind: 'timeline', slug: r.id }));
     }
     for (const i of mine(dated)) {
       const sgr = STATE_SGR[i.x.k];
-      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
+      rows.push(segRow(`${r.id}${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
     }
     // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
     for (const i of mine(undated)) {
       const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), cw + TL_TAIL + TL_GAP, tw);
       const title = byEpic ? [] : [[cut(tt(summaryOf(i)), left), null]];
-      rows.push(segRow(`${r.slug} ${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
+      rows.push(segRow(`${r.id}${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -829,7 +842,7 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
     for (const i of list) {
       const [cell, left] = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, tw] : whyCell(why(i), 27, tw);
       const title = cut(tt(summaryOf(i)), left);
-      rows.push(segRow(`${i.r.slug} ${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -859,9 +872,9 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
-    return segRow(`${r.slug} ${e.key}`, [[`  ${all ? pad(r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
+    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
-      [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.slug, epic: e.key });
+      [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.id, epic: e.key });
   });
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
   // A record from before epics were recorded is not "no epic": until a pass reads it, say so instead.
@@ -1000,7 +1013,7 @@ export function usageLine({ reading, running, held, heldBy }, { now, solid = fal
 // loaded, a loaded one that cannot start, or passes that keep failing.
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
 const bandsOf = (r) => [
-  ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.name} supervisor on`)] : []),
+  ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.repo} supervisor on`)] : []),
   ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start (exit ${r.stall.cannotStart.code}): ${r.stall.cannotStart.why ?? 'it logged nothing'}`)] : []),
   ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes failed: ${r.stall.errors.error}`)] : []),
 ];
@@ -1012,7 +1025,7 @@ function stallNotes(r) {
   const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
   const out = [];
   if (s.noProgress != null) out.push(note(`nothing started, merged or was released for ${since(s.noProgress)}. Last pass: ${s.held}.`));
-  if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.name} supervisor off`));
+  if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver) {
     const what = s.driver.start ? 'the merge driver could not start' : `the merge driver stopped${s.driver.at == null ? '' : ` at ${clock(s.driver.at)}`}`;
     const reason = s.driver.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
@@ -1075,7 +1088,9 @@ function overviewHead(repos, list, { now = Date.now(), solid = false, avail = av
 const NUM_COLS = [['RUN', 'running', 4], ['READY', ['ready', 'queued'], 7, 'ready'], ['WAIT', 'waiting', 6], ['BLOCKED', 'stuck', 9], ['NEEDS YOU', 'needs', 11], ['FAILED', 'failed', 8], ['DONE', 'done', 6]];
 function homeLayout(list, w, width, now, checkin) {
   const ok = list.filter((r) => !r.error);
-  const workers = (r, slot) => `  ${r.workers} (cap ${r.cap})${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  // A repo's batches share its cap: the first of them on screen shows it, the rest say they share it.
+  const capOf = (r) => { const in1 = ok.filter((x) => x.slug === r.slug); return in1.length < 2 ? `cap ${r.cap}` : in1[0] === r ? `cap ${r.cap}, shared` : 'cap shared'; };
+  const workers = (r, slot) => `  ${r.workers} (${capOf(r)})${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [] }, fit = { lastW: lastFit, qdW: qdFit, slot: false };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'FAILED'] }];
@@ -1087,7 +1102,7 @@ function homeLayout(list, w, width, now, checkin) {
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false } = {}) {
   const list = shownRepos(repos, all);
-  const none = repos.filter((r) => !hasBatch(r));
+  const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
   // REPO fits the names with a row; with a width, only those on screen.
   const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.name.length + 2));
   const lay = homeLayout(list, w, width, now, checkin);
@@ -1097,15 +1112,15 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     bold(`  ${pad('REPO', w)}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('QUEUE DONE', lay.qdW)}  WORKERS`),
   ];
   const rows = [], foot = [];
-  const row = (r, line) => rows.push({ id: r.slug, line, open: { kind: 'repo', slug: r.slug } });
+  const row = (r, line) => rows.push({ id: r.id, line, open: { kind: 'repo', slug: r.id } });
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     const [last, lastSgr] = lastPass(r, now);
     // Each state count in its state's colour, a zero dim; DONE in the text colour.
     const n = ([, k, cw, sk]) => { const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[sk ?? k]) : DIM]; };
     const qd = queueDone(r, now, checkin);
-    rows.push(segRow(r.slug, [[`  ${pad(r.name, w)}`, null], [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
-      ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], { kind: 'repo', slug: r.slug }));
+    rows.push(segRow(r.id, [[`  ${pad(r.name, w)}`, null], [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
+      ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], { kind: 'repo', slug: r.id }));
   }
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
@@ -1115,9 +1130,11 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   const notes = [...list.filter((r) => !r.error).flatMap(stallNotes), ...list.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   const seen = new Set();
-  for (const r of repos) {
-    for (const c of portClashes(r.claim, repos.map((x) => x.claim))) {
-      const o = repos.find((x) => x.slug === c.slug);
+  // Ports are claimed per repo, so each repo is checked once, as its standing batch.
+  const standing = repos.filter((r) => !r.batch);
+  for (const r of standing) {
+    for (const c of portClashes(r.claim, standing.map((x) => x.claim))) {
+      const o = standing.find((x) => x.slug === c.slug);
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
@@ -1130,7 +1147,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
   const you = list.filter((r) => !r.error).reduce((a, r) => a + count(r, 'needs'), 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
-  const unset = repos.filter((r) => r.run?.unset).length;
+  const unset = new Set(repos.filter((r) => r.run?.unset).map((r) => r.slug)).size;
   if (unset) {
     notes.push({ tag: '  setup', sgr: GREY, text: [[`${unset} repo${unset === 1 ? ' has' : 's have'} no "Batches run by" setting, so ${unset === 1 ? 'it runs' : 'they run'} in a session. `, GREY],
       ['/desk-setup', BOLD], [' sets it.', GREY]] });
@@ -1160,7 +1177,7 @@ function passLines(r, now) {
 function stoppedLines(r) {
   return ['Running workers carry on, but nothing new starts and stages are not updated.', `To resume: ${resumeOf(r)}.`];
 }
-export const resumeOf = (r) => (supervisorOff(r) ? `desk-q ${r.name} supervisor on`
+export const resumeOf = (r) => (supervisorOff(r) ? `desk-q ${r.repo} supervisor on`
   : r.run?.by === 'supervisor' ? `check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
     : `run /desk-autopilot in ${r.name}${handsOver(r) ? '; it hands the batch to the supervisor at Stage 4' : ''}`);
 // The same, as a sentence of its own: a bare command follows "Run:".
@@ -1377,7 +1394,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     // macOS: no runner, 14m" fits whole.
     ...fitSegs(needSegs(r, x, now), nw - (x.k === 'landing' ? 1 : 2), nw),
     [`${pad(starts(x), 13)}${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
-  ], { kind: 'ticket', slug: r.slug, key: x.t.key, ...(epic ? { epic } : {}) });
+  ], { kind: 'ticket', slug: r.id, key: x.t.key, ...(epic ? { epic } : {}) });
   const rows = GROUPS.flatMap(([name, ks]) => {
     const g = list.filter((x) => ks.includes(x.k));
     return g.length ? [segRow(null, [[`  ${name}`, BOLD], [` · ${g.length}`, GREY]], null), ...g.map(row)] : [];
@@ -1459,7 +1476,7 @@ function blockerRow(r, key, b, kw, now) {
   if (!bt) return segRow(null, [[`  ◆ ${pad(b, kw)}  `, YOU_BOLD], ['not in this queue: ', null], ['release it', BOLD]], null);
   const bk = shownState(r.q, bt, r.ctx);
   const bh = blockerHold(r.q, key, b, r.ctx, new Set([key]));
-  const open = { kind: 'ticket', slug: r.slug, key: b };
+  const open = { kind: 'ticket', slug: r.id, key: b };
   if (bh.k === 'needs') {
     const at = bh.text.lastIndexOf(': ');
     return segRow(b, [[`  ◆ ${pad(b, kw)}  `, YOU_BOLD], [bh.text.slice(0, at + 2), null], [bh.text.slice(at + 2), BOLD]], open);
@@ -1558,7 +1575,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     can.a = merged.length > 0 || outside.length > fits;
     if (merged.length) {
       head.push(segLine([[`  ✓ ${merged.length}`, GOOD], [` ${outside.length ? 'in this batch ' : ''}merged`, null], ...(open && !shows('a') ? [['  · a shows them', DIM]] : [])]));
-      if (shows('a')) for (const b of merged) rows.push(segRow(b, [[`  ✓ ${pad(b, kw)}  `, GOOD], [cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]], { kind: 'ticket', slug: r.slug, key: b }));
+      if (shows('a')) for (const b of merged) rows.push(segRow(b, [[`  ✓ ${pad(b, kw)}  `, GOOD], [cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]], { kind: 'ticket', slug: r.id, key: b }));
     }
     for (const b of unmerged) {
       rows.push(blockerRow(r, key, b, kw, now));
@@ -1624,15 +1641,19 @@ export const ticketScreen = (r, key, opts) => joined(ticketParts(r, key, opts));
 
 class Usage extends Error {}
 
-// Exact name first, then a unique prefix of the short name; owner/name and the slug match too.
+// Exact name first, then a unique prefix of the short name; owner/name and the slug match too. A
+// repo's name is its standing batch; a named batch is `<repo>:<name>`, its `word`.
 export function resolveRepo(repos, word) {
   const w = word.toLowerCase();
-  const exact = repos.filter((r) => [r.name, r.slug, r.slug.replace('__', '/')].some((n) => n.toLowerCase() === w));
+  const exact = repos.filter((r) => [r.name, r.word, r.id, ...(r.batch ? [] : [r.slug, r.slug.replace('__', '/')])].some((n) => n?.toLowerCase() === w));
   if (exact.length === 1) return exact[0];
   const hits = repos.filter((r) => r.name.toLowerCase().startsWith(w));
   if (hits.length === 1) return hits[0];
-  if (hits.length) throw new Usage(`"${word}" matches ${hits.map((r) => r.name).join(' and ')}. Type more of the name.`);
-  throw new Usage(`No repo "${word}". Set up here: ${repos.map((r) => r.name).join(', ')}.`);
+  // A prefix of one repo's name is that repo, its standing batch.
+  const only = hits.filter((r) => !r.batch);
+  if (only.length === 1 && hits.every((r) => r.slug === only[0].slug)) return only[0];
+  if (hits.length) throw new Usage(`"${word}" matches ${hits.map((r) => r.word).join(' and ')}. Type more of the name.`);
+  throw new Usage(`No repo "${word}". Set up here: ${repos.map((r) => r.word).join(', ')}.`);
 }
 
 const MOVES = ['up', 'down', 'top', 'bottom', 'move'];
@@ -1652,34 +1673,34 @@ function target(repos, words) {
   // `ships [<repo>]` and `days [<repo>]` read before a repo name, and `<repo> ships` after one.
   if ([...SHIPS, 'days'].includes(repoWord.toLowerCase())) {
     if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q ${repoWord.toLowerCase()} [<repo>].`);
-    return etaView(repoWord, verb ? resolveRepo(repos, verb).slug : null);
+    return etaView(repoWord, verb ? resolveRepo(repos, verb).id : null);
   }
   const r = resolveRepo(repos, repoWord);
-  if (!verb) return { kind: 'repo', slug: r.slug };
+  if (!verb) return { kind: 'repo', slug: r.id };
   const unknown = () => new Usage(`Unknown command "${[verb, keyWord, ...extra].filter(Boolean).join(' ')}". Verbs: ${VERBS.join(', ')}.`);
-  if ([...SHIPS, 'days'].includes(verb)) { if (keyWord) throw unknown(); return etaView(verb, r.slug); }
+  if ([...SHIPS, 'days'].includes(verb)) { if (keyWord) throw unknown(); return etaView(verb, r.id); }
   if (!VERBS.includes(verb)) throw unknown();
   // The supervisor is the repo's, not its batch's, so a repo with no batch has one too.
   if (verb === 'supervisor') {
-    if (extra.length || (keyWord != null && !['on', 'off'].includes(keyWord.toLowerCase()))) throw new Usage(`On, off or its status? desk-q ${r.name} supervisor [on|off].`);
+    if (extra.length || (keyWord != null && !['on', 'off'].includes(keyWord.toLowerCase()))) throw new Usage(`On, off or its status? desk-q ${r.repo} supervisor [on|off].`);
     return { kind: 'supervisor', slug: r.slug, op: keyWord?.toLowerCase() ?? 'status' };
   }
   if (r.error) throw new Usage(`${r.name}: queue unreadable: ${r.error}`);
   if (!r.q) throw new Usage(`${r.name} has no batch yet.`);
   if (verb === 'workers') {
-    if (keyWord == null) throw new Usage(`How many? desk-q ${r.name} workers <n>.`);
+    if (keyWord == null) throw new Usage(`How many? desk-q ${r.word} workers <n>.`);
     if (extra.length) throw unknown();
-    return { kind: 'workers', slug: r.slug, n: keyWord };
+    return { kind: 'workers', slug: r.id, n: keyWord };
   }
-  if (!keyWord) throw new Usage(`Which ticket? desk-q ${r.name} ${verb} <KEY>${verb === 'move' ? ' <n>' : ''}.`);
+  if (!keyWord) throw new Usage(`Which ticket? desk-q ${r.word} ${verb} <KEY>${verb === 'move' ? ' <n>' : ''}.`);
   const key = [keyWord, keyWord.toUpperCase()].find((k) => r.q.tickets?.[k]);
   if (!key) throw new Usage(`${keyWord} isn't in ${r.name}'s queue.`);
   if (verb === 'move') {
-    if (extra.length !== 1) throw new Usage(`Which position? desk-q ${r.name} move ${key} <n>.`);
-    return { kind: 'move', slug: r.slug, key, verb, to: extra[0] };
+    if (extra.length !== 1) throw new Usage(`Which position? desk-q ${r.word} move ${key} <n>.`);
+    return { kind: 'move', slug: r.id, key, verb, to: extra[0] };
   }
   if (extra.length) throw unknown();
-  return verb === 'show' ? { kind: 'ticket', slug: r.slug, key } : { kind: 'move', slug: r.slug, key, verb };
+  return verb === 'show' ? { kind: 'ticket', slug: r.id, key } : { kind: 'move', slug: r.id, key, verb };
 }
 
 // ---- changes -----------------------------------------------------------------------------------
@@ -1731,12 +1752,13 @@ function moveTicket(r, key, verb, to) {
 function setWorkers(repos, r, word) {
   const n = /^\d+$/.test(word) ? Number(word) : NaN;
   if (!Number.isInteger(n)) throw new Usage(`Workers must be a whole number from 0 to ${r.cap}. Nothing changed.`);
-  const total = liveAllowed(repos.filter((x) => x.slug !== r.slug)) + n;
+  const total = liveAllowed(repos.filter((x) => x !== r)) + n;
   const cap = machineCap();
   if (n > r.cap) {
     const block = { slug: r.slug, port: r.claim.port, last: r.claim.port + n };
-    const clash = portClashes(block, repos.map((x) => x.claim)).map((c) => `${repos.find((x) => x.slug === c.slug).name} (${c.port}–${c.last})`);
-    throw new Usage(`${r.name}'s cap is ${r.cap}, so ${n} workers is refused: nothing changed. `
+    const standing = repos.filter((x) => !x.batch);
+    const clash = portClashes(block, standing.map((x) => x.claim)).map((c) => `${standing.find((x) => x.slug === c.slug).name} (${c.port}–${c.last})`);
+    throw new Usage(`${r.repo}'s cap is ${r.cap}, so ${n} workers is refused: nothing changed. `
       + `A cap of ${n} is an edit to §3b "Autopilot worker concurrency" in ${join(deskConfigRoot(), 'repos', r.slug, 'config.md')}. `
       + `It would hold ports ${block.port} to ${block.last}, ${clash.length ? `overlapping ${clash.join(' and ')}` : 'clear of every other repo'}, `
       + `and live batches would then allow ${total} against this machine's ${cap ?? '? (no machine profile)'}.`);
@@ -1750,7 +1772,7 @@ function setWorkers(repos, r, word) {
 
 // One confirmation line, or a Usage refusal that says what to do instead.
 function apply(repos, v) {
-  const r = repos.find((x) => x.slug === v.slug);
+  const r = repos.find((x) => x.id === v.slug);
   if (v.kind === 'supervisor') return supervisor(r, v.op);
   return v.kind === 'workers' ? setWorkers(repos, r, v.n) : moveTicket(r, v.key, v.verb, v.to);
 }
@@ -1835,9 +1857,9 @@ export function run(argv, { now = Date.now() } = {}) {
   if (isWrite(v)) {
     const said = apply(repos, v);
     const after = loadOrRefuse(now);
-    return `${said}\n\n${repoScreen(after.find((x) => x.slug === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.slug === v.slug)) })}`;
+    return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
   }
-  const r = repos.find((x) => x.slug === v.slug);
+  const r = repos.find((x) => x.id === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
 }
 
@@ -1983,7 +2005,8 @@ export function interactive({
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
-  const repoOf = (slug) => repos.find((r) => r.slug === slug);
+  // A place's `slug` is its batch row's id: the repo's slug for its standing batch.
+  const repoOf = (slug) => repos.find((r) => r.id === slug);
   const hasTabs = () => ['overview', 'repo', 'epic'].includes(view.kind);
   const tabOk = (id) => !(view.kind === 'epic' && id === 'epics');
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
@@ -2272,7 +2295,7 @@ export function interactive({
       if (k && repoOf(view.slug)?.q) act({ kind: 'move', slug: view.slug, key: k, verb: moveVerb });
     } else if (queueView && (str === '+' || str === '-')) {
       const r = repoOf(view.slug);
-      if (r?.q) act({ kind: 'workers', slug: r.slug, n: String(r.workers + (str === '+' ? 1 : -1)) });
+      if (r?.q) act({ kind: 'workers', slug: r.id, n: String(r.workers + (str === '+' ? 1 : -1)) });
       else msg = `${r?.name ?? view.slug} has no batch yet.`;
     } else if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
     else if (key.name === 'up' && scroll > 0) scroll -= 1;
@@ -2285,14 +2308,14 @@ export function interactive({
     else if (str === 'a' && view.kind === 'overview' && tab === 'queue') view = { ...view, all: !view.all };
     else if (['a', 'y', 'f'].includes(str) && view.kind === 'ticket' && screen?.can?.[str]) { if (!unfold.delete(str)) unfold.add(str); msg = ''; }
     else if (str === 's' && view.kind === 'overview' && tab === 'queue') {
-      // Turning off asks first; turning on does not.
-      const r = repoOf(rows[sel]?.id);
+      // Turning off asks first; turning on does not. The supervisor is the repo's: its standing batch's row.
+      const r = repoOf(repoOf(rows[sel]?.id)?.slug);
       if (!r) return;
       const v = { kind: 'supervisor', slug: r.slug };
       let state = null;
       if (platform() !== 'darwin') msg = NEEDS_LAUNCHD;
       else { try { ({ state } = supervisorState(r)); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); } }
-      if (state === 'loaded') { ask = { name: r.name, v: { ...v, op: 'off' } }; msg = ''; }
+      if (state === 'loaded') { ask = { name: r.repo, v: { ...v, op: 'off' } }; msg = ''; }
       else if (state) act({ ...v, op: 'on' });
     }
     else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
@@ -2305,7 +2328,7 @@ export function interactive({
       if (r && existsSync(logPath(r, view.key))) go({ ...view, kind: 'log' });
       else msg = `${view.key} has no log yet.`;
     } else if (str === 'o' && view.kind === 'ticket') {
-      const url = jiraUrlFor(view.slug, view.key);
+      const url = jiraUrlFor(repoOf(view.slug)?.slug ?? view.slug, view.key);
       if (!url) msg = `No Jira site in ${repoOf(view.slug)?.name ?? view.slug}'s config, so there is nothing to open.`;
       else { try { opener(url); msg = `Opened ${url}`; } catch (e) { msg = `Could not open ${url}: ${describeCrash(e)}`; } }
     } else if (str === 'g' && view.kind === 'ticket') {

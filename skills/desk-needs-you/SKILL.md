@@ -36,6 +36,9 @@ Otherwise it prints:
 <repo> <TICKET> <kind> <waited> | <what is needed> | 1. <action> (recommended: <why>) | 2. <action> | …
 ```
 
+`<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch). Pass it to
+`record` as it is printed.
+
 `<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `triage`
 (open triage questions) or `held` (a hold nothing else releases). Action 1 is always the
 recommendation.
