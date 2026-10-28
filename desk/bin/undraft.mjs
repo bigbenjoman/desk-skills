@@ -7,6 +7,9 @@
 //   wait    nothing for anyone to do yet: checks still running, or GitHub has not worked out whether
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
+//   findings  the review at its head found a P0 or a P1: the pass sends those to a fix worker
+//           (fix-tries.mjs reviewFix), and only once no try is left, or its body lists none of them
+//           with a file:line, does it put them to the person (`why` and `action` say what for)
 //
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call; a row of plain text such
@@ -42,9 +45,10 @@ function ownReviews(reviews, handle) {
   return (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
 }
 
-// The latest verdict among the reviews `handle` posted.
-export function latestVerdict(reviews, handle) {
-  return ownReviews(reviews, handle).map((r) => parseVerdict(r.body)).filter(Boolean).pop() ?? null;
+// The latest review carrying a verdict among the reviews `handle` posted, as { verdict, body }, or
+// null. The body is for the findings it lists.
+export function latestReview(reviews, handle) {
+  return ownReviews(reviews, handle).map((r) => ({ verdict: parseVerdict(r.body), body: r.body })).filter((r) => r.verdict).pop() ?? null;
 }
 
 // What the verdict says about this head: { clean, why, settle } (settle: the verdict is at the head,
@@ -121,6 +125,17 @@ export function undraftCall(t, pr, cfg) {
   }
   const plain = !Object.keys(pairs(clean)).length;
   if (!cfg.handle) return person('§1 GitHub handle is not set, so no review verdict can be attested', 'set it with /desk-setup');
+  // A review at the head that found a P0 or a P1 is a code change for a fix worker, whatever else is
+  // wrong with the PR: the pass sends it back (fix-tries.mjs reviewFix) with the review's body.
+  // Under a plain-text row the latest review may still be a desk-review verdict (plainVerdictAt reads
+  // it against desk-review's own counts), and its P0s and P1s go the same way.
+  const review = latestReview(pr.reviews, cfg.handle);
+  const verdict = plain ? null : review?.verdict ?? null;
+  const v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
+  const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
+  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0)) {
+    return { ...person(v.why, `settle the findings on #${n}`), call: 'findings', verdict: found, review: review.body };
+  }
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {
     return person(`it has a merge conflict with its base`, `resolve the conflict on #${n}; it then needs a fresh review`);
   }
@@ -128,8 +143,6 @@ export function undraftCall(t, pr, cfg) {
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   if (gate.state !== 'pass') return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);
-  const verdict = plain ? null : latestVerdict(pr.reviews, cfg.handle);
-  const v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
   if (!v.clean) return person(v.why, v.settle ? `settle the findings or gaps on #${n}` : `review #${n} at its head`);
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);

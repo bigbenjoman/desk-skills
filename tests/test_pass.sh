@@ -1170,6 +1170,106 @@ check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
 
+# ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker twice
+# The fake gh answers each PR from $T/fr/<n>.json, a green draft with one review by ben, and records
+# pr ready and pr comment. frx <n> <head> <reviewed sha> <counts>: a P1 count lists one P1 finding.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+const f = '$T/fr/' + a[2] + '.json';
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync(f, 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
+else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+mkdir -p "$T/fr" "$T/state-r/logs"
+frx(){
+  node -e 'const [dir, n, head, sha, counts] = process.argv.slice(1);
+    const p1 = /p1=[1-9]/.test(counts) ? ["", "P1 (1)", " src/money.ts:12         second currency formatter", "", "P2 (1)", " src/pager.ts:1   no consumer"] : [];
+    const body = ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", ...p1].join("\n");
+    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, body: "## Summary",
+      reviews: [{ author: { login: "ben" }, body }], statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }))' "$T/fr" "$@"
+}
+H0=0000000000000000000000000000000000000000
+cat > "$T/config-r.md" <<EOF
+## 0. Repo
+| Field | Value |
+|---|---|
+| GitHub repo | \`acme/widgets\` |
+| Default branch | \`main\` |
+
+## 1. Identity
+| Field | Value |
+|---|---|
+| GitHub handle | \`ben\` |
+
+## 2. Paths
+| Field | Value |
+|---|---|
+| Primary repo root | \`$T/repo\` |
+| Worktrees directory | \`$T/wt\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+| \`pr-ready\` | Undraft PRs | \`yes\` | \`yes\` |
+
+## 4. Checks
+| Field | Value |
+|---|---|
+| Required checks | \`tests\` |
+| Local review command | \`/desk-review\` |
+| Clean review verdict | \`p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0\` |
+EOF
+export DESK_CONFIG="$T/config-r.md" DESK_QUEUE="$T/queue-r.json" DESK_AUTOPILOT_STATE="$T/state-r"
+q init r; q set-batch concurrency=5
+for k in 1 2 3 4 5 6; do q add "R-$k"; q set "R-$k" state=done lane=A "branch=fix/R-$k" "result.pr=72$k"; done
+frx 721 "$H1" "$H1" 'p0=0 p1=1 p2=1'
+frx 722 "$H1" "$H1" 'p0=0 p1=0 p2=1'
+q set R-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks","what":"red: Lint"}]'; frx 723 "$H1" "$H1" 'p0=0 p1=1 p2=1'
+q set R-4 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"review"},{"try":2,"head":"'"$H1"'","kind":"checks"}]'; frx 724 "$H2" "$H2" 'p0=0 p1=1 p2=1'
+q set R-5 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"review"}]'; frx 725 "$H1" "$H1" 'p0=0 p1=1 p2=1'
+frx 726 "$H1" "$H1" 'p0=1 p1=0 p2=0'
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-281 AC1 a draft whose review at its head has 1 P1 is requeued once for a fix worker" \
+  '[ "$(field R-1 state)" = "\"triaged\"" ] && [ "$(field R-1 fix.kind)" = "\"review\"" ] && [ "$(field R-1 fix.try)" = 1 ] && [ "$(field R-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: R-1 requeued for PR #721 — review not clean: 1 P1"'
+check "DS-281 AC1 and it is not undrafted" '! grep -q "^pr ready 721" "$T/gh-calls"'
+check "DS-281 AC6 a review with only P2s is not requeued and stays draft for the person, as today" \
+  '[ "$(field R-2 state)" = "\"done\"" ] && [ "$(field R-2 fix)" = null ] && [ "$(field R-2 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "R-2: DRAFT — PR #722 stays draft: its review verdict at 111111111 is not clean (p2=1)"'
+check "DS-281 AC7 a checks try counts toward the limit: the review try is try 2" '[ "$(field R-3 fix.try)" = 2 ] && [ "$(field R-3 fix_tries | jq -r ".[1].kind")" = review ]'
+check "DS-281 AC5 after 2 fix tries it is not requeued again, and is recorded stuck" \
+  '[ "$(field R-4 state)" = "\"done\"" ] && [ "$(field R-4 fix_tries | jq length)" = 2 ] && [ "$(field R-4 stuck.why)" = "\"review not clean after 2 fix tries: 1 P1\"" ]'
+check "DS-281 AC5 and it is put to the person" 'echo "$out" | grep -q "R-4: STUCK — PR #724: review not clean after 2 fix tries: 1 P1"'
+check "DS-281 AC4 a try already made for this head is not made again" \
+  '[ "$(field R-5 state)" = "\"done\"" ] && [ "$(field R-5 fix_tries | jq length)" = 1 ] && [ "$(field R-5 stuck.why)" = "\"review not clean after 1 fix try: 1 P1\"" ]'
+check "DS-281 AC1 a P0 its review body does not list with a file:line is not requeued, and stays draft for the person" \
+  '[ "$(field R-6 state)" = "\"done\"" ] && [ "$(field R-6 fix)" = null ] && echo "$out" | grep -q "R-6: DRAFT — PR #726 stays draft: its review verdict at 111111111 is not clean (p0=1)"'
+
+# The next pass spawns the fix worker, its briefing quoting the P1 and not the P2.
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-281 AC1 the fix worker's task is the review fix, reviewed again on the new head" \
+  'grep -q "^R-1 .*Your task is fix try 1 of 2 on PR #721.*review the new head with desk-review and post that review on the PR" "$T/spawns"'
+check "DS-281 AC1 its briefing quotes the P1 with its file and line" \
+  'grep -q "^- P1: src/money.ts:12         second currency formatter$" "$T/state-r/briefings/R-1.md" && ! grep -q "pager.ts" "$T/state-r/briefings/R-1.md"'
+check "DS-281 AC4 a PR whose fix worker is running is not requeued again" '[ "$(field R-1 fix_tries | jq length)" = 1 ] && [ "$(grep -c "^R-1 " "$T/spawns")" = 1 ]'
+
+# R-1's worker pushed H2 and has not reviewed it yet: no undraft, no second try.
+q set R-1 state=done session_id=null result.pr=721; frx 721 "$H2" "$H1" 'p0=0 p1=1 p2=1'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-281 AC2 a new head with no review of its own is not undrafted, nor requeued" \
+  '! grep -q "^pr ready 721" "$T/gh-calls" && [ "$(field R-1 fix_tries | jq length)" = 1 ] && [ "$(field R-1 state)" = "\"done\"" ] && field R-1 undraft.why | grep -q "not the head 222222222"'
+# Its review of H2 is clean: out of draft, with one comment quoting the verdict.
+frx 721 "$H2" "$H2" 'p0=0 p1=0 p2=0'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-281 AC3 a clean re-review on the new head undrafts it" '[ "$(grep -c "^pr ready 721 --repo acme/widgets" "$T/gh-calls")" = 1 ]'
+check "DS-281 AC3 with one comment saying its review on that head was clean, quoting the verdict" \
+  '[ "$(grep -c "^pr comment 721 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.222222222222.) is clean" "$T/gh-calls")" = 1 ] && grep -q "^> .sha=$H2 p0=0 p1=0 p2=0 deferred=0" "$T/gh-calls"'
+
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"

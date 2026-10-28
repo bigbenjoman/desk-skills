@@ -1,5 +1,6 @@
 // A ready batch PR the merge driver cannot merge goes back to a worker on its own branch, at most
 // FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
+// So does a draft whose posted review at its head found a P0 or a P1 (reviewFix), within the same tries.
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -64,6 +65,48 @@ export function fixCall(t, s, ctx) {
   return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, ...fix } };
 }
 
+// A verdict's P0 and P1 counts, as `1 P0, 2 P1`; '' when it has neither.
+export function reviewCounts(v) {
+  return ['p0', 'p1'].filter((k) => Number(v?.[k]) > 0).map((k) => `${Number(v[k])} ${k.toUpperCase()}`).join(', ');
+}
+
+// The P0 and P1 findings a posted desk-review body lists, one line each with its file:line, as
+// { sev, text }. A finding sits under a `P0 (n)` or `P1 (n)` heading, or opens with its own
+// severity; a heading of anything else (P2, REQUIREMENT GAPS, a `###` section) ends that run, and a
+// line opening with an em dash continues the finding above it.
+export function reviewFindings(body) {
+  const found = [];
+  let sev = null;
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    const text = line.trim();
+    const own = /^[#>*_\s-]*(P[0-3])\b/.exec(line);
+    if (own) sev = own[1];
+    else if (/^#{1,6}\s/.test(text) || /^[A-Z][A-Z ]{3,}(\(|$)/.test(text)) sev = null;
+    if (sev !== 'P0' && sev !== 'P1') continue;
+    if (text.startsWith('—') && found.length) { found[found.length - 1].text += ` ${text}`; continue; }
+    if (/[\w./-]+:\d+/.test(text)) found.push({ sev, text });
+  }
+  return found;
+}
+
+// A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
+// found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Only P2s
+// and gaps are left as they are (null), and so is a review whose body lists no P0 or P1 with its
+// file:line (posted inline, which a worker has no `gh api` to read): the person settles those.
+// review: { pr, head, verdict, body }.
+export function reviewFix(t, review) {
+  const counts = reviewCounts(review.verdict);
+  if (!counts || !review.head) return null;
+  const done = t.fix_tries ?? [];
+  if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === review.head)) {
+    return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${counts}` };
+  }
+  const findings = reviewFindings(review.body);
+  if (!findings.length) return null;
+  const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
+  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${counts}`, verdict, findings } };
+}
+
 // The fix worker's briefing section, while its try is open.
 export function fixBrief(t) {
   const f = t.fix;
@@ -72,23 +115,31 @@ export function fixBrief(t) {
   if (f.kind === 'conflict') {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
+  } else if (f.kind === 'review') {
+    lines.push(`Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean (\`${f.verdict}\`). Fix each P0 and P1 finding it lists:`, '');
+    for (const x of f.findings ?? []) lines.push(`- ${x.sev}: ${x.text}`);
+    lines.push('', 'Its P2 findings are not part of this try.');
   } else {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
     for (const c of f.checks) lines.push(`- ${c.name}: ${c.url ?? 'no run URL reported'}`);
     for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}. A person runs that; leave it red.`);
   }
-  lines.push('', `This is try ${f.try} of ${f.of}. A PR still red or in conflict after try ${f.of} goes to the person.`, '');
+  lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${f.kind === 'review' ? 'with a P0 or P1 in its review' : 'red or in conflict'} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
 
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
 export function fixTask(t) {
   const f = t.fix;
+  const review = f.kind === 'review';
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
-    : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
+    : review ? 'fix each P0 and P1 finding it quotes, and nothing else'
+      : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
+  // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
+  const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     `Your task is fix try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. ` +
-    `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>. ` +
-    `Open no new PR, leave the PR out of draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+    `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
+    `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
 }

@@ -33,7 +33,7 @@ import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } f
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment } from './undraft.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
@@ -1576,8 +1576,11 @@ if (drafts.length) {
     const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
-    if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
-    else if (c.call === 'person') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
+    // A P0 or P1 in the review at its head goes back to a fix worker, which reviews its new head again.
+    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review }) : null;
+    if (rf) applyFix(t, n, v.headRefOid, rf);
+    else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
+    else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}`);
     else {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
@@ -1639,20 +1642,25 @@ for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
   };
   const c = fixCall(t, s, ctx);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
+  applyFix(t, n, s.head, c);
+}
+// A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
+// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`.
+function applyFix(t, n, head, c) {
   if (c.call === 'stuck') {
     report.waiting.push(`${t.key}: STUCK — PR #${n}: ${c.why}`);
-    if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== s.head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head: s.head, at: PASS_AT })}`);
-    continue;
+    if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head, at: PASS_AT })}`);
+    return;
   }
   const f = c.fix;
-  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for try ${f.try} of ${f.of} on PR #${n} — ${f.what}`); continue; }
+  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for try ${f.try} of ${f.of} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
   if (!rq.ok) {
     q('set', t.key, 'fix=null');
     report.waiting.push(`${t.key}: STUCK — PR #${n} ${f.what}, and its fix try could not be requeued (${rq.out.split('\n').pop()})`);
-    continue;
+    return;
   }
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, at: PASS_AT }])}`, 'stuck=null');
   out.push(`fix try ${f.try} of ${f.of}: ${t.key} requeued for PR #${n} — ${f.what}`);
