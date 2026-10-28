@@ -46,6 +46,7 @@ cat > "$T/bin/merge-driver.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$(pwd) \$*" >> "$T/driver.calls"
 echo "\$DESK_AUTOPILOT_STATE|\${DESK_QUEUE:-}|\${DESK_BATCH:-}" >> "$T/driver.env"
+env | grep '^DESK_' | sort > "$T/driver.fullenv"
 D="\$DESK_AUTOPILOT_STATE/merge-driver.lock.d"
 mkdir -p "\$D"; echo \$\$ > "\$D/pid"
 trap 'rm -rf "\$D"; exit 143' TERM
@@ -107,6 +108,17 @@ check "AC1: it is started from the repo root with the same tickets and deps, log
 check "AC1: the line names it as restarted on the new code" 'grep -q "^merge driver for acme__widgets: restarted on the new code (pid $old -> $new) for A B$" <<< "$out"'
 check "DS-306 AC5: the standing batch's driver gets its state folder and no queue or batch of its own, as before" '[ "$(tail -1 "$T/driver.env")" = "$ST||" ]'
 
+kill "$new" 2>/dev/null; pkill -P "$new"
+i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+
+# ---- DS-313 AC1: an update run from another repo's shell passes none of its per-repo values on ----
+driver --tickets "A" --log
+old="$(held)"
+out=$(DESK_DEFAULT_BRANCH=feat/other-repo DESK_BATCH=OTHER-1 DESK_GH_REPO=other/repo DESK_QUEUE=/x/queue.json DESK_REPO_ROOT=/x/other restart)
+new="$(held)"
+check "DS-313 AC1: the driver is restarted" '[ -n "$new" ] && [ "$new" != "$old" ] && grep -q "restarted on the new code (pid $old -> $new)" <<< "$out"'
+check "DS-313 AC1: its environment carries no inherited base, batch, repo or queue" '! grep -qE "^DESK_(DEFAULT_BRANCH|BATCH|GH_REPO|QUEUE|REPO_ROOT)=" "$T/driver.fullenv"'
+check "DS-313 AC1: it keeps its own repo root and state" 'grep -qx "DESK_REPO_DIR=$T/repo" "$T/driver.fullenv" && grep -qx "DESK_AUTOPILOT_STATE=$ST" "$T/driver.fullenv" && grep -qx "DESK_HOME=$T/desk" "$T/driver.fullenv"'
 kill "$new" 2>/dev/null; pkill -P "$new"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 

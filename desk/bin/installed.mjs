@@ -90,6 +90,17 @@ function runningDrivers(root) {
   return out;
 }
 
+// The update runs from any shell, perhaps one that worked another repo's batch, so the restarted
+// driver keeps none of its per-repo values: the repo's own config and queue decide them, as they do
+// for the supervisor's driver. An inherited DESK_DEFAULT_BRANCH would have it watch another base.
+export const PER_REPO_ENV = ['DESK_QUEUE', 'DESK_STATE', 'DESK_SLUG', 'DESK_BATCH', 'DESK_DEFAULT_BRANCH', 'DESK_WORKTREES_DIR',
+  'DESK_MEMORY_DIR', 'DESK_GH_REPO', 'DESK_PG_CONTAINER', 'DESK_DEV_PORT', 'DESK_WORKER_PORT_FLOOR', 'DESK_GITHUB_HANDLE', 'DESK_JIRA_NAME'];
+export function driverEnv(env = process.env) {
+  const out = E.otherRepoEnv(env);
+  for (const k of PER_REPO_ENV) delete out[k];
+  return out;
+}
+
 // One line saying what became of a running driver.
 function restartDriver({ slug, batch = null, dir, pid }, ps) {
   const who = batch ? `${slug} batch ${batch}` : slug;
@@ -107,8 +118,7 @@ function restartDriver({ slug, batch = null, dir, pid }, ps) {
   // The driver traps TERM once its sleep returns, so the sleep is stopped too.
   for (const p of [pid, ...kids.map((k) => k.pid)]) { try { process.kill(p, 'SIGTERM'); } catch { /* gone */ } }
   if (!waitFor(() => !alive(pid) && lockPid(dir) !== pid)) return `${name}: did not stop within ${WAIT_MS / 1000}s of SIGTERM, so it was not started again`;
-  const env = { ...process.env, DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
-  for (const k of ['DESK_QUEUE', 'DESK_STATE', 'DESK_SLUG', 'DESK_REPO_ROOT', 'DESK_BATCH']) delete env[k];
+  const env = { ...driverEnv(), DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
   // A named batch's driver acts on that batch's queue, and reads its base as the batch does.
   if (batch) Object.assign(env, { DESK_BATCH: batch, DESK_QUEUE: E.batchPaths(slug, batch).queue });
   const argv = ['--tickets', args.tickets.join(' '), ...(args.deps.length ? ['--deps', args.deps.join(' ')] : []), '--log'];

@@ -218,26 +218,28 @@ const re = (k) => {
 console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: re(k) }))));
 NODE
 }
-# prs <state> [<key>...] -> lines `<number>\t<isDraft>\t<key>` for the batch's PRs (or those keys')
-# based on the default branch. A list gh could not give returns 1, or 4 when gh is signed out (gh's own
-# exit code for it, or a 401), with gh's error in $GH_ERR: it runs in a $( ), so it cannot log.
+# prs <state> [<key>...] -> lines `<number>\t<isDraft>\t<key>\t<base>` for the batch's PRs (or those
+# keys') based on the default branch, or on any base with PRS_BASE set empty. A list gh could not give
+# returns 1, or 4 when gh is signed out (gh's own exit code for it, or a 401), with gh's error in
+# $GH_ERR: it runs in a $( ), so it cannot log.
 GH_ERR="$SD/gh-pr-list.err"
 prs(){
   local st="$1"; shift
+  local base="${PRS_BASE-$BASE_BRANCH}"
   local map raw rc; if [ "$#" -gt 0 ]; then map="$(ticket_map "$@")"; else map="$(ticket_map "${KEY_LIST[@]}")"; fi || return 1
-  raw="$(gh pr list --repo "$REPO" --state "$st" --author "$AUTHOR" --base "$BASE_BRANCH" --limit 100 \
+  raw="$(gh pr list --repo "$REPO" --state "$st" --author "$AUTHOR" ${base:+--base "$base"} --limit 100 \
       --json number,title,headRefName,baseRefName,isDraft 2>"$GH_ERR")"; rc=$?
   if [ "$rc" -ne 0 ]; then
     { [ "$rc" -eq 4 ] || grep -qiE 'gh auth login|not logged in|HTTP 401|bad credentials' "$GH_ERR"; } && return 4
     return 1
   fi
   printf '%s' "$raw" \
-    | jq -r --argjson m "$map" --arg base "$BASE_BRANCH" '
-        .[] | select(.baseRefName == $base) | . as $p
+    | jq -r --argjson m "$map" --arg base "$base" '
+        .[] | select($base == "" or .baseRefName == $base) | . as $p
         | [ $m[] | .re as $re | select((.branch != "" and $p.headRefName == .branch)
                           or (.branch == "" and (($p.title + " " + $p.headRefName) | test($re)))) | .key ] as $k
         | select(($k | length) > 0)
-        | "\($p.number)\t\($p.isDraft)\t\($k[0])"' 2>/dev/null | sort -n
+        | "\($p.number)\t\($p.isDraft)\t\($k[0])\t\($p.baseRefName)"' 2>/dev/null | sort -n
 }
 # Prints "<reviewDecision> <unresolved thread count>". An empty reviewDecision is not an approval.
 feedback(){
@@ -531,7 +533,14 @@ while true; do
   [ "$rc" -eq 0 ] || { log "could not list PRs"; pause 120 1; continue; }
   drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 }')
-  [ -z "$ready" ] && { log "no ready batch PRs"; pause 60; continue; }
+  if [ -z "$ready" ]; then
+    # A driver started on the wrong base lists nothing and would say only that, forever: name the batch
+    # PRs open on any other base, so the mismatch shows in the log.
+    elsewhere=$(PRS_BASE='' prs open </dev/null | awk -F'\t' -v b="$BASE_BRANCH" '$4 != b { printf "%s#%s (%s) on %s", s, $1, $3, $4; s = ", " }')
+    if [ -n "$elsewhere" ]; then log "no ready batch PRs on $BASE_BRANCH, the only base this driver watches; batch PRs open on another base: $elsewhere"
+    else log "no ready batch PRs"; fi
+    pause 60; continue
+  fi
 
   merged=""
   while IFS="$(printf '\t')" read -r n key; do
