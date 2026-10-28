@@ -1173,14 +1173,25 @@ check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try 
 
 # ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker twice
 # The fake gh answers each PR from $T/fr/<n>.json, a green draft with one review by ben, and records
-# pr ready and pr comment. frx <n> <head> <reviewed sha> <counts>: a P1 count lists one P1 finding.
+# pr ready and pr comment. frx <n> <head> <reviewed sha> <counts> [inline]: a P1 count lists one P1
+# finding in the body, or none with inline. The review's inline comments (gh api graphql, by its id
+# PRR_<n>) are $T/fr/<n>.comments, a JSON list, or the error gh prints when it holds ERROR.
 cat > "$T/stub/gh" <<EOF
 #!$NODE
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
 const f = '$T/fr/' + a[2] + '.json';
-if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync(f, 'utf8')); } catch { process.exit(1); } }
+if (a[0] === 'api' && a[1] === 'graphql') {
+  const id = a.find((x) => x.startsWith('id=PRR_'));
+  let c = '[]';
+  try { c = fs.readFileSync('$T/fr/' + (id ? id.slice(7) : 'none') + '.comments', 'utf8'); } catch {}
+  if (c.startsWith('ERROR')) { process.stderr.write(c); process.exit(1); }
+  // As gh does, the whole response unless --jq picks the list out of it.
+  const jq = a[a.indexOf('--jq') + 1];
+  process.stdout.write(a.includes('--jq') && jq === '.data.node.comments.nodes' ? c : JSON.stringify({ data: { node: { comments: { nodes: JSON.parse(c) } } } }));
+}
+else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync(f, 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
 else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
@@ -1189,11 +1200,11 @@ EOF
 chmod +x "$T/stub/gh"
 mkdir -p "$T/fr" "$T/state-r/logs"
 frx(){
-  node -e 'const [dir, n, head, sha, counts] = process.argv.slice(1);
-    const p1 = /p1=[1-9]/.test(counts) ? ["", "P1 (1)", " src/money.ts:12         second currency formatter", "", "P2 (1)", " src/pager.ts:1   no consumer"] : [];
+  node -e 'const [dir, n, head, sha, counts, inline] = process.argv.slice(1);
+    const p1 = /p1=[1-9]/.test(counts) && !inline ?["", "P1 (1)", " src/money.ts:12         second currency formatter", "", "P2 (1)", " src/pager.ts:1   no consumer"] : [];
     const body = ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", ...p1].join("\n");
     require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, body: "## Summary",
-      reviews: [{ author: { login: "ben" }, body }], statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }))' "$T/fr" "$@"
+      reviews: [{ id: `PRR_${n}`, author: { login: "ben" }, body }], statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }))' "$T/fr" "$@"
 }
 H0=0000000000000000000000000000000000000000
 cat > "$T/config-r.md" <<EOF
@@ -1270,6 +1281,35 @@ frx 721 "$H2" "$H2" 'p0=0 p1=0 p2=0'
 check "DS-281 AC3 a clean re-review on the new head undrafts it" '[ "$(grep -c "^pr ready 721 --repo acme/widgets" "$T/gh-calls")" = 1 ]'
 check "DS-281 AC3 with one comment saying its review on that head was clean, quoting the verdict" \
   '[ "$(grep -c "^pr comment 721 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.222222222222.) is clean" "$T/gh-calls")" = 1 ] && grep -q "^> .sha=$H2 p0=0 p1=0 p2=0 deferred=0" "$T/gh-calls"'
+
+# ---- a review whose P0s and P1s are posted inline goes to a fix worker too
+export DESK_QUEUE="$T/queue-ri.json" DESK_AUTOPILOT_STATE="$T/state-ri"
+mkdir -p "$T/state-ri/logs"
+q init ri; q set-batch concurrency=5
+for k in 1 2 3 4; do q add "I-$k"; q set "I-$k" state=done lane=A "branch=fix/I-$k" "result.pr=73$k"; done
+frx 731 "$H1" "$H1" 'p0=0 p1=1 p2=0' inline
+echo '[{"path":"src/tax.ts","line":40,"body":"**P1** VAT applied twice"}]' > "$T/fr/731.comments"
+frx 732 "$H1" "$H1" 'p0=0 p1=1 p2=1'
+echo '[{"path":"src/money.ts","line":12,"body":"**P1** second currency formatter"}]' > "$T/fr/732.comments"
+frx 733 "$H1" "$H1" 'p0=0 p1=1 p2=0' inline
+echo 'ERROR: HTTP 502: Bad Gateway (https://api.github.com/graphql)' > "$T/fr/733.comments"
+frx 734 "$H1" "$H1" 'p0=0 p1=0 p2=1' inline
+echo '[{"path":"src/pager.ts","line":1,"body":"**P2** no consumer"}]' > "$T/fr/734.comments"
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-299 AC1 a draft whose review has 1 P1 posted inline and none in its body is requeued once for a fix worker" \
+  '[ "$(field I-1 state)" = "\"triaged\"" ] && [ "$(field I-1 fix.kind)" = "\"review\"" ] && [ "$(field I-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: I-1 requeued for PR #731 — review not clean: 1 P1"'
+check "DS-299 AC1 the inline comments are read by the review's id" 'grep -q "^api graphql .* id=PRR_731" "$T/gh-calls"'
+check "DS-299 AC2 a finding in the body and inline is quoted once" \
+  '[ "$(field I-2 fix.findings | jq length)" = 1 ] && [ "$(field I-2 fix.findings | jq -r ".[0].text")" = "src/money.ts:12         second currency formatter" ]'
+check "DS-299 AC3 inline comments that cannot be read leave the PR for the person, as today" \
+  '[ "$(field I-3 state)" = "\"done\"" ] && [ "$(field I-3 fix)" = null ] && echo "$out" | grep -q "I-3: DRAFT — PR #733 stays draft"'
+check "DS-299 AC3 and the pass log names the PR and the error" \
+  'echo "$out" | grep -q "undraft: PR #733 (I-3): its review.s inline comments could not be read (ERROR: HTTP 502: Bad Gateway"'
+check "DS-299 AC4 inline comments holding only P2s are not requeued, as today" \
+  '[ "$(field I-4 state)" = "\"done\"" ] && [ "$(field I-4 fix)" = null ] && ! grep -q "^api graphql .* id=PRR_734" "$T/gh-calls"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-299 AC1 the fix worker's briefing quotes the inline finding with its file and line" \
+  'grep -q "^- P1: src/tax.ts:40 VAT applied twice$" "$T/state-ri/briefings/I-1.md"'
 
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.

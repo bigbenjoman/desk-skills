@@ -1623,7 +1623,13 @@ if (drafts.length) {
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
     // A P0 or P1 in the review at its head goes back to a fix worker, which reviews its new head again.
-    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review }) : null;
+    // An interactive desk-review posts its P0s and P1s inline: unread, they leave only the body's.
+    const comments = () => {
+      const r = reviewComments(c.reviewId);
+      if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
+      return r.comments;
+    };
+    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }) : null;
     if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
@@ -1648,6 +1654,18 @@ if (drafts.length) {
     const was = t.undraft ?? {};
     if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
+}
+
+// A review's inline comments as fix-tries.mjs inlineFindings reads them, by the review's GraphQL node
+// id (gh pr view's `id`), as { comments } or { comments: null, error }.
+function reviewComments(id) {
+  if (!id) return { comments: null, error: 'the review has no id' };
+  const query = 'query($id: ID!) { node(id: $id) { ... on PullRequestReview { comments(first: 100) { nodes { path line originalLine body } } } } }';
+  const r = shOut('gh', ['api', 'graphql', '-f', `query=${query}`, '-f', `id=${id}`, '--jq', '.data.node.comments.nodes']);
+  let nodes;
+  try { nodes = r.ok ? JSON.parse(r.out) : null; } catch { nodes = null; }
+  if (!Array.isArray(nodes)) return { comments: null, error: r.ok ? 'gh api graphql returned no comments list' : r.out.split('\n').pop() };
+  return { comments: nodes.map((x) => ({ path: x.path, line: x.line ?? x.originalLine ?? null, body: x.body })) };
 }
 
 // ---- fix tries -----------------------------------------------------------
