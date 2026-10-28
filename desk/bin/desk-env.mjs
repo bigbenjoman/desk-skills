@@ -284,6 +284,7 @@ export const CONFIG_ROWS = Object.freeze({
   'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
   'resume-killed': { section: '3b', row: 'Resume a killed worker (times)' },
   'disk-floor': { section: '3b', row: 'Free disk floor (GB)' },
+  'promotion-slice': { section: '3b', row: 'Promotion slice size (children)' },
   'claim-release': { section: '3b', row: 'Release idle claims after (hours)' },
   'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
