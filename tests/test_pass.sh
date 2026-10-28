@@ -1326,7 +1326,7 @@ q add M-3; q set M-3 state=triaged; q set-batch concurrency=3
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-271 AC3 held for memory, the pass writes no waiting marker" '[ "$(field M-3 state)" = "\"triaged\"" ] && [ "$(ls "$MT")" = ci.json ]'
 
-# ---- DS-303: pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
+# ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
 # worktree setup and the worker it starts resolve X-1's queue and state too.
 unset DESK_QUEUE DESK_AUTOPILOT_STATE DESK_BATCH
 export DESK_REPO_OVERRIDE=acme/widgets

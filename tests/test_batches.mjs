@@ -179,7 +179,7 @@ t('DS-307 an unreadable batch refuses the key, naming that batch', r.code !== 0 
 const away = run({}, "console.log(JSON.stringify(B.belongsElsewhere('Z-2')))");
 t('DS-307 belongsElsewhere returns it rather than throwing', away.code === 0 && json(away).unreadable, true);
 
-// DS-303: `--batch <name>` on a command names its batch as DESK_BATCH does.
+// `--batch <name>` on a command names its batch as DESK_BATCH does.
 const qcli = (args, env = {}) => {
   const r = spawnSync('node', [join(BIN, 'queue.mjs'), ...args], { encoding: 'utf8', env: { ...base, ...env } });
   return { code: r.status, out: r.stdout, err: r.stderr };
@@ -219,6 +219,7 @@ t('DS-303 shell --batch is taken out and exported', sh(['--for-worker', '--batch
 t('DS-303 shell --batch=<name> too', sh(['T-1', '--batch=X-1']).out, `X-1|${namedQ('X-1')}|T-1`);
 t('DS-303 shell arguments after -- are left alone', sh(['T-1', '--', '--batch', 'X-1']).out, `|${standingQ}|T-1 -- --batch X-1`);
 t('DS-303 shell no --batch keeps the standing batch', sh(['T-1']).out, `|${standingQ}|T-1`);
+t('DS-303 shell other arguments keep their spaces and quotes', sh(["it's a", '--batch', 'X-1', '$HOME']).out, `X-1|${namedQ('X-1')}|it's a $HOME`);
 const shBoth = sh(['--batch', 'B'], { DESK_BATCH: 'A' });
 t('DS-303 AC2 shell DESK_BATCH and --batch: refused', shBoth.code, 4);
 t('DS-303 AC2 shell names both', shBoth.err.includes('"A"') && shBoth.err.includes('"B"'), true);

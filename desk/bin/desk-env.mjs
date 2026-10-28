@@ -35,6 +35,8 @@
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
+//   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
+//                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
@@ -925,7 +927,8 @@ export function takeBatchArg(argv = process.argv, env = process.env) {
   return named[0];
 }
 // Every desk script loads this module first, so a bad --batch or DESK_BATCH stops it before it touches a file.
-try { takeBatchArg(); batchName(); } catch (e) { console.error(e.message); process.exit(4); }
+let batchArg = null;
+try { batchArg = takeBatchArg(); batchName(); } catch (e) { console.error(e.message); process.exit(4); }
 const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
 export function ticketKind(key) {
   const k = String(key ?? '');
@@ -1234,6 +1237,13 @@ if (isMain) {
           DESK_PG_CONTAINER: pgContainer(), DESK_DEV_PORT: devPort(), DESK_WORKER_PORT_FLOOR: workerPortFloor(), DESK_IS_WSL: isWSL() ? 'yes' : 'no',
         };
         for (const [k, v] of Object.entries(lines)) console.log(`${k}=${String(v).replace(/'/g, `'\\''`).replace(/^|$/g, "'")}`);
+        break;
+      }
+      case 'take-batch': {
+        // Loading this module already took --batch out of argv and checked it, so the shell has one parser.
+        const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+        if (batchArg) console.log(`export DESK_BATCH=${q(batchArg)}`);
+        console.log(`DESK_ARGS=(${args.map(q).join(' ')})`);
         break;
       }
       case 'identity':
