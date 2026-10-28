@@ -595,8 +595,8 @@ together then, as one page and one push. For worker models, say that the row can
 and that both are unset by default, so finders and that session run on the models they do today: a
 cheaper model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
 set on each model and the findings held. Never set either on the user's behalf. For worker location,
-Recommended is `local`; say that `cloud` is accepted but cloud workers are not available yet, so
-every worker still runs locally and the batch plan says so.
+Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
+Claude Code cloud session, whose tokens and cost are not reported, and is not yet compared with local.
 
 **The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
 autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block

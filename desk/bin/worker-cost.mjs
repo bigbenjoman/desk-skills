@@ -6,6 +6,7 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
+import { cloudWall } from './cloud-worker.mjs';
 
 export const START_UP = 'start-up';
 
@@ -136,7 +137,13 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
 // `preflight` is every preflight's `{ n, cost, unknown }`, apart from `usage`. `first` and `stages`
 // add every run's up, a stage seen in two runs once, and are null when any run's log has no
 // assistant usage at all.
+// A cloud worker writes no log here and nothing reports its tokens or cost: its row is its session
+// URL and its wall time from session start to PR (`cloud`), and its usage stays null.
 export function ticketCost(stateDir, ticket) {
+  if (ticket.location === 'cloud' && ticket.cloud) {
+    return { key: ticket.key, runs: 1, unknown: 0, usage: null, preflight: { n: 0, cost: 0, unknown: 0 }, first: null, stages: null,
+      cloud: { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) } };
+  }
   const round = (f) => { const m = f.match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
   const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => round(a) - round(b));
   if (!logs.length) return null;
@@ -193,8 +200,10 @@ export function costTable(rows) {
   const preOf = (p = noPre) => (!p.n ? 'none' : p.unknown === p.n ? 'unknown'
     : `${usd(p.cost)}${p.unknown ? ` + ${p.unknown} unknown` : ''}`);
   const cells = (r, u, p = r.preflight ?? noPre) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost + p.cost), preOf(p), wallTime(u.ms), firstOf(r)];
-  const table = rows.map((r) => (r.usage ? cells(r, r.usage)
-    : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
+  const NR = 'not reported for cloud';
+  const table = rows.map((r) => (r.cloud ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
+    : r.usage ? cells(r, r.usage)
+      : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
   const firstKnown = rows.filter((r) => r.first != null);
   table.push(cells({ key: 'total', runs: rows.reduce((n, r) => n + r.runs, 0), first: firstKnown.length ? firstKnown.reduce((n, r) => n + r.first, 0) : null }, sum, pre));
   const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'preflight', 'wall time', 'first-turn input'];
@@ -202,25 +211,28 @@ export function costTable(rows) {
   const line = (row) => `  ${row.map((c, i) => (i < 2 ? c.padEnd(width[i]) : c.padStart(width[i]))).join('  ')}`.trimEnd();
   // Each worker's stages sit under its row, in the order its runs reached them.
   const stageLines = (r) => {
+    if (r.cloud) return [`      cloud session: ${r.cloud.url ?? 'unknown'}`];
     if (!r.stages) return ['      stages: unknown (no usage in the log)'];
     const w = Math.max(...r.stages.map((s) => s.name.length));
     const wi = Math.max(...r.stages.map((s) => tokens(s.input).length));
     return r.stages.map((s) => `      ${s.name.padEnd(w)}  ${tokens(s.input).padStart(wi)} in  ${tokens(s.output)} out`);
   };
-  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns, first-turn input is the prompt each run started on, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
+  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns (a cloud worker's runs from session start to its PR), first-turn input is the prompt each run started on, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
-    out.push(`${line(row)}${r && !r.usage ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
+    out.push(`${line(row)}${r && !r.usage && !r.cloud ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
     if (r) out.push(...stageLines(r));
   }
   const notes = [];
-  const leftFirst = rows.length - firstKnown.length;
+  const cloud = rows.filter((r) => r.cloud).length;
+  const leftFirst = rows.length - cloud - firstKnown.length;
   if (leftFirst) notes.push(`first-turn input leaves out ${leftFirst} worker(s) with no usage`);
-  const left = rows.length - known.length;
+  if (cloud) notes.push(`${cloud} cloud worker(s) not counted: Claude Code does not report a cloud session's tokens or cost`);
+  const left = rows.length - cloud - known.length;
   if (left) notes.push(`${left} unknown worker(s) not counted`);
   if (notes.length) out[out.length - 1] += `   (${notes.join('; ')})`;
   return out.join('\n');
 }
 
-// Every queue ticket a worker ran in this batch, in queue order.
+// Every queue ticket a worker ran in this batch, local or cloud, in queue order.
 export const batchCost = (stateDir, tickets) => tickets.map((t) => ticketCost(stateDir, t)).filter(Boolean);

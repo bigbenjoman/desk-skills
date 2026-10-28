@@ -36,8 +36,19 @@ preflight with a `FINDER` or `TEXT` line naming the row and the value, and no wo
 is set until the eval harness shows finding quality holds on the cheaper model.
 
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
-`cloud`. Cloud workers are not available yet, so every worker runs locally either way, and at
-`cloud` the batch plan's `workers:` line says so. Any other value refuses the plan, naming the row.
+`cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
+and `budget:` lines say how many tickets run in a cloud session and that a cloud session takes no
+per-worker budget, and each admitted ticket's `runs:` line says where it runs. A ticket stays local,
+with the reason, when its triage record says it renders (the browser lock and a dev server), needs a
+database, or names in `needs_local` anything else only this computer has (stub binaries, a local
+service), and when the record predates `needs_local`. A cloud ticket (`location: cloud` on the queue)
+gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
+prompt carrying the ticket's text, and the session pushes a branch and opens a draft PR. The pass
+records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
+the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
+left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+The report's cost table shows a cloud worker's session URL and its wall time from session start to
+PR, and its tokens and cost as "not reported for cloud".
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded

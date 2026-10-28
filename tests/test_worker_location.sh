@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # suite: worker location (config §3b row, the batch plan's workers line, desk-setup's question)
-# plan-batch on one fixture triage record under three configs: no Worker location row, `cloud`, and a
-# typo. Every worker runs locally until cloud workers exist. Scratch HOME, state and queue only.
+# plan-batch on fixture triage records under three configs: no Worker location row, `cloud`, and a
+# typo. At cloud, each ticket is placed in the cloud or locally with its reason, and the queue records
+# it. Scratch HOME, state and queue only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -10,7 +11,7 @@ T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/triage"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
-  DESK_JIRA_NAME AUTOPILOT_WRITE_QUEUE
+  DESK_JIRA_NAME AUTOPILOT_WRITE_QUEUE AUTOPILOT_BUDGET_USD
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     rc=${rc:-} out: ${out:-}"; fi; }
 trap 'rm -rf "$T"' EXIT
@@ -61,8 +62,21 @@ check "AC1 and does not mention cloud"                                       '! 
 check "AC1 desk-env reads the unset row as local"                           '[ "$(node --input-type=module -e "import { workerLocation } from \"$B/desk-env.mjs\"; console.log(workerLocation())")" = local ]'
 
 config cloud; plan
-check "AC2 at cloud, the plan says cloud is not available yet"              '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: local — config §3b \"Worker location\" is cloud, but cloud workers are not available yet, so every worker runs locally$"'
-check "AC2 and the ticket is still admitted to run"                         'echo "$out" | grep -q "^KAN-1  lane A  size S  ADMIT$"'
+check "AC2 at cloud, the ticket is still admitted to run"                   '[ "$rc" = 0 ] && echo "$out" | grep -q "^KAN-1  lane A  size S  ADMIT$"'
+check "DS-124 AC3 a record from before needs_local runs locally, and says why" 'echo "$out" | grep -q "^  runs: local — its triage record does not say whether it needs this computer"'
+
+# KAN-2 needs nothing on this computer; KAN-3 renders, so its screenshots need the browser lock.
+printf '{"ticket": "KAN-2", "type": "Task", "lane": "A", "size": "S", "summary": "s", "branch": "feat/KAN-2", "change_kind": "surface", "files_in_scope": ["b.js"], "unknowns": [], "blockers": [], "renders": false, "needs_db": false, "needs_local": null}\n' \
+  > "$T/state/triage/KAN-2.json"
+printf '{"ticket": "KAN-3", "type": "Task", "lane": "A", "size": "S", "summary": "s", "branch": "feat/KAN-3", "change_kind": "surface", "files_in_scope": ["c.js"], "unknowns": [], "blockers": [], "renders": true, "needs_db": false, "needs_local": null}\n' \
+  > "$T/state/triage/KAN-3.json"
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1 KAN-2 KAN-3 2>&1); rc=$?
+check "DS-124 AC1 the plan states the location before any worker starts"   '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 1 of 3 admitted ticket(s) in a cloud session, the rest local"'
+check "DS-124 AC1 and the per-worker budget"                                'echo "$out" | grep -q "^budget: \$25 per local worker (config §3b \"Autopilot per-worker budget (USD)\"); a cloud session takes no budget"'
+check "DS-124 AC3 a ticket that needs nothing here runs in the cloud"       'echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: cloud"'
+check "DS-124 AC3 one that renders runs locally, and the plan says why"     'echo "$out" | grep -A3 "^KAN-3 " | grep -q "^  runs: local — it renders: its screenshots need the browser lock and a local dev server$"'
+check "DS-124 AC2 the queue sends the cloud ticket to the cloud, and only it" '[ "$(node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); console.log([\"KAN-1\", \"KAN-2\", \"KAN-3\"].map((k) => q.tickets[k].location).join())" "$DESK_QUEUE")" = ",cloud," ]'
+check "DS-124 AC1 a malformed budget refuses the plan at cloud"             'out=$(AUTOPILOT_BUDGET_USD="25 USD" node "$B/plan-batch.mjs" KAN-2 2>&1); [ $? != 0 ] && echo "$out" | grep -q "per-worker budget"'
 
 config local; plan
 check "local reads as local"                                                 '[ "$rc" = 0 ] && echo "$out" | grep -qx "workers: local"'
