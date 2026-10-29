@@ -360,24 +360,66 @@ async function costAndUsage(aws, profile, period) {
 export const profileDue = (rec, now) => !(rec?.at != null && utcDay(rec.at) === utcDay(now))
   && !(rec?.failed && now - rec.failed.at < READ_EVERY_MS);
 
+// The account a profile signs in to, and the other accounts in its organisation when it is the
+// management account. Both calls are free; a failed one leaves that part unknown rather than failing.
+//   -> { account: id | null, linked: [id] }
+async function identify(aws, profile) {
+  const account = await aws(['sts', 'get-caller-identity', '--profile', profile, '--output', 'json'])
+    .then((b) => (typeof b?.Account === 'string' ? b.Account : null), () => null);
+  if (!account) return { account: null, linked: [] };
+  const linked = await aws(['organizations', 'list-accounts', '--profile', profile, '--output', 'json'])
+    .then((b) => (Array.isArray(b?.Accounts) ? b.Accounts.map((a) => a?.Id).filter((id) => typeof id === 'string' && id !== account) : []), () => []);
+  return { account, linked };
+}
+
+// The profile under the same name whose figures already hold p's account: the organisation that
+// links it, else an earlier profile that signs in to the same account. list: [{ profile, name, account, linked }]
+//   -> profile | null
+export function coveredBy(p, list) {
+  if (!p?.account) return null;
+  const peers = list.filter((q) => q.profile !== p.profile && q.name === p.name && q.account);
+  const org = peers.find((q) => q.linked?.includes(p.account));
+  if (org) return org.profile;
+  const at = list.findIndex((q) => q.profile === p.profile);
+  return peers.find((q) => q.account === p.account && list.findIndex((x) => x.profile === q.profile) < at)?.profile ?? null;
+}
+
+// costs.md's AWS profiles as the cache last knew them, for coveredBy.
+const knownAccounts = (sources, profiles) => sources.map((s) => ({ profile: s.key, name: s.name,
+  account: profiles?.[s.key]?.account ?? null, linked: profiles?.[s.key]?.linked ?? [] }));
+// A profile recorded as covered whose cover no longer holds it has to be read itself.
+const uncovered = (sources, profiles) => {
+  const list = knownAccounts(sources, profiles);
+  return list.some((p) => profiles?.[p.profile]?.covered && !coveredBy(p, list));
+};
+
 // One AWS reading folded into the last one (`last`, the cache's `aws`, or null): each due profile is
 // read (with force, every one) and every other keeps its record. An organisation profile's figures
-// include its linked accounts. sources: costs.md's AWS entries. aws(args) -> parsed body.
-//   -> the new `aws`: { at, profiles: { <profile>: { profile, name, repo, credit, at, period, total, lines, failed } },
-//        names: awsByName's figures per name }
+// include its linked accounts, so a profile another one covers (coveredBy) makes no Cost Explorer
+// request and holds no figures. sources: costs.md's AWS entries. aws(args) -> parsed body.
+//   -> the new `aws`: { at, profiles: { <profile>: { profile, name, repo, credit, account, linked, covered,
+//        at, period, total, lines, failed } }, names: awsByName's figures per name }
 export async function readAws({ sources, last = null, aws = awsCli, now, force = false }) {
+  const had = Object.fromEntries(sources.map((s) => [s.key, last?.profiles?.[s.key]]));
+  const due = Object.fromEntries(sources.map((s) => [s.key, force || profileDue(had[s.key], now)]));
+  const ids = { ...had };
+  for (const s of sources) if (due[s.key]) ids[s.key] = await identify(aws, s.key);
+  const list = knownAccounts(sources, ids);
   const profiles = {};
-  for (const s of sources) {
-    const had = last?.profiles?.[s.key];
-    const base = { profile: s.key, name: s.name, repo: s.repo ?? null, credit: s.credit ?? null };
-    if (!force && !profileDue(had, now)) { profiles[s.key] = { ...had, ...base }; continue; }
+  for (const [i, s] of sources.entries()) {
+    const was = had[s.key];
+    const id = { account: list[i].account, linked: list[i].linked };
+    const base = { profile: s.key, name: s.name, repo: s.repo ?? null, credit: s.credit ?? null, ...id };
+    const by = coveredBy(list[i], list);
+    if (by) { profiles[s.key] = { ...base, covered: by, at: due[s.key] ? now : was?.at ?? now, failed: null }; continue; }
+    if (!due[s.key] && !was?.covered) { profiles[s.key] = { ...was, ...base }; continue; }
     const period = readingPeriod(now);
     try {
       const lines = awsLines(await costAndUsage(aws, s.key, period));
-      profiles[s.key] = { ...base, at: now, period, total: totalOf(lines), lines, failed: null };
+      profiles[s.key] = { ...base, covered: null, at: now, period, total: totalOf(lines), lines, failed: null };
     } catch (e) {
-      const keep = had?.lines ? { at: had.at, period: had.period, total: had.total, lines: had.lines } : {};
-      profiles[s.key] = { ...base, ...keep, failed: { at: now, why: e.message || String(e) } };
+      const keep = was?.lines ? { at: was.at, period: was.period, total: was.total, lines: was.lines } : {};
+      profiles[s.key] = { ...base, covered: null, ...keep, failed: { at: now, why: e.message || String(e) } };
     }
   }
   return { at: now, profiles, names: awsByName({ profiles }, readingPeriod(now)) };
@@ -385,13 +427,14 @@ export async function readAws({ sources, last = null, aws = awsCli, now, force =
 
 // The AWS figures per name for one period, its profiles' lines merged by service. A profile whose
 // last good figures are from another month is left out of the total and named under stale; one whose
-// last attempt failed is named under failed.
-//   -> { <name>: { repo, period, profiles: [profile], stale: [profile], failed: [profile], total, lines } }
+// last attempt failed is named under failed; one another profile covers, under covered with that profile.
+//   -> { <name>: { repo, period, profiles: [profile], stale: [profile], failed: [profile], covered: [{ profile, by }], total, lines } }
 export function awsByName(aws, period) {
   const out = {};
   for (const p of Object.values(aws?.profiles ?? {})) {
-    const n = (out[p.name] ??= { repo: p.repo, period, profiles: [], stale: [], failed: [], total: 0, lines: [] });
+    const n = (out[p.name] ??= { repo: p.repo, period, profiles: [], stale: [], failed: [], covered: [], total: 0, lines: [] });
     n.profiles.push(p.profile);
+    if (p.covered) { n.covered.push({ profile: p.profile, by: p.covered }); continue; }
     if (p.failed) n.failed.push(p.profile);
     if (p.lines && !samePeriod(p.period, period)) { n.stale.push(p.profile); continue; }
     for (const l of p.lines ?? []) {
@@ -544,8 +587,19 @@ const creditMoved = (s, rec) => rec != null && JSON.stringify(rec.credit ?? null
 const DUE = {
   github: hourly,
   vercel: hourly,
-  aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now) || creditMoved(s, had?.profiles?.[s.key])),
+  aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now) || creditMoved(s, had?.profiles?.[s.key]))
+    || uncovered(sources, had?.profiles),
 };
+
+// The cache as costs.md has it now: a profile removed from costs.md is dropped from AWS, and its
+// names recounted, whether or not AWS has been read since.
+export function forCosts(cache, costs) {
+  if (!cache?.aws || !costs?.exists) return cache;
+  const keys = new Set(sourcesOf(costs).aws.map((s) => s.key));
+  const profiles = Object.fromEntries(Object.entries(cache.aws.profiles ?? {}).filter(([k]) => keys.has(k)));
+  if (Object.keys(profiles).length === Object.keys(cache.aws.profiles ?? {}).length) return cache;
+  return { ...cache, aws: { ...cache.aws, profiles, names: awsByName({ profiles }, readingPeriod(cache.aws.at)) } };
+}
 const NOT_DUE = { github: 'read under an hour ago', vercel: 'read under an hour ago', aws: 'every profile read today, or failed under an hour ago' };
 
 // The suppliers with sources that are due. Workers running or not makes no difference.
@@ -599,6 +653,6 @@ const isMain = (() => {
 if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);
   if (cmd === 'refresh') console.log(JSON.stringify(await refresh({ force: rest.includes('--force') })));
-  else if (cmd === 'show') console.log(JSON.stringify(readCache(), null, 2));
+  else if (cmd === 'show') console.log(JSON.stringify(forCosts(readCache(), readCosts(E.costsPath())), null, 2));
   else { console.error('usage: cost-cache.mjs refresh [--force] | show'); process.exit(2); }
 }
