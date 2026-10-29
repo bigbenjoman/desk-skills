@@ -13,6 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { baseFixKey } from './desk-env.mjs';
 
 const git = (cwd, args) => {
   try { return { ok: true, out: execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
@@ -20,7 +21,7 @@ const git = (cwd, args) => {
 };
 const firstLine = (s) => String(s).split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
-export const baseWorktreePath = (worktreesDir, base) => join(worktreesDir, `base-${base.replace(/[^A-Za-z0-9._-]/g, '-')}`);
+export const baseWorktreePath = (worktreesDir, base) => join(worktreesDir, baseFixKey(base));
 
 // -> { ok: true, path, made } | { ok: false, path, why }
 export function ensureBaseWorktree({ main, worktrees, base }) {

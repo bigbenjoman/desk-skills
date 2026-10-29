@@ -177,4 +177,7 @@ the end of the batch:
 - **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft (put back, as above, if
   it had left draft), while children keep
   spawning and merging into the base. The fix goes onto the base; the gate runs again on the first
-  pass after the base moves (or at once after `queue.mjs set-batch gate=null`).
+  pass after the base moves (or at once after `queue.mjs set-batch gate=null`). A gate that failed
+  only because merging §0 Default branch in conflicted is not yours: the pass hands the conflict to
+  the base's conflict fix worker (`feature-branch.md`), the gate waits while it runs, and the conflict
+  reaches `WAITING ON YOU` only once that worker may not take it or its tries are spent.

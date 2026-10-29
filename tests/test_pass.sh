@@ -1193,6 +1193,12 @@ cat > "$T/config-f.md" <<EOF
 | Key | Capability | Recommended | Your setting |
 |---|---|---|---|
 | \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+| \`pr-conflict-unreviewed\` | Resolve a merge conflict on your PR before any human has reviewed it | \`yes\` | \`yes\` |
+
+## 1. Identity
+| Field | Value |
+|---|---|
+| GitHub handle | \`me\` |
 
 ## 4. Checks
 | Field | Value |
@@ -1211,7 +1217,13 @@ fx(){
 reran(){ printf '%s\n' "${@:3}" "${@:3}" > "$T/state-f/merge-driver/reruns-$1-$2"; }   # reran <n> <head> <check>...: two reruns each
 H1=1111111111111111111111111111111111111111; H2=2222222222222222222222222222222222222222; H3=3333333333333333333333333333333333333333
 q init f; q set-batch concurrency=5
-for k in 1 2 3 4 5; do q add "F-$k"; q set "F-$k" state=done lane=A "branch=fix/F-$k"; done
+for k in 1 2 3 4 5 6 7; do q add "F-$k"; q set "F-$k" state=done lane=A "branch=fix/F-$k"; done
+# F-6 and F-7 conflict too. A person has commented on F-6, under §3 pr-conflict-reviewed (unset, so
+# no); only the user's own handle and a bot have on F-7, so pr-conflict-unreviewed (yes) is read.
+q set F-6 result.pr=705; fx 705 "$H1" CONFLICTING tests:SUCCESS
+q set F-7 result.pr=706; fx 706 "$H1" CONFLICTING tests:SUCCESS
+withComments(){ node -e 'const [f, ...logins] = process.argv.slice(1); const v = JSON.parse(require("fs").readFileSync(f, "utf8")); v.comments = logins.map((login) => ({ author: { login }, body: "x" })); require("fs").writeFileSync(f, JSON.stringify(v))' "$@"; }
+withComments "$T/fx/705.json" reviewer; withComments "$T/fx/706.json" Me "vercel[bot]"
 q set F-1 result.pr=697; fx 697 "$H1" MERGEABLE tests:SUCCESS "Backend tests:FAILURE:901" Lint:FAILURE:902; reran 697 "$H1" "Backend tests" Lint
 q set F-2 result.pr=704; fx 704 "$H1" CONFLICTING tests:SUCCESS
 q set F-3 result.pr=696; fx 696 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903"
@@ -1226,6 +1238,10 @@ check "DS-278 AC6 red only on a check no worker can fix: never requeued, stuck w
   '[ "$(field F-3 state)" = "\"done\"" ] && [ "$(field F-3 fix)" = null ] && [ "$(field F-3 stuck.why)" = "\"Flows image missing · build it: ensure-flows-image.sh\"" ]'
 check "DS-278 AC6 and it is put to the person" 'echo "$out" | grep -q "F-3: STUCK — PR #696: Flows image missing · build it: ensure-flows-image.sh"'
 check "DS-278 AC7 red on both: requeued for the fixable check only" '[ "$(field F-4 state)" = "\"triaged\"" ] && [ "$(field F-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field F-4 fix.not_mine | jq -r ".[0].name")" = "Flows image missing" ]'
+check "DS-320 AC5 a conflict a person commented on reads pr-conflict-reviewed: not requeued, put to the person" \
+  '[ "$(field F-6 state)" = "\"done\"" ] && [ "$(field F-6 fix)" = null ] && echo "$out" | grep -q "F-6: CONFLICT — PR #705 is out of draft and conflicts with main, and config §3 pr-conflict-reviewed is \"no\", so no fix worker resolves it"'
+check "DS-320 AC5 the user's own handle and a bot do not count as reviewed: pr-conflict-unreviewed requeues it" \
+  '[ "$(field F-7 state)" = "\"triaged\"" ] && [ "$(field F-7 fix.kind)" = "\"conflict\"" ]'
 
 # The next pass spawns the fix workers, each given the fix as its task and in its briefing.
 out=$(node "$B/pass.mjs" 2>&1)

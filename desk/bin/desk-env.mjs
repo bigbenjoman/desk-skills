@@ -25,7 +25,7 @@
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
 //   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
-//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|issue|slug, exit 2 if the id is not accepted
+//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|issue|slug, exit 2 if the id is not accepted
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no),
 //                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
@@ -821,6 +821,9 @@ export function applyBatchBase() {
   process.env.DESK_DEFAULT_BRANCH = b;
   return b;
 }
+// The id a batch base's conflict fix worker runs under: its base worktree's directory name
+// (base-sync.mjs baseWorktreePath), so its log, settings and ticket file sit beside the tickets'.
+export const baseFixKey = (base) => `base-${String(base).replace(/[^A-Za-z0-9._-]/g, '-')}`;
 export const skillsDir = () => expandHome(process.env.DESK_SKILLS_DIR ?? join(HOME, '.agents', 'skills'));
 export const lockDir = () => expandHome(process.env.DESK_LOCK_DIR ?? '/tmp');
 // Claude Code keys a project's memory dir by the absolute cwd with every non-alphanumeric char as `-`.
@@ -943,6 +946,12 @@ export function ticketKind(key) {
   if (pattern && !isNone(pattern) && fullMatch(pattern, k)) return { ok: true, kind: 'tracker' };
   const others = configValues('work-id-patterns');
   if (others && !isNone(others) && others.some((p) => fullMatch(p, k))) return { ok: true, kind: 'work-id' };
+  // This batch's base, worked by its conflict fix worker. A queue that cannot be read has no base.
+  if (k.startsWith('base-')) {
+    let b = null;
+    try { b = batchBase(); } catch { /* no usable base */ }
+    if (b && k === baseFixKey(b)) return { ok: true, kind: 'base' };
+  }
   if (/^none\b/.test(tracker)) {
     if (/^issue-[0-9]+$/.test(k)) return { ok: true, kind: 'issue' };
     if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(k)) return { ok: true, kind: 'slug' };

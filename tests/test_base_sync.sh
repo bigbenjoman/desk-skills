@@ -25,10 +25,11 @@ for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln 
 cat > "$T/desk/bin/setup-worktree.sh" <<'EOF'
 mkdir -p "$DESK_WORKTREES_DIR/$2"; echo "[setup-worktree] worktree=$DESK_WORKTREES_DIR/$2"; echo "[setup-worktree] branch=$3"
 EOF
-cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
-if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket=$1"; fi
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
 EOF
-printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
+# The session registry: $T/agents.json when it exists, else empty.
+printf '#!/bin/sh\ncat "%s/agents.json" 2>/dev/null || echo "[]"\n' "$T" > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 # git, but the first push to feat/x first moves origin's feat/x on (what the merge driver does when it
 # merges a PR into the base between the sync's fetch and its push). Armed by $T/race.arm, which holds the clone to push from.
@@ -130,6 +131,58 @@ check "a conflict needs the person"                  '[ $rc -eq 11 ]'
 # AC6: in feature mode a conflict spawns nothing.
 fresh fconflict; feature; conflict; pass
 check "feature mode: a conflict spawns nothing"      '[[ "$out" != *"spawned:"* ]] && [[ "$out" == *"feature mode, so nothing spawns this pass"* ]]'
+check "DS-320 AC5 pr-conflict-unreviewed unset: no conflict fix worker starts" '! grep -q "^base-" "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
+
+# DS-320: where §3 pr-conflict-unreviewed is yes, a base conflict goes to a conflict fix worker in the
+# base worktree. fixrow <value> adds the row; ended <marker line> writes the worker's last turn.
+fixrow(){ printf '| `pr-conflict-unreviewed` | Resolve a merge conflict before any human has reviewed it | `yes` | `%s` |\n' "$1" >> "$C/config.md"; }
+ended(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv[1] }] } })); console.log(JSON.stringify({ type: "result" }))' "$1" >> "$C/state/logs/base-feat-x.log"; }
+live(){ jq -n --arg s "$(jq -r .base_fix.running "$DESK_QUEUE")" '[{sessionId: $s, pid: 1}]' > "$T/agents.json"; }
+# resolve: what the worker does, from a clone: merge main into feat/x, keep both sides, push.
+resolve(){
+  git clone -q "$C/origin.git" "$C/fixer"; git -C "$C/fixer" switch -q feat/x
+  git -C "$C/fixer" merge -q --no-edit origin/main >/dev/null 2>&1; printf 'ours\ntheirs\n' > "$C/fixer/a.txt"
+  git -C "$C/fixer" add a.txt; git -C "$C/fixer" commit -q --no-edit; git -C "$C/fixer" push -q origin feat/x
+}
+rm -f "$T/agents.json"; : > "$T/spawns"
+fresh bfix; feature; fixrow yes; conflict; tip=$(origin_tip); pass
+check "DS-320 AC1 a pass that would spawn starts a conflict fix worker for the base" \
+  '[[ "$out" == *"base-feat-x port="*"(conflict fix try 1 of 2 on feat/x)"* ]] && grep -q "^base-feat-x $C/wt/base-feat-x feat/x .*Your task is conflict fix try 1 of 2 on feat/x" "$T/spawns"'
+check "DS-320 AC1 it is told to merge, never rebase, and to push the base" 'grep -q "merge origin/main into feat/x (git merge, never a rebase or a force push)" "$T/spawns" && grep -q "git push origin feat/x" "$T/spawns"'
+check "DS-320 AC1 and the conflict is not put to the person" '[[ "$out" != *"by hand"* ]] && [ $rc -ne 11 ]'
+check "DS-320 AC1 feature mode: nothing else spawns until the base is synced" '[ "$(grep -c "^T-1 " "$T/spawns")" = 0 ] && [[ "$out" == *"Conflict fix try 1 of 2 starts this pass"* ]]'
+check "DS-320 AC1 the try is kept on the queue, with its files" \
+  '[ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r ".base_fix.tries[0].files[0]" "$DESK_QUEUE")" = a.txt ] && [ "$(jq -r ".base_fix.tries[0].head" "$DESK_QUEUE")" = "$tip" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ]'
+check "DS-320 AC1 its ticket file and briefing name the files" \
+  'grep -q "Conflicting files: a.txt" "$C/state/tickets/base-feat-x.md" && grep -q "^## Base conflict fix try 1 of 2: feat/x" "$C/state/briefings/base-feat-x.md" && grep -q "Conflicting files: a.txt" "$C/state/briefings/base-feat-x.md"'
+live; pass
+check "DS-320 while the worker runs: no second try, the base is left to it" \
+  '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]] && [[ "$out" != *"by hand"* ]] && [ "$(origin_tip)" = "$tip" ]'
+check "DS-320 while the worker runs: still nothing else spawns" '[ "$(grep -c "^T-1 " "$T/spawns")" = 0 ]'
+rm -f "$T/agents.json"; resolve; ended "AUTOPILOT_DONE: pr=none jira=none"; pass
+check "DS-320 AC2 the next pass finds the base current and clears the tries" \
+  '[[ "$out" == *"try 1 of 2 on feat/x finished: pr=none jira=none"* ]] && [[ "$out" == *"feat/x is current with main again, after 1 fix try"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
+check "DS-320 AC2 and spawns resume" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && origin_has_main'
+
+# AC4: a try whose worker left the base where it was is the last at that head: the person, with the
+# files and what the try did.
+: > "$T/spawns"; fresh bstuck; feature; fixrow yes; conflict; pass
+ended "AUTOPILOT_PARK: both sides rewrite a.txt and neither can be kept"; pass
+check "DS-320 AC4 a try that left the base where it was: put to the person" \
+  '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"Conflicting files: a.txt. Still in conflict after 1 fix try; the last try parked: both sides rewrite a.txt and neither can be kept: resolve it by hand in $C/wt/base-feat-x and push"* ]]'
+check "DS-320 AC4 and no second try starts" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ]'
+
+# AC3: the base gate met the conflict at the base's head: the same worker takes it, and the gate's
+# failure is not put to the person.
+: > "$T/spawns"; fresh bgate; feature; fixrow yes; conflict; node "$B/queue.mjs" set T-1 state=done >/dev/null
+node "$B/queue.mjs" set-batch "gate={\"state\":\"failed\",\"sha\":\"$(origin_tip)\",\"failures\":[\"merging main into feat/x conflicts (a.txt)\"],\"conflict\":[\"a.txt\"]}" >/dev/null
+pass
+check "DS-320 AC3 a gate that met the conflict starts the conflict fix worker" 'grep -q "^base-feat-x .*conflict fix try 1 of 2 on feat/x" "$T/spawns"'
+check "DS-320 AC3 the gate waits on it, and is not put to the person" \
+  '[[ "$out" == *"BASE GATE: waits on the conflict fix worker on feat/x"* ]] && [[ "$out" != *"WAITING ON YOU"*"BASE GATE"* ]] && [[ "$out" != *"by hand"* ]]'
+live; pass
+check "DS-320 AC3 while it runs, the gate still waits on it" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [[ "$out" == *"BASE GATE: waits on the conflict fix worker on feat/x"* ]]'
+rm -f "$T/agents.json"
 
 # An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4
 # Acceptance specs is unset, so feature mode is off): a failed sync holds no spawns.

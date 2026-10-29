@@ -70,6 +70,11 @@ and its briefing says the other is not the worker's to fix. desk-q shows each ti
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 
+A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
+handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
+`yes`, the rows a batch base's conflict reads too (`feature-branch.md`). Otherwise it goes under
+`WAITING ON YOU` as `CONFLICT`, to resolve on its branch.
+
 When the pass takes a PR out of draft, it comments on it: why it left draft, quoting the clean
 verdict it read on that head.
 
