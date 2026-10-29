@@ -1,6 +1,7 @@
 // A ready batch PR the merge driver cannot merge goes back to a worker on its own branch, at most
 // FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
-// So does a draft whose posted review at its head found a P0 or a P1 (reviewFix), within the same tries.
+// So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
+// yes a requirement gap (reviewFix), within the same tries.
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -65,6 +66,11 @@ export function fixCall(t, s, ctx) {
   return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, ...fix } };
 }
 
+// A line of a posted desk-review body that opens a section: a `###` heading, an all-caps one as the
+// terminal report writes it (`REQUIREMENT GAPS (2)`), or a bold-only line that cites no file:line.
+const isHeading = (text) => /^#{1,6}\s/.test(text) || /^[A-Z][A-Z ]{3,}(\(|$)/.test(text) ||
+  (/^\*\*[^*]+\*\*$/.test(text) && !/[\w./-]+:\d+/.test(text));
+
 // A verdict's P0 and P1 counts, as `1 P0, 2 P1`; '' when it has neither.
 export function reviewCounts(v) {
   return ['p0', 'p1'].filter((k) => Number(v?.[k]) > 0).map((k) => `${Number(v[k])} ${k.toUpperCase()}`).join(', ');
@@ -81,7 +87,7 @@ export function reviewFindings(body) {
     const text = line.trim();
     const own = /^[#>*_\s-]*(P[0-3])\b/.exec(line);
     if (own) sev = own[1];
-    else if (/^#{1,6}\s/.test(text) || /^[A-Z][A-Z ]{3,}(\(|$)/.test(text)) sev = null;
+    else if (isHeading(text)) sev = null;
     if (sev !== 'P0' && sev !== 'P1') continue;
     if (text.startsWith('—') && found.length) { found[found.length - 1].text += ` ${text}`; continue; }
     if (/[\w./-]+:\d+/.test(text)) found.push({ sev, text });
@@ -111,28 +117,57 @@ const owns = (text, at) => {
   return m != null && m.index + m[1].length <= (/[\w./-]+:\d+/.exec(text)?.index ?? Infinity);
 };
 
+// The requirement gaps a posted desk-review body lists, one string each: the items under a heading
+// naming requirement gaps (`### Requirement gaps`, or `REQUIREMENT GAPS (n)` as the terminal report
+// writes it), up to the next heading. A line indented deeper than the item above continues it, and an
+// `UNVERIFIED CODE CLAIM` or a `None` is no gap.
+export function reviewGaps(body) {
+  const gaps = [];
+  let inGaps = false;
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    const text = line.trim();
+    if (!text) continue;
+    if (isHeading(text)) { inGaps = /requirement gaps?\b/i.test(text); continue; }
+    if (!inGaps) continue;
+    const item = text.replace(/^[-*]\s+/, '');
+    if (/^\s{2,}/.test(line) && gaps.length) gaps[gaps.length - 1] += ` ${item}`;
+    else gaps.push(item);
+  }
+  return gaps.filter((g) => !/UNVERIFIED CODE CLAIM/.test(g) && !/^none\b/i.test(g));
+}
+
+const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
+
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
-// found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Only P2s
-// and gaps are left as they are (null), and so is a review that lists no P0 or P1 with its file:line
-// in its body or its inline comments: the person settles those. An inline finding the body also
-// lists at the same file:line is quoted once, from the body.
+// found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Where
+// config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
+// call the worker may make and record, or park when it needs a product or another person's ruling.
+// P2s are left as they are (null), and so is a review that counts a P0 or P1 but lists none with its
+// file:line in its body or its inline comments, or counts only gaps and lists none under its gaps
+// heading: the person settles those.
+// An inline finding the body also lists at the same file:line is quoted once, from the body.
 // review: { pr, head, verdict, body, comments } (comments as inlineFindings reads them, or a function
 // returning them, called only once a try is left; null when they could not be read, so only the body
 // counts).
-export function reviewFix(t, review) {
+export function reviewFix(t, review, opts = {}) {
   const counts = reviewCounts(review.verdict);
-  if (!counts || !review.head) return null;
+  const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
+  const what = [counts, gapsOpen ? gapCount(gapsOpen) : ''].filter(Boolean).join(', ');
+  if (!what || !review.head) return null;
   const done = t.fix_tries ?? [];
   if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === review.head)) {
-    return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${counts}` };
+    // The review at this head is the last try's own, so its gaps say why each is still open.
+    const left = gapsOpen ? reviewGaps(review.body) : [];
+    return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${what}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
-  const listed = reviewFindings(review.body);
-  const comments = typeof review.comments === 'function' ? review.comments() : review.comments;
+  const listed = counts ? reviewFindings(review.body) : [];
+  const comments = !counts ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  if (!findings.length) return null;
+  const gaps = gapsOpen ? reviewGaps(review.body) : [];
+  if (counts ? !findings.length : !gaps.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${counts}`, verdict, findings } };
+  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
 }
 
 // The fix worker's briefing section, while its try is open.
@@ -144,15 +179,28 @@ export function fixBrief(t) {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
   } else if (f.kind === 'review') {
-    lines.push(`Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean (\`${f.verdict}\`). Fix each P0 and P1 finding it lists:`, '');
-    for (const x of f.findings ?? []) lines.push(`- ${x.sev}: ${x.text}`);
-    lines.push('', 'Its P2 findings are not part of this try.');
+    lines.push(`Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean (\`${f.verdict}\`).`);
+    if (f.findings?.length) {
+      lines.push('Fix each P0 and P1 finding it lists:', '');
+      for (const x of f.findings) lines.push(`- ${x.sev}: ${x.text}`);
+      lines.push('');
+    }
+    if (f.gaps?.length) {
+      lines.push('Close each requirement gap it lists. Config §3 autopilot-judgement is yes, so an engineering call a gap needs is yours to make: change the code so the criterion holds, or, where the code should stand as it is, say why. ' +
+        'Log each call with an AUTOPILOT_DECISION line, list it under Decisions taken in the PR body (desk-pr), and comment it on the ticket (worker contract Stage 8). ' +
+        'A call that leaves the code as it is still needs a new head for the fresh review to read it: commit it on its own with git commit --allow-empty, the call and its reason as the message. ' +
+        'A gap that needs a product ruling or another person\'s, as the worker contract\'s Ask or take sorts it (an ask category such as a fact only the person holds, a call you have no recommendation for, or one a person has already ruled on the ticket), is not yours: park with that question (AUTOPILOT_PARK).', '');
+      for (const g of f.gaps) lines.push(`- Gap: ${g}`);
+      lines.push('');
+    }
+    lines.push('Its P2 findings are not part of this try.');
   } else {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
     for (const c of f.checks) lines.push(`- ${c.name}: ${c.url ?? 'no run URL reported'}`);
     for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}. A person runs that; leave it red.`);
   }
-  lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${f.kind === 'review' ? 'with a P0 or P1 in its review' : 'red or in conflict'} after try ${f.of} goes to the person.`, '');
+  const left = f.kind !== 'review' ? 'red or in conflict' : `with a P0 or P1${f.gaps?.length ? ' or a gap' : ''} in its review`;
+  lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
 
@@ -162,12 +210,14 @@ export function fixTask(t) {
   const review = f.kind === 'review';
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
-    : review ? 'fix each P0 and P1 finding it quotes, and nothing else'
+    : review ? (f.gaps?.length
+      ? `${f.findings?.length ? 'fix each P0 and P1 finding it quotes and ' : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
+      : 'fix each P0 and P1 finding it quotes, and nothing else')
       : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     `Your task is fix try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. ` +
     `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
-    `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+    `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
 }

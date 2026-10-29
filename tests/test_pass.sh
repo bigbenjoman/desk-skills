@@ -1335,6 +1335,48 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-299 AC1 the fix worker's briefing quotes the inline finding with its file and line" \
   'grep -q "^- P1: src/tax.ts:40 VAT applied twice$" "$T/state-ri/briefings/I-1.md"'
 
+# ---- under §3 autopilot-judgement yes, a review with only requirement gaps goes to a fix worker too
+# frg <pr> <head> <sha> <gaps> [none]: a draft whose review at <sha> counts <gaps> gaps and lists one,
+# or none with `none`.
+frg(){
+  node -e 'const [dir, n, head, sha, gaps, none] = process.argv.slice(1);
+    const listed = none ? ["None."] : ["- **AC2**, \"no slot is handed to both.\"", "  - This holds only while the borrow lock is held."];
+    const body = ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${gaps} unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", "", "### Findings", "None.", "", "### Requirement gaps", ...listed, "", "### Scope", "- No out-of-scope hunks."].join("\n");
+    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, body: "## Summary",
+      reviews: [{ id: `PRR_${n}`, author: { login: "ben" }, body }], statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }))' "$T/fr" "$@"
+}
+node -e 'const fs = require("fs"); const [from, to] = process.argv.slice(1);
+  fs.writeFileSync(to, fs.readFileSync(from, "utf8").replace(/(\| `pr-ready` .*\n)/, "$1| `autopilot-judgement` | Take calls outside the ask categories | `yes` | `yes` |\n"))' "$T/config-r.md" "$T/config-g.md"
+GAP='**AC2**, "no slot is handed to both." This holds only while the borrow lock is held.'
+export DESK_CONFIG="$T/config-g.md" DESK_QUEUE="$T/queue-rg.json" DESK_AUTOPILOT_STATE="$T/state-rg"
+mkdir -p "$T/state-rg/logs"
+q init rg; q set-batch concurrency=5
+for k in 1 2 3; do q add "G-$k"; q set "G-$k" state=done lane=A "branch=fix/G-$k" "result.pr=74$k"; done
+frg 741 "$H1" "$H1" 1
+frg 742 "$H1" "$H1" 1 none
+q set G-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"review"},{"try":2,"head":"'"$H1"'","kind":"review"}]'; frg 743 "$H2" "$H2" 1
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-319 AC1 a draft whose review at its head has only a gap is requeued once for a fix worker" \
+  '[ "$(field G-1 state)" = "\"triaged\"" ] && [ "$(field G-1 fix.kind)" = "\"review\"" ] && [ "$(field G-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: G-1 requeued for PR #741 — review not clean: 1 gap"'
+check "DS-319 AC1 the gap is quoted from the review" '[ "$(field G-1 fix.gaps | jq -r ".[0]")" = "$GAP" ]'
+check "DS-319 AC1 and it is not put to the person, nor undrafted" '! echo "$out" | grep -q "G-1: DRAFT" && ! grep -q "^pr ready 741" "$T/gh-calls"'
+check "DS-319 a review counting a gap it does not list stays draft for the person" \
+  '[ "$(field G-2 state)" = "\"done\"" ] && [ "$(field G-2 fix)" = null ] && echo "$out" | grep -q "G-2: DRAFT — PR #742 stays draft: its review verdict at 111111111 is not clean (gaps=1). Settle the findings or gaps on #742"'
+check "DS-319 AC5 after 2 fix tries it is recorded stuck, with the gap the last try's review gives" \
+  '[ "$(field G-3 state)" = "\"done\"" ] && [ "$(field G-3 stuck.why | jq -r .)" = "review not clean after 2 fix tries: 1 gap — $GAP" ] && echo "$out" | grep -qF "G-3: STUCK — PR #743: review not clean after 2 fix tries: 1 gap — $GAP"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-319 AC2 the fix worker's task closes the gap and reviews the new head again" \
+  'grep -q "^G-1 .*Your task is fix try 1 of 2 on PR #741.*close each requirement gap it quotes.*review the new head with desk-review and post that review on the PR" "$T/spawns"'
+check "DS-319 AC1 its briefing quotes the gap" 'grep -qxF -- "- Gap: $GAP" "$T/state-rg/briefings/G-1.md"'
+# Without autopilot-judgement yes the same review is the person's, as today.
+export DESK_CONFIG="$T/config-r.md" DESK_QUEUE="$T/queue-rn.json" DESK_AUTOPILOT_STATE="$T/state-rn"
+mkdir -p "$T/state-rn/logs"
+q init rn; q set-batch concurrency=5
+q add N-1; q set N-1 state=done lane=A branch=fix/N-1 result.pr=751; frg 751 "$H1" "$H1" 1
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-319 AC4 without autopilot-judgement yes, a gap-only review stays draft for the person" \
+  '[ "$(field N-1 state)" = "\"done\"" ] && [ "$(field N-1 fix)" = null ] && [ "$(field N-1 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "N-1: DRAFT — PR #751 stays draft: its review verdict at 111111111 is not clean (gaps=1). Settle the findings or gaps on #751"'
+
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"

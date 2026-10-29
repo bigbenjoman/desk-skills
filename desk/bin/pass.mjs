@@ -1622,7 +1622,7 @@ if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
     perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true,
-    localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'),
+    localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
     ...gateLists(),
   };
@@ -1637,14 +1637,15 @@ if (drafts.length) {
     const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
-    // A P0 or P1 in the review at its head goes back to a fix worker, which reviews its new head again.
+    // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
+    // fix worker, which reviews its new head again.
     // An interactive desk-review posts its P0s and P1s inline: unread, they leave only the body's.
     const comments = () => {
       const r = reviewComments(c.reviewId);
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }) : null;
+    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement }) : null;
     if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
