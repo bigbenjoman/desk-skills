@@ -387,7 +387,7 @@ const knownIdentity = (got, was) => {
 // The profile whose figures already hold p's account, under any name: the organisation that links
 // it, else an earlier profile that signs in to the same account. list: [{ profile, name, account, linked }]
 //   -> profile | null
-export function coveredBy(p, list) {
+function coveredBy(p, list) {
   if (!p?.account) return null;
   const peers = list.filter((q) => q.profile !== p.profile && q.account);
   const org = peers.find((q) => q.linked?.includes(p.account));
