@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
+import { namedBatches } from './batches.mjs';
 
 // A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
 // desk-q through liveBeat, which also counts a recorded next pass still to come.
@@ -73,19 +74,23 @@ export function lastBeat(stateDir, queuePath) {
 export const liveBeat = (beat, now = Date.now()) => beat != null
   && (now - beat.at < LIVE_MS || (beat.next != null && now < beat.next + PASS_GRACE_MS));
 
-// Every other repo's queue under $DESK_HOME/repos, read and never written, in slug order: each is
-// { slug, path, q } or { slug, path, error } for one that cannot be read or is not a queue.
+// Every batch's queue under $DESK_HOME/repos but `self`, read and never written: each repo's standing
+// batch, then its named batches (this repo's own included), in slug order. Each is
+// { slug, batch, path, q } or { slug, batch, path, error } for one that cannot be read or is not a
+// queue, `batch` null for a standing batch.
 export function otherQueues({ self, home = E.deskHome() } = {}) {
   const dir = join(home, 'repos');
   const out = [];
   for (const slug of existsSync(dir) ? readdirSync(dir).sort() : []) {
-    const path = join(dir, slug, 'queue.json');
-    if ((self && resolve(path) === resolve(self)) || !existsSync(path)) continue;
-    try {
-      const q = readJsonOrRefuse(path, 'restore it, or start a new batch there');
-      if (q == null || typeof q !== 'object' || Array.isArray(q)) throw new Error(`${path} is not a queue (it holds ${Array.isArray(q) ? 'a list' : String(q)}): restore it, or start a new batch there`);
-      out.push({ slug, path, q });
-    } catch (e) { out.push({ slug, path, error: describeCrash(e) }); }
+    const batches = [[null, join(dir, slug, 'queue.json')], ...namedBatches(join(dir, slug)).map((b) => [b, join(dir, slug, E.BATCHES_DIR, b, 'queue.json')])];
+    for (const [batch, path] of batches) {
+      if ((self && resolve(path) === resolve(self)) || !existsSync(path)) continue;
+      try {
+        const q = readJsonOrRefuse(path, 'restore it, or start a new batch there');
+        if (q == null || typeof q !== 'object' || Array.isArray(q)) throw new Error(`${path} is not a queue (it holds ${Array.isArray(q) ? 'a list' : String(q)}): restore it, or start a new batch there`);
+        out.push({ slug, batch, path, q });
+      } catch (e) { out.push({ slug, batch, path, error: describeCrash(e) }); }
+    }
   }
   return out;
 }
@@ -108,7 +113,7 @@ export function machineBudget({ running, wanted = 0, machine = machineCap(), que
   for (const o of queues) {
     if (o.error) {
       const counted = E.concurrencyLimits(E.repoConfigValue(o.slug, 'concurrency')).cap;
-      why += `; ${repoName(o.slug)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
+      why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
       all += counted;
     } else all += Object.values(o.q.tickets ?? {}).filter((t) => t?.state === 'running').length;
   }
@@ -122,15 +127,16 @@ export function machineBudget({ running, wanted = 0, machine = machineCap(), que
 // A ticket another batch could start now: triaged, with no question open, and not held.
 const isReady = (t) => t?.state === 'triaged' && (t.open_questions ?? 0) === 0 && !isHeld(t);
 
-// What borrowing needs from each other queue: { slug, live, running, ready, share }, or
-// { slug, error }.
+// What borrowing needs from each other queue: { slug, batch, live, running, ready, share }, or
+// { slug, batch, error }.
 export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stateRoot = join(E.HOME, '.desk-autopilot'), queues = otherQueues({ self, home }) } = {}) {
-  return queues.map(({ slug, path, q, error }) => {
-    if (error) return { slug, error };
+  return queues.map(({ slug, batch = null, path, q, error }) => {
+    if (error) return { slug, batch, error };
     const tickets = Object.values(q.tickets ?? {});
-    const last = lastBeat(join(stateRoot, slug), path)?.at ?? null;
+    const last = lastBeat(join(stateRoot, slug, ...(batch ? [E.BATCHES_DIR, batch] : [])), path)?.at ?? null;
     return {
       slug,
+      batch,
       live: last != null && now - last < LIVE_MS,
       running: tickets.filter((t) => t?.state === 'running').length,
       ready: tickets.filter(isReady).length,
@@ -140,6 +146,7 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
 }
 
 const repoName = (slug) => slug.replace('__', '/');
+const queueName = (o) => (o.batch ? `${repoName(o.slug)} batch ${o.batch}` : repoName(o.slug));
 const workers = (n) => `${n} worker${n === 1 ? '' : 's'}`;
 
 // How many workers this pass may start, and the report line that says why.
@@ -190,7 +197,7 @@ export function borrowPlan({ on, share, cap, running, wanted, others = [], machi
   if (wanted <= own) return plan(above ? `borrowing: ${where}: nothing more is ready` : null);
   if (running + own >= cap) return plan(`borrowing: ${where}: it is at its §3b cap of ${cap}`);
   if (claims.length && room - own > 0) {
-    return plan(`borrowing: ${where}: ${claims.map((o) => `${repoName(o.slug)} has first claim on the free slots (${o.ready} ready, ${o.running} of its ${o.share} running)`).join('; ')} (${count})`);
+    return plan(`borrowing: ${where}: ${claims.map((o) => `${queueName(o)} has first claim on the free slots (${o.ready} ready, ${o.running} of its ${o.share} running)`).join('; ')} (${count})`);
   }
   return plan(`borrowing: ${where}: no free machine slot (${count})`);
 }

@@ -131,6 +131,34 @@ repo('acme__nul', { raw: 'null' });
 p = plan('acme__a', { share: 2, running: 1, wanted: 3 });
 t('AC7 a queue that parses to something other than a queue is unreadable too, not a crash', p.slots === 1 && p.line.includes(`${queuePath('acme__nul')} is not a queue`), true);
 
+// DS-305: a named batch's queue sits beside its repo's standing one, in batches/<name>/queue.json.
+const named = (slug, name, raw) => {
+  const q = join(env.DESK_HOME, 'repos', slug, 'batches', name, 'queue.json');
+  mkdirSync(dirname(q), { recursive: true });
+  writeFileSync(q, raw);
+  return q;
+};
+const listed = (self) => B.otherQueues({ self }).map((o) => `${o.slug}:${o.batch ?? '-'}${o.error ? ' unreadable' : ''}`).join(' ');
+const budget = (self, running) => B.machineBudget({ running, machine: 10, queues: B.otherQueues({ self }) }).line;
+fresh();
+repo('acme__a', { share: 2, running: 1 });
+repo('acme__b', { running: 2 });
+t('DS-305 AC5 with only standing batches, each repo\'s queue is listed as before', listed(queuePath('acme__a')), 'acme__b:-');
+t('DS-305 AC5 and the machine budget is unchanged', budget(queuePath('acme__a'), 1), 'machine budget: 3 of the machine\'s 10 worker(s) running across every repo');
+const x1 = named('acme__a', 'X-1', JSON.stringify({ tickets: { 'X-2': { key: 'X-2', state: 'running' }, 'X-3': { key: 'X-3', state: 'running' }, 'X-4': { key: 'X-4', state: 'triaged' } } }));
+mkdirSync(join(env.DESK_HOME, 'repos', 'acme__a', 'batches', '.done', 'X-0'), { recursive: true });
+t('DS-305 this repo\'s named batch is listed beside the other repo, an archived one is not', listed(queuePath('acme__a')), 'acme__a:X-1 acme__b:-');
+t('DS-305 AC2 the machine budget counts the workers of both batches', budget(queuePath('acme__a'), 1), 'machine budget: 5 of the machine\'s 10 worker(s) running across every repo');
+t('DS-305 AC2 and from inside the named batch, the standing batch is the other one', `${listed(x1)} | ${budget(x1, 2)}`,
+  'acme__a:- acme__b:- | machine budget: 5 of the machine\'s 10 worker(s) running across every repo');
+const xbeat = join(env.HOME, '.desk-autopilot', 'acme__a', 'batches', 'X-1', 'orchestrators');
+mkdirSync(xbeat, { recursive: true });
+writeFileSync(join(xbeat, 'q.json'), JSON.stringify({ queue: x1, batch: 'X-1', pid: 1, at: minsAgo(1) }));
+const xo = B.otherBatches({ self: queuePath('acme__b'), now: NOW }).find((o) => o.batch === 'X-1');
+t('DS-305 borrowing reads a named batch\'s heartbeat from its own state directory', `${xo.live} ${xo.running}`, 'true 2');
+named('acme__b', 'Y-1', '{ not json');
+t('DS-305 an unreadable named batch\'s queue is named and counted at its repo\'s cap', /acme\/b batch Y-1's queue cannot be read \(.*batches\/Y-1\/queue\.json is not valid JSON.*\), so it counts at its cap of 4 workers/.test(budget(queuePath('acme__a'), 1)), true);
+
 // AC8: borrowing off, which is the default.
 t('AC8 the row is off when unset', B.borrowSetting(null).on, false);
 t('a row that is neither on nor off is said and read as off', B.borrowSetting('yes please').on === false && /Borrow idle workers" is "yes please"/.test(B.borrowSetting('yes please').bad), true);
