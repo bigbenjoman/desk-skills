@@ -198,7 +198,6 @@ export const PERMISSION_KEYS = Object.freeze({
   'batch-base-push': 'batch-base-push',
   'autopilot-judgement': 'autopilot-judgement',
   'autopilot-reclaim': 'autopilot-reclaim',
-  'autopilot-usage-resume': 'autopilot-usage-resume',
   'machine-reboot': 'machine-reboot',
   'worker-dependency-install': 'worker-dependency-install',
   'worker-screenshots': 'worker-screenshots',

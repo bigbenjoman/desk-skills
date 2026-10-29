@@ -190,7 +190,6 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
 | `autopilot-judgement` | Take the recommendation on any call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) and log it, instead of parking; ask-category calls and other people's rulings still stop | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
-| `autopilot-usage-resume` | Let a worker that reaches the 5-hour usage limit wait for the reset and carry on, spending the next usage window | `no` | `TODO` |
 | `machine-reboot` | Restart this computer at the end of the §3b Maintenance window, once it has drained, updated desk-skills and the reboot check found no blocker | `ask` | `TODO` |
 | `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
 | `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
@@ -203,9 +202,6 @@ worker's own worktree, every other worktree denied, toolchain allow-listed) or `
 `autopilot-merge` can be `yes` only if `pr-merge-green` is.
 `batch-base-push` unset reads as `ask`: one approval per batch, asked at Stage 3 and passed to
 `pass.mjs` as `AUTOPILOT_BASE_PUSH_APPROVED=1`.
-`autopilot-usage-resume` is `yes` or `no`, and unset reads as `no`: `pass.mjs` stops a worker at the
-5-hour usage limit and parks it with the reset time. At `yes` the pass reports it as paused until the
-reset, and the batch notes record each resume.
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
 puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
 FileVault on, `yes` does as `ask` does: a restarted Mac waits at the unlock screen until you log in.

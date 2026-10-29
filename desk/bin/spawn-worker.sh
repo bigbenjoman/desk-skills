@@ -155,11 +155,13 @@ $CHECKS" \
         for (const l of r ? [] : s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
         const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
         if (process.argv[1] === "cost") console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
+        else if (process.argv[1] === "limit") console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
         else process.stdout.write(r && typeof r.result === "string" ? r.result : s);
       });' "$1" || true
   }
   PRE_COST="$(read_raw cost)"
   RESULT="$(read_raw reply)"
+  PRE_LIMIT="$(read_raw limit)"
 
   fail=0
   check() { # name expected
@@ -169,6 +171,13 @@ $CHECKS" \
   }
   echo "[preflight] $TICKET"
   echo "[preflight] ${PRE_COST:-cost=unknown turns=unknown}"
+  # Refused at the usage limit, the call answered no check: say so once, rather than a FAIL per check
+  # that reads as a broken sandbox. pass.mjs holds the batch on this line and fails nothing.
+  if [ "$PRE_LIMIT" = yes ]; then
+    echo "[preflight] usage-limit: the account is at its usage limit ($(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"
+    echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
+    exit 1
+  fi
   # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
   if [ -n "$MODEL" ]; then
     if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then printf '  %-6s %-8s ok\n' MODEL "$MODEL"

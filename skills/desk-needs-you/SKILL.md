@@ -40,8 +40,10 @@ Otherwise it prints:
 `record` as it is printed.
 
 `<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `triage`
-(open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up) or `pr`
-(an unmerged PR only the user's step on GitHub moves). Action 1 is always the recommendation.
+(open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up), `pr`
+(an unmerged PR only the user's step on GitHub moves) or `usage` (the batch is held on a usage limit:
+one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
+switch). Action 1 is always the recommendation.
 
 ## 2. Ask, four at a time
 

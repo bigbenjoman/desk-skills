@@ -62,7 +62,7 @@ function put(name, r) {
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   const tickets = Object.fromEntries(Object.entries(r.tickets).map(([k, v]) => [k, { key: k, added_at: minsAgo(600), ...v }]));
-  writeFileSync(q, JSON.stringify({ version: 1, batch: `${name}-batch`, concurrency: 2, supervised: !!r.supervised, tickets }));
+  writeFileSync(q, JSON.stringify({ version: 1, batch: `${name}-batch`, concurrency: 2, supervised: !!r.supervised, ...r.batch, tickets }));
   mkdirSync(join(state, 'orchestrators'), { recursive: true });
   writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: q, batch: `${name}-batch`, pid: 1, at: minsAgo(r.beat) }));
   for (const [k, v] of Object.entries(r.triage ?? {})) {
@@ -339,6 +339,24 @@ t('DS-322 AC3 a lane D park resumes, naming the queue\'s lane', firstOf('K-3'), 
 t('DS-322 AC3 a lane D park with its canvas saved resumes, naming lane D', firstOf('K-7'), 'resume (lane D: a worker finishes it once it has your answer)');
 t('DS-322 AC3 a park that rules lane C out resumes', firstOf('K-6'), 'resume (lane A: a worker finishes it once it has your answer)');
 t('DS-322 AC3 a resume names the triage record\'s lane when the queue has none', firstOf('K-5'), 'resume (lane B: a worker finishes it once it has your answer)');
+
+// ---- DS-344: a batch held on a usage limit. Its paused workers and held ticket are none of them
+// stopped: needs-you lists one item for the hold, and desk-q shows each paused worker with the reset.
+const wreset = Math.floor(NOW / 1000) + 3 * 86400;
+const paused = { state: 'running', lane: 'A', stage: '4/9', usage_paused: { type: 'seven_day', resets_at: wreset } };
+put('lambda', { port: 4100, beat: 1, supervised: true, batch: { usage_hold: { since: minsAgo(20), type: 'seven_day', resets_at: wreset, preflight: 'L-3', paused: ['L-1', 'L-2'] } }, tickets: {
+  'L-1': paused, 'L-2': paused, 'L-3': { state: 'triaged', lane: 'A' },
+} });
+const lambda = N.collect({ word: 'lambda' }).items;
+t('DS-344 AC5 a batch held on the usage limit is one item, and no ticket is one', lambda.map((i) => `${i.t.key} ${i.kind}`).join(), 'usage-limit usage');
+t('DS-344 AC5 its need names the limit and how many workers wait', /^held on the weekly usage limit until .+: nothing new starts, and 2 paused workers wait\. It carries on by itself once the limit lifts$/.test(lambda[0]?.need ?? ''), true);
+t('DS-344 AC5 it offers done and not-now, and done is recorded', `${lambda[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'lambda', ticket: 'usage-limit', action: 'done' }).ok}`, 'done,not-now true');
+const { needText: rowText } = await import('../desk/bin/desk-q.mjs');
+const lr = loadRepos().find((r) => r.name === 'lambda');
+const l1 = rowText(lr, lr.rows.find((x) => x.t.key === 'L-1'));
+t(`DS-344 AC1 desk-q shows a paused worker on the weekly limit with its reset day and time (${l1})`, /^paused on the weekly usage limit until \S+ \d+ \S+ \d\d:\d\d, then resumes by itself$/.test(l1), true);
+put('lambda', { port: 4100, beat: 1, supervised: true, tickets: { 'L-1': { state: 'running', lane: 'A', stage: '4/9' } } });
+t('DS-344 AC5 with no hold there is no usage item', N.collect({ word: 'lambda' }).items.length, 0);
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
