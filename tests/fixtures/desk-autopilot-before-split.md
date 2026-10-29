@@ -223,9 +223,10 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 
 Idle = every ticket merged, parked or failed, none held waiting on a merge, and in feature mode no
 base gate waiting on a merge or running (`pass.mjs` exits 11 with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
-transition a ticket to §4 Done state** (and with no tracker, never close an issue), and never treat
-a triage "already fixed" as grounds to close one: a per-criterion check once overturned four of six
-such verdicts.
+transition a ticket to §4 Done state yourself** (and with no tracker, never close an issue): the
+merge driver moves a ticket whose last open PR it merged, under §3 `jira-close-own-merged`, and
+nothing else does. Never treat a triage "already fixed" as grounds to close one: a per-criterion
+check once overturned four of six such verdicts.
 
 ### What a script's exit tells you
 
