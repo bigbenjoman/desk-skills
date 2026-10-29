@@ -62,13 +62,15 @@ function itemOf(r, x) {
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
   // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
   if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
-  if (isHeld(t)) {
+  // A held ticket with a question of its own is asked that question, below.
+  const asks = (t.open_questions ?? 0) > 0;
+  if (isHeld(t) && !asks) {
     const h = holdOf(r.q, t, r.ctx);
     return h.act
       ? { kind: 'held', need: h.text, actions: [['start', 'nothing else lets it start, and once you do the next pass can start it'], ['not-now']] }
       : { kind: 'held', need: h.text, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
-  if (t.state === 'parked') {
+  if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };

@@ -37,8 +37,8 @@ import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate } from './gate.mjs';
-import { FIX_TRIES_MAX } from './fix-tries.mjs';
+import { FAILED, evaluateGate, stalledPr } from './gate.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
@@ -69,6 +69,8 @@ const since = (ms) => {
   return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor(m / 60) % 24}h`;
 };
 const ago = (ms) => (ms == null ? 'never' : ms < 60000 ? 'just now' : `${since(ms)} ago`);
+// A span as `since` writes it, with a zero second unit dropped: "2h 5m", "3h", "1d 1h".
+const span = (ms) => since(ms).replace(/ 0[mh]$/, '');
 function wrap(s, w) {
   const out = []; let line = '';
   for (const word of String(s ?? '').split(/\s+/).filter(Boolean)) {
@@ -106,7 +108,8 @@ function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
-  if (isHeld(t)) return holdOf(q, t, ctx, seen).k;
+  // A held ticket with a question of its own needs the user whatever its blockers do.
+  if (isHeld(t)) return (t.open_questions ?? 0) > 0 ? 'needs' : holdOf(q, t, ctx, seen).k;
   if (answeredPark(t, ctx)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
@@ -177,10 +180,11 @@ function blockerHold(q, key, b, ctx, seen) {
     if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
     const ps = prStatusOf(bt), pr = `#${n}`;
     if (ps.state === 'CLOSED') return { k: 'needs', name: pr, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
-    // Its first reason, and what to do where it needs the user, are enough: its page lists the checks.
-    const m = prNeed(q, bt, ctx, null), first = m.segs[0][0];
-    if (m.k !== 'needs') return { k: 'waiting', name: pr, text: `behind ${pr}: ${first}` };
-    return { k: 'needs', name: pr, text: `${pr}: ${first}${m.segs.length > 1 ? m.segs.at(-1)[0] : ''}` };
+    // Its first reason is enough: its page lists the checks. A PR that needs the user is their one
+    // thing to do, on its own row, so the ticket behind it waits on it rather than counting twice.
+    // `you` marks that wait: it ends only once the user has acted on the PR, so it has no date.
+    const m = prNeed(q, bt, ctx, null);
+    return m.k === 'needs' ? { k: 'waiting', name: pr, you: true, text: `behind ${pr}, which needs you` } : { k: 'waiting', name: pr, text: `behind ${pr}: ${m.segs[0][0]}` };
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
   if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
@@ -221,7 +225,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
     // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
     // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
     if (!ctx.merges || !ctx.reruns) return needs([checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
-    return merging([checksFailed(red.length), FAIL], [triesLeft ? ` · re-run, then a worker repairs it, ${tryOf(t)}` : ` · re-run; no fix tries left`, null]);
+    return merging([red.length > 2 ? `${checksFailed(red.length)}: ${red[0]} +${red.length - 1}` : `${red.join(', ')} failed`, FAIL], [` · ${rerunStep(ps, red, triesLeft, now)}`, null]);
   }
   // Not red and nothing running, yet not green: a required check that never reported or was skipped.
   // Nothing reruns or repairs that, so the merge driver never merges it.
@@ -235,6 +239,17 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
   return ctx.merges ? merging(...progress) : needs(...progress, [' · merge it once green', null]);
+}
+
+// Where the merge driver is with a red PR's reruns, from what the pass read of its files (pr_status
+// reruns, per check at this head, and rerun_at, its last): the rerun it is on and when the next is due,
+// or that they are spent and a fix try follows. With `now` null, a due time is left out.
+function rerunStep(ps, red, triesLeft, now) {
+  const tried = Math.max(0, ...red.map((n) => Number(ps.reruns?.[n]) || 0));
+  if (tried >= RERUNS_MAX) return triesLeft ? 'reruns spent, a worker repairs it next' : 'reruns spent; no fix tries left';
+  const due = tried ? Date.parse(ps.rerun_at ?? '') + RERUN_COOLDOWN_S * 1000 : NaN;
+  const step = now != null && due > now ? `rerun ${tried} of ${RERUNS_MAX} at ${clock(due)}` : `rerun ${tried + 1} of ${RERUNS_MAX} next`;
+  return triesLeft ? step : `${step}; no fix tries left`;
 }
 
 // The unfinished check that started first, as [text, colour]: running or queued, and how long; one
@@ -487,14 +502,17 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
   const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])),
     { jira: /^jira\b/i.test(String(repoConfigValue(r.slug, 'tracker') ?? '').trim()) });
-  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  // A ticket held behind a PR that needs the user waits on them, as one held outside the batch does,
+  // so it is not run forward; nor is anything held behind it.
+  const behindYou = (t) => isHeld(t) && unmergedBlockers(r.q, t).some((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key])).you);
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && behindYou(t) ? 'stuck' : k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    const left = rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+    const left = r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
       paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
@@ -550,7 +568,7 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
-  if (x.k === 'needs') return isHeld(x.t) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
+  if (x.k === 'needs') return isHeld(x.t) && !((x.t.open_questions ?? 0) > 0) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return outsideText(x.t);
   if (x.k === 'failed') return stoppedText(x.t);
   const b = undatedBlockers(r, F, x.t);
@@ -1359,7 +1377,12 @@ const runnerOf = (name) => {
 // its checks are as old as the last pass, so it says when they were read, and is grey.
 function prSegs(r, t, now) {
   const lead = [[`#${t.result.pr}`, PR_SGR], [' · ', null]];
-  if (r.live) return [...lead, ...prNeed(r.q, t, r.ctx, now).segs];
+  if (r.live) {
+    // A Merging PR with no change for STALL_MS keeps its first reason and says so, which a 52-column
+    // row has room for; the rest is moving nothing.
+    const m = prNeed(r.q, t, r.ctx, now), stall = m.k === 'merging' ? stalledPr(t, now) : null;
+    return [...lead, ...(stall ? [m.segs[0], [` · no change for ${span(stall.ms)}`, null]] : m.segs)];
+  }
   return [...lead, [`as of ${clock(Date.parse(prStatusOf(t).at))}: ${segText(prNeed(r.q, t, r.ctx, null).segs)}`, GREY]];
 }
 
@@ -1408,6 +1431,8 @@ function needSegs(r, x, now = Date.now()) {
   const { t, k } = x;
   if (x.pr) return prSegs(r, t, now);
   if (k === 'stuck') return [[outsideText(t), null]];
+  // One with a question of its own needs the user for that, whatever it is held behind.
+  if (isHeld(t) && (t.open_questions ?? 0) > 0) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
   const f = fixOn(t);
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running');
@@ -1425,6 +1450,21 @@ export { detail as needText };
 // An interactive session's claim on a parked ticket (queue.mjs park --claimed-by). Once a pass finds
 // uncommitted work behind it, the park's question says what to do, so the claim is no longer the news.
 const claimOf = (t) => (t.state === 'parked' && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+
+// How long a row in Merging or Needs you has been in that group, as the pass stamped it (`group`), or
+// null: for any other group, or when the stamp is of another group because no pass has run since.
+function inGroup(x, now) {
+  const g = groupOf(x.k), at = Date.parse(x.t.group?.at ?? '');
+  return ['merging', 'needs'].includes(g) && x.t.group?.g === g && Number.isFinite(at) ? Math.max(0, now - at) : null;
+}
+
+// Each unfinished ticket's and unmerged PR's group, as a running pass reads the batch, for it to stamp
+// when a row entered its group (`group` on the ticket): the age STARTS shows, and the digest's stalled PRs.
+export function groupsNow({ slug, stateDir, queuePath, q, now = Date.now() }) {
+  const r = { slug, stateDir, queuePath, q, live: true, last: now };
+  const ctx = holdContext(r);
+  return Object.fromEntries(Object.entries(q?.tickets ?? {}).filter(([, t]) => t.state !== 'done' || prRow(t)).map(([key, t]) => [key, groupOf(shownState(q, t, ctx))]));
+}
 
 // A waiting ticket whose every blocker left is landing starts after their PRs merge.
 function afterPrs(r, x) {
@@ -1477,15 +1517,17 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r, x });
   const tt = titler(list.map(summary));
-  // A ticket with a PR open has started and has no ship date of its own.
-  const starts = (x) => { const a = afterPrs(r, x); return x.pr ? 'started' : a ? cut(a, 12) : startsCell(F, x, now); };
+  // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
+  // says how long it has been there instead, amber for a Merging PR with no change for STALL_MS.
+  const starts = (x) => { const a = afterPrs(r, x), g = inGroup(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(F, x, now); };
+  const startsSgr = (x) => (r.live && groupOf(x.k) === 'merging' && inGroup(x, now) != null && stalledPr(x.t, now) ? WARN : null);
   const ships = (x) => (x.pr ? '—' : shipsCell(F, x, now));
   const row = (x) => segRow(x.t.key, [
     [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], STATE_W), STATE_SGR[x.k]],
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can.
     ...fitSegs(needSegs(r, x, now), nw - (x.pr ? 1 : 2), nw),
-    [`${pad(starts(x), 13)}${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
+    [pad(starts(x), 13), startsSgr(x)], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: r.id, key: x.t.key, ...(epic ? { epic } : {}) });
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(x.k) === k);
@@ -1522,6 +1564,9 @@ const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 // introduces `cmds`, the commands that move it, each drawn alone on its own line so it copies whole.
 function moveOf(r, row, k, t, h, now) {
   const q = t.park?.question;
+  // A held ticket with a question of its own is moved by its answer, not by its blockers.
+  const asks = isHeld(t) && (t.open_questions ?? 0) > 0;
+  if (asks) h = null;
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${f ? `${segText(fixSegs(f, true))}, ` : ''}${runningStage(r, row)}.` };
@@ -1556,7 +1601,7 @@ function moveOf(r, row, k, t, h, now) {
   if (k === 'needs') {
     if (needsSession(t)) return { text: q ? `Needs your answer: ${q}` : 'Needs you: it is lane C or D.', lead: `Only an interactive session takes it on. Open one in ${r.name}:`, cmds: [`/desk-ticket ${t.key}`] };
     const n = t.open_questions ?? 0;
-    return { text: q && t.state === 'parked' ? `Needs your answer: ${q}` : `Needs you: triage left ${n} question${n === 1 ? '' : 's'} open.`,
+    return { text: q && t.state === 'parked' && !asks ? `Needs your answer: ${q}` : `Needs you: triage left ${n} question${n === 1 ? '' : 's'} open.`,
       lead: `Answer, in ${r.name}, and the orchestrator decides whether to requeue it:`, cmds: [answerCmd(t.key)] };
   }
   if (k === 'failed') return { text: `Needs you: its worker stopped${q ? `: ${q}` : '.'}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
@@ -1573,9 +1618,12 @@ function blockerRow(r, key, b, kw, now) {
   const bk = shownState(r.q, bt, r.ctx);
   const bh = blockerHold(r.q, key, b, r.ctx, new Set([key]));
   const open = { kind: 'ticket', slug: r.id, key: b };
-  if (bh.k === 'needs') {
-    const at = bh.text.lastIndexOf(': ');
-    return segRow(b, [[`  ◆ ${pad(b, kw)}  `, YOU_BOLD], [bh.text.slice(0, at + 2), null], [bh.text.slice(at + 2), BOLD]], open);
+  // A PR that needs the user is theirs to move, so it reads as its action, as a blocker that needs them does.
+  const m = bh.you ? prNeed(r.q, bt, r.ctx, null) : null;
+  const text = bh.k === 'needs' ? bh.text : m ? `${bh.name}: ${m.segs[0][0]}${m.segs.length > 1 ? m.segs.at(-1)[0] : ''}` : null;
+  if (text) {
+    const at = text.lastIndexOf(': ');
+    return segRow(b, [[`  ◆ ${pad(b, kw)}  `, YOU_BOLD], [text.slice(0, at + 2), null], [text.slice(at + 2), BOLD]], open);
   }
   const what = prRow(bt) ? prSegs(r, bt, now) : [[cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]];
   return segRow(b, [[`  ${LABEL[bk][0]} ${pad(b, kw)}  `, STATE_SGR[bk] ?? null], [pad(LABEL[bk].slice(2), STATE_W - 2), STATE_SGR[bk] ?? null], ...what], open);
@@ -1616,7 +1664,7 @@ function timingFields(r, F, x, h, now) {
   const prs = open.map((b) => b.name).filter((n) => /^#\d+$/.test(n));
   const starts = k === 'running' ? 'running now' : k === 'stuck' ? 'not until its outside blockers are done'
     // Once its PRs merge, a pass lets the ticket start only where something moves holds (holdOf).
-    : h && h.k === 'needs' ? (open.length && prs.length === open.length
+    : h && (h.k === 'needs' || open.some((b) => b.you)) ? (open.length && prs.length === open.length
       ? (r.ctx.releases ? `at the next pass after ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'}` : `once ${listed(prs)} ${prs.length > 1 ? 'merge' : 'merges'} and you let it start`)
       : 'not until you act')
       : h ? (open.length ? `after ${listed(open.map((b) => b.name))} ${open.length > 1 ? 'merge' : 'merges'}`

@@ -1158,6 +1158,21 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-278 AC5 after 2 fix tries it is not requeued again" '[ "$(field F-1 state)" = "\"done\"" ] && [ "$(field F-1 fix_tries | jq length)" = 2 ]'
 check "DS-278 AC5 the ticket records it stuck, and it is put to the person" \
   '[ "$(field F-1 stuck.why)" = "\"still red after 2 fix tries: Lint\"" ] && echo "$out" | grep -q "F-1: STUCK — PR #697: still red after 2 fix tries: Lint"'
+
+# ---- DS-280: the pass records the driver's reruns and its last, when the PR last changed, and when each
+# row entered its group. F-5's PR is red on Lint after one rerun; nothing merges here, so it needs you.
+printf '1761650000\n' > "$T/state-f/merge-driver/cooldown-699"
+F5_CHANGED=$(field F-5 pr_status.changed_at); F5_GROUP=$(field F-5 group)
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-280 AC1 the reruns the driver tried at this head, per check, and when it last reran one" \
+  '[ "$(field F-5 pr_status | jq -c "[.reruns, .rerun_at]")" = "[{\"Lint\":1},\"2025-10-28T11:13:20.000Z\"]" ]'
+check "DS-280 AC4 and AC5 each row's group is recorded with the pass that found it there" '[ "$(field F-5 group.g)" = "\"needs\"" ] && [ "$(field F-1 group.g)" = "\"needs\"" ]'
+check "DS-280 AC7 with its head and checks unchanged, the last change and the group's start are kept" \
+  '[ "$F5_CHANGED" != null ] && [ "$(field F-5 pr_status.changed_at)" = "$F5_CHANGED" ] && [ "$(field F-5 group)" = "$F5_GROUP" ]'
+fx 699 "$H1" MERGEABLE tests:SUCCESS Lint:SUCCESS
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-280 AC7 a check result that changed moves the last change, and the group's start stays" \
+  '[ "$(field F-5 pr_status.changed_at)" != "$F5_CHANGED" ] && [ "$(field F-5 pr_status.changed_at)" = "$(field F-5 pr_status.at)" ] && [ "$(field F-5 group)" = "$F5_GROUP" ]'
 # Ahead of pace: new tickets hold, and a fix try still starts within the worker count.
 export DESK_QUEUE="$T/queue-p.json" DESK_AUTOPILOT_STATE="$T/state-p"
 mkdir -p "$T/state-p/logs"

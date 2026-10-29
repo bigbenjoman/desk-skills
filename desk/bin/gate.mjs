@@ -20,6 +20,7 @@
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
+//   stalledPr(ticket, now)   a PR unchanged for STALL_MS (pr_status changed_at) -> null | { ms, check }
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
@@ -35,6 +36,21 @@ import { fileURLToPath } from 'node:url';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 const lc = (s) => String(s ?? '').toLowerCase();
+
+// A done ticket's open PR whose head and check results have not changed for STALL_MS, as the last pass
+// read it (pr_status changed_at): { ms, check }, `check` what holds it, or null. desk-q flags a Merging
+// row that is, and the check-in digest lists it.
+export const STALL_MS = 2 * 60 * 60 * 1000;
+export function stalledPr(t, now = Date.now()) {
+  const ps = t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null;
+  const at = Date.parse(ps?.changed_at ?? '');
+  if (ps?.state !== 'OPEN' || !Number.isFinite(at) || now - at < STALL_MS) return null;
+  const checks = ps.checks ?? [];
+  const red = checks.filter((c) => c.status === 'completed' && FAILED.has(c.conclusion)).map((c) => c.name);
+  const open = checks.find((c) => c.status !== 'completed');
+  const check = red.length ? `${red.join(', ')} failed` : open ? `${open.name} ${open.runner ? 'running' : 'queued'}` : checks.length ? 'every check finished' : 'no checks reported';
+  return { ms: now - at, check };
+}
 
 // One check or status context, whatever API it came from, to { name, status, conclusion, runId }.
 //   CheckRun (GraphQL / gh --json statusCheckRollup): name, status, conclusion, detailsUrl

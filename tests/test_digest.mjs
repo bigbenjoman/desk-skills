@@ -245,6 +245,21 @@ t('DS-306 and marks it under that batch\'s heading', readFileSync(r10.page, 'utf
 const ovY = override({ slug: 'acme__y', id: 'y1', choice: 'b', dir, list: two, by: 'Ben', now: new Date('2026-10-27T17:12:00.000Z') });
 t('DS-306 an override is logged in the batch whose log took the call', `${ovY.ok} ${readDecisions(two[2].state).overrides[0]?.override_of}`, 'true y1');
 
+// DS-280 AC8: a Merging PR with no change for 2 hours or more is listed with how long and the check
+// holding it; one that changed within the 2 hours, or that the last pass put in Needs you, is not.
+const now11 = at('2026-10-28', '17:01');
+const minsBefore = (m) => new Date(now11.getTime() - m * 60000).toISOString();
+const prDone = (pr, changed, checks, g = 'merging') => ({ key: `M-${pr}`, state: 'done', result: { pr }, group: { g, at: minsBefore(300) },
+  pr_status: { pr, state: 'OPEN', url: `https://github.com/acme/m/pull/${pr}`, checks, changed_at: minsBefore(changed), at: minsBefore(1) } });
+const lintRed = { name: 'Lint', status: 'completed', conclusion: 'failure' }, e2eRun = { name: 'e2e', status: 'in_progress', conclusion: null, runner: true };
+const M = repo('acme__m', { 'M-1': prDone(1, 130, [lintRed]), 'M-2': prDone(2, 30, [lintRed]), 'M-3': prDone(3, 120, [e2eRun]), 'M-4': prDone(4, 600, [lintRed], 'needs') });
+const r11 = await checkin({ times: DEFAULT_TIMES, now: now11, dir, list: [M], bin: BIN, self: 'acme__m', promote: () => null, checkJira: () => null });
+const page11 = readFileSync(r11.page, 'utf8');
+t('DS-280 AC8 the digest lists each Merging PR unchanged for 2h or more, how long, and the check holding it, longest first',
+  page11.slice(page11.indexOf('### Merging')).split('\n').slice(0, 5).join('\n'),
+  '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): no change for 2h 10m; held by Lint failed\n- `M-3` [#3](https://github.com/acme/m/pull/3): no change for 2h; held by e2e running\n');
+t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s) with no change for 2h or more.'), true);
+
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

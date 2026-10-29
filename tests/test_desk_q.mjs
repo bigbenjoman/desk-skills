@@ -1226,19 +1226,19 @@ const cells217 = (name, key, n = 2) => {
 t('DS-217 AC1 behind a running blocker: waiting, with its stage', cells217('hold', 'W-1'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: tests running | after #177');
 t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
-t('DS-217 behind a PR the merge driver leaves under a merge hold: needs you, even where a supervisor merges', cells217('holdsup', 'W-2H'), '◆ needs you | #180: merge hold: merge it');
+t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');
 t('DS-217 (DS-279 AC16) a hold that names no blocker: needs you, since nothing lets it start', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: let it start');
 // The page's rail, its wrapped lines joined.
 const railText = (page) => lines(page).filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ');
 const w0 = Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED });
 t('DS-217 (DS-218 AC1) its page says so on the rail and gives the release command, each on a line of its own',
   `${railText(w0)} | ${lines(w0).includes('node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null')}`, 'Needs you. Held behind no recorded blocker: let it start. Run, in holdsup: | true');
-t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W-3'), '◆ needs you | #175: draft · undraft it once it is reviewed');
-// hold's: W-3, W-4 and W-7 by their holds, B-PARK's question, B-RED's stopped worker, W-8 and W-9
-// held outside the batch, and the PRs of B-DRAFT and B-READY.
-t('DS-217 AC3 (DS-279 AC14) and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 })).find((l) => l.startsWith('◆ '))?.includes(' hold 9'), true);
-t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176: tests running · merge it once green');
-t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '◆ needs you | #179: tests running · merge it once green');
+t('DS-217 AC3 (DS-280 AC9) behind a draft: waiting on the draft, which needs you', cells217('hold', 'W-3'), '· waiting | behind #175, which needs you');
+// hold's: W-7 by its hold, B-PARK's question, B-RED's stopped worker, W-8 and W-9 held outside the
+// batch, and the PRs of B-DRAFT and B-READY; W-3 and W-4 wait on those PRs, so count once.
+t('DS-217 AC3 (DS-279 AC14, DS-280 AC9) the PR it is behind is counted in what needs you, and it is not', lines(Q.overview(repos217, { now: FIXED, avail: 30 })).find((l) => l.startsWith('◆ '))?.includes(' hold 7'), true);
+t('DS-217 AC4 (DS-280 AC9) behind a ready PR nothing runs to merge: waiting on it', cells217('hold', 'W-4'), '· waiting | behind #176, which needs you');
+t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '· waiting | behind #179, which needs you');
 const rail217 = (name, key) => railText(Q.ticketScreen(repo217(name), key, { now: FIXED }));
 t('DS-218 AC1 (DS-279) a PR\'s own page says whether it needs you: a draft, one nothing merges, a conflict a fix try takes on, a merge hold',
   ['hold B-DRAFT', 'hold B-READY', 'holdsup B-CONF', 'holdsup B-HOLD'].map((s) => rail217(...s.split(' '))).join(' / '),
@@ -1255,7 +1255,7 @@ t('DS-218 AC1 with passes stopped a ticket blocked outside the batch still says 
 put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch: 'halted', concurrency: 1, tickets: { 'HL-1': ready } } });
 t('DS-217 AC5 (DS-279 AC16) behind a blocker that needs you, whose worker stopped or is parked: waiting, which needs you',
   ['W-5N', 'W-5F', 'W-5P'].map((k) => cells217('hold', k)).join(' / '),
-  '· waiting | behind W-3, which needs you / · waiting | behind B-RED, which needs you / · waiting | behind B-PARK, which needs you');
+  '· waiting | behind W-3 / · waiting | behind B-RED, which needs you / · waiting | behind B-PARK, which needs you');
 t('DS-217 AC6 every blocker merged, with a supervisor: waiting to start', cells217('holdsup', 'W-6'), '· waiting | starts at the next pass');
 t('DS-217 AC7 every blocker merged, with no merge driver or supervisor: needs you, let it start', cells217('hold', 'W-7'), '◆ needs you | every blocker merged: let it start');
 t('DS-217 AC7 its page gives the release command the pass prints', Q.ticketScreen(repo217('hold'), 'W-7', { now: FIXED }).includes(
@@ -1271,7 +1271,7 @@ t('DS-217 AC9 with its batch blockers merged and one outside open, the page neve
   `${/Every blocker is done/.test(w9)} ${railText(w9).startsWith('Will not start on its own. 1 Jira ticket outside this batch must be done first, and nothing in this batch moves it.')}`, 'false true');
 t('DS-217 AC9 no ticket page says every blocker is done', Object.keys(repo217('hold').q.tickets).filter((k) => /Every blocker is done/.test(Q.ticketScreen(repo217('hold'), k, { now: FIXED }))).join(), '');
 t('DS-217 the 2026-10-24 desk-skills queue', ['DS-168', 'DS-175', 'DS-180'].map((k) => cells217('skills24', k)).join(' / '),
-  '◆ needs you | held by 27 Jira tickets outside: start anyway? / ◆ needs you | #175: draft · undraft it once it is reviewed / · waiting | behind DS-175, which needs you');
+  '◆ needs you | held by 27 Jira tickets outside: start anyway? / · waiting | behind #175, which needs you / · waiting | behind DS-175');
 t('DS-217 AC10 (DS-279 AC15) one key line under the table names each state shown, with its meaning', queue217('hold').filter((l) => l.startsWith('key ')).join('\n'),
   'key   ● running: holds a worker │ · waiting: moves by itself │ ◆ needs you: nothing moves until you act');
 const key80 = lines(Q.repoScreen(repo217('hold'), { now: FIXED, width: 80 }));
@@ -1514,10 +1514,10 @@ async function ticket218(key, columns = 160) {
 t('DS-218 AC1 the first line under the title, on the rail, says whether it moves without you and what would move it',
   ['DS-168', 'DS-175', 'DS-180'].map((k) => `${lines(page218(k))[3].startsWith('▌ ')} ${railText(page218(k))}`).join(' / '),
   'true Will not start on its own. 27 Jira tickets outside this batch must be done first, and nothing in this batch moves it. If it can start without them, say so, in s218:'
-  + ' / true Needs you. #175: draft · undraft it once it is reviewed. / true Moves without you: behind DS-175, which needs you.');
+  + ' / true Moves without you: behind #175, which needs you. / true Moves without you: behind DS-175.');
 const S175 = await ticket218('DS-175'), S168 = await ticket218('DS-168'), S180 = await ticket218('DS-180');
-t('DS-218 AC1 (DS-279 AC6) the rail is in the state\'s colour: needs you magenta, held outside the batch too, waiting amber',
-  [lastFrame(S175).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S168).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S180).some((l) => l.startsWith('\x1b[38;5;180m▌ \x1b[39m'))].join(), 'true,true,true');
+t('DS-218 AC1 (DS-279 AC6, DS-280 AC9) the rail is in the state\'s colour: held outside the batch needs you, magenta; waiting amber, behind a draft that needs you too',
+  [lastFrame(S175).some((l) => l.startsWith('\x1b[38;5;180m▌ \x1b[39m')), lastFrame(S168).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S180).some((l) => l.startsWith('\x1b[38;5;180m▌ \x1b[39m'))].join(), 'true,true,true');
 const p168 = lines(page218('DS-168'));
 t('DS-218 AC2 the blockers: merged as one green count, the one needing you with its action, those outside with their Jira status',
   ['Blockers  31 · 4 in this batch, 27 open outside it', '  ✓ 3 in this batch merged', '  ◆ DS-150    #175: draft · undraft it once it is reviewed', '  ◌ OUT-1     To Do'].filter((s) => !p168.includes(s)).join(' | '), '');
@@ -1545,7 +1545,7 @@ t('DS-218 AC5 behind an unread PR, where nothing releases holds: Starts does not
   lines(Q.ticketScreen(Q.loadRepos(FIXED).find((r) => r.name === 's218u'), 'U-2', { now: FIXED, width: 120 })).find((l) => l.startsWith('Starts')) ?? '',
   'Starts    once the next pass reads its PRs merged and you let it start');
 t('DS-218 AC6 a ticket others wait on lists them with their states', `${at218('DS-150', 'Holding up')} | ${at218('DS-175', 'Holding up')}`,
-  'Holding up  ◆ DS-168 (needs you), ◆ DS-175 (needs you) wait on this ticket | Holding up  · DS-180 (waiting) waits on this ticket');
+  'Holding up  ◆ DS-168 (needs you), · DS-175 (waiting) wait on this ticket | Holding up  · DS-180 (waiting) waits on this ticket');
 const why168 = (s) => { const f = s.frame(), i = f.indexOf('Why lane A'); return f.slice(i + 1, f.indexOf('', i)); };
 const files168 = (s) => { const f = s.frame(), i = f.indexOf('Files in scope · 9'); return f.slice(i + 1, f.indexOf('', i)); };
 const folded7 = [why168(S168).length, /… \d+ more lines · y shows all$/.test(why168(S168).at(-1)), files168(S168).length, files168(S168).at(-1).endsWith('  … 7 more · f shows all')];
@@ -1564,7 +1564,7 @@ const tabs218 = [];
 for (const k of ['2', '3', '4']) { await T218.press(k); tabs218.push({ head: headOf(T218.frame()), keys: T218.frame().filter((l) => l.startsWith('key ')).length, f: T218.frame(), raw: lastFrame(T218) }); }
 T218.ui.finish(0);
 t('DS-218 AC8 Timeline, By day and Epics each have the Queue\'s header: state counts, who runs the batch, the batch',
-  `${/^◆ 4 tickets need you .* \| ● session {2}last pass .* │ batch s218$/.test(queueHead)} ${tabs218.map((x) => x.head === queueHead).join()}`, 'true true,true,true');
+  `${/^◆ 3 tickets need you .* \| ● session {2}last pass .* │ batch s218$/.test(queueHead)} ${tabs218.map((x) => x.head === queueHead).join()}`, 'true true,true,true');
 t('DS-218 AC8 the Timeline and By day legends are one key line each, the Timeline\'s with its note under it',
   `${tabs218[0].keys} ${tabs218[1].keys} ${tabs218[0].f[tabs218[0].f.findIndex((l) => l.startsWith('key ')) + 1]}`, '1 1       within a week: day and time; beyond a week, the date');
 t('DS-218 AC9 a Timeline bar on screen: the likely span solid in the state\'s colour, the could-run-to part a dimmer shade of it, no ░',
@@ -1763,28 +1763,92 @@ put(I.T, I.env, 'fixrr', { port: 5640, conc: '3 / 5', beat: 1, perms: grant, que
 const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno'), rRr = reposFx.find((r) => r.name === 'fixrr');
 const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW })), qRr = lines(Q.repoScreen(rRr, { now: NOW }));
 const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
-t('DS-279 a red PR the merge driver reruns is merging, and says it is re-run, then repaired, on its first try',
-  `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, 1 check failed · re-run, then a worker repairs it, try 1 of 2.');
+t('DS-279 (DS-280 AC2) a red PR the merge driver reruns is merging, and names the check and the rerun next',
+  `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, e2e failed · rerun 1 of 2 next.');
 t('DS-279 a red PR nothing reruns needs you: fix or re-run it, with no merge grant or with §3 ci-rerun not yes',
   `${/F-1 +◆ needs you/.test(fxRow(qNo, 'F-1'))} ${rail279('F-1', rNo)} | ${/F-1 +◆ needs you/.test(fxRow(qRr, 'F-1'))} ${rail279('F-1', rRr)}`,
   'true Needs you: PR #801, 1 check failed · fix or re-run it. | true Needs you: PR #801, 1 check failed · fix or re-run it.');
 t('DS-279 a red PR after both fix tries is re-run on its new head before the pass records it stuck, never try 3 of 2; a conflict needs you at once',
-  `${rail279('F-2', rGo)} | ${rail279('F-3', rGo)}`, 'Moves without you: PR #802, 1 check failed · re-run; no fix tries left. | Needs you: PR #803, still in conflict with develop after 2 fix tries.');
+  `${rail279('F-2', rGo)} | ${rail279('F-3', rGo)}`, 'Moves without you: PR #802, Lint failed · rerun 1 of 2 next; no fix tries left. | Needs you: PR #803, still in conflict with develop after 2 fix tries.');
 t('DS-279 AC9 no row with a failed check leads with a pass count, on PRs red on the plain PR-status path',
-  `${[fxRow(qGo, 'F-1'), fxRow(qNo, 'F-1'), fxRow(qRr, 'F-1')].every((l) => /#801 · 1 check failed/.test(l))} ${[...qGo, ...qNo, ...qRr].filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | ')}`, 'true ');
+  `${/#801 · e2e failed/.test(fxRow(qGo, 'F-1'))} ${[fxRow(qNo, 'F-1'), fxRow(qRr, 'F-1')].every((l) => /#801 · 1 check failed/.test(l))} ${[...qGo, ...qNo, ...qRr].filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | ')}`, 'true true ');
 t('DS-279 a conflict names the batch\'s base, as its fix try will', rail279('F-4', rGo), 'Moves without you: PR #804, merge conflict with develop · the next pass sends it to a worker, try 1 of 2.');
 t('DS-279 a fix worker that parked needs your answer on its page, as its row says', `${/F-5 +◆ needs you/.test(fxRow(qGo, 'F-5'))} ${rail279('F-5', rGo).startsWith('Needs your answer: which copy?')}`, 'true true');
 const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
 const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
-  `${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx(['lint'])).text} | ${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx([])).text}`, 'behind #810: 1 check failed, advisory only | behind #810: 1 check failed');
+  `${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx(['lint'])).text} | ${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx([])).text}`, 'behind #810: 1 check failed, advisory only | behind #810: lint failed');
 // A §4 Required check that never reported, or finished skipped, is not green: the merge driver never
 // merges it and nothing reruns or repairs it, so it needs you rather than "merges at the next pass".
 const reqQ = { tickets: { 'R-1': { key: 'R-1', ...prOn(811, [okCheck('build')]) }, 'R-2': { key: 'R-2', ...prOn(812, [okCheck('build'), { ...okCheck('e2e'), conclusion: 'skipped' }]) } } };
 const reqNeed = (k) => `${Q.shownState(reqQ, reqQ.tickets[k], advCtx([], ['e2e']))} ${Q.holdOf({ tickets: { ...reqQ.tickets, H: { key: 'H', ...heldBy(k) } } }, { key: 'H', ...heldBy(k) }, advCtx([], ['e2e'])).text}`;
 t('DS-279 a required check that never reported or was skipped needs you, naming it',
   `${reqNeed('R-1')} | ${reqNeed('R-2')}`,
-  'needs #811: required check "e2e" has not reported · fix the check or §4 Required checks | needs #812: required check "e2e" is skipped (skipped does not count) · fix the check or §4 Required checks');
+  'needs behind #811, which needs you | needs behind #812, which needs you');
+t('DS-279 and its row names the check and what to do',
+  ['R-1', 'R-2'].map((k) => Q.needText({ q: reqQ, ctx: advCtx([], ['e2e']), live: true }, { t: reqQ.tickets[k], k: 'needs', pr: true })).join(' | '),
+  '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is skipped (skipped does not count) · fix the check or §4 Required checks');
+
+// ---- DS-280: a PR inside its reruns stays in Merging naming the red check, each Merging and Needs you
+// row says how long it has sat there, and a ticket behind a PR that needs you counts once.
+const at280 = (m) => ({ g: 'merging', at: ago194(m) });
+const lint = { ...red, name: 'Lint' }, backend = { ...red, name: 'Backend tests' };
+const due280 = NOW + 10 * 60000;
+const fresh = { changed_at: ago194(30) };
+const ds280 = {
+  // AC1: one of two reruns had, the next due 10 minutes from now; AC2: two red, none tried; AC3: both spent.
+  'M-1': { ...prOn(901, [...okChecks(2), lint], { reruns: { Lint: 1 }, rerun_at: new Date(due280 - 720000).toISOString(), ...fresh }), group: at280(5) },
+  'M-2': { ...prOn(902, [...okChecks(2), backend, lint], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+  'M-3': { ...prOn(903, [...okChecks(2), lint], { reruns: { Lint: 2 }, rerun_at: ago194(20), ...fresh }), group: at280(5) },
+  // AC4: in Merging for 2h 5m; AC6: no change for exactly 2h; AC7: a check changed 30 minutes ago.
+  'M-4': { ...prOn(904, okChecks(3).map((c, i) => (i ? c : { ...c, status: 'in_progress', conclusion: null })), fresh), group: at280(125) },
+  'M-6': { ...prOn(906, okChecks(3).map((c, i) => (i ? c : { ...c, status: 'in_progress', conclusion: null, started: ago194(150) })), { changed_at: ago194(120) }), group: at280(180) },
+  // AC5: in Needs you since 25 hours ago.
+  'N-5': { state: 'parked', park: { question: 'which copy?' }, group: { g: 'needs', at: ago194(25 * 60) } },
+  // AC9: the 27 Oct board's VPL-504, held only behind #698, which needs you; AC10: one also asking its own question.
+  'V-698': { ...board['V-698'], group: { g: 'needs', at: ago194(60) } },
+  'V-504': heldBy('V-698'),
+  'V-510': { ...heldBy('V-698'), open_questions: 1 },
+};
+put(I.T, I.env, 'ds280', { port: 5650, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds280', concurrency: 3, supervised: true, tickets: ds280 } });
+const r280 = Q.loadRepos(NOW).find((r) => r.name === 'ds280');
+const q280 = lines(Q.repoScreen(r280, { now: NOW, width: 200 }));
+const row280 = (key) => fxRow(q280, key);
+// WHAT IT NEEDS and STARTS of a row, each trimmed, at 200 columns (NEED_W 52).
+const cells280 = (key) => { const l = row280(key); return [l.slice(31, 83).trim(), l.slice(83, 96).trim()]; };
+// WHAT IT NEEDS is 52 columns on a row, so a longer reason is cut there and read whole on the ticket page.
+t('DS-280 AC1 a red PR with one rerun had: Merging, the check, and when the next is due',
+  `${/M-1 +▸ merging/.test(row280('M-1'))} ${cells280('M-1')[0]}`, `true #901 · Lint failed · rerun 1 of 2 at ${new Date(due280).toTimeString().slice(0, 5)}`);
+t('DS-280 AC2 two red before any rerun: Merging, leading with the checks, never a pass count',
+  `${/M-2 +▸ merging +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
+t('DS-280 AC3 both reruns spent and no fix try yet: Merging, a worker repairs it next',
+  `${/M-3 +▸ merging +#903 · Lint failed · reruns spent/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, Lint failed · reruns spent, a worker repairs it next.');
+t('DS-280 more than two red checks lead with the count and the first', Q.needText(r280, { t: { ...ds280['M-2'], pr_status: { ...ds280['M-2'].pr_status, checks: [lint, backend, { ...red, name: 'e2e' }] } }, k: 'merging', pr: true }),
+  '#902 · 3 checks failed: Lint +2 · rerun 1 of 2 next');
+t('DS-280 AC4 STARTS says how long a PR has been in Merging', cells280('M-4')[1], 'for 2h 5m');
+t('DS-280 AC5 STARTS says how long a ticket has been in Needs you', `${/N-5 +◆ needs you/.test(row280('N-5'))} ${cells280('N-5')[1]}`, 'true for 1d 1h');
+t('DS-280 AC6 no change for 2 hours: WHAT IT NEEDS ends saying so', cells280('M-6')[0], '#906 · check 1 running, 2h 30m · no change for 2h');
+t('DS-280 AC7 a check that changed 30 minutes ago: no note', `${cells280('M-4')[0]} | ${q280.filter((l) => /no change/.test(l)).length}`, '#904 · check 1 running, 30m · 2 of 3 done | 1');
+t('DS-280 a stamp of another group, before the next pass, shows no age', (() => {
+  put(I.T, I.env, 'ds280b', { port: 5660, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds280b', concurrency: 3, supervised: true, tickets: { 'M-9': { ...ds280['M-4'], group: { g: 'running', at: ago194(300) } } } } });
+  return fxRow(lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds280b'), { now: NOW, width: 200 })), 'M-9').slice(83, 96).trim();
+})(), 'started');
+const raw280 = async (key) => {
+  const s = screen({ kind: 'repo', slug: 'acme__ds280' }, 200, () => NOW);
+  await sleep(20);
+  const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
+  s.ui.finish(0);
+  return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
+};
+t('DS-280 AC6 and AC7 the age is amber with no change for 2 hours, and uncoloured after a change 30 minutes ago', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:for 3h | ');
+t('DS-280 AC9 behind only a PR that needs you: Waiting, saying so, and starting after it', `${/V-504 +· waiting/.test(row280('V-504'))} ${cells280('V-504').join(' | ')}`,
+  'true behind #698, which needs you | after #698');
+t('DS-280 AC10 held behind it and asking its own question: Needs you, for its question, on its row and its page', `${/V-510 +◆ needs you/.test(row280('V-510'))} ${cells280('V-510')[0]} | ${rail279('V-510', r280)}`,
+  'true 1 triage question(s) open: answer them | Needs you: triage left 1 question open. Answer, in ds280, and the orchestrator decides whether to requeue it:');
+t('DS-280 AC9 and AC10 the header counts #698 and V-510 once each, and V-504 not at all',
+  `${q280[1].startsWith('◆ 3 tickets need you')} ${Q.needsRows(r280).map((x) => x.t.key ?? '').sort().join(',')}`, 'true N-5,V-510,V-698');
+t('DS-280 the pass\'s groups match what desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds280', stateDir: r280.stateDir, queuePath: r280.queuePath, q: r280.q, now: NOW })),
+  JSON.stringify(Object.fromEntries(Object.keys(ds280).map((k) => [k, { 'N-5': 'needs', 'V-698': 'needs', 'V-510': 'needs', 'V-504': 'waiting' }[k] ?? 'merging']))));
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
