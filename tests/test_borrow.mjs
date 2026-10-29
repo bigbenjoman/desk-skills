@@ -362,14 +362,24 @@ const raced = await Promise.all([passX1(), passX2()]);
 t('DS-308 pass AC2: exactly one worker starts across the two batches', runningAt(namedQueue('acme__a', 'X-1')) + runningAt(namedQueue('acme__a', 'X-2')), 1);
 t('DS-308 pass AC2: the other pass says nothing starts', raced.filter((o) => /^repo workers: 1 of the §3b cap of 1 running — .*: nothing starts this pass$/m.test(o)).length, 1);
 
-// AC2 without the lock: X-1 with a sibling batch, the lock unmakeable (its folder is a file). Unlocked
-// it could count a slot another pass is counting too, so it starts nothing and says why.
+// AC2 without the lock: X-1 with a running sibling batch, the lock unmakeable (its folder is a file).
+// Unlocked it could count a slot another pass is counting too, so it starts nothing and says why.
 W = passWorld(10);
-passRepo(W, 'acme__a', { conc: '0 / 3', running: 0, ready: 0, borrow: null, batch: null, machine: false, floor: 46050 });
+passRepo(W, 'acme__a', { conc: '1 / 3', running: 1, ready: 0, borrow: null, batch: null, machine: false, floor: 46050 });
 writeFileSync(join(W, 'not-a-dir'), '');
 out = await passRepo(W, 'acme__a', { conc: '2 / 3', running: 0, ready: 2, borrow: null, batch: 'X-1', machine: false, floor: 46060, prefix: 'X', lockDir: join(W, 'not-a-dir') })();
-t('DS-308 pass AC2: with sibling batches and no lock, X-1 starts nothing', runningAt(namedQueue('acme__a', 'X-1')), 0);
+t('DS-308 pass AC2: with a running sibling batch and no lock, X-1 starts nothing', runningAt(namedQueue('acme__a', 'X-1')), 0);
 t('DS-308 pass AC2: and says the lock is why', /^repo workers: nothing starts this pass: the repo's batches share its §3b cap, and the borrow lock .* cannot be made/m.test(out), true);
+t('DS-308 pass AC2: and records it as the pass\'s hold', /^the repo's shared cap: repo workers: nothing starts this pass: .*cannot be made/.test(JSON.parse(readFileSync(namedQueue('acme__a', 'X-1'), 'utf8')).pass?.held ?? ''), true);
+
+// The same with the sibling idle (a queue on disk, nothing running, no pass): it shares nothing, so
+// there is no race, and X-1 starts as it would with no sibling.
+W = passWorld(10);
+passRepo(W, 'acme__a', { conc: '0 / 3', running: 0, ready: 0, borrow: null, batch: null, machine: false, floor: 46070 });
+writeFileSync(join(W, 'not-a-dir'), '');
+out = await passRepo(W, 'acme__a', { conc: '2 / 3', running: 0, ready: 2, borrow: null, batch: 'X-1', machine: false, floor: 46080, prefix: 'X', lockDir: join(W, 'not-a-dir') })();
+t('DS-308 pass AC2: with only an idle sibling and no lock, X-1 starts its 2', runningAt(namedQueue('acme__a', 'X-1')), 2);
+t('DS-308 pass AC2: and says nothing about the repo\'s batches', /^repo workers:/m.test(out), false);
 
 // AC6: only a standing batch: it starts as many as before, and says nothing about the repo's batches.
 W = passWorld(10);

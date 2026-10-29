@@ -959,13 +959,15 @@ const plan = borrowPlan({
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
+const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
 const REPO = repoBudget({
   batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
-  batches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
+  batches: repoBatches,
 });
 // A repo's batches share its cap only under the lock: without it two passes could each count the same
-// free slot, so a batch with siblings starts nothing this pass rather than counting unlocked.
-const repoUnlocked = SIBLINGS && lockWhy != null;
+// free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)
+// starts nothing this pass rather than counting unlocked. An idle sibling shares nothing, so it does not.
+const repoUnlocked = lockWhy != null && repoBatches.some((o) => o.error || o.live || o.running > 0);
 const slots = MAINT.hold || repoUnlocked ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
 const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${lockWhy}` : REPO.line;
@@ -2104,6 +2106,7 @@ const heldWhy = report.spawned.length || !eligible.length ? null
   : held ?? (baseHold ? 'the batch base sync holds every spawn'
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
+  : repoUnlocked ? `the repo's shared cap: ${repoLine}`
   : REPO.room <= 0 ? `the repo's shared cap: ${REPO.line}`
   : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
