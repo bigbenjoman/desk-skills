@@ -93,5 +93,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   files, your own settings) is read-only to you
 - **And your handoff briefing**, `$DESK_STATE/handoffs/<TICKET>.json`, written when you hand off
   (the Stage 4 file's "Handing off")
+- **And your resume file**, `$DESK_STATE/resume/<TICKET>.json`, in place of the
+  `.claude/desk-ticket-<TICKET>.json` `desk-ticket` names: your worktree's `.claude/` is
+  write-protected
 
 If something is refused, try the plain form once before concluding you lack the capability.

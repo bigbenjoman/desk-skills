@@ -288,13 +288,15 @@ if (mode === 'triage') {
   const NODE_BIN_TOOLS = ['eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing and screenshots.
-  // Not answers/ (a worker must not answer itself), not workers/ (its own settings), not the queue or
-  // the locks.
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
+  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
+  // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
     `Edit(${abs(WT)}/**)`, `Edit(${abs(WT)}/**)`,
     `Edit(${abs(STATE)}/parks/${T}.json)`, `Edit(${abs(STATE)}/parks/${T}.*)`,
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
+    `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.

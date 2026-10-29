@@ -1295,20 +1295,20 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
 
 // A requeued ticket whose worker parked at Stage 3 or later resumes at the stage that round reached,
 // with its summary in the briefing, when its worktree was kept, is on the queue's branch, and has no
-// resume file that records another (resumeCheck). A round that cannot be resumed is said in the
+// resume file (the worker's in the state dir, or one in the worktree) that records another (resumeCheck). A round that cannot be resumed is said in the
 // briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
   const stage = roundStage(round?.stage);
   if (!stage || !kept) return { stage: null, brief: '', line: '' };
-  const r = resumeCheck({ worktree: wt, key: t.key, branch });
+  const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
     return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why }), line: ` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
   }
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const answers = answersSince(existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '', round.at);
   const base = `origin/${DEFAULT_BRANCH}`;
-  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base) });
+  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base), stateDir: STATE });
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 

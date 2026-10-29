@@ -69,14 +69,18 @@ export function roundStage(v) {
 
 export const resumeFilePath = (worktree, key) => join(worktree, '.claude', `desk-ticket-${key}.json`);
 
+// A worker's resume file. The harness write-protects a worktree's `.claude/`, so a worker keeps its
+// resume file in the state dir, where its settings let it write this one file.
+export const workerResumePath = (stateDir, key) => join(stateDir, 'resume', `${key}.json`);
+
 // Whether the round can be resumed in this worktree: { ok: true } or { ok: false, why }. The worktree
-// must be on the queue's branch, and desk-ticket's resume file, where there is one, must record it. A
-// worker's `.claude/` is write-protected, so most worktrees have no resume file.
-export function resumeCheck({ worktree, key, branch }) {
+// must be on the queue's branch, and desk-ticket's resume file, where there is one, must record it:
+// the worker's in the state dir first, else one in the worktree's `.claude/`.
+export function resumeCheck({ worktree, key, branch, stateDir }) {
   const missing = handoffTarget({ worktree, branch });
   if (missing) return { ok: false, why: missing };
-  const path = resumeFilePath(worktree, key);
-  if (!existsSync(path)) return { ok: true };
+  const path = [stateDir && workerResumePath(stateDir, key), resumeFilePath(worktree, key)].find((p) => p && existsSync(p));
+  if (!path) return { ok: true };
   let d;
   try { d = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, why: `its resume file ${path} is not JSON (${e.message})` }; }
   if (!d?.branch) return { ok: false, why: `its resume file ${path} records no branch` };
@@ -100,13 +104,13 @@ export function answerEntriesSince(brief, since) {
 
 // The last round's summary: the stage it reached, the park question and its answer, and the branch
 // and its commits.
-export function renderLastRound({ key, round, answers, branch, worktree, base, commits }) {
+export function renderLastRound({ key, round, answers, branch, worktree, base, commits, stateDir }) {
   const items = (xs, none) => (xs.length ? xs.map((x) => `- ${x}`) : [`- ${none}`]);
   return [
     `## Last round: this session resumes at Stage ${round.stage}`,
     '',
     `The last round of ${key} reached Stage ${round.stage} and parked. This session starts at Stage ${round.stage} rather than Stage 0: ` +
-      `do not redo the stages before it. Check git status and git log in your worktree, and read your resume file ${resumeFilePath(worktree, key)} where there is one.`,
+      `do not redo the stages before it. Check git status and git log in your worktree, and read your resume file ${stateDir ? workerResumePath(stateDir, key) : resumeFilePath(worktree, key)} where there is one.`,
     '',
     '### Park question',
     '',

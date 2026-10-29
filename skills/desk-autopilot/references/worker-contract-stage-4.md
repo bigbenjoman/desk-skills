@@ -284,7 +284,7 @@ To hand off:
    ```
 
    `review` and `evidence` are `[]` when there is nothing yet.
-3. **Update your resume file**, then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
+3. **Update your resume file** (`$DESK_STATE/resume/<TICKET>.json`), then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
    your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
    is not done.
 

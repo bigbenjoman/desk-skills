@@ -692,6 +692,7 @@ check "DS-155 AC7 the batch report's row for a ticket whose sessions handed off 
 git -C "$T/repo" update-ref refs/remotes/origin/main main
 parking(){ handing "$1"; q set "$1" stage=0/9; hlog "$1" "$(printf 'AUTOPILOT_STAGE: %s\nAUTOPILOT_PARK: %s' "$2" "$3")"; }
 resumefile(){ mkdir -p "$T/wt/$1/.claude"; printf '{"ticket":"%s","branch":"%s"}' "$1" "$2" > "$T/wt/$1/.claude/desk-ticket-$1.json"; }
+stateresume(){ mkdir -p "$DESK_AUTOPILOT_STATE/resume"; printf '{"ticket":"%s","branch":"%s"}' "$1" "$2" > "$DESK_AUTOPILOT_STATE/resume/$1.json"; }
 respawn(){ q requeue "$1"; out=$(node "$B/pass.mjs" 2>&1); }
 parking R-1 "4/9 verify" "which colour does the badge take?"
 git -C "$T/wt/R-1" commit -q --allow-empty -m "feat: R-1 the badge"; resumefile R-1 fix/R-1
@@ -699,6 +700,7 @@ parking R-2 "2/9 understand" "is the badge in scope?"
 parking R-3 "5/9 evidence" "which page shows it?"; resumefile R-3 fix/R-3-old
 parking R-4 "4/9 verify" "which size?"
 parking R-5 "6/9 hygiene" "which reviewer?"
+parking R-6 "4/9 verify" "which border?"; stateresume R-6 fix/R-6-old
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-156 a worker's park records the stage its round reached and its question" '[ "$(field R-1 state)" = "\"parked\"" ] && [ "$(field R-1 last_round.stage)" = "\"4/9\"" ] && [ "$(field R-1 last_round.question)" = "\"which colour does the badge take?\"" ]'
 node "$B/answer.mjs" R-1 "green, as on the cards" >/dev/null 2>&1
@@ -706,6 +708,7 @@ respawn R-1
 check "DS-156 AC1 the respawn's briefing holds the last round: the stage, the park question and its answer, the branch and its commits" 'b=$(brief R-1); for s in "## Last round: this session resumes at Stage 4" "which colour does the badge take?" "- green, as on the cards" "\`fix/R-1\` in $T/wt/R-1" "feat: R-1 the badge"; do grep -qF -- "$s" <<< "$b" || exit 1; done'
 check "DS-156 AC2 with a resume file on its branch, the worker starts at the stage the summary names" 'spawned_for R-1 | grep -q "^R-1 [0-9a-f-]* stage=4 branch=fix/R-1 " && [ "$(field R-1 stage)" = 4 ] && [ "$(field R-1 last_round)" = null ] && echo "$out" | grep -q "R-1 .*resumed at Stage 4, where its last round parked"'
 check "DS-156 a resumed round keeps the sibling notes" 'brief R-1 | grep -q "SIBLING-NOTE"'
+check "DS-339 the resumed round names the worker's resume file in the state dir" 'brief R-1 | grep -qF "read your resume file $DESK_AUTOPILOT_STATE/resume/R-1.json where there is one"'
 q set R-1 state=done
 respawn R-5
 check "DS-156 AC2 a worktree on its branch with no resume file resumes too" 'spawned_for R-5 | grep -q "stage=6 " && brief R-5 | grep -qF "## Last round: this session resumes at Stage 6"'
@@ -719,6 +722,9 @@ q set R-3 state=done
 git -C "$T/repo" worktree remove --force "$T/wt/R-4"
 respawn R-4
 check "DS-156 AC5 a requeue that removed the worktree has no last-round summary, and starts at Stage 0" 'spawned_for R-4 | grep -q "stage= " && ! brief R-4 | grep -q "## Last round"'
+q set R-4 state=done
+respawn R-6
+check "DS-339 AC2 a worker's resume file in the state dir on another branch starts at Stage 0, saying why" 'spawned_for R-6 | grep -q "stage= " && brief R-6 | grep -qF "its resume file is for branch fix/R-6-old, not the queue'"'"'s fix/R-6"'
 
 # ---- DS-191: a triage record from before epics were recorded gets its epic read by the next pass
 cat >> "$T/config.md" <<'EOF'

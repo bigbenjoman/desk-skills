@@ -38,6 +38,9 @@ a worker cannot:
   `$DESK_STATE/handoffs/<TICKET>.json` and `$DESK_STATE/images/<TICKET>/**`. It cannot write or delete `answers/`: you clear a ticket's
   answer file once it has been read.
 
+It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harness write-protects its
+worktree's `.claude/`, where `desk-ticket` keeps one interactively.
+
 It may run `desk-env …` and the §4 toolchain rows, a directory item as
 `~/.claude/desk/bin/with-lock.sh <test|tsc|browser|nolock> --cwd <dir> -- <cmd>`. **Database
 variables**: in each worker's worktree every §4 Database URL variable is repointed at its own
