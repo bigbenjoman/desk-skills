@@ -206,21 +206,28 @@ t('race: the first then writes GitHub and finds AWS already read', `${ghLater.gi
 t('race: both readings are in the cache', `${!!C.readCache(raceDir).github?.repos?.['benjo/voicepa']} ${C.readCache(raceDir).aws?.profiles?.forewatt?.total}`, 'true 124.88');
 t('race: one Cost Explorer request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map(of).join(), '1,1,1');
 
-// ---- DS-325: each AWS account counted once per name
+// ---- each AWS account counted once
 // voicepa's shape: default and voicepa-admin both sign in to the management account 070870781760,
-// whose figures hold its linked account 748214039541, which voicepa-ci signs in to.
-const VP_ACCOUNTS = { default: '070870781760', 'voicepa-admin': '070870781760', 'voicepa-ci': '748214039541' };
-const VP_ORG = { '070870781760': ['070870781760', '748214039541'] };
+// whose figures hold its linked account 748214039541, which voicepa-ci signs in to. voicepa-sec
+// signs in to a third account in that organisation, a delegated administrator: it can list the
+// organisation's accounts, but its own figures hold only its own.
+const VP_ACCOUNTS = { default: '070870781760', 'voicepa-admin': '070870781760', 'voicepa-ci': '748214039541', 'voicepa-sec': '555555555555' };
+const VP_MEMBERS = ['070870781760', '748214039541', '555555555555'];
+const VP_LISTS = ['070870781760', '555555555555'];
 const VP_CE = { '070870781760': [grp('Amazon Simple Storage Service', 'Usage', '4.52'), grp('AWS Lambda', 'Usage', '1.2')],
-  '748214039541': [grp('AWS Lambda', 'Usage', '1.2')] };
+  '748214039541': [grp('AWS Lambda', 'Usage', '1.2')], '555555555555': [grp('AWS Lambda', 'Usage', '0.5')] };
 const vcalls = [];
+const vpDown = new Set();
 async function vpAws(args) {
   vcalls.push(args);
-  const id = VP_ACCOUNTS[arg(args, '--profile')];
+  const p = arg(args, '--profile');
+  const id = VP_ACCOUNTS[p];
+  if (vpDown.has(p)) throw new Error('The SSO session associated with this profile has expired');
   if (args[0] === 'sts') return { UserId: 'AROA:desk', Account: id, Arn: `arn:aws:sts::${id}:assumed-role/admin/desk` };
-  if (args[0] === 'organizations') {
-    if (!VP_ORG[id]) throw new Error(DENIED);
-    return { Accounts: VP_ORG[id].map((Id) => ({ Id, Status: 'ACTIVE' })) };
+  if (args[1] === 'describe-organization') return { Organization: { Id: 'o-voicepa', MasterAccountId: '070870781760' } };
+  if (args[1] === 'list-accounts') {
+    if (!VP_LISTS.includes(id)) throw new Error(DENIED);
+    return { Accounts: VP_MEMBERS.map((Id) => ({ Id, Status: 'ACTIVE' })) };
   }
   return page(VP_CE[id]);
 }
@@ -233,7 +240,7 @@ t('DS-325 AC1 two profiles on one account: the name counts it once', `${same.nam
 t('DS-325 AC1 and the second profile is reported as covered by the first', `${JSON.stringify(same.names.voicepa.covered)} ${same.profiles['voicepa-admin'].covered} ${same.profiles['voicepa-admin'].total}`,
   '[{"profile":"voicepa-admin","by":"default"}] default undefined');
 t('DS-325 AC1 each profile\'s account is recorded', `${same.profiles.default.account} ${same.profiles['voicepa-admin'].account} ${same.profiles.default.linked.join()}`,
-  '070870781760 070870781760 748214039541');
+  '070870781760 070870781760 748214039541,555555555555');
 
 vcalls.length = 0;
 const org = await C.readAws({ sources: [vp('voicepa-ci'), vp('default')], aws: vpAws, now: OCT28 });
@@ -267,6 +274,37 @@ await C.refresh({ dir: vpDir, costs: dropped, aws: vpAws, now: OCT28 + 3600000 }
 const after = C.readCache(vpDir).aws;
 t('DS-325 AC3 and the profile that takes over is read, the rest still covered', `${after.names.voicepa.total} ${vpCe('voicepa-admin')} ${vpCe('voicepa-ci')} ${after.profiles['voicepa-ci'].covered} ${Object.keys(after.profiles).join()}`,
   '5.72 1 0 voicepa-admin voicepa-admin,voicepa-ci');
+
+const pair = [vp('default'), vp('voicepa-ci')];
+const day1 = await C.readAws({ sources: pair, aws: vpAws, now: OCT28 });
+vpDown.add('default');
+vcalls.length = 0;
+const day2 = await C.readAws({ sources: pair, last: day1, aws: vpAws, now: OCT28 + 24 * 3600000 });
+vpDown.clear();
+t('DS-325 a failed sign-in keeps the account the cache knew, so the linked profile stays covered and is not read',
+  `${day2.names.voicepa.total} ${day2.profiles.default.account} ${day2.profiles.default.linked.join()} ${day2.profiles['voicepa-ci'].covered} ${vpCe('voicepa-ci')}`,
+  '5.72 070870781760 748214039541,555555555555 default 0');
+
+const sec = await C.readAws({ sources: [vp('voicepa-sec'), vp('default')], aws: vpAws, now: OCT28 });
+t('DS-325 a delegated administrator that can list the organisation covers nothing, and the organisation covers it',
+  `${sec.profiles['voicepa-sec'].linked.length} ${sec.profiles.default.covered} ${sec.profiles['voicepa-sec'].covered} ${sec.names.voicepa.total}`, '0 null default 5.72');
+
+vcalls.length = 0;
+const across = await C.readAws({ sources: [{ ...vp('voicepa-ci'), name: 'ci' }, vp('default')], aws: vpAws, now: OCT28 });
+t('DS-325 a linked account listed under another name is covered by its organisation\'s profile, and read once in all',
+  `${across.profiles['voicepa-ci'].covered} ${across.names.ci.total} ${across.names.voicepa.total} ${vpCe('voicepa-ci')}`, 'default 0 5.72 0');
+
+// A cache written before accounts were recorded, every profile read today.
+const vpThree = ['default', 'voicepa-admin', 'voicepa-ci'].map(vp);
+const unknown = await C.readAws({ sources: vpThree, aws: (args) => (args[0] === 'ce' ? vpAws(args) : Promise.reject(new Error(DENIED))), now: OCT28 });
+const before = { ...unknown, profiles: Object.fromEntries(Object.entries(unknown.profiles).map(([k, { account, linked, covered, ...r }]) => [k, r])) };
+t('DS-325 a cache from before accounts were recorded holds every profile\'s figures', vpThree.map((s) => before.profiles[s.key].total).join(), '5.72,5.72,1.2');
+t('DS-325 and is due the same day', C.dueSuppliers({ costs: all, cache: { aws: before }, now: OCT28 + 3600000 }).join(), 'aws');
+vcalls.length = 0;
+const identified = await C.readAws({ sources: vpThree, last: before, aws: vpAws, now: OCT28 + 3600000 });
+t('DS-325 where identifying each profile counts the account once, with no Cost Explorer request',
+  `${identified.names.voicepa.total} ${vcalls.filter((a) => a[0] === 'ce').length} ${identified.profiles['voicepa-admin'].covered} ${identified.profiles['voicepa-ci'].covered}`, '5.72 0 default default');
+t('DS-325 and then nothing is due', C.dueSuppliers({ costs: all, cache: { aws: identified }, now: OCT28 + 3600000 }).length, 0);
 
 const plain = await C.readAws({ sources, aws: async (args) => { if (args[0] !== 'ce') throw new Error(DENIED); return pages[arg(args, '--profile')][0]; }, now: OCT28 });
 const counted = await C.readAws({ sources, aws, now: OCT28 });

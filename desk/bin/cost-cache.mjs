@@ -361,23 +361,35 @@ export const profileDue = (rec, now) => !(rec?.at != null && utcDay(rec.at) === 
   && !(rec?.failed && now - rec.failed.at < READ_EVERY_MS);
 
 // The account a profile signs in to, and the other accounts in its organisation when it is the
-// management account. Both calls are free; a failed one leaves that part unknown rather than failing.
-//   -> { account: id | null, linked: [id] }
+// management account: a delegated administrator can list the accounts too, but its Cost Explorer
+// holds only its own. Every call is free; a failed one leaves that part unknown (null) rather than failing.
+//   -> { account: id | null, linked: [id] | null }
 async function identify(aws, profile) {
-  const account = await aws(['sts', 'get-caller-identity', '--profile', profile, '--output', 'json'])
+  const call = (args) => aws([...args, '--profile', profile, '--output', 'json']);
+  const account = await call(['sts', 'get-caller-identity'])
     .then((b) => (typeof b?.Account === 'string' ? b.Account : null), () => null);
-  if (!account) return { account: null, linked: [] };
-  const linked = await aws(['organizations', 'list-accounts', '--profile', profile, '--output', 'json'])
-    .then((b) => (Array.isArray(b?.Accounts) ? b.Accounts.map((a) => a?.Id).filter((id) => typeof id === 'string' && id !== account) : []), () => []);
+  if (!account) return { account: null, linked: null };
+  const manages = await call(['organizations', 'describe-organization'])
+    .then((b) => b?.Organization?.MasterAccountId === account, () => null);
+  if (!manages) return { account, linked: manages === false ? [] : null };
+  const linked = await call(['organizations', 'list-accounts'])
+    .then((b) => (Array.isArray(b?.Accounts) ? b.Accounts.map((a) => a?.Id).filter((id) => typeof id === 'string' && id !== account) : null), () => null);
   return { account, linked };
 }
 
-// The profile under the same name whose figures already hold p's account: the organisation that
-// links it, else an earlier profile that signs in to the same account. list: [{ profile, name, account, linked }]
+// What a profile is known to sign in to: this reading's identity, with any part it could not learn
+// kept from the cache's record while the account is the same one.
+const knownIdentity = (got, was) => {
+  const account = got.account ?? was?.account ?? null;
+  return { account, linked: got.linked ?? (account && account === was?.account ? was?.linked : null) ?? [] };
+};
+
+// The profile whose figures already hold p's account, under any name: the organisation that links
+// it, else an earlier profile that signs in to the same account. list: [{ profile, name, account, linked }]
 //   -> profile | null
 export function coveredBy(p, list) {
   if (!p?.account) return null;
-  const peers = list.filter((q) => q.profile !== p.profile && q.name === p.name && q.account);
+  const peers = list.filter((q) => q.profile !== p.profile && q.account);
   const org = peers.find((q) => q.linked?.includes(p.account));
   if (org) return org.profile;
   const at = list.findIndex((q) => q.profile === p.profile);
@@ -392,6 +404,8 @@ const uncovered = (sources, profiles) => {
   const list = knownAccounts(sources, profiles);
   return list.some((p) => profiles?.[p.profile]?.covered && !coveredBy(p, list));
 };
+// A profile read before accounts were recorded has to be identified, whether or not it is due.
+const unidentified = (rec) => rec != null && !('account' in rec);
 
 // One AWS reading folded into the last one (`last`, the cache's `aws`, or null): each due profile is
 // read (with force, every one) and every other keeps its record. An organisation profile's figures
@@ -403,7 +417,9 @@ export async function readAws({ sources, last = null, aws = awsCli, now, force =
   const had = Object.fromEntries(sources.map((s) => [s.key, last?.profiles?.[s.key]]));
   const due = Object.fromEntries(sources.map((s) => [s.key, force || profileDue(had[s.key], now)]));
   const ids = { ...had };
-  for (const s of sources) if (due[s.key]) ids[s.key] = await identify(aws, s.key);
+  for (const s of sources) {
+    if (due[s.key] || unidentified(had[s.key])) ids[s.key] = knownIdentity(await identify(aws, s.key), had[s.key]);
+  }
   const list = knownAccounts(sources, ids);
   const profiles = {};
   for (const [i, s] of sources.entries()) {
@@ -588,7 +604,7 @@ const DUE = {
   github: hourly,
   vercel: hourly,
   aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now) || creditMoved(s, had?.profiles?.[s.key]))
-    || uncovered(sources, had?.profiles),
+    || uncovered(sources, had?.profiles) || sources.some((s) => unidentified(had?.profiles?.[s.key])),
 };
 
 // The cache as costs.md has it now: a profile removed from costs.md is dropped from AWS, and its
