@@ -41,10 +41,10 @@ is set until the eval harness shows finding quality holds on the cheaper model.
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
-done with its PR, on the first pass that reads the marker. A worker waiting at the 5-hour usage
-limit is not stalled: where config §3 `autopilot-usage-resume` is `yes` the pass reports it as
-paused until the reset and lets it resume, and otherwise it stops and parks it with the reset time
-(orchestrator-recovery.md). Log growth
+done with its PR, on the first pass that reads the marker. A worker at a usage limit (5-hour, weekly
+or any other) is not stalled: the pass reports it as paused, holds every spawn and resume, and
+resumes it in its own session once the limit lifts, at its reset or sooner when a probe call
+succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.

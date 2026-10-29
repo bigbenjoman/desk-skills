@@ -5,10 +5,11 @@
 // Never billed to an API key: the call runs without ANTHROPIC_API_KEY, on the signed-in account.
 import { mkdirSync, openSync, closeSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { newestReading, stateDirs, usageDir, probeLog } from './usage-pace.mjs';
 import { takeBorrowLock } from './borrow.mjs';
+import { usageLimit } from './usage-limit.mjs';
 
 export const PROBE_EVERY_MS = 5 * 60 * 1000;
 // However many desk-q windows are open, at most one probe starts in this long.
@@ -63,4 +64,27 @@ export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 
     child.unref();
   } finally { closeSync(fd); }
   return { ran: true };
+}
+
+// One probe the caller waits for: has the usage limit lifted? A batch held on it asks once a pass,
+// whatever the limit's reset time says, since a switch to another subscription lifts it early. Its
+// output is kept as probe.log, so desk-q's reading is as fresh as the answer.
+//   -> { ok: true } | { ok: false, limit: { type, resetsAt } | null, why }
+export function probeNow({ dir = usageDir(), claude = 'claude', env = process.env, timeoutMs = 120_000 } = {}) {
+  const r = spawnSync(claude, PROBE_ARGS, { env: probeEnv(env), encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
+  const out = r.stdout ?? '';
+  try {
+    mkdirSync(dir, { recursive: true });
+    if (out) writeFileSync(probeLog(dir), out);
+    writeFileSync(join(dir, 'probe.at'), String(Date.now()));
+  } catch { /* the answer stands without the reading */ }
+  const u = usageLimit(out);
+  const limit = u.last?.kind === 'limit' && !u.last.resumed ? { type: u.last.type, resetsAt: u.last.resetsAt } : null;
+  // Answered: a result that is not an error, and no rejection after the model last spoke.
+  const answered = out.split('\n').some((l) => { try { const e = JSON.parse(l); return e?.type === 'result' && e.is_error === false; } catch { return false; } });
+  if (r.status === 0 && answered && !limit) return { ok: true };
+  const why = limit ? 'rejected at the usage limit'
+    : r.error ? r.error.message
+    : `${claude} exited ${r.status ?? r.signal} with no answer${(r.stderr ?? '').trim() ? `: ${r.stderr.trim().split('\n').pop().slice(0, 200)}` : ''}`;
+  return { ok: false, limit, why };
 }
