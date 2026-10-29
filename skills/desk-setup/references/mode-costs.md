@@ -52,6 +52,11 @@ AWS config), never a token.
    It overwrites the file, keeping the previous copy as `costs.md.bak`. A credit is stored with the
    day it was entered. **A no, or no answer, writes nothing**: say that no cost sources were saved.
 
+**Neon is filled in by hand.** Nothing detects it: the user adds each name's row to the file's
+`## Neon` section from each org's Billing page (org id, plan, monthly fee, project ids, and the price
+of each unit used), and puts a Neon API key alone in `~/.config/desk/neon-api-key`. Never guess a
+price or a fee. An org on the `free` plan is not read. `write` keeps the section as it was saved.
+
 **Run again** to see the saved list: saved sources keep their names, credits and budget, and every
 team, project or profile found since is marked `new`; one no longer found is marked `not found` and
 kept until dropped. Nothing changes until they confirm and `write` runs. `desk-env costs show`
