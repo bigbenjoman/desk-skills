@@ -2194,7 +2194,7 @@ const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 const PARTIAL_MS = 30;
 const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them. An epic
-// has every one but Epics and Costs, and a name with no repo in desk has only Costs.
+// has every one but Epics and Costs, and a name whose repo isn't set up here has only Costs.
 export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics'], ['costs', 'Costs']];
 const VIEW_KEYS = '←→ or 1–5 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
@@ -2202,7 +2202,7 @@ export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates foll
 export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
 export const NO_EPICS_HERE = "An epic has no Epics view: you're already in one.";
 export const NO_COSTS_HERE = "An epic has no Costs view: its repo's is esc, then 5.";
-export const onlyCosts = (name) => `${name} has no repo in desk, so it has only Costs.`;
+export const onlyCosts = (name) => `${name} isn't set up in desk here, so it has only Costs.`;
 
 function jiraUrlFor(slug, key) {
   const site = repoConfigValue(slug, 'jira-site');

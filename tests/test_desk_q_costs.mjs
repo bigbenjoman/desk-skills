@@ -260,7 +260,7 @@ t('DS-292 AC4 ▲ on credits is amber', supRaw(V, 'AWS').includes(`${AMBER}▲ o
 t('DS-292 AC4 a ▲ credits note says what they covered and what it would have been', `${V.frame().includes(CREDITS_NOTE)} ${V.raw().some((l) => l.includes(`${AMBER}▲ credits      `))}`, 'true true');
 const notAt = V.frame().join('\n');
 await V.press('1');
-t('DS-292 a name with no repo in desk has only Costs, and says so', `${V.frame().join('\n') !== notAt} ${V.crumbs()} | ${V.tabOn()} | ${V.frame().includes(Q.onlyCosts('pr-ninja'))}`, 'true desk-q › costs › pr-ninja | 5 Costs | true');
+t('DS-292 a name whose repo isn\'t set up here has only Costs, and says so', `${V.frame().join('\n') !== notAt} ${V.crumbs()} | ${V.tabOn()} | ${V.frame().includes(Q.onlyCosts('pr-ninja'))}`, 'true desk-q › costs › pr-ninja | 5 Costs | true');
 await V.press('\x1b');
 await V.press('\x1b[B');
 await V.press('\r');
