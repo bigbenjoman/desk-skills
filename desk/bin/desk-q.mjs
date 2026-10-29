@@ -1022,7 +1022,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
 
 export const NO_COST_SOURCES = 'No cost sources set up. /desk-setup costs adds them.';
 export const NO_COST_READING = 'No cost reading yet. desk-q reads them in the background.';
-const SUPPLIER_LABEL = { github: 'GitHub', vercel: 'Vercel' };
+const SUPPLIER_LABEL = { github: 'GitHub', vercel: 'Vercel', aws: 'AWS' };
 const usd = (n) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 // "October, 1–26" while the month runs, "September" once it is read in full.
 function monthText(p) {

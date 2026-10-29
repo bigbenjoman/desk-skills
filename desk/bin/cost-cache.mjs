@@ -417,18 +417,26 @@ function writeCache(cache, dir) {
 
 // ---- what was charged, by name -------------------------------------------------------------------
 // Where each supplier's reading keeps its figures: for GitHub, entries `{ name, total, … }` keyed by
-// repo; for Vercel, a figure keyed by name. Each supplier's `shared` is what no name owns: GitHub's
-// entries keyed by account, Vercel's one figure. An entry with no `total` (can't read, or no good
-// reading yet) has no figure.
-const BILLED_BY = { github: 'repos', vercel: 'names' };
+// repo; for Vercel, a figure keyed by name; for AWS, entries `{ name, period, total, lines, … }` keyed
+// by profile. Each supplier's `shared` is what no name owns: GitHub's entries keyed by account,
+// Vercel's one figure; AWS has none. An entry with no `total` (can't read, or no good reading yet)
+// has no figure.
+const BILLED_BY = { github: 'repos', vercel: 'names', aws: 'profiles' };
 const figure = (e) => (typeof e === 'number' ? e : e?.total);
 const named = (r, s) => Object.entries(r[BILLED_BY[s]] ?? {});
 const sharedOf = (r) => (typeof r.shared === 'number' ? [r.shared] : Object.values(r.shared ?? {}));
 // A reading whose every call failed has a period and no figure: it is not read. Vercel writes its
-// totals even then, as 0, so it is read once a team holds lines, from this reading or a kept one.
+// totals even then, as 0, so it is read once a team holds lines, from this reading or a kept one;
+// AWS once a profile does.
 const hasFigure = (r, s) => (s === 'vercel' ? Object.values(r.teams ?? {}).some((t) => t?.lines)
-  : [...named(r, s).map(([, e]) => e), ...sharedOf(r)].some((e) => typeof figure(e) === 'number'));
+  : s === 'aws' ? Object.values(r.profiles ?? {}).some((p) => p?.lines)
+    : [...named(r, s).map(([, e]) => e), ...sharedOf(r)].some((e) => typeof figure(e) === 'number'));
 const monthOf = (p) => p.year * 12 + p.month;
+const newest = (ps) => ps.reduce((a, p) => (!a || monthOf(p) > monthOf(a) || (monthOf(p) === monthOf(a) && p.to > a.to) ? p : a), null);
+// AWS reads each profile on its own day, so its period is its newest profile's with figures.
+const periodOf = (r, s) => (s === 'aws' ? newest(Object.values(r.profiles ?? {}).filter((p) => p?.lines && p.period).map((p) => p.period)) : r.period);
+// A profile whose last good figures are from another month has no figure this month.
+const figureIn = (e, s, period) => (s === 'aws' && !(e?.lines && samePeriod(e.period, period)) ? undefined : figure(e));
 
 // This month's charges by name, from the newest reading's month: suppliers read for an earlier month
 // are left out. Every sum is taken in whole cents, so the lines add up to the total exactly.
@@ -436,19 +444,20 @@ const monthOf = (p) => p.year * 12 + p.month;
 //   -> { period, total, suppliers: [{ supplier, total }], names: [{ name, total | null }], shared | null },
 //      most charged first; null with no reading
 export function chargesByName({ cache, names = [] }) {
-  const read = Object.keys(BILLED_BY).filter((s) => cache?.[s]?.period && hasFigure(cache[s], s));
+  const read = Object.keys(BILLED_BY).filter((s) => cache?.[s] && periodOf(cache[s], s) && hasFigure(cache[s], s));
   if (!read.length) return null;
-  const period = read.map((s) => cache[s].period).reduce((a, p) => (monthOf(p) > monthOf(a) || (monthOf(p) === monthOf(a) && p.to > a.to) ? p : a));
+  const period = newest(read.map((s) => periodOf(cache[s], s)));
   const by = new Map(names.map((n) => [n, null]));
   const suppliers = [];
   let shared = null;
-  for (const s of read.filter((x) => samePeriod(cache[x].period, period))) {
+  for (const s of read.filter((x) => samePeriod(periodOf(cache[x], x), period))) {
     let sum = 0;
     for (const [key, e] of named(cache[s], s)) {
       const name = e?.name ?? key;
       if (!by.has(name)) by.set(name, null);
-      if (typeof figure(e) !== 'number') continue;
-      const c = Math.round(figure(e) * 100);
+      const f = figureIn(e, s, period);
+      if (typeof f !== 'number') continue;
+      const c = Math.round(f * 100);
       by.set(name, (by.get(name) ?? 0) + c);
       sum += c;
     }
