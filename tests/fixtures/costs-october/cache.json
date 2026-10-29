@@ -65,46 +65,5 @@
     },
     "names": { "voicepa": 59.78, "pr-ninja": 26.15, "forewatt": 0.11, "yield-index": 0.48 },
     "shared": 17.05
-  },
-  "aws": {
-    "at": 1793091600000,
-    "period": { "year": 2026, "month": 10, "from": "2026-10-01", "to": "2026-10-26" },
-    "profiles": {
-      "voicepa-admin": { "name": "voicepa", "at": 1793091600000, "total": 1.59, "failed": null, "items": [
-        { "service": "Amazon Elastic Compute Cloud - Compute", "used": 1.33, "credits": 0, "charged": 1.33 },
-        { "service": "Tax", "used": 0.26, "credits": 0, "charged": 0.26 }
-      ] },
-      "prninja-admin": { "name": "pr-ninja", "at": 1793091600000, "total": 0, "failed": null, "items": [
-        { "service": "Amazon Relational Database Service", "used": 18.32, "credits": -18.32, "charged": 0 },
-        { "service": "AmazonCloudWatch", "used": 6.78, "credits": -6.78, "charged": 0 },
-        { "service": "Amazon Virtual Private Cloud", "used": 3.2, "credits": -3.2, "charged": 0 },
-        { "service": "Amazon EC2 Container Registry (ECR)", "used": 2.5, "credits": -2.5, "charged": 0 },
-        { "service": "Amazon Elastic Container Service", "used": 0.46, "credits": -0.46, "charged": 0 },
-        { "service": "AWS Secrets Manager", "used": 0.33, "credits": -0.33, "charged": 0 },
-        { "service": "AWS Cost Explorer", "used": 0.12, "credits": -0.12, "charged": 0 },
-        { "service": "Amazon Simple Storage Service", "used": 0.02, "credits": -0.02, "charged": 0 }
-      ] },
-      "forewatt": { "name": "forewatt", "at": 1792918800000, "total": 119.1, "failed": { "at": 1793091600000, "why": "The SSO session associated with this profile has expired or is otherwise invalid." }, "items": [
-        { "service": "Amazon Relational Database Service", "used": 56.87, "credits": 0, "charged": 56.87 },
-        { "service": "Amazon Elastic Container Service", "used": 19.08, "credits": 0, "charged": 19.08 },
-        { "service": "AmazonCloudWatch", "used": 11.98, "credits": 0, "charged": 11.98 },
-        { "service": "Amazon Virtual Private Cloud", "used": 5.66, "credits": 0, "charged": 5.66 },
-        { "service": "AWS Step Functions", "used": 3.08, "credits": 0, "charged": 3.08 },
-        { "service": "Amazon Simple Storage Service", "used": 1.81, "credits": 0, "charged": 1.81 },
-        { "service": "Amazon EC2 Container Registry (ECR)", "used": 0.42, "credits": 0, "charged": 0.42 },
-        { "service": "AWS Secrets Manager", "used": 0.34, "credits": 0, "charged": 0.34 },
-        { "service": "Amazon API Gateway", "used": 0.01, "credits": 0, "charged": 0.01 },
-        { "service": "Tax", "used": 19.85, "credits": 0, "charged": 19.85 }
-      ] },
-      "yieldindex": { "name": "yield-index", "at": 1793091600000, "total": 0, "failed": null, "items": [
-        { "service": "Amazon Relational Database Service", "used": 24.9, "credits": -24.9, "charged": 0 },
-        { "service": "Amazon Simple Storage Service", "used": 4.61, "credits": -4.61, "charged": 0 }
-      ] },
-      "fansurge": { "name": "fansurge", "at": 1793091600000, "total": 55.19, "failed": null, "items": [
-        { "service": "Amazon Elastic Compute Cloud - Compute", "used": 38.4, "credits": 0, "charged": 38.4 },
-        { "service": "Amazon Simple Storage Service", "used": 7.59, "credits": 0, "charged": 7.59 },
-        { "service": "Tax", "used": 9.2, "credits": 0, "charged": 9.2 }
-      ] }
-    }
   }
 }

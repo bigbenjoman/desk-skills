@@ -416,12 +416,17 @@ function writeCache(cache, dir) {
 }
 
 // ---- what was charged, by name -------------------------------------------------------------------
-// Where each supplier's reading keeps its figures, each entry `{ name?, total, … }` keyed by its
-// source (a GitHub repo, an AWS profile), or for Vercel a figure keyed by name; an entry with no
-// `name` bills its key. Each supplier's `shared` is what no name owns: a figure, or entries keyed by
-// account. An entry with no `total` (can't read, or no good reading yet) has no figure.
-const BILLED_BY = { github: 'repos', vercel: 'names', aws: 'profiles' };
+// Where each supplier's reading keeps its figures: for GitHub, entries `{ name, total, … }` keyed by
+// repo; for Vercel, a figure keyed by name. Each supplier's `shared` is what no name owns: GitHub's
+// entries keyed by account, Vercel's one figure. An entry with no `total` (can't read, or no good
+// reading yet) has no figure.
+const BILLED_BY = { github: 'repos', vercel: 'names' };
 const figure = (e) => (typeof e === 'number' ? e : e?.total);
+const named = (r, s) => Object.entries(r[BILLED_BY[s]] ?? {});
+// Vercel writes shared as 0 when every team failed, so its 0 is not a figure.
+const sharedOf = (r) => (typeof r.shared === 'number' ? (r.shared ? [r.shared] : []) : Object.values(r.shared ?? {}));
+// A reading whose every call failed has a period and no figure: it is not read.
+const hasFigure = (r, s) => [...named(r, s).map(([, e]) => e), ...sharedOf(r)].some((e) => typeof figure(e) === 'number');
 const monthOf = (p) => p.year * 12 + p.month;
 
 // This month's charges by name, from the newest reading's month: suppliers read for an earlier month
@@ -430,7 +435,7 @@ const monthOf = (p) => p.year * 12 + p.month;
 //   -> { period, total, suppliers: [{ supplier, total }], names: [{ name, total | null }], shared | null },
 //      most charged first; null with no reading
 export function chargesByName({ cache, names = [] }) {
-  const read = Object.keys(BILLED_BY).filter((s) => cache?.[s]?.period);
+  const read = Object.keys(BILLED_BY).filter((s) => cache?.[s]?.period && hasFigure(cache[s], s));
   if (!read.length) return null;
   const period = read.map((s) => cache[s].period).reduce((a, p) => (monthOf(p) > monthOf(a) || (monthOf(p) === monthOf(a) && p.to > a.to) ? p : a));
   const by = new Map(names.map((n) => [n, null]));
@@ -438,7 +443,7 @@ export function chargesByName({ cache, names = [] }) {
   let shared = null;
   for (const s of read.filter((x) => samePeriod(cache[x].period, period))) {
     let sum = 0;
-    for (const [key, e] of Object.entries(cache[s][BILLED_BY[s]] ?? {})) {
+    for (const [key, e] of named(cache[s], s)) {
       const name = e?.name ?? key;
       if (!by.has(name)) by.set(name, null);
       if (typeof figure(e) !== 'number') continue;
@@ -446,8 +451,7 @@ export function chargesByName({ cache, names = [] }) {
       by.set(name, (by.get(name) ?? 0) + c);
       sum += c;
     }
-    const sh = cache[s].shared;
-    for (const e of typeof sh === 'number' ? [sh] : Object.values(sh ?? {})) {
+    for (const e of sharedOf(cache[s])) {
       if (typeof figure(e) !== 'number') continue;
       const c = Math.round(figure(e) * 100);
       shared = (shared ?? 0) + c;

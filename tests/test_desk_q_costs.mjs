@@ -63,11 +63,11 @@ function screen(start = { kind: 'overview', all: false }, columns = 104) {
   };
 }
 const row = (name, amount) => `  ${name.padEnd(14)}${amount.padStart(10)}`;
-const CHARGED = 'charged $899.97 in October, 1–26 │ GitHub $620.52 · AWS $175.88 · Vercel $103.57';
+const CHARGED = 'charged $724.09 in October, 1–26 │ GitHub $620.52 · Vercel $103.57';
 const TABLE = [
   `  ${'REPO'.padEnd(14)}${'CHARGED'.padStart(10)}`,
-  row('voicepa', '$317.11'), row('pr-ninja', '$277.48'), row('forewatt', '$119.42'), row('desk-skills', '$110.45'), row('fansurge', '$55.19'),
-  row('yield-index', '$0.48'), row('gygg-platform', '$0.23'), row('pranicuk', '–'), row('shared', '$19.61'), row('total', '$899.97'),
+  row('voicepa', '$315.52'), row('pr-ninja', '$277.48'), row('desk-skills', '$110.45'), row('yield-index', '$0.48'), row('forewatt', '$0.32'),
+  row('gygg-platform', '$0.23'), row('fansurge', '–'), row('pranicuk', '–'), row('shared', '$19.61'), row('total', '$724.09'),
 ];
 const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
 const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('move  '));
@@ -97,8 +97,8 @@ const lines3 = f2.slice(at3 + 3).filter((l) => /^[ ›] \S/.test(l)).map((l) => 
 const sum3 = lines3.filter(([n, a]) => n !== 'total' && a !== '–').reduce((a, [, s]) => a + cents(s), 0);
 const total3 = cents(lines3.find(([n]) => n === 'total')?.[1] ?? 'NaN');
 t('AC3 the rows sum to the total row and to the charged line, in cents', `${sum3 === total3} ${total3 === charged3} ${lines3.length}`, `true true ${TABLE.length - 1}`);
-const bySupplier = [...(f2[at3] ?? '').matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]+)/g)].map((m) => cents(m[1]));
-t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySupplier.reduce((a, c) => a + c, 0) === charged3}`, '3 true');
+const bySupplier = [...(f2[at3] ?? '').matchAll(/(?:GitHub|Vercel) (\$[\d.,]+)/g)].map((m) => cents(m[1]));
+t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySupplier.reduce((a, c) => a + c, 0) === charged3}`, '2 true');
 
 // ---- AC8: the Claude usage line above the keys, and none of home's batch lines
 t('AC8 the Claude usage line sits above the keys, a blank line between', `${f2[keysAt(f2) - 2]?.startsWith('Claude usage  ')} ${f2[keysAt(f2) - 1]}`, 'true ');
@@ -135,6 +135,21 @@ await sleep(20);
 await S10.press('5');
 t('AC10 with sources and no reading, the screen says so', S10.frame().includes(Q.NO_COST_READING) && Q.NO_COST_READING, 'No cost reading yet. desk-q reads them in the background.');
 S10.ui.finish(0);
+// A first reading whose every call failed has a period and no figure: still no reading, never $0.00.
+process.env.DESK_COST_DIR = join(T, 'failed-reading');
+mkdirSync(process.env.DESK_COST_DIR);
+const failed = { at: FIXED, why: 'not signed in' };
+const october = { year: 2026, month: 10, from: '2026-10-01', to: '2026-10-26' };
+writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify({
+  github: { at: FIXED, period: october, repos: { 'bigbenjoman/voicepa': { name: 'voicepa', failed } }, shared: { bigbenjoman: { failed } } },
+  vercel: { at: FIXED, period: october, teams: { team_ben: { team: 'ben-lavenders-projects', plan: 'pro', owner: null, failed } }, names: {}, shared: 0 },
+}));
+const S10f = screen();
+await sleep(20);
+await S10f.press('5');
+t('AC10 a first reading whose every call failed reads as no reading, not $0.00',
+  `${S10f.frame().includes(Q.NO_COST_READING)} ${S10f.frame().some((l) => l.startsWith('charged '))}`, 'true false');
+S10f.ui.finish(0);
 
 // ---- AC9: no cost sources on the machine
 process.env.DESK_COSTS = join(T, 'no-costs.md');
