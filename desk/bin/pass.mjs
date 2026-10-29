@@ -6,7 +6,7 @@
 // detail lives here and only a summary reaches the conversation.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
@@ -37,7 +37,8 @@ import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, RERUN_COOLD
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBatches, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
+import { listBatches } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -922,7 +923,8 @@ if (blockedByDone.length) {
 // repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
 // machine has room, then above it up to the §3b cap into slots no other live batch has first claim
 // on (borrow.mjs). Either way, with a machine profile its worker cap is a hard limit across every
-// repo (machineBudget), counted under the same lock when it can be taken.
+// repo (machineBudget), counted under the same lock when it can be taken. And the repo's §3b cap is
+// shared by all its batches (repoBudget).
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
 const PACE_HELD = '7-day usage ahead of pace holds every spawn';
@@ -936,10 +938,13 @@ const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudge
 // it starts within the worker count as any spawn does.
 const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
 const spawnHeld = held === PACE_HELD && spawnable.length ? null : held;
+let REPO_SLUG = null;
+try { REPO_SLUG = E.repoSlug(); } catch { /* outside a repo there are no batches */ }
+const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve(b.queue) !== resolve(QUEUE_FILE) && existsSync(b.queue));
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
+if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -947,15 +952,20 @@ if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && spawnable.length &&
   } else lockWhy = l.why;
 }
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
-const otherRepos = MACHINE_CAP != null || borrowLock ? otherQueues({ self: QUEUE_FILE }) : [];
+const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const plan = borrowPlan({
   on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: spawnable.length,
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
-const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room);
+const REPO = repoBudget({
+  batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
+  batches: repoBatches({ slug: REPO_SLUG, queues: otherRepos }),
+});
+const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
+const repoLine = REPO.line && REPO.line + (lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -2072,6 +2082,7 @@ lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}
 lines.push(CEILING.line);
 lines.push(CONC.line);
 lines.push(machineLine);
+if (repoLine) lines.push(repoLine);
 if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);
 if (borrowLine) lines.push(borrowLine);
 lines.push('');
@@ -2090,6 +2101,7 @@ const heldWhy = report.spawned.length || !eligible.length ? null
   : held ?? (baseHold ? 'the batch base sync holds every spawn'
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
+  : REPO.room <= 0 ? `the repo's shared cap: ${REPO.line}`
   : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
