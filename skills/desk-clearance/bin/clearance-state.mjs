@@ -213,9 +213,7 @@ function resolveMergeMethod(allowed) {
   return { method: null, source: 'config §4 Merge method unset - run /desk-setup; nothing is merged until it is set', warn: null }
 }
 
-const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate'])
-const isBot = (a) =>
-  !a || a.__typename === 'Bot' || /\[bot\]$/.test(a.login || '') || BOT_LOGINS.has(a.login || '')
+const isBot = E.isBot
 
 async function gh(args, { json = true } = {}) {
   try {

@@ -824,6 +824,17 @@ export function applyBatchBase() {
 // The id a batch base's conflict fix worker runs under: its base worktree's directory name
 // (base-sync.mjs baseWorktreePath), so its log, settings and ticket file sit beside the tickets'.
 export const baseFixKey = (base) => `base-${String(base).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+// Whether a sync of the batch base may push it: §3 batch-base-push, unset meaning `ask`, which is one
+// approval per batch passed to every pass (and every base conflict fix worker) as
+// AUTOPILOT_BASE_PUSH_APPROVED=1. The pass, the base gate and the worker's settings all read it here.
+export function basePushGrant() {
+  const perm = permissionOrUnset('batch-base-push') ?? 'ask';
+  return { perm, key: permissionKey('batch-base-push'), ok: perm === 'yes' || (perm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED) };
+}
+// A GitHub author that is a bot, not a person: GraphQL's Bot type, a `[bot]` login, or one of the
+// integrations that comment as an ordinary account. A missing author counts as a bot.
+const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate']);
+export const isBot = (a) => !a?.login || a.__typename === 'Bot' || /\[bot\]$/.test(a.login) || BOT_LOGINS.has(a.login.toLowerCase());
 export const skillsDir = () => expandHome(process.env.DESK_SKILLS_DIR ?? join(HOME, '.agents', 'skills'));
 export const lockDir = () => expandHome(process.env.DESK_LOCK_DIR ?? '/tmp');
 // Claude Code keys a project's memory dir by the absolute cwd with every non-alphanumeric char as `-`.

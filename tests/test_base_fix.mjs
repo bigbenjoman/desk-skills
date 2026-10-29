@@ -37,6 +37,14 @@ t('AC4 after two tries: stuck', baseFixCall(done2, c({ head: '3'.repeat(40) })).
 t('outcome: the last park', baseFixOutcome([['AUTOPILOT_STAGE', '4/9'], ['AUTOPILOT_PARK', 'which side? ']]), 'parked: which side?');
 t('outcome: a done', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none jira=none']]), 'finished: pr=none jira=none');
 t('outcome: neither', baseFixOutcome([]), 'ended with no marker');
+t('outcome: a park answered, then a done, is finished', baseFixOutcome([['AUTOPILOT_PARK', 'which side?'], ['AUTOPILOT_DONE', 'pr=none jira=none']]), 'finished: pr=none jira=none');
+t('outcome: a done, then a park, is parked', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none'], ['AUTOPILOT_PARK', 'push refused']]), 'parked: push refused');
+
+// A worker that may not push the base could only park: without §3 batch-base-push no try starts.
+const noPush = baseFixCall(null, c({ push: { perm: 'ask', key: 'batch-base-push', ok: false } }));
+t('no base push grant: the person\'s', noPush.call, 'person');
+t('and it says which row, and how to grant it', noPush.why, 'config §3 batch-base-push is "ask", so no worker may push the resolved base (run passes with AUTOPILOT_BASE_PUSH_APPROVED=1 to let one)');
+t('with the grant: a try starts', baseFixCall(null, c({ push: { perm: 'yes', key: 'batch-base-push', ok: true } })).call, 'spawn');
 
 // The worker's ticket file, briefing and task.
 const ctx = { key: 'base-feat-x', base: 'feat/x', source: 'main', fix: first.fix };

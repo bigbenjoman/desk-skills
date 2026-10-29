@@ -101,13 +101,12 @@ function gate() {
   const path = wt.path;
 
   // The same grant every sync needs: one approval per batch where it is `ask`.
-  const perm = E.permissionOrUnset('batch-base-push') ?? 'ask';
-  const push = perm === 'yes' || (perm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED);
+  const { perm, key, ok: push } = E.basePushGrant();
   const s = syncBase({ path, base: BASE, branch: SOURCE, push });
   if (!s.ok) {
     if (s.reason === 'conflict') conflict = s.files;
     failures.push(s.reason === 'conflict' ? `merging ${SOURCE} into ${BASE} conflicts (${s.files.join(', ')}): the pass hands it to a conflict fix worker where §3 lets one resolve it`
-      : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${E.permissionKey('batch-base-push')} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
+      : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${key} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
         : `syncing ${BASE}: ${s.why}`);
     return;
   }

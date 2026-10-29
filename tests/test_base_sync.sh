@@ -26,7 +26,7 @@ cat > "$T/desk/bin/setup-worktree.sh" <<'EOF'
 mkdir -p "$DESK_WORKTREES_DIR/$2"; echo "[setup-worktree] worktree=$DESK_WORKTREES_DIR/$2"; echo "[setup-worktree] branch=$3"
 EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
-if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3 \$AUTOPILOT_RESUME}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
 EOF
 # The session registry: $T/agents.json when it exists, else empty.
 printf '#!/bin/sh\ncat "%s/agents.json" 2>/dev/null || echo "[]"\n' "$T" > "$T/stub/claude"
@@ -174,6 +174,11 @@ check "DS-320 AC4 a try that left the base where it was: put to the person" \
   '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"Conflicting files: a.txt. Still in conflict after 1 fix try; the last try parked: both sides rewrite a.txt and neither can be kept: resolve it by hand in $C/wt/base-feat-x and push"* ]]'
 check "DS-320 AC4 and no second try starts" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ]'
 
+# A worker that may not push the base could only park, so without §3 batch-base-push none starts.
+: > "$T/spawns"; fresh bnopush no; feature; fixrow yes; conflict; pass
+check "DS-320 a worker that may not push the base is not started: the person, naming the row" \
+  '! grep -q "^base-" "$T/spawns" && [ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"Config §3 batch-base-push is \"no\", so no worker may push the resolved base: resolve it by hand"* ]]'
+
 # AC3: the base gate met the conflict at the base's head: the same worker takes it, and the gate's
 # failure is not put to the person.
 : > "$T/spawns"; fresh bgate; feature; fixrow yes; conflict; node "$B/queue.mjs" set T-1 state=done >/dev/null
@@ -214,6 +219,21 @@ for _ in 1 2 3 4 5 6 7; do pass; done
 check "DS-320 a worker paused on the usage limit with resume granted is waited on, not wedged" \
   '[ ! -s "$T/kills" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ] && [[ "$out" == *"base-feat-x until "*"then it resumes"* ]] && [[ "$out" != *"by hand"* ]]'
 rm -f "$T/agents.json"
+# Its session exits at the limit, as a headless worker's does: held until the reset, never ended as no
+# marker, then resumed in its own session as the same try, once per limit. The log is aged so the exit
+# is not read as a worker the registry has not caught up with.
+age_log(){ touch -t 202001010000 "$C/state/logs/base-feat-x.log"; }
+usage_row='| `autopilot-usage-resume` | Resume across the usage limit | `no` | `yes` |'
+: > "$T/spawns"; fresh bexit; feature; fixrow yes; echo "$usage_row" >> "$C/config.md"
+conflict; pass; sid=$(jq -r .base_fix.running "$DESK_QUEUE"); limit_event "$(( $(date +%s) + 3600 ))"; age_log; pass
+check "DS-320 a worker whose session exited at the limit is held until the reset, not ended as no marker" \
+  '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [[ "$out" == *"base-feat-x until "*"then it resumes"* ]] && [[ "$out" != *"no marker"* ]] && [[ "$out" != *"by hand"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
+limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+check "DS-320 after the reset it is resumed in its own session, as the same try" \
+  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"base-feat-x resumed after the usage limit reset"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r .base_fix.resume_reset "$DESK_QUEUE")" != null ]'
+age_log; pass
+check "DS-320 once per limit: a resume that ends at the same limit ends the try" \
+  '[ "$(grep -c "RESUME" "$T/spawns")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x ended with no marker"* ]]'
 : > "$T/kills"; fresh bnoresume; feature; fixrow yes; conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"; pass
 check "DS-320 without the resume grant it is stopped at the limit, and the base goes to the person" \
   '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped at the 5-hour usage limit, since config §3 autopilot-usage-resume is \"no\""* ]]'

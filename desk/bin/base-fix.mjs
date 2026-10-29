@@ -19,10 +19,14 @@ const short = (sha) => String(sha ?? '?').slice(0, 12);
 const fileList = (files) => (files?.length ? files.join(', ') : 'not listed');
 
 // rec: the queue's base_fix, or null. c: { head (origin's base), source (origin's default branch),
-// files, perm (§3 pr-conflict-unreviewed), alive (the running try's worker is live) }. A try already
-// made at this head is one whose worker finished without moving the base.
+// files, perm (§3 pr-conflict-unreviewed), alive (the running try's worker is live), push (E.basePushGrant())
+// }. A try already made at this head is one whose worker finished without moving the base. A worker that
+// may not push the base could only park, so without that grant no try starts.
 export function baseFixCall(rec, c) {
   if (c.perm !== 'yes') return { call: 'person', why: `config §3 pr-conflict-unreviewed is "${c.perm}", so no worker resolves it` };
+  if (c.push && !c.push.ok) {
+    return { call: 'person', why: `config §3 ${c.push.key} is "${c.push.perm}", so no worker may push the resolved base${c.push.perm === 'ask' ? ' (run passes with AUTOPILOT_BASE_PUSH_APPROVED=1 to let one)' : ''}` };
+  }
   const done = rec?.tries ?? [];
   const last = done[done.length - 1] ?? null;
   if (rec?.running && c.alive) return { call: 'wait', try: last };
@@ -32,14 +36,13 @@ export function baseFixCall(rec, c) {
   return { call: 'spawn', fix: { try: done.length + 1, of: FIX_TRIES_MAX, head: c.head, source: c.source, files: c.files ?? null } };
 }
 
-// What a finished try's worker left, from its log's markers (harvest.mjs workerMarkers): its last
-// park, else its last done, else that it said neither.
+// What a finished try's worker left, from its log's markers (harvest.mjs workerMarkers): whichever of
+// park and done came last, as for a ticket's worker (one answered after a park, that then finished, has
+// finished), else that it said neither.
 export function baseFixOutcome(markers) {
-  const last = (k) => [...(markers ?? [])].reverse().find(([m]) => m === k)?.[1]?.trim();
-  const park = last('AUTOPILOT_PARK');
-  if (park) return `parked: ${park}`;
-  const done = last('AUTOPILOT_DONE');
-  return done ? `finished: ${done}` : 'ended with no marker';
+  const [k, v] = [...(markers ?? [])].reverse().find(([m]) => m === 'AUTOPILOT_PARK' || m === 'AUTOPILOT_DONE') ?? [];
+  if (k === 'AUTOPILOT_PARK') return `parked: ${v.trim()}`;
+  return k ? `finished: ${v.trim()}` : 'ended with no marker';
 }
 
 // The ticket file the worker reads as its ticket ($DESK_STATE/tickets/<key>.md).

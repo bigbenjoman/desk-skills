@@ -109,9 +109,7 @@ const HEADLESS_KEY = E.permissionKey('autopilot-workers');
 const maySpawn = headlessPerm === 'yes' || (headlessPerm === 'ask' && !!process.env.AUTOPILOT_USER_APPROVED);
 // Pushing a sync merge to the batch base is its own grant, unset meaning `ask`: one approval per
 // batch, asked at Stage 3 and passed to every pass as AUTOPILOT_BASE_PUSH_APPROVED=1.
-const basePushPerm = E.permissionOrUnset('batch-base-push') ?? 'ask';
-const BASE_PUSH_KEY = E.permissionKey('batch-base-push');
-const mayPushBase = basePushPerm === 'yes' || (basePushPerm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED);
+const { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } = E.basePushGrant();
 
 // The orchestrator's own name, for the worker's briefing. Resolve it from this process's own
 // session id, which Claude Code exports, and fall back to the env var. Nothing set the env var
@@ -218,6 +216,13 @@ const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.resetsAt)}`
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
 // the limit refused (the queue's usage_hold).
 const usageHolds = [];
+// A worker waiting at a usage limit until it lifts (or the grace after its reset) is paused, not quiet.
+// The limit passed in is one the worker has not answered since (usageLimit's `resumed` is false).
+const pausedOn = (limit) => !!limit && !limit.resumed && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
+// Passes with no log growth before a worker is reported quiet, and before it is stopped as wedged. Workers
+// log no partial messages, so a long model turn or a suite behind the test lock writes nothing until it ends.
+const QUIET_PASSES = 3;
+const WEDGE_PASSES = 6;
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -465,7 +470,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   for (const l of usage.limits.filter((x) => x.resumed)) {
     notes.push(`- [${t.key}] resumed after ${limitName(l.type)}${l.resetsAt != null ? ` (reset at ${resetText(l.resetsAt)})` : ''}`);
   }
-  const pausedOnLimit = !!limit && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
+  const pausedOnLimit = pausedOn(limit);
   // Kept below only while the ticket is still running once the loop is done.
   if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused });
   else if (t.usage_paused) q('set', t.key, 'usage_paused=null');
@@ -485,7 +490,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= 6 && !done && !handoff) {
+    if (idle >= WEDGE_PASSES && !done && !handoff) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
@@ -494,7 +499,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       wedged = true;
       q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
       report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
-    } else if (idle >= 3) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
+    } else if (idle >= QUIET_PASSES) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
   }
 
   // Screenshots the worker captured but cannot upload: one shared browser profile, so the
@@ -1012,6 +1017,8 @@ const BASE_FIX_KEY = BASE ? E.baseFixKey(BASE) : null;
 let bf = fresh.base_fix ?? null;
 let baseFix = null;
 let baseFixLive = false;
+// A try's worker that exited at the usage limit and is resumed this pass, after its reset.
+let baseFixResume = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
 // machine budget binds it as it binds every worker.
@@ -1050,14 +1057,21 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     // it waits for the reset it is paused, not quiet.
     const limit = !said ? usageLimit(text).last : null;
     const atLimit = limit?.kind === 'limit' ? limit : null;
-    const paused = !!atLimit && !atLimit.resumed && Date.now() < atLimit.resetsAt * 1000 + LIMIT_GRACE_MS;
+    const paused = pausedOn(atLimit);
     const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
     const idle = bytes > (bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
     const sidLive = registryOk && liveSids.has(bf.running);
+    const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
+    // A headless worker ends its session at the limit rather than waiting for the reset. Under the grant
+    // to resume across it, as a ticket's worker: held until the reset, then resumed in its own session
+    // (resumeBaseFix), never ended as no marker. Once per limit: a resume that ends before the model
+    // answers leaves the same limit last in the log, and then ends the try as any other exit.
+    const awaitsReset = exited && !!atLimit && !atLimit.resumed && mayResumeOnLimit && bf.resume_reset !== atLimit.resetsAt;
     const outcome = registryOk && atLimit && !mayResumeOnLimit ? `was stopped at the 5-hour usage limit, since config §3 ${USAGE_KEY} is "${usagePerm}"`
-      : idle >= 6 && !said ? `was stopped as wedged, with no output for ${idle} passes`
-        : registryOk && (said || (!sidLive && !(recent && !endedNormally(text)))) ? baseFixOutcome(markers)
-          : null;
+      : awaitsReset ? null
+        : idle >= WEDGE_PASSES && !said ? `was stopped as wedged, with no output for ${idle} passes`
+          : registryOk && (said || exited) ? baseFixOutcome(markers)
+            : null;
     if (outcome) {
       const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
@@ -1070,15 +1084,19 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         bf = { ...bf, log_bytes: bytes, idle_passes: idle };
         if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
       }
-      if (paused) report.paused.push(`${BASE_FIX_KEY} until ${resetText(atLimit.resetsAt)}, then it resumes (config §3 ${USAGE_KEY} is "yes")`);
-      else if (idle >= 3) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
+      const reset = awaitsReset && Date.now() >= atLimit.resetsAt * 1000;
+      if (reset && !lowMemory) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, reset: atLimit.resetsAt, ended: `exited at the 5-hour usage limit, which reset ${resetText(atLimit.resetsAt)}` };
+      else if (reset) report.paused.push(`${BASE_FIX_KEY}: its usage limit reset ${resetText(atLimit.resetsAt)}; it resumes once memory allows`);
+      else if (paused || awaitsReset) report.paused.push(`${BASE_FIX_KEY} until ${resetText(atLimit.resetsAt)}, then it resumes (config §3 ${USAGE_KEY} is "yes")`);
+      else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
   }
   const originSha = (b) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${b}`], { tolerant: true }) || null;
   // A conflict, met by the sync or by the base gate. A fix worker takes it where §3 lets one; what no
   // worker may take, or what its tries left, is the person's, through `toPerson`.
   const conflicted = (files, toPerson) => {
-    const c = baseFixCall(bf, { head: originSha(BASE), source: originSha(SOURCE), files, perm: E.permission('pr-conflict-unreviewed'), alive: baseFixLive });
+    const c = baseFixCall(bf, { head: originSha(BASE), source: originSha(SOURCE), files, perm: E.permission('pr-conflict-unreviewed'), alive: baseFixLive,
+      push: { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } });
     const said = `merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${files?.length ? files.join(', ') : 'not listed'}`;
     if (c.call === 'person' || c.call === 'stuck') { toPerson(`${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push`); return null; }
     if (c.call === 'wait') return `${said}. Conflict fix try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
@@ -1531,6 +1549,42 @@ async function spawnBaseFix({ wt, fix }) {
   report.spawned.push(`${key} port=${port} model=${model || 'default'} (conflict fix try ${fix.try} of ${fix.of} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFix) await spawnBaseFix(baseFix);
+
+// A try's worker that exited at the usage limit, resumed after the reset in its own session, worktree
+// and log, as resumeKilled resumes a ticket's: the same try, not a new one. One that cannot be resumed
+// ends its try, and the next conflict at this head goes to the person with that reason.
+async function resumeBaseFix({ wt, why, reset, ended }) {
+  const key = BASE_FIX_KEY;
+  const sid = bf.running;
+  if (DRY) { out.push(`base conflict fix (dry run): would resume session ${sid} on ${BASE}, which ${ended}`); return; }
+  const fail = (reason) => {
+    const outcome = `could not be resumed after the usage limit: ${reason}`;
+    bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+    q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+    report.failed.push(`${key}: ${ended}, and ${outcome}`);
+  };
+  if (!wt) return fail(why ?? 'the base worktree is gone');
+  const model = models.off ? '' : models[tierFor({ key })];
+  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
+  const pre = preflight(key, wt, workerEnv);
+  if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const port = await freePort();
+  const briefPath = join(STATE, 'briefings', `${key}.md`);
+  const prompt = `Your previous run of this session ended (${ended}). Carry on with your base conflict fix on ${BASE} from where you stopped, in your worktree ${wt}. ` +
+    'A command may have been cut off part way: check git status, git log and any suite you had running before you go on, and redo only what did not finish. ' +
+    `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.`;
+  const logBytes = logPreflight(key, pre.cost);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, ...(existsSync(briefPath) ? [briefPath] : [])], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return fail(refused);
+  bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, resume_reset: reset };
+  q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  report.spawned.push(`${key} resumed after the usage limit reset — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+}
+if (baseFixResume) await resumeBaseFix(baseFixResume);
 
 for (const t of spawnable) {
   if (baseHold || !(attempts < slots)) break;
@@ -1995,8 +2049,7 @@ function humanSeen(n) {
   let v = null;
   try { v = JSON.parse(sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'reviews,comments'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return true; }
   if (!v || typeof v !== 'object') return true;
-  const bot = (a) => !a?.login || /\[bot\]$/.test(a.login) || ['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate'].includes(a.login.toLowerCase());
-  return [...(v.reviews ?? []), ...(v.comments ?? [])].some((x) => !bot(x.author) && x.author.login.toLowerCase() !== String(conflictHandle ?? '').toLowerCase());
+  return [...(v.reviews ?? []), ...(v.comments ?? [])].some((x) => !E.isBot(x.author) &&x.author.login.toLowerCase() !== String(conflictHandle ?? '').toLowerCase());
 }
 for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
   const n = s.pr;

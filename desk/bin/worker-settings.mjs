@@ -429,9 +429,9 @@ if (mode === 'triage') {
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
   if (baseFix) {
-    const perm = E.permissionOrUnset('batch-base-push') ?? 'ask';
-    if (perm === 'yes' || (perm === 'ask' && process.env.AUTOPILOT_BASE_PUSH_APPROVED)) allow.push(...exact('git', ` push origin ${BRANCH}`));
-    else { deny.push(...bash('git', ' push')); denied.push(`${E.permissionKey('batch-base-push')} (${perm})`); }
+    const push = E.basePushGrant();
+    if (push.ok) allow.push(...exact('git', ` push origin ${BRANCH}`));
+    else { deny.push(...bash('git', ' push')); denied.push(`${push.key} (${push.perm})`); }
   } else if (!branchOk) {
     deny.push(...bash('git', ' push'));
     denied.push(`${E.permissionKey('git-push')} (no usable branch for this ticket${BRANCH ? `: '${BRANCH}'` : ''})`);
