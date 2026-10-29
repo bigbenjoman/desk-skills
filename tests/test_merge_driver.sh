@@ -69,7 +69,8 @@ if (fs.existsSync('$T/gh.broken')) { console.error('error connecting to api.gith
 const prs = JSON.parse(fs.readFileSync(F, 'utf8'));
 const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
-  out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && (!a.includes('--base') || p.base === at('--base')))
+  out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && (!a.includes('--base') || p.base === at('--base'))
+      && (!a.includes('--author') || (p.author ?? 'tester') === at('--author')))
     .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
@@ -374,7 +375,7 @@ cat > "$T/prs.json" <<EOF
 {
   "131": { "head": "fix/T-31", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
   "132": { "head": "fix/T-32", "base": "main", "sha": "$SHA32", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
-  "133": { "head": "fix/T-32-more", "base": "release", "sha": "$SHA33", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+  "133": { "head": "fix/T-32-more", "base": "release", "author": "colleague", "sha": "$SHA33", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
 }
 EOF
 q init merge-close
@@ -386,7 +387,7 @@ cloop "$T/config-close.md"; cloop "$T/config-close.md"
 check "DS-336 AC1: the merged ticket is moved to Done and read back"  '[ "$(merged)" = 131 ] && grep -qx "transition T-31 Done" "$T/jira-close.log" && [ "$(cat "$T/jira-status/T-31")" = Done ] && echo "$out" | grep -q "#131 T-31 moved to Done (read back; §3 jira-close-own-merged)"'
 check "DS-336 AC1: the status is read again after the transition"     '[ "$(grep -c "^get T-31 --json" "$T/jira-close.log")" = 2 ]'
 cloop "$T/config-close.md"
-check "DS-336 AC2: another PR open on the key, on any base, leaves the ticket as it is" '[ "$(merged)" = "131 132" ] && ! grep -q "transition T-32" "$T/jira-close.log" && echo "$out" | grep -q "#132 T-32 left as it is: #133 still open on the key"'
+check "DS-336 AC2: another PR open on the key, by anyone and on any base, leaves the ticket as it is" '[ "$(merged)" = "131 132" ] && ! grep -q "transition T-32" "$T/jira-close.log" && echo "$out" | grep -q "#132 T-32 left as it is: #133 still open on the key"'
 jq --arg s "$SHA34" '. + { "134": { head: "fix/T-34", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 cloop "$T/config-noclose.md"; cloop "$T/config-noclose.md"
 check "DS-336 AC3: with jira-close-own-merged not yes, a merge moves nothing" '[ "$(merged)" = "131 132 134" ] && ! grep -q "T-34" "$T/jira-close.log" && echo "$out" | grep -q "#134 T-34 left as it is: config §3 jira-close-own-merged is ask"'
