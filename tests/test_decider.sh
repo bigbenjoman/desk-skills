@@ -268,5 +268,47 @@ verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci is in_progress. Loo
 out=$(tick)
 check "DS-331 AC2: a line handed on by a session, reworded, starts no second session and shows its latest text" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^W|")" = 1 ] && questions | grep -q "^W|.*check ci is in_progress"'
 
+# ---- DS-334: a park asking again what its last requeue cleared is handed on -------------------------
+# Two of DS-313's real parks, a requeue apart: the same conflict, worded afresh.
+P1='DS-313: rebasing fix/DS-313-restart-driver-inherited-base onto origin/main 6d1deb6 conflicts in desk/bin/installed.mjs and tests/test_installed.sh (upstream DS-306 3bc33a7/a53865c/e2f5c2f). Resolve the conflict (or say how), then a worker re-verifies and opens the draft PR.'
+P2='DS-313: rebase onto origin/main (6d1deb6) conflicts in desk/bin/installed.mjs and tests/test_installed.sh with DS-306 (3bc33a7, a53865c, e2f5c2f). Workers never resolve conflicts: who rebases fix/DS-313-restart-driver-inherited-base? Not reached: push, draft PR, local review post, Jira comment, Jira transition.'
+out=$(P1="$P1" P2="$P2" node --input-type=module -e "
+import { deciderItems, samePark } from '$B/decider.mjs';
+const { P1, P2 } = process.env;
+const q = (prev) => ({ tickets: { 'DS-313': { lane: 'A', state: 'parked', park: { question: P2 }, prev_park: prev } } });
+const [again] = deciderItems({ parked: [{ key: 'DS-313', question: P2 }] }, q({ question: P1, since: '2026-10-28T08:45:00Z', round: 3 }));
+const [first] = deciderItems({ parked: [{ key: 'DS-313', question: P2 }] }, q(undefined));
+const [other] = deciderItems({ parked: [{ key: 'DS-313', question: P2 }] }, q({ question: 'the spec for tests/test_pass.sh needs a fixture from DS-200 at 1a2b3c4', round: 1 }));
+console.log([again.round, again.repeat, again.prev.question === P1, first.round, first.repeat, first.prev, other.round, other.repeat,
+  samePark('needs another round: the tests fail', 'needs another round: the tests fail'), samePark('which design?', 'which copy?')].join(' '));
+")
+check "DS-334 AC2: a park carries its round, the park its last requeue cleared and whether it asks the same" '[ "$out" = "4 true true 1 false  2 false true false" ]'
+
+queue '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"r: the tests fail","since":"2026-10-28T08:00:00Z"},"prev_park":{"question":"older","round":2}}}'
+out=$(cd "$T/repo" && node "$B/queue.mjs" requeue R 2>&1)
+check "DS-334: requeue keeps the park it cleared, with its time and round" 'node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets.R; process.exit(t.state===\"triaged\" && t.park===null && t.prev_park.question===\"r: the tests fail\" && t.prev_park.since===\"2026-10-28T08:00:00Z\" && t.prev_park.round===3 && !!t.prev_park.requeued_at ? 0 : 1)" "$DESK_QUEUE"'
+
+mark; rm -f "$T/state/handed.json"; echo "requeue S" > "$T/claude.mode"
+queue "{\"S\":{\"key\":\"S\",\"state\":\"parked\",\"lane\":\"A\",\"park\":{\"question\":\"$P2\",\"since\":\"2026-10-28T09:00:00Z\"},\"prev_park\":{\"question\":\"$P1\",\"since\":\"2026-10-28T08:45:00Z\",\"round\":1}}}"
+verdict "$(parked S "$P2")"
+out=$(tick)
+check "DS-334 AC1: the same park again, unanswered, starts no session" '[ "$(calls)" = 0 ]'
+check "DS-334 AC1: it is handed on naming both parks" 'handed | grep -q "^S|park 2 asks what park 1 asked, with no answer since: a requeue would park again (last park: \"DS-313: rebasing fix/DS-313"'
+check "DS-334 AC1: it is not requeued" 'grep -q "\"state\":\"parked\"" "$DESK_QUEUE"'
+
+mark; rm -f "$T/state/handed.json"
+printf '\n## Answer from the user (2026-10-28T08:50:00Z)\n\nrebase it onto main yourself\n' > "$T/state/briefings/S.md"
+out=$(tick); settle
+check "DS-334 AC1: answered since the last park, it goes to a session" '[ "$(calls)" = 1 ] && [ -z "$(handed)" ]'
+check "DS-334 AC2: the session sees the park its last requeue cleared" 'P=$(ls -t "$T"/claude.args.* | head -1) && grep -q "^  - park 2; the last requeue cleared park 1: DS-313: rebasing" "$P" && grep -q "asking the same thing in other words" "$P"'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'; out=$(tick)
+
+mark; rm -f "$T/state/handed.json"; echo "requeue V" > "$T/claude.mode"
+queue '{"V":{"key":"V","state":"parked","lane":"A","park":{"question":"v: the fixture for tests/test_a.sh is missing","since":"2026-10-28T09:00:00Z"},"prev_park":{"question":"v: rebase conflicts in desk/bin/x.mjs at 1a2b3c4","round":1}}}'
+verdict "$(parked V "v: the fixture for tests/test_a.sh is missing")"
+out=$(tick); settle
+check "DS-334 AC3: a different question from the last park goes to a session as before" '[ "$(calls)" = 1 ] && [ -z "$(handed)" ]'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'; out=$(tick)
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -6,7 +6,8 @@
 // What a pass lists becomes items, each with an id that stays the same while the item does:
 //   - a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
 //     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
-//     decider tool acts on;
+//     decider tool acts on, and a park asking again what the park its last requeue cleared asked,
+//     with no answer since (queue.mjs requeue keeps that park as `prev_park`);
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason.
@@ -37,14 +38,36 @@ function waitKey(line) {
   return `${m[1]}\0${m[2]}\0${pr ? pr[1] : ''}`;
 }
 
+// Do two parks ask the same thing? Workers word a repeat afresh each time, so past an exact match it
+// compares the specific terms (paths, SHAs, branches, keys other than the ticket's own): the same
+// question when at least half of them are shared.
+const parkTerms = (s, own) => new Set((String(s).toLowerCase().match(/[\w./-]+/g) ?? [])
+  .map((w) => w.replace(/[.\-/]+$/, '')).filter((w) => w.length >= 3 && /[\d/._]/.test(w) && w !== own));
+export function samePark(a, b, ticket = '') {
+  const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!norm(a) || !norm(b)) return false;
+  if (norm(a) === norm(b)) return true;
+  const x = parkTerms(a, String(ticket).toLowerCase());
+  const y = parkTerms(b, String(ticket).toLowerCase());
+  if (x.size < 2 || y.size < 2) return false;
+  const both = [...x].filter((w) => y.has(w)).length;
+  return both / new Set([...x, ...y]).size >= 0.5;
+}
+
 // One item per parked ticket and per WAITING ON YOU line, as the pass's verdict names them. A line
 // whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
+// A park carries its round (which park in a row this is, counted by queue.mjs requeue), the park the
+// last requeue cleared, and whether this one asks the same thing.
 export function deciderItems(v, q = {}) {
   const tickets = q.tickets ?? {};
-  const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => ({
-    id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
-    since: tickets[p.key]?.park?.since ?? null,
-  }));
+  const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => {
+    const prev = tickets[p.key]?.prev_park ?? null;
+    return {
+      id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
+      since: tickets[p.key]?.park?.since ?? null,
+      round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
+    };
+  });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
     return { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
@@ -53,14 +76,20 @@ export function deciderItems(v, q = {}) {
 }
 
 // Items the rules hand on without a session: {hand: [{item, why}], ask: [item]}. A §3 row is read as
-// the pass's line gives it.
-export function presort(items) {
+// the pass's line gives it. A park that asks again what the park its last requeue cleared asked, with
+// no answer since that one, is handed on: another worker would park the same way. With no `state` to
+// read answers from, none is counted.
+export function presort(items, state = null) {
   const hand = [];
   const ask = [];
+  const short = (s) => (s.length > 160 ? `${s.slice(0, 159)}…` : s);
   for (const item of items) {
     const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(item.text);
+    const prevAt = item.prev?.since ?? item.prev?.requeued_at;
     if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
+    } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
+      hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
     } else if (item.kind === 'waiting' && item.state === 'done') {
@@ -144,7 +173,12 @@ export function deciderSettings({ bin, state }) {
 
 export function deciderPrompt({ slug, report, items, rules, bin, webRead = false }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
-  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...answerLines(i)]).join('\n');
+  const prevLines = (i) => (i.prev?.question ? [`  - park ${i.round}; the last requeue cleared park ${i.round - 1}: ${i.prev.question.replace(/\n/g, ' ')}`] : []);
+  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...prevLines(i), ...answerLines(i)]).join('\n');
+  // Only when an item has a previous park, so a prompt without any reads as it always has.
+  const onRepeats = items.some((i) => i.prev?.question) ? [
+    '- an item whose last requeue cleared a park asking the same thing in other words, with no answer under it, would only park again: hand it on, naming both parks in its `why`, rather than requeue it',
+  ] : [];
   // Only when an item has answers, so a prompt without any reads as it always has.
   const onAnswers = items.some((i) => i.answers?.length) ? [
     '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B, D or E, and its park does not start `lane C` or `lane D` (one parked at triage), requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
@@ -163,6 +197,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
     ...onWeb,
+    ...onRepeats,
     '',
     '## The items',
     '',
