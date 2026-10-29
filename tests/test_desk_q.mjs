@@ -1809,16 +1809,16 @@ const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), {
 const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
   `${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx(['lint'])).text} | ${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx([])).text}`, 'behind #810: 1 check failed, advisory only | behind #810: lint failed');
-// A §4 Required check that never reported, or finished skipped, is not green: the merge driver never
+// A §4 Required check that never reported, or finished neutral, is not green: the merge driver never
 // merges it and nothing reruns or repairs it, so it needs you rather than "merges at the next pass".
-const reqQ = { tickets: { 'R-1': { key: 'R-1', ...prOn(811, [okCheck('build')]) }, 'R-2': { key: 'R-2', ...prOn(812, [okCheck('build'), { ...okCheck('e2e'), conclusion: 'skipped' }]) } } };
+const reqQ = { tickets: { 'R-1': { key: 'R-1', ...prOn(811, [okCheck('build')]) }, 'R-2': { key: 'R-2', ...prOn(812, [okCheck('build'), { ...okCheck('e2e'), conclusion: 'neutral' }]) } } };
 const reqNeed = (k) => `${Q.shownState(reqQ, reqQ.tickets[k], advCtx([], ['e2e']))} ${Q.holdOf({ tickets: { ...reqQ.tickets, H: { key: 'H', ...heldBy(k) } } }, { key: 'H', ...heldBy(k) }, advCtx([], ['e2e'])).text}`;
-t('DS-279 a required check that never reported or was skipped needs you, naming it',
+t('DS-279 a required check that never reported or ended neutral needs you, naming it',
   `${reqNeed('R-1')} | ${reqNeed('R-2')}`,
   'needs behind #811, which needs you | needs behind #812, which needs you');
 t('DS-279 and its row names the check and what to do',
   ['R-1', 'R-2'].map((k) => Q.needText({ q: reqQ, ctx: advCtx([], ['e2e']), live: true }, { t: reqQ.tickets[k], k: 'needs', pr: true })).join(' | '),
-  '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is skipped (skipped does not count) · fix the check or §4 Required checks');
+  '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is neutral · fix the check or §4 Required checks');
 
 // ---- DS-280: a PR inside its reruns stays in Merging naming the red check, each Merging and Needs you
 // row says how long it has sat there, and a ticket behind a PR that needs you counts once.

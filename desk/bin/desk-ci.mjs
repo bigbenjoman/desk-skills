@@ -1165,10 +1165,10 @@ export function profileReport(p, { measureFile = null, measureHint = '', checksR
   for (const x of p.notes) out.push(`  ${x}`);
   for (const r of p.requiredFull) {
     if (r.maybe) {
-      out.push(`REQUIRED CHECK MAY BE ONLY IN FULL: "${r.check}" matches no job by name, and ${r.job} (${r.file}:${r.line}) is full with a name that is an expression, so the check may be its. If it is, the plan skips it on PRs into a batch base and green blocks their merge.`);
+      out.push(`REQUIRED CHECK MAY BE ONLY IN FULL: "${r.check}" matches no job by name, and ${r.job} (${r.file}:${r.line}) is full with a name that is an expression, so the check may be its. If it is, the plan skips it on PRs into a batch base, and green counts a skipped required check as passing, so they merge without it running.`);
       continue;
     }
-    out.push(`REQUIRED CHECK ONLY IN FULL: "${r.check}" comes from ${r.job} (${r.file}:${r.line}), which the plan skips on PRs into a batch base, so the check never passes on them and green blocks their merge. Keep ${r.job} light, or leave its workflow unchanged.`);
+    out.push(`REQUIRED CHECK ONLY IN FULL: "${r.check}" comes from ${r.job} (${r.file}:${r.line}), which the plan skips on PRs into a batch base, and green counts a skipped required check as passing, so they merge without it running. Keep ${r.job} light, or leave its workflow unchanged.`);
   }
   if (!checksRead) out.push('note: no required checks read (config §4 Required checks unset or none); pass --required <check> for each to check them');
   out.push('');

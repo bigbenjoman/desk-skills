@@ -58,7 +58,7 @@ may name the directory it runs in, relative to the repo root, as `` `apps/api: u
 breaks the test lock and the worker allow-list.
 
 **"Green" means one thing everywhere** (merge driver, clearance, ticket, autopilot): on the exact
-head commit being merged, every §4 Required check completed with success (skipped does not count);
+head commit being merged, every §4 Required check completed with success (a skipped one passes, as branch protection counts it);
 no other check failed, errored, timed out or is still queued or running, unless §4 Advisory checks
 names it; and at least one check completed with success. The merge is then pinned to that commit
 (`--match-head-commit`), so a push after the check cannot be merged unchecked. The one exception

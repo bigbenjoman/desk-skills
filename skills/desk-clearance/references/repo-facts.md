@@ -55,7 +55,7 @@ What the settings mean for clearance:
 | Setting (ruleset `pull_request` parameter, or classic equivalent) | If set | If not |
 |---|---|---|
 | `allowed_merge_methods` | only these merge; §4 Merge method must be one of them | the repo-level `allow_*_merge` flags decide |
-| required status checks | those contexts, each completed with success at head (skipped is not success) | §4 Required checks `none`: nothing is required by name, but green still needs every non-advisory check passed and at least one success (desk-config "Green") |
+| required status checks | those contexts, each completed with success at head (a skipped one passes, as branch protection counts it) | §4 Required checks `none`: nothing is required by name, but green still needs every non-advisory check passed and at least one success (desk-config "Green") |
 | `strict_required_status_checks_policy` / "require branches to be up to date" | the PR next to merge must be updated first | being behind never blocks a merge |
 | `required_approving_review_count` > 0 | the platform refuses an unapproved merge; report `READY` | no *positive* approval is enforced |
 | a standing `CHANGES_REQUESTED` | blocks the merge outright (see below) | nothing refuses it, and clearance still parks it |

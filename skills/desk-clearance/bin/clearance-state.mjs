@@ -443,7 +443,7 @@ function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base, runsB
   const ctx = rollup?.contexts?.nodes || []
   const contextsTruncated = !!rollup?.contexts?.pageInfo?.hasNextPage
   // desk-config.md's one definition of green, evaluated by gate.mjs exactly as merge-driver.sh does:
-  // every required check succeeded (skipped does not count), nothing else failed or is still running
+  // every required check succeeded or was skipped (as branch protection counts it), nothing else failed or is still running
   // unless §4 Advisory checks names it, and at least one check succeeded. A head with no checks at
   // all is ABSENT - an empty set is never vacuously green.
   const checks = G.normaliseRollup(ctx)
@@ -647,7 +647,7 @@ function render(state) {
     ? `  required checks: none - every non-advisory check on the PR must pass  [${req.source}]`
     : `  required checks (from the ${req.source}): ${req.names.join(' | ')}`)
   if (req.drift) console.log(`  WARNING ${req.drift}`)
-  console.log(`  green: required checks succeeded (skipped does not count), no other check failed or running unless advisory, at least one success  [desk-config.md "Green", gate.mjs]`)
+  console.log(`  green: required checks succeeded or were skipped, no other check failed or running unless advisory, at least one success  [desk-config.md "Green", gate.mjs]`)
   if (state.advisory) console.log(`  advisory checks: ${state.advisory.length ? state.advisory.join(' | ') : 'none'}  [config §4 Advisory checks]`)
   if (state.holds) console.log(`  merge holds: ${state.holds.length ? state.holds.map((h) => h.glob).join(' | ') : 'none'}  [config §4 Merge holds]`)
   const mm = state.mergeMethod ?? { method: null, source: 'state predates the field' }

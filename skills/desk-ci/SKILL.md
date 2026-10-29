@@ -226,8 +226,8 @@ requests needs no change. A `pull_request` trigger limited to literal branches i
 since light jobs will not run on PRs into a batch base it does not list.
 
 - **A required check only a full job reports** prints `REQUIRED CHECK ONLY IN FULL`: it would be
-  skipped on every light PR, and green counts a skipped required check as not passed
-  (`desk/bin/gate.mjs`), so those PRs could never merge. The checks are config §4 Required checks,
+  skipped on every light PR, and green counts a skipped required check as passing, as branch
+  protection does (`desk/bin/gate.mjs`), so those PRs would merge without it running. The checks are config §4 Required checks,
   or each `--required <check>`. A check is a job's when it is its name (`name:`, else its id), one of
   its matrix legs `name (…)`, or `caller / job` for a reusable workflow. A full job whose name is
   all expression (`name: ${{ matrix.suite }}`) cannot be matched, so a required check that matches

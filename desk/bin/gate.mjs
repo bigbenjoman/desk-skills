@@ -4,7 +4,8 @@
 // never disagree about whether a PR may merge.
 //
 // Green, on the exact head commit being merged:
-//   1. every §4 Required check completed with success (skipped, neutral or absent does not count);
+//   1. every §4 Required check completed with success, or skipped as branch protection counts it
+//      (neutral or absent does not count);
 //   2. no other check failed, errored, timed out, was cancelled, or is still queued or running,
 //      unless §4 Advisory checks names it; and no workflow run for that commit is still in flight;
 //   3. at least one check completed with success.
@@ -35,6 +36,9 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
+// A required check passes as branch protection passes it: success, or a job its workflow skipped by
+// `if:`. A head whose every check was skipped still fails clause 3 (no success).
+const REQUIRED_PASS = new Set(['success', 'skipped']);
 const lc = (s) => String(s ?? '').toLowerCase();
 
 // One check or status context, whatever API it came from, to { name, status, conclusion, runId }.
@@ -103,16 +107,16 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   for (const c of checks) {
     if (c.status === 'completed' && c.conclusion === 'success') succeeded++;
   }
-  // 1. Required: each present, each instance completed with success.
+  // 1. Required: each present, each instance completed with success or skipped.
   let absent = false;
   for (const n of required) {
     const hits = checks.filter((c) => c.name === n);
     if (!hits.length) { absent = true; reasons.push(`required check "${n}" has not reported`); continue; }
     for (const h of hits) {
       if (h.status !== 'completed') { pending.push(n); reasons.push(`required check "${n}" is ${h.status}`); }
-      else if (h.conclusion !== 'success') {
+      else if (!REQUIRED_PASS.has(h.conclusion)) {
         if (FAILED.has(h.conclusion)) failing.push({ name: n, conclusion: h.conclusion, runId: h.runId });
-        reasons.push(`required check "${n}" is ${h.conclusion ?? 'unknown'}${h.conclusion === 'skipped' ? ' (skipped does not count)' : ''}`);
+        reasons.push(`required check "${n}" is ${h.conclusion ?? 'unknown'}`);
       }
     }
   }
@@ -133,8 +137,8 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   if (!succeeded) reasons.push('no check has completed with success');
 
   // absent: a required check never reported and nothing is still running that could report it (or no
-  // check at all). A completed skipped/neutral required check, or a head whose every check was
-  // skipped, is `fail`: waiting will not turn it green.
+  // check at all). A completed neutral required check, or a head whose every check was skipped, is
+  // `fail`: waiting will not turn it green.
   const state = failing.length ? 'fail'
     : pending.length ? 'pending'
     : absent || !checks.length ? 'absent'
