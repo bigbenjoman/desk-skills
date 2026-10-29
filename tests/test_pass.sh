@@ -1482,6 +1482,21 @@ q add M-3; q set M-3 state=triaged; q set-batch concurrency=3
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-271 AC3 held for memory, the pass writes no waiting marker" '[ "$(field M-3 state)" = "\"triaged\"" ] && [ "$(ls "$MT")" = ci.json ]'
 
+# ---- DS-346: a queued branch with a convention placeholder left in, and no worktree yet, is
+# rebuilt from the key and the triage summary before the worktree is set up. A kept worktree's is not.
+export DESK_QUEUE="$T/queue-br.json" DESK_AUTOPILOT_STATE="$T/state-br"
+mkdir -p "$T/state-br/logs" "$T/state-br/triage" "$T/wt/B-2"
+q init br; q set-batch concurrency=3
+q add B-1; q set B-1 state=triaged 'branch=fix/B-1-<slug>'
+printf '{"ticket":"B-1","summary":"Triage keeps the <slug> placeholder in"}' > "$T/state-br/triage/B-1.json"
+q add B-2; q set B-2 state=triaged 'branch=fix/B-2-<slug>'
+q add B-3; q set B-3 state=triaged branch=fix/B-3-already-fine
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-346 AC3 the placeholder branch is rebuilt from key and summary, and the worker spawns on it" \
+  '[ "$(field B-1 branch)" = "\"fix/B-1-triage-keeps-the-slug-placeholder-in\"" ] && [ "$(field B-1 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch fix/B-1-<slug> was unusable"'
+check "DS-346 AC3 a ticket whose worktree is kept keeps its branch" '[ "$(field B-2 branch)" = "\"fix/B-2-<slug>\"" ]'
+check "DS-346 AC3 a usable branch is left as it is" '[ "$(field B-3 branch)" = "\"fix/B-3-already-fine\"" ]'
+
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
 # worktree setup and the worker it starts resolve X-1's queue and state too.
 unset DESK_QUEUE DESK_AUTOPILOT_STATE DESK_BATCH
