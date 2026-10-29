@@ -329,6 +329,7 @@ printf '{"ticket": "T-80", "stage": "7", "criteria": ["AC1: h saves"], "lane": "
 finish T-80
 pass
 check "DS-155 AC3 a handoff at the end of Stage 6 starts a new session at Stage 7 through the real spawn-worker" '[ "$(state T-80)" = running ] && grep -q "This session starts at Stage 7" "$T/runs/T-80.4" && grep -q "## Handoff: this session starts at Stage 7" "$T/runs/T-80.4" && grep -q "P2 src/h.txt:1 fixed in abc1234" "$T/runs/T-80.4"'
+check "DS-338 AC2 a session resumed at Stage 4b or 7 is told to read the Stage 3 file, which holds the dev server's form" 'grep -q "for Stage 4b and its Stage 3 file" "$T/runs/T-80.2" && grep -q "for Stage 7 and its Stage 3 file" "$T/runs/T-80.4"'
 check "DS-157 AC3 the Stage 7 session runs on the text model, and the batch report shows it" '[ "$(ran_on T-80 4)" = haiku ] && [ "$(field T-80 model)" = "\"haiku\"" ] && echo "$out" | grep -q "T-80 fresh session from Stage 7 (handed off) .*model=haiku"'
 check "DS-157 every preflight proved the text model on its own" '[ "$(grep -c "^claude model-check model=haiku$" "$T/calls.log")" = 4 ]'
 finish T-80

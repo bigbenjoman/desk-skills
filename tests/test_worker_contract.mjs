@@ -1,5 +1,5 @@
 // suite: worker contract (a short core, and each stage's rules in its own file)
-// covers: skills/desk-autopilot/references/** desk/bin/spawn-worker.sh
+// covers: skills/desk-autopilot/references/**
 // tests/fixtures/worker-contract-before-split.md is the whole contract as one file. Every heading and
 // every paragraph of it must still be in the core or a stage section, so an edit that drops a rule
 // from the split files fails here.
@@ -63,9 +63,8 @@ t('DS-328 AC3 it parks only when both sides cannot stand, naming the files and t
 t('DS-328 AC3 the core keeps only that park', core.includes('- **A merge conflict only a product or design call settles** (Stage 5 file, §4).'), true);
 t('DS-328 AC4 without git-force-with-lease a pushed branch merges the default branch in', n5.includes('with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase, no force push.'), true);
 
-// DS-338: a worker resumed at Stage 4b or 7 never reached the Stage 3 file, so it never saw the allowed
-// dev-server form and parked on a start it was allowed. Every stage file holding command forms must be
-// read early at any stage, and the resume prompt names it.
+// Every stage file holding command forms is read early at any stage, so a worker resumed past it still
+// reads the forms it may run. test_batch_e2e.sh checks the resumed worker's prompt names it.
 const early = core.split(/read early when:\s*\n/)[1].split('\n\n')[0].split(/\n(?=- )/).map((b) => b.replace(/\s+/g, ' '));
 const formFiles = stages.filter((f) => /^## \d+\. Command forms/m.test(read(f)));
 t('DS-338 some stage file holds the command forms', formFiles.length > 0, true);
@@ -74,7 +73,6 @@ for (const f of formFiles) {
   const to = early.filter((b) => b.includes(`read ${name} first`));
   t(`DS-338 AC3 the core routes to ${f} early`, to.length > 0, true);
   t(`DS-338 AC3 ${f} is read early at any stage, not only before it`, to.some((b) => b.includes('at any stage') && !/before Stage/.test(b)), true);
-  t(`DS-338 AC2 the resumed-worker prompt names ${f}`, readFileSync(join(root, 'desk/bin/spawn-worker.sh'), 'utf8').includes(`and its Stage ${f.match(/stage-(\w+)\.md$/)[1]} file`), true);
 }
 t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(lint, build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
 t('DS-338 AC1 the core\'s table says the Stage 3 file holds the dev server\'s form', core.includes('§6 the command forms you may run, a dev server\'s too'), true);
