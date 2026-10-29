@@ -1038,7 +1038,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
 
 export const NO_COST_SOURCES = 'No cost sources set up. /desk-setup costs adds them.';
 export const NO_COST_READING = 'No cost reading yet. desk-q reads them in the background.';
-const SUPPLIER_LABEL = { github: 'GitHub', vercel: 'Vercel', aws: 'AWS' };
+const SUPPLIER_LABEL = { github: 'GitHub', vercel: 'Vercel', aws: 'AWS', neon: 'Neon' };
 const usd = (n) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 // "October, 1–26" while the month runs, "September" once it is read in full.
 function monthText(p) {
@@ -1057,14 +1057,17 @@ function staleReads(x, now) {
 const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 
 // What a row's figure leaves out, one tag: a bill that can't be read, a figure not read today, use
-// AWS credits covered, a name with no repo, CI minutes GitHub discounted in full.
+// AWS credits covered, a name with no repo, CI minutes GitHub discounted in full, a Neon org on the
+// free plan.
 function costTag(x, { now, suppliersOf, repoless }) {
+  if (x.cantRead?.text) return [`◌ ${x.cantRead.text}`, GREY];
   if (x.cantRead) return [`◌ can't read: billed to ${SUPPLIER_LABEL[x.cantRead.supplier]} account ${x.cantRead.account}`, GREY];
   const stale = staleReads(x, now)[0];
   if (stale) return [`◌ ${SUPPLIER_LABEL[stale.supplier]} last read ${dayMonth(stale.at)}, ${daysAgo(stale.days)}`, GREY];
   if (x.credits > 0) return [`▲ credits covered ${usd(x.credits)}`, WARN];
   if (repoless.has(x.name)) return [`${andList(suppliersOf(x.name).map((s) => SUPPLIER_LABEL[s]))} only, no repo in desk`, GREY];
   if (x.free) return ['public, so its CI is free', GREY];
+  if (x.freePlan) return ['Neon on the free plan', GREY];
   return null;
 }
 
@@ -1130,17 +1133,18 @@ function costWord(repos, word) {
 
 export const noCostSourcesFor = (repo) => `No cost sources for ${repo}. /desk-setup costs adds them.`;
 // What each supplier bills a name for, one phrase each.
-const SUPPLIER_FOR = { github: 'CI minutes', vercel: 'hosting and builds', aws: 'hosting and CI runners' };
+const SUPPLIER_FOR = { github: 'CI minutes', vercel: 'hosting and builds', aws: 'hosting and CI runners', neon: 'Postgres' };
 const SUPPLIER_W = 10, FOR_W = 24;
 
 // What a supplier's figure leaves out: a bill that can't be read, a figure not read today, use AWS
-// credits covered, CI minutes GitHub discounted in full.
+// credits covered, CI minutes GitHub discounted in full, a Neon org on the free plan.
 function supplierTag(x, s, now) {
-  if (x.cantRead?.supplier === s) return [`◌ can't read: billed to account ${x.cantRead.account}`, GREY];
+  if (x.cantRead?.supplier === s) return [x.cantRead.text ? `◌ ${x.cantRead.text}` : `◌ can't read: billed to account ${x.cantRead.account}`, GREY];
   const stale = staleReads(x, now).find((r) => r.supplier === s);
   if (stale) return [`◌ last read ${dayMonth(stale.at)}, ${daysAgo(stale.days)}`, GREY];
   if (s === 'aws' && x.credits > 0) return ['▲ on credits', WARN];
   if (s === 'github' && x.free) return ['public, so its CI is free', GREY];
+  if (s === 'neon' && x.freePlan) return ['free plan', GREY];
   return null;
 }
 

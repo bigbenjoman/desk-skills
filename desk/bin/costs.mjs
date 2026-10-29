@@ -15,9 +15,9 @@ import { homedir, platform as osPlatform } from 'node:os';
 import { join } from 'node:path';
 import { splitRow } from './machine.mjs';
 
-export const SUPPLIERS = Object.freeze(['github', 'vercel', 'aws']);
+export const SUPPLIERS = Object.freeze(['github', 'vercel', 'aws', 'neon']);
 const HOME = process.env.HOME || homedir();
-const tilde = (p) => (p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p);
+export const tilde = (p) => (p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p);
 
 // ---- where each supplier's login lives -------------------------------------------------------
 export function vercelAuthPath(plat = osPlatform()) {
@@ -26,6 +26,12 @@ export function vercelAuthPath(plat = osPlatform()) {
   return join(process.env.XDG_DATA_HOME || join(HOME, '.local', 'share'), 'com.vercel.cli', 'auth.json');
 }
 export const awsConfigPath = () => process.env.AWS_CONFIG_FILE || join(HOME, '.aws', 'config');
+// A Neon API key, alone in its file, beside costs.md.
+export const neonKeyPath = () => (process.env.DESK_NEON_KEY
+  || join(process.env.DESK_CONFIG_ROOT || join(HOME, '.config', 'desk'), 'neon-api-key')).replace(/^~(?=\/)/, HOME);
+export function neonKey(path = neonKeyPath()) {
+  try { return readFileSync(path, 'utf8').trim() || null; } catch { return null; }
+}
 const vercelApi = () => (process.env.DESK_VERCEL_API || 'https://api.vercel.com').replace(/\/$/, '');
 export const VERCEL_TIMEOUT_MS = 30 * 1000;
 
@@ -150,7 +156,8 @@ const ownName = (profile) => profile.replace(ROLE_SUFFIX, '') || profile;
 
 // ---- entries ---------------------------------------------------------------------------------
 // One entry per source: github { key: owner/name, account, readable }, vercel { key: team/project
-// or team, teamId, team, plan, project }, aws { key: profile, credit }. Each has a name and repo.
+// or team, teamId, team, plan, project }, aws { key: profile, credit }, neon { key: org/project or org,
+// orgId, plan, fee, prices, project }. Each has a name and repo. Neon's are written by hand: nothing detects them.
 export const entryId = (e) => `${e.supplier}:${e.key}`;
 
 function detectedEntries(found, names) {
@@ -174,7 +181,7 @@ function detectedEntries(found, names) {
   return out;
 }
 
-const FACTS = { github: ['account', 'readable'], vercel: ['teamId', 'team', 'plan'], aws: [] };
+const FACTS = { github: ['account', 'readable'], vercel: ['teamId', 'team', 'plan'], aws: [], neon: [] };
 
 // The user's changes to a proposal, from the CLI's flags.
 //   --name <supplier>:<key>=<name>   --drop <supplier>:<key>
@@ -243,7 +250,7 @@ export function propose({ found, saved, edits = parseEdits([]), today }) {
     e.credit = { ...c, entered: today };
   }
   const budget = { actionsUsd: edits.budget !== undefined ? edits.budget : saved?.budget?.actionsUsd ?? null };
-  const logins = { github: 'gh', vercel: tilde(found.vercel?.auth ?? vercelAuthPath()), aws: tilde(found.aws?.path ?? awsConfigPath()) };
+  const logins = { github: 'gh', vercel: tilde(found.vercel?.auth ?? vercelAuthPath()), aws: tilde(found.aws?.path ?? awsConfigPath()), neon: tilde(neonKeyPath()) };
   return { entries: kept, budget, logins };
 }
 
@@ -264,6 +271,32 @@ function vercelRows(entries) {
     namesOf.set(e.teamId, (namesOf.get(e.teamId) ?? new Set()).add(e.name));
   }
   return [...rows.values()].map((r) => ({ ...r, shared: namesOf.get(r.teamId).size > 1 }));
+}
+
+// Neon's billing units, the price key each is priced under, and how many of its metric make one.
+// Storage metrics are byte-months, transfer bytes; a GB is 10^9 bytes.
+export const NEON_UNITS = Object.freeze([
+  { key: 'compute', unit: 'CU-hour', metrics: ['compute_unit_seconds'], per: 3600 },
+  { key: 'storage', unit: 'GB-month', metrics: ['root_branch_bytes_month', 'child_branch_bytes_month'], per: 1e9 },
+  { key: 'restore', unit: 'GB-month', metrics: ['instant_restore_bytes_month'], per: 1e9 },
+  { key: 'snapshots', unit: 'GB-month', metrics: ['snapshot_storage_bytes_month'], per: 1e9 },
+  { key: 'transfer', unit: 'GB', metrics: ['public_network_transfer_bytes'], per: 1e9 },
+  { key: 'branches', unit: 'branch-month', metrics: ['extra_branches_month'], per: 1 },
+]);
+// `compute=0.14, storage=0.35`  -> { compute: 0.14, storage: 0.35 }; a value that is not a number is NaN.
+export const parsePrices = (s) => Object.fromEntries((none(s) ?? '').split(',').map((p) => p.trim()).filter(Boolean)
+  .map((p) => { const eq = p.indexOf('='); return eq < 0 ? [p, NaN] : [p.slice(0, eq).trim(), p.slice(eq + 1).trim() === '' ? NaN : Number(p.slice(eq + 1).replace(/^\$/, ''))]; }));
+const pricesText = (prices) => Object.entries(prices ?? {}).map(([k, v]) => `${k}=${v}`).join(', ');
+
+// Neon entries grouped one row per name per org.
+function neonRows(entries) {
+  const rows = new Map();
+  for (const e of entries.filter((x) => x.supplier === 'neon').sort(byName)) {
+    const k = `${e.name}\u0000${e.orgId}`;
+    if (!rows.has(k)) rows.set(k, { ...e, projects: [] });
+    if (e.project) rows.get(k).projects.push(e.project);
+  }
+  return [...rows.values()];
 }
 
 export function renderCosts({ entries, budget, logins }) {
@@ -294,6 +327,16 @@ export function renderCosts({ entries, budget, logins }) {
     '| Name | Repo | Profile | Credit (USD) | Credits end | Credit entered |',
     '|---|---|---|---|---|---|',
     ...of('aws').map((e) => `| ${cell(e.name)} | ${cell(e.repo)} | ${cell(e.key)} | ${cell(e.credit?.usd)} | ${cell(e.credit?.ends)} | ${cell(e.credit?.entered)} |`),
+    '',
+    '## Neon',
+    '',
+    'Filled in by hand, from each org\'s Billing page: the plan, its monthly fee, and the price of each',
+    `unit used, as ${NEON_UNITS.map((u) => `\`${u.key}\` per ${u.unit}`).join(', ')}.`,
+    'An org on the `free` plan is not read. A fee on an org that bills more than one name is shared.',
+    '',
+    '| Name | Repo | Org id | Plan | Monthly fee (USD) | Projects | Prices (USD) |',
+    '|---|---|---|---|---|---|---|',
+    ...neonRows(entries).map((r) => `| ${cell(r.name)} | ${cell(r.repo)} | ${cell(r.orgId)} | ${cell(r.plan)} | ${cell(r.fee)} | ${cell(r.projects.join(', ') || 'none')} | ${cell(pricesText(r.prices) || 'none')} |`),
     '',
     '## Budget',
     '',
@@ -335,6 +378,12 @@ export function parseCosts(text) {
       const usd = none(c[3]);
       out.entries.push({ supplier: 'aws', key: c[2], name, repo,
         credit: usd == null ? null : { usd: Number(usd), ends: none(c[4]), entered: none(c[5]) } });
+    } else if (section === 'neon') {
+      const fee = none(c[4]);
+      const org = { name, repo, orgId: c[2], plan: String(c[3] ?? '').toLowerCase(), fee: fee == null ? null : Number(fee.replace(/^\$/, '')), prices: parsePrices(c[6]) };
+      const projects = none(c[5])?.split(',').map((p) => p.trim()).filter(Boolean) ?? [];
+      if (!projects.length) out.entries.push({ supplier: 'neon', key: c[2], ...org, project: null });
+      for (const p of projects) out.entries.push({ supplier: 'neon', key: `${c[2]}/${p}`, ...org, project: p });
     } else if (section === 'budget' && name === 'actions-budget-usd') {
       const v = none(c[1]);
       out.budget.actionsUsd = v == null ? null : Number(v);
@@ -349,17 +398,20 @@ export const readCosts = (path) => (path && existsSync(path)
   ? parseCosts(readFileSync(path, 'utf8'))
   : { exists: false, entries: [], budget: { actionsUsd: null }, logins: {} });
 
-// Each name's sources as data: { name: { repo, github: [...], vercel: [...], aws: [...] } }.
+// Each name's sources as data: { name: { repo, github: [...], vercel: [...], aws: [...], neon: [...] } }.
 export function costsByName(costs) {
   const out = {};
   for (const e of costs.entries) {
-    const n = (out[e.name] ??= { repo: e.repo, github: [], vercel: [], aws: [] });
+    const n = (out[e.name] ??= { repo: e.repo, github: [], vercel: [], aws: [], neon: [] });
     n.repo ??= e.repo;
     if (e.supplier === 'github') n.github.push({ repo: e.key, account: e.account, readable: e.readable });
     if (e.supplier === 'aws') n.aws.push({ profile: e.key, credit: e.credit });
   }
   for (const r of vercelRows(costs.entries)) {
     out[r.name].vercel.push({ teamId: r.teamId, team: r.team, plan: r.plan, shared: r.shared, projects: r.projects });
+  }
+  for (const r of neonRows(costs.entries)) {
+    out[r.name].neon.push({ orgId: r.orgId, plan: r.plan, fee: r.fee, prices: r.prices, projects: r.projects });
   }
   return out;
 }
@@ -371,6 +423,7 @@ export function billingUrl(supplier, { team } = {}) {
   if (supplier === 'github') return 'https://github.com/settings/billing/usage';
   if (supplier === 'vercel') return team ? `https://vercel.com/${team}/~/usage` : null;
   if (supplier === 'aws') return 'https://console.aws.amazon.com/costmanagement/home#/cost-explorer';
+  if (supplier === 'neon') return 'https://console.neon.tech/';
   return null;
 }
 
@@ -378,6 +431,7 @@ export function billingUrl(supplier, { team } = {}) {
 const detail = (e) => {
   if (e.supplier === 'github') return `account ${e.account}, ${e.readable == null ? 'readable unknown (gh signed out)' : e.readable ? 'readable' : 'not readable: another account'}`;
   if (e.supplier === 'vercel') return `team ${e.team} (${e.teamId}), plan ${e.plan}`;
+  if (e.supplier === 'neon') return `org ${e.orgId}, plan ${e.plan}`;
   return e.credit ? `credit $${e.credit.usd} until ${e.credit.ends}, entered ${e.credit.entered}` : 'no credit entered';
 };
 

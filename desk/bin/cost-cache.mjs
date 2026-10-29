@@ -3,14 +3,15 @@
 // call per repo, and one for the whole account whose remainder is the shared line. Vercel is one
 // charges call per team, split into a line per project with builds apart, and the team's plan and
 // seats, each charged to a name or to shared. AWS is read with one Cost Explorer query per profile,
-// grouped by service and record type.
+// grouped by service and record type. Neon is read as use per project, one consumption query per
+// org, and priced with costs.md's prices whenever it is shown.
 //
 // A reading covers the month of yesterday (UTC), to yesterday: every supplier lags at least a day.
 // GitHub's month summary cannot stop at yesterday, so its figures include today so far. Only what
 // was charged after discounts is kept, never list price. A failed call keeps the last good figures
 // beside the failure. GitHub and Vercel are not read again for READ_EVERY_MS, failed or not. Every
 // Cost Explorer request is billed, so an AWS profile is read at most once a UTC day, and after a
-// failure not again for READ_EVERY_MS.
+// failure not again for READ_EVERY_MS; a Neon org the same.
 //
 //   node cost-cache.mjs refresh [--force]   read every supplier that is due, under its lock
 //   node cost-cache.mjs show                print the cache
@@ -19,7 +20,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readCosts, vercelText, vercelToken } from './costs.mjs';
+import { readCosts, vercelText, vercelToken, neonKey, neonKeyPath, tilde, NEON_UNITS } from './costs.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 
 export const READ_EVERY_MS = 60 * 60 * 1000;
@@ -463,6 +464,155 @@ export function awsByName(aws, period) {
   return out;
 }
 
+// ---- Neon ------------------------------------------------------------------------------------
+export const NEON_TIMEOUT_MS = 30 * 1000;
+export const NEON_MAX_PAGES = 20;
+export const NEON_METRICS = Object.freeze(NEON_UNITS.flatMap((u) => u.metrics));
+const neonApi = () => (process.env.DESK_NEON_API || 'https://console.neon.tech/api/v2').replace(/\/$/, '');
+const isFreePlan = (plan) => plan === 'free';
+
+// One page of an org's use for a period, a day at a time, from its first day to the start of today, UTC.
+export function consumptionPath(orgId, period, cursor = null) {
+  const { from, to } = chargesWindow(period);
+  const q = new URLSearchParams({ from, to, granularity: 'daily', org_id: orgId, metrics: NEON_METRICS.join(','), ...(cursor ? { cursor } : {}) });
+  return `/consumption_history/v2/projects?${q}`;
+}
+
+// GET /consumption_history/v2/projects: each project's periods, each period's days, each day's
+// metrics. A metric whose value is zero may be left out, so a missing one is 0. A project without its
+// id, or a metric without its name or a numeric value, is refused rather than read as nothing used.
+//   -> { projects: [{ project, usage: { metric: sum } }], cursor: next page's | null }
+export function parseConsumption(body) {
+  const list = (v, what) => { if (!Array.isArray(v)) throw new Error(`unexpected response: no ${what}`); return v; };
+  const projects = [];
+  for (const p of list(body?.projects, 'projects')) {
+    if (typeof p?.project_id !== 'string') throw new Error('unexpected response: a project without project_id');
+    const usage = {};
+    for (const period of list(p.periods, 'periods')) {
+      for (const day of list(period?.consumption, 'consumption')) {
+        for (const m of list(day?.metrics, 'metrics')) {
+          const v = num(m?.value);
+          if (typeof m?.metric_name !== 'string' || v == null) throw new Error('unexpected response: a metric without a name and value');
+          usage[m.metric_name] = (usage[m.metric_name] ?? 0) + v;
+        }
+      }
+    }
+    projects.push({ project: p.project_id, usage });
+  }
+  const cursor = body.pagination?.cursor;
+  return { projects, cursor: typeof cursor === 'string' && cursor ? cursor : null };
+}
+
+// One GET with the Neon API key.  -> parsed JSON; throws with the reason, `refused` on a 401 or 403
+export async function neonGet(path, key) {
+  let r;
+  try { r = await fetch(`${neonApi()}${path}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' }, signal: AbortSignal.timeout(NEON_TIMEOUT_MS) }); }
+  catch (e) { throw new Error(e?.name === 'TimeoutError' ? `timed out after ${NEON_TIMEOUT_MS / 1000}s` : `could not reach Neon: ${e?.message ?? e}`); }
+  if (r.status === 401 || r.status === 403) throw Object.assign(new Error(`HTTP ${r.status}: Neon refused the API key`), { refused: true });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  try { return await r.json(); } catch { throw new Error('unexpected response: not JSON'); }
+}
+
+// An org's use for the period, page by page.  -> { project: { metric: sum } }
+async function orgUsage(neon, key, orgId, period) {
+  const usage = {};
+  let cursor = null;
+  for (let page = 0; page < NEON_MAX_PAGES; page++) {
+    const got = parseConsumption(await neon(consumptionPath(orgId, period, cursor), key));
+    for (const p of got.projects) {
+      const u = (usage[p.project] ??= {});
+      for (const [m, v] of Object.entries(p.usage)) u[m] = (u[m] ?? 0) + v;
+    }
+    if (!got.projects.length || !got.cursor || got.cursor === cursor) return usage;
+    cursor = got.cursor;
+  }
+  throw new Error(`more than ${NEON_MAX_PAGES} pages of projects`);
+}
+
+// The orgs costs.md lists on a paid plan: the only ones read.
+const paidOrgs = (sources) => [...new Set(sources.filter((s) => !isFreePlan(s.plan)).map((s) => s.orgId))];
+// A project's charge in cents, and the price keys its use has none for.
+function projectCents(usage, prices) {
+  let c = 0;
+  const missing = [];
+  for (const u of NEON_UNITS) {
+    const units = u.metrics.reduce((a, m) => a + (usage?.[m] ?? 0), 0) / u.per;
+    if (!units) continue;
+    if (Number.isFinite(prices?.[u.key])) c += units * prices[u.key] * 100;
+    else missing.push(u.key);
+  }
+  return { c, missing };
+}
+
+// Each name's Neon charge for the reading's month, priced from costs.md: its own projects' use in
+// billing units times its row's prices, plus the org's plan and monthly fee (its first row's),
+// charged to the org's one name or else to shared. An org on the free plan is $0. An org that can't be read, or whose use has no price,
+// gives its names no figure but the reason.
+//   neon: the cache's `neon`   sources: costs.md's Neon entries
+//   -> { names: { name: { name, at, failed, total?, cantRead, free } }, shared: usd | null, sharedLines: [{ label, charged }] }
+export function neonCharges(neon, sources) {
+  const byOrg = new Map();
+  for (const s of sources) byOrg.set(s.orgId, [...(byOrg.get(s.orgId) ?? []), s]);
+  const rows = {};
+  const row = (n) => (rows[n] ??= { name: n, c: 0, figure: true, at: null, failed: null, cantRead: null, free: true });
+  let shared = null;
+  const sharedLines = [];
+  const file = tilde(neonKeyPath());
+  for (const [orgId, list] of byOrg) {
+    const own = [...new Set(list.map((e) => e.name))];
+    const { plan, fee } = list[0];
+    if (isFreePlan(plan)) { for (const n of own) row(n).at ??= neon?.at ?? null; continue; }
+    const rec = neon?.orgs?.[orgId];
+    for (const n of own) {
+      const r = row(n);
+      r.free = false;
+      if (rec?.at != null) r.at = r.at == null ? rec.at : Math.min(r.at, rec.at);
+      if (rec?.failed && (r.failed?.at ?? 0) < rec.failed.at) r.failed = rec.failed;
+      if (rec?.cantRead) r.cantRead = { supplier: 'neon', text: rec.cantRead === 'refused' ? `can't read: Neon refused the API key in ${file}` : `can't read: no Neon API key in ${file}` };
+      if (rec?.cantRead || !rec?.usage || !samePeriod(rec.period, neon?.period)) r.figure = false;
+    }
+    if (!rec?.usage || rec.cantRead || !samePeriod(rec.period, neon?.period)) continue;
+    for (const e of list.filter((x) => x.project)) {
+      const got = projectCents(rec.usage[e.project], e.prices);
+      row(e.name).c += got.c;
+      if (got.missing.length) {
+        row(e.name).figure = false;
+        row(e.name).cantRead ??= { supplier: 'neon', text: `can't price: no Neon price for ${got.missing.join(', ')} in costs.md` };
+      }
+    }
+    if (Number.isFinite(fee) && fee > 0) {
+      if (own.length === 1) row(own[0]).c += fee * 100;
+      else {
+        shared = cents((shared ?? 0) + fee);
+        sharedLines.push({ label: `${planLabel(plan)} plan`, charged: cents(fee) });
+      }
+    }
+  }
+  const names = Object.fromEntries(Object.values(rows).map(({ c, figure, ...r }) => [r.name, { ...r, ...(figure ? { total: Math.round(c) / 100 } : {}) }]));
+  return { names, shared, sharedLines };
+}
+
+// One Neon reading folded into the last one (`last`, the cache's `neon`, or null): each due org on a
+// paid plan is read once, however many names it bills (with force, every one), and every other keeps
+// its record. An org on the free plan makes no call: Neon answers only paid plans.
+// sources: costs.md's Neon entries. neon(path, key) -> parsed body.
+//   -> the new `neon`: { at, period, orgs: { orgId: { at, period, usage: { project: { metric: sum } }, cantRead, failed } },
+//        names, shared, sharedLines (neonCharges) }
+export async function readNeon({ sources, last = null, neon = neonGet, now, force = false, key = neonKey() }) {
+  const period = readingPeriod(now);
+  const orgs = {};
+  for (const orgId of paidOrgs(sources)) {
+    const was = last?.orgs?.[orgId];
+    if (!force && was && !profileDue(was, now)) { orgs[orgId] = was; continue; }
+    const keep = was?.usage ? { at: was.at, period: was.period, usage: was.usage } : {};
+    if (!key) { orgs[orgId] = { ...keep, cantRead: 'missing', failed: { at: now, why: `no Neon API key in ${tilde(neonKeyPath())}` } }; continue; }
+    try { orgs[orgId] = { at: now, period, usage: await orgUsage(neon, key, orgId, period), cantRead: null, failed: null }; }
+    catch (e) { orgs[orgId] = { ...keep, cantRead: e.refused ? 'refused' : null, failed: { at: now, why: e.message || String(e) } }; }
+  }
+  const read = { at: now, period, orgs };
+  return { ...read, ...neonCharges(read, sources) };
+}
+
 // ---- the cache -------------------------------------------------------------------------------
 export function readCache(dir = costDir()) {
   try { return JSON.parse(readFileSync(cachePath(dir), 'utf8')); } catch { return null; }
@@ -477,10 +627,10 @@ function writeCache(cache, dir) {
 // ---- what was charged, by name -------------------------------------------------------------------
 // Where each supplier's reading keeps its figures: for GitHub, entries `{ name, total, … }` keyed by
 // repo; for Vercel, a figure keyed by name; for AWS, entries `{ name, period, total, lines, … }` keyed
-// by profile. Each supplier's `shared` is what no name owns: GitHub's entries keyed by account,
-// Vercel's one figure; AWS has none. An entry with no `total` (can't read, or no good reading yet)
-// has no figure.
-const BILLED_BY = { github: 'repos', vercel: 'names', aws: 'profiles' };
+// by profile; for Neon, entries `{ name, total, … }` keyed by name. Each supplier's `shared` is what
+// no name owns: GitHub's entries keyed by account, Vercel's and Neon's one figure; AWS has none. An
+// entry with no `total` (can't read, or no good reading yet) has no figure.
+const BILLED_BY = { github: 'repos', vercel: 'names', aws: 'profiles', neon: 'names' };
 const figure = (e) => (typeof e === 'number' ? e : e?.total);
 const named = (r, s) => Object.entries(r[BILLED_BY[s]] ?? {});
 const sharedOf = (r) => (typeof r.shared === 'number' ? [r.shared] : Object.values(r.shared ?? {}));
@@ -521,6 +671,7 @@ function readsOf(r, s, period) {
 function sharedPartsOf(r, s) {
   if (s === 'github') return Object.values(r.shared ?? {}).flatMap((a) => (a?.items ?? []).map((i) => ({ label: githubLabel(i), c: Math.round(i.charged * 100) })));
   if (s === 'vercel') return Object.values(r.teams ?? {}).flatMap((t) => (t?.lines ?? []).filter((l) => l.name == null).map((l) => ({ label: vercelLabel(l), c: Math.round(l.charged * 100) })));
+  if (s === 'neon') return (r.sharedLines ?? []).map((l) => ({ label: l.label, c: Math.round(l.charged * 100) }));
   return [];
 }
 
@@ -531,7 +682,7 @@ function sharedPartsOf(r, s) {
 // can't be read from, whether its CI minutes were all discounted in full, and when each supplier's
 // figure was read (the oldest source's, with its newest failed attempt).
 //   -> { period, total, suppliers: [{ supplier, total }],
-//        names: [{ name, total | null, by: { supplier: usd }, credits, cantRead | null, free, reads: [{ supplier, at, failedAt }] }],
+//        names: [{ name, total | null, by: { supplier: usd }, credits, cantRead | null, free, freePlan, reads: [{ supplier, at, failedAt }] }],
 //        shared | null, sharedParts: [{ supplier, label, total }], credits },
 //      most charged first; null with no reading
 export function chargesByName({ cache, names = [] }) {
@@ -540,7 +691,7 @@ export function chargesByName({ cache, names = [] }) {
   const period = newest(read.map((s) => periodOf(cache[s], s)));
   const by = new Map();
   const row = (name) => {
-    if (!by.has(name)) by.set(name, { name, c: null, by: {}, credits: 0, cantRead: null, minutes: 0, freeMinutes: 0, reads: {} });
+    if (!by.has(name)) by.set(name, { name, c: null, by: {}, credits: 0, cantRead: null, minutes: 0, freeMinutes: 0, freePlan: false, reads: {} });
     return by.get(name);
   };
   for (const n of names) row(n);
@@ -552,6 +703,8 @@ export function chargesByName({ cache, names = [] }) {
     for (const [key, e] of named(cache[s], s)) {
       const n = row(e?.name ?? key);
       if (s === 'github' && e?.cantRead) n.cantRead = { supplier: s, account: e.cantRead.account };
+      if (s === 'neon' && e?.cantRead) n.cantRead ??= e.cantRead;
+      if (s === 'neon' && e?.free) n.freePlan = true;
       const f = figureIn(e, s, period);
       if (typeof f !== 'number') continue;
       const c = Math.round(f * 100);
@@ -580,7 +733,7 @@ export function chargesByName({ cache, names = [] }) {
   const total = suppliers.reduce((a, s) => a + s.total, 0);
   const rows = [...by.values()].map((n) => ({ name: n.name, total: n.c == null ? null : n.c / 100,
     by: Object.fromEntries(Object.entries(n.by).map(([s, c]) => [s, c / 100])), credits: n.credits / 100, cantRead: n.cantRead,
-    free: n.minutes > 0 && n.freeMinutes === n.minutes, reads: Object.values(n.reads) }))
+    free: n.minutes > 0 && n.freeMinutes === n.minutes, freePlan: n.freePlan, reads: Object.values(n.reads) }))
     .sort((a, b) => (b.total ?? -1) - (a.total ?? -1) || a.name.localeCompare(b.name));
   return { period, total: total / 100, suppliers: suppliers.map((s) => ({ ...s, total: s.total / 100 })).sort((a, b) => b.total - a.total),
     names: rows, shared: shared == null ? null : shared / 100,
@@ -593,6 +746,7 @@ const sourcesOf = (costs) => ({
   github: costs.entries.filter((e) => e.supplier === 'github'),
   vercel: costs.entries.filter((e) => e.supplier === 'vercel' && e.teamId),
   aws: costs.entries.filter((e) => e.supplier === 'aws'),
+  neon: costs.entries.filter((e) => e.supplier === 'neon' && e.orgId),
 });
 
 // GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS. AWS is due
@@ -605,18 +759,26 @@ const DUE = {
   vercel: hourly,
   aws: (sources, had, now) => sources.some((s) => profileDue(had?.profiles?.[s.key], now) || creditMoved(s, had?.profiles?.[s.key]))
     || uncovered(sources, had?.profiles) || sources.some((s) => unidentified(had?.profiles?.[s.key])),
+  // Neon is due with no reading for this month, so an org on the free plan still shows, and when any
+  // paid org is due as an AWS profile is: Neon reads an org's month at most once a UTC day.
+  neon: (sources, had, now) => !samePeriod(had?.period, readingPeriod(now)) || paidOrgs(sources).some((o) => profileDue(had?.orgs?.[o], now)),
 };
 
 // The cache as costs.md has it now: a profile removed from costs.md is dropped from AWS, and its
-// names recounted, whether or not AWS has been read since.
+// names recounted, and Neon's use is priced with costs.md's prices, whether or not either has been
+// read since.
 export function forCosts(cache, costs) {
-  if (!cache?.aws || !costs?.exists) return cache;
+  if (!costs?.exists) return cache;
+  let out = cache;
+  if (cache?.neon) out = { ...out, neon: { ...cache.neon, ...neonCharges(cache.neon, sourcesOf(costs).neon) } };
+  if (!cache?.aws) return out;
   const keys = new Set(sourcesOf(costs).aws.map((s) => s.key));
   const profiles = Object.fromEntries(Object.entries(cache.aws.profiles ?? {}).filter(([k]) => keys.has(k)));
-  if (Object.keys(profiles).length === Object.keys(cache.aws.profiles ?? {}).length) return cache;
-  return { ...cache, aws: { ...cache.aws, profiles, names: awsByName({ profiles }, readingPeriod(cache.aws.at)) } };
+  if (Object.keys(profiles).length === Object.keys(cache.aws.profiles ?? {}).length) return out;
+  return { ...out, aws: { ...cache.aws, profiles, names: awsByName({ profiles }, readingPeriod(cache.aws.at)) } };
 }
-const NOT_DUE = { github: 'read under an hour ago', vercel: 'read under an hour ago', aws: 'every profile read today, or failed under an hour ago' };
+const NOT_DUE = { github: 'read under an hour ago', vercel: 'read under an hour ago', aws: 'every profile read today, or failed under an hour ago',
+  neon: 'every org read today, or failed under an hour ago' };
 
 // The suppliers with sources that are due. Workers running or not makes no difference.
 //   -> ['github', 'aws', …]
@@ -627,13 +789,13 @@ export function dueSuppliers({ costs = readCosts(E.costsPath()), cache = readCac
     .map(([s]) => s);
 }
 
-const READERS = { github: readGithub, vercel: readVercel, aws: readAws };
+const READERS = { github: readGithub, vercel: readVercel, aws: readAws, neon: readNeon };
 
 // Read every due supplier, one at a time per supplier however many callers race: each takes its
 // supplier's lock and checks it is still due under it. Another supplier may be read meanwhile, so
 // the reading goes into the cache as it is on disk then, under the cache's own lock.
 //   -> { github: 'read' | why not, … }
-export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, vercel = vercelGet, aws = awsCli, now = Date.now(), force = false } = {}) {
+export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = readCosts(E.costsPath()), gh = ghApi, vercel = vercelGet, aws = awsCli, neon = neonGet, now = Date.now(), force = false } = {}) {
   const out = {};
   if (!costs.exists) return out;
   for (const [supplier, sources] of Object.entries(sourcesOf(costs))) {
@@ -643,7 +805,7 @@ export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = 
     try {
       const cache = readCache(dir) ?? { v: 1 };
       if (!force && !dueSuppliers({ costs, cache, now }).includes(supplier)) { out[supplier] = NOT_DUE[supplier]; continue; }
-      const read = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, aws, now, force });
+      const read = await READERS[supplier]({ sources, last: cache[supplier] ?? null, gh, vercel, aws, neon, now, force });
       const write = await takeBorrowLock({ dir: lockDir, name: 'desk-cost-cache.lock.d', waitMs: 10000 });
       if (!write.ok) { out[supplier] = 'the cache stayed locked'; continue; }
       try { writeCache({ ...(readCache(dir) ?? { v: 1 }), [supplier]: read }, dir); } finally { write.release(); }
