@@ -7,9 +7,11 @@
 //   wait    nothing for anyone to do yet: checks still running, or GitHub has not worked out whether
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
-//   findings  the review at its head found a P0 or a P1: the pass sends those to a fix worker
-//           (fix-tries.mjs reviewFix), and only once no try is left, or neither its body nor its inline
-//           comments list one with a file:line, does it put them to the person (`why` and `action` say what for)
+//   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
+//           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
+//           (fix-tries.mjs reviewFix), and only once no try is left, or the review lists none of them
+//           (a P0 or P1 by file:line in its body or inline comments, a gap under its gaps heading), does
+//           it put them to the person (`why` and `action` say what for)
 //
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call; a row of plain text such
@@ -112,7 +114,7 @@ export function undraftComment(verdict, head, clean) {
 }
 
 // t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks } (checks as
-// pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey }.
+// pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey, judgement }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -135,8 +137,10 @@ export function undraftCall(t, pr, cfg) {
   const verdict = plain ? null : review?.verdict ?? null;
   const v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
   const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
-  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0)) {
-    return { ...person(v.why, `settle the findings on #${n}`), call: 'findings', verdict: found, review: review.body, reviewId: review.id };
+  // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
+  const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;
+  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || gaps)) {
+    return { ...person(v.why, `settle the ${gaps ? 'findings or gaps' : 'findings'} on #${n}`), call: 'findings', verdict: found, review: review.body, reviewId: review.id };
   }
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {
     return person(`it has a merge conflict with its base`, `resolve the conflict on #${n}; it then needs a fresh review`);

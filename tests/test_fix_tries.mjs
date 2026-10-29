@@ -1,5 +1,5 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -132,5 +132,34 @@ t('DS-299 AC3 inline comments that could not be read leave an inline-only review
 t('DS-299 AC4 inline comments holding only P2s are not requeued', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: [{ path: 'src/a.ts', line: 3, body: '**P2** naming' }, { path: 'src/b.ts', line: 4, body: 'a reply, no severity' }] }), null);
 t('DS-299 inline comments are read only once a try is left', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, comments: () => { throw new Error('read'); } })?.call, 'stuck');
 t('DS-299 and read when one is', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] })?.fix.findings.length, 1);
+
+// ---- under §3 autopilot-judgement yes, a review with only requirement gaps goes to a fix worker too
+const gapBody = (counts, gaps, rest) => reviewBody(counts, rest).replace('deferred=0 gaps=0', `deferred=0 gaps=${gaps}`);
+const AC2 = '**AC2**, "no slot is handed to both." This holds only while the borrow lock is held.';
+const g1Body = gapBody('p0=0 p1=0 p2=0', 1, ['### Findings', 'None.', '', '### Requirement gaps', '- **AC2**, "no slot is handed to both."', '  - This holds only while the borrow lock is held.', '', '### Scope', '- No out-of-scope hunks.']);
+const judge = { ...ucfg, judgement: 'yes' };
+const g1 = undraftCall(tk(), draft(g1Body), judge);
+t('DS-319 AC1 a review at the head with only gaps is a findings call under autopilot-judgement yes', `${g1?.call} ${g1?.verdict?.gaps} ${g1?.action}`, 'findings 1 settle the findings or gaps on #702');
+t('DS-319 AC1 found before red checks', undraftCall(tk(), draft(g1Body, { checks: [red('tests', '9')] }), judge)?.call, 'findings');
+const rg1 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: g1.verdict, body: g1.review }, { judgement: 'yes' });
+t('DS-319 AC1 requeued for try 1 of 2, of kind review', `${rg1?.call} ${rg1?.fix.try}/${rg1?.fix.of} ${rg1?.fix.kind} ${rg1?.fix.what}`, 'requeue 1/2 review review not clean: 1 gap');
+t('DS-319 AC1 the gap is quoted from the review, its sub-points with it, and no other section', JSON.stringify(rg1?.fix.gaps), JSON.stringify([AC2]));
+const briefG = fixBrief(tk({ fix: rg1.fix }));
+t('DS-319 AC1 the brief quotes the gap', briefG.includes(`- Gap: ${AC2}`), true);
+t('DS-319 AC1 and asks for no P0 or P1 fix', briefG.includes('Fix each P0 and P1'), false);
+t('DS-319 AC2 the brief says the call is the worker\'s, recorded as a decision, in the PR body and on the ticket', ['AUTOPILOT_DECISION', 'Decisions taken in the PR body', 'comment it on the ticket'].every((x) => briefG.includes(x)), true);
+t('DS-319 AC3 the brief parks a gap that needs a product or another person\'s ruling', briefG.includes('needs a product ruling or another person\'s is not yours: park with that question (AUTOPILOT_PARK)'), true);
+const taskG = fixTask(tk({ fix: rg1.fix }));
+t('DS-319 AC2 the task closes each gap and reviews the new head again', taskG.includes('close each requirement gap it quotes') && taskG.includes('review the new head with desk-review and post that review on the PR'), true);
+t('DS-319 AC2 and lets the worker comment on the ticket', taskG.includes('leave the ticket\'s Jira status as it is, apart from the comments recording your calls'), true);
+t('DS-319 AC4 without autopilot-judgement yes, gaps stay for the person', `${undraftCall(tk(), draft(g1Body), ucfg)?.call} ${reviewFix(tk(), { pr: 702, head: HEAD, verdict: g1.verdict, body: g1Body })}`, 'person null');
+t('DS-319 AC4 nor under ask', undraftCall(tk(), draft(g1Body), { ...ucfg, judgement: 'ask' })?.call, 'person');
+const tried = [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }];
+const rg5 = reviewFix(tk({ fix_tries: tried }), { pr: 702, head: HEAD, verdict: g1.verdict, body: g1Body }, { judgement: 'yes' });
+t('DS-319 AC5 after 2 tries it is stuck, with the gap the last try\'s review gives', `${rg5?.call} | ${rg5?.why}`, `stuck | review not clean after 2 fix tries: 1 gap — ${AC2}`);
+t('DS-319 a review counting a gap it does not list is left for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: gapBody('p0=0 p1=0 p2=0', 1, ['### Requirement gaps', 'None.']) }, { judgement: 'yes' }), null);
+const p1g = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: p1Body }, { judgement: 'yes' });
+t('DS-319 a P1 and a gap go in one try, both quoted', `${p1g?.fix.what} | ${p1g?.fix.findings.length} | ${p1g?.fix.gaps}`, 'review not clean: 1 P1, 1 gap | 1 | AC3: src/csv.ts:4 no VAT column');
+t('DS-319 the terminal report\'s gaps are read, and an unverified code claim is not a gap', JSON.stringify(reviewGaps('REQUIREMENT GAPS (2, 1 unverified)  ABC-123\n AC3: "export includes VAT" — no VAT column\n AC1: "keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only\n\nUNPROVEN PREMISES (1)\n src/a.ts:1 assumes retries')), JSON.stringify(['AC3: "export includes VAT" — no VAT column']));
 
 process.exit(fails ? 1 : 0);
