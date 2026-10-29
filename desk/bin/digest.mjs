@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
-import { stalledPr } from './gate.mjs';
+import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
@@ -237,16 +237,8 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   return out.sort((a, b) => a.ticket.localeCompare(b.ticket));
 }
 
-// One repo's Merging PRs, as the last pass grouped them (`group`), whose head and check results have not
-// changed for STALL_MS: {ticket, pr, url, for, check}, longest unchanged first.
-export function stalledPrs(r, now = new Date()) {
-  const q = readJson(r.queue, null);
-  const hours = (ms) => { const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60; return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : m ? `${h}h ${m}m` : `${h}h`; };
-  return Object.entries(q?.tickets ?? {}).filter(([, t]) => t.group?.g === 'merging')
-    .map(([key, t]) => ({ key, t, s: stalledPr(t, now.getTime()) })).filter((x) => x.s)
-    .sort((a, b) => b.s.ms - a.s.ms)
-    .map(({ key, t, s }) => ({ ticket: key, pr: t.result.pr, url: t.pr_status.url ?? null, for: hours(s.ms), check: s.check }));
-}
+// One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
+const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
 
 // The page: every repo with something to answer or something taken, questions first.
 // The weekly maintenance window's notes are the computer's, not a repo's, so they head the page.
@@ -269,7 +261,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for 2h or more` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -310,8 +302,8 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       lines.push('');
     }
     if (g.stalled?.length) {
-      lines.push('### Merging, no change for 2h or more', '');
-      for (const s of g.stalled) lines.push(`- \`${s.ticket}\` ${s.url ? `[#${s.pr}](${s.url})` : `#${s.pr}`}: no change for ${s.for}; held by ${s.check}`);
+      lines.push(`### Merging, no change for ${STALL_FOR} or more`, '');
+      for (const s of g.stalled) lines.push(`- \`${s.ticket}\` ${s.url ? `[#${s.pr}](${s.url})` : `#${s.pr}`}: ${s.check} · no change for ${s.for}`);
       lines.push('');
     }
     if (g.putOff?.length) {

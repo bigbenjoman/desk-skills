@@ -1817,8 +1817,11 @@ const row280 = (key) => fxRow(q280, key);
 // WHAT IT NEEDS and STARTS of a row, each trimmed, at 200 columns (NEED_W 52).
 const cells280 = (key) => { const l = row280(key); return [l.slice(31, 83).trim(), l.slice(83, 96).trim()]; };
 // WHAT IT NEEDS is 52 columns on a row, so a longer reason is cut there and read whole on the ticket page.
+// The row names the rerun to come, so one rerun had reads "rerun 2 of 2" until the driver runs it.
 t('DS-280 AC1 a red PR with one rerun had: Merging, the check, and when the next is due',
-  `${/M-1 +▸ merging/.test(row280('M-1'))} ${cells280('M-1')[0]}`, `true #901 · Lint failed · rerun 1 of 2 at ${new Date(due280).toTimeString().slice(0, 5)}`);
+  `${/M-1 +▸ merging/.test(row280('M-1'))} ${cells280('M-1')[0]}`, `true #901 · Lint failed · rerun 2 of 2 at ${new Date(due280).toTimeString().slice(0, 5)}`);
+t('DS-280 AC1 once its cooldown passes, the same rerun is next, not a different count',
+  fxRow(lines(Q.repoScreen(r280, { now: due280 + 60000, width: 200 })), 'M-1').slice(31, 83).trim(), '#901 · Lint failed · rerun 2 of 2 next');
 t('DS-280 AC2 two red before any rerun: Merging, leading with the checks, never a pass count',
   `${/M-2 +▸ merging +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
 t('DS-280 AC3 both reruns spent and no fix try yet: Merging, a worker repairs it next',

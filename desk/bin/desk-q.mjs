@@ -37,7 +37,7 @@ import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, stalledPr } from './gate.mjs';
+import { FAILED, evaluateGate } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -108,8 +108,7 @@ function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
-  // A held ticket with a question of its own needs the user whatever its blockers do.
-  if (isHeld(t)) return (t.open_questions ?? 0) > 0 ? 'needs' : holdOf(q, t, ctx, seen).k;
+  if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   if (answeredPark(t, ctx)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
@@ -124,6 +123,8 @@ const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.bat
 const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
+// A held ticket with a question of its own: it needs the user for that, whatever its blockers do.
+export const heldAsks = (t) => isHeld(t) && (t.open_questions ?? 0) > 0;
 const outsideText = (t) => {
   const o = outsideOf(t);
   return o.length === 1 ? `held by ${o[0].key}, outside this batch: start anyway?` : `held by ${o.length} Jira tickets outside: start anyway?`;
@@ -243,12 +244,13 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
 
 // Where the merge driver is with a red PR's reruns, from what the pass read of its files (pr_status
 // reruns, per check at this head, and rerun_at, its last): the rerun it is on and when the next is due,
-// or that they are spent and a fix try follows. With `now` null, a due time is left out.
+// or that they are spent and a fix try follows. It always names the rerun to come, so the count only
+// moves when the driver reruns. With `now` null, a due time is left out.
 function rerunStep(ps, red, triesLeft, now) {
   const tried = Math.max(0, ...red.map((n) => Number(ps.reruns?.[n]) || 0));
   if (tried >= RERUNS_MAX) return triesLeft ? 'reruns spent, a worker repairs it next' : 'reruns spent; no fix tries left';
   const due = tried ? Date.parse(ps.rerun_at ?? '') + RERUN_COOLDOWN_S * 1000 : NaN;
-  const step = now != null && due > now ? `rerun ${tried} of ${RERUNS_MAX} at ${clock(due)}` : `rerun ${tried + 1} of ${RERUNS_MAX} next`;
+  const step = `rerun ${tried + 1} of ${RERUNS_MAX} ${now != null && due > now ? `at ${clock(due)}` : 'next'}`;
   return triesLeft ? step : `${step}; no fix tries left`;
 }
 
@@ -298,6 +300,15 @@ function holdsReach(q, from, key, seen = new Set()) {
 // Nothing here calls GitHub.
 const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
+// How long an open PR's head and check results have gone unchanged, as the last pass read it
+// (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
+// is, and the check-in digest lists it (stalledPrs).
+export const STALL_MS = 2 * 60 * 60 * 1000;
+export const STALL_FOR = span(STALL_MS);
+const stalledFor = (t, now) => {
+  const ps = prStatusOf(t), at = Date.parse(ps?.changed_at ?? '');
+  return ps?.state === 'OPEN' && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
+};
 // A done ticket whose PR the last pass read as open or closed unmerged. One merged, with no PR, or not
 // read yet is done, as unmergedBlockers takes it.
 const prRow = (t) => !t?.merged_at && ['OPEN', 'CLOSED'].includes(prStatusOf(t)?.state);
@@ -568,7 +579,7 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
-  if (x.k === 'needs') return isHeld(x.t) && !((x.t.open_questions ?? 0) > 0) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
+  if (x.k === 'needs') return isHeld(x.t) && !heldAsks(x.t) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return outsideText(x.t);
   if (x.k === 'failed') return stoppedText(x.t);
   const b = undatedBlockers(r, F, x.t);
@@ -1380,8 +1391,8 @@ function prSegs(r, t, now) {
   if (r.live) {
     // A Merging PR with no change for STALL_MS keeps its first reason and says so, which a 52-column
     // row has room for; the rest is moving nothing.
-    const m = prNeed(r.q, t, r.ctx, now), stall = m.k === 'merging' ? stalledPr(t, now) : null;
-    return [...lead, ...(stall ? [m.segs[0], [` · no change for ${span(stall.ms)}`, null]] : m.segs)];
+    const m = prNeed(r.q, t, r.ctx, now), stall = m.k === 'merging' ? stalledFor(t, now) : null;
+    return [...lead, ...(stall != null ? [m.segs[0], [` · no change for ${span(stall)}`, null]] : m.segs)];
   }
   return [...lead, [`as of ${clock(Date.parse(prStatusOf(t).at))}: ${segText(prNeed(r.q, t, r.ctx, null).segs)}`, GREY]];
 }
@@ -1432,7 +1443,7 @@ function needSegs(r, x, now = Date.now()) {
   if (x.pr) return prSegs(r, t, now);
   if (k === 'stuck') return [[outsideText(t), null]];
   // One with a question of its own needs the user for that, whatever it is held behind.
-  if (isHeld(t) && (t.open_questions ?? 0) > 0) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
+  if (heldAsks(t)) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
   const f = fixOn(t);
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running');
@@ -1464,6 +1475,19 @@ export function groupsNow({ slug, stateDir, queuePath, q, now = Date.now() }) {
   const r = { slug, stateDir, queuePath, q, live: true, last: now };
   const ctx = holdContext(r);
   return Object.fromEntries(Object.entries(q?.tickets ?? {}).filter(([, t]) => t.state !== 'done' || prRow(t)).map(([key, t]) => [key, groupOf(shownState(q, t, ctx))]));
+}
+
+// One repo's PRs the last pass put in Merging (`group`) whose head and check results have gone
+// unchanged for STALL_MS, longest first, for the check-in digest: {ticket, pr, url, for, check}, where
+// `check` is the reason their row leads with. The pass put them in Merging, so something merges and
+// reruns them, and they are worded as Merging words them.
+export function stalledPrs({ slug, stateDir, queuePath, q, now = Date.now() }) {
+  const r = { slug, stateDir, queuePath, q, live: true, last: now };
+  const ctx = { ...holdContext(r), merges: true, reruns: true };
+  return Object.entries(q?.tickets ?? {}).filter(([, t]) => prRow(t) && t.group?.g === 'merging')
+    .map(([key, t]) => ({ key, t, ms: stalledFor(t, now) })).filter((x) => x.ms != null)
+    .sort((a, b) => b.ms - a.ms)
+    .map(({ key, t, ms }) => ({ ticket: key, pr: t.result.pr, url: prStatusOf(t).url ?? null, for: span(ms), check: prNeed(q, t, ctx, null).segs[0][0] }));
 }
 
 // A waiting ticket whose every blocker left is landing starts after their PRs merge.
@@ -1520,7 +1544,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
   // says how long it has been there instead, amber for a Merging PR with no change for STALL_MS.
   const starts = (x) => { const a = afterPrs(r, x), g = inGroup(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(F, x, now); };
-  const startsSgr = (x) => (r.live && groupOf(x.k) === 'merging' && inGroup(x, now) != null && stalledPr(x.t, now) ? WARN : null);
+  const startsSgr = (x) => (r.live && groupOf(x.k) === 'merging' && inGroup(x, now) != null && stalledFor(x.t, now) != null ? WARN : null);
   const ships = (x) => (x.pr ? '—' : shipsCell(F, x, now));
   const row = (x) => segRow(x.t.key, [
     [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], STATE_W), STATE_SGR[x.k]],
@@ -1565,7 +1589,7 @@ const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 function moveOf(r, row, k, t, h, now) {
   const q = t.park?.question;
   // A held ticket with a question of its own is moved by its answer, not by its blockers.
-  const asks = isHeld(t) && (t.open_questions ?? 0) > 0;
+  const asks = heldAsks(t);
   if (asks) h = null;
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);

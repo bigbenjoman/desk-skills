@@ -257,7 +257,7 @@ const r11 = await checkin({ times: DEFAULT_TIMES, now: now11, dir, list: [M], bi
 const page11 = readFileSync(r11.page, 'utf8');
 t('DS-280 AC8 the digest lists each Merging PR unchanged for 2h or more, how long, and the check holding it, longest first',
   page11.slice(page11.indexOf('### Merging')).split('\n').slice(0, 5).join('\n'),
-  '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): no change for 2h 10m; held by Lint failed\n- `M-3` [#3](https://github.com/acme/m/pull/3): no change for 2h; held by e2e running\n');
+  '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): Lint failed · no change for 2h 10m\n- `M-3` [#3](https://github.com/acme/m/pull/3): e2e running · no change for 2h\n');
 t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s) with no change for 2h or more.'), true);
 
 rmSync(root, { recursive: true, force: true });
