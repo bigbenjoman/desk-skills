@@ -889,7 +889,7 @@ const Rn = screen(tidyQ, 104, () => FIXED);
 await sleep(20);
 await Rn.press('c');
 t('a repo\'s parked note too long for the tab line at 104 columns goes on its own line, key and all',
-  `${Rn.frame()[1].trimEnd()} | ${Rn.frame()[2].trimEnd()}`, `${ALL_TABS} | Waiting-on-you tickets dated at the next check-in · c to undo`);
+  `${Rn.frame()[1].trimEnd()} | ${Rn.frame()[2].trimEnd()}`, `${ALL_TABS} | Tickets that need your answer dated at the next check-in · c to undo`);
 Rn.ui.finish(0);
 
 const everyFeat = lines(Q.timelineScreen(featRepos, null, { now: FIXED }));
