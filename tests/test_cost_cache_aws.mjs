@@ -1,9 +1,11 @@
 // suite: cost cache, AWS (each profile's month by service and record type, read at most once a day)
-// The AWS reading against fixture `aws ce get-cost-and-usage` output (the ResultsByTime shape AWS
-// documents for GetCostAndUsage, grouped by SERVICE then RECORD_TYPE), a fixed clock (27 and 28
-// October, 1 November 2026) and a scratch costs.md, cache dir and lock dir. No check calls AWS: aws
-// is a function here that counts its calls, and a fake aws script on PATH for the background
-// refresh. One check or more per criterion of DS-289.
+// The AWS reading against `aws ce get-cost-and-usage` output grouped by SERVICE then RECORD_TYPE:
+// forewatt's is a real reply, recorded on 29 October 2026 for 1 to 28 October
+// (fixtures/aws-ce-forewatt-2026-10.json, as the CLI printed it); the credit, paging and twin cases
+// are built in the same shape. A fixed clock (27 and 28 October, 1 November 2026) and a scratch
+// costs.md, cache dir and lock dir. No check calls AWS: aws is a function here that counts its
+// calls, and a fake aws script on PATH for the background refresh. One check or more per criterion
+// of DS-289.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -12,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const BIN = join(HERE, '..', 'desk', 'bin');
 const T = mkdtempSync(join(tmpdir(), 'desk-cost-aws-'));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_LOCK_DIR: join(T, 'locks'), DESK_USAGE_DIR: join(T, 'usage'), DESK_COST_DIR: join(T, 'costs'), DESK_COSTS: join(T, 'costs.md'),
@@ -33,15 +36,15 @@ const grp = (service, type, amount) => ({ Keys: [service, type], Metrics: { Unbl
 const page = (groups, next) => ({ GroupDefinitions: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'RECORD_TYPE' }],
   ResultsByTime: [{ TimePeriod: { Start: '2026-10-01', End: '2026-10-27' }, Total: {}, Groups: groups, Estimated: true }],
   DimensionValueAttributes: [], ...(next ? { NextPageToken: next } : {}) });
-// Out of order, so only the sort puts the lines largest first and tax last.
-const FOREWATT = [grp('Tax', 'Tax', '0.69'), grp('Amazon Route 53', 'Usage', '1.0100000001'), grp('Amazon Simple Storage Service', 'Usage', '3.4512'),
-  grp('AWS Lambda', 'Usage', '0.0000012'), grp('Amazon Route 53', 'Tax', '0.2')];
+// The recorded reply comes in name order, so only the sort puts the lines largest first.
+const RECORDED = JSON.parse(readFileSync(join(HERE, 'fixtures', 'aws-ce-forewatt-2026-10.json'), 'utf8'));
+const FOREWATT = RECORDED.ResultsByTime[0].Groups;
 const PRNINJA = [grp('Amazon Elastic Compute Cloud - Compute', 'Usage', '30.3312'), grp('Amazon Elastic Compute Cloud - Compute', 'Credit', '-30.3312'),
   grp('EC2 - Other', 'Usage', '20.17'), grp('EC2 - Other', 'Credit', '-20.17'),
   grp('Amazon Simple Storage Service', 'Usage', '5'), grp('Amazon Simple Storage Service', 'Credit', '-3'),
   grp('Tax', 'Tax', '10.1'), grp('Tax', 'Credit', '-10.1')];
 const FANSURGE = [grp('Amazon CloudFront', 'Usage', '0.42')];
-const pages = { forewatt: [page(FOREWATT)], 'prninja-admin': [page(PRNINJA)], fansurge: [page(FANSURGE)] };
+const pages = { forewatt: [RECORDED],'prninja-admin': [page(PRNINJA)], fansurge: [page(FANSURGE)] };
 
 const sources = [
   { supplier: 'aws', key: 'forewatt', name: 'forewatt', repo: 'benjo__forewatt', credit: null },
@@ -76,10 +79,14 @@ t('AC1 the reading runs', (await C.refresh({ costs, aws, now: OCT27 })).aws, 're
 const a = cache().aws;
 const fw = a.profiles.forewatt;
 t('AC1 forewatt\'s lines, one per service, largest first, tax last', fw.lines.map((l) => l.service).join(' | '),
-  'Amazon Simple Storage Service | Amazon Route 53 | Tax');
-t('AC1 each charged to the cent', fw.lines.map((l) => l.charged).join(' '), '3.45 1.01 0.89');
-t('AC1 a tax record under another service joins the tax line, marked as tax', `${line(fw, 'Tax').charged} ${line(fw, 'Tax').tax}`, '0.89 true');
-t('AC1 a line under a cent in every figure is left out', !!line(fw, 'AWS Lambda'), false);
+  'Amazon Relational Database Service | Amazon Elastic Container Service | AmazonCloudWatch | Amazon Virtual Private Cloud | AWS Step Functions'
+  + ' | Amazon Simple Storage Service | Amazon EC2 Container Registry (ECR) | AWS Secrets Manager | AWS Cost Explorer | Amazon API Gateway'
+  + ' | AWS Key Management Service | Tax');
+t('AC1 each charged to the cent', fw.lines.map((l) => l.charged).join(' '), '59.9 19.54 12.62 5.94 3.24 1.89 0.44 0.36 0.04 0.01 0.01 20.79');
+t('AC1 tax is a line of its own, marked as tax', `${line(fw, 'Tax').charged} ${line(fw, 'Tax').tax}`, '20.79 true');
+t('AC1 a tax record under another service joins the tax line', JSON.stringify(C.awsLines([{ service: 'Amazon Route 53', type: 'Tax', amount: 0.2 }, { service: 'Tax', type: 'Tax', amount: 0.69 }])),
+  '[{"service":"Tax","used":0.89,"credits":0,"charged":0.89,"tax":true}]');
+t('AC1 a line under a cent in every figure is left out, and so is one at $0', `${!!line(fw, 'Amazon DynamoDB')} ${!!line(fw, 'AWS Glue')}`, 'false false');
 t('AC1 with the profile it was read with and the time of the reading', `${fw.profile} ${fw.name} ${fw.at === OCT27} ${fw.failed}`, 'forewatt forewatt true null');
 t('AC1 for 1 to 26 October, days in UTC', `${fw.period.from}..${fw.period.to}`, '2026-10-01..2026-10-26');
 t('AC1 asked of Cost Explorer as the ticket gives it, End exclusive', calls.find((c) => arg(c, '--profile') === 'forewatt').join(' '),
@@ -95,7 +102,8 @@ const fs = a.profiles.fansurge;
 t('AC3 a profile with no repo in desk is kept under its own name', `${fs.name} ${fs.repo} ${fs.total}`, 'fansurge null 0.42');
 t('AC3 and stands as a name of its own in the cache', `${Object.keys(a.names).sort().join()} ${a.names.fansurge.repo} ${a.names.fansurge.total}`, 'fansurge,forewatt,pr-ninja null 0.42');
 t('AC6 one Cost Explorer request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map(of).join(), '1,1,1');
-t('AC7 forewatt\'s lines add up to its total to the cent', `${sum(fw.lines)} ${fw.total}`, '5.35 5.35');
+// The recorded amounts add up to 124.77 raw; its lines, each to the cent, to 124.78.
+t('AC7 forewatt\'s lines add up to its total to the cent', `${sum(fw.lines)} ${fw.total}`, '124.78 124.78');
 // Two profiles under one name, each service a third of a cent over: the rounded lines add to 1.32
 // where the raw amounts would round to 1.34.
 const third = (...services) => [page(services.map((s) => grp(s, 'Usage', '0.334')))];
@@ -140,7 +148,7 @@ await C.refresh({ costs, aws, now: OCT28 });
 const a5 = cache().aws;
 t('AC5 the failed profile keeps its last good figures and their time', `${a5.profiles['prninja-admin'].total} ${a5.profiles['prninja-admin'].at === OCT27} ${a5.profiles['prninja-admin'].lines.length}`, '2 true 4');
 t('AC5 and records the failed attempt with its time and reason', JSON.stringify(a5.profiles['prninja-admin'].failed), JSON.stringify({ at: OCT28, why: EXPIRED }));
-t('AC5 the other profiles still update', `${a5.profiles.forewatt.total} ${a5.profiles.forewatt.at === OCT28}`, '5.45 true');
+t('AC5 the other profiles still update', `${a5.profiles.forewatt.total} ${a5.profiles.forewatt.at === OCT28}`, '124.88 true');
 reset();
 await C.refresh({ costs, aws, now: OCT28 + 59 * 60000 });
 t('AC5 under an hour on, the failed profile is not tried again', of('prninja-admin'), 0);
@@ -190,14 +198,14 @@ open();
 const ghLater = await ghFirst;
 t('race: the second refresh reads AWS while the first holds GitHub', `${both.entries.length} ${awsMeanwhile.github} | ${awsMeanwhile.aws}`, '4 another reading is running | read');
 t('race: the first then writes GitHub and finds AWS already read', `${ghLater.github} | ${ghLater.aws}`, 'read | every profile read today, or failed under an hour ago');
-t('race: both readings are in the cache', `${!!C.readCache(raceDir).github?.repos?.['benjo/voicepa']} ${C.readCache(raceDir).aws?.profiles?.forewatt?.total}`, 'true 5.45');
+t('race: both readings are in the cache', `${!!C.readCache(raceDir).github?.repos?.['benjo/voicepa']} ${C.readCache(raceDir).aws?.profiles?.forewatt?.total}`, 'true 124.88');
 t('race: one Cost Explorer request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map(of).join(), '1,1,1');
 
 // ---- AC9: desk-q's check starts one background reading per profile and does not wait
 mkdirSync(join(T, 'bin'));
 const fakeAws = join(T, 'bin', 'aws');
 const awsLog = join(T, 'aws-calls');
-writeFileSync(join(T, 'answer.json'), JSON.stringify(page(FOREWATT)));
+writeFileSync(join(T, 'answer.json'), JSON.stringify(RECORDED));
 writeFileSync(fakeAws, `#!/bin/sh\necho "attempts=$AWS_MAX_ATTEMPTS $*" >> "${awsLog}"\nsleep 0.2\ncat "${join(T, 'answer.json')}"\n`);
 chmodSync(fakeAws, 0o755);
 // The child runs on the real clock, so it gets a cache of its own.
@@ -211,7 +219,7 @@ const until = Date.now() + 15000;
 while (Date.now() < until && !C.readCache(childDir)) await new Promise((r) => { setTimeout(r, 100); });
 await new Promise((r) => { setTimeout(r, 1500); });
 const awsCalls = () => (existsSync(awsLog) ? readFileSync(awsLog, 'utf8').trim().split('\n') : []);
-t('AC9 the background reading writes the cache', C.readCache(childDir)?.aws?.profiles?.forewatt?.total, 5.45);
+t('AC9 the background reading writes the cache', C.readCache(childDir)?.aws?.profiles?.forewatt?.total, 124.88);
 t('AC9 two started together make one request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map((p) => awsCalls().filter((l) => l.includes(`--profile ${p} `)).length).join(), '1,1,1');
 t('AC6 each aws call runs with the CLI\'s retries off, so one call is one request', awsCalls().length > 0 && awsCalls().every((l) => l.startsWith('attempts=1 ')), true);
 t('AC9 with that reading made today, the next check starts nothing', C.startRefresh({ due: C.dueSuppliers({ costs, cache: C.readCache(childDir), now: Date.now() }), env: childEnv }).started, false);

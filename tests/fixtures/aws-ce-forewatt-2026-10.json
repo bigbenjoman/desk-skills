@@ -1,0 +1,229 @@
+{
+    "GroupDefinitions": [
+        {
+            "Type": "DIMENSION",
+            "Key": "SERVICE"
+        },
+        {
+            "Type": "DIMENSION",
+            "Key": "RECORD_TYPE"
+        }
+    ],
+    "ResultsByTime": [
+        {
+            "TimePeriod": {
+                "Start": "2026-10-01",
+                "End": "2026-10-29"
+            },
+            "Total": {},
+            "Groups": [
+                {
+                    "Keys": [
+                        "AWS Cost Explorer",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0.04",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "AWS Glue",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "AWS Key Management Service",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0.005823",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "AWS Lambda",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "AWS Secrets Manager",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0.3587052632",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "AWS Step Functions",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "3.23585",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon API Gateway",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0.01122184",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon DynamoDB",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0.0000749723",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon EC2 Container Registry (ECR)",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0.442083992",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon Elastic Container Service",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "19.5371027961",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon Relational Database Service",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "59.8961035843",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon Simple Notification Service",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon Simple Storage Service",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "1.8899227029",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Amazon Virtual Private Cloud",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "5.935060305",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "AmazonCloudWatch",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "12.6249998474",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "CloudWatch Events",
+                        "Usage"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "0",
+                            "Unit": "USD"
+                        }
+                    }
+                },
+                {
+                    "Keys": [
+                        "Tax",
+                        "Tax"
+                    ],
+                    "Metrics": {
+                        "UnblendedCost": {
+                            "Amount": "20.79",
+                            "Unit": "USD"
+                        }
+                    }
+                }
+            ],
+            "Estimated": true
+        }
+    ],
+    "DimensionValueAttributes": []
+}
