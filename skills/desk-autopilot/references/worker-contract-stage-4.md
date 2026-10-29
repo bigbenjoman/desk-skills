@@ -214,7 +214,9 @@ that actually refuted with codex, and never claim codex on a run that fell back.
   finding, only once those tries are spent. End with
   `AUTOPILOT_DONE: pr=<n> jira=<status> review=round 3 left <counts> for a fix try`. Leave the PR in
   draft. These are findings handed on, not ones you have understood and left, so posting them is not
-  posting a P0 left in place; a P0 you cannot fix still parks (below).
+  posting a P0 left in place; a P0 you cannot fix still parks (below). Where §3
+  `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks
+  as above.
 - **Round 3, only P2s**: **carry them, do not park.** Mark each `"carried": true`, so the verdict
   reads clean on the blocking counts and records the number carried, and open the draft PR. Put the
   section `verdict.mjs --carried <results>` prints (`### Carried review findings`, `file:line` each)

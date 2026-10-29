@@ -104,6 +104,11 @@ t('DS-281 AC3 a clean re-review at the new head is undrafted with its verdict', 
 t('DS-281 AC4 a try already made for this head is not made again', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' } })?.why, 'review not clean after 1 fix try: 1 P1');
 const r5 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' } });
 t('DS-281 AC5 after 2 tries it is stuck, with the P1 count', `${r5?.call} | ${r5?.why}`, 'stuck | review not clean after 2 fix tries: 1 P1');
+const r3Body = ['<!-- desk-review:local -->', `<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=3 -->`,
+  `**desk-review, round 3 (fix range ddddddd..aaaaaaa): 1 P1 at \`aaaaaaa\`** · codex read the diff cold`, `<!-- desk-review:carried v=1 p2=1 since=${'d'.repeat(40)} -->`, '', '- **P1** `src/b.ts:3` second formatter'].join('\n');
+const u335 = undraftCall(tk(), draft(r3Body), ucfg);
+const f335 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: u335?.verdict, body: u335?.review });
+t('DS-335 AC1 a worker\'s round-3 review with a P1 at the head goes to a fix try with that finding', `${u335?.call} ${f335?.call} ${f335?.fix.try}/${f335?.fix.of} ${JSON.stringify(f335?.fix.findings)}`, 'findings requeue 1/2 [{"sev":"P1","text":"- **P1** `src/b.ts:3` second formatter"}]');
 const r335 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' }, body: p1Body });
 t('DS-335 AC2 once the tries are spent, the stuck text names each finding with its file:line', r335?.why, 'review not clean after 2 fix tries: 1 P1 — P1: packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original');
 const p2only = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=2')), ucfg);

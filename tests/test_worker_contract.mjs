@@ -82,6 +82,7 @@ const stage4 = read('worker-contract-stage-4.md').replace(/\s+/g, ' ');
 t('DS-335 AC3 a round-3 P0 or P1 still parks by default', stage4.includes('**Round 3, a P0 or P1**: park, naming each finding and its `file:line`. No fourth round.'), true);
 t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the review for a fix try instead',
   stage4.includes('**Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.**') && stage4.includes('`AUTOPILOT_DONE: pr=<n> jira=<status> review=round 3 left <counts> for a fix try`'), true);
+t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
