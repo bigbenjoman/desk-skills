@@ -218,5 +218,23 @@ verdict "$(parked H "h?")"; echo "none" > "$T/claude.mode"
 out=$(tick); settle; out=$(tick)
 check "a session with no result line hands its items on" 'handed | grep -q "^H|decider no DECIDER_RESULT: line$"'
 
+# ---- §3 worker-web-read: a park asking only for a public fact is requeued where workers can read the web ----
+lastargs(){ set -- "$T"/claude.args.*; echo "$T/claude.args.$(( $# - 1 ))"; }
+FACT="what is the ONS 2024 UK household count?"
+mark; echo "hand" > "$T/claude.mode"
+queue '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"'"$FACT"'"}}}'
+verdict "$(parked P "$FACT")"
+out=$(tick); settle
+check "web-read unset: the decider prompt has no public-fact rule" '[ "$(calls)" = 1 ] && ! grep -q "public fact" "$(lastargs)"'
+printf '| `worker-web-read` | Read the web | `ask` | `yes` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+mark; echo "requeue Q" > "$T/claude.mode"
+queue '{"Q":{"key":"Q","state":"parked","lane":"A","park":{"question":"'"$FACT"' (Q)"}}}'
+verdict "$(parked Q "$FACT (Q)")"
+out=$(tick); settle
+verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'
+out=$(tick)
+check "web-read yes: the prompt says a public fact is no fact only the person holds, and to requeue it" '[ "$(calls)" = 1 ] && grep -q "a park asking only for a public fact .* is not a fact only the person holds" "$(lastargs)" && grep -q "requeue it for its worker to look the fact up" "$(lastargs)"'
+check "web-read yes: the park is requeued, not handed on" 'grep -q "\"Q\":{[^}]*\"state\":\"triaged\"" "$DESK_QUEUE" && ! handed | grep -q "^Q|"'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
