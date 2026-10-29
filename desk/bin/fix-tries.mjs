@@ -1,7 +1,8 @@
 // A ready batch PR the merge driver cannot merge goes back to a worker on its own branch, at most
 // FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
 // So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
-// yes a requirement gap (reviewFix), within the same tries.
+// yes a requirement gap (reviewFix), within the same tries, and one whose review gaps the person
+// ruled on through desk-needs-you (gapsFix), outside them.
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -170,10 +171,19 @@ export function reviewFix(t, review, opts = {}) {
   return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
 }
 
+// The person's call on a draft's review gaps (desk-needs-you), as the fix it sends back: not one of
+// the FIX_TRIES_MAX tries, which are the pass's own.
+export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head ?? null, what: 'review gaps: your call', answer });
+
 // The fix worker's briefing section, while its try is open.
 export function fixBrief(t) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  if (f.kind === 'gaps') {
+    return [`## Your call on PR #${f.pr}'s review gaps`, '',
+      `Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
+  }
   const lines = [`## Fix try ${f.try} of ${f.of}: PR #${f.pr}`, ''];
   if (f.kind === 'conflict') {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
@@ -207,17 +217,22 @@ export function fixBrief(t) {
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
 export function fixTask(t) {
   const f = t.fix;
-  const review = f.kind === 'review';
+  const gaps = f.kind === 'gaps';
+  const review = f.kind === 'review' || gaps;
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
-    : review ? (f.gaps?.length
-      ? `${f.findings?.length ? 'fix each P0 and P1 finding it quotes and ' : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
-      : 'fix each P0 and P1 finding it quotes, and nothing else')
-      : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
+    : gaps ? 'do what the call says about each gap, and nothing else'
+      : review ? (f.gaps?.length
+        ? `${f.findings?.length ? 'fix each P0 and P1 finding it quotes and ' : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
+        : 'fix each P0 and P1 finding it quotes, and nothing else')
+        : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';
+  const task = gaps
+    ? `Your task is to carry out the person's call on the review gaps of PR #${f.pr}, already open on your branch: the "Your call" section of your briefing quotes it. `
+    : `Your task is fix try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. `;
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
-    `Your task is fix try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. ` +
+    task +
     `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
     `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
 }

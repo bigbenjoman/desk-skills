@@ -1451,7 +1451,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}${t.fix && !t.fix.finished ? ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})` : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.
