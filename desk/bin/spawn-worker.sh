@@ -50,7 +50,7 @@ SETTINGS="$STATE/workers/$TICKET.settings.json"
 
 [ -d "$WT" ] || { echo "FAIL: worktree $WT does not exist — run setup-worktree.sh first" >&2; exit 1; }
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
-mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs"
+mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs" "$STATE/resume"
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns

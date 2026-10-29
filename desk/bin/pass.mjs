@@ -13,7 +13,7 @@ import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spin
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
-  roundStage, resumeCheck, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
+  roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
@@ -1325,20 +1325,20 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
 
 // A requeued ticket whose worker parked at Stage 3 or later resumes at the stage that round reached,
 // with its summary in the briefing, when its worktree was kept, is on the queue's branch, and has no
-// resume file that records another (resumeCheck). A round that cannot be resumed is said in the
+// resume file (the worker's in the state dir, or one in the worktree) that records another (resumeCheck). A round that cannot be resumed is said in the
 // briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
   const stage = roundStage(round?.stage);
   if (!stage || !kept) return { stage: null, brief: '', line: '' };
-  const r = resumeCheck({ worktree: wt, key: t.key, branch });
+  const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
-    return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why }), line: ` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
+    return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why, path: r.path }), line:` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
   }
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const answers = answersSince(existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '', round.at);
   const base = `origin/${DEFAULT_BRANCH}`;
-  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base) });
+  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base), resumePath: r.path });
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
@@ -1458,6 +1458,8 @@ for (const t of spawnable) {
   const logBytes = logPreflight(t.key, pre.cost);
   // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
+  // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
+  if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
