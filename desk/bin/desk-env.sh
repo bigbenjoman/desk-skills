@@ -54,26 +54,30 @@ desk_apply_batch_base() {
   export DESK_DEFAULT_BRANCH="$b"
 }
 
-# Exports DESK_REPO_ROOT, DESK_WORKTREES_DIR, DESK_HOME, DESK_SLUG, DESK_REPO_CONFIG_DIR,
-# DESK_DEFAULT_BRANCH, DESK_BIN, DESK_STATE, DESK_QUEUE,
-# DESK_SKILLS_DIR, DESK_LOCK_DIR, DESK_MEMORY_DIR, DESK_GH_REPO, DESK_PG_CONTAINER,
-# DESK_DEV_PORT, DESK_WORKER_PORT_FLOOR, DESK_IS_WSL. Fails (non-zero) with the resolver's
-# message if the repo root is unset.
+# Sets and exports each `KEY='value'` line of desk-env.mjs output, so the keys are named only there.
+desk_export_assigned() {
+  local k
+  eval "$1"
+  while IFS= read -r k; do
+    if [ -n "$k" ]; then export "${k?}"; fi
+  done <<EOF
+$(printf '%s\n' "$1" | sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p')
+EOF
+}
+
+# Exports every value `desk-env.mjs paths` prints (DESK_REPO_ROOT, DESK_DEFAULT_BRANCH, DESK_STATE,
+# DESK_QUEUE and the rest). Fails (non-zero) with the resolver's message if the repo root is unset.
 desk_load_paths() {
   local out
   out="$(node "$DESK_ENV_MJS" paths)" || return 1
-  eval "$out"
-  export DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_HOME DESK_SLUG DESK_REPO_CONFIG_DIR DESK_DEFAULT_BRANCH DESK_BIN DESK_STATE DESK_QUEUE \
-    DESK_SKILLS_DIR DESK_LOCK_DIR DESK_MEMORY_DIR DESK_GH_REPO DESK_PG_CONTAINER \
-    DESK_DEV_PORT DESK_WORKER_PORT_FLOOR DESK_IS_WSL
+  desk_export_assigned "$out"
 }
 
 # Exports DESK_GITHUB_HANDLE and DESK_JIRA_NAME, or fails loudly.
 desk_load_identity() {
   local out
   out="$(node "$DESK_ENV_MJS" identity)" || return 1
-  eval "$out"
-  export DESK_GITHUB_HANDLE DESK_JIRA_NAME
+  desk_export_assigned "$out"
 }
 
 # Headless `claude -p` needs the grant before it launches, because it cannot ask.
