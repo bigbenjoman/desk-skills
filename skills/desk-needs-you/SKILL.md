@@ -77,7 +77,8 @@ line saying what it recorded. Keep it for the end.
   tell the user to give the message to that repo's session themselves.
 - **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`
   session to open.
-- **`not-now`**: puts the item in the not-now register. Do not ask about it again in this run.
+- **`not-now`**: puts the item in the not-now register. `list` and `left` leave it out until its
+  question, blocker or PR head changes. Do not ask about it again in this run.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, nothing more is needed: its next pass picks the answer up.
