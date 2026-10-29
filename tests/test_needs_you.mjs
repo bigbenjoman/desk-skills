@@ -155,6 +155,11 @@ const reg = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-n
 t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} ${reg.includes('PRODUCTION BROKEN: checkout returns 500')} ${answers().at(-1).args.join(' ')}`, 'true true A-6 not now');
 const n4 = N.record({ word: 'alpha', ticket: 'A-4', action: 'not-now' });
 t('AC8 a hold put off is in the register too, and stays held', `${n4.ok} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8').includes('"ticket":"A-4"')} ${queueOf('alpha').tickets['A-4'].held_by}`, 'true true A-9');
+// DS-324 AC1, AC3: a put-off item is not listed again, on this run or a later one, and the count leaves it out.
+const offList = cli('list', 'alpha');
+t('DS-324 AC1 a put-off park and hold are not listed', `${N.collect({ word: 'alpha' }).items.some((i) => ['A-4', 'A-6'].includes(i.t.key))} ${/^alpha A-[46] /m.test(offList.out)}`, 'false false');
+t('DS-324 AC1 the count line leaves them out and says so', offList.out.trim().split('\n').at(-1), `${offList.out.split('\n').filter((l) => / \| /.test(l)).length} items in 1 repo. 2 put off with not-now, left out until they change.`);
+t('DS-324 AC3 a later run with nothing changed still leaves them out', N.collect({ word: 'alpha', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['A-4', 'A-6'].includes(i.t.key)), false);
 
 // ---- A spine approval runs as its own repo, and what is left for the person is shown, not refused
 const s7 = N.record({ word: 'alpha', ticket: 'A-7', action: 'approve' });
@@ -190,8 +195,18 @@ t('AC16 the record line says passes are stopped', /Passes are stopped in gamma/.
 
 // ---- AC11: the end prints the desk-q count left, then each stopped repo and how to resume it
 const left = cli('left').out.trim().split('\n');
-// A-1, A-3, A-7, B-1 and G-1 are settled; A-2, A-4, A-6 and A-8 still need you.
-t('AC11 the count left is desk-q\'s', left[0], 'desk-q counts 4 items needing you.');
+// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you.
+t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 2 items needing you. 2 put off with not-now, left out until they change.');
+t('DS-324 AC4 left matches list', N.collect().items.length, 2);
+
+// ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
+const aq = queueOf('alpha');
+aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(600) };
+aq.tickets['A-6'].park.inputs = { 'pr-head': 'bbb' };
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(aq));
+const back = N.collect({ word: 'alpha' }).items;
+t('DS-324 AC2 a hold whose blocker went done is listed again', back.find((i) => i.t.key === 'A-4')?.need, 'A-9 finished with no PR: let it start');
+t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
 t('AC16 the last line says passes are stopped in gamma and how to resume', /^Passes are stopped in gamma, .* To resume: run \/desk-autopilot in gamma\.$/.test(left.at(-1)), true);
 
 // ---- DS-297 AC2: once the session requeues the answered ticket, it moves on as any requeued ticket does
@@ -212,7 +227,7 @@ writeFileSync(xq, JSON.stringify({ version: 1, batch: 'x1-batch', base: 'feat/x'
 writeFileSync(join(xs, 'orchestrators', 'q.json'), JSON.stringify({ queue: xq, batch: 'x1-batch', pid: 1, at: minsAgo(1) }));
 const xList = cli('list', 'alpha');
 t('DS-310 AC3 the item names the named batch, as record takes it', xList.out.split('\n').some((l) => l.startsWith('alpha:X-1 X-2 parked') && l.includes('| Which banner? |')), true);
-t('DS-310 AC3 the repo\'s name lists its standing batch\'s items and the named batch\'s', `${xList.out.includes('\nalpha A-6 ')} ${/^@ alpha · X-1 \(feat\/x\): run by the supervisor/m.test(xList.out)}`, 'true true');
+t('DS-310 AC3 the repo\'s name lists its standing batch\'s items and the named batch\'s', `${xList.out.includes('\nalpha A-2 ')} ${/^@ alpha · X-1 \(feat\/x\): run by the supervisor/m.test(xList.out)}`, 'true true');
 t('DS-310 AC3 the named batch on its own lists only its items', cli('list', 'alpha:X-1').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'X-2,X-3');
 const x2 = cli('record', 'alpha:X-1', 'X-2', 'resume', 'the red one');
 const xQueue = () => JSON.parse(readFileSync(xq, 'utf8'));
@@ -239,6 +254,14 @@ t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 t('DS-279 a PR only you move is recorded as done', N.record({ word: 'eta', ticket: 'E-2', action: 'done' }).ok, true);
+// DS-324 AC1, AC2: a PR put off is left out until its head moves.
+const eq = () => join(env.DESK_HOME, 'repos', 'acme__eta', 'queue.json');
+const moveHead = (h) => { const q = queueOf('eta'); q.tickets['E-2'].pr_status.head = h; writeFileSync(eq(), JSON.stringify(q)); };
+moveHead('aaa');
+const pe2 = N.record({ word: 'eta', ticket: 'E-2', action: 'not-now' });
+t('DS-324 AC1 a PR put off is not listed', `${pe2.ok} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-2')}`, 'true false');
+moveHead('bbb');
+t('DS-324 AC2 a PR whose head moved is listed again, saying so', /pr-head aaa → bbb/.test(N.collect({ word: 'eta' }).items.find((i) => i.t.key === 'E-2')?.need ?? ''), true);
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

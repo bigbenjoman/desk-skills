@@ -20,14 +20,14 @@
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
 //
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then the longest waiting. Exits 0, or 11 (show the person) on anything it refuses.
+// first, then the longest waiting, less any put off with not-now whose inputs are unchanged. Exits 0, or 11 (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
-import { addPutOff, putOffEntry, notNowPath } from './not-now.mjs';
+import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
 // A question longer than this is cut on its line: the session asks it, not reads it in full.
 const QUESTION_MAX = 240;
@@ -88,17 +88,36 @@ function itemOf(r, x) {
   return { kind: 'triage', need, actions: [['answer', 'answering clears its questions, so the next pass can start it'], ['not-now']] };
 }
 
-// Every item desk-q counts as needing the person, in the batches `word` names (all when null).
+// The question and inputs an item is put off under. A park is keyed as answer.mjs records it, to its
+// question and park inputs; anything else to its need, its PR head and its blockers' states, so a
+// moved head or a blocker that went done brings it back.
+const PARK_KINDS = ['parked', 'session', 'spine'];
+function putOffKey(r, t, item) {
+  if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
+  const inputs = { ticket: t.key };
+  if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
+  if (item.kind === 'held') inputs.blockers = keysOf(t.held_by).map((b) => `${b}:${r.q.tickets?.[b]?.state ?? 'none'}`).join(',');
+  return { question: item.need, inputs };
+}
+
+// Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
+// those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
   const { named = null, scope } = word ? batchesNamed(repos, word) : { scope: shownRepos(repos, false) };
   const items = [];
+  let putOff = 0;
   for (const r of scope.filter((x) => !x.error && x.q)) {
+    const register = readRegister(r.stateDir);
     for (const x of needsRows(r)) {
-      items.push({ r, t: x.t, ...itemOf(r, x), since: timeOf(x.t.park?.since ?? x.t.added_at), broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
+      const item = itemOf(r, x);
+      const l = lookup(register, putOffKey(r, x.t, item));
+      if (l.status === 'put_off') { putOff++; continue; }
+      if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
+      items.push({ r, t: x.t, ...item, since: timeOf(x.t.park?.since ?? x.t.added_at), broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
     }
   }
   items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
-  return { repos, scope, items, named };
+  return { repos, scope, items, named, putOff };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -109,8 +128,11 @@ const runLine = (r) => {
       : `passes stopped; answers wait until they resume. To resume: ${w.resume}`}`;
 };
 
+// The put-off count, after the item count: they are not listed again until their inputs change.
+const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left out until ${c.putOff === 1 ? 'it changes' : 'they change'}.` : '');
+
 export function listText(c, now = Date.now()) {
-  if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.`;
+  if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}`;
   const repos = [...new Set(c.items.map((i) => i.r))];
   const lines = repos.map(runLine);
   for (const i of c.items) {
@@ -118,7 +140,7 @@ export function listText(c, now = Date.now()) {
     lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${cut(i.need, QUESTION_MAX)} | ${i.actions.map(actionText).join(' | ')}`);
   }
   const n = new Set(repos.map((r) => r.slug)).size;
-  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.`);
+  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);
   return lines.join('\n');
 }
 
@@ -193,11 +215,11 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     }
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs; anything else by its question alone.
-      if (item.kind === 'parked' || item.kind === 'session' || item.kind === 'spine') {
+      if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         return a.ok ? say(true, 'put off (not-now register).') : say(false, a.why);
       }
-      addPutOff(putOffEntry({ question: item.need, ticket, inputs: { ticket }, at: new Date(now).toISOString() }), r.stateDir);
+      addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString() }), r.stateDir);
       return say(true, `put off (${notNowPath(r.stateDir)}).`);
     }
     case 'open': {
@@ -214,7 +236,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 export function leftText({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
   const c = collect({ word, now, repos });
   const where = c.named ? ` in ${c.named.name}` : '';
-  const lines = [`desk-q counts ${c.items.length} item${c.items.length === 1 ? '' : 's'} needing you${where}.`];
+  const lines = [`desk-q counts ${c.items.length} item${c.items.length === 1 ? '' : 's'} needing you${where}.${putOffLine(c)}`];
   for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }

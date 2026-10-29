@@ -122,7 +122,7 @@ const NOBODY = { releases: false, merges: false, reruns: false, live: false, sta
 // stopped nothing will requeue it, so it needs them again.
 const answeredPark = (t, ctx) => t?.state === 'parked' && !!t.park?.answered && ctx?.live === true;
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
-const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
+export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
 // A held ticket with a question of its own: it needs the user for that, whatever its blockers do.
