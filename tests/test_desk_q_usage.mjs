@@ -121,12 +121,13 @@ t('DS-215 AC20 every repo on home set to off: no note, and the 7-day bar at 40% 
 unrepo('calm'); unrepo('solo'); repo('solo', { 'S-1': 'triaged' });
 reading([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)]);
 t('AC3 and the 7-day bar is amber at 40%', colours(win(0.4), true), '38;5;180/38;5;180');
-// The hold is a pass's, which reads worker logs alone: the same reading from a probe claims none.
+// The hold is a pass's, which reads the probe's output as well as worker logs (DS-342 AC4): the same
+// reading from a probe alone holds too.
 rmSync(join(env.HOME, '.desk-autopilot', 'acme__solo', 'logs'), { recursive: true, force: true });
 mkdirSync(env.DESK_USAGE_DIR, { recursive: true });
 writeFileSync(P.probeLog(), `${event([0.2, at(24, 11, 20)], [0.4, at(30, 15, 0)])}\n`);
 utimesSync(P.probeLog(), (FIXED - MIN) / 1000, (FIXED - MIN) / 1000);
-t('AC5 a probe reading ahead of pace, with no worker log, claims no hold: a pass would not hold', home(), '5h ██········ 20% 11:20 · 7d ████······ 40% Fri 15:00');
+t('AC5 (DS-342 AC4) a probe reading ahead of pace, with no worker log, holds as a pass would', homeAll().endsWith('▲ solo ahead of pace: no new workers until it slows'), true);
 rmSync(env.DESK_USAGE_DIR, { recursive: true, force: true });
 
 // ---- AC6: a window whose reset time has passed reads 0% with no call

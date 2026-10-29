@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
@@ -49,8 +49,8 @@ const parkText = (r, t) => String(t.park?.question ?? openQuestion(r.stateDir, t
 const SESSION_WHY = 'lane C/D: a worker would only park on it';
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
-// verdictAt's `not clean (… gaps=N …)`).
-const reviewGaps = (t) => t.pr_status?.isDraft === true && t.undraft?.call === 'person' && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft.why ?? ''));
+// verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
+const reviewGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 
 // The batches `word` names: a repo's name is all of its batches, `<repo>:<name>` one named batch.
@@ -66,9 +66,15 @@ export function runner(r) {
   return r.run?.by === 'supervisor' ? { by: 'supervisor' } : { by: 'session', name: r.q?.batch ?? null };
 }
 
+// A batch held on a usage limit is one item, named by this in place of a ticket: its paused workers
+// and held tickets are none of them stopped, so none is an item of its own.
+const USAGE_ITEM = 'usage-limit';
+const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true } : null);
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
+  if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
   // An unmerged PR: only the person's step on GitHub moves it, as its desk-q row says. A draft whose
   // review left gaps also takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
@@ -129,12 +135,14 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
   let putOff = 0;
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
-    for (const x of needsRows(r)) {
+    const hold = usageRow(r);
+    for (const x of [...(hold ? [hold] : []), ...needsRows(r)]) {
       const item = itemOf(r, x);
       const l = lookup(register, putOffKey(r, x.t, item));
       if (l.status === 'put_off') { putOff++; continue; }
       if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
-      items.push({ r, t: x.t, ...item, since: timeOf(x.t.park?.since ?? x.t.added_at), broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
+      const since = x.usage ? timeOf(r.q.usage_hold.since) : timeOf(x.t.park?.since ?? x.t.added_at);
+      items.push({ r, t: x.t, ...item, since, broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
     }
   }
   items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
@@ -181,7 +189,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
-  const x = r.q ? needsRows(r).find((y) => y.t.key === ticket) : null;
+  const x = !r.q ? null : ticket === USAGE_ITEM ? usageRow(r) : needsRows(r).find((y) => y.t.key === ticket);
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
   const [verb, id] = action.split(/\s+/);

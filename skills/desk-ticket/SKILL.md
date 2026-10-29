@@ -234,6 +234,14 @@ worktree (config §2 Primary repo root and Worktrees directory):
 find <primary repo root> <worktrees dir> -maxdepth 3 -name 'desk-ticket-<TICKET>.json'
 ```
 
+**An autopilot worker writes `$DESK_STATE/resume/<TICKET>.json` instead** (`desk-env paths` prints
+`DESK_STATE`): the harness write-protects a worker's `.claude/`, and its settings allow that one
+file. So the search covers that path too, and a hit there counts toward the one file:
+
+```bash
+find <DESK_STATE>/resume -name '<TICKET>.json'
+```
+
 If more than one turns up, **stop and ask which is authoritative**: do not guess, and do not merge
 them. Two files for one ticket means two sessions were working it, and picking the wrong one
 resumes the wrong state.

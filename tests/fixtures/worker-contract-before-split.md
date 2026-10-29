@@ -10,7 +10,7 @@ file and a skill disagree about anything else, **the skill wins**.
 
 **The desk skills are files, not Skill-tool entries.** You run with `--setting-sources ""`, which
 keeps your user's settings out and with them the skill registry: the Skill tool answers
-`Unknown skill: desk-ticket` (or `desk-review`, `pr-expert`, …) and that is expected, not a fault.
+`Unknown skill: desk-ticket` (or `desk-review`, …) and that is expected, not a fault.
 Never park on it. Instead **Read the skill's file directly**: `desk-env paths` prints
 `DESK_SKILLS_DIR`, and each skill is `$DESK_SKILLS_DIR/<name>/SKILL.md` with its references beside
 it. Wherever a skill or this file says "run `desk-review`" or "load `desk-ticket`", it means read
@@ -128,7 +128,7 @@ people's commits into yours.
 call (section 1) or a shared-state write rather than a difficulty: missing product/catalog/copy
 data, any write to staging or a shared index. Plus, specific to running unattended:
 
-- **A merge conflict.** Any. Never resolve one.
+- **A merge conflict only a product or design call settles** (Stage 5 file, §4).
 - **A lane demotion to C, or to D with no saved canvas.** C needs an agreed plan or a product
   answer, and D a canvas to build from (Stage 3 file).
 - **A priority in config §4 Priorities only you set.** `desk-jira` refuses it to you, with or
@@ -443,8 +443,7 @@ as reviewed.
 The default branch moves while you work. `git fetch origin`, and if
 `git rev-list --count HEAD..origin/<default>` is non-zero, probe with
 `git merge-tree --write-tree origin/<default> HEAD | grep -c '^CONFLICT'`, without touching the
-tree. Clean → rebase, then **re-run typecheck and your specs**. Any conflict → park, naming the
-files.
+tree, so you know before you start which files will conflict.
 
 ## 5. What the orchestrator owns, not you
 

@@ -64,6 +64,7 @@ check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env
 check "desk-env costs write denied"                       'jq -e ".permissions.deny | index(\"Bash(desk-env costs write:*)\") and index(\"Bash(node $B/desk-env.mjs costs write:*)\")" "$T/ws.json" >/dev/null'
 check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
+check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
 settings '`sh scripts/check.sh`'
@@ -189,6 +190,8 @@ check "AC8 desk-jira --help and help allowed"              'ok "desk-jira --help
 check "AC9 the repo desk config.md is readable"            '[ "$(readable "$CFG")" = allow ]'
 check "AC10 the Jira token beside it is not"               '[ "$(readable "$CREDS/atlassian-token")" = refused ] && no "cat $CREDS/atlassian-token" "cat $CREDS/*" "rg . $CREDS" "head ~/.config/desk/repos/acme__widgets/atlassian-t*" "cat \$HOME/.config/desk/repos/acme__widgets/x"'
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
+check "DS-340 AC2 the installed desk templates can be listed and read" \
+  '[ "$(readable "$DESK_HOME/templates/.githooks/pre-push")" = allow ] && [ "$(readable "$DESK_HOME/templates/scripts/desk/pre-push.sh")" = allow ] && ok "ls $DESK_HOME/templates/scripts/desk"'
 check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
 check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test" \
       "./node_modules/.bin/./vitest run" "node_modules/.bin//tsc" "node $W/node_modules/vitest/vitest.mjs run" "node $W/node_modules/.bin/vitest"'
@@ -263,6 +266,20 @@ PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
 check "AC8 none of the three rows: each treated as no"     '[ $rc -eq 0 ] && denied_line worker-dependency-install no && denied_line worker-screenshots no && denied_line worker-local-services no'
 check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$L browser node ./shot.mjs" "$UP typesense"'
 check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
+
+# ---- §3 worker-web-read: WebSearch and WebFetch, and nothing else new ----
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
+cp "$T/ws.json" "$T/ws-off.json"
+check "web-read unset: neither tool allowed, both denied, named" '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch && denies WebSearch && denies WebFetch && denied_line worker-web-read no'
+for v in ask no; do
+  PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=$v)"
+  check "web-read $v: neither tool allowed, named"         '! allows WebSearch && ! allows WebFetch && denies WebSearch && denied_line worker-web-read $v'
+done
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=yes)"
+check "web-read yes: WebSearch and WebFetch allowed, not denied" '[ $rc -eq 0 ] && allows WebSearch && allows WebFetch && ! denies WebSearch && ! denies WebFetch && [[ "$out" != *worker-web-read* ]]'
+check "web-read yes: the only allow rules added are the two tools" '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-off.json")" "$T/ws.json")" = "[\"WebSearch\",\"WebFetch\"]" ]'
+triage
+check "web-read yes: a triage pass gets neither"           '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
 check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "$UP Typesense"'
 : > "$T/repo/compose.override.yaml"

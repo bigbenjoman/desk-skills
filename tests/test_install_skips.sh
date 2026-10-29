@@ -94,6 +94,8 @@ check "DS-271 AC6: its launchd jobs are unloaded" \
   '[ "$(grep -c "^bootout gui/[0-9]*/com.desk-skills.$VM" "$T/launchctl.calls")" = 2 ]'
 check "DS-271 AC6: the install says so in one line" \
   '[ "$(printf "%s\n" "$out" | grep -c "ok    removed the local CI runner:.*tart delete $VM)$")" = 1 ]'
+check "DS-340 AC1: every file under desk/templates is installed, dotfiles included" \
+  '[ -n "$(find "$S/../desk/templates" -type f)" ] && [ -z "$(cd "$S/../desk/templates" && find . -type f | while read -r f; do cmp -s "$f" "$HOME/.claude/desk/templates/$f" || echo "$f"; done)" ]'
 check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec --sandbox read-only"* ]]'
 check "deny-rule skip carries the harness-rules command" '[[ "$summary" == *"harness-rules.py\" --settings"*"baseline"* ]]'
 check "plugin skip names each plugin install" '[[ "$summary" == *"claude plugin install vercel@claude-plugins-official --scope user"* ]]'

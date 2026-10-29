@@ -448,8 +448,11 @@ if [ -d "$SRC/desk/bin" ]; then
     chmod +x "$DESKDIR/bin/$(basename "$f")"
     count=$((count + 1))
   done
-  # undraft.mjs reads review verdicts with the review gate's parser, from ../templates beside bin.
-  install_file "$SRC/desk/templates/scripts/desk/review-gate.mjs" "$DESKDIR/templates/scripts/desk/review-gate.mjs"
+  # The templates a repo commits (dotfiles included), beside bin: undraft.mjs reads review verdicts with
+  # the review gate's parser from there, and workers, who cannot read this checkout, copy them from there.
+  while IFS= read -r f; do
+    install_file "$f" "$DESKDIR/templates/${f#"$SRC/desk/templates/"}"
+  done < <(find "$SRC/desk/templates" -type f ! -name '*.bak*')
   ok "$count scripts (queue.json, workers/ and batch state are never touched)"
   wrote "scripts  ~/.claude/desk/bin ($count)"
   # desk-env on PATH: the skills run `desk-env where` to find the current repo's config.

@@ -288,13 +288,15 @@ if (mode === 'triage') {
   const NODE_BIN_TOOLS = ['eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing and screenshots.
-  // Not answers/ (a worker must not answer itself), not workers/ (its own settings), not the queue or
-  // the locks.
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
+  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
+  // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
     `Edit(${abs(WT)}/**)`, `Edit(${abs(WT)}/**)`,
     `Edit(${abs(STATE)}/parks/${T}.json)`, `Edit(${abs(STATE)}/parks/${T}.*)`,
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
+    `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
@@ -495,6 +497,9 @@ if (mode === 'triage') {
   ]);
   grant('worker-screenshots', shots, []);
 
+  // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
+  grant('worker-web-read', ['WebSearch', 'WebFetch']);
+
   // Starting a §4 Local services entry, detached, by its compose service name (each item's first
   // word). Compose names a project after its directory, so from a worktree a bare `up` would start a
   // second stack: the one form allowed reads the main checkout's compose file, the shared project,
@@ -561,6 +566,9 @@ if (mode === 'triage') {
   // The user's subagent definitions, which workers list and read when a skill names an agent.
   const agents = join(E.HOME, '.claude', 'agents');
   if (existsSync(agents)) dirs.add(agents);
+  // The installed desk templates (install.sh copies them beside bin), which a ticket may tell a worker to commit.
+  const templates = join(E.deskHome(), 'templates');
+  if (existsSync(templates)) dirs.add(templates);
 
   const mem = E.memoryDir();
   if (existsSync(mem)) dirs.add(mem);

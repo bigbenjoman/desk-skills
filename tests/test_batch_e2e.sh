@@ -130,8 +130,25 @@ if (prompt.startsWith('Reply with exactly one word: MODEL_OK')) {
 }
 // The preflight's reply, as one json result carrying its cost and turns with --output-format json, as
 // the real CLI writes it. While T/preflight-text exists it replies in plain text: a result with no cost.
+// The usage probe: refused at the weekly limit while T/probe-429 exists, as a real call is.
+if (prompt === 'Reply with: ok') {
+  fs.appendFileSync(T + '/calls.log', 'claude probe\n');
+  if (fs.existsSync(T + '/probe-429')) {
+    console.log(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: Math.floor(Date.now() / 1000) + 86400 } }));
+    console.log(JSON.stringify({ type: 'result', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', result: "You've hit your weekly limit" }));
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }));
+  console.log(JSON.stringify({ type: 'result', is_error: false, result: 'ok' }));
+  process.exit(0);
+}
 if (prompt.startsWith('Perform these')) {
   fs.appendFileSync(T + '/calls.log', 'claude preflight model=' + model + '\n');
+  // Refused at the usage limit: the json result the real CLI writes for HTTP 429, and no checks.
+  if (fs.existsSync(T + '/preflight-429')) {
+    console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', num_turns: 1, total_cost_usd: 0, result: "You've hit your weekly limit · resets Nov 1 at 3pm" }));
+    process.exit(1);
+  }
   const reply = [...prompt.matchAll(/^(\w+)=OK or \1=BLOCKED/gm)].map((m) => m[1] + '=' + (/^(W_IN|TOOL\d+|JIRA)\$/.test(m[1]) ? 'OK' : 'BLOCKED')).join('\n');
   if (at('--output-format') === 'json' && !fs.existsSync(T + '/preflight-text')) console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 9, total_cost_usd: 0.4321, result: reply }));
   else console.log(reply);
@@ -329,6 +346,7 @@ printf '{"ticket": "T-80", "stage": "7", "criteria": ["AC1: h saves"], "lane": "
 finish T-80
 pass
 check "DS-155 AC3 a handoff at the end of Stage 6 starts a new session at Stage 7 through the real spawn-worker" '[ "$(state T-80)" = running ] && grep -q "This session starts at Stage 7" "$T/runs/T-80.4" && grep -q "## Handoff: this session starts at Stage 7" "$T/runs/T-80.4" && grep -q "P2 src/h.txt:1 fixed in abc1234" "$T/runs/T-80.4"'
+check "DS-338 AC2 a session resumed at Stage 4b or 7 is told to read the Stage 3 file, which holds the dev server's form" 'grep -q "for Stage 4b and its Stage 3 file" "$T/runs/T-80.2" && grep -q "for Stage 7 and its Stage 3 file" "$T/runs/T-80.4"'
 check "DS-157 AC3 the Stage 7 session runs on the text model, and the batch report shows it" '[ "$(ran_on T-80 4)" = haiku ] && [ "$(field T-80 model)" = "\"haiku\"" ] && echo "$out" | grep -q "T-80 fresh session from Stage 7 (handed off) .*model=haiku"'
 check "DS-157 every preflight proved the text model on its own" '[ "$(grep -c "^claude model-check model=haiku$" "$T/calls.log")" = 4 ]'
 finish T-80
@@ -441,6 +459,17 @@ record T-17 src/p.txt A S; q admit T-17
 pass
 check "DS-157 AC4 a rejected text model fails it too"            '[ "$(state T-17)" = failed ] && [ ! -e "$T/runs/T-17.1" ] && echo "$out" | grep -q "TEXT  FAIL .*Worker models names text=\"no-such-model\""'
 q drop T-17
+
+# DS-344 AC2: a preflight the account's usage limit refuses (HTTP 429) is told apart from a failed
+# one by the real spawn-worker.sh. The ticket keeps its place, and the batch holds on the limit.
+config "standard=sonnet high=opus"
+touch "$T/preflight-429" "$T/probe-429"
+record T-18 src/q.txt A S; q admit T-18
+pass
+check "DS-344 AC2 a preflight refused with HTTP 429 fails nothing, and the batch holds on the weekly limit" '[ "$(state T-18)" = triaged ] && [ "$(field T-18 spawn_failed)" = null ] && [ ! -e "$T/runs/T-18.1" ] && echo "$out" | grep -q "T-18: its preflight was refused at the weekly usage limit" && [ "$(bfield usage_hold.preflight)" = "\"T-18\"" ]'
+q drop T-18; rm -f "$T/preflight-429" "$T/probe-429"
+pass
+check "DS-344 AC3 a probe that succeeds lifts the hold"         '[ "$(bfield usage_hold)" = null ] && grep -q "^claude probe$" "$T/calls.log"'
 
 # A malformed row holds every spawn rather than reading as default.
 config "standard=sonnet"

@@ -50,7 +50,7 @@ SETTINGS="$STATE/workers/$TICKET.settings.json"
 
 [ -d "$WT" ] || { echo "FAIL: worktree $WT does not exist — run setup-worktree.sh first" >&2; exit 1; }
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
-mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs"
+mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs" "$STATE/resume"
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
@@ -155,11 +155,13 @@ $CHECKS" \
         for (const l of r ? [] : s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
         const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
         if (process.argv[1] === "cost") console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
+        else if (process.argv[1] === "limit") console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
         else process.stdout.write(r && typeof r.result === "string" ? r.result : s);
       });' "$1" || true
   }
   PRE_COST="$(read_raw cost)"
   RESULT="$(read_raw reply)"
+  PRE_LIMIT="$(read_raw limit)"
 
   fail=0
   check() { # name expected
@@ -169,6 +171,13 @@ $CHECKS" \
   }
   echo "[preflight] $TICKET"
   echo "[preflight] ${PRE_COST:-cost=unknown turns=unknown}"
+  # Refused at the usage limit, the call answered no check: say so once, rather than a FAIL per check
+  # that reads as a broken sandbox. pass.mjs holds the batch on this line and fails nothing.
+  if [ "$PRE_LIMIT" = yes ]; then
+    echo "[preflight] usage-limit: the account is at its usage limit ($(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"
+    echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
+    exit 1
+  fi
   # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
   if [ -n "$MODEL" ]; then
     if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then printf '  %-6s %-8s ok\n' MODEL "$MODEL"
@@ -243,7 +252,7 @@ elif [ -n "${AUTOPILOT_START_STAGE:-}" ]; then
   # at the stage named, from the briefing in its system prompt, not at Stage 0.
   case "$AUTOPILOT_START_STAGE" in 3|4|4b|5|6|7|8|9) ;; *) echo "FAIL: AUTOPILOT_START_STAGE is \"$AUTOPILOT_START_STAGE\" — want a stage from 3 to 9, or 4b" >&2; exit 1 ;; esac
   RESUME_ARGS=(--session-id "$SID")
-  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it, and the briefing in your system prompt is what it left for you. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE, check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
+  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it, and the briefing in your system prompt is what it left for you. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE and its Stage 3 file, whose §6 holds every command form you may run (a dev server's included), check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
 else
   RESUME_ARGS=(--session-id "$SID")
   PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT — never use $DESK_DEV_PORT. Work the ticket with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"

@@ -57,6 +57,8 @@ cat > "$T/fakes/claude" <<EOF
 n=\$(ls "$T" | grep -c '^claude\.args\.')
 printf '%s\n' "\$@" > "$T/claude.args.\$n"
 read -r mode key < "$T/claude.mode"
+# webfact: requeue only when the prompt carries the public-fact rule, otherwise hand on
+[ "\$mode" = webfact ] && { grep -q 'requeue it for its worker to look the fact up' <<< "\$2" && mode=requeue || mode=hand; }
 ids=\$(grep -oE 'id \`[a-z]+-[0-9a-f]+\`' <<< "\$2" | grep -oE '[a-z]+-[0-9a-f]+')
 case "\$mode" in
   hang) exec sleep 60 ;;
@@ -217,6 +219,54 @@ queue '{"H":{"key":"H","state":"parked","lane":"A","park":{"question":"h?"}}}'
 verdict "$(parked H "h?")"; echo "none" > "$T/claude.mode"
 out=$(tick); settle; out=$(tick)
 check "a session with no result line hands its items on" 'handed | grep -q "^H|decider no DECIDER_RESULT: line$"'
+
+# ---- §3 worker-web-read: a park asking only for a public fact is requeued where workers can read the web ----
+lastargs(){ set -- "$T"/claude.args.*; echo "$T/claude.args.$(( $# - 1 ))"; }
+FACT="what is the ONS 2024 UK household count?"
+mark; echo "webfact P" > "$T/claude.mode"
+queue '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"'"$FACT"'"}}}'
+verdict "$(parked P "$FACT")"
+out=$(tick); settle; out=$(tick)
+check "web-read unset: the decider prompt has no public-fact rule" '[ "$(calls)" = 1 ] && ! grep -q "public fact" "$(lastargs)"'
+check "web-read unset: the park is handed on, not requeued" 'handed | grep -q "^P|" && ! grep -q "\"P\":{[^}]*\"state\":\"triaged\"" "$DESK_QUEUE"'
+printf '| `worker-web-read` | Read the web | `ask` | `yes` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+mark; echo "webfact Q" > "$T/claude.mode"
+queue '{"Q":{"key":"Q","state":"parked","lane":"A","park":{"question":"'"$FACT"' (Q)"}}}'
+verdict "$(parked Q "$FACT (Q)")"
+out=$(tick); settle
+verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'
+out=$(tick)
+check "web-read yes: the prompt says a public fact is no fact only the person holds, and to requeue it" '[ "$(calls)" = 1 ] && grep -q "a park asking only for a public fact .* is not a fact only the person holds" "$(lastargs)" && grep -q "requeue it for its worker to look the fact up" "$(lastargs)"'
+check "web-read yes: the park is requeued, not handed on" 'grep -q "\"Q\":{[^}]*\"state\":\"triaged\"" "$DESK_QUEUE" && ! handed | grep -q "^Q|"'
+
+# ---- DS-331: a done ticket's line is handed on without a session, and a reworded line keeps its id ---
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+waits(){ printf '{"status":"show_person","code":11,"message":"x","waiting":%s,"parked":[],"notify":true,"push":[]}' "$1"; }
+queue '{"V":{"key":"V","state":"done","lane":"A","result":{"pr":7}}}'
+verdict "$(waits '["V: DRAFT — PR #7 stays draft: check ci has not reported. Look at it"]')"
+out=$(tick)
+check "DS-331 AC1: a done ticket's DRAFT line is handed on without a session" '[ "$(calls)" = 0 ] && handed | grep -q "^V|V is done, and the decider can only requeue"'
+entry(){ node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(Object.values(r).filter((h) => h.ticket === process.argv[2]).map((h) => `${h.id}|${h.at}`).join(" "))' "$T/state/handed.json" "$1"; }
+v1=$(entry V); sleep 1
+verdict "$(waits '["V: DRAFT — PR #7 stays draft: check ci is failure. Look at it"]')"
+out=$(tick)
+check "DS-331 AC3: only pre-handed items start no session" '[ "$(calls)" = 0 ] && ! grep -q "^decider: started" <<< "$(tail -n 5 "$LOG")"'
+check "DS-331 AC2: its new wording keeps the one entry, its id and time, with the latest text" '[ -n "$v1" ] && [ "$(entry V)" = "$v1" ] && questions | grep -q "^V|handed on|V: DRAFT — PR #7 stays draft: check ci is failure"'
+ids=$(node --input-type=module -e "
+import { deciderItems } from '$B/decider.mjs';
+const q = { tickets: { W: { key: 'W', state: 'parked', lane: 'A' } } };
+const id = (l) => deciderItems({ waiting: [l] }, q)[0].id;
+console.log([id('W: DRAFT — PR #9 stays draft: check ci has not reported. Look at it'), id('W: DRAFT — PR #9 stays draft: check ci is in_progress. Look at it'), id('W: STUCK — PR #9: it cannot merge'), id('W: DRAFT — PR #10 stays draft: x'), id('W: unreadable park inputs (bad), read as none: a'), id('W: unreadable park inputs (bad), read as none: b')].join(' '));")
+read -r d1 d2 s1 p10 u1 u2 <<< "$ids"
+check "DS-331 AC2: the same ticket, class and PR keep one id while check states differ" '[ "$d1" = "$d2" ]'
+check "DS-331 AC2: another class, another PR or an unclassed line gets its own id" '[ "$d1" != "$s1" ] && [ "$d1" != "$p10" ] && [ "$u1" != "$u2" ]'
+mark; rm -f "$T/state/handed.json"
+queue '{"W":{"key":"W","state":"parked","lane":"A","park":{"question":"w?"}}}'
+verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci has not reported. Look at it"]')"
+out=$(tick); settle; out=$(tick)
+verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci is in_progress. Look at it"]')"
+out=$(tick)
+check "DS-331 AC2: a line handed on by a session, reworded, starts no second session and shows its latest text" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^W|")" = 1 ] && questions | grep -q "^W|.*check ci is in_progress"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

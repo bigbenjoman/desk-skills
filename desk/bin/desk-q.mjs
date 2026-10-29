@@ -43,8 +43,9 @@ import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs'
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
+import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
@@ -479,6 +480,15 @@ function stallOf(r, now) {
   const oldCode = { supervisor: loaded && c?.supervisor?.old_code === true, driver: c?.driver?.old_code === true && holder != null && holder === c.driver.pid };
   return { noProgress: quiet, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
     oldCode: oldCode.supervisor || oldCode.driver ? oldCode : null };
+}
+// The batch's hold on a usage limit, as the last pass recorded it (pass.mjs usage_hold), in one
+// sentence, or null with none. It lifts by itself, so it says what lifts it sooner.
+export function usageHoldOf(r) {
+  const h = r.q?.usage_hold;
+  if (!h || typeof h !== 'object') return null;
+  const n = Array.isArray(h.paused) ? h.paused.length : 0;
+  return `held on ${limitName(h.type)}${h.resets_at != null ? ` until ${resetsWhen(h.resets_at)}` : ''}: nothing new starts` +
+    `${n ? `, and ${n} paused worker${n === 1 ? '' : 's'} wait${n === 1 ? 's' : ''}` : ''}. It carries on by itself once the limit lifts`;
 }
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
 const handsOver = (r) => r.run?.by === 'session' && r.run.set === 'supervisor';
@@ -1307,12 +1317,11 @@ function machineLine(running, cap, room, avail) {
 
 // The usage reading every header shows: the newest of both windows, how many workers run in every
 // repo here, and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each
-// repo by its own §3b row, so a repo set to off is never held). The hold is judged on the reading a
-// pass judges it on, worker logs alone, so the header never says a pass holds when it would not.
+// repo by its own §3b row, so a repo set to off is never held). A pass reads the same worker logs and
+// probe output (newestUsage), so the hold is judged on the 7-day figure shown.
 export function usageOf(repos, now, shown = repos) {
-  const dirs = stateDirs({ self: usageDir() });
-  const reading = readUsage({ dirs, now }), passReading = newestUsage({ dirs, now });
-  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: passReading, now });
+  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), now });
+  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
   return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: heldBy.length > 0, heldBy };
 }
@@ -1362,7 +1371,9 @@ function stallNotes(r) {
   if (!s) return [];
   const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
   const out = [];
-  if (s.noProgress != null) out.push(note(`nothing started or merged for ${since(s.noProgress)}. Last pass: ${s.held}.`));
+  const u = usageHoldOf(r);
+  if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
+  if (s.noProgress != null && !u) out.push(note(`nothing started or merged for ${since(s.noProgress)}. Last pass: ${s.held}.`));
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver) {
     const what = s.driver.start ? 'the merge driver could not start' : `the merge driver stopped${s.driver.at == null ? '' : ` at ${clock(s.driver.at)}`}`;
@@ -1503,6 +1514,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
 const clock = (t) => new Date(t).toTimeString().slice(0, 5);
+// A usage limit's reset, epoch seconds: the time today, else the day and time.
+const resetsWhen = (s) => (new Date(s * 1000).toDateString() === new Date().toDateString() ? clock(s * 1000) : dayAndTime(s * 1000));
 // The interactive screen's `clock` is its time source, so the breadcrumb's time is read through this.
 const hhmm = clock;
 
@@ -1580,6 +1593,8 @@ function readyWhy(r, t) {
 // there, the last pass's reading, which the worker may be further on from.
 function runningStage(r, x) {
   const { st } = x;
+  const p = x.t?.usage_paused;
+  if (p) return `paused on ${limitName(p.type)}${p.resets_at != null ? ` until ${resetsWhen(p.resets_at)}` : ''}, then resumes by itself`;
   if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}`;
   return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
 }

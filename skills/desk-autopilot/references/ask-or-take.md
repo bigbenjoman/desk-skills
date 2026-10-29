@@ -44,6 +44,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   checks the register when it harvests the run. While the park stays put off, each pass reads its
   `pr-head` (the branch's head on origin) and `config:<row id>` inputs again, and asks the question
   as soon as one has changed; any other input is compared only when a session asks again.
+- **An input may be a list of plain values**, as `{"conflict-files": ["a.ts", "b.ts"]}`, stored
+  joined (`a.ts, b.ts`); a nested object is not. Inputs that cannot be read are logged under the
+  pass's `park inputs:` and read as none: the park is asked as usual, with no notice for the person to clear.
 - **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
   line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
   `variable <NAME> set` for a repo Actions variable, or `none`), or
@@ -79,6 +82,10 @@ node ~/.claude/desk/bin/not-now.mjs add <TICKET> "<question>" --inputs '{"ticket
 | production data or credentials (`production`) | a production database, a secret, a key, a live account |
 | customer copy where length means cost (`customer-copy`) | an SMS, a paid placement, any copy billed by length |
 | facts only the user holds (`user-fact`) | product or catalog data, a design URL, an asset, a name, who owns what |
+
+A public fact (a published figure, a page, a site's robots.txt or terms) is not a fact only the user
+holds where §3 `worker-web-read` is `yes`: look it up with WebSearch and WebFetch and cite the page.
+Where the row is not `yes`, a worker parks naming it.
 
 Ask too when the call has **no recommendation you can defend**: say so, as "no recommendation", in
 the question.

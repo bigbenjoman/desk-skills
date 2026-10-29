@@ -52,6 +52,31 @@ t('lane D: the core parks only a demotion to D with no saved canvas', core.inclu
 const routing = readFileSync(join(root, 'skills/desk-ticket/references/desk-ticket-routing.md'), 'utf8');
 t('lane D: the routing exempts an autopilot worker from stopping for agreement', routing.includes('**An autopilot worker does not stop**'), true);
 
+// DS-328: a worker resolves its own rebase conflict, and parks only on one a product or design call settles.
+const stage5 = read('worker-contract-stage-5.md');
+const n5 = stage5.replace(/\s+/g, ' ');
+t('DS-328 no file parks on any conflict unconditionally', files.some((f) => /Any conflict → park|Any\. Never resolve one/.test(read(f))), false);
+t('DS-328 AC1 the Stage 5 section makes a conflict the worker\'s to resolve, keeping both sides', n5.includes('**A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides\' intent'), true);
+t('DS-328 AC1 typecheck and specs re-run after the rebase', n5.includes('**Re-run typecheck and your specs**, under the lock'), true);
+t('DS-328 AC2 a hand-written resolution gets a fresh desk-review before the push', n5.includes('**A fresh `desk-review` at the new head, before you push**'), true);
+t('DS-328 AC3 it parks only when both sides cannot stand, naming the files and the decision', n5.includes('**Park only when the two sides cannot both stand**') && n5.includes('Park naming the files and the decision needed'), true);
+t('DS-328 AC3 the core keeps only that park', core.includes('- **A merge conflict only a product or design call settles** (Stage 5 file, §4).'), true);
+t('DS-328 AC4 without git-force-with-lease a pushed branch merges the default branch in', n5.includes('with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase, no force push.'), true);
+
+// Every stage file holding command forms is read early at any stage, so a worker resumed past it still
+// reads the forms it may run. test_batch_e2e.sh checks the resumed worker's prompt names it.
+const early = core.split(/read early when:\s*\n/)[1].split('\n\n')[0].split(/\n(?=- )/).map((b) => b.replace(/\s+/g, ' '));
+const formFiles = stages.filter((f) => /^## \d+\. Command forms/m.test(read(f)));
+t('DS-338 some stage file holds the command forms', formFiles.length > 0, true);
+for (const f of formFiles) {
+  const name = `the Stage ${f.match(/stage-(\w+)\.md$/)[1]} file`;
+  const to = early.filter((b) => b.includes(`read ${name} first`));
+  t(`DS-338 AC3 the core routes to ${f} early`, to.length > 0, true);
+  t(`DS-338 AC3 ${f} is read early at any stage, not only before it`, to.some((b) => b.includes('at any stage') && !/before Stage/.test(b)), true);
+}
+t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(lint, build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
+t('DS-338 AC1 the core\'s table says the Stage 3 file holds the dev server\'s form', core.includes('§6 the command forms you may run, a dev server\'s too'), true);
+
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));

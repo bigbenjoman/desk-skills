@@ -223,9 +223,10 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 
 Idle = every ticket merged, parked or failed, none held waiting on a merge, and in feature mode no
 base gate waiting on a merge or running (`pass.mjs` exits 11 with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
-transition a ticket to §4 Done state** (and with no tracker, never close an issue), and never treat
-a triage "already fixed" as grounds to close one: a per-criterion check once overturned four of six
-such verdicts.
+transition a ticket to §4 Done state yourself** (and with no tracker, never close an issue): the
+merge driver moves a ticket whose last open PR it merged, under §3 `jira-close-own-merged`, and
+nothing else does. Never treat a triage "already fixed" as grounds to close one: a per-criterion
+check once overturned four of six such verdicts.
 
 ### What a script's exit tells you
 
@@ -1117,11 +1118,17 @@ HH:MM times holds spawns under `STALLED`, naming the row.
 `gh auth status`, `desk-jira whoami` (where §4 Tracker is `jira`), `claude auth status`,
 `codex login status` (unless §3 `codex-review` is `no`), the browser profile's saved GitHub login
 (unless §3 `pr-images` is `no`), and free disk on the worktrees disk against §3b "Free disk floor
-(GB)" (unset: 20). A check with no answer in 20 seconds fails as `timed out`, and results are reused
-for 15 minutes. The report always carries one `health:` line. A failing required check holds every
-new spawn (running workers carry on), is named under `STALLED` with the command that fixes it, and
-goes into `push` as `health:<slug>:<check>`, which is pushed once while it stays failing. Signing
-back in is always the person's; the line says `recovered` on the first pass that sees it pass.
+(GB)" (unset: 20). A check with no answer in 20 seconds fails as `timed out`; a remote check that
+times out or cannot reach its host is run once more before it counts. Results are reused for 15
+minutes while every check passes, and a failing run is checked again on the next pass. The report
+always carries one `health:` line. A failing required check holds every new spawn (running workers
+carry on). A remote check is named under `STALLED` with the command that fixes it, and goes into
+`push` as `health:<slug>:<check>`, only once it has failed two runs in a row (the browser profile
+and the disk on the first); it is pushed once while it stays failing. Every remote check failing
+together, one of them unable to reach its host, is the network, one `health:<slug>:network` with no
+sign-in fix (only all of them refusing a sign-in is the sign-ins), and a single check that
+cannot reach its host names the connection, not the sign-in. Signing back in is always the
+person's; the line says `recovered` on the first pass that sees it pass.
 
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
@@ -1323,10 +1330,10 @@ is set until the eval harness shows finding quality holds on the cheaper model.
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
-done with its PR, on the first pass that reads the marker. A worker waiting at the 5-hour usage
-limit is not stalled: where config §3 `autopilot-usage-resume` is `yes` the pass reports it as
-paused until the reset and lets it resume, and otherwise it stops and parks it with the reset time
-(orchestrator-recovery.md). Log growth
+done with its PR, on the first pass that reads the marker. A worker at a usage limit (5-hour, weekly
+or any other) is not stalled: the pass reports it as paused, holds every spawn and resume, and
+resumes it in its own session once the limit lifts, at its reset or sooner when a probe call
+succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.

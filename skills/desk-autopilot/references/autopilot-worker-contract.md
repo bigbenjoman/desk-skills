@@ -10,7 +10,7 @@ file and a skill disagree about anything else, **the skill wins**.
 
 **The desk skills are files, not Skill-tool entries.** You run with `--setting-sources ""`, which
 keeps your user's settings out and with them the skill registry: the Skill tool answers
-`Unknown skill: desk-ticket` (or `desk-review`, `pr-expert`, …) and that is expected, not a fault.
+`Unknown skill: desk-ticket` (or `desk-review`, …) and that is expected, not a fault.
 Never park on it. Instead **Read the skill's file directly**: `desk-env paths` prints
 `DESK_SKILLS_DIR`, and each skill is `$DESK_SKILLS_DIR/<name>/SKILL.md` with its references beside
 it. Wherever a skill or this file says "run `desk-review`" or "load `desk-ticket`", it means read
@@ -48,7 +48,7 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 - you are about to run any suite, typecheck, lint or build, at any stage (a repro at Stage 2
   included): read the Stage 4 file first;
 - you are about to run anything but `desk-env`, `desk-jira`, a reading tool or a `git` read
-  (`status`, `log`, `show`, `diff`, `fetch`, `branch`) before Stage 3: read the Stage 3 file first;
+  (`status`, `log`, `show`, `diff`, `fetch`, `branch`), at any stage: read the Stage 3 file first;
 - you are about to start a dev server, touch an env file or a database variable, or rebase (the
   self-review's "§4's rebase check" is section 4 of that file): read the Stage 5 file first;
 - you are about to write to the tracker (a comment, a transition, a field edit), at any stage: read
@@ -56,7 +56,7 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 
 | Stage | File | Holds |
 |---|---|---|
-| 3 implement | `worker-contract-stage-3.md` | the design skills as files; §6 command forms that are silently denied |
+| 3 implement | `worker-contract-stage-3.md` | the design skills as files; §6 the command forms you may run, a dev server's too |
 | 4 verify, 4b self-review | `worker-contract-stage-4.md` | §3 verification, the test lock and memory, self-review and codex |
 | 5 evidence (even when you skip it), 7 PR | `worker-contract-stage-5.md` | §4 rebase before you push; §5 what the orchestrator owns: images, the draft PR, merging |
 | 8 Jira | `worker-contract-stage-8.md` | Jira comments and transitions under config §3 |
@@ -94,8 +94,8 @@ still parks (section 2). Where `autopilot-judgement` is not `yes`, product, desi
 park as before.
 
 **Check a step before asking if it was done**, and after a park print
-`AUTOPILOT_PARK_INPUTS: {…}`, plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` where a script can read
-what settles it: `desk-autopilot` *Ask or take* says how.
+`AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
+where a script can read what clears it: `desk-autopilot` *Ask or take* says how.
 
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
@@ -145,7 +145,7 @@ people's commits into yours.
 call (section 1) or a shared-state write rather than a difficulty: missing product/catalog/copy
 data, any write to staging or a shared index. Plus, specific to running unattended:
 
-- **A merge conflict.** Any. Never resolve one.
+- **A merge conflict only a product or design call settles** (Stage 5 file, §4).
 - **A lane demotion to C, or to D with no saved canvas.** C needs an agreed plan or a product
   answer, and D a canvas to build from (Stage 3 file).
 - **A priority in config §4 Priorities only you set.** `desk-jira` refuses it to you, with or

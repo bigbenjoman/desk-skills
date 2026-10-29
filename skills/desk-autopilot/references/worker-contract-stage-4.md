@@ -284,12 +284,13 @@ To hand off:
    ```
 
    `review` and `evidence` are `[]` when there is nothing yet.
-3. **Update your resume file**, then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
+3. **Update your resume file** (`$DESK_STATE/resume/<TICKET>.json`), then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
    your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
    is not done.
 
 The orchestrator then spawns a new session for the same ticket, worktree and branch, with the
 handoff in its briefing. **When your prompt says your session starts at a stage**, read that stage's
-file, check `git status` and `git log` in your worktree, and carry on from there; an
+file and the Stage 3 file (its §6 holds every command form you may run, a dev server's included),
+check `git status` and `git log` in your worktree, and carry on from there; an
 `AUTOPILOT_IMAGES` an earlier session printed is kept. A task worker (`AUTOPILOT_TASK`) never hands
 off.

@@ -13,7 +13,7 @@ import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spin
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
-  roundStage, resumeCheck, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
+  roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
@@ -24,7 +24,8 @@ import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
-import { usageLimit, resetText } from './usage-limit.mjs';
+import { usageLimit, resetText, limitName } from './usage-limit.mjs';
+import { probeNow } from './usage-probe.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -190,7 +191,7 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [] };
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -200,14 +201,21 @@ if (!REGISTER.ok) report.waiting.push(`not-now register: unreadable (${REGISTER.
 const putOff = (t) => t.state === 'parked' && !!t.park?.question && !isHeld(t)
   && lookup(REGISTER, { question: t.park.question, inputs: t.park.inputs ?? {} }).status === 'put_off';
 
-// The 5-hour usage limit. Claude Code waits for the reset and then carries on, which spends the next
-// usage window: config §3 autopilot-usage-resume decides whether a worker may, and anything but `yes`
-// stops it at the limit. A paused worker is quiet, not wedged, until this long after the reset; then
-// the stall check runs as before.
-const usagePerm = E.permission('autopilot-usage-resume');
-const USAGE_KEY = E.permissionKey('autopilot-usage-resume');
-const mayResumeOnLimit = usagePerm === 'yes';
+// The usage limit, any of them (usage-limit.mjs). A worker never gives up on one: the batch holds
+// every spawn and resume, and a worker that ended its session at the limit stays running, paused, until
+// the limit lifts: at its reset time, or sooner when the one probe call a held pass makes succeeds, as
+// it does once the person switches subscription. A paused worker whose session is still live is quiet,
+// not wedged, until this long after the reset; then the stall check runs as before.
 const LIMIT_GRACE_MS = 30 * 60 * 1000;
+let PROBE = null;
+// At most one probe a pass, made only when something is held on the limit.
+const probeOnce = () => (PROBE ??= probeNow());
+const lifted = (l) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000) || probeOnce().ok;
+const liftedHow = (l) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000 ? `its reset at ${resetText(l.resetsAt)} passed` : 'a probe call succeeded');
+const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.resetsAt)}` : '');
+// The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
+// the limit refused (the queue's usage_hold).
+const usageHolds = [];
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -327,7 +335,8 @@ function againstRegister(t, question, log) {
     }
   } catch { /* no log, no inputs */ }
   const p = parseInputs(raw);
-  if (!p.ok) report.waiting.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
+  // Logged, never waiting on the person: nobody can clear it, and the park itself is asked as usual.
+  if (!p.ok) report.inputs.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
   const inputs = p.ok ? p.inputs : {};
   return { inputs, ...lookup(REGISTER, { question, inputs }) };
 }
@@ -442,40 +451,22 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   const done = park || handoff ? undefined : lastDone?.[1];
   for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
 
-  // A worker at the 5-hour usage limit (usage-limit.mjs decides; nothing here reads the event). Only
-  // a worker that has neither parked nor finished is acted on.
+  // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
+  // that has neither parked nor finished, and has not answered since the limit, is acted on.
   const logText = readFileSync(log, 'utf8');
   const usage = usageLimit(logText);
-  const limit = !park && !done && !handoff && usage.last?.kind === 'limit' ? usage.last : null;
+  const limit = !park && !done && !handoff && usage.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
   if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
     q('set', t.key, `usage_unrecognised=${usage.unrecognised.length}`);
     report.unrecognised.push(`${t.key}: ${usage.unrecognised.at(-1)}`);
   }
-  if (mayResumeOnLimit) {
-    for (const l of usage.limits.filter((x) => x.resumed)) {
-      notes.push(`- [${t.key}] resumed after the 5-hour usage limit reset at ${resetText(l.resetsAt)} (config §3 ${USAGE_KEY} is "yes")`);
-    }
+  for (const l of usage.limits.filter((x) => x.resumed)) {
+    notes.push(`- [${t.key}] resumed after ${limitName(l.type)}${l.resetsAt != null ? ` (reset at ${resetText(l.resetsAt)})` : ''}`);
   }
-  if (limit && !mayResumeOnLimit) {
-    // Stopping needs the registry: without it the worker would resume while recorded as parked.
-    if (!registryOk) continue;
-    const isLive = liveSids.has(t.session_id);
-    const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
-    if (pid) sh('kill', [String(pid)], { tolerant: true });
-    const stop = !isLive ? 'its session had already ended' : pid ? `the worker was stopped (pid ${pid})` : `no pid to stop: stop session ${t.session_id} by hand`;
-    // A worker can resume before any pass sees it paused. It is stopped all the same, so it spends
-    // no more of the next window, and the reason says it had resumed.
-    const why = limit.resumed
-      ? `reached the 5-hour usage limit, which reset ${resetText(limit.resetsAt)}, and resumed into the next usage window before a pass saw it. ` +
-        `Config §3 ${USAGE_KEY} is "${usagePerm}", so it goes no further: ${stop}. Requeue it with queue.mjs requeue ${t.key}`
-      : `paused on the 5-hour usage limit, which resets ${resetText(limit.resetsAt)}. Config §3 ${USAGE_KEY} is "${usagePerm}", so it does not resume into the next usage window: ${stop}. ` +
-        `After the reset, requeue it with queue.mjs requeue ${t.key}`;
-    q('park', t.key, why);
-    report.parked.push(`${t.key}: ${why}`);
-    continue;
-  }
-  const pausedOnLimit = !!limit && !limit.resumed && Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS;
-  if (pausedOnLimit) report.paused.push(`${t.key} until ${resetText(limit.resetsAt)}, then it resumes (config §3 ${USAGE_KEY} is "yes")`);
+  const pausedOnLimit = !!limit && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
+  // Kept below only while the ticket is still running once the loop is done.
+  if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused });
+  else if (t.usage_paused) q('set', t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
@@ -608,17 +599,16 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
       else if (ownsSpecs(t)) checkOwned(t, Number(pr));
-    } else if (limit && !limit.resumed && !wedged && t.session_id && t.resume_reset !== limit.resetsAt) {
-      // Exited at the 5-hour usage limit under a grant to resume across it (any other setting parked it
-      // above): a headless worker ends its session at the limit rather than waiting for the reset. It
-      // stays running, reported paused, until the reset, then is resumed in its own session, never failed.
-      // Once per limit: a resume that ends before the model answers leaves the same limit last in the
-      // log, and is then handled as any other exit below rather than resumed on every pass.
-      if (Date.now() >= limit.resetsAt * 1000) {
-        // Queued now, so not paused: the paused line was this ticket's, pushed above.
-        if (pausedOnLimit) report.paused.pop();
-        const why = `exited at the 5-hour usage limit, which reset ${resetText(limit.resetsAt)}`;
-        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`, `resume_reset=${limit.resetsAt}`);
+    } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
+      // Exited at a usage limit: a headless worker ends its session there rather than waiting for the
+      // reset. It stays running, reported paused, until the limit lifts, then is resumed in its own
+      // session, never failed. Once per limit: a resume that ends before the model answers, with no
+      // new rejection, leaves the same count of limits in the log, and is then handled as any other
+      // exit below rather than resumed on every pass.
+      if (lifted(limit)) {
+        const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
+        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
+          `resume_limits=${usage.limits.length}`);
         report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
       }
     } else if (!wedged && !endedNormally(logText) && t.session_id) {
@@ -641,9 +631,35 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       }
     } else {
       q('set', t.key, 'state=failed');
-      report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at the 5-hour usage limit (resets ${resetText(limit.resetsAt)})` : ''} — check ${log}`);
+      report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} — check ${log}`);
     }
   }
+}
+
+// ---- the usage limit -----------------------------------------------------
+// A paused worker holds the batch while it is still running once the loop is done. A preflight the
+// limit refused holds it through the queue's usage_hold, kept across passes until the limit lifts. A
+// hold whose limit has lifted holds nothing, and spawns and resumes go ahead as normal.
+let USAGE_HOLD = null;
+{
+  const tickets = queue().tickets;
+  for (const h of usageHolds.splice(0)) {
+    if (tickets[h.key]?.state !== 'running') {
+      if (tickets[h.key]?.usage_paused) q('set', h.key, 'usage_paused=null');
+      continue;
+    }
+    usageHolds.push(h);
+    report.paused.push(`${h.key} on ${limitName(h.limit.type)}${untilText(h.limit)}, then it resumes, or sooner once a probe call succeeds`);
+    // desk-q reads this to show the ticket paused rather than at its stage.
+    if (h.was?.type !== h.limit.type || h.was?.resets_at !== h.limit.resetsAt) {
+      q('set', h.key, `usage_paused=${JSON.stringify({ type: h.limit.type, resets_at: h.limit.resetsAt })}`);
+    }
+  }
+  const stored = queue().usage_hold;
+  const pre = stored?.preflight ? { key: stored.preflight, limit: { type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null } } : null;
+  const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => !lifted(h.limit));
+  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: pre && !lifted(pre.limit) ? pre.key : null };
+  else if (pre) report.advanced.push(`${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit)}): spawns and resumes go ahead`);
 }
 
 // ---- batch notes ---------------------------------------------------------
@@ -926,7 +942,9 @@ if (blockedByDone.length) {
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
 const PACE_HELD = '7-day usage ahead of pace holds every spawn';
-const held = MAINT.hold ? 'the maintenance window holds every spawn' : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
+const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every spawn and resume, until it lifts or a probe call succeeds`;
+if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${PROBE?.why ?? 'not run'})`);
+const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOLD ? usageHeldText(USAGE_HOLD) : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"`
@@ -1185,7 +1203,19 @@ function preflight(key, wt, workerEnv) {
   const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
   const cost = { usd: num(m?.[1]), turns: num(m?.[2]) };
   const failure = /\[preflight\] pass/.test(pre) ? null : `${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}\n${preflightNote(cost)}`;
-  return { failure, cost };
+  // A call refused at the usage limit (spawn-worker.sh says so): nothing about the worker failed.
+  return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre) };
+}
+// A preflight the usage limit refused holds the batch: the ticket keeps its place and state, and
+// nothing else spawns or preflights this pass. The probe names the limit where it can.
+let usageStop = false;
+function preflightHitLimit(t, cost) {
+  logPreflight(t.key, cost);
+  const l = probeOnce().limit ?? { type: 'unknown', resetsAt: null };
+  USAGE_HOLD ??= { type: l.type, resetsAt: l.resetsAt, preflight: t.key };
+  USAGE_HOLD.preflight ??= t.key;
+  usageStop = true;
+  report.stalled.push(`${t.key}: its preflight was refused at ${limitName(USAGE_HOLD.type)} — not failed, and nothing else spawns until the limit lifts`);
 }
 const preflightNote = ({ usd, turns }) =>
   `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`;
@@ -1228,6 +1258,7 @@ async function resumeKilled(t) {
   const model = t.model && t.model !== 'default' ? t.model : '';
   const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
   const pre = preflight(t.key, t.worktree, workerEnv);
+  if (pre.limit) return preflightHitLimit(t, pre.cost);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
@@ -1245,7 +1276,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit reset' : maint ? 'after the maintenance window' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 
@@ -1294,20 +1325,20 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
 
 // A requeued ticket whose worker parked at Stage 3 or later resumes at the stage that round reached,
 // with its summary in the briefing, when its worktree was kept, is on the queue's branch, and has no
-// resume file that records another (resumeCheck). A round that cannot be resumed is said in the
+// resume file (the worker's in the state dir, or one in the worktree) that records another (resumeCheck). A round that cannot be resumed is said in the
 // briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
   const stage = roundStage(round?.stage);
   if (!stage || !kept) return { stage: null, brief: '', line: '' };
-  const r = resumeCheck({ worktree: wt, key: t.key, branch });
+  const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
-    return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why }), line: ` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
+    return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why, path: r.path }), line:` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
   }
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const answers = answersSince(existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : '', round.at);
   const base = `origin/${DEFAULT_BRANCH}`;
-  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base) });
+  const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base), resumePath: r.path });
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
@@ -1336,13 +1367,14 @@ async function spawnHandoff(t) {
     report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
+  if (pre.limit) return preflightHitLimit(t, pre.cost);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null');
+    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1362,11 +1394,13 @@ for (const t of spawnable) {
   if (toResume(t)) {
     // eslint-disable-next-line no-await-in-loop
     await resumeKilled(t);
+    if (usageStop) break;
     continue;
   }
   if (toHandoff(t)) {
     // eslint-disable-next-line no-await-in-loop
     await spawnHandoff(t);
+    if (usageStop) break;
     continue;
   }
   const wt = join(WORKTREES, t.key);
@@ -1400,6 +1434,7 @@ for (const t of spawnable) {
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true });
 
   const pre = preflight(t.key, wt, workerEnv);
+  if (pre.limit) { preflightHitLimit(t, pre.cost); break; }
   if (pre.failure) {
     logPreflight(t.key, pre.cost);
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
@@ -1423,13 +1458,15 @@ for (const t of spawnable) {
   const logBytes = logPreflight(t.key, pre.cost);
   // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
+  // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
+  if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
-    'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null',
+    'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
@@ -1456,6 +1493,16 @@ for (const t of spawnable) {
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.
 borrowLock?.release();
+// The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
+// the first pass that held until the one that finds it lifted.
+{
+  const was = queue().usage_hold;
+  if (USAGE_HOLD) {
+    const rec = { since: was?.since ?? PASS_AT, type: USAGE_HOLD.type, resets_at: USAGE_HOLD.resetsAt, preflight: USAGE_HOLD.preflight ?? null,
+      paused: usageHolds.map((h) => h.key) };
+    q('set-batch', `usage_hold=${JSON.stringify(rec)}`);
+  } else if (was) q('set-batch', 'usage_hold=null');
+}
 const borrowLine = borrowedLine(plan, { share: concurrency, running: running.length, spawned: report.spawned.length });
 
 // ---- epics ---------------------------------------------------------------
@@ -2023,6 +2070,7 @@ for (const t of Object.values(queue().tickets)) {
 }
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (report.clears.length) out.push(`clears-when:\n  ${report.clears.join('\n  ')}`);
+if (report.inputs.length) out.push(`park inputs:\n  ${report.inputs.join('\n  ')}`);
 if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 

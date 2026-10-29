@@ -5,7 +5,8 @@
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
 //   - a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
-//     that is not `yes`, is handed straight on;
+//     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
+//     decider tool acts on;
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason.
@@ -25,6 +26,17 @@ export const RESULT_MARK = 'DECIDER_RESULT:';
 const h = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 12);
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 
+// What a WAITING ON YOU line waits on, for its id: its ticket, its class (`DRAFT`, `STUCK`, `READY TO
+// MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. A line
+// with no class is keyed on all of it.
+function waitKey(line) {
+  const s = String(line);
+  const m = /^([^:]*): ([A-Z][A-Z ]*[A-Z]) — /.exec(s);
+  if (!m) return s;
+  const pr = /PR #(\d+)/.exec(s.slice(m[0].length));
+  return `${m[1]}\0${m[2]}\0${pr ? pr[1] : ''}`;
+}
+
 // One item per parked ticket and per WAITING ON YOU line, as the pass's verdict names them. A line
 // whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
 export function deciderItems(v, q = {}) {
@@ -35,7 +47,7 @@ export function deciderItems(v, q = {}) {
   }));
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
-    return { id: `wait-${h(line)}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null };
+    return { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
   });
   return [...parked, ...waiting];
 }
@@ -51,6 +63,8 @@ export function presort(items) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
+    } else if (item.kind === 'waiting' && item.state === 'done') {
+      hand.push({ item, why: `${item.ticket} is done, and the decider can only requeue or record clears-when for a parked ticket` });
     } else ask.push(item);
   }
   return { hand, ask };
@@ -96,12 +110,15 @@ export function handItems(state, handed, now = new Date()) {
   return added;
 }
 
-// Drops every handed item the latest pass no longer lists: it was settled some other way.
+// Drops every handed item the latest pass no longer lists: it was settled some other way. One it still
+// lists keeps its time and takes the line's latest wording.
 export function pruneHanded(state, items) {
   const r = readHanded(state);
-  const live = new Set(items.map((i) => i.id));
+  const live = new Map(items.map((i) => [i.id, i.text]));
   const kept = Object.fromEntries(Object.entries(r).filter(([id]) => live.has(id)));
-  if (Object.keys(kept).length !== Object.keys(r).length) writeHanded(state, kept);
+  const reworded = Object.entries(kept).filter(([id, e]) => e.text !== live.get(id));
+  for (const [id, e] of reworded) e.text = live.get(id);
+  if (Object.keys(kept).length !== Object.keys(r).length || reworded.length) writeHanded(state, kept);
   return kept;
 }
 
@@ -125,12 +142,16 @@ export function deciderSettings({ bin, state }) {
   };
 }
 
-export function deciderPrompt({ slug, report, items, rules, bin }) {
+export function deciderPrompt({ slug, report, items, rules, bin, webRead = false }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...answerLines(i)]).join('\n');
   // Only when an item has answers, so a prompt without any reads as it always has.
   const onAnswers = items.some((i) => i.answers?.length) ? [
     '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B, D or E, and its park does not start `lane C` or `lane D` (one parked at triage), requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+  ] : [];
+  // Only where this repo's workers can read the web, so a prompt for any other repo reads as it always has.
+  const onWeb = webRead ? [
+    '- a park asking only for a public fact (a published figure, or a page, robots.txt or terms anyone can read on the web) is not a fact only the person holds: this repo\'s workers can search and read the web (config §3 `worker-web-read` is `yes`). On lane A, B, D or E, requeue it for its worker to look the fact up, and settle the item',
   ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
@@ -141,6 +162,7 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
     '- never requeue a lane C ticket or a park that starts `lane C` or `lane D` (parked at triage on its lane), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
+    ...onWeb,
     '',
     '## The items',
     '',
@@ -162,13 +184,13 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
 
 // Starts the session detached, its JSON result written to <state>/decider/<id>.json. Returns the
 // record the supervisor keeps until the session ends.
-export function startDecider({ state, slug, bin, report, items, rules, cwd, env = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, cwd, env = process.env, claude = 'claude', now = new Date() }) {
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
   const settings = join(dir, `${id}.settings.json`);
   writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin });
+  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead });
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');
