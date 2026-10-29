@@ -261,17 +261,22 @@ const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 const none = (s) => (s === 'none' || s === '' ? null : s);
 const byName = (a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
 
-// Vercel entries grouped one row per name per team, and which teams bill more than one name.
-function vercelRows(entries) {
+// A supplier's entries grouped one row per name per account (`id`, its Vercel team or Neon org).
+function rowsOf(entries, supplier, id) {
   const rows = new Map();
-  const namesOf = new Map();
-  for (const e of entries.filter((x) => x.supplier === 'vercel').sort(byName)) {
-    const k = `${e.name}\u0000${e.teamId}`;
+  for (const e of entries.filter((x) => x.supplier === supplier).sort(byName)) {
+    const k = `${e.name}\u0000${e[id]}`;
     if (!rows.has(k)) rows.set(k, { ...e, projects: [] });
     if (e.project) rows.get(k).projects.push(e.project);
-    namesOf.set(e.teamId, (namesOf.get(e.teamId) ?? new Set()).add(e.name));
   }
-  return [...rows.values()].map((r) => ({ ...r, shared: namesOf.get(r.teamId).size > 1 }));
+  return [...rows.values()];
+}
+// Vercel entries grouped one row per name per team, and which teams bill more than one name.
+function vercelRows(entries) {
+  const rows = rowsOf(entries, 'vercel', 'teamId');
+  const namesOf = new Map();
+  for (const r of rows) namesOf.set(r.teamId, (namesOf.get(r.teamId) ?? new Set()).add(r.name));
+  return rows.map((r) => ({ ...r, shared: namesOf.get(r.teamId).size > 1 }));
 }
 
 // Neon's billing units, the price key each is priced under, and how many of its metric make one.
@@ -290,15 +295,7 @@ export const parsePrices = (s) => Object.fromEntries((none(s) ?? '').split(',').
 const pricesText = (prices) => Object.entries(prices ?? {}).map(([k, v]) => `${k}=${v}`).join(', ');
 
 // Neon entries grouped one row per name per org.
-function neonRows(entries) {
-  const rows = new Map();
-  for (const e of entries.filter((x) => x.supplier === 'neon').sort(byName)) {
-    const k = `${e.name}\u0000${e.orgId}`;
-    if (!rows.has(k)) rows.set(k, { ...e, projects: [] });
-    if (e.project) rows.get(k).projects.push(e.project);
-  }
-  return [...rows.values()];
-}
+const neonRows = (entries) => rowsOf(entries, 'neon', 'orgId');
 
 export function renderCosts({ entries, budget, logins }) {
   const of = (s) => entries.filter((e) => e.supplier === s).sort(byName);

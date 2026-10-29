@@ -118,6 +118,9 @@ t('AC3 hobby shows Neon at $0, on the free plan', `${nameOf(c2, 'hobby').total} 
 const hob = Q.supplierScreen([], 'hobby', { now: FEB6, costs, cache: cache(), pinUsage: true }).split('\n');
 t('AC3 its supplier view tags Neon "free plan"', hob.find((l) => l.startsWith('  Neon')), `  ${'Neon'.padEnd(10)}${'Postgres'.padEnd(24)}${'$0.00'.padStart(11)}  free plan`);
 const freeOnly = { ...costs, entries: costs.entries.filter((e) => e.name === 'hobby') };
+const hobLater = Q.supplierScreen([], 'hobby', { now: FEB6 + 2 * 24 * 3600000, costs: freeOnly, cache: cache(), pinUsage: true }).split('\n');
+t('AC3 days later, with nothing read since, still "free plan": a free org is never read, so never stale', hobLater.find((l) => l.startsWith('  Neon')),
+  `  ${'Neon'.padEnd(10)}${'Postgres'.padEnd(24)}${'$0.00'.padStart(11)}  free plan`);
 t('AC3 with only free orgs Neon is due once a month, and makes no call', `${C.dueSuppliers({ costs: freeOnly, cache: null, now: FEB6 }).join()} ${C.dueSuppliers({ costs: freeOnly, cache: cache(), now: FEB6 + 18 * 3600000 }).join()}`, 'neon ');
 
 // ---- AC5: one org shared by two repos is read once, each charged only its own projects

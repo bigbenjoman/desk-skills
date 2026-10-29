@@ -561,7 +561,8 @@ export function neonCharges(neon, sources) {
   for (const [orgId, list] of byOrg) {
     const own = [...new Set(list.map((e) => e.name))];
     const { plan, fee } = list[0];
-    if (isFreePlan(plan)) { for (const n of own) row(n).at ??= neon?.at ?? null; continue; }
+    // An org on the free plan is never read, so it gives its names no read time to go stale.
+    if (isFreePlan(plan)) { for (const n of own) row(n); continue; }
     const rec = neon?.orgs?.[orgId];
     for (const n of own) {
       const r = row(n);
