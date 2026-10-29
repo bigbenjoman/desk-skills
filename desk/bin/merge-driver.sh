@@ -45,7 +45,9 @@
 # its body file). A row that does not parse stops the driver at start.
 # The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
 # `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
-# and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl.
+# and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl. Where §4 Tracker
+# is jira and §3 jira-close-own-merged is yes, a ticket with no other PR still open on its key is then
+# moved to §4 Done state and read back; this is the only close anywhere in the batch.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # A check still red after both goes back to a fix worker: pass.mjs reads reruns-<n>-<sha> and
@@ -166,6 +168,8 @@ if ! FLAKY="$(node "$DESK_BIN/gate.mjs" flaky 2>&1)"; then
 fi
 TRACKER="$(desk_cfg tracker 2>/dev/null | tr 'A-Z' 'a-z' || true)"
 JIRA_CREATE_PERM="$(desk_perm jira-create)"
+CLOSE_PERM="$(desk_perm jira-close-own-merged)"
+DONE_STATE="$(desk_cfg done-state 2>/dev/null || true)"
 SIZE_FIELD="$(desk_cfg jira-size-field 2>/dev/null || true)"
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
@@ -412,6 +416,31 @@ flaky_ticket(){
   fi
 }
 
+# close_merged <n> <key>: once #n has merged, its ticket goes to §4 Done state where §3
+# jira-close-own-merged is yes and no other PR on the key is still open, on any base; read back after.
+# Nothing else in the batch closes a ticket. A failure is logged and never undoes the merge.
+close_merged(){
+  local n="$1" key="$2" map open st out
+  [ "$TRACKER" = jira ] && [ "$(node "$DESK_ENV_MJS" ticket-kind "$key" 2>/dev/null)" = tracker ] || return 0
+  if [ "$CLOSE_PERM" != yes ]; then log "#$n $key left as it is: config §3 jira-close-own-merged is $CLOSE_PERM"; return 0; fi
+  case "$DONE_STATE" in ''|TODO*|none) log "#$n $key not moved: config §4 Done state is not set — run /desk-setup"; return 0 ;; esac
+  map="$(ticket_map "$key")" || { log "#$n $key not moved to $DONE_STATE: its PRs could not be matched"; return 0; }
+  if ! open=$(gh pr list --repo "$REPO" --state open --author "$AUTHOR" --limit 100 --json number,title,headRefName 2>&1) \
+    || ! open=$(printf '%s' "$open" | jq -r --argjson m "$map" '.[] | . as $p | select(any($m[]; .re as $re
+          | (.branch != "" and $p.headRefName == .branch) or (($p.title + " " + $p.headRefName) | test($re)))) | "#\(.number)"' 2>&1); then
+    log "#$n $key not moved to $DONE_STATE: open PRs could not be listed ($(printf '%s' "$open" | tail -1))"; return 0
+  fi
+  if [ -n "$open" ]; then log "#$n $key left as it is: $(printf '%s' "$open" | paste -sd ' ' -) still open on the key"; return 0; fi
+  st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
+  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key already $DONE_STATE"; return 0; fi
+  if ! out=$(desk-jira transition "$key" "$DONE_STATE" 2>&1); then
+    log "#$n $key not moved to $DONE_STATE: $(printf '%s' "$out" | head -1) — move it by hand"; return 0
+  fi
+  st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
+  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key moved to $DONE_STATE (read back; §3 jira-close-own-merged)"
+  else log "#$n $key transition sent but it reads ${st:-unreadable}, not $DONE_STATE — check it by hand"; fi
+}
+
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out waived label grant
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
@@ -476,6 +505,7 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
     # The merge time on the ticket, and its line in the eta history. A failure here never undoes the merge.
     if rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    close_merged "$n" "$key"
     return 0
   fi
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"

@@ -351,4 +351,46 @@ jq '."121".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/p
 mloop "$T/config-ask.md"
 check "DS-203 AC6: a new batch carries no approval, so it is asked again" '[ $rc -eq 1 ] && echo "$out" | grep -qF "with no batch approval" && [ "$(merged)" = 121 ]'
 
+# ---- DS-336: a ticket whose last open PR the driver merges goes to §4 Done state -------------------
+sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
+  | awk '{ print } /^\| `pr-ready`/ { print "| `jira-close-own-merged` | Close own merged | `yes` | `yes` |" } /^\| Tracker/ { print "| Done state | `Done` |" }' > "$T/config-close.md"
+sed -e 's/| `jira-close-own-merged` | Close own merged | `yes` | `yes` |/| `jira-close-own-merged` | Close own merged | `yes` | `ask` |/' "$T/config-close.md" > "$T/config-noclose.md"
+# The fake desk-jira: each ticket's status in jira-status/<key>, In Progress until a transition moves it.
+mkdir -p "$T/jira-status"
+cat > "$T/stub/desk-jira" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/jira-close.log"
+f="$T/jira-status/\$2"
+case "\$1" in
+  get) st="In Progress"; [ -f "\$f" ] && st="\$(cat "\$f")"; jq -n --arg s "\$st" '{fields: {status: {name: \$s}}}' ;;
+  transition) printf '%s' "\$3" > "\$f"; echo "\$2 -> \$3" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+SHA31=c111111111111111111111111111111111111111; SHA32=c222222222222222222222222222222222222222
+SHA33=c333333333333333333333333333333333333333; SHA34=c444444444444444444444444444444444444444
+cat > "$T/prs.json" <<EOF
+{
+  "131": { "head": "fix/T-31", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "132": { "head": "fix/T-32", "base": "main", "sha": "$SHA32", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "133": { "head": "fix/T-32-more", "base": "release", "sha": "$SHA33", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+q init merge-close
+for k in T-31 T-32 T-34; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+q add T-33 Bug A; q set T-33 state=done
+: > "$T/merges.log"; : > "$T/jira-close.log"
+cloop(){ out=$(DESK_CONFIG="$1" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-31" 2>&1); rc=$?; }
+cloop "$T/config-close.md"; cloop "$T/config-close.md"
+check "DS-336 AC1: the merged ticket is moved to Done and read back"  '[ "$(merged)" = 131 ] && grep -qx "transition T-31 Done" "$T/jira-close.log" && [ "$(cat "$T/jira-status/T-31")" = Done ] && echo "$out" | grep -q "#131 T-31 moved to Done (read back; §3 jira-close-own-merged)"'
+check "DS-336 AC1: the status is read again after the transition"     '[ "$(grep -c "^get T-31 --json" "$T/jira-close.log")" = 2 ]'
+cloop "$T/config-close.md"
+check "DS-336 AC2: another PR open on the key, on any base, leaves the ticket as it is" '[ "$(merged)" = "131 132" ] && ! grep -q "transition T-32" "$T/jira-close.log" && echo "$out" | grep -q "#132 T-32 left as it is: #133 still open on the key"'
+jq --arg s "$SHA34" '. + { "134": { head: "fix/T-34", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+cloop "$T/config-noclose.md"; cloop "$T/config-noclose.md"
+check "DS-336 AC3: with jira-close-own-merged not yes, a merge moves nothing" '[ "$(merged)" = "131 132 134" ] && ! grep -q "T-34" "$T/jira-close.log" && echo "$out" | grep -q "#134 T-34 left as it is: config §3 jira-close-own-merged is ask"'
+mpj "$T/config-close.md"
+check "DS-336 AC4: a ticket done with no PR merged (a triage already-fixed) is never closed" '! grep -q "T-33" "$T/jira-close.log" && [ "$(grep -c "^transition" "$T/jira-close.log")" = 1 ]'
+
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
