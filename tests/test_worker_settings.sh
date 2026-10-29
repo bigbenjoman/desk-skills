@@ -265,7 +265,6 @@ check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$
 check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
 
 # ---- §3 worker-web-read: WebSearch and WebFetch, and nothing else new ----
-denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
 cp "$T/ws.json" "$T/ws-off.json"
 check "web-read unset: neither tool allowed, both denied, named" '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch && denies WebSearch && denies WebFetch && denied_line worker-web-read no'

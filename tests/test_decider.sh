@@ -57,6 +57,8 @@ cat > "$T/fakes/claude" <<EOF
 n=\$(ls "$T" | grep -c '^claude\.args\.')
 printf '%s\n' "\$@" > "$T/claude.args.\$n"
 read -r mode key < "$T/claude.mode"
+# webfact: requeue only when the prompt carries the public-fact rule, otherwise hand on
+[ "\$mode" = webfact ] && { grep -q 'requeue it for its worker to look the fact up' <<< "\$2" && mode=requeue || mode=hand; }
 ids=\$(grep -oE 'id \`[a-z]+-[0-9a-f]+\`' <<< "\$2" | grep -oE '[a-z]+-[0-9a-f]+')
 case "\$mode" in
   hang) exec sleep 60 ;;
@@ -221,13 +223,14 @@ check "a session with no result line hands its items on" 'handed | grep -q "^H|d
 # ---- §3 worker-web-read: a park asking only for a public fact is requeued where workers can read the web ----
 lastargs(){ set -- "$T"/claude.args.*; echo "$T/claude.args.$(( $# - 1 ))"; }
 FACT="what is the ONS 2024 UK household count?"
-mark; echo "hand" > "$T/claude.mode"
+mark; echo "webfact P" > "$T/claude.mode"
 queue '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"'"$FACT"'"}}}'
 verdict "$(parked P "$FACT")"
-out=$(tick); settle
+out=$(tick); settle; out=$(tick)
 check "web-read unset: the decider prompt has no public-fact rule" '[ "$(calls)" = 1 ] && ! grep -q "public fact" "$(lastargs)"'
+check "web-read unset: the park is handed on, not requeued" 'handed | grep -q "^P|" && ! grep -q "\"P\":{[^}]*\"state\":\"triaged\"" "$DESK_QUEUE"'
 printf '| `worker-web-read` | Read the web | `ask` | `yes` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
-mark; echo "requeue Q" > "$T/claude.mode"
+mark; echo "webfact Q" > "$T/claude.mode"
 queue '{"Q":{"key":"Q","state":"parked","lane":"A","park":{"question":"'"$FACT"' (Q)"}}}'
 verdict "$(parked Q "$FACT (Q)")"
 out=$(tick); settle

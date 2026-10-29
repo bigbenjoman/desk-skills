@@ -495,7 +495,7 @@ if (mode === 'triage') {
   ]);
   grant('worker-screenshots', shots, []);
 
-  // Reading the public web: searching, and fetching a page by its URL. Nothing that writes anywhere.
+  // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
   grant('worker-web-read', ['WebSearch', 'WebFetch']);
 
   // Starting a §4 Local services entry, detached, by its compose service name (each item's first
