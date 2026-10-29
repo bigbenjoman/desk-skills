@@ -1117,11 +1117,17 @@ HH:MM times holds spawns under `STALLED`, naming the row.
 `gh auth status`, `desk-jira whoami` (where §4 Tracker is `jira`), `claude auth status`,
 `codex login status` (unless §3 `codex-review` is `no`), the browser profile's saved GitHub login
 (unless §3 `pr-images` is `no`), and free disk on the worktrees disk against §3b "Free disk floor
-(GB)" (unset: 20). A check with no answer in 20 seconds fails as `timed out`, and results are reused
-for 15 minutes. The report always carries one `health:` line. A failing required check holds every
-new spawn (running workers carry on), is named under `STALLED` with the command that fixes it, and
-goes into `push` as `health:<slug>:<check>`, which is pushed once while it stays failing. Signing
-back in is always the person's; the line says `recovered` on the first pass that sees it pass.
+(GB)" (unset: 20). A check with no answer in 20 seconds fails as `timed out`; a remote check that
+times out or cannot reach its host is run once more before it counts. Results are reused for 15
+minutes while every check passes, and a failing run is checked again on the next pass. The report
+always carries one `health:` line. A failing required check holds every new spawn (running workers
+carry on). A remote check is named under `STALLED` with the command that fixes it, and goes into
+`push` as `health:<slug>:<check>`, only once it has failed two runs in a row (the browser profile
+and the disk on the first); it is pushed once while it stays failing. Every remote check failing
+together, one of them unable to reach its host, is the network, one `health:<slug>:network` with no
+sign-in fix (only all of them refusing a sign-in is the sign-ins), and a single check that
+cannot reach its host names the connection, not the sign-in. Signing back in is always the
+person's; the line says `recovered` on the first pass that sees it pass.
 
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
