@@ -35,6 +35,10 @@ writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
 const queue = join(env.DESK_HOME, 'repos', slug, 'queue.json');
 mkdirSync(dirname(queue), { recursive: true });
 writeFileSync(queue, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tickets: { 'S-1': { key: 'S-1', state: 'triaged' } } }));
+// voicepa is set up here with no batch, so its costs open on its place; pr-ninja is not, so its open on a place of their own.
+mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', 'bigbenjoman__voicepa'), { recursive: true });
+writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', 'bigbenjoman__voicepa', 'config.md'),
+  '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3200` |\n');
 
 // Tuesday 27 October 2026, 11:05: the reading covers 1 to 26 October.
 const FIXED = new Date(2026, 9, 27, 11, 5).getTime();
@@ -59,7 +63,7 @@ function screen(start = { kind: 'overview', all: false }, columns = 104) {
   const frame = () => raw().map((l) => l.replace(ANSI, ''));
   return {
     ui, frame, raw, opened,
-    press: async (s) => { input.write(s); await sleep(20); },
+    press: async (s) => { input.write(s); await sleep(s === '\x1b' ? 600 : 20); },
     crumbs: () => frame()[0].replace(/ · \d\d:\d\d$/, ''),
     tabOn: () => /\x1b\[7m([^\x1b]+)\x1b\[27m/.exec(raw()[1] ?? '')?.[1] ?? null,
   };
@@ -114,10 +118,11 @@ t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySup
 t('AC8 the Claude usage line sits above the keys, a blank line between', `${f2[keysAt(f2) - 2]?.startsWith('Claude usage  ')} ${f2[keysAt(f2) - 1]}`, 'true ');
 t('AC8 no needs-you, workers or ports lines', f2.some((l) => /^◆ |^● \d+ worker|▲ ports|nothing needs you/.test(l)), false);
 
-// ---- AC11: enter on a row changes nothing
+// ---- AC11 (DS-292 opens a name): enter on the shared row changes nothing
+for (let i = 0; i < 8; i++) await H.press('\x1b[B');
 const before11 = H.frame().join('\n');
 await H.press('\r');
-t('AC11 enter on a row leaves the screen as it is', `${H.frame().join('\n') === before11} ${H.crumbs()}`, 'true desk-q › costs');
+t('AC11 enter on the shared row leaves the screen as it is', `${H.frame().join('\n') === before11} ${H.crumbs()}`, 'true desk-q › costs');
 
 // ---- AC12: at 104 columns no row is cut
 t('AC12 at 104 columns no line is cut or wider', f2.filter((l) => l.endsWith('…') || [...l].length > 104).length, 0);
@@ -134,8 +139,8 @@ await sleep(20);
 t('AC13 desk-q costs in a terminal opens home on its Costs tab', `${S13.crumbs()} | ${S13.tabOn()}`, 'desk-q › costs | 5 Costs');
 S13.ui.finish(0);
 let refused = '';
-try { Q.run(['costs', 'voicepa'], { now: FIXED }); } catch (e) { refused = e.message; }
-t('AC13 desk-q costs takes no further words', refused, 'Unknown command "costs voicepa". Try desk-q costs.');
+try { Q.run(['costs', 'voicepa', 'github'], { now: FIXED }); } catch (e) { refused = e.message; }
+t('AC13 desk-q costs takes a repo and no further words', refused, 'Unknown command "costs voicepa github". Try desk-q costs [<repo>].');
 
 // ---- DS-291: each row's tag and its note, and o to a billing page
 const AMBER = '\x1b[38;5;180m', GREY = '\x1b[38;5;247m';
@@ -207,6 +212,84 @@ t('DS-291 AC6 a bill not read yet today carries the same tags', `${rowEnd(U, 'fo
 t('DS-291 AC6 and its note says it hasn\'t been read yet', noteText(U, '◌ forewatt'), "Its AWS bill hasn't been read yet today, so this shows the 25 Oct figure.");
 U.ui.finish(0);
 process.env.DESK_COST_DIR = MAIN;
+
+// ---- DS-292: enter on a name in Costs shows its charge by supplier
+const sup = (name, what, amount, tag) => `  ${name.padEnd(10)}${what.padEnd(24)}${amount.padStart(11)}${tag ? `  ${tag}` : ''}`;
+const supTotal = (amount) => `  ${'total'.padEnd(34)}${amount.padStart(11)}`;
+const SUP_HEAD = `  ${'SUPPLIER'.padEnd(10)}${'FOR'.padEnd(24)}${'CHARGED'.padStart(11)}`;
+const VOICEPA = ['charged $317.11 to voicepa in October, 1–26', '', SUP_HEAD,
+  sup('GitHub', 'CI minutes', '$255.74'), sup('Vercel', 'hosting and builds', '$59.78'), sup('AWS', 'hosting and CI runners', '$1.59'), supTotal('$317.11')];
+const PR_NINJA = ['charged $277.48 to pr-ninja in October, 1–26', '', SUP_HEAD,
+  sup('GitHub', 'CI minutes', '$251.33'), sup('Vercel', 'hosting and builds', '$26.15'), sup('AWS', 'hosting and CI runners', '$0.00', '▲ on credits'), supTotal('$277.48')];
+const CREDITS_NOTE = 'note  ▲ credits      AWS credits covered $31.73. Without them, pr-ninja would have been charged $309.21.';
+const block = (S, first, n) => { const f = S.frame(); const i = f.indexOf(first); return i < 0 ? null : f.slice(i, i + n).map((l) => l.replace(/^›/, ' ')).join('\n'); };
+const selected = (S) => S.frame().find((l) => l.startsWith('›')) ?? '';
+const supRaw = (S, name) => S.raw().find((l) => l.replace(ANSI, '').slice(2).startsWith(`${name} `)) ?? '';
+
+const V = await costsAt(null);
+await V.press('\r');
+t('DS-292 AC1 enter on voicepa: desk-q › costs › voicepa, the Costs tab highlighted', `${V.crumbs()} | ${V.tabOn()}`, 'desk-q › costs › voicepa | 5 Costs');
+t('DS-292 AC1 the charged line, then a SUPPLIER / FOR / CHARGED table, largest first, and a total row', block(V, VOICEPA[0], VOICEPA.length), VOICEPA.join('\n'));
+t('DS-292 AC1 the largest supplier is selected', selected(V).startsWith('› GitHub'), true);
+const fv = V.frame();
+const supCents = fv.filter((l) => /^[ ›] (GitHub|Vercel|AWS) /.test(l)).map((l) => cents(l.slice(36, 47).trim()));
+const supSum = supCents.reduce((a, c) => a + c, 0);
+const supTot = cents(fv.find((l) => l.startsWith('  total '))?.slice(36, 47).trim() ?? 'NaN');
+t('DS-292 AC2 the rows sum to the total row and to voicepa\'s row on the Costs tab, in cents', `${supCents.length} ${supSum === supTot} ${supTot === cents('$317.11')}`, '3 true true');
+t('DS-292 AC3 FOR is fixed by supplier', fv.filter((l) => /^[ ›] (GitHub|Vercel|AWS) /.test(l)).map((l) => `${l.slice(2, 12).trim()}: ${l.slice(12, 36).trim()}`).join(' | '),
+  'GitHub: CI minutes | Vercel: hosting and builds | AWS: hosting and CI runners');
+t('DS-292 AC12 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
+  `${fv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fv[keysAt(fv) - 2]?.startsWith('Claude usage  ')} ${fv[keysAt(fv) - 1]}`, '0 true ');
+t('DS-292 the keys say o opens the bill, and esc goes back', ['o open the bill', 'esc back'].every((k) => fv.slice(keysAt(fv)).join(' ').includes(k)), true);
+const before292 = V.frame().join('\n');
+await V.press('\r');
+t('DS-292 AC11 enter on a supplier row leaves the screen as it is', V.frame().join('\n') === before292, true);
+await V.press('o');
+await V.press('\x1b[B');
+await V.press('o');
+await V.press('\x1b[B');
+await V.press('o');
+t('DS-292 AC10 o opens the selected supplier\'s billing page', V.opened.join(' '),
+  'https://github.com/settings/billing/usage https://vercel.com/voice-pa/~/usage https://console.aws.amazon.com/costmanagement/home#/cost-explorer');
+await V.press('\x1b');
+t('DS-292 AC6 esc: back on the Costs tab, voicepa selected', `${V.crumbs()} | ${V.tabOn()} | ${selected(V).startsWith('› voicepa ')}`, 'desk-q › costs | 5 Costs | true');
+await V.press('\x1b[B');
+await V.press('\r');
+t('DS-292 AC4 pr-ninja by supplier, its AWS row on credits', block(V, PR_NINJA[0], PR_NINJA.length), PR_NINJA.join('\n'));
+t('DS-292 AC4 ▲ on credits is amber', supRaw(V, 'AWS').includes(`${AMBER}▲ on credits`), true);
+t('DS-292 AC4 a ▲ credits note says what they covered and what it would have been', `${V.frame().includes(CREDITS_NOTE)} ${V.raw().some((l) => l.includes(`${AMBER}▲ credits      `))}`, 'true true');
+const notAt = V.frame().join('\n');
+await V.press('1');
+t('DS-292 a name whose repo isn\'t set up here has only Costs, and says so', `${V.frame().join('\n') !== notAt} ${V.crumbs()} | ${V.tabOn()} | ${V.frame().includes(Q.onlyCosts('pr-ninja'))}`, 'true desk-q › costs › pr-ninja | 5 Costs | true');
+await V.press('\x1b');
+await V.press('\x1b[B');
+await V.press('\r');
+t('DS-292 AC5 a supplier last read before today ends in when, grey', `${V.crumbs()} | ${supRaw(V, 'AWS').replace(ANSI, '').slice(49)} | ${supRaw(V, 'AWS').includes(`${GREY}◌ last read 25 Oct, 2 days ago`)}`,
+  'desk-q › costs › forewatt | ◌ last read 25 Oct, 2 days ago | true');
+V.ui.finish(0);
+
+// AC7-AC8: on voicepa's own place, 5 shows it by supplier; esc goes up to home's Costs.
+const VP = screen({ kind: 'repo', slug: 'bigbenjoman__voicepa' });
+await sleep(20);
+t('DS-292 AC7 voicepa\'s place has 5 Costs, not dimmed', VP.raw()[1].includes(`${GREY}5 Costs`), false);
+await VP.press('5');
+t('DS-292 AC7 5 on voicepa\'s place shows voicepa by supplier', `${VP.crumbs()} | ${VP.tabOn()} | ${block(VP, VOICEPA[0], VOICEPA.length) === VOICEPA.join('\n')}`, 'desk-q › costs › voicepa | 5 Costs | true');
+await VP.press('\x1b');
+t('DS-292 AC8 esc: home\'s Costs tab, voicepa selected', `${VP.crumbs()} | ${VP.tabOn()} | ${selected(VP).startsWith('› voicepa ')}`, 'desk-q › costs | 5 Costs | true');
+VP.ui.finish(0);
+
+// AC9: a repo with no cost sources.
+const SO = screen({ kind: 'repo', slug: slug });
+await sleep(20);
+await SO.press('5');
+t('DS-292 AC9 5 on a repo with no cost sources says how to add them', SO.frame().includes(Q.noCostSourcesFor('solo')) && Q.noCostSourcesFor('solo'), 'No cost sources for solo. /desk-setup costs adds them.');
+SO.ui.finish(0);
+
+// AC13: desk-q costs <repo>, piped, prints this screen as plain text.
+const out292 = Q.run(['costs', 'voicepa'], { now: FIXED });
+t('DS-292 AC13 desk-q costs voicepa prints the screen as plain text', `${/\x1b/.test(out292)} | ${out292}`, `false | ${[...VOICEPA, '', 'Claude usage  no reading yet'].join('\n')}`);
+t('DS-292 AC13 and pr-ninja\'s, its note unwrapped', Q.run(['costs', 'pr-ninja'], { now: FIXED }), [...PR_NINJA, '', CREDITS_NOTE, '', 'Claude usage  no reading yet'].join('\n'));
+t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo'], { now: FIXED }).split('\n')[0], Q.noCostSourcesFor('solo'));
 
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);

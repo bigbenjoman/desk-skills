@@ -12,6 +12,7 @@
 //                                        epic with children in the queue
 //   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
 //   desk-q costs                         every name's charge this month, from the cost cache
+//   desk-q costs <repo>                  one repo's (or name's) charge this month by supplier
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
@@ -20,7 +21,7 @@
 // A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
 // batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–5 for a place's Queue,
-// Timeline, By day and Epics, and home's Costs, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
+// Timeline, By day and Epics, and Costs on home and on a repo, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
@@ -1077,7 +1078,8 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const sharedTag = c.sharedParts.length ? [c.sharedParts.map((p) => `${SUPPLIER_LABEL[p.supplier]} ${p.label} ${usd(p.total)}`).join(' · '), GREY] : null;
   const rows = lines.map((x) => {
     const tag = x.name === 'shared' ? sharedTag : costTag(x, { now, suppliersOf, repoless });
-    const r = segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], null);
+    const open = x.name === 'shared' ? null : { kind: 'costs', ...costPlace(repos, costs, x.name) };
+    const r = segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], open);
     return { ...r, bill: x.name === 'shared' ? null : billOf(x, { costs }) };
   });
   const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
@@ -1094,6 +1096,67 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
 }
 
 export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
+
+// Where a name's charges open: its repo's place where desk has the repo, else a place of its own.
+function costPlace(repos, costs, name) {
+  const slug = costs.entries.find((e) => e.name === name && e.repo)?.repo;
+  return repos.some((r) => r.id === slug) ? { name, slug } : { name, slug: null };
+}
+// The name a repo's costs are listed under, or null with none.
+const costNameOf = (costs, slug) => costs.entries.find((e) => e.repo === slug)?.name ?? null;
+// A cost name, else a repo by its name, for `desk-q costs <word>`.
+function costWord(repos, word) {
+  const costs = readCosts(costsPath());
+  const name = costs.entries.find((e) => e.name.toLowerCase() === word.toLowerCase())?.name;
+  if (name) return costPlace(repos, costs, name);
+  const r = resolveRepo(repos, word);
+  return { name: costNameOf(costs, r.slug), slug: r.id, label: r.repo };
+}
+
+export const noCostSourcesFor = (repo) => `No cost sources for ${repo}. /desk-setup costs adds them.`;
+// What each supplier bills a name for, one phrase each.
+const SUPPLIER_FOR = { github: 'CI minutes', vercel: 'hosting and builds', aws: 'hosting and CI runners' };
+const SUPPLIER_W = 10, FOR_W = 24;
+
+// What a supplier's figure leaves out: a bill that can't be read, a figure not read today, use AWS
+// credits covered, CI minutes GitHub discounted in full.
+function supplierTag(x, s, now) {
+  if (x.cantRead?.supplier === s) return [`◌ can't read: billed to account ${x.cantRead.account}`, GREY];
+  const stale = staleReads(x, now).find((r) => r.supplier === s);
+  if (stale) return [`◌ last read ${dayMonth(stale.at)}, ${daysAgo(stale.days)}`, GREY];
+  if (s === 'aws' && x.credits > 0) return ['▲ on credits', WARN];
+  if (s === 'github' && x.free) return ['public, so its CI is free', GREY];
+  return null;
+}
+
+// One name's charge this month by supplier, most first, then the total, under the line with the
+// name's total. A supplier the cost sources list with no figure reads –. `label` names the repo when
+// it has no cost sources.
+function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, label = name } = {}) {
+  const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
+  const mine = costs.entries.filter((e) => e.name === name);
+  if (!mine.length) return { head: [noCostSourcesFor(label)], rows: [], foot };
+  const c = chargesByName({ cache, names: [name] });
+  if (!c) return { head: [NO_COST_READING], rows: [], foot };
+  const x = c.names.find((n) => n.name === name);
+  const money = (n) => (n == null ? '–' : usd(n));
+  const aw = Math.max(11, money(x.total).length + 3);
+  const list = SUPPLIERS.filter((s) => mine.some((e) => e.supplier === s)).map((s) => ({ s, total: x.by[s] ?? null }))
+    .sort((a, b) => (b.total ?? -1) - (a.total ?? -1));
+  const rows = list.map(({ s, total }) => {
+    const tag = supplierTag(x, s, now);
+    const r = segRow(`supplier ${SUPPLIER_LABEL[s]}`, [[`  ${pad(SUPPLIER_LABEL[s], SUPPLIER_W)}${pad(SUPPLIER_FOR[s], FOR_W)}`, null],
+      [rpad(money(total), aw), total == null ? GREY : null], ...(tag ? [['  ', null], tag] : [])], null);
+    return { ...r, bill: billingUrl(s, { team: mine.find((e) => e.supplier === s)?.team }) };
+  });
+  const charged = segLine([['charged ', GREY], [money(x.total), BOLD], [` to ${name} in ${monthText(c.period)}`, GREY]]);
+  const notes = x.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
+    usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`, null]] }] : [];
+  return { head: [charged, '', bold(`  ${pad('SUPPLIER', SUPPLIER_W)}${pad('FOR', FOR_W)}${rpad('CHARGED', aw)}`)], rows,
+    foot: [segLine([[`  ${pad('total', SUPPLIER_W + FOR_W)}`, GREY], [rpad(money(x.total), aw), BOLD]]), ...(notes.length ? ['', ...noteLines(notes, 14, width)] : []), ...foot] };
+}
+
+export const supplierScreen = (repos, name, opts) => joined(supplierParts(repos, name, opts));
 
 // The screens' header note on tickets that need the user's answer.
 const parkedBadge = (checkin) => (checkin ? 'Tickets that need your answer dated at the next check-in · c to undo'
@@ -1918,8 +1981,8 @@ function target(repos, words) {
   const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
   if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
   if (repoWord.toLowerCase() === 'costs') {
-    if (verb) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q costs.`);
-    return { kind: 'costs' };
+    if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q costs [<repo>].`);
+    return verb ? { kind: 'costs', ...costWord(repos, verb) } : { kind: 'costs' };
   }
   // `ships [<repo>]` and `days [<repo>]` read before a repo name, and `<repo> ships` after one.
   if ([...SHIPS, 'days'].includes(repoWord.toLowerCase())) {
@@ -2094,7 +2157,7 @@ function loadOrRefuse(now) {
 }
 
 export function run(argv, { now = Date.now() } = {}) {
-  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs\n'
+  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off]';
   checkFlags(argv);
@@ -2105,7 +2168,7 @@ export function run(argv, { now = Date.now() } = {}) {
   // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
   if (v.kind === 'timeline') return argv.includes('--plain') ? shipsScreen(repos, v.slug, { now }) : timelineScreen(repos, v.slug, { now });
   if (v.kind === 'days') return daysScreen(repos, v.slug, { now });
-  if (v.kind === 'costs') return costsScreen(repos, { now });
+  if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
     const after = loadOrRefuse(now);
@@ -2131,14 +2194,15 @@ const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 const PARTIAL_MS = 30;
 const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them. An epic
-// has every one but Epics, and only home has Costs.
+// has every one but Epics and Costs, and a name whose repo isn't set up here has only Costs.
 export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics'], ['costs', 'Costs']];
 const VIEW_KEYS = '←→ or 1–5 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
 // An epic's Queue hides the tickets a move steps past, so the order is set on the repo's.
 export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
 export const NO_EPICS_HERE = "An epic has no Epics view: you're already in one.";
-export const NO_COSTS_HERE = 'Costs are on home only.';
+export const NO_COSTS_HERE = "An epic has no Costs view: its repo's is esc, then 5.";
+export const onlyCosts = (name) => `${name} isn't set up in desk here, so it has only Costs.`;
 
 function jiraUrlFor(slug, key) {
   const site = repoConfigValue(slug, 'jira-site');
@@ -2230,9 +2294,11 @@ function spans(parts, sep) {
 }
 
 // A Timeline or By day view names its place by repo, or every repo, as the screen does.
+// A name's Costs are its repo's place, or with no repo in desk a place of their own.
 const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
   ? { place: v.slug ? { kind: 'repo', slug: v.slug } : { kind: 'overview', all: false }, tab: v.kind }
-  : v.kind === 'costs' ? { place: { kind: 'overview', all: false }, tab: 'costs' } : { place: v, tab: null });
+  : v.kind === 'costs' ? { place: v.slug ? { kind: 'repo', slug: v.slug } : v.name ? { kind: 'cost', name: v.name } : { kind: 'overview', all: false }, tab: 'costs' }
+    : { place: v, tab: null });
 
 // The full-screen view is a place (every repo, a repo, an epic, a ticket) and, for every place but a
 // ticket, a view of it: Queue, Timeline, By day or Epics. Tab, 1–4, w and a click on the tab line change the view
@@ -2260,8 +2326,11 @@ export function interactive({
   const height = () => Math.max(5, output.rows || 24);
   // A place's `slug` is its batch row's id: the repo's slug for its standing batch.
   const repoOf = (slug) => repos.find((r) => r.id === slug);
-  const hasTabs = () => ['overview', 'repo', 'epic'].includes(view.kind);
-  const tabOk = (id) => (id === 'costs' ? view.kind === 'overview' : !(view.kind === 'epic' && id === 'epics'));
+  const hasTabs = () => ['overview', 'repo', 'epic', 'cost'].includes(view.kind);
+  const tabOk = (id) => (view.kind === 'cost' ? id === 'costs' : view.kind !== 'epic' || !['epics', 'costs'].includes(id));
+  // The supplier screen: Costs on a repo's place or a name's own.
+  const bySupplier = () => tab === 'costs' && ['repo', 'cost'].includes(view.kind);
+  const costName = () => (view.kind === 'cost' ? view.name : costNameOf(readCosts(costsPath()), repoOf(view.slug)?.slug));
   // A view the new place lacks gives way to its nearest: Costs to the Queue, Epics to the Timeline.
   const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
@@ -2272,6 +2341,8 @@ export function interactive({
   function crumbParts() {
     const r = view.slug ? repoOf(view.slug) : null;
     const parts = [{ label: 'desk-q', to: { kind: 'overview', all: false } }];
+    // A repo's Costs sit under home's: "desk-q › costs › voicepa".
+    if (bySupplier()) return spans([...parts, { label: 'costs', to: { kind: 'costs' } }, { label: view.kind === 'cost' ? view.name : r?.name ?? view.slug, to: null }], ' › ');
     if (view.slug) parts.push({ label: r?.name ?? view.slug, to: { kind: 'repo', slug: view.slug } });
     if (view.epic) parts.push({ label: cut(epicShort(epicFacts()?.epics?.[view.epic] ?? { key: view.epic }), 40), to: { kind: 'epic', slug: view.slug, epic: view.epic } });
     if (view.key) parts.push({ label: view.key, to: { kind: 'ticket', slug: view.slug, key: view.key, ...(view.epic ? { epic: view.epic } : {}) } });
@@ -2298,7 +2369,8 @@ export function interactive({
     const own = r?.q && !r.error ? [r] : null;
     if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     // Costs carry the Claude usage line but none of home's batch lines.
-    if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true, width: w }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
+    if (bySupplier()) return { badge: '', ...supplierParts(repos, costName(), { now, pinUsage: true, width: w, label: r?.repo }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
+    if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true, width: w }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · enter open · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
       const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null, pinUsage: true };
@@ -2410,9 +2482,12 @@ export function interactive({
     sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
   }
   // The selection comes back only to the view it was made on: another view's rows are other rows.
+  // Up from a repo's Costs, home's Costs select that repo's row.
   function back() {
     const p = stack.pop();
+    const name = bySupplier() ? costName() : null;
     if (p) { view = p.view; keepTab(); if (p.tab === tab) ({ sel, selId } = p); else { sel = 0; selId = null; } }
+    if (name && view.kind === 'overview' && tab === 'costs') { sel = 0; selId = `cost ${name}`; }
     scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
   }
   // A place reached directly (the command line, :, the breadcrumb) gets the places above it to Esc to.
@@ -2431,7 +2506,7 @@ export function interactive({
   }
   // A view this place lacks leaves the view as it is and says why.
   function setTab(id) {
-    if (!tabOk(id)) { msg = id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
+    if (!tabOk(id)) { msg = view.kind === 'cost' ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
     tab = id; sel = 0; selId = null; scroll = null; msg = '';
   }
 
@@ -2588,9 +2663,9 @@ export function interactive({
       const r = repoOf(view.slug);
       if (r && existsSync(logPath(r, view.key))) go({ ...view, kind: 'log' });
       else msg = `${view.key} has no log yet.`;
-    } else if (str === 'o' && view.kind === 'overview' && tab === 'costs') {
+    } else if (str === 'o' && (bySupplier() || (view.kind === 'overview' && tab === 'costs'))) {
       const x = rows[sel];
-      if (!x?.bill) msg = x ? `No billing page to open for ${x.id.replace(/^cost /, '')}.` : 'No row to open the bill of.';
+      if (!x?.bill) msg = x ? `No billing page to open for ${x.id.replace(/^(cost|supplier) /, '')}.` : 'No row to open the bill of.';
       else { try { opener(x.bill); msg = `Opened ${x.bill}`; } catch (e) { msg = `Could not open ${x.bill}: ${describeCrash(e)}`; } }
     } else if (str === 'o' && view.kind === 'ticket') {
       const url = jiraUrlFor(repoOf(view.slug)?.slug ?? view.slug, view.key);
