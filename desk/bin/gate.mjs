@@ -20,6 +20,7 @@
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
+//   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
@@ -83,6 +84,14 @@ export function latestPerCheck(checks) {
   }
   return [...keep, ...best.values()];
 }
+
+// Every check finished, at least one was skipped and the rest passed: on a draft, that is CI that
+// does not run there (a workflow that skips drafts), not a check to fix. Undrafting it runs them.
+export function skippedOnly(allChecks) {
+  const checks = latestPerCheck(allChecks ?? []);
+  return checks.some((c) => c.conclusion === 'skipped') && checks.every((c) => c.status === 'completed' && ['success', 'skipped'].includes(c.conclusion));
+}
+export const SKIPPED_ON_DRAFT = 'CI does not run on a draft, so its checks were skipped';
 
 export function evaluateGate(allChecks, { required = [], advisory = [], runs = [] } = {}) {
   const checks = latestPerCheck(allChecks);

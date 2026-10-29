@@ -67,4 +67,13 @@ for (const clean of [null, '', 'TODO (how the local review says clean)', 'none']
   t(`AC4 ${JSON.stringify(clean)} is the person's, set with /desk-setup`, `${c?.call} ${c?.action}`, 'person set it with /desk-setup');
 }
 
+// DS-323 AC3: checks a workflow skips on a draft are not "not green": once the rest holds, the person undrafts it.
+const withChecks = (checks, reviews) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'] });
+const skippedTests = [{ name: 'tests', status: 'completed', conclusion: 'skipped' }, { name: 'lint', status: 'completed', conclusion: 'success' }];
+const sk = withChecks(skippedTests, [review(marker(ALL_ZERO))]);
+t('DS-323 AC3 a clean draft whose only red checks were skipped is the person\'s to undraft', `${sk?.call} | ${sk?.why} | ${sk?.action}`, 'person | CI does not run on a draft, so its checks were skipped | undraft #701');
+t('DS-323 AC3 one whose review is not clean says that instead', withChecks(skippedTests, [review(marker(ALL_ZERO.replace('gaps=0', 'gaps=2')))])?.why.includes('gaps=2'), true);
+t('DS-323 AC3 a failed check beside a skipped one is still not green', withChecks([...skippedTests, { name: 'build', status: 'completed', conclusion: 'failure' }], [review(marker(ALL_ZERO))])?.why.startsWith('its checks are not green'), true);
+
 process.exit(fails ? 1 : 0);

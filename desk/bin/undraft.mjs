@@ -16,12 +16,13 @@
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call; a row of plain text such
 // as `no findings` reads as plainVerdictAt says, and an unset row is the person's), the head has no merge
-// conflict (GitHub says MERGEABLE), the checks are green (gate.mjs's one definition), the screenshots are in the body (none
+// conflict (GitHub says MERGEABLE), the checks are green (gate.mjs's one definition; checks a workflow
+// skips on a draft leave the undraft to the person once the rest holds), the screenshots are in the body (none
 // the pass could not upload, no `_drag <file>_` placeholder left), and only then the grant: §3 pr-ready `yes`, or `ask` with the
 // batch's Stage 3 approval (queue approved.undraft). A feature spine is never undrafted here:
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment).
-import { evaluateGate } from './gate.mjs';
+import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
@@ -148,10 +149,13 @@ export function undraftCall(t, pr, cfg) {
   if (pr.mergeable !== 'MERGEABLE') return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})` };
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
-  if (gate.state !== 'pass') return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);
+  // Checks a workflow skips on a draft never go green there, so only the person's undraft runs them.
+  const skipped = gate.state !== 'pass' && skippedOnly(pr.checks);
+  if (gate.state !== 'pass' && !skipped) return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);
   if (!v.clean) return person(v.why, v.settle ? `settle the findings or gaps on #${n}` : `review #${n} at its head`);
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
+  if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
   if (cfg.perm === 'yes') return { call: 'ready', why: null, note: null, verdict: read };
   if (cfg.perm === 'ask' && cfg.approved) {
