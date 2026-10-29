@@ -546,7 +546,9 @@ function projectCents(usage, prices) {
 
 // Each name's Neon charge for the reading's month, priced from costs.md: its own projects' use in
 // billing units times its row's prices, plus the org's plan and monthly fee (its first row's),
-// charged to the org's one name or else to shared. An org on the free plan is $0. An org that can't be read, or whose use has no price,
+// charged to the org's one name or else to shared. A shared org's fee is not split: no even or by-use
+// share is the org's real bill to any one name, and Vercel's plan fee goes to shared the same way.
+// An org on the free plan is $0. An org that can't be read, or whose use has no price,
 // gives its names no figure but the reason.
 //   neon: the cache's `neon`   sources: costs.md's Neon entries
 //   -> { names: { name: { name, at, failed, total?, cantRead, free } }, shared: usd | null, sharedLines: [{ label, charged }] }
