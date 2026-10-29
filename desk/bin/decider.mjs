@@ -5,7 +5,8 @@
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
 //   - a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
-//     that is not `yes`, is handed straight on;
+//     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
+//     decider tool acts on;
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason.
@@ -25,6 +26,17 @@ export const RESULT_MARK = 'DECIDER_RESULT:';
 const h = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 12);
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 
+// What a WAITING ON YOU line waits on, for its id: its ticket, its class (`DRAFT`, `STUCK`, `READY TO
+// MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. A line
+// with no class is keyed on all of it.
+export function waitKey(line) {
+  const s = String(line);
+  const m = /^([^:]*): ([A-Z][A-Z ]*[A-Z]) — /.exec(s);
+  if (!m) return s;
+  const pr = /PR #(\d+)/.exec(s.slice(m[0].length));
+  return `${m[1]}\0${m[2]}\0${pr ? pr[1] : ''}`;
+}
+
 // One item per parked ticket and per WAITING ON YOU line, as the pass's verdict names them. A line
 // whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
 export function deciderItems(v, q = {}) {
@@ -35,7 +47,7 @@ export function deciderItems(v, q = {}) {
   }));
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
-    return { id: `wait-${h(line)}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null };
+    return { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
   });
   return [...parked, ...waiting];
 }
@@ -51,6 +63,8 @@ export function presort(items) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
+    } else if (item.kind === 'waiting' && item.state === 'done') {
+      hand.push({ item, why: `${item.ticket} is done, and the decider can only requeue or record clears-when for a parked ticket` });
     } else ask.push(item);
   }
   return { hand, ask };
@@ -83,16 +97,22 @@ export function freshItems(state, items, handed = readHanded(state)) {
 }
 
 // Records items handed on and returns the ones newly recorded. One already handed and still
-// unanswered keeps its time, so a later answer still counts; one answered since is handed again from now.
+// unanswered keeps its time, so a later answer still counts, and takes the line's latest wording; one
+// answered since is handed again from now.
 export function handItems(state, handed, now = new Date()) {
   const r = readHanded(state);
   const added = [];
+  let reworded = false;
   for (const h of handed) {
-    if (r[h.item.id] && !answered(state, r[h.item.id])) continue;
+    const was = r[h.item.id];
+    if (was && !answered(state, was)) {
+      if (was.text !== h.item.text) { was.text = h.item.text; reworded = true; }
+      continue;
+    }
     r[h.item.id] = { id: h.item.id, ticket: h.item.ticket, kind: h.item.kind, text: h.item.text, why: h.why, at: now.toISOString() };
     added.push(h);
   }
-  if (added.length) writeHanded(state, r);
+  if (added.length || reworded) writeHanded(state, r);
   return added;
 }
 

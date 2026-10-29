@@ -218,5 +218,32 @@ verdict "$(parked H "h?")"; echo "none" > "$T/claude.mode"
 out=$(tick); settle; out=$(tick)
 check "a session with no result line hands its items on" 'handed | grep -q "^H|decider no DECIDER_RESULT: line$"'
 
+# ---- DS-331: a done ticket's line is handed on without a session, and a reworded line keeps its id ---
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+waits(){ printf '{"status":"show_person","code":11,"message":"x","waiting":%s,"parked":[],"notify":true,"push":[]}' "$1"; }
+queue '{"V":{"key":"V","state":"done","lane":"A","result":{"pr":7}}}'
+verdict "$(waits '["V: DRAFT — PR #7 stays draft: check ci has not reported. Look at it"]')"
+out=$(tick)
+check "DS-331 AC1: a done ticket's DRAFT line is handed on without a session" '[ "$(calls)" = 0 ] && handed | grep -q "^V|V is done, and the decider can only requeue"'
+verdict "$(waits '["V: DRAFT — PR #7 stays draft: check ci is failure. Look at it"]')"
+out=$(tick)
+check "DS-331 AC3: only pre-handed items start no session" '[ "$(calls)" = 0 ] && ! grep -q "^decider: started" <<< "$(tail -n 5 "$LOG")"'
+check "DS-331 AC2: its new wording keeps the one item, with the latest text" '[ "$(handed | grep -c "^V|")" = 1 ] && questions | grep -q "^V|handed on|V: DRAFT — PR #7 stays draft: check ci is failure"'
+ids=$(node --input-type=module -e "
+import { deciderItems } from '$B/decider.mjs';
+const q = { tickets: { W: { key: 'W', state: 'parked', lane: 'A' } } };
+const id = (l) => deciderItems({ waiting: [l] }, q)[0].id;
+console.log([id('W: DRAFT — PR #9 stays draft: check ci has not reported. Look at it'), id('W: DRAFT — PR #9 stays draft: check ci is in_progress. Look at it'), id('W: STUCK — PR #9: it cannot merge'), id('W: DRAFT — PR #10 stays draft: x'), id('W: unreadable park inputs (bad), read as none: a'), id('W: unreadable park inputs (bad), read as none: b')].join(' '));")
+read -r d1 d2 s1 p10 u1 u2 <<< "$ids"
+check "DS-331 AC2: the same ticket, class and PR keep one id while check states differ" '[ "$d1" = "$d2" ]'
+check "DS-331 AC2: another class, another PR or an unclassed line gets its own id" '[ "$d1" != "$s1" ] && [ "$d1" != "$p10" ] && [ "$u1" != "$u2" ]'
+mark; rm -f "$T/state/handed.json"
+queue '{"W":{"key":"W","state":"parked","lane":"A","park":{"question":"w?"}}}'
+verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci has not reported. Look at it"]')"
+out=$(tick); settle; out=$(tick)
+verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci is in_progress. Look at it"]')"
+out=$(tick)
+check "DS-331 AC2: a line handed on by a session, reworded, starts no second session" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^W|")" = 1 ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
