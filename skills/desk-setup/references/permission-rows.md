@@ -96,7 +96,7 @@ a row changes, say which of these applies.
 | `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`, `worker-dependency-install`, `worker-screenshots`, `worker-local-services`: anything short of `yes`, unset included, is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
-| `pass.mjs` | `autopilot-workers`, `pr-images`, `batch-base-push` (unset is `ask`), `autopilot-usage-resume` (unset is `no`); through `maintenance.mjs`, `machine-reboot` (unset is `ask`) |
+| `pass.mjs` | `autopilot-workers`, `pr-images`, `ci-rerun` (a draft's cancelled or timed-out runs), `batch-base-push` (unset is `ask`), `autopilot-usage-resume` (unset is `no`); through `maintenance.mjs`, `machine-reboot` (unset is `ask`) |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
 | `upload-images.mjs` | `pr-images` |

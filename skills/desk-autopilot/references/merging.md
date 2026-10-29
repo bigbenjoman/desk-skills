@@ -150,6 +150,10 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. The driver merges a ready PR,
   pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
+- **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3
+  `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per
+  check per head and its 12-minute gap, in the same `reruns-<n>-<sha>` and `cooldown-<n>` files.
+  Red again with a failure, or still red after both reruns, it goes on as any red draft does.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart

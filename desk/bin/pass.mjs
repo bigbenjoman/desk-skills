@@ -1621,7 +1621,7 @@ const gateLists = () => {
 if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
-    perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true,
+    perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
     ...gateLists(),
@@ -1634,7 +1634,11 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, {
+      ...cfg, spine,
+      reruns: (name) => driverLines(`reruns-${n}-${v.headRefOid}`).filter((l) => l === name).length,
+      cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
+    });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
@@ -1648,6 +1652,8 @@ if (drafts.length) {
     const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement }) : null;
     if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
+    else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
+    else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
     else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}`);
     else {
@@ -1670,6 +1676,22 @@ if (drafts.length) {
     const was = t.undraft ?? {};
     if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
+}
+
+// A draft's cancelled or timed-out runs, re-run as merge-driver.sh reruns a ready PR's: every check
+// tried is counted in reruns-<n>-<head>, the ones GitHub accepted in reruns-ok-<n>-<head>, and an
+// accepted rerun starts the cooldown, so the driver and the pass share one cap per head.
+function rerunDraft(t, n, head, c) {
+  mkdirSync(DRIVER_DIR, { recursive: true });
+  const ok = c.runs.filter((id) => shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']).ok);
+  if (ok.length) writeFileSync(join(DRIVER_DIR, `cooldown-${n}`), `${Math.floor(Date.now() / 1000)}\n`);
+  const lines = (xs) => xs.map((x) => `${x.name}\n`).join('');
+  appendFileSync(join(DRIVER_DIR, `reruns-${n}-${head}`), lines(c.checks));
+  // A check with no run id is credited only if every rerun was accepted.
+  const credited = c.checks.filter((x) => (x.runId ? ok.includes(x.runId) : ok.length === c.runs.length));
+  if (credited.length) appendFileSync(join(DRIVER_DIR, `reruns-ok-${n}-${head}`), lines(credited));
+  const refused = c.runs.filter((id) => !ok.includes(id));
+  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${ok.length ? ` (re-ran run ${ok.join(', ')})` : ''}${refused.length ? `; GitHub refused the rerun of run ${refused.join(', ')}` : ''}`);
 }
 
 // A review's inline comments as fix-tries.mjs inlineFindings reads them, by the review's GraphQL node

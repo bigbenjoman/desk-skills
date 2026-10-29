@@ -76,4 +76,24 @@ t('DS-323 AC3 a clean draft whose only red checks were skipped is the person\'s 
 t('DS-323 AC3 one whose review is not clean says that instead', withChecks(skippedTests, [review(marker(ALL_ZERO.replace('gaps=0', 'gaps=2')))])?.why.includes('gaps=2'), true);
 t('DS-323 AC3 a failed check beside a skipped one is still not green', withChecks([...skippedTests, { name: 'build', status: 'completed', conclusion: 'failure' }], [review(marker(ALL_ZERO))])?.why.startsWith('its checks are not green'), true);
 
+// DS-330: a draft whose red checks were all cancelled or timed out is re-run where §3 ci-rerun is yes.
+const rerunPr = (checks, more = {}) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'types', status: 'completed', conclusion: 'success' }, ...checks] },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true, ...more });
+const cancelled = [{ name: 'tests', status: 'completed', conclusion: 'cancelled', runId: 11 }, { name: 'lint', status: 'completed', conclusion: 'timed_out', runId: 12 }];
+const rr = rerunPr(cancelled);
+t('DS-330 AC1 a cancelled and a timed-out run are re-run', `${rr?.call} ${rr?.runs.join(',')} ${rr?.checks.map((c) => c.name).join(',')}`, 'rerun 11,12 tests,lint');
+t('DS-330 AC1 and not put to the person', rr?.action, undefined);
+t('DS-330 AC1 within the last rerun\'s cooldown it waits', rerunPr(cancelled, { cooledDown: false })?.call, 'wait');
+t('DS-330 AC1 one rerun spent leaves another', rerunPr(cancelled, { reruns: () => 1 })?.call, 'rerun');
+const again = rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 13 }], { reruns: () => 1 });
+t('DS-330 AC2 a rerun that fails takes the failed-check path', `${again?.call} | ${again?.why}`, 'person | its checks are not green: required check "tests" is failure');
+t('DS-330 AC2 so does a cancel beside a failure', rerunPr([cancelled[0], { name: 'build', status: 'completed', conclusion: 'failure', runId: 14 }])?.call, 'person');
+const spent = rerunPr(cancelled, { reruns: (name) => (name === 'tests' ? 2 : 1) });
+t('DS-330 AC3 two reruns spent: the person, with the conclusion', `${spent?.call} | ${spent?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out, still after 2 reruns at this head');
+for (const rerun of ['ask', 'no', undefined]) {
+  const c = rerunPr(cancelled, { rerun });
+  t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
+}
+t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
+
 process.exit(fails ? 1 : 0);

@@ -6,6 +6,9 @@
 //           merges it once it is green
 //   wait    nothing for anyone to do yet: checks still running, or GitHub has not worked out whether
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
+//   rerun   every red check was cancelled or timed out, so it never tested the code: where §3 ci-rerun
+//           is yes the pass reruns `runs`, within the merge driver's per-head cap and cooldown
+//           (`checks`, { name, runId }, are what it counts against them)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
 //           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
@@ -23,6 +26,7 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment).
 import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
+import { RERUNS_MAX } from './fix-tries.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
@@ -114,8 +118,24 @@ export function undraftComment(verdict, head, clean) {
   return `Out of draft: the ${what} posted on this head (\`${String(head ?? '').slice(0, 12)}\`) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
 }
 
+// A red gate whose every failing check was cancelled or timed out: a `rerun` call while §3 ci-rerun is
+// yes and a rerun is left at this head, `wait` through the last rerun's cooldown, else null (a check
+// that failed, or no rerun left, is not green as ever, and its why says how many reruns were spent).
+const INTERRUPTED = new Set(['cancelled', 'timed_out']);
+function rerunCall(gate, cfg) {
+  const failing = [...new Map(gate.failing.map((f) => [f.name, f])).values()];
+  if (cfg.rerun !== 'yes' || !failing.length || failing.some((f) => !INTERRUPTED.has(f.conclusion))) return null;
+  if (failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX)) return null;
+  const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
+  if (!runs.length) return null;
+  const what = failing.map((f) => `"${f.name}" ${f.conclusion}`).join('; ');
+  if (cfg.cooledDown === false) return { call: 'wait', why: `checks re-run after they were cancelled or timed out (${what}), waiting out the rerun's cooldown` };
+  return { call: 'rerun', why: `its checks were cancelled or timed out, so they are re-run: ${what}`, runs, checks: failing.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) };
+}
+
 // t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks } (checks as
-// pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey, judgement }.
+// pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey, judgement,
+// rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head, cooledDown (the last rerun has had its gap) }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -151,7 +171,12 @@ export function undraftCall(t, pr, cfg) {
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   // Checks a workflow skips on a draft never go green there, so only the person's undraft runs them.
   const skipped = gate.state !== 'pass' && skippedOnly(pr.checks);
-  if (gate.state !== 'pass' && !skipped) return person(`its checks are not green: ${gate.reasons.join('; ')}`, `fix or re-run the checks on #${n}`);
+  if (gate.state !== 'pass' && !skipped) {
+    const rr = rerunCall(gate, cfg);
+    if (rr) return rr;
+    const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
+    return person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
+  }
   if (!v.clean) return person(v.why, v.settle ? `settle the findings or gaps on #${n}` : `review #${n} at its head`);
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
