@@ -76,7 +76,7 @@ function itemOf(r, x) {
     if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
     return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: needText(r, x), actions: [['open', SESSION_WHY], ['not-now']] };
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', SESSION_WHY], ['not-now']] };
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
   // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
   if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
