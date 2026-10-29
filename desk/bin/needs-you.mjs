@@ -9,7 +9,9 @@
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask
-//       answer "<answer>"   answer it only (digest.mjs answer): triage questions
+//       answer "<answer>"   answer it only (digest.mjs answer): triage questions. On a draft PR whose
+//                           review left gaps, the call on them: posted on the PR, kept for its next
+//                           worker, and requeued for a worker on the PR
 //       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
 //       requeue             send a ticket whose worker stopped back to a worker (queue.mjs requeue)
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
@@ -22,7 +24,9 @@
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then the longest waiting, less any put off with not-now whose inputs are unchanged. Exits 0, or 11 (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf } from './desk-q.mjs';
@@ -40,6 +44,10 @@ const since = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m
 // A park triage made (size, a dependency cycle): queue.mjs requeue refuses it, so it needs a person.
 const triagePark = (t) => /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''));
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
+// A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
+// verdictAt's `not clean (… gaps=N …)`).
+const reviewGaps = (t) => t.pr_status?.isDraft === true && t.undraft?.call === 'person' && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft.why ?? ''));
+const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 
 // The batches `word` names: a repo's name is all of its batches, `<repo>:<name>` one named batch.
 function batchesNamed(repos, word) {
@@ -57,8 +65,13 @@ export function runner(r) {
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
-  // An unmerged PR: only the person's step on GitHub moves it, as its desk-q row says.
-  if (x.pr) return { kind: 'pr', need: `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
+  // An unmerged PR: only the person's step on GitHub moves it, as its desk-q row says. A draft whose
+  // review left gaps also takes their call on them, which a worker on the PR carries out.
+  if (x.pr) {
+    const need = `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`;
+    if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
+    return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
+  }
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
   // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
   if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
@@ -173,8 +186,26 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}`, message });
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
+  // The person's call on a draft's review gaps: posted on the PR, kept in the briefing and as the fix
+  // its next worker starts on, then requeued. Requeued whoever runs the batch: the next pass closes a
+  // fix on a ticket still done, so one left for a session to requeue would be lost.
+  const gapsAnswer = () => {
+    const pr = x.t.result.pr;
+    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
+    try { execFileSync('gh', ['pr', 'comment', String(pr), '--repo', repo, '--body', prComment(text)], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (e) { return say(false, `not posted on PR #${pr} (${one(e.stderr || e.message)}), so nothing was recorded.`); }
+    const a = ans();
+    if (!a.ok) return say(false, `posted on PR #${pr}, but not recorded: ${a.why}`);
+    const fix = { ...gapsFix({ pr, head: x.t.pr_status?.head, answer: text }), at: new Date(now).toISOString() };
+    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify(fix)}`]);
+    if (!f.ok) return say(false, `posted on PR #${pr} and in its briefing, but its fix was refused: ${f.out}`);
+    const q = queueCmd(r, ['requeue', ticket]);
+    if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return say(false, `posted on PR #${pr} and in its briefing, but the requeue was refused: ${q.out}`); }
+    return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
+  };
   switch (verb) {
     case 'answer': {
+      if (item.kind === 'pr') return gapsAnswer();
       const a = ans();
       return a.ok ? say(true, 'answer recorded (digest.mjs answer).') : say(false, a.why);
     }

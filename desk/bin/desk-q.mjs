@@ -39,7 +39,7 @@ import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -273,6 +273,8 @@ function draftNeed(q, t, needs, merging) {
   if (u?.call === 'wait') return merging(['draft', null], [` · ${/^checks/.test(u.why ?? '') ? 'checks running' : 'GitHub is still checking for conflicts'}, out of draft once green`, null]);
   if (u?.call === 'ready' || u?.call === 'failed') return merging(['draft', null], [' · out of draft at the next pass', null]);
   if (t.key === q?.spine) return needs(['draft', null], [' · feature spine: approve its specs', null]);
+  // A pass from before skippedOnly recorded skipped checks as not green: its checks say otherwise.
+  if (u?.call === 'person' && /^its checks are not green/.test(u.why ?? '') && skippedOnly(prStatusOf(t)?.checks)) return needs(['draft', null], [` · ${SKIPPED_ON_DRAFT}: undraft #${t.result.pr}`, null]);
   return needs(['draft', null], [` · ${draftWhy(u)}`, null]);
 }
 
@@ -1542,7 +1544,9 @@ function prSegs(r, t, now) {
 // A ticket on a fix try: its PR, what is wrong with it, and that a worker repairs it, running or next.
 function fixSegs(f, running) {
   const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
-  return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${running ? 'a worker' : 'next free worker'} repairs it, try ${f.try} of ${f.of}`, null]];
+  const who = running ? 'a worker' : 'next free worker';
+  if (f.kind === 'gaps') return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
+  return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${who} repairs it, try ${f.try} of ${f.of}`, null]];
 }
 
 const prOf = (r, key) => (landing(r.q.tickets?.[key]) ? `#${r.q.tickets[key].result.pr}` : null);
@@ -1920,7 +1924,8 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
   // The PR's fix try and what no fix try can move, as the last pass recorded them on the ticket.
   const stuck = t.stuck && !t.merged_at ? t.stuck : null;
-  if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
+  if (t.fix?.kind === 'gaps') field('Your call', [[t.fix.what, null]]);
+  else if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
   if (stuck) field('For you', [[stuck.why, WARN]]);
   if (t.fix || stuck) out.push('');
   // Why lane and the file list fold to FOLD_LINES, from `short` (lines that leave room for the note

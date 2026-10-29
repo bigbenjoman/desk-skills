@@ -282,6 +282,33 @@ t('DS-324 AC3 a PR whose checks moved but head did not stays left out', N.collec
 moveHead('bbb');
 t('DS-324 AC2 a PR whose head moved is listed again, saying so', /pr-head aaa → bbb/.test(N.collect({ word: 'eta' }).items.find((i) => i.t.key === 'E-2')?.need ?? ''), true);
 
+// ---- DS-323: a draft whose review left gaps takes the person's call on them; skipped checks on a draft read as CI not running there.
+const draftPr = (pr, checks, undraft) => ({ state: 'done', lane: 'A', result: { pr }, undraft,
+  pr_status: { pr, state: 'OPEN', url: null, isDraft: true, mergeable: 'MERGEABLE', head: `h${pr}`, checks, at: minsAgo(1) } });
+const passed = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
+  'I-1': draftPr(71, passed, { call: 'person', why: 'its review verdict at abc123456 is not clean (gaps=2)', action: 'settle the findings or gaps on #71' }),
+  'I-2': draftPr(72, [{ name: 'test', status: 'completed', conclusion: 'skipped' }, ...passed],
+    { call: 'person', why: 'its checks are not green: required check "test" is skipped (skipped does not count)', action: 'fix or re-run the checks on #72' }),
+} });
+const iota = N.collect({ word: 'iota' }).items;
+const i1 = iota.find((i) => i.t.key === 'I-1');
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71: draft · review not clean: 2 gaps | answer,done,not-now');
+t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
+const i2 = iota.find((i) => i.t.key === 'I-2');
+t('DS-323 AC3 a draft whose only red checks were skipped says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72: draft · CI does not run on a draft, so its checks were skipped: undraft #72');
+t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,not-now false');
+const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
+const gr = cli('record', 'iota', 'I-1', 'answer', call323);
+const i1q = queueOf('iota').tickets['I-1'];
+const ghLog = readFileSync(GH_LOG, 'utf8');
+t('DS-323 AC2 the answer is posted on the PR', `${gr.code} ${ghLog.includes('pr comment 71 --repo acme/iota --body') && ghLog.includes(`> ${call323}`)}`, '0 true');
+t('DS-323 AC2 it is kept in the briefing for the next worker', `${JSON.stringify(answers().at(-1).args)} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__iota', 'briefings', 'I-1.md'), 'utf8').includes(call323)}`, `${JSON.stringify(['I-1', call323])} true`);
+t('DS-323 AC2 and requeued for a worker on the PR, carrying the call', `${i1q.state} ${i1q.fix?.kind} ${i1q.fix?.pr} ${i1q.fix?.head} ${i1q.fix?.answer === call323}`, 'triaged gaps 71 h71 true');
+const { fixBrief, fixTask } = await import('../desk/bin/fix-tries.mjs');
+t('DS-323 AC2 the fix worker\'s briefing quotes the call, and its task is to carry it out', `${fixBrief(i1q).includes(`> ${call323}`)} ${/carry out the person's call on the review gaps of PR #71/.test(fixTask(i1q))} ${/leave the PR in draft/.test(fixTask(i1q))}`, 'true true true');
+t('DS-323 AC2 desk-q no longer counts it as needing you', N.collect({ word: 'iota' }).items.some((i) => i.t.key === 'I-1'), false);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

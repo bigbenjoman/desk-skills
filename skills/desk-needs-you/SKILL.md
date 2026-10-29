@@ -56,7 +56,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
   not, the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
   resume, so it never stays parked once answered. A `session` item has none either: only `open`
-  moves it.
+  moves it. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
+  `record` posts on the PR and sends to a worker on it.
 - An `override <id>` action takes the user's choice as its text.
 
 Ask the next round only after recording this one.
