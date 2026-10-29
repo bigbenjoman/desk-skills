@@ -1167,7 +1167,7 @@ export const supplierScreen = (repos, name, opts) => joined(supplierParts(repos,
 const SKU_LABEL = { actions_linux: 'Linux runners', actions_macos: 'macOS runners', actions_windows: 'Windows runners' };
 const usedText = (i) => `${i.quantity.toLocaleString('en-US', { maximumFractionDigits: 3 })} ${/^minutes?$/i.test(i.unit) ? 'min' : i.unit}`;
 // What `o` opens on each supplier's screen.
-export const SUPPLIER_BILL = { github: 'GitHub billing', vercel: 'Vercel usage', aws: 'Cost Explorer' };
+const SUPPLIER_BILL = { github: 'GitHub billing', vercel: 'Vercel usage', aws: 'Cost Explorer' };
 
 // GitHub's part of a name's charge: what each runner type used and was charged, most first, then the
 // total; then this month against last, flagged amber once this month has passed last month's charge.
@@ -2338,7 +2338,7 @@ function step(rows, i, d) {
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
 const KEY = /^(←→ or 1–5|\+ −|\S+) (.+)$/;
-const MOVES_ON = /^(select|open(?! the bill| GitHub billing| Vercel usage| Cost Explorer)|view|back|scroll)\b/;
+const MOVES_ON = new RegExp(`^(select|open(?! the bill|${Object.values(SUPPLIER_BILL).map((t) => ` ${t}`).join('|')})|view|back|scroll)\\b`);
 function keyLines(s, w) {
   const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
   const text = (list) => list.map(([k, d]) => (d ? `${k} ${d}` : k)).join(' · ');
