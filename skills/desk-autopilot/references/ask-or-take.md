@@ -44,6 +44,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   checks the register when it harvests the run. While the park stays put off, each pass reads its
   `pr-head` (the branch's head on origin) and `config:<row id>` inputs again, and asks the question
   as soon as one has changed; any other input is compared only when a session asks again.
+- **An input may be a list of plain values**, as `{"conflict-files": ["a.ts", "b.ts"]}`, stored
+  joined (`a.ts, b.ts`); a nested object is not. Inputs that cannot be read are logged under the
+  pass's `park inputs:` and read as none: the park is asked as usual, with no notice for the person to clear.
 - **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
   line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
   `variable <NAME> set` for a repo Actions variable, or `none`), or

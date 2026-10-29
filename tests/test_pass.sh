@@ -454,6 +454,15 @@ check "DS-143 AC7 a changed config row asks the put-off question again, saying w
 out=$(node "$B/answer.mjs" N-2 "develop is right" 2>&1)
 check "DS-143 a real answer to a put-off question ends the deferral" 'echo "$out" | grep -q "N-2: answered, so its question is no longer put off" && tail -n 1 "$reg" | grep -q "\"cleared\""'
 q set N-2 state=done
+# N-3 names its inputs with a list; N-4's inputs hold an object, which cannot be read.
+{ say 'AUTOPILOT_PARK: Resolve the conflict in the lockfile?' 'AUTOPILOT_PARK_INPUTS: {"conflict_files":["a.ts","b.ts"]}'; result_event; } > "$T/state-d/logs/N-3.log"
+{ say 'AUTOPILOT_PARK: Which steps are left?' 'AUTOPILOT_PARK_INPUTS: {"steps":{"pr":true}}'; result_event; } > "$T/state-d/logs/N-4.log"
+for k in N-3 N-4; do q add "$k"; q set "$k" state=running "branch=fix/$k" "session_id=run-$k"; done
+out=$(node "$B/pass.mjs" 2>&1)
+waiting_only(){ echo "$out" | awk '/^WAITING ON YOU/{f=1;next} /^[^ ]/{f=0} f'; }
+check "DS-337 AC1 park inputs holding a list are stored, joined" '[ "$(field N-3 state)" = "\"parked\"" ] && [ "$(field N-3 park.inputs)" = "{\"conflict_files\":\"a.ts, b.ts\"}" ] && ! echo "$out" | grep -q "N-3: unreadable park inputs"'
+check "DS-337 AC2 unreadable park inputs are logged, not waiting on the person" '[ "$(field N-4 state)" = "\"parked\"" ] && echo "$out" | awk "/^park inputs:/,0" | grep -qF "N-4: unreadable park inputs (inputs must be plain values or lists of them, not steps), read as none" && ! waiting_only | grep -q "unreadable park inputs"'
+q set N-3 state=done; q set N-4 state=done
 
 # The check-in digest. C-1 parks on a broken live service, C-2 on an ordinary question; a last digest
 # dated in the future keeps the check-in itself out of the way until it is removed.
