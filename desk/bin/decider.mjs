@@ -29,7 +29,7 @@ const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path
 // What a WAITING ON YOU line waits on, for its id: its ticket, its class (`DRAFT`, `STUCK`, `READY TO
 // MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. A line
 // with no class is keyed on all of it.
-export function waitKey(line) {
+function waitKey(line) {
   const s = String(line);
   const m = /^([^:]*): ([A-Z][A-Z ]*[A-Z]) — /.exec(s);
   if (!m) return s;
@@ -97,31 +97,28 @@ export function freshItems(state, items, handed = readHanded(state)) {
 }
 
 // Records items handed on and returns the ones newly recorded. One already handed and still
-// unanswered keeps its time, so a later answer still counts, and takes the line's latest wording; one
-// answered since is handed again from now.
+// unanswered keeps its time, so a later answer still counts; one answered since is handed again from now.
 export function handItems(state, handed, now = new Date()) {
   const r = readHanded(state);
   const added = [];
-  let reworded = false;
   for (const h of handed) {
-    const was = r[h.item.id];
-    if (was && !answered(state, was)) {
-      if (was.text !== h.item.text) { was.text = h.item.text; reworded = true; }
-      continue;
-    }
+    if (r[h.item.id] && !answered(state, r[h.item.id])) continue;
     r[h.item.id] = { id: h.item.id, ticket: h.item.ticket, kind: h.item.kind, text: h.item.text, why: h.why, at: now.toISOString() };
     added.push(h);
   }
-  if (added.length || reworded) writeHanded(state, r);
+  if (added.length) writeHanded(state, r);
   return added;
 }
 
-// Drops every handed item the latest pass no longer lists: it was settled some other way.
+// Drops every handed item the latest pass no longer lists: it was settled some other way. One it still
+// lists keeps its time and takes the line's latest wording.
 export function pruneHanded(state, items) {
   const r = readHanded(state);
-  const live = new Set(items.map((i) => i.id));
+  const live = new Map(items.map((i) => [i.id, i.text]));
   const kept = Object.fromEntries(Object.entries(r).filter(([id]) => live.has(id)));
-  if (Object.keys(kept).length !== Object.keys(r).length) writeHanded(state, kept);
+  const reworded = Object.entries(kept).filter(([id, e]) => e.text !== live.get(id));
+  for (const [id, e] of reworded) e.text = live.get(id);
+  if (Object.keys(kept).length !== Object.keys(r).length || reworded.length) writeHanded(state, kept);
   return kept;
 }
 

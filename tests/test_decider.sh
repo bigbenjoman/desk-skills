@@ -225,10 +225,12 @@ queue '{"V":{"key":"V","state":"done","lane":"A","result":{"pr":7}}}'
 verdict "$(waits '["V: DRAFT — PR #7 stays draft: check ci has not reported. Look at it"]')"
 out=$(tick)
 check "DS-331 AC1: a done ticket's DRAFT line is handed on without a session" '[ "$(calls)" = 0 ] && handed | grep -q "^V|V is done, and the decider can only requeue"'
+entry(){ node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(Object.values(r).filter((h) => h.ticket === process.argv[2]).map((h) => `${h.id}|${h.at}`).join(" "))' "$T/state/handed.json" "$1"; }
+v1=$(entry V); sleep 1
 verdict "$(waits '["V: DRAFT — PR #7 stays draft: check ci is failure. Look at it"]')"
 out=$(tick)
 check "DS-331 AC3: only pre-handed items start no session" '[ "$(calls)" = 0 ] && ! grep -q "^decider: started" <<< "$(tail -n 5 "$LOG")"'
-check "DS-331 AC2: its new wording keeps the one item, with the latest text" '[ "$(handed | grep -c "^V|")" = 1 ] && questions | grep -q "^V|handed on|V: DRAFT — PR #7 stays draft: check ci is failure"'
+check "DS-331 AC2: its new wording keeps the one entry, its id and time, with the latest text" '[ -n "$v1" ] && [ "$(entry V)" = "$v1" ] && questions | grep -q "^V|handed on|V: DRAFT — PR #7 stays draft: check ci is failure"'
 ids=$(node --input-type=module -e "
 import { deciderItems } from '$B/decider.mjs';
 const q = { tickets: { W: { key: 'W', state: 'parked', lane: 'A' } } };
@@ -243,7 +245,7 @@ verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci has not reported. L
 out=$(tick); settle; out=$(tick)
 verdict "$(waits '["W: DRAFT — PR #9 stays draft: check ci is in_progress. Look at it"]')"
 out=$(tick)
-check "DS-331 AC2: a line handed on by a session, reworded, starts no second session" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^W|")" = 1 ]'
+check "DS-331 AC2: a line handed on by a session, reworded, starts no second session and shows its latest text" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^W|")" = 1 ] && questions | grep -q "^W|.*check ci is in_progress"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
