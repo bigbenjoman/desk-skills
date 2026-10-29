@@ -1068,7 +1068,7 @@ function billOf(x, { costs }) {
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
-  const c = chargesByName({ cache: forCosts(cache, costs), names:[...new Set(costs.entries.map((e) => e.name))] });
+  const c = chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] });
   if (!c) return { head: [NO_COST_READING], rows: [], foot };
   const charged = segLine([['charged ', GREY], [usd(c.total), BOLD], [` in ${monthText(c.period)}`, GREY],
     ...c.suppliers.flatMap((s, i) => [i ? [' · ', GREY] : BAR, [`${SUPPLIER_LABEL[s.supplier]} `, GREY], [usd(s.total), BOLD]])]);
