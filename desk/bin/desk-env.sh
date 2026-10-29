@@ -26,6 +26,17 @@ desk_where() {
   [ "$EXISTS" = yes ] || { echo "desk: no config for $SLUG at $CONFIG. Run /desk-setup in this repo." >&2; return 1; }
 }
 
+# desk_take_batch "$@": takes `--batch <name>` (or `--batch=<name>`) out of the arguments, up to a bare
+# `--`, through desk-env.mjs's takeBatchArg, and exports it as DESK_BATCH so this script and every child
+# act on that batch. The other arguments are left in DESK_ARGS, in order; follow with
+#   set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
+# A missing name, or two different names from either source, fails with exit 4 and nothing exported.
+desk_take_batch() {
+  local out
+  out="$(node "$DESK_ENV_MJS" take-batch "$@")" || return 4
+  eval "$out"
+}
+
 # Autopilot entry points only (triage.sh, merge-driver.sh; pass.mjs does the same in node): export
 # the queue's batch base as DESK_DEFAULT_BRANCH before desk_load_paths, so this process and every
 # child targets it. No base set is a no-op. An unreadable base, or one contradicting an

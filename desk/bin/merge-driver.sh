@@ -12,6 +12,7 @@
 # --deps     space-separated succ:pred[,pred] — succ is released (state=triaged, moved to the front of
 #            the spawn order) once EVERY pred's PR has merged. Chain only real file collisions.
 # --log      append stdout and stderr to <state>/merge-driver.log (no value: the file is fixed).
+# --batch    the named batch whose queue and state it drives, as DESK_BATCH=<name> does.
 #
 # Which PRs are the batch's: open, authored by config §1's GitHub handle, based on §0 Default branch
 # (never a promotion PR such as main -> production), and whose head branch is the branch recorded in
@@ -69,9 +70,14 @@
 # Once its arguments are accepted, the last line it writes is always `merge driver exited <code>`.
 set -uo pipefail
 
-usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"] [--log]" >&2; exit 2; }
+usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"] [--log] [--batch <name>]" >&2; exit 2; }
+
+# shellcheck source=desk-env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
 
 # ---- arguments: validated before anything else runs ---------------------------------------------
+desk_take_batch "$@" || exit 2
+set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
 TICKETS=""; DEPS=""; LOG=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -82,8 +88,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# shellcheck source=desk-env.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
 is_key(){ node "$DESK_ENV_MJS" ticket-kind "$1" >/dev/null 2>&1; }
 key_error(){ node "$DESK_ENV_MJS" ticket-kind "$1" 2>&1 >/dev/null | sed 's/^desk: //'; }
 

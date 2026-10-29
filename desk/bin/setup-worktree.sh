@@ -37,14 +37,16 @@
 # (`database=<name>` only when that per-ticket database exists; otherwise `database=none`).
 set -euo pipefail
 
-FOR_WORKER=""
-if [ "${1:-}" = "--for-worker" ]; then FOR_WORKER=1; shift; fi
-TICKET="${1:?usage: setup-worktree.sh [--for-worker] <TICKET> <branch>}"
-BRANCH="${2:?usage: setup-worktree.sh [--for-worker] <TICKET> <branch>}"
-
 PG_CONTAINER_ENV="${DESK_PG_CONTAINER:-}"   # an explicit env override beats the config text below
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+desk_take_batch "$@" || exit 2
+set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
+FOR_WORKER=""
+if [ "${1:-}" = "--for-worker" ]; then FOR_WORKER=1; shift; fi
+TICKET="${1:?usage: setup-worktree.sh [--for-worker] [--batch <name>] <TICKET> <branch>}"
+BRANCH="${2:?usage: setup-worktree.sh [--for-worker] [--batch <name>] <TICKET> <branch>}"
+
 # The ticket names a directory and a database: its shape is checked first (no /, no ..).
 node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
 desk_load_paths || exit 1

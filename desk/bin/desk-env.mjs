@@ -13,6 +13,9 @@
 // Also the portable OS helpers the scripts share (memory, uuid, ports), so Linux, WSL and macOS
 // differ in exactly one file.
 //
+// Every desk command that loads this module, and every shell script that sources desk-env.sh, takes
+// `--batch <name>` to act on that named batch, as DESK_BATCH=<name> does (takeBatchArg).
+//
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
@@ -32,6 +35,8 @@
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
+//   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
+//                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
@@ -896,8 +901,34 @@ export function spawnGate(row = configValue('spawn-gate')) {
 //   slug      lower-case kebab with §4 Tracker none           -> text from $DESK_STATE/tickets/<id>.md
 // -> { ok: true, kind } | { ok: false, error }
 export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-// Every desk script loads this module first, so a bad DESK_BATCH stops it before it touches a file.
-try { batchName(); } catch (e) { console.error(e.message); process.exit(4); }
+// `--batch <name>` (or `--batch=<name>`) on any desk command names its batch as DESK_BATCH does, for a
+// caller whose exports do not outlive one shell call. It leaves argv before the command reads its own
+// arguments (up to a bare `--`, past which arguments belong to another command), and is set in the
+// environment so every child the command starts follows it. Two different names, from either source,
+// are refused rather than one picked.
+export function takeBatchArg(argv = process.argv, env = process.env) {
+  const named = [];
+  for (let i = 1; i < argv.length;) {
+    if (argv[i] === '--') break;
+    const m = /^--batch(?:=(.*))?$/.exec(argv[i]);
+    if (!m) { i += 1; continue; }
+    const v = m[1] ?? argv[i + 1];
+    if (v == null || v === '' || v.startsWith('-')) throw new DeskConfigError('desk: --batch wants a batch name (--batch <name>).');
+    named.push(v);
+    argv.splice(i, m[1] == null ? 2 : 1);
+  }
+  if (!named.length) return null;
+  const other = named.find((v) => v !== named[0]);
+  if (other) throw new DeskConfigError(`desk: --batch "${named[0]}" and --batch "${other}" name different batches. Give one.`);
+  if (env.DESK_BATCH && env.DESK_BATCH !== named[0]) {
+    throw new DeskConfigError(`desk: DESK_BATCH "${env.DESK_BATCH}" and --batch "${named[0]}" name different batches. Unset DESK_BATCH or drop --batch.`);
+  }
+  env.DESK_BATCH = named[0];
+  return named[0];
+}
+// Every desk script loads this module first, so a bad --batch or DESK_BATCH stops it before it touches a file.
+let batchArg = null;
+try { batchArg = takeBatchArg(); batchName(); } catch (e) { console.error(e.message); process.exit(4); }
 const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
 export function ticketKind(key) {
   const k = String(key ?? '');
@@ -1206,6 +1237,13 @@ if (isMain) {
           DESK_PG_CONTAINER: pgContainer(), DESK_DEV_PORT: devPort(), DESK_WORKER_PORT_FLOOR: workerPortFloor(), DESK_IS_WSL: isWSL() ? 'yes' : 'no',
         };
         for (const [k, v] of Object.entries(lines)) console.log(`${k}=${String(v).replace(/'/g, `'\\''`).replace(/^|$/g, "'")}`);
+        break;
+      }
+      case 'take-batch': {
+        // Loading this module already took --batch out of argv and checked it, so the shell has one parser.
+        const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+        if (batchArg) console.log(`export DESK_BATCH=${q(batchArg)}`);
+        console.log(`DESK_ARGS=(${args.map(q).join(' ')})`);
         break;
       }
       case 'identity':
