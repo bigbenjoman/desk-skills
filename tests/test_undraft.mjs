@@ -155,6 +155,11 @@ for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built
 const doc = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
 t('DS-327 AC5 setup step 1 proposes §4 Check builds, not prose only', /\*\*Check builds\.\*\*[\s\S]*propose it for §4 Check builds[\s\S]*Never leave it as prose only/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
 t('DS-327 AC5 the config template has the row', /^\| Check builds \| /m.test(doc('../desk-config.md')), true);
-t('DS-327 AC5 desk-env reads it as check-builds', doc('../desk/bin/desk-env.mjs').includes("'check-builds': { section: '4', row: 'Check builds' }"), true);
+const cbDir = mkdtempSync(join(tmpdir(), 'desk-check-builds-'));
+writeFileSync(join(cbDir, 'config.md'), '## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Check builds | `Flows image: ./scripts/ensure-flows-image.sh` |\n');
+const cbList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'list', 'check-builds'],
+  { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(cbDir, 'config.md'), DESK_MACHINE: join(cbDir, 'none.md'), HOME: cbDir } });
+t('DS-327 AC5 desk-env reads the row as check-builds', `${cbList.status} ${cbList.stdout.trim()}`, '0 Flows image: ./scripts/ensure-flows-image.sh');
+rmSync(cbDir, { recursive: true, force: true });
 
 process.exit(fails ? 1 : 0);
