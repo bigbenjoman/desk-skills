@@ -1,4 +1,9 @@
 // suite: undraft (which §4 Clean review verdict values the pass can read a review against)
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { undraftCall, undraftComment, leftOver, DESK_REVIEW_CLEAN } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -75,5 +80,47 @@ const sk = withChecks(skippedTests, [review(marker(ALL_ZERO))]);
 t('DS-323 AC3 a clean draft whose only red checks were skipped is the person\'s to undraft', `${sk?.call} | ${sk?.why} | ${sk?.action}`, 'person | CI does not run on a draft, so its checks were skipped | undraft #701');
 t('DS-323 AC3 one whose review is not clean says that instead', withChecks(skippedTests, [review(marker(ALL_ZERO.replace('gaps=0', 'gaps=2')))])?.why.includes('gaps=2'), true);
 t('DS-323 AC3 a failed check beside a skipped one is still not green', withChecks([...skippedTests, { name: 'build', status: 'completed', conclusion: 'failure' }], [review(marker(ALL_ZERO))])?.why.startsWith('its checks are not green'), true);
+
+// DS-330: a draft whose red checks were all cancelled or timed out is re-run where §3 ci-rerun is yes.
+const rerunPr = (checks, more = {}) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'types', status: 'completed', conclusion: 'success' }, ...checks] },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true, ...more });
+const cancelled = [{ name: 'tests', status: 'completed', conclusion: 'cancelled', runId: 11 }, { name: 'lint', status: 'completed', conclusion: 'timed_out', runId: 12 }];
+const rr = rerunPr(cancelled);
+t('DS-330 AC1 a cancelled and a timed-out run are re-run', `${rr?.call} ${rr?.runs.join(',')}`, 'rerun 11,12');
+t('DS-330 AC1 with the gate as rerun.sh reads it', JSON.stringify(rr?.gate), '{"pending":[],"failedRuns":["11","12"],"reasons":["required check \\"tests\\" is cancelled","\\"lint\\" timed_out"],"failing":[{"name":"tests","runId":"11"},{"name":"lint","runId":"12"}]}');
+const running = rerunPr([...cancelled, { name: 'build', status: 'in_progress', conclusion: null, runId: 11 }]);
+t('DS-330 AC1 while another check still runs it waits, spending no rerun', `${running?.call} | ${running?.why}`, 'wait | checks still running (build) beside cancelled or timed-out ones, re-run once they finish');
+t('DS-330 AC2 a failure beside a cancelled check of the same name is not re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 15 }, cancelled[0]])?.call, 'person');
+t('DS-330 AC1 and not put to the person', rr?.action, undefined);
+t('DS-330 AC1 within the last rerun\'s cooldown it waits', rerunPr(cancelled, { cooledDown: false })?.call, 'wait');
+t('DS-330 AC1 one rerun spent leaves another', rerunPr(cancelled, { reruns: () => 1 })?.call, 'rerun');
+const again = rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 13 }], { reruns: () => 1 });
+t('DS-330 AC2 a rerun that fails takes the failed-check path', `${again?.call} | ${again?.why}`, 'person | its checks are not green: required check "tests" is failure');
+t('DS-330 AC2 so does a cancel beside a failure', rerunPr([cancelled[0], { name: 'build', status: 'completed', conclusion: 'failure', runId: 14 }])?.call, 'person');
+const spent = rerunPr(cancelled, { reruns: (name) => (name === 'tests' ? 2 : 1) });
+t('DS-330 AC3 two reruns spent: the person, with the conclusion', `${spent?.call} | ${spent?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out, still after 2 reruns at this head');
+for (const rerun of ['ask', 'no', undefined]) {
+  const c = rerunPr(cancelled, { rerun });
+  t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
+}
+t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
+
+// DS-330: the pass reruns through rerun.sh, the merge driver's own rerun, against a fake gh.
+const tmp = mkdtempSync(join(tmpdir(), 'undraft-rerun-'));
+mkdirSync(join(tmp, 'bin'));
+writeFileSync(join(tmp, 'bin', 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${tmp}/gh.log"\n`, { mode: 0o755 });
+const rerunSh = (perm) => spawnSync('bash', [fileURLToPath(new URL('../desk/bin/rerun.sh', import.meta.url)), join(tmp, 'sd'), 'o/r', '701', HEAD], {
+  input: JSON.stringify({ gate: rr.gate }), encoding: 'utf8', env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, ...(perm ? { RERUN_PERM: perm } : {}) },
+});
+const read = (f) => { try { return readFileSync(join(tmp, f), 'utf8'); } catch { return ''; } };
+rerunSh(undefined);
+t('DS-330 AC4 rerun.sh with no RERUN_PERM reruns nothing', read('gh.log'), '');
+const ran = rerunSh('yes');
+t('DS-330 AC1 rerun.sh reruns each run with --failed', read('gh.log'), 'run rerun 11 --repo o/r --failed\nrun rerun 12 --repo o/r --failed\n');
+t('DS-330 AC1 and records it in the driver\'s files', `${read(`sd/reruns-701-${HEAD}`)}|${read(`sd/reruns-ok-701-${HEAD}`)}|${/^\d+\n$/.test(read('sd/cooldown-701'))}`, 'tests\nlint\n|tests\nlint\n|true');
+t('DS-330 AC1 rerun.sh exits 0', ran.status, 0);
+rerunSh('yes');
+t('DS-330 AC1 a second rerun inside the cooldown is not made', read('gh.log').split('\n').filter(Boolean).length, 2);
+rmSync(tmp, { recursive: true, force: true });
 
 process.exit(fails ? 1 : 0);

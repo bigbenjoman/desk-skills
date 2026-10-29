@@ -1564,6 +1564,12 @@ function readPrStatus(n) {
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
+// The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
+// check, and whether the last rerun has had its cooldown.
+const driverReruns = (n, head) => ({
+  reruns: (name) => driverLines(`reruns-${n}-${head}`).filter((l) => l === name).length,
+  cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
+});
 // What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
 // tried per check at this head and when it last reran one (its reruns-<n>-<sha> and cooldown-<n>), and
 // when the head or a check result last changed, kept from the last read while neither has.
@@ -1621,7 +1627,7 @@ const gateLists = () => {
 if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
-    perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true,
+    perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
     ...gateLists(),
@@ -1634,7 +1640,7 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine, ...driverReruns(n, v.headRefOid) });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
@@ -1648,6 +1654,8 @@ if (drafts.length) {
     const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement }) : null;
     if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
+    else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
+    else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
     else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}`);
     else {
@@ -1670,6 +1678,14 @@ if (drafts.length) {
     const was = t.undraft ?? {};
     if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
+}
+
+// A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
+// driver and the pass keep one record, cap and cooldown per head.
+function rerunDraft(t, n, head, c) {
+  const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun') } });
+  const said = r.out.split('\n').filter(Boolean).join('; ');
+  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${said ? ` (${said})` : ''}`);
 }
 
 // A review's inline comments as fix-tries.mjs inlineFindings reads them, by the review's GraphQL node
@@ -1708,8 +1724,7 @@ for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
   const n = s.pr;
   const ctx = {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), operator: operatorRow.checks,
-    reruns: (name) => driverLines(`reruns-${n}-${s.head}`).filter((l) => l === name).length,
-    cooledDown: (() => { const at = Number(driverLines(`cooldown-${n}`)[0]) || 0; return Date.now() / 1000 - at >= RERUN_COOLDOWN_S; })(),
+    ...driverReruns(n, s.head),
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {
       if (flakyRow.errors.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
