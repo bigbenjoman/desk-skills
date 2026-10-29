@@ -248,8 +248,15 @@ function requeue(q, key) {
   // A ticket whose sessions handed off starts again at the stage the last handoff named, in its
   // worktree, rather than at Stage 0 (pass.mjs spawnHandoff). `handoff_stage=null` first starts it over.
   const fromStage = t.handoff_stage ?? null;
+  // The park this requeue clears, and which park in a row it was, so the decider can tell when the
+  // next worker parks the same way again (decider.mjs deciderItems). A requeue that clears no park (a
+  // fix try, a failed worker) ends the run: the next park is not asking again. So does one that clears
+  // a stall: the pass parked it, the worker asked nothing.
+  const prevPark = t.state === 'parked' && t.park?.question && !wedged
+    ?{ question: String(t.park.question), since: t.park.since ?? null, requeued_at: new Date().toISOString(), round: (t.prev_park?.round ?? 0) + 1 }
+    : null;
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
+  Object.assign(t, { prev_park: prevPark, state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);

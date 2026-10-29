@@ -533,7 +533,7 @@ function decide(state, s, v, q, now = new Date()) {
   const settled = s.settled ?? [];
   s.settled = [];
   if (!['show_person', 'idle'].includes(v.status)) return [];
-  const { hand, ask } = presort(items);
+  const { hand, ask } = presort(items, state);
   const lines = [];
   // One the last session settled that a pass still lists was not settled: another session would only
   // settle it again.
