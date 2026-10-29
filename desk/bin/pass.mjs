@@ -35,6 +35,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { undraftCall, undraftComment } from './undraft.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { usagePace } from './usage-pace.mjs';
+import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 
@@ -1561,6 +1562,19 @@ function readPrStatus(n) {
     checks, at: new Date().toISOString(),
   };
 }
+const DRIVER_DIR = join(STATE, 'merge-driver');
+const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
+// What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
+// tried per check at this head and when it last reran one (its reruns-<n>-<sha> and cooldown-<n>), and
+// when the head or a check result last changed, kept from the last read while neither has.
+function withHistory(s, was) {
+  const seen = (x) => JSON.stringify([x?.head ?? null, (x?.checks ?? []).map((c) => [c.name, c.status, c.conclusion]).sort()]);
+  const reruns = {};
+  if (s.head) for (const l of driverLines(`reruns-${s.pr}-${s.head}`)) if (l) reruns[l] = (reruns[l] ?? 0) + 1;
+  const last = Number(driverLines(`cooldown-${s.pr}`)[0]) || 0;
+  const kept = was?.pr === s.pr && was.changed_at && seen(was) === seen(s);
+  return { ...s, reruns, rerun_at: last ? new Date(last * 1000).toISOString() : null, changed_at: kept ? was.changed_at : s.at };
+}
 // A merge is recorded here whoever made it, the merge driver or anyone else: merged_at on the ticket
 // and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
 const merges = [];
@@ -1580,6 +1594,7 @@ for (const t of Object.values(qNow.tickets)) {
   if (!s) {
     s = readPrStatus(n);
     if (!s) continue;
+    s = withHistory(s, t.pr_status);
     prStates[n] = s.state;
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
     if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
@@ -1678,8 +1693,6 @@ if (operatorRow.errors.length && undrafted.length) {
   out.push(`fix tries: none this pass, since config §4 Checks workers can't fix does not parse: ${operatorRow.errors.join(', ')} (want \`<check>: <what fixes it>\`). Run /desk-setup`);
 }
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
-const DRIVER_DIR = join(STATE, 'merge-driver');
-const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
 function conflictFiles(branch) {
   if (!branch) return null;
@@ -1996,6 +2009,18 @@ if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (report.clears.length) out.push(`clears-when:\n  ${report.clears.join('\n  ')}`);
 if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
+
+// ---- groups --------------------------------------------------------------
+// Each row's group as desk-q shows it, and the pass that first found it there, kept on the ticket as
+// `group` ({g, at}): desk-q's STARTS says how long a row has sat in it, and the digest lists a Merging
+// PR with no change for two hours. Read after this pass's own writes, so a spawn or a fix try counts now.
+if (!DRY) {
+  let groups = {};
+  const qg = queue();
+  try { groups = groupsNow({ slug: E.repoSlug(), stateDir: STATE, queuePath: QUEUE_FILE, q: qg }); }
+  catch (e) { out.push(`groups: not recorded this pass (${describeCrash(e).split('\n')[0]})`); }
+  for (const [key, g] of Object.entries(groups)) if (qg.tickets[key]?.group?.g !== g) q('set', key, `group=${JSON.stringify({ g, at: PASS_AT })}`);
+}
 
 // ---- verdict -------------------------------------------------------------
 // Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can

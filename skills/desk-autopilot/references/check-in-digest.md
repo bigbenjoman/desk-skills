@@ -72,6 +72,9 @@ whose pass saw it first, until main moves. Each move goes in `maintenance.log` a
   still open at the next check-in is listed again, and the batch carries on meanwhile with every
   ticket it does not block. It is pushed only when something is new (a question the last page did
   not list, or a call taken since); otherwise the page is written and nothing is pushed.
+- **Merging PRs that stopped moving.** Per repo, under `Merging, no change for 2h or more`: each PR
+  the last pass found in Merging whose head and check results have not changed for two hours, with
+  how long and the check holding it. Listed, never pushed.
 - **Parks already Done in Jira.** Before listing a repo's parks, the digest asks that repo's Jira
   (its own `desk-jira`, run from its checkout) for their status, one `key in (...)` search per 100
   keys. A park whose status is in Jira's Done category is not asked; the repo's section names them

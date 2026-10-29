@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isHeld } from './batch-state.mjs';
+import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
@@ -236,6 +237,9 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   return out.sort((a, b) => a.ticket.localeCompare(b.ticket));
 }
 
+// One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
+const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
+
 // The page: every repo with something to answer or something taken, questions first.
 // The weekly maintenance window's notes are the computer's, not a repo's, so they head the page.
 export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance = [] }) {
@@ -244,6 +248,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
+  const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
   const npr = groups.filter((g) => g.promotion?.key).length;
   const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
   const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
@@ -252,17 +257,17 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   // A repo the promotion window skipped says why, last, whatever else the page holds.
   const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj) {
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
     lines.push('');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira))) {
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -294,6 +299,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     if (g.checks?.length) {
       lines.push('### Checked instead of asking', '');
       for (const c of g.checks) lines.push(`- \`${c.ticket}\`: ${c.question} Checked ${c.checked}: ${c.showed}${c.pr ? ` [PR](${c.pr})` : ''}`);
+      lines.push('');
+    }
+    if (g.stalled?.length) {
+      lines.push(`### Merging, no change for ${STALL_FOR} or more`, '');
+      for (const s of g.stalled) lines.push(`- \`${s.ticket}\` ${s.url ? `[#${s.pr}](${s.url})` : `#${s.pr}`}: ${s.check} · no change for ${s.for}`);
       lines.push('');
     }
     if (g.putOff?.length) {
@@ -363,6 +373,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         putOff: putOffQuestions(r, register).map((p) => ({ ...p, tickets: p.tickets.filter((k) => !done.has(k)) })).filter((p) => p.tickets.length),
         promotion: promotionOf(r),
         jira,
+        stalled: stalledPrs(r, now),
       };
     });
     const maintenance = digestNotes().filter(inWindow);
