@@ -1,4 +1,5 @@
-// Cost sources: which GitHub repos, Vercel teams and projects and AWS profiles bill each name.
+// Cost sources: which GitHub repos, Vercel teams and projects, AWS profiles and Neon orgs and
+// projects bill each name.
 //
 // One file per computer, ~/.config/desk/costs.md (desk-env.mjs owns the path), beside machine.md and
 // read by every repo. A name is usually a configured repo's, but a bill can belong to no repo in desk,
