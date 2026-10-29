@@ -205,8 +205,22 @@ aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(60
 aq.tickets['A-6'].park.inputs = { 'pr-head': 'bbb' };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(aq));
 const back = N.collect({ word: 'alpha' }).items;
-t('DS-324 AC2 a hold whose blocker went done is listed again', back.find((i) => i.t.key === 'A-4')?.need, 'A-9 finished with no PR: let it start');
+t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^A-9 finished with no PR: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
 t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
+// DS-324 AC1, AC3: two holds with the same words are put off each on its own; the second does not bring the first back.
+const held = (k) => ({ key: k, state: 'parked', lane: 'A', held_by: 'A-9', added_at: minsAgo(25), park: { question: `held by orchestrator: blocked by A-9 — starts once their PRs merge (${k})` } });
+const tq = queueOf('alpha');
+tq.tickets['A-10'] = held('A-10');
+tq.tickets['A-11'] = held('A-11');
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(tq));
+const twins = () => N.collect({ word: 'alpha' }).items.filter((i) => ['A-10', 'A-11'].includes(i.t.key));
+t('DS-324 two holds share a need', twins().map((i) => i.need).join(' | '), 'A-9 finished with no PR: let it start | A-9 finished with no PR: let it start');
+N.record({ word: 'alpha', ticket: 'A-10', action: 'not-now' });
+N.record({ word: 'alpha', ticket: 'A-11', action: 'not-now' });
+t('DS-324 AC1 both are left out once both are put off', twins().length, 0);
+delete tq.tickets['A-10'];
+delete tq.tickets['A-11'];
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(tq));
 t('AC16 the last line says passes are stopped in gamma and how to resume', /^Passes are stopped in gamma, .* To resume: run \/desk-autopilot in gamma\.$/.test(left.at(-1)), true);
 
 // ---- DS-297 AC2: once the session requeues the answered ticket, it moves on as any requeued ticket does
@@ -260,6 +274,11 @@ const moveHead = (h) => { const q = queueOf('eta'); q.tickets['E-2'].pr_status.h
 moveHead('aaa');
 const pe2 = N.record({ word: 'eta', ticket: 'E-2', action: 'not-now' });
 t('DS-324 AC1 a PR put off is not listed', `${pe2.ok} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-2')}`, 'true false');
+// Its need's words change with its checks (a running check's age among them); its head has not moved.
+const ckq = queueOf('eta');
+ckq.tickets['E-2'].pr_status.checks = [{ name: 'build', status: 'in_progress', conclusion: null, startedAt: minsAgo(5) }];
+writeFileSync(eq(), JSON.stringify(ckq));
+t('DS-324 AC3 a PR whose checks moved but head did not stays left out', N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-2'), false);
 moveHead('bbb');
 t('DS-324 AC2 a PR whose head moved is listed again, saying so', /pr-head aaa → bbb/.test(N.collect({ word: 'eta' }).items.find((i) => i.t.key === 'E-2')?.need ?? ''), true);
 

@@ -89,15 +89,17 @@ function itemOf(r, x) {
 }
 
 // The question and inputs an item is put off under. A park is keyed as answer.mjs records it, to its
-// question and park inputs; anything else to its need, its PR head and its blockers' states, so a
-// moved head or a blocker that went done brings it back.
+// question and park inputs; anything else to its ticket and kind, since several tickets share a need's
+// words, with its need, PR head and blockers' states as inputs, so a moved head or a blocker that went
+// done brings it back. A PR's need is left out: it carries the age of its running checks.
 const PARK_KINDS = ['parked', 'session', 'spine'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
+  else inputs.need = item.need;
   if (item.kind === 'held') inputs.blockers = keysOf(t.held_by).map((b) => `${b}:${r.q.tickets?.[b]?.state ?? 'none'}`).join(',');
-  return { question: item.need, inputs };
+  return { question: `${t.key} ${item.kind}`, inputs };
 }
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
@@ -214,7 +216,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return o.ok ? say(true, `decision ${id} overridden to "${text}" (digest.mjs override).`) : say(false, o.why);
     }
     case 'not-now': {
-      // A park is put off by answer.mjs, keyed to its inputs; anything else by its question alone.
+      // A park is put off by answer.mjs, keyed to its inputs; anything else here, as putOffKey keys it.
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         return a.ok ? say(true, 'put off (not-now register).') : say(false, a.why);
