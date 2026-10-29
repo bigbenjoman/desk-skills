@@ -7,8 +7,8 @@
 //   wait    nothing for anyone to do yet: checks still running, or GitHub has not worked out whether
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   rerun   every red check was cancelled or timed out, so it never tested the code: where §3 ci-rerun
-//           is yes the pass reruns `runs`, within the merge driver's per-head cap and cooldown
-//           (`checks`, { name, runId }, are what it counts against them)
+//           is yes the pass reruns `runs` through rerun.sh, within the merge driver's per-head cap
+//           and cooldown (`gate` is what rerun.sh reads)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
 //           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
@@ -119,18 +119,23 @@ export function undraftComment(verdict, head, clean) {
 }
 
 // A red gate whose every failing check was cancelled or timed out: a `rerun` call while §3 ci-rerun is
-// yes and a rerun is left at this head, `wait` through the last rerun's cooldown, else null (a check
-// that failed, or no rerun left, is not green as ever, and its why says how many reruns were spent).
+// yes and a rerun is left at this head, `wait` while other checks still run or through the last
+// rerun's cooldown, else null (a check that failed, or no rerun left, is not green as ever, and its
+// why says how many reruns were spent). A rerun call carries the gate as rerun.sh reads it.
 const INTERRUPTED = new Set(['cancelled', 'timed_out']);
 function rerunCall(gate, cfg) {
-  const failing = [...new Map(gate.failing.map((f) => [f.name, f])).values()];
+  const failing = gate.failing;
   if (cfg.rerun !== 'yes' || !failing.length || failing.some((f) => !INTERRUPTED.has(f.conclusion))) return null;
   if (failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX)) return null;
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
   if (!runs.length) return null;
+  if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside cancelled or timed-out ones, re-run once they finish` };
   const what = failing.map((f) => `"${f.name}" ${f.conclusion}`).join('; ');
   if (cfg.cooledDown === false) return { call: 'wait', why: `checks re-run after they were cancelled or timed out (${what}), waiting out the rerun's cooldown` };
-  return { call: 'rerun', why: `its checks were cancelled or timed out, so they are re-run: ${what}`, runs, checks: failing.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) };
+  return {
+    call: 'rerun', why: `its checks were cancelled or timed out, so they are re-run: ${what}`, runs,
+    gate: { pending: [], failedRuns: runs, reasons: gate.reasons, failing: failing.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) },
+  };
 }
 
 // t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks } (checks as

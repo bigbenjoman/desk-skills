@@ -1564,6 +1564,12 @@ function readPrStatus(n) {
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
+// The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
+// check, and whether the last rerun has had its cooldown.
+const driverReruns = (n, head) => ({
+  reruns: (name) => driverLines(`reruns-${n}-${head}`).filter((l) => l === name).length,
+  cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
+});
 // What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
 // tried per check at this head and when it last reran one (its reruns-<n>-<sha> and cooldown-<n>), and
 // when the head or a check result last changed, kept from the last read while neither has.
@@ -1634,11 +1640,7 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, {
-      ...cfg, spine,
-      reruns: (name) => driverLines(`reruns-${n}-${v.headRefOid}`).filter((l) => l === name).length,
-      cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
-    });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine, ...driverReruns(n, v.headRefOid) });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
@@ -1678,20 +1680,12 @@ if (drafts.length) {
   }
 }
 
-// A draft's cancelled or timed-out runs, re-run as merge-driver.sh reruns a ready PR's: every check
-// tried is counted in reruns-<n>-<head>, the ones GitHub accepted in reruns-ok-<n>-<head>, and an
-// accepted rerun starts the cooldown, so the driver and the pass share one cap per head.
+// A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
+// driver and the pass keep one record, cap and cooldown per head.
 function rerunDraft(t, n, head, c) {
-  mkdirSync(DRIVER_DIR, { recursive: true });
-  const ok = c.runs.filter((id) => shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']).ok);
-  if (ok.length) writeFileSync(join(DRIVER_DIR, `cooldown-${n}`), `${Math.floor(Date.now() / 1000)}\n`);
-  const lines = (xs) => xs.map((x) => `${x.name}\n`).join('');
-  appendFileSync(join(DRIVER_DIR, `reruns-${n}-${head}`), lines(c.checks));
-  // A check with no run id is credited only if every rerun was accepted.
-  const credited = c.checks.filter((x) => (x.runId ? ok.includes(x.runId) : ok.length === c.runs.length));
-  if (credited.length) appendFileSync(join(DRIVER_DIR, `reruns-ok-${n}-${head}`), lines(credited));
-  const refused = c.runs.filter((id) => !ok.includes(id));
-  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${ok.length ? ` (re-ran run ${ok.join(', ')})` : ''}${refused.length ? `; GitHub refused the rerun of run ${refused.join(', ')}` : ''}`);
+  const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun') } });
+  const said = r.out.split('\n').filter(Boolean).join('; ');
+  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${said ? ` (${said})` : ''}`);
 }
 
 // A review's inline comments as fix-tries.mjs inlineFindings reads them, by the review's GraphQL node
@@ -1730,8 +1724,7 @@ for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
   const n = s.pr;
   const ctx = {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), operator: operatorRow.checks,
-    reruns: (name) => driverLines(`reruns-${n}-${s.head}`).filter((l) => l === name).length,
-    cooledDown: (() => { const at = Number(driverLines(`cooldown-${n}`)[0]) || 0; return Date.now() / 1000 - at >= RERUN_COOLDOWN_S; })(),
+    ...driverReruns(n, s.head),
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {
       if (flakyRow.errors.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
