@@ -55,6 +55,12 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   finished with no PR, or its PR was closed unmerged). The user decides: re-run or finish the
   blocker, release the ticket anyway, or drop it.
 
+**Behind a failed or parked blocker, a held ticket is not a question of its own.** That blocker is
+already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
+depth, is listed once under `WAITING ON A PARK` and in `on_park`, never under `stuck` or `waiting`:
+the answer to the blocker settles it. Only a blocker that finished with no PR, closed its PR unmerged
+or is not in the batch leaves it STUCK.
+
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 
 **"Add the blocker to the batch"** as an answer: fetch as at Stage 1, `triage.sh <B>`, `queue.mjs admit <B>`,

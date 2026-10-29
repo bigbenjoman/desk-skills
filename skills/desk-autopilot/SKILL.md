@@ -192,6 +192,7 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 | `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`), the promotion question for a newly merged production-broken fix (`promotion:<slug>:<sha>:urgent`), each failing health check (`health:<slug>:<check>`, below), and main's failed `tests` check that blocks the desk-skills auto-release (`release-failed-<sha>`, *The weekly maintenance window*). Empty otherwise, on any exit |
 | `release_due` | held tickets whose every blocker's PR has merged (under `waiting` too when no merge driver is running) |
 | `stuck` | held tickets whose blocker can no longer merge on its own (under `waiting` too) |
+| `on_park` | held tickets behind a failed or parked ticket: they wait on that answer, and are not under `waiting` |
 
 On 11 from `pass.mjs`, put `waiting` and `parked` in front of the person, then keep the loop going
 unless `status` is `idle` or `error`. Push only `push`, and only the entries the previous pass's

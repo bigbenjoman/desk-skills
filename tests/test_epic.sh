@@ -569,6 +569,18 @@ q='{"tickets":{"Z":{"state":"running"},"A":'"$HZ"',"B":'"$HA"',"C":'"$HA"',"D":'
 check "a diamond of holds (Z <- A <- B,C <- D) is waiting, not stuck" '[ "$(womk "$q" D)" = waiting ]'
 q='{"tickets":{"A":{"state":"queued"},"S":'"$H"'}}'
 check "held behind a queued blocker (never spawns by itself): stuck, not waiting" '[ "$(wom "$q")" = stuck ]'
+wop(){ node --input-type=module -e "import {waitingOnPark} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); const st=JSON.parse(process.argv[3] ?? '{}'); console.log((waitingOnPark(q, q.tickets[process.argv[2]], (n)=>st[n]??null) ?? ['none']).join(','))" "$@"; }
+q='{"tickets":{"A":{"state":"parked","park":{"question":"which helper?"}},"S":'"$H"'}}'
+check "DS-332: held behind a parked blocker waits on its park" '[ "$(wop "$q" S)" = A ] && [ "$(wom "$q")" = stuck ]'
+q='{"tickets":{"Z":{"state":"failed"},"A":'"$HZ"',"B":'"$HA"',"C":'"$HA"',"D":'"$HD"'}}'
+check "DS-332: a diamond behind one failed ticket waits on it, once" '[ "$(wop "$q" D)" = Z ] && [ "$(wop "$q" A)" = Z ]'
+q='{"tickets":{"Z":{"state":"failed"},"B":{"state":"done","result":{"pr":7}},"S":{"state":"parked","park":{"question":"held by orchestrator: z b"},"held_by":"Z|B"}}}'
+check "DS-332: a failed blocker beside one whose PR is open: waits on the failed one" '[ "$(wop "$q" S "{\"7\":\"OPEN\"}")" = Z ]'
+check "DS-332: and beside one whose PR closed unmerged: stuck, not waiting" '[ "$(wop "$q" S "{\"7\":\"CLOSED\"}")" = none ]'
+q='{"tickets":{"Z":{"state":"failed"},"S":{"state":"parked","park":{"question":"held by orchestrator: z y"},"held_by":"Z|Y"}}}'
+check "DS-332: a failed blocker beside one not in the batch: stuck" '[ "$(wop "$q" S)" = none ]'
+q='{"tickets":{"Z":{"state":"running"},"A":'"$HZ"'}}'
+check "DS-332: waiting on a merge is not waiting on a park" '[ "$(wop "$q" A)" = none ]'
 q='{"tickets":{"S":{"state":"parked","park":{"question":"held by orchestrator: starts once A merges"}}}}'
 check "a hold with no recorded blocker: idle, never silently waiting" '[ "$(idle "$q")" = idle ]'
 q='{"tickets":{"A":{"state":"failed"},"S":'"$H"'}}'
@@ -579,7 +591,9 @@ node "$B/queue.mjs" init t4 >/dev/null; node "$B/queue.mjs" add KAN-401 Task A >
 node "$B/queue.mjs" set KAN-401 state=failed >/dev/null; node "$B/queue.mjs" set KAN-402 held_by=KAN-401 >/dev/null
 node "$B/queue.mjs" park KAN-402 "held by orchestrator: blocked by KAN-401 (Jira link) — starts once their PRs merge" >/dev/null
 out=$(node "$B/queue.mjs" render 2>&1)
-check "held behind a failed blocker is surfaced as stuck and waiting on you" 'printf "%s" "$out" | grep -q "STUCK" && printf "%s" "$out" | grep -q "waiting on you"'
+check "DS-332: held behind a failed blocker shows as waiting on its answer, not STUCK" 'printf "%s" "$out" | grep -q "HELD.*waiting on the answer to KAN-401 (failed or parked)" && ! printf "%s" "$out" | grep -q "STUCK"'
+node "$B/queue.mjs" drop KAN-401 >/dev/null; out=$(node "$B/queue.mjs" render 2>&1)
+check "DS-332: held behind a dropped blocker is STUCK and waiting on you" 'printf "%s" "$out" | grep -q "STUCK" && printf "%s" "$out" | grep -q "waiting on you"'
 q='{"tickets":{"A":{"state":"done"},"B":{"state":"parked","park":{"question":"x"}}}}'
 check "everything done or parked: idle (unchanged)" '[ "$(idle "$q")" = idle ]'
 q='{"tickets":{"A":{"state":"triaged"}}}'
