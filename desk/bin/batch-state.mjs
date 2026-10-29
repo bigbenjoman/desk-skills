@@ -77,9 +77,16 @@ export function designGap(r) {
 // can read it.
 export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && designGap(r) !== null);
 
-// A queue ticket only an interactive session takes on: lane C, or one parked at triage on its lane.
-// A lane D ticket whose worker parked is requeued like any other.
-export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '');
+// A park that puts its ticket in lane C, or lane D with its canvas not saved where a worker can read
+// it: a requeue only parks it again. "not lane C" or "from lane C" rules the lane out.
+const LANE_C = /(?<!\b(?:not|from|no longer|than) )\blane C\b/i;
+const LANE_D = /(?<!\b(?:not|from|no longer|than) )\blane D\b/i;
+const NO_CANVAS = /\bcanvas (?:is |was )?not (?:saved|on)\b|\bno saved canvas\b|\blinks no Claude Design canvas\b|\bonly (?:in|design is a) Figma\b/i;
+export const sessionPark = (question) => LANE_C.test(question) || (LANE_D.test(question) && NO_CANVAS.test(question));
+
+// A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
+// one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.
+export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.

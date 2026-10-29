@@ -325,11 +325,13 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
-function triageOf(stateDir, key) {
+export function triageOf(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
   if (!existsSync(p)) return null;
   try { return readJsonOrRefuse(p, `re-run triage.sh ${key}`); } catch { return { summary: '(triage record unreadable)' }; }
 }
+// A ticket's lane: the queue's, else its triage record's `tr`.
+export const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
 
 // How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
 // further back than this is one the last pass has already put on the queue.
@@ -1857,7 +1859,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const row = r.rows.find((x) => x.t.key === key) ?? r.prs.find((x) => x.t.key === key);
   const tr = triageOf(r.stateDir, key) ?? {};
   const pos = r.rows.find((x) => x.t.key === key)?.pos;
-  const lane = t.lane && t.lane !== '?' ? t.lane : tr.lane ?? '?';
+  const lane = laneOf(t, tr);
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
   const shows = (id) => open == null || open.has(id);
   const can = { a: false, y: false, f: false };

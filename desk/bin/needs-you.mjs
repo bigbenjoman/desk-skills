@@ -28,8 +28,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
-import { isHeld, spinePark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf } from './desk-q.mjs';
+import { isHeld, spinePark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
+import { loadRepos, shownRepos, holdOf, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
@@ -43,6 +43,10 @@ const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const since = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
 // A park triage made (size, a dependency cycle): queue.mjs requeue refuses it, so it needs a person.
 const triagePark = (t) => /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''));
+// A park in lane C, or a canvas-less lane D, is offered to an interactive desk-ticket session. A stopped
+// worker's park is the one it wrote to its park file: it exited with no marker, so the queue holds none.
+const parkText = (r, t) => String(t.park?.question ?? openQuestion(r.stateDir, t.key) ?? '');
+const SESSION_WHY = 'lane C/D: a worker would only park on it';
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`).
@@ -72,6 +76,7 @@ function itemOf(r, x) {
     if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
     return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', SESSION_WHY], ['not-now']] };
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
   // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
   if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
@@ -87,6 +92,7 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
+    if (sessionPark(parkText(r, t))) return { kind: 'session', need, actions: [['open', SESSION_WHY], ['not-now']] };
     if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ['not-now']] };
     if (triagePark(t)) return { kind: 'session', need, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
     const { taken, overrides } = readDecisions(r.stateDir);
@@ -94,7 +100,7 @@ function itemOf(r, x) {
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, actions: [['resume', `lane ${t.lane ?? '?'}: a worker finishes it once it has your answer`], ['not-now'], ...offer] };
+    return { kind: 'parked', need, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
