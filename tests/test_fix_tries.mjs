@@ -104,6 +104,8 @@ t('DS-281 AC3 a clean re-review at the new head is undrafted with its verdict', 
 t('DS-281 AC4 a try already made for this head is not made again', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' } })?.why, 'review not clean after 1 fix try: 1 P1');
 const r5 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' } });
 t('DS-281 AC5 after 2 tries it is stuck, with the P1 count', `${r5?.call} | ${r5?.why}`, 'stuck | review not clean after 2 fix tries: 1 P1');
+const r335 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' }, body: p1Body });
+t('DS-335 AC2 once the tries are spent, the stuck text names each finding with its file:line', r335?.why, 'review not clean after 2 fix tries: 1 P1 — P1: packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original');
 const p2only = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=2')), ucfg);
 t('DS-281 AC6 only P2s: not a findings call, the person settles them as today', `${p2only?.call} ${p2only?.action}`, 'person settle the findings or gaps on #702');
 t('DS-281 AC6 and reviewFix leaves it alone', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '0', p2: '2' } }), null);

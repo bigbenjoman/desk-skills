@@ -173,8 +173,9 @@ export function reviewFix(t, review, opts = {}) {
   if (!what || !review.head) return null;
   const done = t.fix_tries ?? [];
   if (spent(done, fixedAt(done, review.head))) {
-    // The review at this head is the last try's own, so its gaps say why each is still open.
-    const left = gapsOpen ? reviewGaps(review.body) : [];
+    // The review at this head is the last try's own, so its findings and gaps say what is still open.
+    // Only the body's: its inline comments are not read once no try is left.
+    const left = [...(counts ? reviewFindings(review.body).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
     return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${what}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body) : [];

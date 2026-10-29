@@ -206,6 +206,15 @@ that actually refuted with codex, and never claim codex on a run that fell back.
   so give it the round of your loop and, from round 3, round 2's reviewed SHA. Say in
   `AUTOPILOT_DONE` how many rounds ran.
 - **Round 3, a P0 or P1**: park, naming each finding and its `file:line`. No fourth round.
+  **Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.** Carry on
+  through Stage 7 as for a clean round, open the draft PR, and post the round-3 review on it as below,
+  its verdict counting the P0s and P1s at your head and its body listing each with its `file:line`.
+  That posted review is the hand-off: the pass sends the draft back to a fix worker (`fix-tries.mjs`
+  `reviewFix`, as for any draft whose review finds a P0 or P1), and to the person, naming each
+  finding, only once those tries are spent. End with
+  `AUTOPILOT_DONE: pr=<n> jira=<status> review=round 3 left <counts> for a fix try`. Leave the PR in
+  draft. These are findings handed on, not ones you have understood and left, so posting them is not
+  posting a P0 left in place; a P0 you cannot fix still parks (below).
 - **Round 3, only P2s**: **carry them, do not park.** Mark each `"carried": true`, so the verdict
   reads clean on the blocking counts and records the number carried, and open the draft PR. Put the
   section `verdict.mjs --carried <results>` prints (`### Carried review findings`, `file:line` each)
