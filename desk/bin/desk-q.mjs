@@ -1209,9 +1209,11 @@ function githubParts(cache, name, period, total) {
 
 // One supplier's part of a name's charge this month: the line with what it charged, then for GitHub
 // what it was charged for. `bill` is the page `o` opens.
-function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {
+export function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache: raw = readCache() } = {}) {
   const mine = costs.entries.filter((e) => e.name === name && e.supplier === supplier);
   const bill = billingUrl(supplier, { team: mine[0]?.team });
+  // The cache as costs.md has it now, as on the repo screen, so both count the same profiles.
+  const cache = forCosts(raw, costs);
   const c = chargesByName({ cache, names: [name] });
   if (!c) return { head: [NO_COST_READING], rows: [], foot: [], bill };
   const x = c.names.find((n) => n.name === name);

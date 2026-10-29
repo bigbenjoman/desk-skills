@@ -364,6 +364,8 @@ t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo']
 const gone = fixture();
 gone.aws.profiles['voicepa-old'] = { ...gone.aws.profiles['voicepa-admin'], profile: 'voicepa-old', lines: [{ service: 'Amazon EC2', used: 40, credits: 0, charged: 40 }], total: 40 };
 t('DS-325 AC3 a profile removed from costs.md is in no supplier\'s figure', Q.supplierScreen([], 'voicepa', { now: FIXED, cache: gone, pinUsage: true }).split('\n').slice(0, VOICEPA.length).join('\n'), VOICEPA.join('\n'));
+const awsPage = (cache) => JSON.stringify(Q.supplierPageParts([], 'voicepa', 'aws', { now: FIXED, cache }).head);
+t('DS-293 AC10 (DS-325 AC3) the AWS screen leaves out a profile removed from costs.md, as the repo screen does', awsPage(gone), awsPage(fixture()));
 
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);
