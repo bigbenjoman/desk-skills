@@ -18,9 +18,11 @@
 //
 // A pass holds every new spawn while a required check fails. A remote check is told to the person
 // (a stall line and a push) only once it has failed on two runs in a row, as a blip clears by
-// itself; the local ones (browser, disk) on the first. Every remote check unreachable together is the
-// network, one item (`health:<slug>:network`) with no sign-in fix; a network failure of one check
-// names its connection, not its sign-in. Otherwise one entry per failing check
+// itself; the local ones (browser, disk) on the first. Every remote check failing together, with at
+// least one of them not reaching its host, is the network, one item (`health:<slug>:network`) with no
+// sign-in fix, so a CLI that words a dropped connection in a way NETWORK misses does not push its
+// sign-in; only when every one of them is a refused sign-in are they the sign-ins. A network failure
+// of one check names its connection, not its sign-in. Otherwise one entry per failing check
 // (`health:<slug>:<id>`); whoever sends the pass's pushes sends a key once, so a check that stays
 // failing is not pushed again, and one that recovers and fails again is.
 //
@@ -152,7 +154,7 @@ const fixOf = (id, r) => {
 const label = (id) => `${byId[id].name}${byId[id].cmd ? ` (${byId[id].cmd.join(' ')})` : ''}`;
 
 // How many runs in a row each failure has lasted, by check id (and `network` for every remote check
-// unreachable together). A failure of another kind than last run's starts again at 1.
+// failing together, one of them unreachable). A failure of another kind than last run's starts again at 1.
 function nextStreak(prev, units) {
   const was = prev?.streak ?? Object.fromEntries((prev?.failing ?? []).map((id) => [id, { kind: prev.results?.[id]?.kind ?? 'auth', n: 1 }]));
   return Object.fromEntries(units.map(({ key, kind }) => [key, { kind, n: was[key]?.kind === kind ? was[key].n + 1 : 1 }]));
@@ -183,7 +185,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   }
   const failing = wanted.filter((id) => !results[id].ok);
   const remote = wanted.filter(isRemote);
-  const network = remote.length > 1 && remote.every((id) => !results[id].ok && results[id].kind === 'network');
+  const network = remote.length > 1 && remote.every((id) => !results[id].ok) && remote.some((id) => results[id].kind === 'network');
   const units = [
     ...(network ? [{ key: 'network', kind: 'network', ids: remote }] : []),
     ...failing.filter((id) => !(network && isRemote(id))).map((id) => ({ key: id, kind: results[id].kind ?? 'auth', ids: [id] })),

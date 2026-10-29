@@ -223,6 +223,14 @@ check "DS-333 AC2 no credential remedy"                     '! grep -qE "gh auth
 for c in gh claude codex desk-jira; do mode "$c" ok; done
 pj
 
+# ---- every remote check failing together, one worded in a way the pattern misses ---------------
+for c in gh claude codex; do mode "$c" net; done; mode desk-jira out
+pj; pj
+check "DS-333 AC2 all failing, one unmatched: the network"   'grep -q "every remote check: the network" <<< "$out" && [[ "$(pushes)" =~ ^health:.+:network$ ]]'
+check "DS-333 AC2 all failing, one unmatched: no sign-in fix" '! grep -qE "gh auth login|renew the Jira|claude auth login|codex login" <<< "$out"'
+for c in gh claude codex desk-jira; do mode "$c" ok; done
+pj
+
 # ---- every remote check signed out together is still the sign-ins ------------------------------
 for c in gh claude codex desk-jira; do mode "$c" out; done
 pj; pj
