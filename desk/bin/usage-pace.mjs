@@ -61,14 +61,15 @@ export function stateDirs({ self = E.stateDir(), root = join(E.HOME, '.desk-auto
   return [...new Set(dirs.map((d) => resolve(d)))];
 }
 
-// The newest 7-day reading across every worker log written in the last RECENT_MS, or null. Events
-// carry no time of their own, so "newest" is read from the window: the latest `resetsAt`, and within
-// it the highest utilisation, since usage only rises until the window resets.
+// The newest 7-day reading across every worker log written in the last RECENT_MS, or null: the one
+// desk-q shows, so a pass paces on the same figure.
 export const newestUsage = ({ dirs = stateDirs(), now = Date.now() } = {}) => newestReading({ dirs, now }).seven_day;
 
 // The newest reading of each window across every worker log written in the last RECENT_MS, plus any
-// `files` named (the usage probe's output), by the same rule as newestUsage. `at` is when the newest
-// file holding a chosen event was last written, or null with no reading.
+// `files` named (the usage probe's output). Events carry no time of their own, so the newest is the
+// last event holding that window in the most recently written file. Never the latest `resetsAt`:
+// after a switch of subscription, the one left behind can reset later. `at` is when the newest file
+// holding a chosen event was last written, or null with no reading.
 //   -> { five_hour, seven_day, at }
 export function newestReading({ dirs = stateDirs(), files = [], now = Date.now() } = {}) {
   const best = { five_hour: null, seven_day: null }, from = {};
@@ -83,8 +84,8 @@ export function newestReading({ dirs = stateDirs(), files = [], now = Date.now()
     if (!st.isFile() || now - st.mtimeMs > RECENT_MS) continue;
     for (const e of eventsOf(path, st)) {
       for (const k of WINDOWS) {
-        const w = e[k], b = best[k];
-        if (w && (!b || w.resetsAt > b.resetsAt || (w.resetsAt === b.resetsAt && w.utilization > b.utilization))) {
+        const w = e[k];
+        if (w && (from[k] === undefined || st.mtimeMs >= from[k])) {
           best[k] = w;
           from[k] = st.mtimeMs;
         }

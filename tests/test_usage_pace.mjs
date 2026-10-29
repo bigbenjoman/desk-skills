@@ -65,11 +65,21 @@ const root = join(env.HOME, '.desk-autopilot');
 const A = join(root, 'acme__a');
 const B = join(root, 'acme__b');
 const real = Date.now();
-log(A, 'A-1', [event(0.3, resetIn(real, 2 * DAY)), event(0.4, resetIn(real, 2 * DAY))]);
-log(B, 'B-1', [event(0.62, resetIn(real, 2 * DAY))], HOUR);
+log(A, 'A-1', [event(0.3, resetIn(real, 2 * DAY)), event(0.4, resetIn(real, 2 * DAY))], HOUR);
+log(B, 'B-1', [event(0.62, resetIn(real, 2 * DAY))]);
 t('AC6 unit: the newest reading across both repos', JSON.stringify(P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })), JSON.stringify({ utilization: 0.62, resetsAt: resetIn(real, 2 * DAY) }));
 log(B, 'B-1', [event(0.9, resetIn(real, -DAY))]);
-t('a later window beats a higher reading in a window that has reset', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real }).utilization, 0.4);
+t('DS-342 AC3 unit: a newest reading whose window has reset is kept, and reads as reset', P.usagePace({ setting: P.pacingSetting('5'), usage: P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real }), now: real }).line.startsWith('usage: no recent data (the newest reading'), true);
+// Two subscriptions: the one left behind (A-1, an hour ago) resets later than the one in use (B-1).
+const both = (five, seven) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { ...(five && { five_hour: five }), ...(seven && { seven_day: seven }) } } });
+const win = (utilization, ms) => ({ utilization, resetsAt: resetIn(real, ms) });
+log(A, 'A-1', [both(win(0.2, 4 * HOUR), win(0.38, 5 * DAY))], HOUR);
+log(B, 'B-1', [both(win(0.1, 4 * HOUR), win(0.94, 2 * DAY))]);
+const reading = () => P.newestReading({ dirs: P.stateDirs({ self: A, root }), now: real });
+t('DS-342 AC1 unit: both windows come from the newest event, not the latest reset', JSON.stringify([reading().five_hour, reading().seven_day]), JSON.stringify([win(0.1, 4 * HOUR), win(0.94, 2 * DAY)]));
+t('DS-342 AC4 unit: weekly pacing judges on the same 7-day reading', JSON.stringify(P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })), JSON.stringify(reading().seven_day));
+log(B, 'B-1', [both(win(0.05, 4 * HOUR), win(0.9, 2 * DAY)), both(win(0.1, 4 * HOUR), null)]);
+t('DS-342 AC2 unit: a window the newest event lacks comes from the newest event that has it', JSON.stringify([reading().five_hour, reading().seven_day]), JSON.stringify([win(0.1, 4 * HOUR), win(0.9, 2 * DAY)]));
 // A log over the 1 MB tail: the tail's newest reading, and the whole log when the tail has none.
 const filler = Array(12000).fill(JSON.stringify({ type: 'user', pad: 'x'.repeat(100) }));
 log(A, 'A-1', [event(0.3, resetIn(real, 2 * DAY)), ...filler, event(0.45, resetIn(real, 2 * DAY)), ...filler.slice(0, 10)]);
@@ -86,7 +96,8 @@ t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({
 const dirsOf = (self) => JSON.stringify(P.stateDirs({ self, root }).sort());
 t('DS-305 AC5 unit: with only standing batches, the directories are the repos\'', dirsOf(A), JSON.stringify([A, B]));
 const X = join(A, 'batches', 'X-1');
-log(X, 'X-2', [event(0.7, resetIn(real, 2 * DAY))]);
+utimesSync(join(B, 'logs', 'B-2.log.round1.gz'), (real - HOUR) / 1000, (real - HOUR) / 1000);
+log(X, 'X-2',[event(0.7, resetIn(real, 2 * DAY))]);
 mkdirSync(join(A, 'batches', '.done', 'X-0'), { recursive: true });
 t('DS-305 a named batch is listed, an archived one is not', dirsOf(A), JSON.stringify([A, X, B].sort()));
 t('DS-305 AC3 unit: a named batch\'s worker logs count', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.7);
@@ -185,7 +196,7 @@ t('pass AC5: it names the row', /Usage pacing headroom \(points\)" is "five" —
 
 // AC6: this repo's log is under pace; another repo's newer reading is ahead of it.
 w = world({ pacing: '5' });
-log(w.state, 'R-1', [event(0.4, soon(3.5))]);
+log(w.state, 'R-1', [event(0.4, soon(3.5))], HOUR);
 log(join(root, 'acme__other'), 'O-1', [event(0.62, soon(3.5))]);
 out = await w.run();
 t('pass AC6: the other repo\'s newer reading holds this repo\'s spawns', w.ticket('Y-1'), 'triaged');
