@@ -45,7 +45,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
 import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { startRefresh, readCache, chargesByName, isFull } from './cost-cache.mjs';
-import { readCosts } from './costs.mjs';
+import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -1030,9 +1030,41 @@ function monthText(p) {
   return isFull(p) ? month : `${month}, 1–${Number(p.to.slice(8))}`;
 }
 
+// A figure not read today: its supplier, the day of its last good reading and how many days back.
+const daysAgo = (n) => `${n} day${n === 1 ? '' : 's'} ago`;
+const dayMonth = (t) => dmy(t).split(' ').slice(1).join(' ');
+function staleReads(x, now) {
+  return (x.reads ?? []).filter((r) => r.at != null && calendarDays(r.at, now) < 0)
+    .map((r) => ({ ...r, days: -calendarDays(r.at, now), failedToday: r.failedAt != null && r.failedAt > r.at && calendarDays(r.failedAt, now) === 0 }))
+    .sort((a, b) => b.days - a.days);
+}
+const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+
+// What a row's figure leaves out, one tag: a bill that can't be read, a figure not read today, use
+// AWS credits covered, a name with no repo, CI minutes GitHub discounted in full.
+function costTag(x, { now, suppliersOf, repoless }) {
+  if (x.cantRead) return [`◌ can't read: billed to ${SUPPLIER_LABEL[x.cantRead.supplier]} account ${x.cantRead.account}`, GREY];
+  const stale = staleReads(x, now)[0];
+  if (stale) return [`◌ ${SUPPLIER_LABEL[stale.supplier]} last read ${dayMonth(stale.at)}, ${daysAgo(stale.days)}`, GREY];
+  if (x.credits > 0) return [`▲ credits covered ${usd(x.credits)}`, WARN];
+  if (repoless.has(x.name)) return [`${andList(suppliersOf(x.name).map((s) => SUPPLIER_LABEL[s]))} only, no repo in desk`, GREY];
+  if (x.free) return ['public, so its CI is free', GREY];
+  return null;
+}
+
+// The bill `o` opens for a row: its largest supplier's, else the first it is billed by. The shared
+// row's is its largest shared line's.
+function billOf(x, { costs, c }) {
+  if (x.name === 'shared') { const p = c.sharedParts[0]; return p ? billingUrl(p.supplier, { team: p.team }) : null; }
+  const mine = costs.entries.filter((e) => e.name === x.name);
+  const top = Object.entries(x.by ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? SUPPLIERS.find((s) => mine.some((e) => e.supplier === s));
+  return top ? billingUrl(top, { team: mine.find((e) => e.supplier === top)?.team }) : null;
+}
+
 // Every name's charge this month, most first, then shared and the total, under a line with the total
-// by supplier. A name the cost sources list with no figure reads –.
-function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false } = {}) {
+// by supplier. A name the cost sources list with no figure reads –. A row ends in what its figure
+// leaves out, the total in how many figures were not read today, and a note under them says each.
+function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
   const c = chargesByName({ cache, names: [...new Set(costs.entries.map((e) => e.name))] });
@@ -1042,9 +1074,25 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
   const aw = Math.max(10, usd(c.total).length + 3);
-  const rows = lines.map((x) => segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null]], null));
+  const suppliersOf = (name) => SUPPLIERS.filter((s) => costs.entries.some((e) => e.name === name && e.supplier === s));
+  const repoless = new Set(costs.entries.filter((e) => !costs.entries.some((o) => o.name === e.name && o.repo)).map((e) => e.name));
+  const sharedTag = c.sharedParts.length ? [c.sharedParts.map((p) => `${SUPPLIER_LABEL[p.supplier]} ${p.label} ${usd(p.total)}`).join(' · '), GREY] : null;
+  const rows = lines.map((x) => {
+    const tag = x.name === 'shared' ? sharedTag : costTag(x, { now, suppliersOf, repoless });
+    const r = segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], null);
+    return { ...r, bill: billOf(x, { costs, c }) };
+  });
+  const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
+  const most = Math.max(0, ...stale.map((r) => r.days));
+  const includes = stale.length ? [['  ', null], [`includes ${stale.length} bill${stale.length === 1 ? '' : 's'} from ${stale.every((r) => r.days === most) ? '' : 'up to '}${daysAgo(most)}`, GREY]] : [];
+  const notes = [
+    ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits are covering ${usd(c.credits)} of use. It becomes a charge when they run out.`, null]] }] : []),
+    ...stale.map((r) => ({ tag: `◌ ${r.name}`, sgr: GREY, text: [[r.failedToday
+      ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
+      : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
+  ];
   return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
-    foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD]]), ...foot] };
+    foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes]), ...(notes.length ? ['', ...noteLines(notes, nw, width)] : []), ...foot] };
 }
 
 export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
@@ -2158,7 +2206,7 @@ function step(rows, i, d) {
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
 const KEY = /^(←→ or 1–5|\+ −|\S+) (.+)$/;
-const MOVES_ON = /^(select|open|view|back|scroll)\b/;
+const MOVES_ON = /^(select|open(?! the bill)|view|back|scroll)\b/;
 function keyLines(s, w) {
   const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
   const text = (list) => list.map(([k, d]) => (d ? `${k} ${d}` : k)).join(' · ');
@@ -2252,7 +2300,7 @@ export function interactive({
     const own = r?.q && !r.error ? [r] : null;
     if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     // Costs carry the Claude usage line but none of home's batch lines.
-    if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${VIEW_KEYS} · ${cmdKeys}` };
+    if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true, width: w }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
       const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null, pinUsage: true };
@@ -2542,6 +2590,10 @@ export function interactive({
       const r = repoOf(view.slug);
       if (r && existsSync(logPath(r, view.key))) go({ ...view, kind: 'log' });
       else msg = `${view.key} has no log yet.`;
+    } else if (str === 'o' && view.kind === 'overview' && tab === 'costs') {
+      const x = rows[sel];
+      if (!x?.bill) msg = x ? `No billing page to open for ${x.id.replace(/^cost /, '')}.` : 'No row to open the bill of.';
+      else { try { opener(x.bill); msg = `Opened ${x.bill}`; } catch (e) { msg = `Could not open ${x.bill}: ${describeCrash(e)}`; } }
     } else if (str === 'o' && view.kind === 'ticket') {
       const url = jiraUrlFor(repoOf(view.slug)?.slug ?? view.slug, view.key);
       if (!url) msg = `No Jira site in ${repoOf(view.slug)?.name ?? view.slug}'s config, so there is nothing to open.`;

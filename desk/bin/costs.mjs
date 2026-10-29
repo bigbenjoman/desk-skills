@@ -364,6 +364,16 @@ export function costsByName(costs) {
   return out;
 }
 
+// ---- billing pages ---------------------------------------------------------------------------
+// Each supplier's page for what it charged this month. Vercel's is the team's; AWS's is Cost
+// Explorer, which opens on whichever account the browser is signed in to.
+export function billingUrl(supplier, { team } = {}) {
+  if (supplier === 'github') return 'https://github.com/settings/billing/usage';
+  if (supplier === 'vercel') return team ? `https://vercel.com/${team}/~/usage` : null;
+  if (supplier === 'aws') return 'https://console.aws.amazon.com/costmanagement/home#/cost-explorer';
+  return null;
+}
+
 // ---- what the conversation is shown ----------------------------------------------------------
 const detail = (e) => {
   if (e.supplier === 'github') return `account ${e.account}, ${e.readable == null ? 'readable unknown (gh signed out)' : e.readable ? 'readable' : 'not readable: another account'}`;

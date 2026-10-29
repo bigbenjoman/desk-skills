@@ -438,28 +438,69 @@ const periodOf = (r, s) => (s === 'aws' ? newest(Object.values(r.profiles ?? {})
 // A profile whose last good figures are from another month has no figure this month.
 const figureIn = (e, s, period) => (s === 'aws' && !(e?.lines && samePeriod(e.period, period)) ? undefined : figure(e));
 
+// A GitHub item's name on the shared line: "storage", "Actions minutes", else its product.
+const githubLabel = (i) => (/storage/i.test(i.sku) ? 'storage' : /minute/i.test(i.unit) ? 'Actions minutes' : i.product || i.sku);
+// A Vercel line's name on the shared line: "Pro plan", its seats or service, else its project.
+const vercelLabel = (l) => (l.kind === 'plan' ? `${l.label} plan` : l.kind === 'project' ? l.project : l.label);
+
+// Each figure's reading, by name: the time of each source's last good reading and of its last
+// failed attempt. Vercel's names are read with their team.
+function readsOf(r, s, period) {
+  const out = [];
+  if (s === 'vercel') {
+    for (const t of Object.values(r.teams ?? {})) {
+      if (!t?.lines) continue;
+      for (const name of new Set(t.lines.filter((l) => l.name != null).map((l) => l.name))) out.push({ name, at: t.at, failedAt: t.failed?.at ?? null });
+    }
+    return out;
+  }
+  for (const [key, e] of named(r, s)) if (typeof figureIn(e, s, period) === 'number') out.push({ name: e?.name ?? key, at: e.at, failedAt: e.failed?.at ?? null });
+  return out;
+}
+
+// What no name owns, line by line: GitHub's items by account, Vercel's lines charged to no name.
+function sharedPartsOf(r, s) {
+  if (s === 'github') return Object.values(r.shared ?? {}).flatMap((a) => (a?.items ?? []).map((i) => ({ label: githubLabel(i), c: Math.round(i.charged * 100) })));
+  if (s === 'vercel') return Object.values(r.teams ?? {}).flatMap((t) => (t?.lines ?? []).filter((l) => l.name == null).map((l) => ({ label: vercelLabel(l), c: Math.round(l.charged * 100), team: t.team })));
+  return [];
+}
+
 // This month's charges by name, from the newest reading's month: suppliers read for an earlier month
 // are left out. Every sum is taken in whole cents, so the lines add up to the total exactly.
-// names: every name the cost sources list, so one with no figure still has a row.
-//   -> { period, total, suppliers: [{ supplier, total }], names: [{ name, total | null }], shared | null },
+// names: every name the cost sources list, so one with no figure still has a row. Each name carries
+// what explains its figure: its total by supplier, what AWS credits covered, the GitHub account it
+// can't be read from, whether its CI minutes were all discounted in full, and when each supplier's
+// figure was read (the oldest source's, with its newest failed attempt).
+//   -> { period, total, suppliers: [{ supplier, total }],
+//        names: [{ name, total | null, by: { supplier: usd }, credits, cantRead | null, free, reads: [{ supplier, at, failedAt }] }],
+//        shared | null, sharedParts: [{ supplier, label, total, team? }], credits },
 //      most charged first; null with no reading
 export function chargesByName({ cache, names = [] }) {
   const read = Object.keys(BILLED_BY).filter((s) => cache?.[s] && periodOf(cache[s], s) && hasFigure(cache[s], s));
   if (!read.length) return null;
   const period = newest(read.map((s) => periodOf(cache[s], s)));
-  const by = new Map(names.map((n) => [n, null]));
+  const by = new Map();
+  const row = (name) => {
+    if (!by.has(name)) by.set(name, { name, c: null, by: {}, credits: 0, cantRead: null, minutes: 0, freeMinutes: 0, reads: {} });
+    return by.get(name);
+  };
+  for (const n of names) row(n);
   const suppliers = [];
+  const parts = new Map();
   let shared = null;
   for (const s of read.filter((x) => samePeriod(periodOf(cache[x], x), period))) {
     let sum = 0;
     for (const [key, e] of named(cache[s], s)) {
-      const name = e?.name ?? key;
-      if (!by.has(name)) by.set(name, null);
+      const n = row(e?.name ?? key);
+      if (s === 'github' && e?.cantRead) n.cantRead = { supplier: s, account: e.cantRead.account };
       const f = figureIn(e, s, period);
       if (typeof f !== 'number') continue;
       const c = Math.round(f * 100);
-      by.set(name, (by.get(name) ?? 0) + c);
+      n.c = (n.c ?? 0) + c;
+      n.by[s] = (n.by[s] ?? 0) + c;
       sum += c;
+      if (s === 'aws') n.credits += (e.lines ?? []).reduce((a, l) => a + Math.round((l.credits ?? 0) * 100), 0);
+      for (const i of s === 'github' ? (e.items ?? []).filter((x) => /minute/i.test(x.unit)) : []) { n.minutes++; if (i.discount === 'full') n.freeMinutes++; }
     }
     for (const e of sharedOf(cache[s])) {
       if (typeof figure(e) !== 'number') continue;
@@ -467,13 +508,25 @@ export function chargesByName({ cache, names = [] }) {
       shared = (shared ?? 0) + c;
       sum += c;
     }
+    for (const p of sharedPartsOf(cache[s], s).filter((x) => x.c > 0)) {
+      const k = `${s}\u0000${p.label}\u0000${p.team ?? ''}`;
+      parts.set(k, { supplier: s, label: p.label, c: (parts.get(k)?.c ?? 0) + p.c, ...(p.team ? { team: p.team } : {}) });
+    }
+    for (const r of readsOf(cache[s], s, period)) {
+      const had = row(r.name).reads[s];
+      row(r.name).reads[s] = { supplier: s, at: had ? Math.min(had.at, r.at) : r.at, failedAt: Math.max(had?.failedAt ?? 0, r.failedAt ?? 0) || null };
+    }
     suppliers.push({ supplier: s, total: sum });
   }
   const total = suppliers.reduce((a, s) => a + s.total, 0);
-  const rows = [...by].map(([name, c]) => ({ name, total: c == null ? null : c / 100 }))
+  const rows = [...by.values()].map((n) => ({ name: n.name, total: n.c == null ? null : n.c / 100,
+    by: Object.fromEntries(Object.entries(n.by).map(([s, c]) => [s, c / 100])), credits: n.credits / 100, cantRead: n.cantRead,
+    free: n.minutes > 0 && n.freeMinutes === n.minutes, reads: Object.values(n.reads) }))
     .sort((a, b) => (b.total ?? -1) - (a.total ?? -1) || a.name.localeCompare(b.name));
   return { period, total: total / 100, suppliers: suppliers.map((s) => ({ ...s, total: s.total / 100 })).sort((a, b) => b.total - a.total),
-    names: rows, shared: shared == null ? null : shared / 100 };
+    names: rows, shared: shared == null ? null : shared / 100,
+    sharedParts: [...parts.values()].map(({ c, ...p }) => ({ ...p, total: c / 100 })).sort((a, b) => b.total - a.total),
+    credits: rows.reduce((a, n) => a + Math.round(n.credits * 100), 0) / 100 };
 }
 
 // Each supplier's sources in costs.md.

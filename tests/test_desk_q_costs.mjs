@@ -1,9 +1,9 @@
 // suite: desk-q Costs tab (every name's charge this month)
 // desk-q against the October fixture cost cache and cost sources (tests/fixtures/costs-october), a
 // fixed clock and a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT and cost directory. One check or more
-// per acceptance criterion of DS-290; AC4-AC7 (Costs off home) are in test_desk_q.mjs beside the
-// other tab checks.
-import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+// per acceptance criterion of DS-290 and of DS-291 (each row's tag and note, o to a billing page);
+// DS-290's AC4-AC7 (Costs off home) are in test_desk_q.mjs beside the other tab checks.
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,27 +47,37 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-// The interactive screen on the fixed clock, with no probe or cost reading started.
+// The interactive screen on the fixed clock, with no probe or cost reading started; what it opens is
+// kept in `opened`.
 function screen(start = { kind: 'overview', all: false }, columns = 104) {
   const input = new PassThrough();
   Object.assign(input, { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns, rows: 50, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-  const ui = Q.interactive({ input, output, start, exit() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }), costWith: () => ({ started: false }) });
+  const opened = [];
+  const ui = Q.interactive({ input, output, start, exit() {}, refreshMs: 600000, clock: () => FIXED, opener: (u) => opened.push(u), probeWith: async () => ({ ran: false }), costWith: () => ({ started: false }) });
   const raw = () => output.buf.split('\x1b[H').at(-1).split('\r\n');
   const frame = () => raw().map((l) => l.replace(ANSI, ''));
   return {
-    ui, frame,
+    ui, frame, raw, opened,
     press: async (s) => { input.write(s); await sleep(20); },
     crumbs: () => frame()[0].replace(/ · \d\d:\d\d$/, ''),
     tabOn: () => /\x1b\[7m([^\x1b]+)\x1b\[27m/.exec(raw()[1] ?? '')?.[1] ?? null,
   };
 }
-const row = (name, amount) => `  ${name.padEnd(14)}${amount.padStart(10)}`;
+const row = (name, amount, tag) => `  ${name.padEnd(14)}${amount.padStart(10)}${tag ? `  ${tag}` : ''}`;
 const CHARGED = 'charged $899.97 in October, 1–26 │ GitHub $620.52 · AWS $175.88 · Vercel $103.57';
+// The fixture's forewatt AWS reading is from 25 Oct and its attempt on 27 Oct failed.
+const STALE = '◌ AWS last read 25 Oct, 2 days ago';
 const TABLE = [
   `  ${'REPO'.padEnd(14)}${'CHARGED'.padStart(10)}`,
-  row('voicepa', '$317.11'), row('pr-ninja', '$277.48'), row('forewatt', '$119.42'), row('desk-skills', '$110.45'), row('fansurge', '$55.19'),
-  row('yield-index', '$0.48'), row('gygg-platform', '$0.23'), row('pranicuk', '–'), row('shared', '$19.61'), row('total', '$899.97'),
+  row('voicepa', '$317.11'), row('pr-ninja', '$277.48', '▲ credits covered $31.73'), row('forewatt', '$119.42', STALE), row('desk-skills', '$110.45'),
+  row('fansurge', '$55.19', 'AWS only, no repo in desk'), row('yield-index', '$0.48', '▲ credits covered $29.51'), row('gygg-platform', '$0.23'),
+  row('pranicuk', '–', "◌ can't read: billed to GitHub account pranichealinguk"), row('shared', '$19.61', 'Vercel Pro plan $17.05 · GitHub storage $2.56'),
+  row('total', '$899.97', 'includes 1 bill from 2 days ago'),
+];
+const NOTES = [
+  'note  ▲ credits      AWS credits are covering $61.24 of use. It becomes a charge when they run out.',
+  "      ◌ forewatt     Its AWS bill couldn't be read today, so this shows the 25 Oct figure. desk-q tries again every hour.",
 ];
 const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
 const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('move  '));
@@ -118,7 +128,7 @@ const out13 = Q.run(['costs'], { now: FIXED });
 const lines13 = out13.split('\n');
 t('AC13 desk-q costs prints the charged line, a blank line and the table, as plain text',
   `${/\x1b/.test(out13)} | ${lines13.slice(0, 2 + TABLE.length).join('\n')}`, `false | ${[CHARGED, '', ...TABLE].join('\n')}`);
-t('AC13 then a blank line and the Claude usage line', lines13.slice(2 + TABLE.length).join('|'), '|Claude usage  no reading yet');
+t('AC13 then a blank line, the notes unwrapped, a blank line and the Claude usage line', lines13.slice(2 + TABLE.length).join('|'), ['', ...NOTES, '', 'Claude usage  no reading yet'].join('|'));
 const S13 = screen({ kind: 'costs' });
 await sleep(20);
 t('AC13 desk-q costs in a terminal opens home on its Costs tab', `${S13.crumbs()} | ${S13.tabOn()}`, 'desk-q › costs | 5 Costs');
@@ -126,6 +136,77 @@ S13.ui.finish(0);
 let refused = '';
 try { Q.run(['costs', 'voicepa'], { now: FIXED }); } catch (e) { refused = e.message; }
 t('AC13 desk-q costs takes no further words', refused, 'Unknown command "costs voicepa". Try desk-q costs.');
+
+// ---- DS-291: each row's tag and its note, and o to a billing page
+const AMBER = '\x1b[38;5;180m', GREY = '\x1b[38;5;247m';
+let variants = 0;
+const costsAt = async (cache, columns = 104) => {
+  const S = screen(undefined, columns);
+  await sleep(20);
+  if (cache) {
+    process.env.DESK_COST_DIR = join(T, `variant-${++variants}`);
+    mkdirSync(process.env.DESK_COST_DIR);
+    writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify(cache));
+  }
+  await S.press('5');
+  return S;
+};
+const rawRow = (S, name) => S.raw().find((l) => l.replace(ANSI, '').slice(2).startsWith(`${name} `)) ?? '';
+const rowEnd = (S, name) => (S.frame().find((l) => l.slice(2).startsWith(`${name} `)) ?? '').slice(28);
+// A note's text, its wrapped lines joined.
+const noteText = (S, tag) => {
+  const f = S.frame();
+  const i = f.findIndex((l) => l.slice(6).startsWith(tag));
+  if (i < 0) return null;
+  const out = [f[i].slice(21)];
+  for (let j = i + 1; f[j]?.startsWith(' '.repeat(21)); j++) out.push(f[j].trim());
+  return out.join(' ');
+};
+const fixture = () => JSON.parse(readFileSync(join(FIX, 'cache.json'), 'utf8'));
+const MAIN = env.DESK_COST_DIR;
+
+const D = await costsAt(null);
+t('DS-291 AC1 a name AWS credits covered ends in its credits, amber', `${rowEnd(D, 'pr-ninja')} | ${rawRow(D, 'pr-ninja').includes(`${AMBER}▲ credits covered $31.73`)}`, '▲ credits covered $31.73 | true');
+t('DS-291 AC2 a name with no repo in desk names its suppliers, grey', `${rowEnd(D, 'fansurge')} | ${rawRow(D, 'fansurge').includes(`${GREY}AWS only, no repo in desk`)}`, 'AWS only, no repo in desk | true');
+t('DS-291 AC4 a name that can\'t be read reads –, says why in grey, and adds nothing to the total',
+  `${D.frame().find((l) => l.slice(2).startsWith('pranicuk '))?.slice(16, 26).trim()} | ${rowEnd(D, 'pranicuk')} | ${rawRow(D, 'pranicuk').includes(`${GREY}◌ can't read`)} | ${D.frame().some((l) => /^ {2}total +\$899\.97/.test(l))}`,
+  "– | ◌ can't read: billed to GitHub account pranichealinguk | true | true");
+t('DS-291 AC5 a bill whose reading failed today ends in when it was last read, the total in how many are old',
+  `${rowEnd(D, 'forewatt')} | ${rowEnd(D, 'total')}`, `${STALE} | includes 1 bill from 2 days ago`);
+t('DS-291 AC5 and a ◌ forewatt note says why', noteText(D, '◌ forewatt'), "Its AWS bill couldn't be read today, so this shows the 25 Oct figure. desk-q tries again every hour.");
+t('DS-291 AC7 the shared row names its lines, grey', `${rowEnd(D, 'shared')} | ${rawRow(D, 'shared').includes(`${GREY}Vercel Pro plan $17.05 · GitHub storage $2.56`)}`, 'Vercel Pro plan $17.05 · GitHub storage $2.56 | true');
+t('DS-291 AC8 a ▲ credits note says what credits cover', `${noteText(D, '▲ credits')} | ${D.raw().some((l) => l.includes(`${AMBER}▲ credits      `))}`,
+  'AWS credits are covering $61.24 of use. It becomes a charge when they run out. | true');
+const f9 = D.frame();
+const at9 = f9.findIndex((l) => l.slice(6).startsWith('◌ forewatt'));
+t('DS-291 AC9 at 104 columns a note wraps with its text indented under its first line',
+  `${f9[at9]?.endsWith('desk-q tries')} | ${f9[at9 + 1]} | ${f9.every((l) => [...l].length <= 104)}`, `true | ${' '.repeat(21)}again every hour. | true`);
+t('DS-291 AC10 the keys say o opens the bill', D.frame().slice(keysAt(D.frame())).join(' ').includes('o open the bill'), true);
+await D.press('o');
+for (let i = 0; i < 4; i++) await D.press('\x1b[B');
+await D.press('o');
+await D.press('\x1b[B');
+await D.press('o');
+t('DS-291 AC10 o opens the largest supplier\'s billing page: GitHub for voicepa, AWS for fansurge, the team\'s Vercel page for yield-index', D.opened.join(' '),
+  'https://github.com/settings/billing/usage https://console.aws.amazon.com/costmanagement/home#/cost-explorer https://vercel.com/ben-lavenders-projects/~/usage');
+D.ui.finish(0);
+
+// AC3: a public repo whose CI minutes the cache marks as discounted in full.
+const pub = fixture();
+pub.github.repos['bigbenjoman/desk-skills'].items[0] = { ...pub.github.repos['bigbenjoman/desk-skills'].items[0], charged: 0, discount: 'full' };
+pub.github.repos['bigbenjoman/desk-skills'].total = 0;
+const P = await costsAt(pub);
+t('DS-291 AC3 a repo whose CI minutes were all discounted in full ends public, grey', `${rowEnd(P, 'desk-skills')} | ${rawRow(P, 'desk-skills').includes(`${GREY}public, so its CI is free`)}`, 'public, so its CI is free | true');
+P.ui.finish(0);
+
+// AC6: no attempt yet today, the last good reading from 25 Oct.
+const unread = fixture();
+unread.aws.profiles.forewatt.failed = null;
+const U = await costsAt(unread);
+t('DS-291 AC6 a bill not read yet today carries the same tags', `${rowEnd(U, 'forewatt')} | ${rowEnd(U, 'total')}`, `${STALE} | includes 1 bill from 2 days ago`);
+t('DS-291 AC6 and its note says it hasn\'t been read yet', noteText(U, '◌ forewatt'), "Its AWS bill hasn't been read yet today, so this shows the 25 Oct figure.");
+U.ui.finish(0);
+process.env.DESK_COST_DIR = MAIN;
 
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);
@@ -177,7 +258,7 @@ await sleep(20);
 await S10a.press('5');
 const f10a = S10a.frame();
 t('AC10 AWS counts only the profiles read for this month',
-  `${f10a.find((l) => l.startsWith('charged '))} | ${f10a.filter((l) => /^[ ›] (forewatt|fansurge) /.test(l)).map((l) => l.slice(1).trim().split(/\s+/).join(' ')).join(', ')}`,
+  `${f10a.find((l) => l.startsWith('charged '))} | ${f10a.filter((l) => /^[ ›] (forewatt|fansurge) /.test(l)).map((l) => l.slice(1).trim().split(/\s+/).slice(0, 2).join(' ')).join(', ')}`,
   'charged $1.59 in October, 1–26 │ AWS $1.59 | fansurge –, forewatt –');
 S10a.ui.finish(0);
 
