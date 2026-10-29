@@ -1407,6 +1407,17 @@ for (const t of spawnable) {
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
   const kept = existsSync(wt);
+  // A queued branch no worker could push (a convention placeholder left in at triage) is replaced
+  // from the key and summary before setup-worktree.sh cuts it.
+  let renamed = '';
+  if (!kept && t.branch && E.branchProblem(t.branch)) {
+    let summary = null;
+    try { summary = JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8')).summary; } catch { /* key only */ }
+    const fixed = E.branchFor({ key: t.key, type: t.type, summary, from: t.branch });
+    renamed = ` (branch ${t.branch ?? 'none'} was unusable: ${E.branchProblem(t.branch)}; now ${fixed})`;
+    q('set', t.key, `branch=${fixed}`);
+    t.branch = fixed;
+  }
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
   // worktree it could not finish, and a half-built one must not get a worker.
@@ -1488,7 +1499,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.

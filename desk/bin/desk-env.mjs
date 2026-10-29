@@ -23,6 +23,7 @@
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
+//   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs ticket-kind <id>        print tracker|work-id|issue|slug, exit 2 if the id is not accepted
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no),
@@ -417,7 +418,9 @@ function rowFor(id) {
   return r;
 }
 
-// `<slug>` in a value (the template's own path examples) means this repo's slug.
+// `<slug>` in a value (the template's own path examples) means this repo's slug. Not in §5 Branch
+// names, where it is the ticket's own short slug.
+const NO_SLUG_EXPANSION = new Set(['branch-names']);
 const expandSlug = (v) => (typeof v === 'string' && v.includes('<slug>') && currentRepo().slug
   ? v.replaceAll('<slug>', currentRepo().slug) : v);
 
@@ -484,7 +487,8 @@ function configValueIn(parsed, id) {
 function repoValueIn(parsed, id) {
   const { section, row } = rowFor(id);
   const e = parsed.sections[section]?.byName[norm(row)];
-  return unset(e?.value) ? null : expandSlug(e.value);
+  if (unset(e?.value)) return null;
+  return NO_SLUG_EXPANSION.has(id) ? e.value : expandSlug(e.value);
 }
 
 // A repo memory ceiling above the machine profile's reads as the machine's.
@@ -951,6 +955,27 @@ export function ticketKind(key) {
   return { ok: false, error: `'${k}' is not ${want.join(', or ') || 'a ticket id this config accepts'}` };
 }
 
+// ---- branch names ----------------------------------------------------------------------------
+// A ticket's branch is pushed by name, so a convention placeholder left in it (`<slug>`), a space,
+// or anything `git check-ref-format --branch` refuses makes it unusable (git itself accepts < and >).
+// -> why it is unusable, or null
+export function branchProblem(name) {
+  const b = String(name ?? '');
+  if (!b) return 'it is empty';
+  if (/[<>]/.test(b)) return 'it still holds a <placeholder>';
+  if (/\s/.test(b)) return 'it holds a space';
+  try { execFileSync('git', ['check-ref-format', '--branch', b], { stdio: 'ignore' }); } catch { return '`git check-ref-format --branch` refuses it'; }
+  return null;
+}
+// A usable branch for a ticket from its key and summary: the prefix an unusable branch already had,
+// else the one its issue type takes.
+const BRANCH_PREFIX = { bug: 'fix', chore: 'chore' };
+export function branchFor({ key, type, summary, from }) {
+  const prefix = /^([a-z]+)\//.exec(String(from ?? ''))?.[1] ?? BRANCH_PREFIX[String(type ?? '').toLowerCase()] ?? 'feat';
+  const words = String(summary ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 6);
+  return [`${prefix}/${key}`, ...words].join('-');
+}
+
 // ---- memory --------------------------------------------------------------------------------
 // Two numbers answer two different questions; see the autopilot skill's memory section.
 //   avail: is there room to START something?  Linux MemAvailable; macOS free+inactive+purgeable+speculative.
@@ -1203,6 +1228,11 @@ if (isMain) {
         const r = ticketKind(args[0]);
         if (!r.ok) { console.error(`desk: ${r.error}`); process.exit(2); }
         console.log(r.kind);
+        break;
+      }
+      case 'branch-check': {
+        const why = branchProblem(args[0]);
+        if (why) { console.error(`desk: branch '${args[0] ?? ''}' is not usable: ${why}`); process.exit(1); }
         break;
       }
       case 'perm-or-unset': {

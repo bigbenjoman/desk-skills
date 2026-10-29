@@ -149,7 +149,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "summary": "<one line>",
   "lane": "A|B|C|D|E",
   "lane_reason": "<the specific signal that chose it, in the routing file's terms>",
-  "branch": "<this repo's branch convention, $BRANCH_CONV, with <TICKET> = $TICKET>",
+  "branch": "<this repo's branch convention, $BRANCH_CONV, with <TICKET> = $TICKET and every other <...> placeholder filled in: <type> from the issue type, a slug as two to five lower-case kebab words of the summary. No < or > and no spaces may remain>",
   "files_in_scope": ["repo-relative paths you expect to change"],
   "change_kind": "relocate|schema|shared|surface",
   "change_kind_reason": "<one clause: what it moves, the schema or shared code it changes, or the surface it touches>",
@@ -181,6 +181,14 @@ if [ ! -f "$OUT" ]; then
 fi
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+# A branch the worker could never push is refused, and the record goes with it, so the ticket is
+# triaged again rather than queued on that branch.
+BRANCH=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).branch)' "$OUT")
+if ! WHY=$(node "$DESK_ENV_MJS" branch-check "$BRANCH" 2>&1); then
+  rm -f "$OUT"
+  echo "FAIL: $TICKET triage record is malformed: ${WHY#desk: }. Triage it again." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Lane challenge. Only C and D get one, because only they are terminal: an

@@ -51,7 +51,7 @@ cat > "$T/stub/claude" <<'EOF'
 n=$(ls "$STUB_LOG".* 2>/dev/null | wc -l | tr -d ' ')
 printf '%s\0' "$@" > "$STUB_LOG.$n"
 if [ "$n" = 0 ]; then
-  printf '{"ticket":"fix-thing","lane":"%s","branch":"fix/fix-thing","change_kind":"%s"%s}' "$STUB_LANE" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/fix-thing.json"
+  printf '{"ticket":"fix-thing","lane":"%s","branch":"%s","change_kind":"%s"%s}' "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/fix-thing.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
   printf '%s' "$STUB_CHAL" > "$DESK_STATE/triage/fix-thing.challenge.json"
@@ -125,9 +125,32 @@ for k in '' 'move'; do
   out=$(STUB_KIND="$k" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
   check "AC1: a record whose change kind is '$k' is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
 done
+# DS-346: a branch with the convention's placeholder left in (DS-345's own triage output) is refused
+# and not recorded; one git accepts is kept as written. The prompt names every placeholder.
+for br in 'fix/DS-345-<slug>' 'fix/DS-345 two words' 'fix/DS-345..x'; do
+  rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+  out=$(STUB_BRANCH="$br" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+  check "DS-346 AC1: a record whose branch is '$br' is refused and not kept" \
+    '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]] && [ ! -f "$T/state/triage/fix-thing.json" ]'
+done
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_BRANCH='fix/DS-345-triage-branch-placeholder' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-346 AC2: a branch git accepts is kept as written" \
+  '[ $rc -eq 0 ] && [ "$(jq -r .branch "$T/state/triage/fix-thing.json")" = fix/DS-345-triage-branch-placeholder ]'
+check "DS-346: the prompt asks for every <...> placeholder to be filled" \
+  'tr "\0" "\n" < "$STUB_LOG.0" | grep -qF "every other <...> placeholder filled in"'
+cat >> "$T/config.md" <<'EOF'
+
+## 5. Conventions
+| Field | Value |
+|---|---|
+| Branch names | `<type>/<slug>` |
+EOF
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "triage settings: git ls-tree on any ref"                        'permits "git ls-tree -r --name-only origin/main -- desk" && permits "git ls-tree HEAD"'
+check "DS-346: §5 Branch names reaches the prompt with its <slug> kept, not the repo slug" \
+  'tr "\0" "\n" < "$STUB_LOG.0" | grep -qF "this repo'"'"'s branch convention, <type>/<slug>, with"'
+check "triage settings: git ls-tree on any ref"                       'permits "git ls-tree -r --name-only origin/main -- desk" && permits "git ls-tree HEAD"'
 check "triage settings: branch listing allowed"                         'permits "git branch -a" && permits "git branch -r" && permits "git branch --list -r"'
 check "triage settings: branch -r/-a cannot delete"                     '! permits "git branch -r -d origin/x" && ! permits "git branch -a -D x" && ! permits "git branch -rd origin/x"'
 check "triage settings: fetch and -C refused"                           '! permits "git fetch" && ! permits "git fetch origin" && ! permits "git -C /x log"'

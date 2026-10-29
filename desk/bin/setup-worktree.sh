@@ -73,7 +73,7 @@ cfg_items() {
 }
 
 case "$BRANCH" in
-  -*|*..*|*' '*|*.lock|/*|*/) fail "branch '$BRANCH' is not a usable branch name" ;;
+  -*|*..*|*' '*|*'<'*|*'>'*|*.lock|/*|*/) fail "branch '$BRANCH' is not a usable branch name" ;;
 esac
 [ "$BRANCH" != "$DESK_DEFAULT_BRANCH" ] || fail "refusing to set up a ticket worktree on the default branch ($BRANCH)"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || fail "branch '$BRANCH' is not a valid git branch name"
