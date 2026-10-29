@@ -103,28 +103,42 @@ export function lanePark(r) {
     : `lane ${r.lane} — ${why.slice(0, 160)}`;
 }
 
-// A held ticket is still going somewhere only while it can still be released: every predecessor is
-// either progressing (running, waiting to spawn, done with a PR that is open, or itself held and
-// going somewhere) or merged (done with a merged PR: the release is due). One predecessor that cannot
-// get there (failed, parked for a reason of its own, finished with no PR, a PR closed unmerged, never
-// admitted, missing) means it waits on a person, and so does a hold with no recorded blocker.
-// `prState(n)` gives a PR's state when the caller looked it up ('OPEN' | 'MERGED' | 'CLOSED'); unknown
-// counts as open.
-export function waitingOnMerge(q, t, prState = () => null, seen = new Set()) {
+// Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every
+// predecessor is progressing (running, waiting to spawn, done with a PR that is open, or itself held
+// and going somewhere) or merged (done with a merged PR: the release is due), or null when one
+// predecessor can never get there and nobody is already being asked about it (finished with no PR, a
+// PR closed unmerged, never admitted, dropped or missing), and for a hold with no recorded blocker.
+// A predecessor failed or parked for a reason of its own is already a question for the person, so the
+// tickets behind it wait on that answer. `prState(n)` gives a PR's state when the caller looked it up
+// ('OPEN' | 'MERGED' | 'CLOSED'); unknown counts as open.
+function holdLeadsTo(q, t, prState, seen) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
-  if (!isHeld(t) || seen.has(t)) return false;
+  if (!isHeld(t) || seen.has(t)) return null;
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
-  const ok = preds.length > 0 && preds.every((p) => {
+  let parks = preds.length > 0 ? [] : null;
+  for (const p of preds) {
     const pt = q.tickets?.[p];
-    if (!pt) return false;
-    if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) return true;
-    if (pt.state === 'done') return pt.result?.pr != null && prState(pt.result.pr) !== 'CLOSED';
-    return waitingOnMerge(q, pt, prState, seen);
-  });
+    if (!pt) parks = null;
+    else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
+    else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
+    else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
+    else { const up = holdLeadsTo(q, pt, prState, seen); parks = up && [...parks, ...up]; }
+    if (!parks) break;
+  }
   seen.delete(t);
-  return ok;
+  return parks && [...new Set(parks)];
+}
+
+// A held ticket is still going somewhere on its own: every predecessor progressing or merged.
+export const waitingOnMerge = (q, t, prState = () => null) => holdLeadsTo(q, t, prState, new Set())?.length === 0;
+
+// The parked or failed tickets a held ticket waits on, or null: it waits on their answer, and is not a
+// question of its own. Null too when it waits on a merge or is stuck.
+export function waitingOnPark(q, t, prState = () => null) {
+  const parks = holdLeadsTo(q, t, prState, new Set());
+  return parks?.length ? parks : null;
 }
 
 // The batch's worker count and whose it is. `concurrency_by: 'user'` marks a count the user set,

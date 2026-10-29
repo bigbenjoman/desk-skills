@@ -115,10 +115,30 @@ pj
 check "pass: a ticket that fails this pass exits 11 while others run" '[ $rc -eq 11 ] && [ "$(js .status)" = show_person ] && js ".waiting[]" | grep -q "^T-9: exited with no marker"'
 q drop T-9
 
-# A blocker that can no longer merge leaves its held ticket stuck.
+# A failed or parked blocker is the person's question already: what is held behind it waits on that
+# answer, at any depth, and is not asked again.
 q set T-1 state=failed session_id=null
 pj
-check "pass: a failed ticket and its stuck successor exit 11"   '[ $rc -eq 11 ] && [ "$(js ".stuck | join(\",\")")" = T-2 ] && js ".waiting[]" | grep -q "^T-1: FAILED" && js ".waiting[]" | grep -q "^T-2: STUCK"'
+check "DS-332 AC1: a failed blocker exits 11, and its successor waits on it, not STUCK" '[ $rc -eq 11 ] && [ "$(js ".stuck | length")" = 0 ] && [ "$(js ".on_park | join(\",\")")" = T-2 ] && js ".waiting[]" | grep -q "^T-1: FAILED" && ! js ".waiting[]" | grep -q "^T-2"'
+check "DS-332 AC1: the report says what it waits on"             'js .message | grep -q "WAITING ON A PARK: T-2 (T-1)" && ! js .message | grep -q STUCK'
+q add T-3; q set T-3 state=triaged lane=A branch=fix/T-3; q hold T-3 T-2
+q park T-1 "which helper should the spec use?"
+pj
+check "DS-332 AC1: behind a parked blocker, every dependant waits on its park" '[ $rc -eq 11 ] && [ "$(js ".on_park | join(\",\")")" = T-2,T-3 ] && [ "$(js ".stuck | length")" = 0 ] && js .message | grep -q "T-3 (T-1)"'
+check "DS-332 AC2: the park is the one question; the dependants are not under waiting or parked" '[ "$(js "[.parked[].key] | join(\",\")")" = T-1 ] && ! js ".waiting[]" | grep -q "^T-[23]"'
+check "DS-332 AC2: NOTIFY counts the park once"                  'js .message | grep -q "^NOTIFY: 1 item(s) need you — T-1$"'
+# A blocker that can no longer merge and that nobody is asked about leaves its held tickets stuck.
+q set T-1 state=done park=null
+pj
+check "DS-332 AC3: a blocker done with no PR leaves its dependants STUCK" '[ $rc -eq 11 ] && [ "$(js ".stuck | join(\",\")")" = T-2,T-3 ] && [ "$(js ".on_park | length")" = 0 ] && js ".waiting[]" | grep -q "^T-2: STUCK"'
+q drop T-3
+q add T-4; q set T-4 state=triaged lane=A branch=fix/T-4; q add T-5; q set T-5 state=failed; q hold T-4 T-5
+pj
+check "DS-332 AC1: held behind a failed blocker waits on it"      '[ "$(js ".on_park | join(\",\")")" = T-4 ] && ! js ".waiting[]" | grep -q "^T-4"'
+q drop T-5
+pj
+check "DS-332 AC3: once that blocker is dropped, its dependant is STUCK" '[ "$(js ".stuck | join(\",\")")" = T-2,T-4 ] && [ "$(js ".on_park | length")" = 0 ] && js ".waiting[]" | grep -q "^T-4: STUCK — held behind T-5"'
+q drop T-4
 
 # Every blocker merged and no merge driver running: the release is the person's.
 q set T-1 state=done result.pr=7

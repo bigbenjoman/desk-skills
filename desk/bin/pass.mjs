@@ -9,7 +9,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -64,7 +64,7 @@ function verdict(status, message, fields = {}) {
   if (status === 'error') recordPass((prev) => ({ errors: (Number(prev.errors) || 0) + 1, error: String(message).trim().split('\n')[0] }));
   const code = CODES[status];
   if (AS_JSON) {
-    console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, push: [], release_due: [], stuck: [], ...fields }));
+    console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, push: [], release_due: [], stuck: [], on_park: [], ...fields }));
   } else if (status === 'error') console.error(message);
   else console.log(message);
   return code;
@@ -1838,7 +1838,11 @@ const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every((
 const spinesOf = (t) => predsOf(t).filter((p) => spinePark(qNow.tickets[p]));
 const onApproval = heldNow.filter((t) => spinesOf(t).length && waitingOnMerge(qNow, t, prState));
 const onMerge = heldNow.filter((t) => waitingOnMerge(qNow, t, prState) && !releaseDue.includes(t) && !onApproval.includes(t));
-const stuck = heldNow.filter((t) => !waitingOnMerge(qNow, t, prState));
+// Held behind a failed or parked ticket waits on the person's answer there, which is asked once.
+const parksOf = new Map(heldNow.map((t) => [t, waitingOnPark(qNow, t, prState)]).filter(([, p]) => p));
+const onPark = [...parksOf.keys()];
+const stuck = heldNow.filter((t) => !waitingOnMerge(qNow, t, prState) && !parksOf.has(t));
+if (onPark.length) out.push(`WAITING ON A PARK: ${onPark.map((t) => `${t.key} (${parksOf.get(t).join(', ')})`).join(', ')}: answered there, not asked again`);
 if (onApproval.length) out.push(`WAITING ON APPROVAL: ${onApproval.map((t) => `${t.key} (spine ${spinesOf(t).join(', ')})`).join(', ')}`);
 if (onMerge.length) out.push(`WAITING ON MERGE: ${onMerge.map((t) => `${t.key} (${predsOf(t).join(', ')})`).join(', ')}`);
 for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'approval')) {
@@ -1881,7 +1885,7 @@ for (const t of releaseDue) {
   if (driverLive) out.push(`release due: ${t.key} (every blocker merged; the merge driver releases it on its next loop)`);
   else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running: release it (${E.releaseCommand(t.key)})`);
 }
-for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (failed, parked, no PR, or a closed PR): decide whether it waits, is released, or is dropped`);
+for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (no PR, a closed PR, or not in the batch): decide whether it waits, is released, or is dropped`);
 // A failed ticket waits on the person until it is requeued or dropped. This pass's failures are
 // printed under `failed:` with their reason, and reach the verdict's `waiting` from there.
 const failedThisPass = new Set(report.failed.map((x) => x.split(':')[0]));
@@ -2178,4 +2182,5 @@ recordPass((prev) => {
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
   waiting, parked, push, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
+  on_park: onPark.map((t) => t.key),
 });
