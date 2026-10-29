@@ -497,6 +497,9 @@ if (mode === 'triage') {
   ]);
   grant('worker-screenshots', shots, []);
 
+  // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
+  grant('worker-web-read', ['WebSearch', 'WebFetch']);
+
   // Starting a §4 Local services entry, detached, by its compose service name (each item's first
   // word). Compose names a project after its directory, so from a worktree a bare `up` would start a
   // second stack: the one form allowed reads the main checkout's compose file, the shared project,

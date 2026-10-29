@@ -548,7 +548,8 @@ function decide(state, s, v, q, now = new Date()) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
     return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`];
   }
-  s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'), cwd: process.cwd(), now });
+  s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
+    webRead: E.permission('worker-web-read') === 'yes', cwd: process.cwd(), now });
   return [...lines, `decider: started (pid ${s.decider.pid}) for ${fresh.map((i) => i.ticket).join(', ')}; its output is ${s.decider.out}`];
 }
 

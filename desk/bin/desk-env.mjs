@@ -202,6 +202,7 @@ export const PERMISSION_KEYS = Object.freeze({
   'worker-dependency-install': 'worker-dependency-install',
   'worker-screenshots': 'worker-screenshots',
   'worker-local-services': 'worker-local-services',
+  'worker-web-read': 'worker-web-read',
   'db-per-ticket': 'db-per-ticket',
   'db-clone-staging': 'db-clone-staging',
   'staging-write': 'staging-write',

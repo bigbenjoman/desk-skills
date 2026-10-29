@@ -266,6 +266,20 @@ PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
 check "AC8 none of the three rows: each treated as no"     '[ $rc -eq 0 ] && denied_line worker-dependency-install no && denied_line worker-screenshots no && denied_line worker-local-services no'
 check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$L browser node ./shot.mjs" "$UP typesense"'
 check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
+
+# ---- §3 worker-web-read: WebSearch and WebFetch, and nothing else new ----
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
+cp "$T/ws.json" "$T/ws-off.json"
+check "web-read unset: neither tool allowed, both denied, named" '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch && denies WebSearch && denies WebFetch && denied_line worker-web-read no'
+for v in ask no; do
+  PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=$v)"
+  check "web-read $v: neither tool allowed, named"         '! allows WebSearch && ! allows WebFetch && denies WebSearch && denied_line worker-web-read $v'
+done
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=yes)"
+check "web-read yes: WebSearch and WebFetch allowed, not denied" '[ $rc -eq 0 ] && allows WebSearch && allows WebFetch && ! denies WebSearch && ! denies WebFetch && [[ "$out" != *worker-web-read* ]]'
+check "web-read yes: the only allow rules added are the two tools" '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-off.json")" "$T/ws.json")" = "[\"WebSearch\",\"WebFetch\"]" ]'
+triage
+check "web-read yes: a triage pass gets neither"           '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
 check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "$UP Typesense"'
 : > "$T/repo/compose.override.yaml"

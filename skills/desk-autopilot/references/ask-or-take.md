@@ -83,6 +83,10 @@ node ~/.claude/desk/bin/not-now.mjs add <TICKET> "<question>" --inputs '{"ticket
 | customer copy where length means cost (`customer-copy`) | an SMS, a paid placement, any copy billed by length |
 | facts only the user holds (`user-fact`) | product or catalog data, a design URL, an asset, a name, who owns what |
 
+A public fact (a published figure, a page, a site's robots.txt or terms) is not a fact only the user
+holds where §3 `worker-web-read` is `yes`: look it up with WebSearch and WebFetch and cite the page.
+Where the row is not `yes`, a worker parks naming it.
+
 Ask too when the call has **no recommendation you can defend**: say so, as "no recommendation", in
 the question.
 

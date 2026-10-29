@@ -142,12 +142,16 @@ export function deciderSettings({ bin, state }) {
   };
 }
 
-export function deciderPrompt({ slug, report, items, rules, bin }) {
+export function deciderPrompt({ slug, report, items, rules, bin, webRead = false }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...answerLines(i)]).join('\n');
   // Only when an item has answers, so a prompt without any reads as it always has.
   const onAnswers = items.some((i) => i.answers?.length) ? [
     '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B, D or E, and its park does not start `lane C` or `lane D` (one parked at triage), requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+  ] : [];
+  // Only where this repo's workers can read the web, so a prompt for any other repo reads as it always has.
+  const onWeb = webRead ? [
+    '- a park asking only for a public fact (a published figure, or a page, robots.txt or terms anyone can read on the web) is not a fact only the person holds: this repo\'s workers can search and read the web (config §3 `worker-web-read` is `yes`). On lane A, B, D or E, requeue it for its worker to look the fact up, and settle the item',
   ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
@@ -158,6 +162,7 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
     '- never requeue a lane C ticket or a park that starts `lane C` or `lane D` (parked at triage on its lane), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
+    ...onWeb,
     '',
     '## The items',
     '',
@@ -179,13 +184,13 @@ export function deciderPrompt({ slug, report, items, rules, bin }) {
 
 // Starts the session detached, its JSON result written to <state>/decider/<id>.json. Returns the
 // record the supervisor keeps until the session ends.
-export function startDecider({ state, slug, bin, report, items, rules, cwd, env = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, cwd, env = process.env, claude = 'claude', now = new Date() }) {
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
   const settings = join(dir, `${id}.settings.json`);
   writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin });
+  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead });
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');

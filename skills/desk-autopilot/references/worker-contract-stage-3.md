@@ -58,6 +58,9 @@ Your settings are an **allow-list**: anything not named here is refused.
   after your worktree (`docker-compose` takes the same form). Nothing is allowed where the main
   checkout's `.env` sets `COMPOSE_FILE`. `docker compose down`, `rm`, `run`, `docker rm` and
   `docker run` are refused.
+- **WebSearch and WebFetch**, only where §3 `worker-web-read` is `yes`: a public fact the ticket
+  needs is looked up, with the page named in the PR, rather than parked. Otherwise parks naming the
+  row.
 - **`git reset`**: `--soft`, `--mixed` and on paths are allowed in your worktree; `--hard` and
   `--merge` are refused (`git restore` and `git checkout -- <path>` undo a file).
 - **`git push`: only these exact commands** for your own recorded branch: `git push origin <branch>`,
