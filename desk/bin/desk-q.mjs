@@ -11,6 +11,7 @@
 //                                        per epic first; with --plain, one line per ticket, then one per
 //                                        epic with children in the queue
 //   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
+//   desk-q costs                         every name's charge this month, from the cost cache
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
@@ -18,8 +19,8 @@
 //
 // A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
 // batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
-// the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–4 for a place's Queue,
-// Timeline, By day and Epics, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
+// the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–5 for a place's Queue,
+// Timeline, By day and Epics, and home's Costs, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
@@ -30,7 +31,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -43,7 +44,8 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { startRefresh } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, isFull } from './cost-cache.mjs';
+import { readCosts } from './costs.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -1016,6 +1018,37 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   return { head, rows, foot };
 }
 
+// ---- Costs -------------------------------------------------------------------------------------
+
+export const NO_COST_SOURCES = 'No cost sources set up. /desk-setup costs adds them.';
+export const NO_COST_READING = 'No cost reading yet. desk-q reads them in the background.';
+const SUPPLIER_LABEL = { github: 'GitHub', vercel: 'Vercel', aws: 'AWS' };
+const usd = (n) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// "October, 1–26" while the month runs, "September" once it is read in full.
+function monthText(p) {
+  const month = new Date(Date.UTC(p.year, p.month - 1, 1)).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' });
+  return isFull(p) ? month : `${month}, 1–${Number(p.to.slice(8))}`;
+}
+
+// Every name's charge this month, most first, then shared and the total, under a line with the total
+// by supplier. A name the cost sources list with no figure reads –.
+function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false } = {}) {
+  const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
+  if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
+  const c = chargesByName({ cache, names: [...new Set(costs.entries.map((e) => e.name))] });
+  if (!c) return { head: [NO_COST_READING], rows: [], foot };
+  const charged = segLine([['charged ', GREY], [usd(c.total), BOLD], [` in ${monthText(c.period)}`, GREY],
+    ...c.suppliers.flatMap((s, i) => [i ? [' · ', GREY] : BAR, [`${SUPPLIER_LABEL[s.supplier]} `, GREY], [usd(s.total), BOLD]])]);
+  const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
+  const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
+  const aw = Math.max(10, usd(c.total).length + 3);
+  const rows = lines.map((x) => segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null]], null));
+  return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
+    foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD]]), ...foot] };
+}
+
+export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
+
 // The screens' header note on tickets that need the user's answer.
 const parkedBadge = (checkin) => (checkin ? 'Tickets that need your answer dated at the next check-in · c to undo'
   : 'Tickets that need your answer have no date · c: date them as if answered at the next check-in');
@@ -1838,6 +1871,10 @@ const etaView = (word, slug) => ({ kind: word.toLowerCase() === 'days' ? 'days' 
 function target(repos, words) {
   const [repoWord, verb, keyWord, ...extra] = words.filter((a) => !a.startsWith('--'));
   if (!repoWord) return { kind: 'overview', all: words.includes('--all') };
+  if (repoWord.toLowerCase() === 'costs') {
+    if (verb) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q costs.`);
+    return { kind: 'costs' };
+  }
   // `ships [<repo>]` and `days [<repo>]` read before a repo name, and `<repo> ships` after one.
   if ([...SHIPS, 'days'].includes(repoWord.toLowerCase())) {
     if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q ${repoWord.toLowerCase()} [<repo>].`);
@@ -2011,7 +2048,7 @@ function loadOrRefuse(now) {
 }
 
 export function run(argv, { now = Date.now() } = {}) {
-  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>]\n'
+  if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off]';
   checkFlags(argv);
@@ -2022,6 +2059,7 @@ export function run(argv, { now = Date.now() } = {}) {
   // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
   if (v.kind === 'timeline') return argv.includes('--plain') ? shipsScreen(repos, v.slug, { now }) : timelineScreen(repos, v.slug, { now });
   if (v.kind === 'days') return daysScreen(repos, v.slug, { now });
+  if (v.kind === 'costs') return costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
     const after = loadOrRefuse(now);
@@ -2047,13 +2085,14 @@ const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 const PARTIAL_MS = 30;
 const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them. An epic
-// has every one but Epics.
-export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics']];
-const VIEW_KEYS = '←→ or 1–4 view';
+// has every one but Epics, and only home has Costs.
+export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics'], ['costs', 'Costs']];
+const VIEW_KEYS = '←→ or 1–5 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
 // An epic's Queue hides the tickets a move steps past, so the order is set on the repo's.
 export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
 export const NO_EPICS_HERE = "An epic has no Epics view: you're already in one.";
+export const NO_COSTS_HERE = 'Costs are on home only.';
 
 function jiraUrlFor(slug, key) {
   const site = repoConfigValue(slug, 'jira-site');
@@ -2118,7 +2157,7 @@ function step(rows, i, d) {
 // A keys line, each key bold: "↑↓ select · enter open · q quit". One wider than the terminal goes on
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
-const KEY = /^(←→ or 1–4|\+ −|\S+) (.+)$/;
+const KEY = /^(←→ or 1–5|\+ −|\S+) (.+)$/;
 const MOVES_ON = /^(select|open|view|back|scroll)\b/;
 function keyLines(s, w) {
   const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
@@ -2147,7 +2186,7 @@ function spans(parts, sep) {
 // A Timeline or By day view names its place by repo, or every repo, as the screen does.
 const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
   ? { place: v.slug ? { kind: 'repo', slug: v.slug } : { kind: 'overview', all: false }, tab: v.kind }
-  : { place: v, tab: null });
+  : v.kind === 'costs' ? { place: { kind: 'overview', all: false }, tab: 'costs' } : { place: v, tab: null });
 
 // The full-screen view is a place (every repo, a repo, an epic, a ticket) and, for every place but a
 // ticket, a view of it: Queue, Timeline, By day or Epics. Tab, 1–4, w and a click on the tab line change the view
@@ -2176,7 +2215,9 @@ export function interactive({
   // A place's `slug` is its batch row's id: the repo's slug for its standing batch.
   const repoOf = (slug) => repos.find((r) => r.id === slug);
   const hasTabs = () => ['overview', 'repo', 'epic'].includes(view.kind);
-  const tabOk = (id) => !(view.kind === 'epic' && id === 'epics');
+  const tabOk = (id) => (id === 'costs' ? view.kind === 'overview' : !(view.kind === 'epic' && id === 'epics'));
+  // A view the new place lacks gives way to its nearest: Costs to the Queue, Epics to the Timeline.
+  const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
   // The parked note is shown while any ticket in view waits on the user, or c is on.
   const badge = (rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? parkedBadge(checkin) : '');
@@ -2189,6 +2230,7 @@ export function interactive({
     if (view.epic) parts.push({ label: cut(epicShort(epicFacts()?.epics?.[view.epic] ?? { key: view.epic }), 40), to: { kind: 'epic', slug: view.slug, epic: view.epic } });
     if (view.key) parts.push({ label: view.key, to: { kind: 'ticket', slug: view.slug, key: view.key, ...(view.epic ? { epic: view.epic } : {}) } });
     if (view.kind === 'log') parts.push({ label: 'log', to: null });
+    if (view.kind === 'overview' && tab === 'costs') parts.push({ label: 'costs', to: null });
     return spans(parts, ' › ');
   }
 
@@ -2203,12 +2245,14 @@ export function interactive({
     const esc = view.kind === 'overview' ? '' : 'esc back · ';
     const cmdKeys = `: command · ${esc}q quit`;
     if (view.slug && !r) return { head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: cmdKeys };
-    if (!tabOk(tab)) tab = 'timeline';
+    keepTab();
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
     // one repo's own, or none for a repo with no batch.
     const claude = (shown) => (shown ? { usage: usageLine(usageOf(repos, now, shown), { now, solid: !process.env.NO_COLOR }) } : {});
     const own = r?.q && !r.error ? [r] : null;
     if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
+    // Costs carry the Claude usage line but none of home's batch lines.
+    if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${VIEW_KEYS} · ${cmdKeys}` };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
       const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null, pinUsage: true };
@@ -2259,8 +2303,11 @@ export function interactive({
     const pinned = [];
     if (hasTabs()) {
       const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : tabOk(p.id) ? null : DIM]]);
-      if (screen.badge) segs.push([`    ${screen.badge}`, null]);
-      pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false));
+      // A parked note too long to follow the tabs goes on its own line below them, so its key is kept.
+      const tabsWide = segs.map((s) => s[0]).join('').length;
+      const own = screen.badge && tabsWide + 4 + screen.badge.length > w;
+      if (screen.badge && !own) segs.push([`    ${screen.badge}`, null]);
+      pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false), ...(own ? [fit(screen.badge)] : []));
     } else pinned.push(fit(screen.badge ? segLine([...crumbs.segs, [`    ${screen.badge}`, null]]) : crumbs));
     // A command to copy (`whole`) wider than the terminal is not cut: it runs on into the rows below,
     // which the terminal wraps it onto, so a copy takes it whole. Each row it runs on to is a SPILL.
@@ -2313,13 +2360,13 @@ export function interactive({
     const p = placeOf(v);
     stack.push({ view, sel, selId, tab });
     view = p.place; if (p.tab) tab = p.tab;
-    if (!tabOk(tab)) tab = 'timeline';
+    keepTab();
     sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
   }
   // The selection comes back only to the view it was made on: another view's rows are other rows.
   function back() {
     const p = stack.pop();
-    if (p) { view = p.view; if (p.tab === tab) ({ sel, selId } = p); else { sel = 0; selId = null; } }
+    if (p) { view = p.view; keepTab(); if (p.tab === tab) ({ sel, selId } = p); else { sel = 0; selId = null; } }
     scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
   }
   // A place reached directly (the command line, :, the breadcrumb) gets the places above it to Esc to.
@@ -2334,11 +2381,11 @@ export function interactive({
     if (epic && kind !== 'epic') up({ kind: 'epic', slug, epic });
     if (kind === 'log') up({ kind: 'ticket', slug, key, ...(epic ? { epic } : {}) });
     view = p.place; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
-    if (!tabOk(tab)) tab = 'timeline';
+    keepTab();
   }
   // A view this place lacks leaves the view as it is and says why.
   function setTab(id) {
-    if (!tabOk(id)) { msg = NO_EPICS_HERE; return; }
+    if (!tabOk(id)) { msg = id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
     tab = id; sel = 0; selId = null; scroll = null; msg = '';
   }
 
