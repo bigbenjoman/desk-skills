@@ -309,6 +309,21 @@ const { fixBrief, fixTask } = await import('../desk/bin/fix-tries.mjs');
 t('DS-323 AC2 the fix worker\'s briefing quotes the call, and its task is to carry it out', `${fixBrief(i1q).includes(`> ${call323}`)} ${/carry out the person's call on the review gaps of PR #71/.test(fixTask(i1q))} ${/leave the PR in draft/.test(fixTask(i1q))}`, 'true true true');
 t('DS-323 AC2 desk-q no longer counts it as needing you', N.collect({ word: 'iota' }).items.some((i) => i.t.key === 'I-1'), false);
 
+// ---- DS-345: a draft whose gaps outlast its fix tries keeps undraft.call `findings` (DS-342's record),
+// and still takes the person's call on them; one with findings and no gaps does not.
+put('mu', { port: 4200, beat: 1, supervised: true, tickets: {
+  'M-1': draftPr(81, passed, { call: 'findings', why: 'its review verdict at 575fa8c5c is not clean (gaps=1)', action: 'settle the findings or gaps on #81' }),
+  'M-2': draftPr(82, passed, { call: 'findings', why: 'its review verdict at 575fa8c5c is not clean (p1=1)', action: 'settle the findings on #82' }),
+} });
+const mu = Object.fromEntries(N.collect({ word: 'mu' }).items.map((i) => [i.t.key, i]));
+t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,not-now');
+const call345 = 'Drop the 7-day row for the old subscription; keep the rest';
+const mr = cli('record', 'mu', 'M-1', 'answer', call345);
+const m1q = queueOf('mu').tickets['M-1'];
+t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
+t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
+t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,not-now');
+
 // ---- DS-322: a worker's park that names lane C, or lane D with no saved canvas, is offered open, never
 // resume or requeue; any other park's resume names the ticket's own lane.
 put('kappa', { port: 4000, beat: 1, supervised: true, tickets: {

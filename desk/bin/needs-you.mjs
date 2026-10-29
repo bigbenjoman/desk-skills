@@ -49,8 +49,8 @@ const parkText = (r, t) => String(t.park?.question ?? openQuestion(r.stateDir, t
 const SESSION_WHY = 'lane C/D: a worker would only park on it';
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
-// verdictAt's `not clean (… gaps=N …)`).
-const reviewGaps = (t) => t.pr_status?.isDraft === true && t.undraft?.call === 'person' && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft.why ?? ''));
+// verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
+const reviewGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 
 // The batches `word` names: a repo's name is all of its batches, `<repo>:<name>` one named batch.
