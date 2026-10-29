@@ -23,7 +23,7 @@ say so rather than letting them queue.
 
 **"Green" is the config's one definition** (desk-config "Green"), the same in the driver, in
 `desk-clearance`, in `desk-ticket` and here: on the **exact head commit** being merged, every §4
-Required checks entry completed with success (**skipped does not count**); no other check failed, errored,
+Required checks entry completed with success (**a skipped one passes**, as branch protection counts it); no other check failed, errored,
 timed out or is still queued or running, unless §4 Advisory checks names it; and at least one check
 completed with success. With Required checks `none`, the second and third clauses still apply. The
 merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-head-commit <sha>`, so a
@@ -111,7 +111,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
 
 - **Merge on green as defined, not on the checks you like.** A red check is advisory only when §4
   Advisory checks names it, and waivable only by the driver under §4 Known flaky checks (above),
-  never by you; a skipped required check is not a pass. Read checks with
+  never by you. Read checks with
   `gh pr checks <n> --json name,state,bucket` against the head SHA you will pin, or `awk -F'\t'` on
   the plain output: it is tab-separated and a name column that carries an emoji makes splitting on
   whitespace silently yield the wrong word instead of the verdict, and nothing ever merges.

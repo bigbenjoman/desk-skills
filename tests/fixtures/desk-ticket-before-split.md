@@ -350,7 +350,7 @@ non-tracker ticket: nothing to move).
 
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
-  checks entry completed with success (skipped does not count); no other check failed, errored, timed out
+  checks entry completed with success (a skipped one passes, as branch protection counts it); no other check failed, errored, timed out
   or is still queued or running, unless §4 Advisory checks names it; and at least one check
   completed with success. Then merge pinned to that commit with `--match-head-commit`. With §4
   Branch protection `none`, nothing on GitHub stops a red merge, so the check is entirely yours.

@@ -155,7 +155,7 @@ not, and `mergeable` never is — it flaps to `UNKNOWN` every time the default b
 
 - **Green at the PR's current head, as the config defines it** (desk-config "Green", the one
   definition `desk-ticket`, `desk-autopilot` and the merge driver use too): every required check
-  completed with success (**skipped does not count**); no other check failed, errored, timed out or
+  completed with success (**a skipped one passes**, as branch protection counts it); no other check failed, errored, timed out or
   is still queued or running, unless §4 Advisory checks names it; and at least one check completed
   with success, so a head with no checks at all is not green. **The required checks are the union**
   of what the platform requires (read live from the ruleset and branch protection API, never from

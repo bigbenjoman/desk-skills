@@ -7,7 +7,11 @@ const cr = (name, status, conclusion, runId) => ({ name, status, conclusion, det
 const req = ['Lint, Type Check & Build', 'Verify script sign-off'];
 const G = (nodes, o = {}) => evaluateGate(normaliseRollup(nodes), { required: req, ...o });
 t('all required success', G([cr(req[0], 'COMPLETED', 'SUCCESS'), cr(req[1], 'COMPLETED', 'SUCCESS')]).state, 'pass');
-t('required skipped', G([cr(req[0], 'COMPLETED', 'SUCCESS'), cr(req[1], 'COMPLETED', 'SKIPPED')]).state, 'fail');
+t('DS-329 AC1 a required check skipped by its job\'s if: passes, as branch protection counts it', G([cr(req[0], 'COMPLETED', 'SUCCESS'), cr(req[1], 'COMPLETED', 'SKIPPED')]).state, 'pass');
+for (const c of ['FAILURE', 'CANCELLED', 'TIMED_OUT']) {
+  t(`DS-329 AC2 a required check that ended ${c.toLowerCase()} is still not green`, G([cr(req[0], 'COMPLETED', 'SUCCESS'), cr(req[1], 'COMPLETED', c)]).state, 'fail');
+}
+t('every required check skipped, nothing succeeded', G([cr(req[0], 'COMPLETED', 'SKIPPED'), cr(req[1], 'COMPLETED', 'SKIPPED')]).state, 'fail');
 t('every check skipped, none required', evaluateGate(normaliseRollup([cr('a', 'COMPLETED', 'SKIPPED'), cr('b', 'COMPLETED', 'SKIPPED')])).state, 'fail');
 t('early pass before CI queues (required absent)', G([cr('Vercel', 'COMPLETED', 'SUCCESS')]).state, 'absent');
 t('required queued', G([cr(req[0], 'QUEUED', null), cr(req[1], 'COMPLETED', 'SUCCESS')]).state, 'pending');
