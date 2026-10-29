@@ -1139,6 +1139,19 @@ export function driftLines({ missing, stalls, dontAsk }) {
   return lines.length ? lines : ['no drift'];
 }
 
+// What `paths` and `identity` print, in that order. Most of it belongs to one repo; a child started
+// for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
+const PATHS = {
+  DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
+  DESK_BIN: binDir, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
+  DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
+  DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
+};
+const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
+const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
+const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+
 // ---- CLI -----------------------------------------------------------------------------------
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
@@ -1230,25 +1243,18 @@ if (isMain) {
         for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id) ?? '(unset)'}`);
         break;
       case 'paths': {
-        const lines = {
-          DESK_REPO_ROOT: repoRoot(), DESK_WORKTREES_DIR: worktreesDir(), DESK_HOME: deskHome(), DESK_SLUG: repoSlug(), DESK_REPO_CONFIG_DIR: repoConfigDir(), DESK_DEFAULT_BRANCH: defaultBranch(),
-          DESK_BIN: binDir(), DESK_STATE: stateDir(), DESK_QUEUE: queueFile(), DESK_SKILLS_DIR: skillsDir(),
-          DESK_LOCK_DIR: lockDir(), DESK_MEMORY_DIR: memoryDir(), DESK_GH_REPO: ghRepo(),
-          DESK_PG_CONTAINER: pgContainer(), DESK_DEV_PORT: devPort(), DESK_WORKER_PORT_FLOOR: workerPortFloor(), DESK_IS_WSL: isWSL() ? 'yes' : 'no',
-        };
-        for (const [k, v] of Object.entries(lines)) console.log(`${k}=${String(v).replace(/'/g, `'\\''`).replace(/^|$/g, "'")}`);
+        const lines = Object.entries(PATHS).map(([k, f]) => [k, f()]);
+        for (const [k, v] of lines) console.log(`${k}=${shellQuote(v)}`);
         break;
       }
       case 'take-batch': {
         // Loading this module already took --batch out of argv and checked it, so the shell has one parser.
-        const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
-        if (batchArg) console.log(`export DESK_BATCH=${q(batchArg)}`);
-        console.log(`DESK_ARGS=(${args.map(q).join(' ')})`);
+        if (batchArg) console.log(`export DESK_BATCH=${shellQuote(batchArg)}`);
+        console.log(`DESK_ARGS=(${args.map((a) => shellQuote(a)).join(' ')})`);
         break;
       }
       case 'identity':
-        console.log(`DESK_GITHUB_HANDLE='${githubHandle()}'`);
-        console.log(`DESK_JIRA_NAME='${jiraName().replace(/'/g, `'\\''`)}'`);
+        for (const [k, f] of Object.entries(IDENTITY)) console.log(`${k}=${shellQuote(f())}`);
         break;
       case 'mem': {
         const what = args[0] ?? 'status';
