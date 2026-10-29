@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
 import { needsSession } from './batch-state.mjs';
+import { questionKey } from './not-now.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -38,17 +39,20 @@ function waitKey(line) {
   return `${m[1]}\0${m[2]}\0${pr ? pr[1] : ''}`;
 }
 
-// Do two parks ask the same thing? Workers word a repeat afresh each time, so past an exact match it
-// compares the specific terms (paths, SHAs, branches, keys other than the ticket's own): the same
-// question when at least half of them are shared.
+// Do two parks ask the same thing? Workers word a repeat afresh each time, so past an exact match (as
+// not-now.mjs matches a question) it compares the specific terms (paths, SHAs, other keys): the same
+// question when at least half of them are shared. A term naming the ticket itself (its key, branch or
+// worktree) or a remote ref (`origin/main`) is in nearly every park it makes, so it is not counted.
 const parkTerms = (s, own) => new Set((String(s).toLowerCase().match(/[\w./-]+/g) ?? [])
-  .map((w) => w.replace(/[.\-/]+$/, '')).filter((w) => w.length >= 3 && /[\d/._]/.test(w) && w !== own));
+  .map((w) => w.replace(/[.\-/]+$/, ''))
+  .filter((w) => w.length >= 3 && /[\d/._]/.test(w) && !own?.test(w) && !w.startsWith('origin/')));
 export function samePark(a, b, ticket = '') {
-  const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (!norm(a) || !norm(b)) return false;
-  if (norm(a) === norm(b)) return true;
-  const x = parkTerms(a, String(ticket).toLowerCase());
-  const y = parkTerms(b, String(ticket).toLowerCase());
+  if (!String(a ?? '').trim() || !String(b ?? '').trim()) return false;
+  if (questionKey(a) === questionKey(b)) return true;
+  const key = String(ticket).toLowerCase().replace(/[^\w-]/g, '');
+  const own = key ? new RegExp(`(^|[^a-z0-9])${key}([^a-z0-9]|$)`) : null;
+  const x = parkTerms(a, own);
+  const y = parkTerms(b, own);
   if (x.size < 2 || y.size < 2) return false;
   const both = [...x].filter((w) => y.has(w)).length;
   return both / new Set([...x, ...y]).size >= 0.5;

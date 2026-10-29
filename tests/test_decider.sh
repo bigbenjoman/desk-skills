@@ -283,10 +283,21 @@ console.log([again.round, again.repeat, again.prev.question === P1, first.round,
   samePark('needs another round: the tests fail', 'needs another round: the tests fail'), samePark('which design?', 'which copy?')].join(' '));
 ")
 check "DS-334 AC2: a park carries its round, the park its last requeue cleared and whether it asks the same" '[ "$out" = "4 true true 1 false  2 false true false" ]'
+out=$(node --input-type=module -e "
+import { samePark } from '$B/decider.mjs';
+console.log([
+  samePark('rebasing fix/DS-400-x onto origin/main conflicts in desk/bin/pass.mjs. Who rebases?', 'tests/test_pass.sh fails on fix/DS-400-x after rebasing onto origin/main: needs more agent work', 'DS-400'),
+  samePark('Which fixture?', 'which fixture', 'DS-400'),
+].join(' '));
+")
+check "DS-334 AC3: two questions sharing only the ticket's branch and origin/main are not the same" '[ "$out" = "false true" ]'
 
 queue '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"r: the tests fail","since":"2026-10-28T08:00:00Z"},"prev_park":{"question":"older","round":2}}}'
 out=$(cd "$T/repo" && node "$B/queue.mjs" requeue R 2>&1)
 check "DS-334: requeue keeps the park it cleared, with its time and round" 'node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets.R; process.exit(t.state===\"triaged\" && t.park===null && t.prev_park.question===\"r: the tests fail\" && t.prev_park.since===\"2026-10-28T08:00:00Z\" && t.prev_park.round===3 && !!t.prev_park.requeued_at ? 0 : 1)" "$DESK_QUEUE"'
+queue '{"R":{"key":"R","state":"failed","lane":"A","prev_park":{"question":"older","round":2}},"U":{"key":"U","state":"parked","lane":"A","park":{"question":"u: waits on PR 7","clears_when":{"kind":"pr-merged","pr":7}},"prev_park":{"question":"older","round":1}},"W":{"key":"W","state":"parked","lane":"A","park":{"question":"claimed","claim":{"session":"s1","at":"2026-10-28T08:00:00Z"}},"prev_park":{"question":"older","round":1}}}'
+out=$(cd "$T/repo" && node "$B/queue.mjs" requeue R 2>&1 && node "$B/queue.mjs" requeue U 2>&1 && node "$B/queue.mjs" requeue W 2>&1)
+check "DS-334: a requeue that clears no park, or one settled by itself, ends the run" 'node -e "const q=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets; process.exit([\"R\",\"U\",\"W\"].every((k) => q[k].state===\"triaged\" && q[k].prev_park===null) ? 0 : 1)" "$DESK_QUEUE"'
 
 mark; rm -f "$T/state/handed.json"; echo "requeue S" > "$T/claude.mode"
 queue "{\"S\":{\"key\":\"S\",\"state\":\"parked\",\"lane\":\"A\",\"park\":{\"question\":\"$P2\",\"since\":\"2026-10-28T09:00:00Z\"},\"prev_park\":{\"question\":\"$P1\",\"since\":\"2026-10-28T08:45:00Z\",\"round\":1}}}"

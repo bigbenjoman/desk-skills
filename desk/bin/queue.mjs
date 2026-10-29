@@ -249,10 +249,13 @@ function requeue(q, key) {
   // worktree, rather than at Stage 0 (pass.mjs spawnHandoff). `handoff_stage=null` first starts it over.
   const fromStage = t.handoff_stage ?? null;
   // The park this requeue clears, and which park in a row it was, so the decider can tell when the
-  // next worker parks the same way again (decider.mjs deciderItems).
-  const prevPark = t.state === 'parked' && t.park?.question
+  // next worker parks the same way again (decider.mjs deciderItems). A requeue that clears no park (a
+  // fix try, a failed worker) or one settled by itself (its clears-when condition held, an idle claim
+  // released) ends the run: the next park is not asking again.
+  const settled = !!t.park?.claim?.session || (t.park?.clears_when?.kind ?? 'none') !== 'none';
+  const prevPark = t.state === 'parked' && t.park?.question && !settled
     ? { question: String(t.park.question), since: t.park.since ?? null, requeued_at: new Date().toISOString(), round: (t.prev_park?.round ?? 0) + 1 }
-    : t.prev_park ?? null;
+    : null;
   // A fresh session, so a killed worker waiting to resume no longer does.
   Object.assign(t, { prev_park: prevPark, state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
     handoff: fromStage ? 'pending' : null,
