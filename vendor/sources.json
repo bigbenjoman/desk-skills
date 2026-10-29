@@ -411,12 +411,12 @@
         "path": "skills/docker-expert"
       },
       "pin": {
-        "commit": "e0bcf882d",
-        "date": "2026-10-14"
+        "commit": "bbfc66fe6",
+        "date": "2026-10-23"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 8 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 7). Installed via `npx ski",
-      "tree_sha256": "3a15a37feeeb061591740837246b8010a658781caa2cf16f00fd66ba5c94062b"
+      "tree_sha256": "7f96ee3d4a7e877c367d5171bdf772ca81b20296a5c6595811bb64746776d94a"
     },
     "fastapi-pro": {
       "source": {
@@ -691,12 +691,12 @@
         "path": "skills/gcp-cloud-run/"
       },
       "pin": {
-        "commit": "e69f4f039",
-        "date": "2026-09-05"
+        "commit": "dd8e9923c",
+        "date": "2026-10-24"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13. Tree == lock skillFolderHash dd1788e; SKILL.md changed 9 times since (latest e69f4f0, 2026-09-05) - local behind. sickn33 is an aggregator repo; the skill may itself be copied from elsewhere, but it is the install source. Repo also has LICENSE-CONTENT.",
-      "tree_sha256": "1ba8f61335f1e856cf0bd4e2779beb028ae59331be21cf5098f9dd6bb9b95913"
+      "tree_sha256": "60c1b8ccf9749e1b4a46391457d6d8e2614770c01d10cf08578abd05ee45ccbf"
     },
     "ml-pipeline-workflow": {
       "source": {
@@ -719,12 +719,12 @@
         "path": "skills/neon-postgres/"
       },
       "pin": {
-        "commit": "f333dd0a5",
-        "date": "2026-10-15"
+        "commit": "ccca3334a",
+        "date": "2026-10-23"
       },
       "license": "Apache-2.0",
       "notes": "Listed in ~/skills-lock.json (source neondatabase/agent-skills). SKILL.md + all 3 references byte-identical at ca7821e; SKILL.md changed 4 times since (latest dd290a9, 2026-09-23) - local behind.",
-      "tree_sha256": "d12fc5510e40d63681dc80ba150a1a44ba5753110a5aba9662a1e0aa28ff93aa"
+      "tree_sha256": "1afe8f71d4a9653e7cc3b24228d9ba255e93e5963511453e77c7843e10910985"
     },
     "openapi-spec-generation": {
       "source": {
