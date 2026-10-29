@@ -73,4 +73,14 @@ check "AC3 backend/.venv exists before the worker spawns"         '[ -f "$W/back
 st=$(git -C "$W" status --porcelain 2>&1)
 check "AC3 the worktree is clean after the install"               '[ -z "$st" ]'
 
+# DS-346: a new worktree is refused on a name no worker can push; a finished one already on such a
+# branch is handed back, so a kept round resumes.
+for br in 'fix/T-2-<slug>' '-x' 'fix/T-2.lock' 'fix/T-2/' 'fix/T-2..x' 'fix/T-2 x'; do
+  out=$(bash "$B/setup-worktree.sh" --for-worker T-2 "$br" 2>&1); rc=$?
+  check "DS-346 a new worktree on '$br' is refused" '[ $rc -ne 0 ] && [[ "$out" == *"is not usable"* ]] && [ ! -e "$T/wt/T-2" ]'
+done
+git -C "$T/repo" worktree add -q -b 'fix/T-3-<slug>' "$T/wt/T-3" main
+out=$(bash "$B/setup-worktree.sh" --for-worker T-3 'fix/T-3-<slug>' 2>&1); rc=$?
+check "DS-346 a finished worktree on a placeholder branch is handed back" '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-3"* ]]'
+
 echo "setup-worktree install: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
