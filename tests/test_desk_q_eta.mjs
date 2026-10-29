@@ -238,10 +238,10 @@ const at = (...a) => new Date(...a).getTime();
 t('DS-161 AC8: today, the next 6 days, a week out, and another year', [at(2026, 9, 19, 21, 30), at(2026, 9, 22, 14, 30), at(2026, 9, 26, 10, 0), at(2027, 0, 4, 9, 0)].map((x) => when(x, FIXED)),
   ['today 21:30', 'Thu 14:30', '26 Oct', '4 Jan 2027']);
 
-// ---- forecast AC9: STARTS and SHIPS on the queue, QUEUE DONE on the overview
+// ---- forecast AC9: STARTS and SHIPS on the queue, ALL DONE BY on the overview
 t('DS-161 AC9: the queue screen has STARTS and SHIPS columns', alphaRows.some((l) => /^\s+#\s+TICKET\s+STATE\s+WHAT IT NEEDS\s+STARTS\s+SHIPS\s+TITLE$/.test(l)), true);
 const ov = Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n');
-t('DS-161 AC9: the overview has a QUEUE DONE column', ov.some((l) => /DONE\s+QUEUE DONE\s+WORKERS$/.test(l)), true);
+t('DS-161 AC9 (DS-279 AC16): the overview has an ALL DONE BY column', ov.some((l) => /DONE\s+ALL DONE BY\s+WORKERS$/.test(l)), true);
 t('DS-161 AC9: giving when the repo\'s last dated ticket ships', (ov.find((l) => /^ {2}alpha /.test(l)) ?? '').includes(`  ${when(F.clears, FIXED)}`), true);
 
 // ---- forecast AC10: the ticket screen's dates and the history behind them
@@ -283,10 +283,10 @@ const a6 = () => frame().find((l) => /\sA-6\s/.test(l)) ?? '';
 // The note follows the tab line, under the breadcrumb.
 const note = () => frame()[1];
 await sleep(20);
-const UNDATED = 'Tickets waiting on you have no date · c: date them as if answered at the next check-in';
-t('DS-161 AC12 (DS-188 AC3): before c, the header says tickets waiting on you have no date', note().endsWith(UNDATED) && /no date/.test(a6()), true);
+const UNDATED = 'Tickets that need your answer have no date · c: date them as if answered at the next check-in';
+t('DS-161 AC12 (DS-188 AC3): before c, the header says tickets that need your answer have no date', note().endsWith(UNDATED) && /no date/.test(a6()), true);
 input.write('c'); await sleep(20);
-t('DS-161 AC12 (DS-188 AC4): after c, the header says they are dated at the next check-in', note().endsWith('Waiting-on-you tickets dated at the next check-in · c to undo'), true);
+t('DS-161 AC12 (DS-188 AC4): after c, the header says they are dated at the next check-in', note().endsWith('Tickets that need your answer dated at the next check-in · c to undo'), true);
 t('DS-161 AC12: and the ticket waiting on the user has a date', a6().includes(`  ${when(Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].likely, FIXED)}  `) && !/no date/.test(a6()), true);
 t('DS-161 AC12: from no earlier than the next check-in, Tue 08:00', Q.forecastOf(alpha, { now: FIXED, checkin: true }).T['A-6'].start >= at(2026, 9, 20, 8, 0), true);
 input.write('c'); await sleep(20);
@@ -352,13 +352,13 @@ t('DS-162 AC4 (DS-185 AC3): the queue screen dates nothing, and no cell reads pa
 t('DS-162 AC4 (DS-188 AC1): the ticket screen says passes stopped in place of its dates', field(Q.ticketScreen(quiet, 'Q-1', { now: FIXED }).split('\n'), 'Ships'),
   'Ships     no date  Passes stopped 20m ago, so no dates until they resume.');
 const quietRow = Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? '';
-t('DS-162 AC4 (DS-188 AC1): the overview\'s QUEUE DONE reads passes stopped, not paused', [/\spasses stopped\s/.test(quietRow), /paused/.test(quietRow)], [true, false]);
+t('DS-162 AC4 (DS-188 AC1): the overview\'s ALL DONE BY reads passes stopped, not paused', [/\spasses stopped\s/.test(quietRow), /paused/.test(quietRow)], [true, false]);
 t('DS-162 AC4: and a stopped forecast saves no estimate', readEstimates(stateOf('quiet')).size, 0);
 // Every screen that describes a stopped batch.
 const quietViews = { repo: Q.repoScreen(quiet, { now: FIXED }), ticket: Q.ticketScreen(quiet, 'Q-1', { now: FIXED }), ships: Q.run(['ships', 'quiet', '--plain'], { now: FIXED }),
   timeline: Q.timelineScreen(Q.loadRepos(FIXED), 'acme__quiet', { now: FIXED }), days: Q.daysScreen(Q.loadRepos(FIXED), 'acme__quiet', { now: FIXED }),
   epics: await epicsView('acme__quiet'), overview: Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}quiet /.test(l)) ?? '' };
-// The overview's row says it in two columns: LAST PASS "■ stopped · 20m", QUEUE DONE "passes stopped";
+// The overview's row says it in two columns: LAST PASS "■ stopped · 20m", ALL DONE BY "passes stopped";
 // the repo screen's header "■ stopped · 20m", then the last pass's time.
 const saysStopped = { overview: /stopped · 20m .*passes stopped/, repo: /^■ stopped · 20m {2}last pass 18:31 │ /m };
 t('DS-188 AC1: every screen of a stopped batch says passes stopped 20m ago and never paused',
@@ -453,7 +453,7 @@ t('DS-165 AC3: no earlier than its queued child ships', VF.E['EP-2'].likely >= V
 
 // ---- AC4: a child waiting on the user leaves the epic undated
 t('DS-165 AC4: an epic with a child waiting on the user has no date', VF.E['EP-3'], null);
-t('DS-165 AC4: and says so, with c', epicRow('EP-3').endsWith('No date: 1 waiting on you · c: date them as if answered at the next check-in'), true);
+t('DS-165 AC4: and says so, with c', epicRow('EP-3').endsWith('No date: 1 needs you · c: date them as if answered at the next check-in'), true);
 
 // ---- AC5: every child done shows when it shipped
 t('DS-165 AC5: an epic whose children are all done shows when it shipped', /\s2\/2\s+—\s+shipped today 13:51$/.test(epicRow('EP-4')), true);
@@ -506,7 +506,7 @@ const idleViews = { Timeline: Q.timelineScreen(Q.loadRepos(FIXED), 'acme__idle',
 t('DS-184 AC1-AC4: Timeline, By day, Epics and ships say nothing is left for autopilot, and not that dates are paused',
   Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split(/\r?\n/).includes(IDLE), /paused|passes stopped/i.test(s)]])),
   { Timeline: [true, false], 'By day': [true, false], Epics: [true, false], ships: [true, false] });
-t('DS-184 AC5: the overview\'s QUEUE DONE for it does not read paused',
+t('DS-184 AC5: the overview\'s ALL DONE BY for it does not read paused',
   (Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}idle /.test(l)) ?? '').match(/\s(paused|nothing left)\s/)?.[1], 'nothing left');
 repo('idle1', 4710, { tickets: { 'J-1': { state: 'failed', park: { question: 'tests red' } } }, sizes: { 'J-1': 'M' }, history: hist12, pass: FIXED - 30 * MIN });
 t('DS-184 AC1: one ticket, none needing a session, reads in the singular with no session count',
@@ -521,7 +521,7 @@ const row = (s, key) => s.split('\n').find((l) => new RegExp(`^ +${key} `).test(
 const stl = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__stalled', { now: FIXED });
 const sdy = Q.daysScreen(Q.loadRepos(FIXED), 'acme__stalled', { now: FIXED });
 t('DS-184 AC6 (DS-218 AC10): a paused batch\'s Timeline shows each unfinished ticket undated with its state and reason, then the note',
-  [noteOf(stl), /^ {2}P-1 +● running +Stage 3\/9 · dated again at the next pass/.test(row(stl, 'P-1')), /^ {2}P-2 +○ ready +Starts when passes resume/.test(row(stl, 'P-2')), /^ {2}P-3 +◆ needs you +Waiting on you/.test(row(stl, 'P-3'))],
+  [noteOf(stl), /^ {2}P-1 +● running +Stage 3\/9 · dated again at the next pass/.test(row(stl, 'P-1')), /^ {2}P-2 +○ ready +Starts when passes resume/.test(row(stl, 'P-2')), /^ {2}P-3 +◆ needs you +Needs your answer/.test(row(stl, 'P-3'))],
   [stalledNote, true, true, true]);
 t('DS-184 AC6: and so does By day, the tickets under "No date yet"',
   [noteOf(sdy), sdy.split('\n').some((l) => l.startsWith('  No date yet · 3 tickets')), /^ {4}P-2 +○ ready +Starts when passes resume/.test(row(sdy, 'P-2'))], [stalledNote, true, true]);

@@ -107,9 +107,9 @@ const head = lines(ov.out)[1];
 t('AC4 (DS-188 AC5, DS-215 AC12) header', /^● 2 workers running │ machine cap 10 · room for \d+ more │ \d+\.\d GiB free$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk share 3502–3503\./.test(l)), true);
-// ---- AC15: voicepa's counts, last pass and workers (and QUEUE DONE, with no history)
+// ---- AC15: voicepa's counts, last pass and workers (and ALL DONE BY, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
-t('AC15 voicepa row: a session 4m ago, run 2, ready 0, wait 1, blocked 0, needs 0, failed 0, done 3, workers 3', vp.slice(1, 16).join(' '), '● session · 4m ago 2 0 1 0 0 0 3 no history 3');
+t('AC15 (DS-279 AC14) voicepa row: a session 4m ago, run 2, ready 0, merging 0, wait 1, needs 0, done 3, workers 3', vp.slice(1, 15).join(' '), '● session · 4m ago 2 0 0 1 0 3 no history 3');
 
 // ---- AC7: a held ticket whose only unmerged blocker runs is waiting, behind that blocker only
 const repo = W.run('--plain', 'voicepa');
@@ -122,7 +122,7 @@ const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
 t('AC8 state, detail and triage title', /running\s+stage 4\/9 as of \d\d:\d\d\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
 t('AC8 done count', /✓ 3 done, not shown/.test(pre.out), true);
-t('DS-194 AC5 (DS-215) with no PR landing, the counts line leaves the landing part out', lines(pre.out)[1], '◆ nothing needs you  ● 2 running  · 1 waiting │ ✓ 3 done, not shown');
+t('DS-194 AC5 (DS-215) with no PR merging, the counts line leaves the merging part out', lines(pre.out)[1], '◆ nothing needs you  ● 2 running  · 1 waiting │ ✓ 3 done, not shown');
 // ---- AC9: an ambiguous prefix refuses, naming both, with no table
 const amb = W.run('--plain', 'pr');
 t('AC9 ambiguous prefix exits non-zero', amb.code !== 0, true);
@@ -147,13 +147,13 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-6': { state: 'parked', held_by: 'VPL-5', park: { question: 'held by orchestrator: blocked by VPL-5' } },
   'VPL-7': { state: 'triaged', open_questions: 1, outside_blockers: [{ key: 'EXT-1', category: 'new' }, { key: 'EXT-2', category: 'indeterminate' }] },
 } } } });
-t('AC6 (DS-217 AC5) held behind a ticket parked for its own reason reads waiting, which is parked', /VPL-6\s+· waiting\s+behind VPL-5, which is parked\s/.test(S.run('--plain', 'voicepa').out), true);
+t('AC6 (DS-217 AC5) held behind a ticket parked for its own reason reads waiting, which needs you', /VPL-6\s+· waiting\s+behind VPL-5, which needs you\s/.test(S.run('--plain', 'voicepa').out), true);
 const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-7').out };
-t('DS-188 AC2 every screen calls the held ticket blocked, never stuck, and the overview heads its column BLOCKED',
-  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck/i.test(s)), lines(blockedViews.overview)[0].endsWith(' │ ◌ 1 blocked'),
-    lines(blockedViews.overview).some((l) => /^ +REPO .* BLOCKED /.test(l)), /VPL-7\s+◌ blocked\s/.test(blockedViews.queue),
-    lines(blockedViews.ticket)[0].startsWith('VPL-7  ◌ blocked'), lines(blockedViews.ticket).some((l) => /^ {2}◌ EXT-2 +In Progress$/.test(l))]),
-  '[false,false,false,true,true,true,true,true]');
+t('DS-279 AC6 a ticket held outside the batch needs you on every screen, and no screen says blocked or stuck',
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 3 tickets need you .*│ voicepa 2 · pr-ninja 1$/.test(lines(blockedViews.overview)[0]),
+    /VPL-7\s+◆ needs you\s+held by 2 Jira tickets outside: start anyway\?/.test(blockedViews.queue),
+    lines(blockedViews.ticket)[0].startsWith('VPL-7  ◆ needs you'), lines(blockedViews.ticket).some((l) => /^ {2}◌ EXT-2 +In Progress$/.test(l))]),
+  '[false,false,false,true,true,true,true]');
 
 // ---- AC13: nothing set up
 const E = mkdtempSync(join(tmpdir(), 'desk-q-empty-'));
@@ -193,7 +193,7 @@ const F = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-1': { state: 'triaged', open_questions: 0 }, 'VPL-2': { state: 'failed' }, 'VPL-3': { state: 'triaged', open_questions: 0 } } } } });
 const past = F.run('voicepa', 'up', 'VPL-3');
 t('up past a failed ticket reaches the place above it', `${lines(past.out)[0]} | ${unfinishedKeys(readQ(qPath(F, 'voicepa'))).join()}`, 'VPL-3 → position 1 of 2, placed by you. | VPL-3,VPL-1');
-t('a failed ticket shows no position', /^\s+-\s+VPL-2\s+✕ failed/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
+t('a ticket whose worker stopped shows no position, and needs you', /^\s+-\s+VPL-2\s+◆ needs you\s+worker stopped · requeue it/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
@@ -515,8 +515,8 @@ t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { 
 
 // The median of tidy's 12 size M durations, 4 to 10 h: the 7th of them sorted.
 const typicalM = '7.0';
-t('DS-163 AC8 a ticket waiting on you says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Waiting on you · ~${typicalM} h once answered`)), true);
-t('DS-163 AC8 (DS-217 AC8) a blocked ticket names what holds it', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Held: 1 Jira blocker outside the batch')), true);
+t('DS-163 AC8 (DS-279 AC16) a ticket that needs your answer says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Needs your answer · ~${typicalM} h once answered`)), true);
+t('DS-163 AC8 (DS-217 AC8) a ticket held outside the batch names what holds it', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Held by EXT-5, outside this batch')), true);
 t('DS-163 AC8 workers set to 0 says nothing starts', /Workers set to 0: nothing starts +Z-1 title$/.test(barRow(tl('acme__zero'), 'Z-1')), true);
 
 const Ks = screen({ kind: 'timeline', slug: 'acme__tidy' }, 120, () => FIXED);
@@ -602,7 +602,7 @@ const stuck10 = Q.loadRepos(FIXED);
 const stk = (w) => ({ 'By day': rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: w }), 'STK-1'), Timeline: rowFor(Q.timelineScreen(stuck10, 'acme__stuck10', { now: FIXED, width: w }), 'STK-1') });
 t('DS-179 AC1 at 120 and 80 columns, the stuck row is no wider than the terminal', [120, 80].flatMap((w) => Object.entries(stk(w)).filter(([, l]) => !l || l.length > w).map(([v, l]) => `${v}@${w}: ${l.length}`)).join(), '');
 t('DS-179 AC1 it says what it waits on, cut with …, and keeps its title', Object.entries(stk(120)).filter(([, l]) => !/After BLK-101, BLK-102, .*… +STK-1 title$/.test(l)).map(([v, l]) => `${v}: ${l}`).join(), '');
-t('DS-179 a reason that fits is written whole', rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: 120 }), 'BLK-101').includes('Waiting on you · ~'), true);
+t('DS-179 a reason that fits is written whole', rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: 120 }), 'BLK-101').includes('Needs your answer · ~'), true);
 
 const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 100, () => FIXED);
 await sleep(20);
@@ -822,7 +822,7 @@ const datedEpics = ['E-1', 'E-2'].sort((a, b) => featF.E[a].likely - featF.E[b].
 t('DS-166 AC1 sorted by SHIPS, the undated one last', featTl.filter((l) => [e1, e2, e3].includes(l)).join('\n'), [...datedEpics, e3].join('\n'));
 t('DS-166 AC2 an epic under way reads "started"', /\sstarted\s/.test(e1), true);
 t('DS-166 AC3 a provisional epic\'s row ends "provisional"', /^ {2}Beats +0\/2 .*█.* {2}provisional$/.test(e2), true);
-t('DS-166 AC4 an epic with no date gives the reason instead of a bar', `${e3.includes('No date: 1 waiting on you')} ${e3.includes('█')}`, 'true false');
+t('DS-166 AC4 an epic with no date gives the reason instead of a bar', `${e3.includes('No date: 1 needs you')} ${e3.includes('█')}`, 'true false');
 const other = featTl.findIndex((l) => l === '  Other work · 2 tickets with no epic');
 t('DS-166 AC5 the tickets in no epic follow under "Other work", each by title and state with its own bar',
   other > featTl.indexOf(e3) && featTl.slice(other + 1, other + 3).map((l) => /^ {4}(F-\d) title +○ ready +[ ┆]*█/.exec(l)?.[1]).sort().join(), 'F-6,F-7');
@@ -846,7 +846,7 @@ t('DS-166 AC8 4 shows the Epics view, one row per epic', `${where(Fa)} | ${epics
 // On screen the bar is solid, its not-yet-queued part grey (DS-218); plain output keeps □ for it.
 t('DS-166 AC8 each with a bar of done, queued and not-yet-queued children', `${epicsRow('E-1').includes(`${'■'.repeat(16)}    1/3`)} ${epicsRow('E-2').includes(`${'■'.repeat(16)}    0/2`)} ${rawLine(Fa, 'E-2').includes(`${G}${'■'.repeat(8)}\x1b[39m`)}`, 'true true true');
 t('DS-166 AC8 its SHIPS and the child that sets the date', epicsRow('E-1').endsWith(`${whenAt(featF.E['E-1'].likely, FIXED).padEnd(14)}set by ${featF.E['E-1'].setBy}`), true);
-t('DS-166 AC8 a provisional or undated epic says so there', `${epicsRow('E-2').endsWith('provisional: 1 not queued')} ${epicsRow('E-3').includes('No date: 1 waiting on you')}`, 'true true');
+t('DS-166 AC8 a provisional or undated epic says so there', `${epicsRow('E-2').endsWith('provisional: 1 not queued')} ${epicsRow('E-3').includes('No date: 1 needs you')}`, 'true true');
 await Fa.press('\r');
 t('DS-166 AC8 Enter on an epic there opens its Timeline', where(Fa), 'desk-q › feat › Smart scheduling, your day | 2 Timeline | timeline');
 await Fa.press('4');
@@ -876,8 +876,8 @@ dated('hue', 4100, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: HUE }
 const ovRow = (s, name) => lastFrame(s).find((l) => l.replace(ANSI, '').replace(/^›/, ' ').startsWith(`  ${name} `)) ?? '';
 const Ov = nav({ kind: 'overview', all: false });
 await sleep(20);
-// After LAST PASS, each count; a blocked count is dim (DS-186), so red is failed only.
-t('DS-181 AC1 each non-zero count in its state\'s colour: running, ready, waiting, needs you, failed', coloured(ovRow(Ov, 'hue')).slice(1).join(' '), '38;5;108:1 38;5;75:1 38;5;180:1 38;5;176:1 38;5;210:1');
+// After LAST PASS, each count; a ticket held outside the batch or whose worker stopped counts as needs you.
+t('DS-181 AC1 (DS-279 AC14) each non-zero count in its state\'s colour: running, ready, waiting, needs you', coloured(ovRow(Ov, 'hue')).slice(1).join(' '), '38;5;108:1 38;5;75:1 38;5;180:1 38;5;176:3');
 t('DS-181 AC1 (DS-186 AC4, DS-215 AC13) zero counts are grey, the one non-zero count coloured',
   coloured(ovRow(Ov, 'slow'), true).slice(1, 7).join(' '), '38;5;247:0 38;5;75:4 38;5;247:0 38;5;247:0 38;5;247:0 38;5;247:0');
 Ov.ui.finish(0);
@@ -887,9 +887,9 @@ await sleep(20);
 const stateCell = (s, key) => coloured(lastFrame(s).find((l) => l.replace(ANSI, '').slice(1).includes(` ${key} `)) ?? '', true)[0] ?? '';
 const keys = ['H-1', 'H-2', 'H-3', 'H-4', 'H-5', 'H-6'];
 const queueCells = keys.map((k) => stateCell(Hq, k));
-// DS-186 AC2: each state with its glyph, in its colour; blocked grey (DS-217 AC11), failed red.
+// DS-186 AC2: each state with its glyph, in its colour; held outside the batch and a stopped worker need you (DS-279 AC6).
 t('DS-181 AC2 (DS-186 AC2) one repo\'s Queue shows each state cell with its glyph in its colour', queueCells.join(' '),
-  '38;5;108:● running 38;5;75:○ ready 38;5;180:· waiting 38;5;176:◆ needs you 38;5;247:◌ blocked 38;5;210:✕ failed');
+  '38;5;108:● running 38;5;75:○ ready 38;5;180:· waiting 38;5;176:◆ needs you 38;5;176:◆ needs you 38;5;176:◆ needs you');
 await Hq.press('2');
 t('DS-181 AC2 (DS-186 AC2) the same on the Timeline', keys.slice(0, 5).map((k) => stateCell(Hq, k)).join(' '), queueCells.slice(0, 5).join(' '));
 await Hq.press('3');
@@ -983,8 +983,8 @@ const lpRaw = lastFrame(Lp);
 const overlaps = lpRaw.filter((l) => / {2}▲ ports +\S+ \+ /.test(l.replace(ANSI, '')));
 t('DS-186 AC8 each ports overlap note starts ▲, in yellow', `${overlaps.length > 0} ${overlaps.every((l) => l.includes('\x1b[38;5;180m▲ ports'))}`, 'true true');
 t('DS-186 AC8 (DS-215 AC12) "N tickets need you" is bold magenta', lpRaw.some((l) => /^\x1b\[1;38;5;176m◆ \d+ tickets need you\x1b\[22;39m/.test(l)), true);
-// AC4: the QUEUE DONE notes "passes stopped" and "no history" are grey.
-t('DS-186 AC4 the QUEUE DONE notes passes stopped and no history are grey', `${ovRow(Lp, 'hours').includes(`${G}passes stopped`)} ${ovRow(Lp, 'ontime').includes(`${G}no history`)}`, 'true true');
+// AC4: the ALL DONE BY notes "passes stopped" and "no history" are grey.
+t('DS-186 AC4 the ALL DONE BY notes passes stopped and no history are grey', `${ovRow(Lp, 'hours').includes(`${G}passes stopped`)} ${ovRow(Lp, 'ontime').includes(`${G}no history`)}`, 'true true');
 Lp.ui.finish(0);
 
 // AC9: the Timeline's legend names a swatch per state shown, each in its colour; Epics' swatches too.
@@ -994,9 +994,9 @@ await sleep(20);
 // DS-218 AC8: one key line, its bar swatches first, then each state shown with its glyph.
 const legendRaw = lastFrame(Lg).find((l) => l.replace(ANSI, '').startsWith('key ')) ?? '';
 t('DS-186 AC9 (DS-218 AC8) the Timeline key line: the bar, the check-ins, then each state shown', legendRaw.replace(ANSI, '').trim(),
-  'key   █ starts to ships  █ could run to (1 run in 5 is later) │ ┆ check-ins 08:00 and 17:00 │ ● running  ○ ready  ◌ blocked  ◆ needs you');
+  'key   █ starts to ships  █ could run to (1 run in 5 is later) │ ┆ check-ins 08:00 and 17:00 │ ● running  ○ ready  ◆ needs you');
 t('DS-186 AC9 each state in its colour, and no "colour shows state"',
-  `${['\x1b[38;5;108m● running\x1b[39m', '\x1b[38;5;75m○ ready\x1b[39m', '\x1b[38;5;247m◌ blocked\x1b[39m', '\x1b[38;5;176m◆ needs you\x1b[39m'].every((s) => legendRaw.includes(s))} ${Lg.output.buf.includes('colour shows state')}`, 'true false');
+  `${['\x1b[38;5;108m● running\x1b[39m', '\x1b[38;5;75m○ ready\x1b[39m', '\x1b[38;5;176m◆ needs you\x1b[39m'].every((s) => legendRaw.includes(s))} ${Lg.output.buf.includes('colour shows state')}`, 'true false');
 Lg.ui.finish(0);
 const Le = screen({ kind: 'repo', slug: 'acme__feat' }, 160, () => FIXED);
 Le.output.rows = 80; Le.output.resize();
@@ -1028,8 +1028,8 @@ t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2
 const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
   'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
-t('DS-187 AC1 the overview opens with how many need you, each repo\'s count, most first, then the blocked count',
-  lines(NY.run('--plain').out)[0], '◆ 3 tickets need you │ voicepa 2 · pr-ninja 1 │ ◌ 1 blocked');
+t('DS-187 AC1 (DS-279 AC6) the overview opens with how many need you, each repo\'s count, most first, a ticket held outside the batch among them',
+  lines(NY.run('--plain').out)[0], '◆ 4 tickets need you │ voicepa 3 · pr-ninja 1');
 const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
 t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('◆ ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
@@ -1047,8 +1047,8 @@ const mixed = () => Q.loadRepos(FIXED).find((r) => r.name === 'mixed');
 const GROUP_LINE = /^ {2}([A-Z][a-z]+(?: you)?) · (\d+)$/;
 const groupsAndKeys = (out) => lines(out).map((l) => GROUP_LINE.exec(l)?.slice(1).join(' · ') ?? /^ +\d+ {2}(M-\d)\s/.exec(l)?.[1]).filter(Boolean).join(' | ');
 const mixedQ = Q.repoScreen(mixed(), { width: 140, now: FIXED });
-t('DS-187 AC2 the Queue is grouped Running, Ready, Waiting, Needs you, Blocked, each group in queue order', groupsAndKeys(mixedQ),
-  'Running · 1 | M-4 | Ready · 2 | M-2 | M-5 | Waiting · 1 | M-6 | Needs you · 1 | M-1 | Blocked · 1 | M-3');
+t('DS-187 AC2 (DS-279 AC1) the Queue is grouped Running, Ready, Waiting, Needs you, each group in queue order', groupsAndKeys(mixedQ),
+  'Running · 1 | M-4 | Ready · 2 | M-2 | M-5 | Waiting · 1 | M-6 | Needs you · 2 | M-1 | M-3');
 const mixedHead = lines(mixedQ).find((l) => /^ +# /.test(l));
 t('DS-187 AC3 at 140 columns WHAT IT NEEDS follows STATE and is at least 50 wide',
   `${mixedHead.indexOf('WHAT IT NEEDS') === mixedHead.indexOf('STATE') + 13} ${mixedHead.indexOf('STARTS') - mixedHead.indexOf('WHAT IT NEEDS') >= 50}`, 'true true');
@@ -1056,7 +1056,7 @@ const m5 = lines(mixedQ).find((l) => /^ +\d+ {2}M-5 /.test(l)) ?? '';
 t('DS-187 AC3 and TITLE takes the rest of the width', `${m5.length} ${m5.endsWith('…')}`, '140 true');
 const mixedPlain = I.run('--plain', 'mixed').out;
 t('DS-187 AC9 --plain keeps the group headings and the WHAT IT NEEDS column',
-  `${/^ {2}Needs you · 1$/m.test(mixedPlain)} ${/^ +# {2}TICKET +STATE +WHAT IT NEEDS +STARTS/m.test(mixedPlain)}`, 'true true');
+  `${/^ {2}Needs you · 2$/m.test(mixedPlain)} ${/^ +# {2}TICKET +STATE +WHAT IT NEEDS +STARTS/m.test(mixedPlain)}`, 'true true');
 
 const m2Page = lines(Q.ticketScreen(mixed(), 'M-2', { width: 120, now: FIXED, jiraUrl: 'https://acme.atlassian.net/browse/M-2' }));
 const fieldsOf = (ls) => ls.map((l) => /^(Starts|Ships|Based on|Holding up|Branch|Open) {2,}\S/.exec(l)?.[1]).filter(Boolean).join();
@@ -1110,9 +1110,9 @@ function landRepo(checks, { beat = 1, ps = prOpen(checks) } = {}) {
 const landQueue = (r) => lines(Q.repoScreen(r, { now: NOW }));
 const landRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\d+) {2}${key} `).test(l)) ?? '';
 const lq = landQueue(landRepo([ubuntu, macos]));
-t('DS-194 AC3 the landing ticket is in a Landing group above Waiting', lq.indexOf('  Landing · 1') >= 0 && lq.indexOf('  Landing · 1') < lq.indexOf('  Waiting · 2'), true);
-t('DS-194 AC3 its state reads ◐ landing, and WHAT IT NEEDS its PR, how many checks passed and the one holding it', landRow(lq, 'LD-1'),
-  `     -  LD-1      ◐ landing    ${'#164 · 1 of 2 checks passed · macOS: no runner, 14m'.padEnd(52)}${'started'.padEnd(13)}${'—'.padEnd(14)}resume from the last round`);
+t('DS-194 AC3 (DS-279 AC4) the PR in CI is in a Merging group above Waiting', lq.indexOf('  Merging · 1') >= 0 && lq.indexOf('  Merging · 1') < lq.indexOf('  Waiting · 2'), true);
+t('DS-194 AC3 (DS-279 AC8) its state reads ▸ merging, and WHAT IT NEEDS its PR, the check holding it, then how many are done', landRow(lq, 'LD-1'),
+  `     -  LD-1      ▸ merging    ${'#164 · macOS: no runner, 14m · 1 of 2 done'.padEnd(52)}${'started'.padEnd(13)}${'—'.padEnd(14)}resume from the last round`);
 // AC4 and the colours, on the screen.
 async function landingRaw(checks, key = 'LD-1', opts) {
   landRepo(checks, opts);
@@ -1125,24 +1125,25 @@ async function landingRaw(checks, key = 'LD-1', opts) {
 }
 const build = { name: 'build', status: 'completed', conclusion: 'success', started: ago194(20), completed: ago194(12), runner: true };
 const raw194 = await landingRaw([ubuntu, macos]);
-t('DS-194 AC3 the state is cyan, and AC4 a check queued 10 minutes with no runner is yellow', coloured(raw194.l).filter((c) => /landing|#164|runner/.test(c)).join(), '38;5;73:◐ landing,38;5;73:#164,38;5;180:macOS: no runner, 14m');
+t('DS-194 AC3 the state is cyan, and AC4 a check queued 10 minutes with no runner is yellow', coloured(raw194.l).filter((c) => /merging|#164|runner/.test(c)).join(), '38;5;73:▸ merging,38;5;73:#164,38;5;180:macOS: no runner, 14m');
 const e2eRunning = { name: 'e2e', status: 'in_progress', conclusion: null, started: ago194(5), runner: true };
-t('DS-194 AC4 a running check reads its name and age', landRow(landQueue(landRepo([build, e2eRunning])), 'LD-1').includes('#164 · 1 of 2 checks passed · e2e running, 5m '), true);
-t('DS-194 AC4 a failed check reads failed, in red', coloured((await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }])).l).includes('38;5;210:e2e failed'), true);
-t('DS-194 AC4 every check passed reads merging, in green', coloured((await landingRaw([build])).l).includes('38;5;108:all checks passed · merging'), true);
-// AC5: the header counts the landing PR, in cyan.
-t('DS-194 AC5 (DS-215) the counts line counts the PRs landing and the merged tickets', lq[1], '◆ nothing needs you  ● 1 running  ◐ 1 landing  · 2 waiting │ ✓ 2 done, not shown');
-t('DS-194 AC5 the landing count is cyan', coloured(raw194.head).includes('38;5;73:◐ 1 landing'), true);
-// AC6: a held ticket names its landing blocker by its PR.
-t('DS-194 AC6 (DS-217 AC2) the only blocker left is landing: behind its PR, merging when green, starting after it', /· waiting {4}behind #164: checks running, merges when green +after #164 /.test(landRow(lq, 'LD-2')), true);
+t('DS-194 AC4 a running check reads its name and age', landRow(landQueue(landRepo([build, e2eRunning])), 'LD-1').includes('#164 · e2e running, 5m · 1 of 2 done '), true);
+const red194 = await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }]);
+t('DS-194 AC4 (DS-279 AC9) a failed check leads the row, in red, with no pass count', `${coloured(red194.l).includes('38;5;210:1 check failed')} ${/passed/.test(red194.l.replace(ANSI, ''))}`, 'true false');
+t('DS-194 AC4 (DS-279 AC7) every check passed reads merges at the next pass, the count in green', `${coloured((await landingRaw([build])).l).includes('38;5;108:1 check passed')} ${landRow(landQueue(landRepo([build])), 'LD-1').includes('#164 · 1 check passed · merges at the next pass')}`, 'true true');
+// AC5: the header counts the merging PR, in cyan.
+t('DS-194 AC5 (DS-215, DS-279) the counts line counts the PRs merging and the merged tickets', lq[1], '◆ nothing needs you  ● 1 running  ▸ 1 merging  · 2 waiting │ ✓ 2 done, not shown');
+t('DS-194 AC5 the merging count is cyan', coloured(raw194.head).includes('38;5;73:▸ 1 merging'), true);
+// AC6: a held ticket names its merging blocker by its PR.
+t('DS-194 AC6 (DS-217 AC2) the only blocker left is merging: behind its PR and the check holding it, starting after it', /· waiting {4}behind #164: tests \(macos-latest\) queued +after #164 /.test(landRow(lq, 'LD-2')), true);
 t('DS-194 AC6 with another blocker left, both are listed and STARTS is not after the PR', `${/· waiting {4}behind #164, LD-4 /.test(landRow(lq, 'LD-3'))} ${/after #/.test(landRow(lq, 'LD-3'))}`, 'true false');
 t('DS-194 AC6 the PR is cyan in the row', coloured((await landingRaw([ubuntu, macos], 'LD-2')).l).includes('38;5;73:#164'), true);
 // AC7: the held ticket's page lists the landing blocker's checks, then when they were read.
 const p2 = lines(Q.ticketScreen(landRepo([ubuntu, macos]), 'LD-2', { now: NOW }));
 const i7 = p2.findIndex((l) => l.startsWith('Blockers  '));
 const lead194 = ' '.repeat(14);
-t('DS-194 AC7 the landing blocker, one line per check, then when the last pass read them', p2.slice(i7 + 1, i7 + 5).join('\n'), [
-  '  ◐ LD-1      landing    #164 · 1 of 2 checks passed · macOS: no runner, 14m',
+t('DS-194 AC7 the merging blocker, one line per check, then when the last pass read them', p2.slice(i7 + 1, i7 + 5).join('\n'), [
+  '  ▸ LD-1      merging    #164 · macOS: no runner, 14m · 1 of 2 done',
   `${lead194}✓  ${'tests (ubuntu-latest)'.padEnd(26)}passed in 7m 35s`,
   `${lead194}◌  ${'tests (macos-latest)'.padEnd(26)}queued 14m, no runner yet`,
   `${lead194}checked by the last pass, 1m ago · https://github.com/acme/land/pull/164`].join('\n'));
@@ -1156,7 +1157,7 @@ put(I.T, I.env, 'land', { port: 4900, conc: '2 / 3', beat: 1, perms: { 'autopilo
 const r278 = Q.loadRepos(NOW).find((r) => r.name === 'land');
 t('DS-278 AC8 the ticket shows its try number and what the try is fixing', lines(Q.ticketScreen(r278, 'LD-1', { width: 120, now: NOW })).includes('Fix try   1 of 2 · red: Backend tests, Lint'), true);
 const p278 = lines(Q.ticketScreen(r278, 'LD-5', { width: 120, now: NOW }));
-t('DS-278 AC8 a stuck PR shows its last try and why it is stuck', p278.includes('Fix try   2 of 2 · conflicts with main') && p278.includes('Stuck     still in conflict with main after 2 fix tries'), true);
+t('DS-278 AC8 a PR no worker can fix shows its last try and why it is left to you', p278.includes('Fix try   2 of 2 · conflicts with main') && p278.includes('For you   still in conflict with main after 2 fix tries'), true);
 landRepo([ubuntu, macos]);
 const G7 = screen({ kind: 'ticket', slug: 'acme__land', key: 'LD-2' }, 140, () => NOW);
 await sleep(20);
@@ -1164,21 +1165,21 @@ const g7line = G7.frame().find((l) => l.includes('checked by the last pass')) ??
 await G7.press('g');
 t('DS-194 AC7 on the screen the line offers g, and g opens the PR', `${g7line.trim()} | ${G7.opened.join()}`, 'checked by the last pass, 1m ago · g open #164 on GitHub | https://github.com/acme/land/pull/164');
 G7.ui.finish(0);
-// AC8: with passes stopped, the landing row says when its checks were read, dimmed.
+// AC8: with passes stopped, the merging row says when its checks were read, dimmed.
 const stoppedRow = landRow(landQueue(landRepo([ubuntu, macos], { beat: 300 })), 'LD-1');
 const hhmm = new Date(NOW - 60000).toTimeString().slice(0, 5);
-t('DS-194 AC8 passes stopped: as of the last read, n of m checks passed', new RegExp(`◐ landing {4}as of ${hhmm}: 1 of 2 checks passed +started`).test(stoppedRow), true);
-t('DS-194 AC8 and it is grey', coloured((await landingRaw([ubuntu, macos], 'LD-1', { beat: 300 })).l, true).includes(`38;5;247:as of ${hhmm}: 1 of 2 checks passed`), true);
-// AC9: once the pass records the PR merged, the ticket leaves Landing and counts as merged.
+t('DS-194 AC8 passes stopped: as of the last read, what holds it', new RegExp(`▸ merging {4}#164 · as of ${hhmm}: tests \\(macos-latest\\) queued`).test(stoppedRow), true);
+t('DS-194 AC8 and it is grey', coloured((await landingRaw([ubuntu, macos], 'LD-1', { beat: 300 })).l, true).some((c) => c.startsWith(`38;5;247:as of ${hhmm}: tests (macos-latest) queued`)), true);
+// AC9: once the pass records the PR merged, the ticket leaves Merging and counts as merged.
 const mergedQ = landQueue(landRepo([ubuntu], { ps: { ...prOpen([ubuntu]), state: 'MERGED' } }));
-t('DS-194 AC9 a merged PR leaves Landing and is counted merged', `${mergedQ.some((l) => /Landing|LD-1 |landing/.test(l))} ${mergedQ[1].endsWith(' │ ✓ 3 done, not shown')}`, 'false true');
+t('DS-194 AC9 a merged PR leaves Merging and is counted merged', `${mergedQ.some((l) => /Merging|LD-1 |merging/.test(l))} ${mergedQ[1].endsWith(' │ ✓ 3 done, not shown')}`, 'false true');
 // AC10: desk-q reads only what the pass recorded: a gh on its PATH is never called.
 landRepo([ubuntu, macos]);
 mkdirSync(join(I.T, 'stub-gh'), { recursive: true });
 writeFileSync(join(I.T, 'stub-gh', 'gh'), `#!/bin/sh\necho "$@" >> "${join(I.T, 'gh-calls')}"\n`, { mode: 0o755 });
 const ghEnv = { ...I.env, PATH: `${join(I.T, 'stub-gh')}:${process.env.PATH}` };
 // Each run must render its landing data, or "no gh call" would also pass on a crash.
-const runs194 = [[['--plain', 'land'], '◐ landing'], [['--plain', 'land', 'show', 'LD-2'], 'checked by the last pass'], [['--plain', 'land', 'show', 'LD-1'], 'Checks on #164:'], [['--plain'], 'land']]
+const runs194 = [[['--plain', 'land'], '▸ merging'], [['--plain', 'land', 'show', 'LD-2'], 'checked by the last pass'], [['--plain', 'land', 'show', 'LD-1'], 'Checks on #164:'], [['--plain'], 'land']]
   .map(([args, want]) => { const p = spawnSync('node', [BIN, ...args], { encoding: 'utf8', env: ghEnv }); return p.status === 0 && p.stdout.includes(want); });
 t('DS-194 AC10 every run renders the landing data', runs194.join(), 'true,true,true,true');
 t('DS-194 AC10 desk-q makes no gh call', readdirSync(I.T).includes('gh-calls'), false);
@@ -1223,24 +1224,27 @@ const cells217 = (name, key, n = 2) => {
   return [l.slice(18, 31), l.slice(31, 83), l.slice(83, 96), l.slice(96, 110)].slice(0, n).map((s) => s.trim()).join(' | ');
 };
 t('DS-217 AC1 behind a running blocker: waiting, with its stage', cells217('hold', 'W-1'), '· waiting | behind B-RUN (running, stage 4/9)');
-t('DS-217 AC2 behind a PR a supervisor merges: waiting until green, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: checks running, merges when green | after #177');
-t('DS-217 behind a PR that conflicts with its base: needs you, even where a supervisor merges', cells217('holdsup', 'W-2C'), '◆ needs you | #178 conflicts with its base: resolve it');
-t('DS-217 behind a PR the merge driver leaves under a merge hold: needs you, even where a supervisor merges', cells217('holdsup', 'W-2H'), '◆ needs you | #180 is under a merge hold: merge it');
-t('DS-217 a hold that names no blocker: needs you, since nothing releases it', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: release it');
+t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: tests running | after #177');
+t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
+t('DS-217 behind a PR the merge driver leaves under a merge hold: needs you, even where a supervisor merges', cells217('holdsup', 'W-2H'), '◆ needs you | #180: merge hold: merge it');
+t('DS-217 (DS-279 AC16) a hold that names no blocker: needs you, since nothing lets it start', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: let it start');
 // The page's rail, its wrapped lines joined.
 const railText = (page) => lines(page).filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ');
 const w0 = Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED });
 t('DS-217 (DS-218 AC1) its page says so on the rail and gives the release command, each on a line of its own',
-  `${railText(w0)} | ${lines(w0).includes('node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null')}`, 'Needs you. Held behind no recorded blocker: release it. Run, in holdsup: | true');
-t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W-3'), '◆ needs you | #175 is a draft: undraft and merge it');
-t('DS-217 AC3 and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 })).find((l) => l.startsWith('◆ '))?.includes(' hold 4'), true);
-t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176 will not merge on its own: merge it');
-t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '◆ needs you | #179 will not merge on its own: merge it');
+  `${railText(w0)} | ${lines(w0).includes('node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null')}`, 'Needs you. Held behind no recorded blocker: let it start. Run, in holdsup: | true');
+t('DS-217 AC3 behind a draft: needs you, naming the action', cells217('hold', 'W-3'), '◆ needs you | #175: draft · undraft it once it is reviewed');
+// hold's: W-3, W-4 and W-7 by their holds, B-PARK's question, B-RED's stopped worker, W-8 and W-9
+// held outside the batch, and the PRs of B-DRAFT and B-READY.
+t('DS-217 AC3 (DS-279 AC14) and it is counted in what needs you', lines(Q.overview(repos217, { now: FIXED, avail: 30 })).find((l) => l.startsWith('◆ '))?.includes(' hold 9'), true);
+t('DS-217 AC4 behind a ready PR nothing runs to merge: needs you', cells217('hold', 'W-4'), '◆ needs you | #176: tests running · merge it once green');
+t('DS-217 AC4 or merging is ask with no batch approval', cells217('holdask', 'W-4A'), '◆ needs you | #179: tests running · merge it once green');
 const rail217 = (name, key) => railText(Q.ticketScreen(repo217(name), key, { now: FIXED }));
-t('DS-218 AC1 a landing PR\'s own page says it needs you where its blockers\' pages would: a draft, one nothing merges, a conflict, a merge hold',
+t('DS-218 AC1 (DS-279) a PR\'s own page says whether it needs you: a draft, one nothing merges, a conflict a fix try takes on, a merge hold',
   ['hold B-DRAFT', 'hold B-READY', 'holdsup B-CONF', 'holdsup B-HOLD'].map((s) => rail217(...s.split(' '))).join(' / '),
-  'Needs you. #175 is a draft: undraft and merge it. / Needs you. #176 will not merge on its own: merge it. / Needs you. #178 conflicts with its base: resolve it. / Needs you. #180 is under a merge hold: merge it.');
-t('DS-218 AC1 a landing PR that merges by itself moves without you', rail217('holdsup', 'B-GREEN').startsWith('Moves without you: its PR #177 is in CI, '), true);
+  'Needs you: PR #175, draft · undraft it once it is reviewed. / Needs you: PR #176, tests running, 0m · 0 of 1 done · merge it once green. / '
+  + 'Moves without you: PR #178, merge conflict with main · the next pass sends it to a worker, try 1 of 2. / Needs you: PR #180, merge hold: merge it.');
+t('DS-218 AC1 a PR that merges by itself moves without you', rail217('holdsup', 'B-GREEN').startsWith('Moves without you: PR #177, tests running'), true);
 const halted218 = Q.loadRepos(NOW).find((r) => r.name === 'halted');
 t('DS-218 AC1 with passes stopped a ready ticket will not move until they resume, and says how',
   railText(Q.ticketScreen(halted218, 'HL-1', { now: NOW })), 'Will not move until passes resume. Run /desk-autopilot in halted.');
@@ -1249,27 +1253,27 @@ put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch
 t('DS-218 AC1 with passes stopped a ticket blocked outside the batch still says what blocks it, not that passes would move it',
   railText(Q.ticketScreen(Q.loadRepos(NOW).find((r) => r.name === 'halted'), 'HL-2', { now: NOW })).startsWith('Will not start on its own. 2 Jira tickets outside this batch'), true);
 put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch: 'halted', concurrency: 1, tickets: { 'HL-1': ready } } });
-t('DS-217 AC5 behind a blocker that needs you, failed or is parked: waiting, saying which',
+t('DS-217 AC5 (DS-279 AC16) behind a blocker that needs you, whose worker stopped or is parked: waiting, which needs you',
   ['W-5N', 'W-5F', 'W-5P'].map((k) => cells217('hold', k)).join(' / '),
-  '· waiting | behind W-3, which needs you / · waiting | behind B-RED, which failed / · waiting | behind B-PARK, which is parked');
-t('DS-217 AC6 every blocker merged, with a supervisor: waiting to be released', cells217('holdsup', 'W-6'), '· waiting | released at the next pass');
-t('DS-217 AC7 every blocker merged, with no merge driver or supervisor: needs you, release it', cells217('hold', 'W-7'), '◆ needs you | every blocker merged: release it');
+  '· waiting | behind W-3, which needs you / · waiting | behind B-RED, which needs you / · waiting | behind B-PARK, which needs you');
+t('DS-217 AC6 every blocker merged, with a supervisor: waiting to start', cells217('holdsup', 'W-6'), '· waiting | starts at the next pass');
+t('DS-217 AC7 every blocker merged, with no merge driver or supervisor: needs you, let it start', cells217('hold', 'W-7'), '◆ needs you | every blocker merged: let it start');
 t('DS-217 AC7 its page gives the release command the pass prints', Q.ticketScreen(repo217('hold'), 'W-7', { now: FIXED }).includes(
   'Run, in hold:\n\nnode ~/.claude/desk/bin/queue.mjs set W-7 state=triaged park=null held_by=null\nnode ~/.claude/desk/bin/queue.mjs front W-7\n'), true);
-t('DS-217 AC8 open Jira blockers outside the batch: blocked, no start and no date, whatever its blocker does', cells217('hold', 'W-8', 4), '◌ blocked | held: 27 Jira blockers outside the batch | — | no date');
+t('DS-217 AC8 (DS-279 AC6) open Jira blockers outside the batch: needs you, no start and no date, whatever its blocker does', cells217('hold', 'W-8', 4), '◆ needs you | held by 27 Jira tickets outside: start anyway? | — | no date');
 t('DS-217 AC8 once the user confirms it can start without them, outside blockers no longer block it', cells217('hold', 'W-10'), '· waiting | behind B-RUN (running, stage 4/9)');
-t('DS-217 AC6 every blocker merged, a supervisor but no merge grant: nothing releases it, so it needs you', cells217('holdask', 'W-6A'), '◆ needs you | every blocker merged: release it');
+t('DS-217 AC6 every blocker merged, a supervisor but no merge grant: nothing lets it start, so it needs you', cells217('holdask', 'W-6A'), '◆ needs you | every blocker merged: let it start');
 t('DS-217 two tickets held behind each other both need you, and one behind them waits saying so',
   ['C-1', 'C-2', 'C-3'].map((k) => cells217('holdask', k)).join(' / '),
-  '◆ needs you | C-2 is held behind this one: release one of them / ◆ needs you | C-1 is held behind this one: release one of them / · waiting | behind C-1, which needs you');
+  '◆ needs you | C-2 is held behind this one: let one of them start / ◆ needs you | C-1 is held behind this one: let one of them start / · waiting | behind C-1, which needs you');
 const w9 = Q.ticketScreen(repo217('hold'), 'W-9', { now: FIXED });
 t('DS-217 AC9 with its batch blockers merged and one outside open, the page never says every blocker is done',
-  `${/Every blocker is done/.test(w9)} ${railText(w9).startsWith('Will not start on its own. 1 Jira ticket outside this batch must be done first, and nothing in this batch can release it.')}`, 'false true');
+  `${/Every blocker is done/.test(w9)} ${railText(w9).startsWith('Will not start on its own. 1 Jira ticket outside this batch must be done first, and nothing in this batch moves it.')}`, 'false true');
 t('DS-217 AC9 no ticket page says every blocker is done', Object.keys(repo217('hold').q.tickets).filter((k) => /Every blocker is done/.test(Q.ticketScreen(repo217('hold'), k, { now: FIXED }))).join(), '');
 t('DS-217 the 2026-10-24 desk-skills queue', ['DS-168', 'DS-175', 'DS-180'].map((k) => cells217('skills24', k)).join(' / '),
-  '◌ blocked | held: 27 Jira blockers outside the batch / ◆ needs you | #175 is a draft: undraft and merge it / · waiting | behind DS-175, which needs you');
-t('DS-217 AC10 one key line under the table names each state shown, with its meaning', queue217('hold').filter((l) => l.startsWith('key ')).join('\n'),
-  'key   ● running │ ◐ landing: a PR open and merging │ · waiting: moves by itself │ ◌ blocked: held outside this batch │ ◆ needs you: nothing moves until you act │ ✕ failed: requeue or drop it');
+  '◆ needs you | held by 27 Jira tickets outside: start anyway? / ◆ needs you | #175: draft · undraft it once it is reviewed / · waiting | behind DS-175, which needs you');
+t('DS-217 AC10 (DS-279 AC15) one key line under the table names each state shown, with its meaning', queue217('hold').filter((l) => l.startsWith('key ')).join('\n'),
+  'key   ● running: holds a worker │ · waiting: moves by itself │ ◆ needs you: nothing moves until you act');
 const key80 = lines(Q.repoScreen(repo217('hold'), { now: FIXED, width: 80 }));
 const k80i = key80.findIndex((l) => l.startsWith('key '));
 t('DS-217 AC10 at 80 columns the key line breaks between states, never past the width',
@@ -1284,7 +1288,7 @@ const hkFrame = lastFrame(Hk);
 Hk.ui.finish(0);
 const hkKey = hkFrame.find((l) => l.replace(ANSI, '').startsWith('key ')) ?? '';
 t('DS-217 AC10 the key line: each state in its colour, its meaning grey',
-  ['\x1b[38;5;247mkey \x1b[39m', '\x1b[38;5;180m· waiting\x1b[39m\x1b[38;5;247m: moves by itself\x1b[39m', '\x1b[38;5;247m◌ blocked\x1b[39m\x1b[38;5;247m: held outside this batch\x1b[39m',
+  ['\x1b[38;5;247mkey \x1b[39m', '\x1b[38;5;180m· waiting\x1b[39m\x1b[38;5;247m: moves by itself\x1b[39m',
     '\x1b[38;5;176m◆ needs you\x1b[39m\x1b[38;5;247m: nothing moves until you act\x1b[39m'].filter((s) => !hkKey.includes(s)).join(' | '), '');
 // The default text, plain and bold; every other colour is a 256-colour or 24-bit code, read as drawn.
 const ONE_DARK = { 1: '#e6e9ef', 39: '#abb2bf' };
@@ -1333,19 +1337,17 @@ t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off 
   `${cell215('off')} ${bandAt >= 0 && bandAt < needsAt} ${lastFrame(S215).some((l) => l.includes('\x1b[1;7;38;5;210m ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on\x1b[22;27;39m'))}`, '38;5;210:✕ supervisor off · 3m true true');
 t('DS-215 AC15 home keeps the tab line under the breadcrumb, the Queue in reverse video, and the red band follows it after a blank line',
   `${S215.frame()[1].startsWith('1 Queue  2 Timeline  3 By day  4 Epics')} ${S215.tabOn()} ${S215.frame()[2] === '' && S215.frame()[3].startsWith(' ✕ ')}`, 'true 1 Queue true');
-// DS-215 AC16-19: home fits the terminal. hold and hue each have a failed ticket; mixed has one
-// ready with no free slot.
+// DS-215 AC16-19: home fits the terminal. mixed has one ready ticket with no free slot.
 const fit215 = (width) => lines(Q.overview(Q.loadRepos(NOW).filter((r) => ['hold', 'hue', 'mixed'].includes(r.name)), { now: NOW, avail: 30, width }));
 const cols215 = (ls) => ls.find((l) => l.startsWith('  REPO ')).trim().split(/ {2,}/).join('|');
 const wider = (ls, w) => ls.filter((l) => [...l].length > w).length;
 const f104 = fit215(104), f120 = fit215(120), f160 = fit215(160);
-t('DS-215 AC16 at 104 columns home has screen 1\'s columns, no line is wider, and the failed and no-free-slot counts move into the notes',
-  `${cols215(f104)} ${wider(f104, 104)} | ${f104.filter((l) => /✕ (hold|hue) +1 ticket failed\. Its screen lists it\.$/.test(l)).length} ${f104.some((l) => /^ {8}mixed +1 ready with no free slot: it starts as its running workers finish\.$/.test(l))}`,
-  'REPO|LAST PASS|RUN|READY|WAIT|BLOCKED|NEEDS YOU|QUEUE DONE|WORKERS 0 | 2 true');
-// Lower-cased: tests/run.sh reads an upper-case FAIL anywhere in a suite's output as a failure.
-t('DS-215 AC16 at 120 columns the failed and done columns come back, no line wider; at 160 the row says it has a ready ticket with no free slot',
-  `${cols215(f120).toLowerCase()} ${wider(f120, 120)} ${f120.some((l) => l.includes('ticket failed'))} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith('2 (cap 3) · 1 ready with no free slot')}`,
-  'repo|last pass|run|ready|wait|blocked|needs you|failed|done|queue done|workers 0 false | true');
+t('DS-215 AC16 (DS-279 AC14) at 104 columns home drops DONE, no line is wider, and the no-free-slot count moves into the notes',
+  `${cols215(f104)} ${wider(f104, 104)} | ${f104.some((l) => /^(note| {4}) {4}mixed +1 ready with no free slot: it starts as its running workers finish\.$/.test(l))}`,
+  'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|ALL DONE BY|WORKERS 0 | true');
+t('DS-215 AC16 (DS-279 AC14) at 120 columns the done column comes back, no line wider; at 160 the row says it has a ready ticket with no free slot',
+  `${cols215(f120)} ${wider(f120, 120)} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith('2 (cap 3) · 1 ready with no free slot')}`,
+  'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|DONE|ALL DONE BY|WORKERS 0 | true');
 const setup104 = f104.findIndex((l) => /^(note| {4}) {4}setup /.test(l));
 t('DS-215 AC17 a note wider than the terminal wraps between words, the rest indented under its text',
   `${setup104 >= 0} ${/^ {21}\S/.test(f104[setup104 + 1] ?? '')} ${wider(f104, 104)}`, 'true true 0');
@@ -1354,7 +1356,7 @@ S104.output.rows = 120; S104.output.resize();
 await sleep(20);
 const f104s = S104.frame();
 t('DS-215 AC18 home\'s tab line carries no parked note; the note is in home\'s notes',
-  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets waiting on you have no date/.test(l))}`, 'true true');
+  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets that need your answer have no date/.test(l))}`, 'true true');
 const more215 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 }));
 const moreAt = more215.findIndex((l) => /^ {2}\d+ more set up with no batch: /.test(l));
 const more104 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30, width: 60 }));
@@ -1511,17 +1513,17 @@ async function ticket218(key, columns = 160) {
 }
 t('DS-218 AC1 the first line under the title, on the rail, says whether it moves without you and what would move it',
   ['DS-168', 'DS-175', 'DS-180'].map((k) => `${lines(page218(k))[3].startsWith('▌ ')} ${railText(page218(k))}`).join(' / '),
-  'true Will not start on its own. 27 Jira tickets outside this batch must be done first, and nothing in this batch can release it. If it can start without them, say so, in s218:'
-  + ' / true Needs you. #175 is a draft: undraft and merge it. / true Moves without you: behind DS-175, which needs you.');
+  'true Will not start on its own. 27 Jira tickets outside this batch must be done first, and nothing in this batch moves it. If it can start without them, say so, in s218:'
+  + ' / true Needs you. #175: draft · undraft it once it is reviewed. / true Moves without you: behind DS-175, which needs you.');
 const S175 = await ticket218('DS-175'), S168 = await ticket218('DS-168'), S180 = await ticket218('DS-180');
-t('DS-218 AC1 the rail is in the state\'s colour: needs you magenta, blocked grey, waiting amber',
-  [lastFrame(S175).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S168).some((l) => l.startsWith(`${G}▌ \x1b[39m`)), lastFrame(S180).some((l) => l.startsWith('\x1b[38;5;180m▌ \x1b[39m'))].join(), 'true,true,true');
+t('DS-218 AC1 (DS-279 AC6) the rail is in the state\'s colour: needs you magenta, held outside the batch too, waiting amber',
+  [lastFrame(S175).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S168).some((l) => l.startsWith('\x1b[38;5;176m▌ \x1b[39m')), lastFrame(S180).some((l) => l.startsWith('\x1b[38;5;180m▌ \x1b[39m'))].join(), 'true,true,true');
 const p168 = lines(page218('DS-168'));
 t('DS-218 AC2 the blockers: merged as one green count, the one needing you with its action, those outside with their Jira status',
-  ['Blockers  31 · 4 in this batch, 27 open outside it', '  ✓ 3 in this batch merged', '  ◆ DS-150    #175 is a draft: undraft and merge it', '  ◌ OUT-1     To Do'].filter((s) => !p168.includes(s)).join(' | '), '');
+  ['Blockers  31 · 4 in this batch, 27 open outside it', '  ✓ 3 in this batch merged', '  ◆ DS-150    #175: draft · undraft it once it is reviewed', '  ◌ OUT-1     To Do'].filter((s) => !p168.includes(s)).join(' | '), '');
 const f168 = lastFrame(S168);
 t('DS-218 AC2 on screen: the count green, the one needing you magenta with the action bold, the outside ones grey',
-  [f168.some((l) => l.includes('\x1b[38;5;108m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175 is a draft: \x1b[1mundraft and merge it\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');
+  [f168.some((l) => l.includes('\x1b[38;5;108m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175: \x1b[1mdraft · undraft it once it is reviewed\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');
 const outsideShown = (s) => s.frame().filter((l) => /^ {2}◌ OUT-\d+ /.test(l)).length;
 const before3 = [outsideShown(S168), S168.frame().includes('    … 22 more outside this batch  · a shows all'), S168.frame().some((l) => /✓ DS-101 /.test(l)), keysLine(S168).includes('a blockers')];
 await S168.press('a');
@@ -1534,16 +1536,16 @@ t('DS-218 AC4 a Warnings block shows each flag triage or the pass raised, an adv
 t('DS-218 AC4 each flag is amber', f168.some((l) => l.startsWith('\x1b[38;5;180m  ▲ \x1b[39m')), true);
 t('DS-218 AC5 a held ticket: Starts says what it waits for, and Ships says no date',
   ['DS-168', 'DS-175', 'DS-180'].map((k) => `${at218(k, 'Starts')} | ${at218(k, 'Ships')}`).join(' / '),
-  'Starts    not until its outside blockers are done | Ships     no date / Starts    once #175 merges and you release it | Ships     no date / Starts    after DS-175 merges | Ships     no date');
+  'Starts    not until its outside blockers are done | Ships     no date / Starts    once #175 merges and you let it start | Ships     no date / Starts    after DS-175 merges | Ships     no date');
 t('DS-218 AC5 behind a PR that needs you, where a supervisor releases holds: Starts at the next pass after it merges',
   lines(Q.ticketScreen(repo217('holdsup'), 'W-2H', { now: FIXED, width: 120 })).find((l) => l.startsWith('Starts')) ?? '', 'Starts    at the next pass after #180 merges');
 // Behind a PR whose status no pass has read yet, with too little history to date it and nothing to release it.
 dated('s218u', 5060, { hours: [4], tickets: { 'U-1': { state: 'done', result: { pr: 181 } }, 'U-2': heldBy('U-1') } });
 t('DS-218 AC5 behind an unread PR, where nothing releases holds: Starts does not promise the next pass',
   lines(Q.ticketScreen(Q.loadRepos(FIXED).find((r) => r.name === 's218u'), 'U-2', { now: FIXED, width: 120 })).find((l) => l.startsWith('Starts')) ?? '',
-  'Starts    once the next pass reads its PRs merged and you release it');
+  'Starts    once the next pass reads its PRs merged and you let it start');
 t('DS-218 AC6 a ticket others wait on lists them with their states', `${at218('DS-150', 'Holding up')} | ${at218('DS-175', 'Holding up')}`,
-  'Holding up  ◌ DS-168 (blocked), ◆ DS-175 (needs you) wait on this ticket | Holding up  · DS-180 (waiting) waits on this ticket');
+  'Holding up  ◆ DS-168 (needs you), ◆ DS-175 (needs you) wait on this ticket | Holding up  · DS-180 (waiting) waits on this ticket');
 const why168 = (s) => { const f = s.frame(), i = f.indexOf('Why lane A'); return f.slice(i + 1, f.indexOf('', i)); };
 const files168 = (s) => { const f = s.frame(), i = f.indexOf('Files in scope · 9'); return f.slice(i + 1, f.indexOf('', i)); };
 const folded7 = [why168(S168).length, /… \d+ more lines · y shows all$/.test(why168(S168).at(-1)), files168(S168).length, files168(S168).at(-1).endsWith('  … 7 more · f shows all')];
@@ -1562,7 +1564,7 @@ const tabs218 = [];
 for (const k of ['2', '3', '4']) { await T218.press(k); tabs218.push({ head: headOf(T218.frame()), keys: T218.frame().filter((l) => l.startsWith('key ')).length, f: T218.frame(), raw: lastFrame(T218) }); }
 T218.ui.finish(0);
 t('DS-218 AC8 Timeline, By day and Epics each have the Queue\'s header: state counts, who runs the batch, the batch',
-  `${/^◆ 2 tickets need you .* \| ● session {2}last pass .* │ batch s218$/.test(queueHead)} ${tabs218.map((x) => x.head === queueHead).join()}`, 'true true,true,true');
+  `${/^◆ 4 tickets need you .* \| ● session {2}last pass .* │ batch s218$/.test(queueHead)} ${tabs218.map((x) => x.head === queueHead).join()}`, 'true true,true,true');
 t('DS-218 AC8 the Timeline and By day legends are one key line each, the Timeline\'s with its note under it',
   `${tabs218[0].keys} ${tabs218[1].keys} ${tabs218[0].f[tabs218[0].f.findIndex((l) => l.startsWith('key ')) + 1]}`, '1 1       within a week: day and time; beyond a week, the date');
 t('DS-218 AC9 a Timeline bar on screen: the likely span solid in the state\'s colour, the could-run-to part a dimmer shade of it, no ░',
@@ -1626,9 +1628,9 @@ const needs219 = lines(ov219).findIndex((l) => l.startsWith('◆ '));
 const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
 t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note naming what held them',
   `${cell219('np')} | ${notesOf('np').join(' / ')} | ${cell219('moved')} ${notesOf('moved').length}`,
-  `▲ no progress 3h 5m | nothing started, merged or was released for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
+  `▲ no progress 3h 5m | nothing started or merged for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
 t('DS-219 AC2 two errored passes in a row: the red band above the header names the repo and the error\'s first line; one does not',
-  `${bandAt219('err: the last 2 passes failed: no repo config found for acme/err')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
+  `${bandAt219('err: the last 2 passes errored: no repo config found for acme/err')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
 t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervisor + session, and one note with both fixes',
   `${cell219('both')} | ${notesOf('both').join(' / ')} | ${cell219('alone')} ${notesOf('alone').length}`,
   '▲ supervisor + session | a session is also running this supervised batch. Close the session, or run: desk-q both supervisor off | ● supervisor · 1m ago 0');
@@ -1639,9 +1641,10 @@ t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in des
   notesOf('old').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
 t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
   `${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') >= 0} ${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') < needs219}`, 'true true');
-t('DS-219 AC7 the needs-you count is followed by how long the oldest has waited', /^◆ 2 tickets need you {2}oldest 2h 10m │ wait 2/.test(lines(ov219)[needs219]), true);
+// land's open PR needs you too: nothing there may merge it.
+t('DS-219 AC7 the needs-you count is followed by how long the oldest has waited', /^◆ 3 tickets need you {2}oldest 2h 10m │ wait 2 · land 1$/.test(lines(ov219)[needs219]), true);
 t('DS-219 AC8 a supervised batch with every ticket done and a PR still open: live, not stopped, its rows read by their tickets',
-  `${cell219('land')} ${notesOf('land').length} ${/LD-1 .*landing/.test(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'land'), { now: NOW }))}`, '● supervisor · 1m ago 0 true');
+  `${cell219('land')} ${notesOf('land').length} ${/LD-1 +◆ needs you +#50 · no checks reported yet · merge it once green/.test(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'land'), { now: NOW }))}`, '● supervisor · 1m ago 0 true');
 const S219 = screen({ kind: 'overview', all: true }, 240, () => NOW);
 S219.output.rows = 160; S219.output.resize();
 await sleep(20);
@@ -1678,6 +1681,110 @@ t('DS-310 AC4 the repo\'s name still opens its standing batch, as before', W310.
 t('DS-310 a ticket in the named batch is shown from it', /which copy\?/.test(W310.run('--plain', 'desk-skills:X-1', 'show', 'X-3').out), true);
 const over310 = W310.run('desk-skills:X-1', 'workers', '4');
 t('DS-310 a named batch\'s workers past the cap counts its sibling batch in the machine total', `${over310.code !== 0} ${/live batches would then allow 6 /.test(over310.out + over310.err)}`, 'true true');
+
+// ---- DS-279: five states named by who moves a ticket next, and a row with a failure leads with it.
+// The 27 Oct voicepa board: #693 in CI, #701 green, #705's fix try running, #704's and #697's queued,
+// #696 red on a check only an operator fixes, #698 red after both tries, #700 and #702 drafts.
+const okCheck = (name) => ({ name, status: 'completed', conclusion: 'success', started: ago194(30), completed: ago194(20), runner: true });
+const okChecks = (n) => Array.from({ length: n }, (_, i) => okCheck(`check ${i + 1}`));
+const prOn = (pr, checks, more = {}) => ({ state: 'done', result: { pr }, pr_status: { pr, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks, at: ago194(1), ...more } });
+const eleven = Array.from({ length: 11 }, (_, i) => ({ name: i ? `check ${i}` : 'Lint', url: null }));
+const red = { name: 'Flows image missing', status: 'completed', conclusion: 'failure', started: ago194(9), completed: ago194(8), runner: true };
+const board = {
+  'V-366': { state: 'queued' },
+  'V-705': { state: 'running', stage: '3/9', result: { pr: 705 }, fix: { try: 1, of: 2, pr: 705, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
+  'V-704': { ...ready, result: { pr: 704 }, fix: { try: 1, of: 2, pr: 704, kind: 'conflict', what: 'conflicts with main', base: 'main' } },
+  'V-697': { ...ready, result: { pr: 697 }, fix: { try: 1, of: 2, pr: 697, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
+  'V-693': prOn(693, [...okChecks(18), { name: 'Backend tests', status: 'in_progress', conclusion: null, started: new Date(NOW - 4 * 60000).toISOString(), runner: true },
+    { name: 'e2e', status: 'queued', conclusion: null, started: null, runner: false }, { name: 'e2e (2)', status: 'queued', conclusion: null, started: null, runner: false }]),
+  'V-701': prOn(701, okChecks(23)),
+  'V-508': heldBy('V-693'),
+  'V-500': { state: 'parked', park: { question: 'which copy?' } },
+  'V-501': { state: 'failed', park: { question: 'tests red' } },
+  'V-696': { ...prOn(696, [...okChecks(3), red]), stuck: { why: 'Flows image missing · build it: ensure-flows-image.sh', pr: 696 } },
+  'V-698': { ...prOn(698, [...okChecks(3), { ...red, name: 'Lint' }]), stuck: { why: 'still red after 2 fix tries: Lint', pr: 698 } },
+  'V-700': { ...prOn(700, okChecks(3), { isDraft: true }), undraft: { call: 'person', why: 'its review verdict at abcdef123 is not clean (p1=1)', action: 'settle the findings or gaps on #700' } },
+  'V-702': { ...prOn(702, okChecks(3), { isDraft: true }), undraft: { call: 'person', why: '§4 Clean review verdict is not set as key=value counts, so no verdict can be read as clean', action: 'set it with /desk-setup' } },
+  'V-690': mergedAt(690),
+};
+put(I.T, I.env, 'board', { port: 5600, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'board', concurrency: 3, supervised: true, tickets: board } });
+put(I.T, I.env, 'boardask', { port: 5610, conc: '3 / 5', beat: 1, queue: { batch: 'boardask', concurrency: 3, supervised: true, tickets: { 'V-701': prOn(701, okChecks(23)) } } });
+const repos279 = Q.loadRepos(NOW).filter((r) => ['board', 'boardask'].includes(r.name));
+const r279 = repos279.find((r) => r.name === 'board');
+const q279 = lines(Q.repoScreen(r279, { now: NOW }));
+const row279 = (key) => q279.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
+const rail279 = (key, r = r279) => railText(Q.ticketScreen(r, key, { now: NOW }));
+t('DS-279 AC1 the groups are exactly Running, Ready, Merging, Waiting, Needs you, in that order, each ticket in one',
+  q279.map((l) => GROUP_LINE.exec(l)?.slice(1).join(' · ') ?? /^ +(?:-|\*?\d+) {2}(V-\d+)\s/.exec(l)?.[1]).filter(Boolean).join(' | '),
+  'Running · 1 | V-705 | Ready · 3 | V-366 | V-704 | V-697 | Merging · 2 | V-693 | V-701 | Waiting · 1 | V-508 | Needs you · 6 | V-500 | V-501 | V-696 | V-698 | V-700 | V-702');
+t('DS-279 AC2 a fix worker on its red PR holds a worker: Running', `${/V-705 +● running +#705 · 11 checks failed/.test(row279('V-705'))} ${rail279('V-705').includes('#705 · 11 checks failed · a worker repairs it, try 1 of 2')}`, 'true true');
+t('DS-279 AC3 an untriaged ticket and a queued fix try wait only for a worker: Ready', `${/V-366 +○ ready +triaging/.test(row279('V-366'))} ${/V-697 +○ ready /.test(row279('V-697'))}`, 'true true');
+t('DS-279 AC4 a PR in CI that merges without you: Merging', /V-693 +▸ merging /.test(row279('V-693')), true);
+t('DS-279 AC5 a ticket behind one that moves by itself: Waiting', /V-508 +· waiting +behind #693: Backend tests running/.test(row279('V-508')), true);
+t('DS-279 AC6 a question, a stopped worker, an operator check, red after both tries and drafts: Needs you, each with its reason',
+  ['V-500', 'V-501', 'V-696', 'V-698', 'V-700', 'V-702'].filter((k) => !/ ◆ needs you +\S/.test(row279(k))).join(), '');
+t('DS-279 AC7 all 23 checks passed: merges at the next pass, or needs you to merge it where pr-merge-green is not yes',
+  `${row279('V-701').includes('#701 · all 23 checks passed · merges at the next')} ${rail279('V-701')} | ${rail279('V-701', repos279.find((r) => r.name === 'boardask'))}`,
+  'true Moves without you: PR #701, all 23 checks passed · merges at the next pass. | Needs you: PR #701, all 23 checks passed · merge it.');
+t('DS-279 AC8 the check holding it, how long, and how many are done', row279('V-693').includes('#693 · Backend tests running, 4m · 18 of 21 done'), true);
+t('DS-279 AC9 11 failed checks on try 1: a worker repairs it while running, the next free worker while queued',
+  `${rail279('V-705').includes('11 checks failed · a worker repairs it, try 1 of 2')} ${rail279('V-697').includes('#697 · 11 checks failed · next free worker repairs it, try 1 of 2')}`, 'true true');
+t('DS-279 AC9 no row with a failed check leads with a pass count', q279.filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | '), '');
+t('DS-279 AC10 a DIRTY PR on its first try names the base branch', rail279('V-704'), 'Moves without you: #704 · merge conflict with main · next free worker repairs it, try 1 of 2.');
+t('DS-279 AC11 red only on a check workers can\'t fix: its reason and command', rail279('V-696'), 'Needs you: PR #696, Flows image missing · build it: ensure-flows-image.sh.');
+t('DS-279 AC12 a draft whose review has a P1, and one whose clean verdict is unreadable',
+  `${row279('V-700').includes('#700 · draft · review not clean: 1 P1')} ${rail279('V-702')}`, 'true Needs you: PR #702, draft · review verdict unreadable: set §4 Clean review verdict.');
+t('DS-279 AC13 still red after both fix tries', row279('V-698').includes('#698 · still red after 2 fix tries: Lint'), true);
+const ov279 = lines(Q.overview(repos279, { now: NOW, avail: 30 }));
+t('DS-279 AC14 home counts RUN, READY, MERGING, WAIT, NEEDS YOU and DONE, the merged ticket in DONE and no open PR, and the header counts the Needs you rows',
+  `${cols215(ov279)} | ${(rowOf(ov279.join('\n'), 'board') ?? '').trim().split(/\s+/).slice(6, 12).join(' ')} | ${q279[1].startsWith('◆ 6 tickets need you  ● 1 running  ○ 3 ready  ▸ 2 merging  · 1 waiting │ ✓ 1 done')} ${ov279.find((l) => l.startsWith('◆ '))?.startsWith('◆ 7 tickets need you')}`,
+  'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|DONE|ALL DONE BY|WORKERS | 1 3 2 1 6 1 | true true');
+t('DS-279 AC15 the key line names each state on screen, in order, with what moves it', q279.find((l) => l.startsWith('key ')),
+  'key   ● running: holds a worker │ ○ ready: next free worker takes it │ ▸ merging: merges by itself once green │ · waiting: moves by itself │ ◆ needs you: nothing moves until you act');
+const drawn279 = [ov279.join('\n'), q279.join('\n'), Q.timelineScreen(repos279, 'acme__board', { now: NOW }), Q.daysScreen(repos279, 'acme__board', { now: NOW }),
+  ...Object.keys(board).map((k) => Q.ticketScreen(r279, k, { now: NOW }))].join('\n');
+t('DS-279 AC16 no screen draws a retired word: fixing, stuck, blocked, landing, release, waiting on you, QUEUE DONE',
+  (drawn279.match(/\b(fixing|stuck|blocked|landing|releas\w*)\b|waiting on you|queue done/gi) ?? []).join(), '');
+t('DS-279 AC16 "failed" is said only of checks', [ov279.join('\n'), q279.join('\n')].join('\n').split('\n').filter((l) => /failed/.test(l) && !/\d+ checks? failed/.test(l)).join(' | '), '');
+
+// A red PR moves by itself only where the merge driver reruns it, both fix tries end with the person,
+// a fix worker that parked needs you on its page as on its row, and a batch base names the conflict.
+const fx = {
+  'F-1': prOn(801, [...okChecks(2), { ...red, name: 'e2e' }]),
+  'F-2': { ...prOn(802, [...okChecks(2), { ...red, name: 'Lint' }]), fix_tries: [{ try: 1 }, { try: 2 }] },
+  'F-3': { ...prOn(803, okChecks(2), { mergeable: 'CONFLICTING' }), fix_tries: [{ try: 1 }, { try: 2 }] },
+  'F-4': prOn(804, okChecks(2), { mergeable: 'CONFLICTING' }),
+  'F-5': { state: 'parked', park: { question: 'which copy?' }, result: { pr: 805 }, fix: { try: 1, of: 2, pr: 805, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
+};
+const grant = { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' };
+put(I.T, I.env, 'fixgo', { port: 5620, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'fixgo', concurrency: 3, supervised: true, base: 'develop', tickets: fx } });
+put(I.T, I.env, 'fixno', { port: 5630, conc: '3 / 5', beat: 1, queue: { batch: 'fixno', concurrency: 3, supervised: true, tickets: { 'F-1': fx['F-1'] } } });
+put(I.T, I.env, 'fixrr', { port: 5640, conc: '3 / 5', beat: 1, perms: grant, queue: { batch: 'fixrr', concurrency: 3, supervised: true, tickets: { 'F-1': fx['F-1'] } } });
+const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno'), rRr = reposFx.find((r) => r.name === 'fixrr');
+const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW })), qRr = lines(Q.repoScreen(rRr, { now: NOW }));
+const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
+t('DS-279 a red PR the merge driver reruns is merging, and says it is re-run, then repaired, on its first try',
+  `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, 1 check failed · re-run, then a worker repairs it, try 1 of 2.');
+t('DS-279 a red PR nothing reruns needs you: fix or re-run it, with no merge grant or with §3 ci-rerun not yes',
+  `${/F-1 +◆ needs you/.test(fxRow(qNo, 'F-1'))} ${rail279('F-1', rNo)} | ${/F-1 +◆ needs you/.test(fxRow(qRr, 'F-1'))} ${rail279('F-1', rRr)}`,
+  'true Needs you: PR #801, 1 check failed · fix or re-run it. | true Needs you: PR #801, 1 check failed · fix or re-run it.');
+t('DS-279 a red PR after both fix tries is re-run on its new head before the pass records it stuck, never try 3 of 2; a conflict needs you at once',
+  `${rail279('F-2', rGo)} | ${rail279('F-3', rGo)}`, 'Moves without you: PR #802, 1 check failed · re-run; no fix tries left. | Needs you: PR #803, still in conflict with develop after 2 fix tries.');
+t('DS-279 AC9 no row with a failed check leads with a pass count, on PRs red on the plain PR-status path',
+  `${[fxRow(qGo, 'F-1'), fxRow(qNo, 'F-1'), fxRow(qRr, 'F-1')].every((l) => /#801 · 1 check failed/.test(l))} ${[...qGo, ...qNo, ...qRr].filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | ')}`, 'true ');
+t('DS-279 a conflict names the batch\'s base, as its fix try will', rail279('F-4', rGo), 'Moves without you: PR #804, merge conflict with develop · the next pass sends it to a worker, try 1 of 2.');
+t('DS-279 a fix worker that parked needs your answer on its page, as its row says', `${/F-5 +◆ needs you/.test(fxRow(qGo, 'F-5'))} ${rail279('F-5', rGo).startsWith('Needs your answer: which copy?')}`, 'true true');
+const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
+const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
+t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
+  `${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx(['lint'])).text} | ${Q.holdOf(advQ, advQ.tickets['A-2'], advCtx([])).text}`, 'behind #810: 1 check failed, advisory only | behind #810: 1 check failed');
+// A §4 Required check that never reported, or finished skipped, is not green: the merge driver never
+// merges it and nothing reruns or repairs it, so it needs you rather than "merges at the next pass".
+const reqQ = { tickets: { 'R-1': { key: 'R-1', ...prOn(811, [okCheck('build')]) }, 'R-2': { key: 'R-2', ...prOn(812, [okCheck('build'), { ...okCheck('e2e'), conclusion: 'skipped' }]) } } };
+const reqNeed = (k) => `${Q.shownState(reqQ, reqQ.tickets[k], advCtx([], ['e2e']))} ${Q.holdOf({ tickets: { ...reqQ.tickets, H: { key: 'H', ...heldBy(k) } } }, { key: 'H', ...heldBy(k) }, advCtx([], ['e2e'])).text}`;
+t('DS-279 a required check that never reported or was skipped needs you, naming it',
+  `${reqNeed('R-1')} | ${reqNeed('R-2')}`,
+  'needs #811: required check "e2e" has not reported · fix the check or §4 Required checks | needs #812: required check "e2e" is skipped (skipped does not count) · fix the check or §4 Required checks');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

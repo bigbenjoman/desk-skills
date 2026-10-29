@@ -10,7 +10,8 @@
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask
 //       answer "<answer>"   answer it only (digest.mjs answer): triage questions
-//       release             release a hold nothing else will (desk-q's release command)
+//       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
+//       requeue             send a ticket whose worker stopped back to a worker (queue.mjs requeue)
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
 //       not-now             put it off (the not-now register), asked again once its inputs change
@@ -24,7 +25,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath } from './not-now.mjs';
 
@@ -56,10 +57,15 @@ export function runner(r) {
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
+  // An unmerged PR: only the person's step on GitHub moves it, as its desk-q row says.
+  if (x.pr) return { kind: 'pr', need: `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
+  if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
+  // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
+  if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
   if (isHeld(t)) {
     const h = holdOf(r.q, t, r.ctx);
     return h.act
-      ? { kind: 'held', need: h.text, actions: [['release', 'nothing else releases it, and releasing it lets the next pass start it'], ['not-now']] }
+      ? { kind: 'held', need: h.text, actions: [['start', 'nothing else lets it start, and once you do the next pass can start it'], ['not-now']] }
       : { kind: 'held', need: h.text, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
   if (t.state === 'parked') {
@@ -86,7 +92,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
   const { named = null, scope } = word ? batchesNamed(repos, word) : { scope: shownRepos(repos, false) };
   const items = [];
   for (const r of scope.filter((x) => !x.error && x.q)) {
-    for (const x of r.rows.filter((y) => y.k === 'needs')) {
+    for (const x of needsRows(r)) {
       items.push({ r, t: x.t, ...itemOf(r, x), since: timeOf(x.t.park?.since ?? x.t.added_at), broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
     }
   }
@@ -131,7 +137,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
-  const x = r.rows?.find((y) => y.t.key === ticket && y.k === 'needs');
+  const x = r.q ? needsRows(r).find((y) => y.t.key === ticket) : null;
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
   const [verb, id] = action.split(/\s+/);
@@ -160,10 +166,18 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const q = queueCmd(r, ['requeue', ticket]);
       return q.ok ? say(true, `answer recorded and requeued; the next pass can spawn it.`) : say(false, `answer recorded, but the requeue was refused: ${q.out}`);
     }
-    case 'release': {
+    case 'requeue': {
+      if (w.by === 'session') {
+        return say(true, `not requeued, because a live session runs ${r.name}: message it to requeue ${ticket}.`,
+          { to: w.name, text: `${ticket}'s worker stopped and the person asked through desk-needs-you to requeue it (node ~/.claude/desk/bin/queue.mjs requeue ${ticket}).` });
+      }
+      const q = queueCmd(r, ['requeue', ticket]);
+      return q.ok ? say(true, 'requeued; the next pass can spawn it.') : say(false, `requeue refused: ${q.out}`);
+    }
+    case 'start': {
       const steps = releaseCommand(ticket, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-      for (const s of steps) { const q = queueCmd(r, s); if (!q.ok) return say(false, `release refused: ${q.out}`); }
-      return say(true, 'released; the next pass can start it.');
+      for (const s of steps) { const q = queueCmd(r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
+      return say(true, 'hold lifted; the next pass can start it.');
     }
     // queue.mjs's own lines: they name any undraft or merge left for the person to do.
     case 'approve': { const q = queueCmd(r, ['approve', ticket]); return q.ok ? say(true, `spine approved: ${q.out}`) : say(false, q.out); }
@@ -200,7 +214,7 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now)
   const c = collect({ word, now, repos });
   const where = c.named ? ` in ${c.named.name}` : '';
   const lines = [`desk-q counts ${c.items.length} item${c.items.length === 1 ? '' : 's'} needing you${where}.`];
-  for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.landing.length))) {
+  for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }
   return lines.join('\n');

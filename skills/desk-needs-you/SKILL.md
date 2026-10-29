@@ -40,8 +40,8 @@ Otherwise it prints:
 `record` as it is printed.
 
 `<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `triage`
-(open triage questions) or `held` (a hold nothing else releases). Action 1 is always the
-recommendation.
+(open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up) or `pr`
+(an unmerged PR only the user's step on GitHub moves). Action 1 is always the recommendation.
 
 ## 2. Ask, four at a time
 
@@ -68,7 +68,7 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `release`, `approve`, `not-now`, `open` and `done`. Each run prints one
+Leave `"<text>"` off for `start`, `requeue`, `approve`, `not-now`, `open` and `done`. Each run prints one
 line saying what it recorded. Keep it for the end.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
