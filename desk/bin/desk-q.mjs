@@ -45,7 +45,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { startRefresh, readCache, chargesByName, isFull } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, isFull } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
 export { LIVE_MS };
@@ -1068,7 +1068,7 @@ function billOf(x, { costs }) {
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
-  const c = chargesByName({ cache, names: [...new Set(costs.entries.map((e) => e.name))] });
+  const c = chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] });
   if (!c) return { head: [NO_COST_READING], rows: [], foot };
   const charged = segLine([['charged ', GREY], [usd(c.total), BOLD], [` in ${monthText(c.period)}`, GREY],
     ...c.suppliers.flatMap((s, i) => [i ? [' · ', GREY] : BAR, [`${SUPPLIER_LABEL[s.supplier]} `, GREY], [usd(s.total), BOLD]])]);
@@ -1138,7 +1138,7 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const mine = costs.entries.filter((e) => e.name === name);
   if (!mine.length) return { head: [noCostSourcesFor(label)], rows: [], foot };
-  const c = chargesByName({ cache, names: [name] });
+  const c = chargesByName({ cache: forCosts(cache, costs), names: [name] });
   if (!c) return { head: [NO_COST_READING], rows: [], foot };
   const x = c.names.find((n) => n.name === name);
   const money = (n) => (n == null ? '–' : usd(n));

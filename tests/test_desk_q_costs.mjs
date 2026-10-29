@@ -290,6 +290,10 @@ const out292 = Q.run(['costs', 'voicepa'], { now: FIXED });
 t('DS-292 AC13 desk-q costs voicepa prints the screen as plain text', `${/\x1b/.test(out292)} | ${out292}`, `false | ${[...VOICEPA, '', 'Claude usage  no reading yet'].join('\n')}`);
 t('DS-292 AC13 and pr-ninja\'s, its note unwrapped', Q.run(['costs', 'pr-ninja'], { now: FIXED }), [...PR_NINJA, '', CREDITS_NOTE, '', 'Claude usage  no reading yet'].join('\n'));
 t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo'], { now: FIXED }).split('\n')[0], Q.noCostSourcesFor('solo'));
+// A second AWS profile under voicepa, read today and since removed from costs.md.
+const gone = fixture();
+gone.aws.profiles['voicepa-old'] = { ...gone.aws.profiles['voicepa-admin'], profile: 'voicepa-old', lines: [{ service: 'Amazon EC2', used: 40, credits: 0, charged: 40 }], total: 40 };
+t('DS-325 AC3 a profile removed from costs.md is in no supplier\'s figure', Q.supplierScreen([], 'voicepa', { now: FIXED, cache: gone, pinUsage: true }).split('\n').slice(0, VOICEPA.length).join('\n'), VOICEPA.join('\n'));
 
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);
@@ -326,12 +330,13 @@ t('AC10 a reading that worked and charged nothing reads $0.00, not as no reading
   S10z.frame().find((l) => l.startsWith('charged ')) ?? null, 'charged $0.00 in October, 1–26 │ Vercel $0.00');
 S10z.ui.finish(0);
 // AWS reads each profile on its own day: a profile that failed first time has no figure, and one
-// whose last good figures are from September is left out of October's.
-const awsProfile = (name, period, total) => ({ profile: name, name, repo: null, credit: null, at: FIXED, period, total, failed: null,
+// whose last good figures are from September is left out of October's. Each profile is the one
+// costs.md lists, as one it doesn't is in no total.
+const awsProfile = (name, period, total, profile = name) => ({ profile, name, repo: null, credit: null, at: FIXED, period, total, failed: null,
   lines: [{ service: 'Amazon Simple Storage Service', used: total, credits: 0, charged: total }] });
 writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify({
   aws: { at: FIXED, profiles: {
-    voicepa: awsProfile('voicepa', october, 1.59),
+    'voicepa-admin': awsProfile('voicepa', october, 1.59, 'voicepa-admin'),
     forewatt: awsProfile('forewatt', { year: 2026, month: 9, from: '2026-09-01', to: '2026-09-30' }, 119.1),
     fansurge: { profile: 'fansurge', name: 'fansurge', repo: null, credit: null, failed },
   } },

@@ -56,19 +56,24 @@ const costs = readCosts(env.DESK_COSTS);
 t('fixture costs.md reads back with three AWS profiles', costs.entries.filter((e) => e.supplier === 'aws').length, 3);
 
 // A fake aws: answers from the fixtures by profile and page token, records each call, and can fail
-// for one profile.
+// for one profile. Each profile signs in to an account of its own, none of them an organisation's.
 const calls = [];
 let fail = {};
 const arg = (args, flag) => args[args.indexOf(flag) + 1];
+const ACCOUNTS = { forewatt: '111111111111', 'prninja-admin': '757324725511', fansurge: '222222222222' };
+const DENIED = 'An error occurred (AccessDeniedException) when calling the ListAccounts operation';
 async function aws(args) {
   calls.push(args);
   const p = arg(args, '--profile');
   if (fail[p]) throw new Error(fail[p]);
+  if (args[0] === 'sts') return { UserId: 'AROA:desk', Account: ACCOUNTS[p], Arn: `arn:aws:sts::${ACCOUNTS[p]}:assumed-role/admin/desk` };
+  if (args[0] === 'organizations') throw new Error(DENIED);
   const token = args.includes('--next-page-token') ? Number(arg(args, '--next-page-token')) : 0;
   return pages[p][token];
 }
 const reset = () => { calls.length = 0; fail = {}; };
-const of = (p) => calls.filter((a) => arg(a, '--profile') === p).length;
+const ce = () => calls.filter((a) => a[0] === 'ce');
+const of = (p) => ce().filter((a) => arg(a, '--profile') === p).length;
 const cache = () => C.readCache();
 const line = (r, s) => r?.lines?.find((l) => l.service === s);
 const sum = (lines) => Math.round(lines.reduce((a, l) => a + l.charged, 0) * 100) / 100;
@@ -89,7 +94,7 @@ t('AC1 a tax record under another service joins the tax line', JSON.stringify(C.
 t('AC1 a line under a cent in every figure is left out, and so is one at $0', `${!!line(fw, 'Amazon DynamoDB')} ${!!line(fw, 'AWS Glue')}`, 'false false');
 t('AC1 with the profile it was read with and the time of the reading', `${fw.profile} ${fw.name} ${fw.at === OCT27} ${fw.failed}`, 'forewatt forewatt true null');
 t('AC1 for 1 to 26 October, days in UTC', `${fw.period.from}..${fw.period.to}`, '2026-10-01..2026-10-26');
-t('AC1 asked of Cost Explorer as the ticket gives it, End exclusive', calls.find((c) => arg(c, '--profile') === 'forewatt').join(' '),
+t('AC1 asked of Cost Explorer as the ticket gives it, End exclusive', ce().find((c) => arg(c, '--profile') === 'forewatt').join(' '),
   'ce get-cost-and-usage --profile forewatt --time-period Start=2026-10-01,End=2026-10-27 --granularity MONTHLY --metrics UnblendedCost '
   + '--group-by Type=DIMENSION,Key=SERVICE Type=DIMENSION,Key=RECORD_TYPE --output json --no-paginate');
 const pn = a.profiles['prninja-admin'];
@@ -166,11 +171,11 @@ t('AC5 and so is a cost in another currency', (() => { try { C.parseCostAndUsage
 reset();
 pages.fansurge = [page(FANSURGE, '1'), page([grp('Amazon CloudFront', 'Tax', '0.08')])];
 const two = await C.readAws({ sources: [sources[2]], last: null, aws, now: OCT28 });
-t('AC6 a second page is read with its token', `${calls.length} ${arg(calls[1], '--next-page-token')} ${two.profiles.fansurge.total}`, '2 1 0.5');
+t('AC6 a second page is read with its token', `${ce().length} ${arg(ce()[1], '--next-page-token')} ${two.profiles.fansurge.total}`, '2 1 0.5');
 reset();
 pages.fansurge = [page(FANSURGE, '1'), page(FANSURGE, '2'), page(FANSURGE)];
 const three = await C.readAws({ sources: [sources[2]], last: null, aws, now: OCT28 });
-t('AC6 a third page is never asked for: the reading fails after two requests', `${calls.length} ${three.profiles.fansurge.failed?.why}`, '2 more than 2 pages of results');
+t('AC6 a third page is never asked for: the reading fails after two requests', `${ce().length} ${three.profiles.fansurge.failed?.why}`, '2 more than 2 pages of results');
 
 // ---- AC10: 1 November reads October in full
 reset();
@@ -178,7 +183,7 @@ pages.fansurge = [page(FANSURGE)];
 await C.refresh({ costs, aws, now: NOV1 });
 const a10 = cache().aws;
 t('AC10 every profile is due on 1 November', `${of('forewatt')} ${of('prninja-admin')} ${of('fansurge')}`, '1 1 1');
-t('AC10 and asks for 1 October to 1 November, End exclusive', calls.every((c) => arg(c, '--time-period') === 'Start=2026-10-01,End=2026-11-01'), true);
+t('AC10 and asks for 1 October to 1 November, End exclusive', ce().every((c) => arg(c, '--time-period') === 'Start=2026-10-01,End=2026-11-01'), true);
 t('AC10 the cache gives it as October, 1–31', `${a10.profiles.forewatt.period.month} ${a10.profiles.forewatt.period.from}..${a10.profiles.forewatt.period.to}`, '10 2026-10-01..2026-10-31');
 
 // ---- a GitHub reading that ends after an AWS one does not undo it, nor send AWS again
@@ -201,6 +206,112 @@ t('race: the first then writes GitHub and finds AWS already read', `${ghLater.gi
 t('race: both readings are in the cache', `${!!C.readCache(raceDir).github?.repos?.['benjo/voicepa']} ${C.readCache(raceDir).aws?.profiles?.forewatt?.total}`, 'true 124.88');
 t('race: one Cost Explorer request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map(of).join(), '1,1,1');
 
+// ---- each AWS account counted once
+// voicepa's shape: default and voicepa-admin both sign in to the management account 070870781760,
+// whose figures hold its linked account 748214039541, which voicepa-ci signs in to. voicepa-sec
+// signs in to a third account in that organisation, a delegated administrator: it can list the
+// organisation's accounts, but its own figures hold only its own.
+const VP_ACCOUNTS = { default: '070870781760', 'voicepa-admin': '070870781760', 'voicepa-ci': '748214039541', 'voicepa-sec': '555555555555' };
+const VP_MEMBERS = ['070870781760', '748214039541', '555555555555'];
+const VP_LISTS = ['070870781760', '555555555555'];
+const VP_CE = { '070870781760': [grp('Amazon Simple Storage Service', 'Usage', '4.52'), grp('AWS Lambda', 'Usage', '1.2')],
+  '748214039541': [grp('AWS Lambda', 'Usage', '1.2')], '555555555555': [grp('AWS Lambda', 'Usage', '0.5')] };
+const vcalls = [];
+const vpDown = new Set();
+async function vpAws(args) {
+  vcalls.push(args);
+  const p = arg(args, '--profile');
+  const id = VP_ACCOUNTS[p];
+  if (vpDown.has(p)) throw new Error('The SSO session associated with this profile has expired');
+  if (args[0] === 'sts') return { UserId: 'AROA:desk', Account: id, Arn: `arn:aws:sts::${id}:assumed-role/admin/desk` };
+  if (args[1] === 'describe-organization') return { Organization: { Id: 'o-voicepa', MasterAccountId: '070870781760' } };
+  if (args[1] === 'list-accounts') {
+    if (!VP_LISTS.includes(id)) throw new Error(DENIED);
+    return { Accounts: VP_MEMBERS.map((Id) => ({ Id, Status: 'ACTIVE' })) };
+  }
+  return page(VP_CE[id]);
+}
+const vp = (key) => ({ supplier: 'aws', key, name: 'voicepa', repo: 'benjo__voicepa', credit: null });
+const vpCe = (p) => vcalls.filter((a) => a[0] === 'ce' && arg(a, '--profile') === p).length;
+
+const same = await C.readAws({ sources: [vp('default'), vp('voicepa-admin')], aws: vpAws, now: OCT28 });
+t('DS-325 AC1 two profiles on one account: the name counts it once', `${same.names.voicepa.total} ${same.names.voicepa.lines.map((l) => `${l.service} ${l.charged}`).join(' | ')}`,
+  '5.72 Amazon Simple Storage Service 4.52 | AWS Lambda 1.2');
+t('DS-325 AC1 and the second profile is reported as covered by the first', `${JSON.stringify(same.names.voicepa.covered)} ${same.profiles['voicepa-admin'].covered} ${same.profiles['voicepa-admin'].total}`,
+  '[{"profile":"voicepa-admin","by":"default"}] default undefined');
+t('DS-325 AC1 each profile\'s account is recorded', `${same.profiles.default.account} ${same.profiles['voicepa-admin'].account} ${same.profiles.default.linked.join()}`,
+  '070870781760 070870781760 748214039541,555555555555');
+
+vcalls.length = 0;
+const org = await C.readAws({ sources: [vp('voicepa-ci'), vp('default')], aws: vpAws, now: OCT28 });
+t('DS-325 AC2 a linked account counts once, in its organisation\'s figures', `${org.names.voicepa.total} ${org.profiles.default.total}`, '5.72 5.72');
+t('DS-325 AC2 the linked profile is covered by the organisation\'s, listed first or not', org.profiles['voicepa-ci'].covered, 'default');
+t('DS-325 AC2 and makes no Cost Explorer request', `${vpCe('voicepa-ci')} ${vpCe('default')}`, '0 1');
+
+const VP = join(T, 'voicepa.md');
+const vpCosts = (keys) => {
+  writeFileSync(VP, renderCosts({ entries: keys.map(vp), budget: { actionsUsd: null }, logins: { aws: '~/.aws/config' } }));
+  return readCosts(VP);
+};
+const vpDir = join(T, 'vp-costs');
+vcalls.length = 0;
+await C.refresh({ dir: vpDir, costs: vpCosts(['default', 'voicepa-admin', 'voicepa-ci']), aws: vpAws, now: OCT28 });
+const vpRead = C.readCache(vpDir);
+t('DS-325 all three of the 29 October profiles: the name is one organisation\'s figures, read once', `${vpRead.aws.names.voicepa.total} ${vcalls.filter((a) => a[0] === 'ce').length}`, '5.72 1');
+const all = vpCosts(['default', 'voicepa-admin', 'voicepa-ci']);
+t('DS-325 and the Costs tab charges it once', C.chargesByName({ cache: C.forCosts(vpRead, all), names: ['voicepa'] }).names[0].total, 5.72);
+// A fourth profile, on an account of its own, read earlier and since removed from costs.md.
+const withGone = { ...vpRead, aws: { ...vpRead.aws, profiles: { ...vpRead.aws.profiles,
+  gone: { ...vpRead.aws.profiles.default, profile: 'gone', account: '333333333333', linked: [] } } } };
+t('DS-325 AC3 a profile removed from costs.md, on a day AWS is not due', C.dueSuppliers({ costs: all, cache: withGone, now: OCT28 + 3600000 }).length, 0);
+t('DS-325 AC3 is in no total when the cache is read', C.chargesByName({ cache: C.forCosts(withGone, all), names: ['voicepa'] }).names[0].total, 5.72);
+t('DS-325 AC3 nor when it is shown', `${Object.keys(C.forCosts(withGone, all).aws.profiles).join()} ${C.forCosts(withGone, all).aws.names.voicepa.total}`,
+  'default,voicepa-admin,voicepa-ci 5.72');
+const dropped = vpCosts(['voicepa-admin', 'voicepa-ci']);
+t('DS-325 AC3 removing the profile that covered the rest makes AWS due the same day', C.dueSuppliers({ costs: dropped, cache: vpRead, now: OCT28 + 3600000 }).join(), 'aws');
+vcalls.length = 0;
+await C.refresh({ dir: vpDir, costs: dropped, aws: vpAws, now: OCT28 + 3600000 });
+const after = C.readCache(vpDir).aws;
+t('DS-325 AC3 and the profile that takes over is read, the rest still covered', `${after.names.voicepa.total} ${vpCe('voicepa-admin')} ${vpCe('voicepa-ci')} ${after.profiles['voicepa-ci'].covered} ${Object.keys(after.profiles).join()}`,
+  '5.72 1 0 voicepa-admin voicepa-admin,voicepa-ci');
+
+const pair = [vp('default'), vp('voicepa-ci')];
+const day1 = await C.readAws({ sources: pair, aws: vpAws, now: OCT28 });
+vpDown.add('default');
+vcalls.length = 0;
+const day2 = await C.readAws({ sources: pair, last: day1, aws: vpAws, now: OCT28 + 24 * 3600000 });
+vpDown.clear();
+t('DS-325 a failed sign-in keeps the account the cache knew, so the linked profile stays covered and is not read',
+  `${day2.names.voicepa.total} ${day2.profiles.default.account} ${day2.profiles.default.linked.join()} ${day2.profiles['voicepa-ci'].covered} ${vpCe('voicepa-ci')}`,
+  '5.72 070870781760 748214039541,555555555555 default 0');
+
+const sec = await C.readAws({ sources: [vp('voicepa-sec'), vp('default')], aws: vpAws, now: OCT28 });
+t('DS-325 a delegated administrator that can list the organisation covers nothing, and the organisation covers it',
+  `${sec.profiles['voicepa-sec'].linked.length} ${sec.profiles.default.covered} ${sec.profiles['voicepa-sec'].covered} ${sec.names.voicepa.total}`, '0 null default 5.72');
+
+vcalls.length = 0;
+const across = await C.readAws({ sources: [{ ...vp('voicepa-ci'), name: 'ci' }, vp('default')], aws: vpAws, now: OCT28 });
+t('DS-325 a linked account listed under another name is covered by its organisation\'s profile, and read once in all',
+  `${across.profiles['voicepa-ci'].covered} ${across.names.ci.total} ${across.names.voicepa.total} ${vpCe('voicepa-ci')}`, 'default 0 5.72 0');
+
+// A cache written before accounts were recorded, every profile read today.
+const vpThree = ['default', 'voicepa-admin', 'voicepa-ci'].map(vp);
+const unknown = await C.readAws({ sources: vpThree, aws: (args) => (args[0] === 'ce' ? vpAws(args) : Promise.reject(new Error(DENIED))), now: OCT28 });
+const before = { ...unknown, profiles: Object.fromEntries(Object.entries(unknown.profiles).map(([k, { account, linked, covered, ...r }]) => [k, r])) };
+t('DS-325 a cache from before accounts were recorded holds every profile\'s figures', vpThree.map((s) => before.profiles[s.key].total).join(), '5.72,5.72,1.2');
+t('DS-325 and is due the same day', C.dueSuppliers({ costs: all, cache: { aws: before }, now: OCT28 + 3600000 }).join(), 'aws');
+vcalls.length = 0;
+const identified = await C.readAws({ sources: vpThree, last: before, aws: vpAws, now: OCT28 + 3600000 });
+t('DS-325 where identifying each profile counts the account once, with no Cost Explorer request',
+  `${identified.names.voicepa.total} ${vcalls.filter((a) => a[0] === 'ce').length} ${identified.profiles['voicepa-admin'].covered} ${identified.profiles['voicepa-ci'].covered}`, '5.72 0 default default');
+t('DS-325 and then nothing is due', C.dueSuppliers({ costs: all, cache: { aws: identified }, now: OCT28 + 3600000 }).length, 0);
+
+const plain = await C.readAws({ sources, aws: async (args) => { if (args[0] !== 'ce') throw new Error(DENIED); return pages[arg(args, '--profile')][0]; }, now: OCT28 });
+const counted = await C.readAws({ sources, aws, now: OCT28 });
+t('DS-325 AC4 one profile per account: the totals are as they were', Object.keys(counted.names).map((n) => `${n} ${counted.names[n].total}`).join(),
+  Object.keys(plain.names).map((n) => `${n} ${plain.names[n].total}`).join());
+t('DS-325 AC4 and nothing is covered', Object.values(counted.names).flatMap((n) => n.covered).length, 0);
+
 // ---- AC9: desk-q's check starts one background reading per profile and does not wait
 mkdirSync(join(T, 'bin'));
 const fakeAws = join(T, 'bin', 'aws');
@@ -220,7 +331,7 @@ while (Date.now() < until && !C.readCache(childDir)) await new Promise((r) => { 
 await new Promise((r) => { setTimeout(r, 1500); });
 const awsCalls = () => (existsSync(awsLog) ? readFileSync(awsLog, 'utf8').trim().split('\n') : []);
 t('AC9 the background reading writes the cache', C.readCache(childDir)?.aws?.profiles?.forewatt?.total, 124.88);
-t('AC9 two started together make one request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map((p) => awsCalls().filter((l) => l.includes(`--profile ${p} `)).length).join(), '1,1,1');
+t('AC9 two started together make one request per profile', ['forewatt', 'prninja-admin', 'fansurge'].map((p) => awsCalls().filter((l) => l.includes(` ce get-cost-and-usage --profile ${p} `)).length).join(), '1,1,1');
 t('AC6 each aws call runs with the CLI\'s retries off, so one call is one request', awsCalls().length > 0 && awsCalls().every((l) => l.startsWith('attempts=1 ')), true);
 t('AC9 with that reading made today, the next check starts nothing', C.startRefresh({ due: C.dueSuppliers({ costs, cache: C.readCache(childDir), now: Date.now() }), env: childEnv }).started, false);
 
