@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { EXIT, Refusal, crashShowsPerson, describeCrash, readQueue, readJsonOrRefuse } from './batch-state.mjs';
 import { ownedSpecs, spineSpecFiles, specsCommand } from './spine-check.mjs';
+import { useTicketBatch } from './batches.mjs';
 
 // What the reviewer looks for, by the `kind` it reports.
 export const KINDS = {
@@ -141,6 +142,7 @@ if (isMain) {
     console.error('usage: spine-review.mjs brief <SPINE> | spine-review.mjs questions <SPINE> [<reviewer reply file>]');
     process.exit(EXIT.SHOW_PERSON);
   }
+  useTicketBatch(key);
   E.applyBatchBase();
   const { specs, worktree, command } = spineSpecs(key);
   if (cmd === 'brief') console.log(reviewBrief(specs, { worktree, command }));

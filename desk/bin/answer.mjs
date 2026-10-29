@@ -14,9 +14,9 @@ import { join } from 'node:path';
 import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
 import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
+import { useTicketBatch } from './batches.mjs';
 
 crashShowsPerson();
-const STATE = stateDir();
 const QUEUE = join(binDir(), 'queue.mjs');
 
 const [ticket, ...rest] = process.argv.slice(2);
@@ -29,6 +29,9 @@ if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
   console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
   process.exit(EXIT.SHOW_PERSON);
 }
+// The answer goes to the batch holding the ticket, and the queue.mjs it runs follows (DESK_BATCH).
+useTicketBatch(ticket);
+const STATE = stateDir();
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
 mkdirSync(join(STATE, 'briefings'), { recursive: true });

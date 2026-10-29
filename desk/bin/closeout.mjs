@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Tells the batch about an interactive close-out. Once a desk-ticket or desk-pr session merges a ticket's
-// last PR or moves it to Done, a ticket this repo's batch queue still holds unfinished gets a note in that
-// batch's state, <state>/closed-out/<TICKET>.json, and the orchestrator's next pass records it done
+// last PR or moves it to Done, a ticket one of this repo's batch queues still holds unfinished gets a note in
+// that batch's state, <state>/closed-out/<TICKET>.json, and the orchestrator's next pass records it done
 // (pass.mjs): only the orchestrator writes its queue. A ticket in no batch, or already done there, writes
 // nothing and prints nothing.
 //
@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, realpa
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { useTicketBatch } from './batches.mjs';
 
 export const closedOutDir = (state) => join(state, 'closed-out');
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
@@ -50,6 +51,7 @@ if (isMain) {
   if (!ticket || !E.SAFE_ID.test(ticket) || args.length > 1) { console.error(usage); process.exit(2); }
   if (pr != null && !/^\d+$/.test(pr)) { console.error(`--pr wants a PR number, not "${pr}". ${usage}`); process.exit(2); }
   if (!['merged', 'done'].includes(how)) { console.error(`--how is merged or done, not "${how}". ${usage}`); process.exit(2); }
+  try { useTicketBatch(ticket); } catch (e) { console.error(e.message); process.exit(2); }
   const r = noteCloseout({ queue: E.queueFile(), state: E.stateDir(), ticket, pr: pr == null ? null : Number(pr), how });
   if (r) console.log(`${ticket} is ${r.state} in batch ${r.batch ?? '(unnamed)'}: noted for its orchestrator, whose next pass records it done (${r.path})`);
 }

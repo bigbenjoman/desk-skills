@@ -234,5 +234,68 @@ t('DS-303 AC3 merge-driver.sh --batch X-1 logs to X-1 state', /merge driver exit
 t('DS-303 AC3 and not to the standing state', mdLog(standingS), null);
 t('DS-303 AC3 merge-driver.sh takes its other arguments as before', md.status, 1);
 
+// A command about one ticket acts on the batch that holds it: answer.mjs, closeout.mjs, queue.mjs's
+// ticket subcommands and spine-review.mjs, with no batch named and no explicit queue or state path.
+const ticketCli = (script, args, env = {}) => {
+  const r = spawnSync('node', [join(BIN, script), ...args], { encoding: 'utf8', env: { ...base, ...env } });
+  return { code: r.status, out: `${r.stdout}${r.stderr}` };
+};
+const has = (path) => { try { readFileSync(path); return true; } catch { return false; } };
+mkdirSync(dirname(namedQ('Y-1')), { recursive: true });
+writeFileSync(namedQ('Y-1'), JSON.stringify({ version: 1, batch: 'Y-1', tickets: {
+  'Y-2': { key: 'Y-2', state: 'triaged', open_questions: 1 },
+  'Y-3': { key: 'Y-3', state: 'running' },
+  'Y-4': { key: 'Y-4', state: 'triaged' },
+} }));
+const y1 = () => JSON.parse(read(namedQ('Y-1'))).tickets;
+
+// A batch whose queue cannot be read may be the one holding the key, so the command refuses naming it.
+r = ticketCli('answer.mjs', ['Y-2', 'too soon']);
+t('DS-304 an unreadable batch refuses the answer, naming its queue', r.code !== 0 && r.out.includes(namedQ('Z-1')) && !has(join(standingS, 'briefings', 'Y-2.md')) && !has(join(namedS('Y-1'), 'briefings', 'Y-2.md')), true);
+writeFileSync(namedQ('Z-1'), JSON.stringify({ version: 1, batch: 'Z-1', tickets: {} }));
+
+r = ticketCli('answer.mjs', ['Y-2', 'use the blue one']);
+t('DS-304 AC1 an answer for Y-2 goes to Y-1\'s state', r.code === 0 && read(join(namedS('Y-1'), 'briefings', 'Y-2.md')).includes('use the blue one'), true);
+t('DS-304 AC1 and not the standing batch\'s', has(join(standingS, 'briefings', 'Y-2.md')), false);
+t('DS-304 AC1 Y-1\'s queue shows Y-2 answered', y1()['Y-2'].open_questions, 0);
+r = ticketCli('closeout.mjs', ['Y-3', '--pr', '7']);
+t('DS-304 AC1 a close-out for Y-3 is noted in Y-1\'s state', r.code === 0 && JSON.parse(read(join(namedS('Y-1'), 'closed-out', 'Y-3.json'))).queue, namedQ('Y-1'));
+r = ticketCli('queue.mjs', ['set', 'Y-4', 'note=found']);
+t('DS-304 AC1 queue.mjs set acts on Y-1', r.code === 0 && y1()['Y-4'].note, 'found');
+t('DS-304 AC1 queue.mjs get reads Y-1', JSON.parse(ticketCli('queue.mjs', ['get', 'Y-4']).out).note, 'found');
+
+r = ticketCli('answer.mjs', ['S-1', 'standing answer']);
+t('DS-304 AC2 a standing ticket\'s answer is stored as today', r.code === 0 && read(join(standingS, 'briefings', 'S-1.md')).includes('standing answer'), true);
+r = ticketCli('closeout.mjs', ['S-1']);
+t('DS-304 AC2 a standing ticket\'s close-out is stored as today', r.code === 0 && JSON.parse(read(join(standingS, 'closed-out', 'S-1.json'))).queue, standingQ);
+
+const queues = () => [standingQ, namedQ('X-1')].map(read).join('\n');
+const qBefore = queues();
+for (const [script, args] of [['answer.mjs', ['DUP-1', 'an answer']], ['closeout.mjs', ['DUP-1']], ['queue.mjs', ['set', 'DUP-1', 'note=x']]]) {
+  r = ticketCli(script, args);
+  t(`DS-304 AC3 ${script} for a key in two batches exits naming both`, r.code !== 0 && /the standing batch, X-1/.test(r.out), true);
+}
+t('DS-304 AC3 no queue was written', queues(), qBefore);
+t('DS-304 AC3 no briefing or close-out was written', [standingS, namedS('X-1')].some((d) => has(join(d, 'briefings', 'DUP-1.md')) || has(join(d, 'closed-out', 'DUP-1.json'))), false);
+
+r = ticketCli('answer.mjs', ['--batch', 'X-3', 'Y-4', 'flagged']);
+t('DS-304 AC4 --batch wins: the answer goes to X-3', r.code === 0 && has(join(namedS('X-3'), 'briefings', 'Y-4.md')) && !has(join(namedS('Y-1'), 'briefings', 'Y-4.md')), true);
+const y1Before = read(namedQ('Y-1'));
+r = ticketCli('queue.mjs', ['set', 'Y-4', 'note=env'], { DESK_BATCH: 'X-3' });
+t('DS-304 AC4 DESK_BATCH wins: Y-4 is not looked up', r.code !== 0 && read(namedQ('Y-1')) === y1Before, true);
+r = ticketCli('queue.mjs', ['set', 'Y-4', 'note=path'], { DESK_QUEUE: standingQ });
+t('DS-304 AC4 an explicit DESK_QUEUE wins too', r.code !== 0 && read(namedQ('Y-1')) === y1Before, true);
+
+r = ticketCli('answer.mjs', ['NOPE-1', 'later']);
+t('DS-304 AC5 a ticket in no batch is answered in the standing state', r.code === 0 && r.out.includes('not in the queue yet') && has(join(standingS, 'briefings', 'NOPE-1.md')), true);
+r = ticketCli('closeout.mjs', ['NOPE-1']);
+t('DS-304 AC5 a ticket in no batch writes no close-out', r.code === 0 && r.out === '' && !has(join(standingS, 'closed-out', 'NOPE-1.json')), true);
+
+// spine-review reads the spine's own feature batch: past its spine check, to the config's missing spec directory.
+mkdirSync(dirname(namedQ('S-5')), { recursive: true });
+writeFileSync(namedQ('S-5'), JSON.stringify({ version: 1, batch: 'S-5', feature: true, spine: 'S-6', tickets: { 'S-6': { key: 'S-6', state: 'parked' } } }));
+r = ticketCli('spine-review.mjs', ['brief', 'S-6']);
+t('DS-304 spine-review finds the spine in its feature batch', r.out.includes('S-6: config §4 Acceptance specs names no spec directory'), true);
+
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');
