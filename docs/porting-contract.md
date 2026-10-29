@@ -40,7 +40,7 @@ from shell, `desk_cfg` / `desk_perm` / `desk_load_paths` in `desk-env.sh`.
 | Studia's Jira site, cloudId, workflow names (`In Development`, `Review/QA`, `Done`) | `§4 Jira site`, `Jira cloudId`, `In-progress state`, `Review state`, `Done state` |
 | Launch Priority `customfield_10159`, `sev-pN` labels, Figma field | `§4 Priority`, `§4 Labels`, `§4 Other fields` |
 | `studia-web`, `Sophos-Education/...` | `§0 GitHub repo`, `§2 Primary repo root` |
-| `🏁 CI gate` and its list of checks, Protect Main ruleset | `§4 Required checks`, `§4 Advisory checks`, `§4 Branch protection`, and the one definition of "green" in the config's Rules (required checks succeeded at the exact head, skipped not counting; nothing else red or pending unless advisory; merges pinned with `--match-head-commit`) |
+| `🏁 CI gate` and its list of checks, Protect Main ruleset | `§4 Required checks`, `§4 Advisory checks`, `§4 Branch protection`, and the one definition of "green" in the config's Rules (required checks succeeded at the exact head, a skipped one passing as branch protection counts it; nothing else red or pending unless advisory; merges pinned with `--match-head-commit`) |
 | "build the Lambda images before merging backend changes" and similar manual steps | `§4 Merge holds` (`` `<glob>: <why>` ``): skills never merge such a PR and report the reason |
 | `--squash` | `§4 Merge method` |
 | `/pullbot`, `pullbot-gate`, `review-bar`, `p0=0 p1=0 p2=0` | `§4 Local review command`, `§4 Clean review verdict`; desk now ships its own, `desk-review` (below) |

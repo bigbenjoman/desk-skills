@@ -296,7 +296,7 @@ const i1 = iota.find((i) => i.t.key === 'I-1');
 t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71: draft · review not clean: 2 gaps | answer,done,not-now');
 t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
-t('DS-323 AC3 a draft whose only red checks were skipped says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72: draft · CI does not run on a draft, so its checks were skipped: undraft #72');
+t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72: draft · CI does not run on a draft, so its checks were skipped: undraft #72');
 t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,not-now false');
 const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
 const gr = cli('record', 'iota', 'I-1', 'answer', call323);

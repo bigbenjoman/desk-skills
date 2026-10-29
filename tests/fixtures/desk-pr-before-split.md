@@ -504,7 +504,7 @@ the checks branch protection requires, so where another check runs (a path-filte
 it would merge past that check failing. Otherwise do not arm it: undraft, and merge when the head is
 green by the definition below. Merging needs the head
 **green** as the config defines it (desk-config "Green": every §4 Required checks entry completed
-with success, skipped not counting; nothing else failed, errored, timed out or still running unless
+with success, a skipped one passing as branch protection counts it; nothing else failed, errored, timed out or still running unless
 §4 Advisory checks names it; at least one success), and is always pinned to that head with
 `--match-head-commit`. A PR touching a glob in §4 Merge holds is never armed or merged by a skill:
 report it with the hold's reason and the user merges. Never `--admin`, never past a failing check
