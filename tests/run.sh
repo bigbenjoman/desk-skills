@@ -13,14 +13,16 @@ trap 'rm -f "$OUT"' EXIT
 SH="${BASH:-bash}"
 echo "bash $BASH_VERSION ($SH); scripts with #!/usr/bin/env bash get $(command -v bash)"
 fail=0; total=0
-# A suite fails the run on a FAIL line, a non-zero exit, a bash error, or no checks at all.
-run() { printf '\n== %s\n' "$1"; shift; "$@" >"$OUT" 2>&1 3<&-; rc=$?
+# A suite fails the run on a FAIL line, a non-zero exit, a bash error, or no checks at all. A failed
+# suite's whole output but its ok lines is printed, so whatever it said about the failure is in the log.
+run() { printf '\n== %s\n' "$1"; shift; "$@" >"$OUT" 2>&1 3<&-; rc=$?; bad=0
   grep -E "checks passed|^SKIP" "$OUT"; c=$(grep -c "^ok" "$OUT")
   [ "$c" -gt 0 ] || c=$(grep -oE '[0-9]+ checks passed' "$OUT" | grep -oE '^[0-9]+' | head -n 1)
   c=${c:-0}; total=$((total + c)); echo "ok: $c"
-  grep -E 'FAIL|too many arguments|unbound variable|bad substitution|syntax error' "$OUT" && fail=1
-  [ $rc -eq 0 ] || { echo "exit $rc"; tail -5 "$OUT"; fail=1; }
-  [ "$c" -gt 0 ] || { echo "no checks ran"; fail=1; }; }
+  grep -qE 'FAIL|too many arguments|unbound variable|bad substitution|syntax error' "$OUT" && bad=1
+  [ $rc -eq 0 ] || { echo "exit $rc"; bad=1; }
+  [ "$c" -gt 0 ] || { echo "no checks ran"; bad=1; }
+  [ $bad -eq 0 ] || { grep -vE '^ok|checks passed|^SKIP' "$OUT"; fail=1; }; }
 # Every tests/test_*.sh and tests/test_*.mjs is a suite, run in name order, so adding one needs no
 # edit here. Its label is the first `# suite: <label>` (`// suite: <label>` in .mjs) line in its
 # first ten lines, or the file name without one.

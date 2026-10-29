@@ -45,9 +45,13 @@ cat > "$T/fixture.json" <<EOF
    "object": {"url": "https://github.com/acme/alpha/pull/7", "title": "PR 7"}}]},
  "remotelink_fail": ["KAN-7"]}
 EOF
+# shellcheck source=stub_jira.sh
+. "$S/stub_jira.sh"
 PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
-python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!
-SLOWPORT=$((PORT + 1)); python3 "$S/stub_jira.py" "$SLOWPORT" "$T/slow.log" 1.5 & SLOW=$!
+stub_jira "$PORT" "$LOG" "" "$T/fixture.json"; STUB=$STUB_PID; PORT=$STUB_PORT
+trap 'kill $STUB 2>/dev/null' EXIT
+stub_jira $((PORT + 1)) "$T/slow.log" 1.5; SLOW=$STUB_PID; SLOWPORT=$STUB_PORT
+trap 'kill $STUB $SLOW 2>/dev/null' EXIT
 # A site where a deleted link is still there on the read-back.
 cat > "$T/keep.json" <<'EOF'
 {"unlink_readback": "keep", "issues": {
@@ -56,9 +60,8 @@ cat > "$T/keep.json" <<'EOF'
   "KAN-31": {"issuelinks": [{"id": "77", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
                              "inwardIssue": {"key": "KAN-30"}}]}}}
 EOF
-KEEPPORT=$((PORT + 2)); python3 "$S/stub_jira.py" "$KEEPPORT" "$T/keep.log" "" "$T/keep.json" & KEEP=$!
+stub_jira $((PORT + 2)) "$T/keep.log" "" "$T/keep.json"; KEEP=$STUB_PID; KEEPPORT=$STUB_PORT
 trap 'kill $STUB $SLOW $KEEP 2>/dev/null' EXIT
-sleep 0.5
 
 mkrepo() {  # name remote tracker site
   local d="$T/repos/$1"; git init -q "$d"; [ -n "$2" ] && git -C "$d" remote add origin "$2"
@@ -560,10 +563,10 @@ jq -n '{projects: {KAN: "10101"}, issues: {
     {id: "customfield_10174", name: "Size", custom: true, schema: {type: "option"}, scope: {type: "PROJECT", project: {id: "10034"}}},
     {id: "customfield_10208", name: "Size", custom: true, schema: {type: "option"}, scope: {type: "PROJECT", project: {id: "10101"}}}]}' > "$T/scoped.json"
 jq '.fields[0] |= del(.scope)' "$T/scoped.json" > "$T/both.json"
-SPORT=$((PORT + 5)); python3 "$S/stub_jira.py" "$SPORT" "$T/scoped.log" "" "$T/scoped.json" & SSTUB=$!
-BPORT=$((PORT + 6)); python3 "$S/stub_jira.py" "$BPORT" "$T/both.log" "" "$T/both.json" & BSTUB=$!
+stub_jira $((PORT + 5)) "$T/scoped.log" "" "$T/scoped.json"; SSTUB=$STUB_PID; SPORT=$STUB_PORT
+trap 'kill $STUB $SLOW $KEEP $SSTUB 2>/dev/null' EXIT
+stub_jira $((PORT + 6)) "$T/both.log" "" "$T/both.json"; BSTUB=$STUB_PID; BPORT=$STUB_PORT
 trap 'kill $STUB $SLOW $KEEP $SSTUB $BSTUB 2>/dev/null' EXIT
-sleep 0.5
 slint(){ out=$(cd "$1" && JIRA_SITE="http://127.0.0.1:$2" "$J" lint "${@:3}" 2>&1); rc=$?; }
 slint "$A" "$SPORT" "$LD/clean.md" customfield_10208=M
 check "lint: with no Size field row, Size is read from the field scoped to the project, not another's" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
@@ -624,9 +627,8 @@ jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}}},
    "children": {"KAN-2": ["KAN-45", "KAN-46"]},
    "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}' > "$T/lint.json"
-LPORT=$((PORT + 3)); python3 "$S/stub_jira.py" "$LPORT" "$T/lint.log" "" "$T/lint.json" & LSTUB=$!
+stub_jira $((PORT + 3)) "$T/lint.log" "" "$T/lint.json"; LSTUB=$STUB_PID; LPORT=$STUB_PORT
 trap 'kill $STUB $SLOW $KEEP $LSTUB 2>/dev/null' EXIT
-sleep 0.5
 klint(){ out=$(cd "$A" && JIRA_SITE="http://127.0.0.1:$LPORT" "$J" lint "$@" 2>&1); rc=$?; }
 klint KAN-45
 check "lint KEY: a clean ticket (parent and sibling excluded) has no findings" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
@@ -651,12 +653,11 @@ check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | 
 # 2026-10-18): none has a blocking finding, under the DS project's own key pattern.
 jq -s '{issues: (map({key: .key, value: {summary: .key, issuetype: {name: .type}, description: .d,
   customfield_10208: {value: .size}, _names: {customfield_10208: "Size"}}}) | from_entries)}' "$S/lint_corpus.jsonl" > "$T/corpus.json"
-CPORT=$((PORT + 4)); python3 "$S/stub_jira.py" "$CPORT" "$T/corpus.log" "" "$T/corpus.json" & CSTUB=$!
+stub_jira $((PORT + 4)) "$T/corpus.log" "" "$T/corpus.json"; CSTUB=$STUB_PID; CPORT=$STUB_PORT
 trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB 2>/dev/null' EXIT
 SLUG_DS=$(mkrepo ds "https://github.com/acme/ds" jira "http://127.0.0.1:$CPORT")
 printf '| Ticket key pattern | `DS-[0-9]+` |\n' >> "$DESK_CONFIG_ROOT/repos/$SLUG_DS/config.md"
 printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_DS/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_DS/atlassian-token"
-sleep 0.5
 blocked=''; n=0
 for k in $(jq -r .key "$S/lint_corpus.jsonl"); do
   out=$(cd "$T/repos/ds" && "$J" lint "$k" 2>&1); rc=$?; n=$((n + 1))
@@ -684,9 +685,8 @@ check "create refuses parent=@<row> outside a batch check" '[ $rc -ne 0 ] && pri
 # create-batch: every row checked as create checks it, then each sent in order. Its own stub
 # numbers the tickets it creates (KAN-101 up) and rejects a summary of "third".
 printf '{"issues": {}, "children": {}, "create_seq": 101, "create_fail": ["third"], "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}\n' > "$T/batch.json"
-BTPORT=$((PORT + 7)); python3 "$S/stub_jira.py" "$BTPORT" "$T/batch.log" "" "$T/batch.json" & BTSTUB=$!
+stub_jira $((PORT + 7)) "$T/batch.log" "" "$T/batch.json"; BTSTUB=$STUB_PID; BTPORT=$STUB_PORT
 trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB $BTSTUB 2>/dev/null' EXIT
-sleep 0.5
 BL="$T/batch.log"
 bcreates() { jq -s '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | length' "$BL"; }
 bsent() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue") | .body | fromjson | .fields | {summary, parent: .parent.key}]' "$BL"; }
