@@ -43,7 +43,7 @@ import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs'
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { pacingSetting, usagePace, newestUsage, stateDirs } from './usage-pace.mjs';
+import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1242,12 +1242,11 @@ function machineLine(running, cap, room, avail) {
 
 // The usage reading every header shows: the newest of both windows, how many workers run in every
 // repo here, and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each
-// repo by its own §3b row, so a repo set to off is never held). The hold is judged on the reading a
-// pass judges it on, worker logs alone, so the header never says a pass holds when it would not.
+// repo by its own §3b row, so a repo set to off is never held). A pass reads the same worker logs and
+// probe output (newestUsage), so the hold is judged on the 7-day figure shown.
 export function usageOf(repos, now, shown = repos) {
-  const dirs = stateDirs({ self: usageDir() });
-  const reading = readUsage({ dirs, now }), passReading = newestUsage({ dirs, now });
-  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: passReading, now });
+  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), now });
+  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
   return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: heldBy.length > 0, heldBy };
 }

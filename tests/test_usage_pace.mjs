@@ -17,7 +17,7 @@ const T = mkdtempSync(join(tmpdir(), 'desk-usage-pace-'));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks') };
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_PORT_FLOOR',
-  'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED']) delete process.env[k];
+  'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED', 'DESK_USAGE_DIR']) delete process.env[k];
 Object.assign(process.env, env);
 mkdirSync(env.DESK_LOCK_DIR, { recursive: true });
 // Imported after the environment is set: desk-env reads HOME once.
@@ -78,6 +78,15 @@ log(B, 'B-1', [both(win(0.1, 4 * HOUR), win(0.94, 2 * DAY))]);
 const reading = () => P.newestReading({ dirs: P.stateDirs({ self: A, root }), now: real });
 t('DS-342 AC1 unit: both windows come from the newest event, not the latest reset', JSON.stringify([reading().five_hour, reading().seven_day]), JSON.stringify([win(0.1, 4 * HOUR), win(0.94, 2 * DAY)]));
 t('DS-342 AC4 unit: weekly pacing judges on the same 7-day reading', JSON.stringify(P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })), JSON.stringify(reading().seven_day));
+// After a switch with no worker running, desk-q's probe alone holds the subscription in use: a pass
+// reads it as desk-q does.
+const U = await import(join(BIN, 'usage-probe.mjs'));
+mkdirSync(P.usageDir(), { recursive: true });
+writeFileSync(P.probeLog(), `${both(win(0.3, 4 * HOUR), win(0.97, DAY))}\n`);
+const shown = U.readUsage({ dirs: P.stateDirs({ self: A, root }), now: real }).seven_day;
+t('DS-342 AC4 unit: a probe reading newer than every worker log is the one both judge on',
+  JSON.stringify([P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real }), shown]), JSON.stringify([win(0.97, DAY), win(0.97, DAY)]));
+rmSync(P.usageDir(), { recursive: true, force: true });
 log(B, 'B-1', [both(win(0.05, 4 * HOUR), win(0.9, 2 * DAY)), both(win(0.1, 4 * HOUR), null)]);
 t('DS-342 AC2 unit: a window the newest event lacks comes from the newest event that has it', JSON.stringify([reading().five_hour, reading().seven_day]), JSON.stringify([win(0.1, 4 * HOUR), win(0.9, 2 * DAY)]));
 // A log over the 1 MB tail: the tail's newest reading, and the whole log when the tail has none.

@@ -61,9 +61,14 @@ export function stateDirs({ self = E.stateDir(), root = join(E.HOME, '.desk-auto
   return [...new Set(dirs.map((d) => resolve(d)))];
 }
 
-// The newest 7-day reading across every worker log written in the last RECENT_MS, or null: the one
-// desk-q shows, so a pass paces on the same figure.
-export const newestUsage = ({ dirs = stateDirs(), now = Date.now() } = {}) => newestReading({ dirs, now }).seven_day;
+// Where desk-q's usage probe (usage-probe.mjs) keeps its output. It is read here as well, because the
+// probe runs only while no worker does, which is when it alone holds the subscription in use.
+export const usageDir = () => E.expandHome(process.env.DESK_USAGE_DIR ?? join(E.HOME, '.desk-autopilot', 'usage'));
+export const probeLog = (dir = usageDir()) => join(dir, 'probe.log');
+
+// The newest 7-day reading across every worker log written in the last RECENT_MS and the probe's
+// output, or null: the one desk-q shows, so a pass paces on the same figure.
+export const newestUsage = ({ dirs = stateDirs(), files = [probeLog()], now = Date.now() } = {}) => newestReading({ dirs, files, now }).seven_day;
 
 // The newest reading of each window across every worker log written in the last RECENT_MS, plus any
 // `files` named (the usage probe's output). Events carry no time of their own, so the newest is the
