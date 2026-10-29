@@ -190,7 +190,7 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [] };
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -327,7 +327,8 @@ function againstRegister(t, question, log) {
     }
   } catch { /* no log, no inputs */ }
   const p = parseInputs(raw);
-  if (!p.ok) report.waiting.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
+  // Logged, never waiting on the person: nobody can clear it, and the park itself is asked as usual.
+  if (!p.ok) report.inputs.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
   const inputs = p.ok ? p.inputs : {};
   return { inputs, ...lookup(REGISTER, { question, inputs }) };
 }
@@ -2023,6 +2024,7 @@ for (const t of Object.values(queue().tickets)) {
 }
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (report.clears.length) out.push(`clears-when:\n  ${report.clears.join('\n  ')}`);
+if (report.inputs.length) out.push(`park inputs:\n  ${report.inputs.join('\n  ')}`);
 if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
 
