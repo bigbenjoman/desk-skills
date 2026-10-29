@@ -263,7 +263,7 @@ function passWorld(machine) {
 // and `ready` tickets. With `batch`, the queue is that named batch's, and the repo is known by its
 // slug so its other batches are found; `machine: false` runs with no machine profile; `prefix` starts
 // the ticket keys. -> a function that runs one pass and resolves to its output.
-function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'on', minAvail = '0', floor, batch, machine = true, prefix = '' }) {
+function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'on', minAvail = '0', floor, batch, machine = true, prefix = '', lockDir }) {
   const R = join(W, slug);
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(W, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '[user]\n  email = t@example.com\n  name = t\n');
@@ -291,6 +291,7 @@ function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'o
   const penv = { ...gitEnv, PATH: `${join(W, 'stub')}:${process.env.PATH}`, DESK_CONFIG: config, DESK_QUEUE: q,
     DESK_AUTOPILOT_STATE: state, DESK_MACHINE: join(W, machine ? 'machine.md' : 'no-machine.md'), WT_DIR: join(R, 'wt'),
     AUTOPILOT_MIN_AVAIL_GB: minAvail, AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor),
+    ...(lockDir ? { DESK_LOCK_DIR: lockDir } : {}),
     ...(batch !== undefined ? { DESK_REPO_OVERRIDE: slug.replace('__', '/'), ...(batch ? { DESK_BATCH: batch } : {}) } : {}) };
   return () => new Promise((res) => {
     const c = spawn('node', [join(BIN, 'pass.mjs')], { env: penv, cwd: join(R, 'repo') });
@@ -360,6 +361,15 @@ const passX2 = passRepo(W, 'acme__a', { conc: '1 / 1', running: 0, ready: 1, bor
 const raced = await Promise.all([passX1(), passX2()]);
 t('DS-308 pass AC2: exactly one worker starts across the two batches', runningAt(namedQueue('acme__a', 'X-1')) + runningAt(namedQueue('acme__a', 'X-2')), 1);
 t('DS-308 pass AC2: the other pass says nothing starts', raced.filter((o) => /^repo workers: 1 of the §3b cap of 1 running — .*: nothing starts this pass$/m.test(o)).length, 1);
+
+// AC2 without the lock: X-1 with a sibling batch, the lock unmakeable (its folder is a file). Unlocked
+// it could count a slot another pass is counting too, so it starts nothing and says why.
+W = passWorld(10);
+passRepo(W, 'acme__a', { conc: '0 / 3', running: 0, ready: 0, borrow: null, batch: null, machine: false, floor: 46050 });
+writeFileSync(join(W, 'not-a-dir'), '');
+out = await passRepo(W, 'acme__a', { conc: '2 / 3', running: 0, ready: 2, borrow: null, batch: 'X-1', machine: false, floor: 46060, prefix: 'X', lockDir: join(W, 'not-a-dir') })();
+t('DS-308 pass AC2: with sibling batches and no lock, X-1 starts nothing', runningAt(namedQueue('acme__a', 'X-1')), 0);
+t('DS-308 pass AC2: and says the lock is why', /^repo workers: nothing starts this pass: the repo's batches share its §3b cap, and the borrow lock .* cannot be made/m.test(out), true);
 
 // AC6: only a standing batch: it starts as many as before, and says nothing about the repo's batches.
 W = passWorld(10);

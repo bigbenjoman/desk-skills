@@ -963,9 +963,12 @@ const REPO = repoBudget({
   batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
   batches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
 });
-const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
+// A repo's batches share its cap only under the lock: without it two passes could each count the same
+// free slot, so a batch with siblings starts nothing this pass rather than counting unlocked.
+const repoUnlocked = SIBLINGS && lockWhy != null;
+const slots = MAINT.hold || repoUnlocked ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
-const repoLine = REPO.line && REPO.line + (lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
+const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${lockWhy}` : REPO.line;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
