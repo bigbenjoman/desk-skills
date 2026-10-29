@@ -1249,9 +1249,8 @@ if (isMain) {
       }
       case 'take-batch': {
         // Loading this module already took --batch out of argv and checked it, so the shell has one parser.
-        const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
-        if (batchArg) console.log(`export DESK_BATCH=${q(batchArg)}`);
-        console.log(`DESK_ARGS=(${args.map(q).join(' ')})`);
+        if (batchArg) console.log(`export DESK_BATCH=${shellQuote(batchArg)}`);
+        console.log(`DESK_ARGS=(${args.map((a) => shellQuote(a)).join(' ')})`);
         break;
       }
       case 'identity':
