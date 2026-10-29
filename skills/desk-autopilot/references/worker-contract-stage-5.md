@@ -26,9 +26,9 @@ open an editor, `git commit --no-edit` first and `--continue` after it. Then:
 
 - **Re-run typecheck and your specs**, under the lock (Stage 4 file), whether or not the rebase
   stopped.
-- **A fresh `desk-review` at the new head, before you push**, where the resolution changed code the
-  Stage 4b review covered: any conflicted hunk you wrote by hand rather than taking both sides
-  verbatim. Its findings are handled as Stage 4b's are.
+- **A fresh `desk-review` at the new head, before you push**, whenever you resolved a conflict:
+  the resolved hunks are in neither side's reviewed diff, even where you took both sides verbatim.
+  Its findings are handled as Stage 4b's are.
 - **Say it in the PR's Testing**: the files that conflicted, with whose ticket or PR, and how you
   resolved each.
 
