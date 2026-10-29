@@ -66,6 +66,11 @@ export function fixCall(t, s, ctx) {
   return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, ...fix } };
 }
 
+// A line of a posted desk-review body that opens a section: a `###` heading, an all-caps one as the
+// terminal report writes it (`REQUIREMENT GAPS (2)`), or a bold-only line that cites no file:line.
+const isHeading = (text) => /^#{1,6}\s/.test(text) || /^[A-Z][A-Z ]{3,}(\(|$)/.test(text) ||
+  (/^\*\*[^*]+\*\*$/.test(text) && !/[\w./-]+:\d+/.test(text));
+
 // A verdict's P0 and P1 counts, as `1 P0, 2 P1`; '' when it has neither.
 export function reviewCounts(v) {
   return ['p0', 'p1'].filter((k) => Number(v?.[k]) > 0).map((k) => `${Number(v[k])} ${k.toUpperCase()}`).join(', ');
@@ -82,7 +87,7 @@ export function reviewFindings(body) {
     const text = line.trim();
     const own = /^[#>*_\s-]*(P[0-3])\b/.exec(line);
     if (own) sev = own[1];
-    else if (/^#{1,6}\s/.test(text) || /^[A-Z][A-Z ]{3,}(\(|$)/.test(text)) sev = null;
+    else if (isHeading(text)) sev = null;
     if (sev !== 'P0' && sev !== 'P1') continue;
     if (text.startsWith('—') && found.length) { found[found.length - 1].text += ` ${text}`; continue; }
     if (/[\w./-]+:\d+/.test(text)) found.push({ sev, text });
@@ -122,8 +127,7 @@ export function reviewGaps(body) {
   for (const line of String(body ?? '').split(/\r?\n/)) {
     const text = line.trim();
     if (!text) continue;
-    const heading = /^#{1,6}\s/.test(text) || /^[A-Z][A-Z ]{3,}(\(|$)/.test(text) || /^\*\*[^*]+\*\*$/.test(text);
-    if (heading) { inGaps = /requirement gaps?\b/i.test(text); continue; }
+    if (isHeading(text)) { inGaps = /requirement gaps?\b/i.test(text); continue; }
     if (!inGaps) continue;
     const item = text.replace(/^[-*]\s+/, '');
     if (/^\s{2,}/.test(line) && gaps.length) gaps[gaps.length - 1] += ` ${item}`;
@@ -182,9 +186,10 @@ export function fixBrief(t) {
       lines.push('');
     }
     if (f.gaps?.length) {
-      lines.push('Close each requirement gap it lists. Config §3 autopilot-judgement is yes, so an engineering call a gap needs is yours to make: change the code so the criterion holds, or, where the criterion should stand as it is, say why. ' +
+      lines.push('Close each requirement gap it lists. Config §3 autopilot-judgement is yes, so an engineering call a gap needs is yours to make: change the code so the criterion holds, or, where the code should stand as it is, say why. ' +
         'Log each call with an AUTOPILOT_DECISION line, list it under Decisions taken in the PR body (desk-pr), and comment it on the ticket (worker contract Stage 8). ' +
-        'A gap that needs a product ruling or another person\'s is not yours: park with that question (AUTOPILOT_PARK).', '');
+        'A call that leaves the code as it is still needs a new head for the fresh review to read it: commit it on its own with git commit --allow-empty, the call and its reason as the message. ' +
+        'A gap that needs a product ruling or another person\'s, as the worker contract\'s Ask or take sorts it (an ask category such as a fact only the person holds, a call you have no recommendation for, or one a person has already ruled on the ticket), is not yours: park with that question (AUTOPILOT_PARK).', '');
       for (const g of f.gaps) lines.push(`- Gap: ${g}`);
       lines.push('');
     }

@@ -148,7 +148,8 @@ const briefG = fixBrief(tk({ fix: rg1.fix }));
 t('DS-319 AC1 the brief quotes the gap', briefG.includes(`- Gap: ${AC2}`), true);
 t('DS-319 AC1 and asks for no P0 or P1 fix', briefG.includes('Fix each P0 and P1'), false);
 t('DS-319 AC2 the brief says the call is the worker\'s, recorded as a decision, in the PR body and on the ticket', ['AUTOPILOT_DECISION', 'Decisions taken in the PR body', 'comment it on the ticket'].every((x) => briefG.includes(x)), true);
-t('DS-319 AC3 the brief parks a gap that needs a product or another person\'s ruling', briefG.includes('needs a product ruling or another person\'s is not yours: park with that question (AUTOPILOT_PARK)'), true);
+t('DS-319 AC3 the brief parks a gap that needs a product or another person\'s ruling', briefG.includes('needs a product ruling or another person\'s, as the worker contract\'s Ask or take sorts it') && briefG.includes('is not yours: park with that question (AUTOPILOT_PARK)'), true);
+t('DS-319 AC2 a call that leaves the code as it is is committed empty, so the fresh review has a new head', briefG.includes('commit it on its own with git commit --allow-empty, the call and its reason as the message'), true);
 const taskG = fixTask(tk({ fix: rg1.fix }));
 t('DS-319 AC2 the task closes each gap and reviews the new head again', taskG.includes('close each requirement gap it quotes') && taskG.includes('review the new head with desk-review and post that review on the PR'), true);
 t('DS-319 AC2 and lets the worker comment on the ticket', taskG.includes('leave the ticket\'s Jira status as it is, apart from the comments recording your calls'), true);
@@ -161,5 +162,7 @@ t('DS-319 a review counting a gap it does not list is left for the person', revi
 const p1g = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: p1Body }, { judgement: 'yes' });
 t('DS-319 a P1 and a gap go in one try, both quoted', `${p1g?.fix.what} | ${p1g?.fix.findings.length} | ${p1g?.fix.gaps}`, 'review not clean: 1 P1, 1 gap | 1 | AC3: src/csv.ts:4 no VAT column');
 t('DS-319 the terminal report\'s gaps are read, and an unverified code claim is not a gap', JSON.stringify(reviewGaps('REQUIREMENT GAPS (2, 1 unverified)  ABC-123\n AC3: "export includes VAT" — no VAT column\n AC1: "keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only\n\nUNPROVEN PREMISES (1)\n src/a.ts:1 assumes retries')), JSON.stringify(['AC3: "export includes VAT" — no VAT column']));
+t('DS-319 a bold-only heading opens and ends the gaps section', JSON.stringify(reviewGaps('**Requirement gaps**\n- AC1: "x" — not done\n**Scope**\n- src/a.ts:3 out of scope')), JSON.stringify(['AC1: "x" — not done']));
+t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
 process.exit(fails ? 1 : 0);
