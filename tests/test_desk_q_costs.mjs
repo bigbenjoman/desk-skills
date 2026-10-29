@@ -150,6 +150,17 @@ await S10f.press('5');
 t('AC10 a first reading whose every call failed reads as no reading, not $0.00',
   `${S10f.frame().includes(Q.NO_COST_READING)} ${S10f.frame().some((l) => l.startsWith('charged '))}`, 'true false');
 S10f.ui.finish(0);
+// A Vercel reading that worked and charged nothing writes the same totals, but its team holds lines.
+writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify({
+  vercel: { at: FIXED, period: october, teams: { team_ben: { team: 'ben-lavenders-projects', plan: 'hobby', owner: null, at: FIXED, total: 0, failed: null,
+    lines: [{ kind: 'plan', label: 'Hobby', name: null, charged: 0 }] } }, names: {}, shared: 0 },
+}));
+const S10z = screen();
+await sleep(20);
+await S10z.press('5');
+t('AC10 a reading that worked and charged nothing reads $0.00, not as no reading',
+  S10z.frame().find((l) => l.startsWith('charged ')) ?? null, 'charged $0.00 in October, 1–26 │ Vercel $0.00');
+S10z.ui.finish(0);
 
 // ---- AC9: no cost sources on the machine
 process.env.DESK_COSTS = join(T, 'no-costs.md');

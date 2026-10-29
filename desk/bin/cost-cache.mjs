@@ -423,10 +423,11 @@ function writeCache(cache, dir) {
 const BILLED_BY = { github: 'repos', vercel: 'names' };
 const figure = (e) => (typeof e === 'number' ? e : e?.total);
 const named = (r, s) => Object.entries(r[BILLED_BY[s]] ?? {});
-// Vercel writes shared as 0 when every team failed, so its 0 is not a figure.
-const sharedOf = (r) => (typeof r.shared === 'number' ? (r.shared ? [r.shared] : []) : Object.values(r.shared ?? {}));
-// A reading whose every call failed has a period and no figure: it is not read.
-const hasFigure = (r, s) => [...named(r, s).map(([, e]) => e), ...sharedOf(r)].some((e) => typeof figure(e) === 'number');
+const sharedOf = (r) => (typeof r.shared === 'number' ? [r.shared] : Object.values(r.shared ?? {}));
+// A reading whose every call failed has a period and no figure: it is not read. Vercel writes its
+// totals even then, as 0, so it is read once a team holds lines, from this reading or a kept one.
+const hasFigure = (r, s) => (s === 'vercel' ? Object.values(r.teams ?? {}).some((t) => t?.lines)
+  : [...named(r, s).map(([, e]) => e), ...sharedOf(r)].some((e) => typeof figure(e) === 'number'));
 const monthOf = (p) => p.year * 12 + p.month;
 
 // This month's charges by name, from the newest reading's month: suppliers read for an earlier month
