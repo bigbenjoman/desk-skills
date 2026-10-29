@@ -45,10 +45,20 @@ const read = { prHead: () => 'f00d', config: (id) => (id === 'default-branch' ? 
 t('pr-head and a config row are read again, the rest kept', JSON.stringify(refreshInputs({ ticket: 'V-7', 'pr-head': 'a1b2', 'config:default-branch': 'main', 'config:gone': 'x' }, read)),
   '{"ticket":"V-7","pr-head":"f00d","config:default-branch":"develop","config:gone":"x"}');
 
-// Inputs are a flat object of plain values.
+// Inputs are a flat object of plain values, or lists of them.
 t('no inputs are {}', JSON.stringify(parseInputs(null).inputs), '{}');
 t('numbers are kept as text', parseInputs('{"pr": 12}').inputs.pr, '12');
 t('a nested value is refused', parseInputs('{"a": {"b": 1}}').ok, false);
+t('DS-337 AC1 a list of plain values is kept, joined in its order', parseInputs('{"conflict_files": ["b.ts", "a.ts", 3]}').inputs.conflict_files, 'b.ts, a.ts, 3');
+t('DS-337 a list holding an object is refused, naming it', parseInputs('{"steps": ["pr", {"x": 1}]}').why, 'inputs must be plain values or lists of them, not steps');
+{
+  const ld = mkdtempSync(join(tmpdir(), 'desk-not-now-list-'));
+  const listed = (files) => parseInputs(JSON.stringify({ conflict_files: files })).inputs;
+  addPutOff(putOffEntry({ question: 'Resolve the conflict?', ticket: 'L-1', inputs: listed(['a', 'b']) }), ld);
+  t('DS-337 AC1 list inputs match the register', lookup(readRegister(ld), { question: 'Resolve the conflict?', inputs: listed(['a', 'b']) }).status, 'put_off');
+  t('DS-337 AC1 and a changed list asks again', lookup(readRegister(ld), { question: 'Resolve the conflict?', inputs: listed(['a', 'c']) }).status, 'changed');
+  rmSync(ld, { recursive: true, force: true });
+}
 t('not JSON is refused', parseInputs('{a').why, 'inputs are not JSON');
 
 // AC8: a register that cannot be read puts nothing off, so the question is asked as today.

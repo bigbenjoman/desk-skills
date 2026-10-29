@@ -52,6 +52,17 @@ t('lane D: the core parks only a demotion to D with no saved canvas', core.inclu
 const routing = readFileSync(join(root, 'skills/desk-ticket/references/desk-ticket-routing.md'), 'utf8');
 t('lane D: the routing exempts an autopilot worker from stopping for agreement', routing.includes('**An autopilot worker does not stop**'), true);
 
+// DS-328: a worker resolves its own rebase conflict, and parks only on one a product or design call settles.
+const stage5 = read('worker-contract-stage-5.md');
+const n5 = stage5.replace(/\s+/g, ' ');
+t('DS-328 no file parks on any conflict unconditionally', files.some((f) => /Any conflict → park|Any\. Never resolve one/.test(read(f))), false);
+t('DS-328 AC1 the Stage 5 section makes a conflict the worker\'s to resolve, keeping both sides', n5.includes('**A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides\' intent'), true);
+t('DS-328 AC1 typecheck and specs re-run after the rebase', n5.includes('**Re-run typecheck and your specs**, under the lock'), true);
+t('DS-328 AC2 a hand-written resolution gets a fresh desk-review before the push', n5.includes('**A fresh `desk-review` at the new head, before you push**'), true);
+t('DS-328 AC3 it parks only when both sides cannot stand, naming the files and the decision', n5.includes('**Park only when the two sides cannot both stand**') && n5.includes('Park naming the files and the decision needed'), true);
+t('DS-328 AC3 the core keeps only that park', core.includes('- **A merge conflict only a product or design call settles** (Stage 5 file, §4).'), true);
+t('DS-328 AC4 without git-force-with-lease a pushed branch merges the default branch in', n5.includes('with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase, no force push.'), true);
+
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));

@@ -189,6 +189,8 @@ check "AC8 desk-jira --help and help allowed"              'ok "desk-jira --help
 check "AC9 the repo desk config.md is readable"            '[ "$(readable "$CFG")" = allow ]'
 check "AC10 the Jira token beside it is not"               '[ "$(readable "$CREDS/atlassian-token")" = refused ] && no "cat $CREDS/atlassian-token" "cat $CREDS/*" "rg . $CREDS" "head ~/.config/desk/repos/acme__widgets/atlassian-t*" "cat \$HOME/.config/desk/repos/acme__widgets/x"'
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
+check "DS-340 AC2 the installed desk templates can be listed and read" \
+  '[ "$(readable "$DESK_HOME/templates/.githooks/pre-push")" = allow ] && [ "$(readable "$DESK_HOME/templates/scripts/desk/pre-push.sh")" = allow ] && ok "ls $DESK_HOME/templates/scripts/desk"'
 check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
 check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test" \
       "./node_modules/.bin/./vitest run" "node_modules/.bin//tsc" "node $W/node_modules/vitest/vitest.mjs run" "node $W/node_modules/.bin/vitest"'

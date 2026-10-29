@@ -7,7 +7,7 @@ import { mkdirSync, openSync, closeSync, readFileSync, renameSync, writeFileSync
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import * as E from './desk-env.mjs';
-import { newestReading, stateDirs } from './usage-pace.mjs';
+import { newestReading, stateDirs, usageDir, probeLog } from './usage-pace.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 
 export const PROBE_EVERY_MS = 5 * 60 * 1000;
@@ -15,10 +15,10 @@ export const PROBE_EVERY_MS = 5 * 60 * 1000;
 export const PROBE_GAP_MS = 60 * 1000;
 export const PROBE_ARGS = ['-p', 'Reply with: ok', '--model', 'haiku', '--output-format', 'stream-json', '--verbose',
   '--setting-sources', '', '--strict-mcp-config', '--tools', ''];
-export const usageDir = () => E.expandHome(process.env.DESK_USAGE_DIR ?? join(E.HOME, '.desk-autopilot', 'usage'));
-export const probeLog = (dir = usageDir()) => join(dir, 'probe.log');
+export { usageDir, probeLog };
 
-// The newest reading of both windows: every repo's worker logs and the last probe's output.
+// The newest reading of both windows: every repo's worker logs and the last probe's output, the same
+// sources a pass's newestUsage reads.
 //   -> { five_hour, seven_day, at }
 export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), now = Date.now() } = {}) =>
   newestReading({ dirs, files: [probeLog(dir)], now });

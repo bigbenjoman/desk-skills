@@ -9,8 +9,33 @@ core does.
 The default branch moves while you work. `git fetch origin`, and if
 `git rev-list --count HEAD..origin/<default>` is non-zero, probe with
 `git merge-tree --write-tree origin/<default> HEAD | grep -c '^CONFLICT'`, without touching the
-tree. Clean → rebase, then **re-run typecheck and your specs**. Any conflict → park, naming the
-files.
+tree, so you know before you start which files will conflict.
+
+**How you bring it in.** Rebase (`git rebase origin/<default>`) while your branch is not on origin
+yet (`git branch -r` does not list it), or where config §3 `git-force-with-lease` is `yes`, pushing
+an already-pushed branch with `git push --force-with-lease origin <branch>`. A branch already on
+origin with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase,
+no force push.
+
+**A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides'
+intent: their change lands, and so does yours. Where their side renamed, moved or reshaped
+something yours uses, carry your change onto their new form; never drop their hunk to make yours
+apply. A conflict in a generated file is regenerated with its §4 row, not hand-merged. Stage the
+files, then `git rebase --continue` (or `git commit --no-edit` for a merge); if `--continue` cannot
+open an editor, `git commit --no-edit` first and `--continue` after it. Then:
+
+- **Re-run typecheck and your specs**, under the lock (Stage 4 file), whether or not the rebase
+  stopped.
+- **A fresh `desk-review` at the new head, before you push**, whenever you resolved a conflict:
+  the resolved hunks are in neither side's reviewed diff, even where you took both sides verbatim.
+  Its findings are handled as Stage 4b's are.
+- **Say it in the PR's Testing**: the files that conflicted, with whose ticket or PR, and how you
+  resolved each.
+
+**Park only when the two sides cannot both stand**: they change the same behaviour incompatibly,
+and choosing between them is a product or design decision. Park naming the files and the decision
+needed, with the remaining tail (core section 1). Which code shape keeps both is an engineering
+call, and yours.
 
 ## 5. What the orchestrator owns, not you
 

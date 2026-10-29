@@ -94,8 +94,8 @@ still parks (section 2). Where `autopilot-judgement` is not `yes`, product, desi
 park as before.
 
 **Check a step before asking if it was done**, and after a park print
-`AUTOPILOT_PARK_INPUTS: {…}`, plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` where a script can read
-what settles it: `desk-autopilot` *Ask or take* says how.
+`AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
+where a script can read what clears it: `desk-autopilot` *Ask or take* says how.
 
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
@@ -145,7 +145,7 @@ people's commits into yours.
 call (section 1) or a shared-state write rather than a difficulty: missing product/catalog/copy
 data, any write to staging or a shared index. Plus, specific to running unattended:
 
-- **A merge conflict.** Any. Never resolve one.
+- **A merge conflict only a product or design call settles** (Stage 5 file, §4).
 - **A lane demotion to C, or to D with no saved canvas.** C needs an agreed plan or a product
   answer, and D a canvas to build from (Stage 3 file).
 - **A priority in config §4 Priorities only you set.** `desk-jira` refuses it to you, with or

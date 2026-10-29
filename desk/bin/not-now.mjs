@@ -9,7 +9,7 @@
 //   not-now.mjs list
 //
 // <json> is a flat object naming what the question depends on, e.g. {"ticket": "ABC-1", "pr-head":
-// "3f2a…", "config:default-branch": "main"}. A question is matched by its text, with case, spacing
+// "3f2a…", "config:default-branch": "main", "conflict-files": ["a.ts", "b.ts"]}. A question is matched by its text, with case, spacing
 // and closing punctuation ignored. Each pass re-reads a put-off park's `pr-head` and `config:<id>`
 // inputs (refreshInputs), so those bring the question back when they change.
 // An unreadable register reads as empty, so the question is asked as it would be without one.
@@ -29,15 +29,17 @@ export const questionKey = (question) => sha(normal(question)).slice(0, 12);
 const stable = (o) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
 export const inputsHash = (inputs) => sha(stable(inputs ?? {})).slice(0, 16);
 
-// {ok, inputs} or {ok: false, why}: a flat object of strings, numbers or booleans. Nothing is {}.
+// {ok, inputs} or {ok: false, why}: a flat object of strings, numbers or booleans, or lists of them,
+// each kept as text (a list joined with ", ", in its order). Nothing is {}.
+const plain = (v) => ['string', 'number', 'boolean'].includes(typeof v);
 export function parseInputs(raw) {
   if (raw == null || String(raw).trim() === '') return { ok: true, inputs: {} };
   let o;
   try { o = JSON.parse(String(raw)); } catch { return { ok: false, why: 'inputs are not JSON' }; }
   if (!o || typeof o !== 'object' || Array.isArray(o)) return { ok: false, why: 'inputs must be a JSON object' };
-  const bad = Object.entries(o).filter(([, v]) => !['string', 'number', 'boolean'].includes(typeof v)).map(([k]) => k);
-  if (bad.length) return { ok: false, why: `inputs must be plain values, not ${bad.join(', ')}` };
-  return { ok: true, inputs: Object.fromEntries(Object.entries(o).map(([k, v]) => [k, String(v)])) };
+  const bad = Object.entries(o).filter(([, v]) => !plain(v) && !(Array.isArray(v) && v.every(plain))).map(([k]) => k);
+  if (bad.length) return { ok: false, why: `inputs must be plain values or lists of them, not ${bad.join(', ')}` };
+  return { ok: true, inputs: Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Array.isArray(v) ? v.map(String).join(', ') : String(v)])) };
 }
 
 export function putOffEntry({ question, ticket, inputs = {}, by = null, at = new Date().toISOString() }) {
