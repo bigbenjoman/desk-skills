@@ -622,7 +622,8 @@ const nav = (start) => screen(start, 120, () => FIXED);
 const shows = (s) => {
   const f = s.frame();
   return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO {2,}LAST PASS/.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline'
-    : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics' : 'none';
+    : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics'
+      : f.some((l) => l.startsWith('No cost sources for ') || /^ {2}SUPPLIER +FOR +CHARGED$/.test(l)) ? 'costs' : 'none';
 };
 // Wide enough that every keys line is one line.
 const keysLine = (s) => s.frame().at(-1);
@@ -633,10 +634,10 @@ await sleep(20);
 t('DS-164 the Queue shows first, its tab line under the breadcrumb', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 1 Queue | queue | true');
 await N1.press('\t');
 t('DS-164 AC1 Tab on a repo\'s Queue shows its Timeline, Timeline highlighted', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 2 Timeline | timeline | true');
-await N1.press('\t'); await N1.press('\t'); await N1.press('\t');
-t('DS-164 Tab from Epics wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
+await N1.press('\t'); await N1.press('\t'); await N1.press('\t'); await N1.press('\t');
+t('DS-164 Tab from Costs wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
 await N1.press('\x1b[Z');
-t('DS-164 shift+Tab steps back', where(N1), 'desk-q › tidy | 4 Epics | epics');
+t('DS-164 shift+Tab steps back', where(N1), 'desk-q › costs › tidy | 5 Costs | costs');
 N1.ui.finish(0);
 
 // DS-182: ← and → step along the tab bar and stop at its ends, in both arrow encodings.
@@ -650,8 +651,8 @@ await Ar.press(RIGHT);
 t('DS-182 AC1 → (CSI) on the Queue shows the Timeline', where(Ar), 'desk-q › tidy | 2 Timeline | timeline');
 await Ar.press(SS3_RIGHT);
 t('DS-182 AC1 → (SS3) on the Timeline shows By day', where(Ar), 'desk-q › tidy | 3 By day | days');
-await Ar.press(RIGHT); await Ar.press(RIGHT);
-t('DS-182 → on the rightmost tab stays there', where(Ar), 'desk-q › tidy | 4 Epics | epics');
+await Ar.press(RIGHT); await Ar.press(RIGHT); await Ar.press(RIGHT);
+t('DS-182 → on the rightmost tab stays there', where(Ar), 'desk-q › costs › tidy | 5 Costs | costs');
 await Ar.press('\t');
 t('DS-182 AC5 Tab on the rightmost tab still wraps to the Queue', where(Ar), 'desk-q › tidy | 1 Queue | queue');
 await Ar.press('4');
@@ -767,7 +768,8 @@ const want10 = {
   'every timeline': { yes: ['←→ or 1–5 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
   'every days': { yes: ['←→ or 1–5 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
   'every epics': { yes: ['←→ or 1–5 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'every costs': { yes: ['←→ or 1–5 view', '↑↓ select'], no: ['enter open', 'esc back', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'every costs': { yes: ['←→ or 1–5 view', '↑↓ select', 'enter open'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'repo costs': { yes: ['←→ or 1–5 view', '↑↓ select', 'o open the bill', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
   'repo queue': { yes: ['←→ or 1–5 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
   'repo timeline': { yes: ['←→ or 1–5 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
   'repo days': { yes: ['←→ or 1–5 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
@@ -874,15 +876,15 @@ await Fa.press('\x1b[Z');
 t('DS-290 AC6 Tab and shift+Tab in an epic skip Costs', `${tabbed} || ${where(Fa)}`, 'desk-q › feat › Smart scheduling, your day | 1 Queue | queue || desk-q › feat › Smart scheduling, your day | 3 By day | days');
 Fa.ui.finish(0);
 
-// DS-290 AC7: a repo's tab line dims 5 Costs too, and 5 there changes nothing.
+// DS-292 AC7: a repo's tab line has 5 Costs, and 5 or → from Epics shows the repo's costs.
 const Rc = nav(tidyQ);
 await sleep(20);
 const repoTabs = `${Rc.frame()[1].startsWith(ALL_TABS)} | ${tabLine(Rc).includes(`${G}5 Costs\x1b[39m`)}`;
 await Rc.press('4'); await Rc.press('5');
-const after5 = `${where(Rc)} | ${Rc.frame().includes(Q.NO_COSTS_HERE)}`;
-await Rc.press(RIGHT);
-t('DS-290 AC7 a repo\'s tab line dims 5 Costs, and 5 or → from Epics leave the view as it is',
-  `${repoTabs} || ${after5} || ${where(Rc)}`, 'true | true || desk-q › tidy | 4 Epics | epics | true || desk-q › tidy | 4 Epics | epics');
+const after5 = `${where(Rc)} | ${Rc.frame().includes(Q.noCostSourcesFor('tidy'))}`;
+await Rc.press('4'); await Rc.press(RIGHT);
+t('DS-292 AC7 a repo\'s tab line has 5 Costs, and 5 or → from Epics show its costs',
+  `${repoTabs} || ${after5} || ${where(Rc)}`, 'true | false || desk-q › costs › tidy | 5 Costs | costs | true || desk-q › costs › tidy | 5 Costs | costs');
 Rc.ui.finish(0);
 // With five tabs the parked note no longer fits after them at 104 columns, so it takes its own line.
 const Rn = screen(tidyQ, 104, () => FIXED);
