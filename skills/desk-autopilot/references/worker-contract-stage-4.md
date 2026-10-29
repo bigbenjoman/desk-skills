@@ -290,6 +290,7 @@ To hand off:
 
 The orchestrator then spawns a new session for the same ticket, worktree and branch, with the
 handoff in its briefing. **When your prompt says your session starts at a stage**, read that stage's
-file, check `git status` and `git log` in your worktree, and carry on from there; an
+file and the Stage 3 file (its §6 holds every command form you may run, a dev server's included),
+check `git status` and `git log` in your worktree, and carry on from there; an
 `AUTOPILOT_IMAGES` an earlier session printed is kept. A task worker (`AUTOPILOT_TASK`) never hands
 off.
