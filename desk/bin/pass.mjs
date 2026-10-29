@@ -1044,14 +1044,20 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     let text = '';
     try { text = readFileSync(log, 'utf8'); } catch { /* no log yet: read as ended */ }
     const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
-    const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
-    const idle = bytes > (bf.log_bytes ?? 0) ? 0 : (bf.idle_passes ?? 0) + 1;
     const markers = workerMarkers(text);
     const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
+    // At the 5-hour usage limit, as a ticket's worker: stopped there unless §3 lets it resume, and while
+    // it waits for the reset it is paused, not quiet.
+    const limit = !said ? usageLimit(text).last : null;
+    const atLimit = limit?.kind === 'limit' ? limit : null;
+    const paused = !!atLimit && !atLimit.resumed && Date.now() < atLimit.resetsAt * 1000 + LIMIT_GRACE_MS;
+    const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
+    const idle = bytes > (bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
     const sidLive = registryOk && liveSids.has(bf.running);
-    const outcome = idle >= 6 && !said ? `was stopped as wedged, with no output for ${idle} passes`
-      : registryOk && (said || (!sidLive && !(recent && !endedNormally(text)))) ? baseFixOutcome(markers)
-        : null;
+    const outcome = registryOk && atLimit && !mayResumeOnLimit ? `was stopped at the 5-hour usage limit, since config §3 ${USAGE_KEY} is "${usagePerm}"`
+      : idle >= 6 && !said ? `was stopped as wedged, with no output for ${idle} passes`
+        : registryOk && (said || (!sidLive && !(recent && !endedNormally(text)))) ? baseFixOutcome(markers)
+          : null;
     if (outcome) {
       const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
@@ -1064,7 +1070,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         bf = { ...bf, log_bytes: bytes, idle_passes: idle };
         if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
       }
-      if (idle >= 3) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
+      if (paused) report.paused.push(`${BASE_FIX_KEY} until ${resetText(atLimit.resetsAt)}, then it resumes (config §3 ${USAGE_KEY} is "yes")`);
+      else if (idle >= 3) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
   }
   const originSha = (b) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${b}`], { tolerant: true }) || null;

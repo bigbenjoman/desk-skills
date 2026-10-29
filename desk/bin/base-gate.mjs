@@ -37,7 +37,7 @@ try { sha = readQueue(E.queueFile()).gate?.sha ?? null; } catch { /* read again 
 let ours = null;
 // The files a sync of the base met in conflict, for the pass's conflict fix worker; null otherwise.
 let conflict = null;
-const git =(cwd, args) => { try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const git = (cwd, args) => { try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
 // Whatever happens, the queue gets a result: a gate that dies silently would hold the batch for ever.
 function finish(extra = {}) {

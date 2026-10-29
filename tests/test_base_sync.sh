@@ -205,6 +205,20 @@ check "DS-320 six quiet passes: stopped as wedged, and the base goes to the pers
   '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped as wedged, with no output for 6 passes"* ]]'
 rm -f "$T/agents.json"
 
+# A worker at the 5-hour usage limit: paused, not wedged, where §3 autopilot-usage-resume is yes, and
+# stopped at the limit where it is not.
+limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" >> "$C/state/logs/base-feat-x.log"; }
+: > "$T/kills"; fresh bpause; feature; fixrow yes; echo '| `autopilot-usage-resume` | Resume across the usage limit | `no` | `yes` |' >> "$C/config.md"
+conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"
+for _ in 1 2 3 4 5 6 7; do pass; done
+check "DS-320 a worker paused on the usage limit with resume granted is waited on, not wedged" \
+  '[ ! -s "$T/kills" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ] && [[ "$out" == *"base-feat-x until "*"then it resumes"* ]] && [[ "$out" != *"by hand"* ]]'
+rm -f "$T/agents.json"
+: > "$T/kills"; fresh bnoresume; feature; fixrow yes; conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"; pass
+check "DS-320 without the resume grant it is stopped at the limit, and the base goes to the person" \
+  '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped at the 5-hour usage limit, since config §3 autopilot-usage-resume is \"no\""* ]]'
+rm -f "$T/agents.json"
+
 # An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4
 # Acceptance specs is unset, so feature mode is off): a failed sync holds no spawns.
 fresh planned; conflict; node "$B/queue.mjs" set-batch epic=E-1 >/dev/null; node "$B/queue.mjs" drop T-1 >/dev/null
