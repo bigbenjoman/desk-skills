@@ -18,7 +18,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, HOME as E_HOME } from './desk-env.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
-import { belongsElsewhere } from './batches.mjs';
+import { belongsElsewhere, useTicketBatch } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -38,6 +38,14 @@ function setBase(q, v) {
   q.base = v;
 }
 
+// A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
+// admit put a ticket in this batch, so they are not looked up.
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get'];
+{
+  const [, , c, ...a] = process.argv;
+  const at = a.indexOf('--claimed-by');
+  if (TICKET_CMDS.includes(c)) useTicketBatch(a.filter((_, i) => at < 0 || (i !== at && i !== at + 1))[0]);
+}
 const QUEUE = queueFile();
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
 const heldPark = (blockers) => ({ question: `held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`, since: new Date().toISOString() });
