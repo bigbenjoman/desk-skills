@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { resetText } from './usage-limit.mjs';
 import { readLogFile } from './harvest.mjs';
+import { namedBatches } from './batches.mjs';
 
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 // Only a log written to in this long counts: an older event says little about usage now.
@@ -50,11 +51,13 @@ export function windowEvents(text) {
   return out;
 }
 
-// Every repo's autopilot state directory: this repo's own (an override can move it) and each one
-// under ~/.desk-autopilot, since one allowance runs them all.
+// Every batch's autopilot state directory: this batch's own (an override can move it) and each repo's
+// under ~/.desk-autopilot with its named batches beside it, since one allowance runs them all.
 export function stateDirs({ self = E.stateDir(), root = join(E.HOME, '.desk-autopilot') } = {}) {
   const dirs = [self];
-  for (const d of existsSync(root) ? readdirSync(root) : []) dirs.push(join(root, d));
+  for (const d of existsSync(root) ? readdirSync(root) : []) {
+    dirs.push(join(root, d), ...namedBatches(join(root, d)).map((b) => join(root, d, E.BATCHES_DIR, b)));
+  }
   return [...new Set(dirs.map((d) => resolve(d)))];
 }
 

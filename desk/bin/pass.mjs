@@ -1145,9 +1145,9 @@ const baselineBrief = () => {
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing.
 let attempts = 0;
-// Ports held by running workers in every other repo's queue. Two repos' worker blocks can meet, and a
-// worker's port is unbound until it starts a server, so probing cannot see one another repo's pass has
-// just handed out. Only running tickets hold one. A queue that will not parse is named in the report
+// Ports held by running workers in every other batch's queue, this repo's other batches included. Two
+// batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
+// cannot see one another batch's pass has just handed out. Only running tickets hold one. A queue that will not parse is named in the report
 // and skipped, never a hold.
 const unreadableQueues = new Set();
 function otherQueuePorts() {
@@ -1160,7 +1160,7 @@ function otherQueuePorts() {
 }
 // Assign a port nothing else holds. Three things make one unavailable: another ticket in this batch
 // already holds it (a worker's port is unbound until it starts a server, so a bind check alone races),
-// a running worker in another repo's queue holds it (two repos' worker blocks can meet), or something
+// a running worker in another batch's queue holds it (two batches' worker blocks can meet), or something
 // is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
 // spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
 async function freePort(own = null) {
