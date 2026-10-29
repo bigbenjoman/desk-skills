@@ -37,7 +37,8 @@ driver just merged into the base) is fetched, merged again and retried once. Pus
 YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push), a
 refused push, the row, or the primary checkout having the base checked out (switch it off that
 branch; no base worktree is made until then). In feature mode that pass spawns nothing; otherwise
-spawning carries on from the base as it stands.
+spawning carries on from the base as it stands. Feature mode here is the decision `plan-batch`
+recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
 
 **A conflict goes to a conflict fix worker before it comes to you** (`base-fix.mjs`), where §3
 `pr-conflict-unreviewed` is `yes`: the base is merged work no reviewer has read as one change. The
@@ -50,8 +51,7 @@ pass that syncs the base clean says so and clears the tries, kept on the queue a
 gets two tries, one per head of the base, as a PR in conflict does: after two, or a try that left
 the base where it was, or with the row not `yes`, the conflict goes under `WAITING ON YOU`, naming
 its files and what the last try did (parked, finished, or no marker); resolve it in the base
-worktree and push. Feature mode here is the decision `plan-batch`
-recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
+worktree and push.
 
 **Baseline checks (config §4 "Baseline checks" `on`).** Once the sync is done, and only when the
 base has moved since the last record, the pass runs §4 Install, Typecheck and Lint in the base

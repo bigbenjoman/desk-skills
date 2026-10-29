@@ -1242,6 +1242,8 @@ check "DS-320 AC5 a conflict a person commented on reads pr-conflict-reviewed: n
   '[ "$(field F-6 state)" = "\"done\"" ] && [ "$(field F-6 fix)" = null ] && echo "$out" | grep -q "F-6: CONFLICT — PR #705 is out of draft and conflicts with main, and config §3 pr-conflict-reviewed is \"no\", so no fix worker resolves it"'
 check "DS-320 AC5 the user's own handle and a bot do not count as reviewed: pr-conflict-unreviewed requeues it" \
   '[ "$(field F-7 state)" = "\"triaged\"" ] && [ "$(field F-7 fix.kind)" = "\"conflict\"" ]'
+# F-7 is done with: settled and green, so it takes none of the worker slots the checks below count.
+q set F-7 state=done fix=null fix_tries=null; fx 706 "$H1" MERGEABLE tests:SUCCESS
 
 # The next pass spawns the fix workers, each given the fix as its task and in its briefing.
 out=$(node "$B/pass.mjs" 2>&1)
