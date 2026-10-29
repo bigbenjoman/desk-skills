@@ -287,6 +287,7 @@ export const CONFIG_ROWS = Object.freeze({
   'advisory-checks': { section: '4', row: 'Advisory checks' },
   'flaky-checks': { section: '4', row: 'Known flaky checks' },
   'operator-checks': { section: '4', row: "Checks workers can't fix" },
+  'check-builds': { section: '4', row: 'Check builds' },
   'repo-merge-settings': { section: '4', row: 'Repo merge settings' },
   vercel: { section: '4', row: 'Vercel' },
   'staging-bypass': { section: '4', row: 'Staging bypass token location' },

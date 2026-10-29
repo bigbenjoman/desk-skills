@@ -34,6 +34,7 @@ import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } f
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment } from './undraft.mjs';
+import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
@@ -1621,6 +1622,8 @@ function readPrStatus(n) {
   };
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
+const BUILD_DIR = join(STATE, 'check-builds');
+const buildRow = parseOperatorChecks(E.configValues('check-builds'));
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
 // The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
 // check, and whether the last rerun has had its cooldown.
@@ -1688,8 +1691,9 @@ if (drafts.length) {
     perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
-    ...gateLists(),
+    ...gateLists(), builds: buildRow.checks,
   };
+  if (buildRow.errors.length) out.push(`undraft: no check builds this pass, since config §4 Check builds does not parse: ${buildRow.errors.join(', ')} (want \`<check>: <command>\`). Run /desk-setup`);
   const notesFile = join(STATE, 'batch-notes.md');
   for (const { t, s } of drafts) {
     const n = s.pr;
@@ -1698,7 +1702,7 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine, ...driverReruns(n, v.headRefOid) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
@@ -1714,6 +1718,8 @@ if (drafts.length) {
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
+    else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
+    else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
     else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}`);
     else {
@@ -1736,6 +1742,57 @@ if (drafts.length) {
     const was = t.undraft ?? {};
     if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
+}
+
+// A draft red only on checks §4 Check builds names gets their build, on the host, in the ticket's
+// worktree moved on to the PR's head (check-build.mjs). Where it cannot start, the draft is the person's.
+function startCheckBuild(t, n, head, c, rec) {
+  if (DRY) { out.push(`undraft (dry run): would run \`${c.command}\` for PR #${n} (${t.key}) at ${String(head).slice(0, 12)}: ${c.why}`); return rec; }
+  const dir = buildDir(t, head);
+  let pid = null;
+  let failed = dir.why ?? null;
+  if (!failed) {
+    try { pid = startBuild(BUILD_DIR, { n, head, command: c.command, checks: c.checks, cwd: dir.cwd }); } catch (e) { failed = e.message; }
+  }
+  if (!failed) {
+    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (started in ${dir.cwd}, pid ${pid})`);
+    return rec;
+  }
+  const why = `its check build \`${c.command}\` could not start: ${failed}`;
+  const action = `run \`${c.command}\` at the head of #${n}, then re-run ${c.checks.map((x) => `"${x}"`).join(', ')}`;
+  report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
+  return { ...rec, call: 'person', why, action };
+}
+// The ticket's worktree at the PR's head: moved on to it when it is behind and clean, never otherwise.
+function buildDir(t, head) {
+  const wt = t.worktree;
+  if (!wt || !existsSync(wt)) return { why: `the ticket's worktree (${wt ?? 'none recorded'}) is not there` };
+  const at = shOut('git', ['-C', wt, 'rev-parse', 'HEAD']);
+  if (at.ok && at.out === head) return { cwd: wt };
+  const st = shOut('git', ['-C', wt, 'status', '--porcelain']);
+  if (!st.ok || st.out) return { why: `its worktree ${wt} is not at the head and has uncommitted changes` };
+  const moved = shOut('git', ['-C', wt, 'fetch', '-q', 'origin', head]).ok && shOut('git', ['-C', wt, 'merge', '--ff-only', '-q', head]).ok;
+  return moved ? { cwd: wt } : { why: `its worktree ${wt} is at ${at.out.slice(0, 9)} and could not be moved on to the head` };
+}
+// A check build that succeeded: its checks' runs re-run with --failed, once per head. Not rerun.sh,
+// whose cap and cooldown are for flaky runs: these were red for want of the build.
+function rerunBuilt(t, n, head, c, rec) {
+  if (DRY) { out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ') || '(none)'} on PR #${n} (${t.key}): ${c.why}`); return rec; }
+  const refused = c.runs.length ? [] : ['no run id was reported for it'];
+  for (const id of c.runs) {
+    const r = shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']);
+    if (!r.ok) refused.push(`run ${id}: ${r.out.split('\n').pop()}`);
+  }
+  markReran(BUILD_DIR, n, head, { ok: !refused.length, out: refused.join('; ') });
+  if (!refused.length) {
+    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (run(s) ${c.runs.join(', ')})`);
+    return rec;
+  }
+  const checks = c.checks.map((x) => `"${x}"`).join(', ');
+  const why = `its check build ran at ${String(head).slice(0, 9)}, but the re-run of ${checks} was refused: ${refused.join('; ')}`;
+  const action = `re-run ${checks} on #${n}`;
+  report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
+  return { ...rec, call: 'person', why, action };
 }
 
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the

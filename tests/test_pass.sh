@@ -1467,6 +1467,102 @@ q add N-1; q set N-1 state=done lane=A branch=fix/N-1 result.pr=751; frg 751 "$H
 check "DS-319 AC4 without autopilot-judgement yes, a gap-only review stays draft for the person" \
   '[ "$(field N-1 state)" = "\"done\"" ] && [ "$(field N-1 fix)" = null ] && [ "$(field N-1 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "N-1: DRAFT — PR #751 stays draft: its review verdict at 111111111 is not clean (gaps=1). Settle the findings or gaps on #751"'
 
+# ---- DS-327: a draft red only on a check §4 Check builds names gets its build on the host, then a re-run
+# The fake gh answers each PR from $T/fb/<n>.json, a clean-reviewed draft at its worktree's head, and
+# records run rerun. fbx <n> <head> <check>:<conclusion>[:<run id>]... writes one. Each PR's worktree
+# is a git repo of its own; the build scripts record where they ran and how often.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'rerun') { if (fs.existsSync('$T/fb/rerun.fail')) { console.error('run 9003 cannot be rerun'); process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+mkdir -p "$T/fb" "$T/state-b/logs"
+fbx(){
+  node -e 'const [dir, n, head, ...cs] = process.argv.slice(1);
+    const body = ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${head} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1: clean**"].join("\n");
+    const checks = cs.map((c) => { const [name, conclusion, id] = c.split(":"); return { __typename: "CheckRun", name, status: conclusion === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: conclusion === "PENDING" ? "" : conclusion, ...(id ? { detailsUrl: `https://github.com/acme/widgets/actions/runs/${id}/job/1` } : {}) }; });
+    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, body: "## Summary",
+      reviews: [{ id: `PRR_${n}`, author: { login: "ben" }, body }], statusCheckRollup: checks }))' "$T/fb" "$@"
+}
+for k in 1 2 3; do git init -q -b "fix/V-$k" "$T/wt/V-$k"; git -C "$T/wt/V-$k" commit -q --allow-empty -m "V-$k"; done
+HB1=$(git -C "$T/wt/V-1" rev-parse HEAD); HB2=$(git -C "$T/wt/V-2" rev-parse HEAD); HB3=$(git -C "$T/wt/V-3" rev-parse HEAD)
+cat > "$T/build-ok.sh" <<EOF
+printf '%s %s\n' "\$(pwd -P)" "\$(git rev-parse HEAD)" >> "$T/built"
+echo "pushed flows-lambda:staging-tree-1"
+EOF
+cat > "$T/build-fail.sh" <<'EOF'
+for i in 1 2 3 4 5 6 7; do echo "step $i"; done
+echo "no Docker context" >&2; exit 3
+EOF
+cat > "$T/config-b.md" <<EOF
+## 0. Repo
+| Field | Value |
+|---|---|
+| GitHub repo | \`acme/widgets\` |
+| Default branch | \`main\` |
+
+## 1. Identity
+| Field | Value |
+|---|---|
+| GitHub handle | \`ben\` |
+
+## 2. Paths
+| Field | Value |
+|---|---|
+| Primary repo root | \`$T/repo\` |
+| Worktrees directory | \`$T/wt\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+| \`pr-ready\` | Undraft PRs | \`yes\` | \`yes\` |
+| \`ci-rerun\` | Re-run CI | \`yes\` | \`yes\` |
+
+## 4. Checks
+| Field | Value |
+|---|---|
+| Required checks | \`tests\` |
+| Local review command | \`/desk-review\` |
+| Clean review verdict | \`p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0\` |
+| Check builds | \`Flows image: sh $T/build-ok.sh\` \`Lambda image: sh $T/build-fail.sh\` |
+EOF
+export DESK_CONFIG="$T/config-b.md" DESK_QUEUE="$T/queue-b.json" DESK_AUTOPILOT_STATE="$T/state-b"
+q init b; q set-batch concurrency=5
+for k in 1 2 3; do q add "V-$k"; q set "V-$k" state=done lane=A "branch=fix/V-$k" "worktree=$T/wt/V-$k" "result.pr=76$k"; done
+fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
+fbx 762 "$HB2" tests:FAILURE:9002 "Flows image:FAILURE:9002"
+fbx 763 "$HB3" tests:SUCCESS "Lambda image:FAILURE:9003"
+# Waits for PR n's build at head to write its exit code.
+built(){ for _ in $(seq 1 100); do [ -f "$T/state-b/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1); built 761 "$HB1"; built 763 "$HB3"
+check "DS-327 AC1 a draft red only on a named check gets its command, once, in its worktree at its head" \
+  '[ "$(cat "$T/built")" = "$(cd "$T/wt/V-1" && pwd -P) $HB1" ] && echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Flows image\" red at ${HB1:0:9}, which §4 Check builds clears"'
+check "DS-327 AC1 while it runs, the PR is not put to the person" '[ "$(field V-1 undraft.call)" = "\"build\"" ] && ! echo "$out" | grep -q "V-1: DRAFT"'
+check "DS-327 AC4 a red check the row does not name is handled as before: nothing is built" \
+  '[ ! -e "$T/state-b/check-builds/762-$HB2.json" ] && echo "$out" | grep -q "V-2: DRAFT — PR #762 stays draft: its checks are not green: .*Fix or re-run the checks on #762"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-327 AC1 once it succeeds, the check is re-run with --failed" '[ "$(grep -c "^run rerun 9001 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ]'
+check "DS-327 AC1 and the PR is not put to the person" '[ "$(field V-1 undraft.call)" = "\"rebuilt\"" ] && ! echo "$out" | grep -q "V-1: DRAFT"'
+check "DS-327 AC2 a failed command puts the PR to the person, with the command, its exit code and its last lines" \
+  '[ "$(field V-3 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "V-3: DRAFT — PR #763 stays draft: its check build \`sh $T/build-fail.sh\` exited 3 at ${HB3:0:9}: step 4 / step 5 / step 6 / step 7 / no Docker context. Fix the build, run it at the head of #763, then re-run \"Lambda image\""'
+check "DS-327 AC2 and nothing is re-run for it" '! grep -q "^run rerun 9003" "$T/gh-calls"'
+fbx 761 "$HB1" tests:SUCCESS "Flows image:PENDING:9001"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-327 AC1 while the re-run runs, the PR waits" '[ "$(field V-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "V-1: DRAFT"'
+fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-327 AC3 still red after the build and its re-run: the command is not run again at that head" \
+  '[ "$(wc -l < "$T/built" | tr -d " ")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls"'
+check "DS-327 AC3 and the PR is put to the person, naming the check" \
+  'echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Flows image\" is still red at ${HB1:0:9} after its check build \`sh $T/build-ok.sh\` ran and the check was re-run. Fix \"Flows image\" on #761"'
+
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"

@@ -154,6 +154,12 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per
   check per head and its 12-minute gap, in the same `reruns-<n>-<sha>` and `cooldown-<n>` files.
   Red again with a failure, or still red after both reruns, it goes on as any red draft does.
+- **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3
+  `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, in the
+  ticket's worktree at the PR's head, detached so a pass that ends leaves it running, with its output
+  and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
+  `--failed`. A command that fails, or a check still red after the re-run, goes to the person with the
+  command, its exit code and its last lines; it is not run again at that head. A worker never runs it.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart

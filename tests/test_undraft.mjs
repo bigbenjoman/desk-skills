@@ -125,4 +125,36 @@ rerunSh('yes');
 t('DS-330 AC1 a second rerun inside the cooldown is not made', read('gh.log').split('\n').filter(Boolean).length, 2);
 rmSync(tmp, { recursive: true, force: true });
 
+// DS-327: a draft red only on checks §4 Check builds names gets that build, once per head, then a re-run.
+const FLOWS = { name: 'Flows image', status: 'completed', conclusion: 'failure', runId: 21 };
+const builds = [{ name: 'Flows image', command: './scripts/ensure-flows-image.sh' }];
+const buildPr = (checks, built = null, more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'success' }, ...checks], { builds, built: (h) => (h === HEAD ? built : null), ...more });
+const b0 = buildPr([FLOWS]);
+t('DS-327 AC1 no build at this head yet: build it', `${b0?.call} | ${b0?.command} | ${b0?.checks} | ${b0?.runs}`, 'build | ./scripts/ensure-flows-image.sh | Flows image | 21');
+t('DS-327 AC1 while it runs it waits', buildPr([FLOWS], { state: 'running', command: b0.command })?.why, `its check build \`./scripts/ensure-flows-image.sh\` is running at ${HEAD.slice(0, 9)}, then "Flows image" is re-run`);
+const ok = { state: 'done', command: b0.command, code: 0, tail: 'pushed', reran: null };
+t('DS-327 AC1 once it succeeded, the check is re-run', `${buildPr([FLOWS], ok)?.call} ${buildPr([FLOWS], ok)?.runs}`, 'rebuilt 21');
+t('DS-327 AC1 while the re-run runs, it waits as any running check does', buildPr([{ ...FLOWS, status: 'in_progress', conclusion: null }], { ...ok, reran: { ok: true } })?.call, 'wait');
+const failed = buildPr([FLOWS], { ...ok, code: 3, tail: 'step 7 / no Docker context' });
+t('DS-327 AC2 a failed build is the person\'s, with the command, its exit code and its last lines', `${failed?.call} | ${failed?.why} | ${failed?.action}`,
+  `person | its check build \`./scripts/ensure-flows-image.sh\` exited 3 at ${HEAD.slice(0, 9)}: step 7 / no Docker context | fix the build, run it at the head of #701, then re-run "Flows image"`);
+t('DS-327 AC2 a build stopped before it wrote a code says so', buildPr([FLOWS], { ...ok, code: null, tail: '' })?.why, `its check build \`./scripts/ensure-flows-image.sh\` stopped before it finished at ${HEAD.slice(0, 9)}`);
+const refused = buildPr([FLOWS], { ...ok, reran: { ok: false, out: 'run 21: HTTP 403' } });
+t('DS-327 AC2 a refused re-run is the person\'s', `${refused?.call} | ${refused?.action}`, 'person | re-run "Flows image" on #701');
+const still = buildPr([FLOWS], { ...ok, reran: { ok: true, out: '' } });
+t('DS-327 AC3 still red after the build and its re-run: the person, naming the check', `${still?.call} | ${still?.why}`,
+  `person | "Flows image" is still red at ${HEAD.slice(0, 9)} after its check build \`./scripts/ensure-flows-image.sh\` ran and the check was re-run`);
+t('DS-327 AC3 a build at another head is not this head\'s', buildPr([FLOWS], null, { built: (h) => (h === OLD ? ok : null) })?.call, 'build');
+t('DS-327 AC4 a red check the row does not name beside it is handled as before', buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.why,
+  'its checks are not green: "Flows image" failure; "lint" failure');
+t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'person');
+t('DS-327 a named check still pending beside another waits', buildPr([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])?.call, 'wait');
+for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'person');
+
+// DS-327 AC5: /desk-setup proposes the row from the instructions, and the row is a config row.
+const doc = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
+t('DS-327 AC5 setup step 1 proposes §4 Check builds, not prose only', /\*\*Check builds\.\*\*[\s\S]*propose it for §4 Check builds[\s\S]*Never leave it as prose only/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
+t('DS-327 AC5 the config template has the row', /^\| Check builds \| /m.test(doc('../desk-config.md')), true);
+t('DS-327 AC5 desk-env reads it as check-builds', doc('../desk/bin/desk-env.mjs').includes("'check-builds': { section: '4', row: 'Check builds' }"), true);
+
 process.exit(fails ? 1 : 0);
