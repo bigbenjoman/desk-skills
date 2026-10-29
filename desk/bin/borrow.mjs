@@ -18,7 +18,7 @@ import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './bat
 import { namedBatches } from './batches.mjs';
 
 // A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
-// desk-q through liveBeat, which also counts a recorded next pass still to come.
+// desk-q and borrowing through liveBeat, which also counts a recorded next pass still to come.
 export const LIVE_MS = 15 * 60 * 1000;
 
 // Config §3b "Borrow idle workers": `on` or `off`, unset meaning off. Anything else is said and read
@@ -127,33 +127,18 @@ export function machineBudget({ running, wanted = 0, machine = machineCap(), que
 // A ticket another batch could start now: triaged, with no question open, and not held.
 const isReady = (t) => t?.state === 'triaged' && (t.open_questions ?? 0) === 0 && !isHeld(t);
 
-// This repo's other batches, from otherQueues(): { batch, live, running, ready, share }, or
-// { batch, error } for one that cannot be read. `batch` is null for the standing batch.
-export function repoBatches({ slug, queues = [], now = Date.now() }) {
-  return queues.filter((o) => o.slug === slug).map(({ batch = null, path, q, error }) => {
-    if (error) return { batch, error };
-    const tickets = Object.values(q.tickets ?? {});
-    return {
-      batch,
-      live: liveBeat(lastBeat(E.batchPaths(slug, batch).state, path), now),
-      running: tickets.filter((t) => t?.state === 'running').length,
-      ready: tickets.filter(isReady).length,
-      share: batchConcurrency(q, E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency'))).n,
-    };
-  });
-}
-
 const batchLabel = (b) => (b == null ? 'the standing batch' : `batch ${b}`);
 
 // The repo's §3b cap is shared by its batches: a pass starts at most the cap less every batch's
 // running workers, less the slots kept for the others. A live batch with ready work and nothing
 // running keeps one slot; a named (feature) batch also keeps, from the standing batch, the part of its
-// own number it has not filled, so spare slots go to it first. A named batch with nothing running
-// keeps one slot for itself whatever the others keep. A batch that cannot be read counts at the cap.
+// own number it has not filled, so spare slots go to it first. A batch with nothing running keeps one
+// slot for itself whatever the others keep: a named batch first, the standing batch from what is left
+// after each named batch with nothing running has its one. A batch that cannot be read counts at the cap.
 //   batch     this batch's name, null for the standing batch
 //   running   this batch's running workers
 //   wanted    the slots this pass would otherwise fill
-//   batches   repoBatches()
+//   batches   otherBatches() of this repo
 // -> { room, line }   room is Infinity, and line null, with no other batch live or running
 export function repoBudget({ batch = null, running, wanted = 0, cap, batches = [] }) {
   const shown = batches.filter((o) => o.error || o.live || o.running > 0);
@@ -162,6 +147,7 @@ export function repoBudget({ batch = null, running, wanted = 0, cap, batches = [
   const each = [`${batchLabel(batch)} (this pass) ${running}`];
   const kept = [];
   let keep = 0;
+  let firsts = 0;
   for (const o of shown) {
     if (o.error) {
       all += cap;
@@ -171,13 +157,14 @@ export function repoBudget({ batch = null, running, wanted = 0, cap, batches = [
     all += o.running;
     each.push(`${batchLabel(o.batch)} ${o.running}`);
     if (!o.live || o.ready === 0 || o.share <= 0) continue;
+    if (o.batch != null && o.running === 0) firsts += 1;
     const k = batch == null && o.batch != null ? Math.min(o.ready, Math.max(0, o.share - o.running)) : o.running === 0 ? 1 : 0;
     if (!k) continue;
     keep += k;
     kept.push(`${k} kept for ${batchLabel(o.batch)}, which has ${o.ready} ready and ${o.running} running`);
   }
   const free = Math.max(0, cap - all);
-  const own = batch != null && running === 0 && wanted > 0 ? Math.min(1, free) : 0;
+  const own = running > 0 || wanted <= 0 ? 0 : Math.min(1, batch != null ? free : Math.max(0, free - firsts));
   const room = Math.max(own, free - keep);
   const head = `repo workers: ${all} of the §3b cap of ${cap} running — ${each.join(', ')}`;
   const held = kept.length ? `; ${kept.join('; ')}` : '';
@@ -191,11 +178,10 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
   return queues.map(({ slug, batch = null, path, q, error }) => {
     if (error) return { slug, batch, error };
     const tickets = Object.values(q.tickets ?? {});
-    const last = lastBeat(join(stateRoot, slug, ...(batch ? [E.BATCHES_DIR, batch] : [])), path)?.at ?? null;
     return {
       slug,
       batch,
-      live: last != null && now - last < LIVE_MS,
+      live: liveBeat(lastBeat(join(stateRoot, slug, ...(batch ? [E.BATCHES_DIR, batch] : [])), path), now),
       running: tickets.filter((t) => t?.state === 'running').length,
       ready: tickets.filter(isReady).length,
       share: batchConcurrency(q, E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency'))).n,

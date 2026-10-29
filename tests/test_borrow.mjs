@@ -162,8 +162,8 @@ named('acme__b', 'Y-1', '{ not json');
 t('DS-305 an unreadable named batch\'s queue is named and counted at its repo\'s cap', /acme\/b batch Y-1's queue cannot be read \(.*batches\/Y-1\/queue\.json is not valid JSON.*\), so it counts at its cap of 4 workers/.test(budget(queuePath('acme__a'), 1)), true);
 
 // A repo's batches share its §3b cap. A named batch of `slug` with `running` and `ready` tickets and
-// a heartbeat `beat` minutes old in its own state directory.
-function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1 } = {}) {
+// a heartbeat `beat` minutes old in its own state directory, planning its next pass in `next` minutes.
+function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next } = {}) {
   const tickets = {};
   for (let i = 1; i <= running; i++) tickets[`${name}-R${i}`] = { key: `${name}-R${i}`, state: 'running' };
   for (let i = 1; i <= ready; i++) tickets[`${name}-Y${i}`] = { key: `${name}-Y${i}`, state: 'triaged', open_questions: 0 };
@@ -171,11 +171,11 @@ function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1 } = {
   if (beat != null) {
     const dir = join(env.HOME, '.desk-autopilot', slug, 'batches', name, 'orchestrators');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'q.json'), JSON.stringify({ queue: q, batch: name, pid: 1, at: minsAgo(beat) }));
+    writeFileSync(join(dir, 'q.json'), JSON.stringify({ queue: q, batch: name, pid: 1, at: minsAgo(beat), ...(next != null ? { next: minsAgo(-next) } : {}) }));
   }
   return q;
 }
-const repoRoom = (self, mine) => B.repoBudget({ cap: 3, ...mine, batches: B.repoBatches({ slug: 'acme__a', queues: B.otherQueues({ self }), now: NOW }) });
+const repoRoom = (self, mine) => B.repoBudget({ cap: 3, ...mine, batches: B.otherBatches({ self, now: NOW }).filter((o) => o.slug === 'acme__a') });
 fresh();
 repo('acme__a', { conc: '2 / 3', share: 2, running: 2 });
 let x1q = batchOf('acme__a', 'X-1', { ready: 2 });
@@ -198,6 +198,13 @@ fresh();
 repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 1 });
 batchOf('acme__a', 'X-1', { running: 0, ready: 1, beat: 16 });
 t('DS-308 a batch whose orchestrator has gone, with nothing running, neither keeps a slot nor counts', String(repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 }).room), 'Infinity');
+batchOf('acme__a', 'X-1', { running: 0, ready: 1, beat: 16, next: 5 });
+t('DS-308 a batch waiting longer than 15 minutes for the next pass it recorded still keeps its slot', repoRoom(queuePath('acme__a'), { running: 1, wanted: 2 }).room, 1);
+fresh();
+repo('acme__a', { conc: '2 / 3', share: 2, ready: 1 });
+x1q = batchOf('acme__a', 'X-1', { share: 3, running: 2, ready: 1 });
+t('DS-308 the standing batch, with ready work and nothing running, takes the last slot rather than both keeping it for the other',
+  `${repoRoom(queuePath('acme__a'), { running: 0, wanted: 1 }).room} ${repoRoom(x1q, { batch: 'X-1', running: 2, wanted: 1 }).room}`, '1 0');
 fresh();
 repo('acme__a', { conc: '1 / 1', share: 1, ready: 1 });
 x1q = batchOf('acme__a', 'X-1', { share: 1, ready: 1 });

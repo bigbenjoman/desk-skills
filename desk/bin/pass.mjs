@@ -37,7 +37,7 @@ import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, RERUN_COOLD
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBatches, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 import { listBatches } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -961,7 +961,7 @@ const plan = borrowPlan({
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
 const REPO = repoBudget({
   batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
-  batches: repoBatches({ slug: REPO_SLUG, queues: otherRepos }),
+  batches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
 });
 const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
