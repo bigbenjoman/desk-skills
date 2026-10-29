@@ -45,7 +45,10 @@ recorded on the queue when it seeded (`feature`), not whatever `feature.json` na
 pass starts a task worker in the base worktree, under the id `base-<branch>` with its ticket file in
 `$DESK_STATE/tickets/`, and it merges §0 Default branch in (a merge, never a rebase or a force push),
 resolves the files git lists, verifies the merged tree and pushes the base under the same
-`batch-base-push` grant. It takes a worker slot, and while it runs the pass leaves the base worktree
+`batch-base-push` grant. It takes a worker slot, within the batch's worker count and the machine
+budget, and every batch counts it and its port as a running worker's. A session still live after its
+worker parked or finished is stopped, as is one quiet for six passes (wedged); either ends the try.
+While it runs the pass leaves the base worktree
 alone (no sync, no baseline, no base gate) and, in feature mode, still spawns nothing else. The next
 pass that syncs the base clean says so and clears the tries, kept on the queue as `base_fix`. A base
 gets two tries, one per head of the base, as a PR in conflict does: after two, or a try that left

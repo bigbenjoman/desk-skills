@@ -95,6 +95,9 @@ export function otherQueues({ self, home = E.deskHome() } = {}) {
   return out;
 }
 
+// The workers a queue has running: its running tickets, and its base conflict fix while one runs.
+const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state === 'running').length + (q.base_fix?.running ? 1 : 0);
+
 // The machine-wide worker budget, borrowing on or off: the machine profile's cap is a hard limit on
 // the workers running in every repo together, so a pass starts at most the cap less every queue's
 // running workers. A queue that cannot be read counts at its repo's own §3b cap, the most it could
@@ -115,7 +118,7 @@ export function machineBudget({ running, wanted = 0, machine = machineCap(), que
       const counted = E.concurrencyLimits(E.repoConfigValue(o.slug, 'concurrency')).cap;
       why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
       all += counted;
-    } else all += Object.values(o.q.tickets ?? {}).filter((t) => t?.state === 'running').length;
+    } else all += runningIn(o.q);
   }
   const room = Math.max(0, machine - all);
   const head = `machine budget: ${all} of the machine's ${machine} worker(s) running across every repo${why}`;
@@ -138,7 +141,7 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
       slug,
       batch,
       live: last != null && now - last < LIVE_MS,
-      running: tickets.filter((t) => t?.state === 'running').length,
+      running: runningIn(q),
       ready: tickets.filter(isReady).length,
       share: batchConcurrency(q, E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency'))).n,
     };

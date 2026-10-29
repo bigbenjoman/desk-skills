@@ -11,11 +11,10 @@
 //   wait    the running try's worker is still live
 //   stuck   no try is left: the person resolves it, and `why` names the last try's outcome
 //   person  §3 does not let a worker resolve it
-import { FIX_TRIES_MAX } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, tries, triesSpent } from './fix-tries.mjs';
 
 export { FIX_TRIES_MAX };
 
-const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 const fileList = (files) => (files?.length ? files.join(', ') : 'not listed');
 
@@ -27,7 +26,7 @@ export function baseFixCall(rec, c) {
   const done = rec?.tries ?? [];
   const last = done[done.length - 1] ?? null;
   if (rec?.running && c.alive) return { call: 'wait', try: last };
-  if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === c.head)) {
+  if (triesSpent(done, c.head)) {
     return { call: 'stuck', why: `still in conflict after ${tries(done.length)}${last?.outcome ? `; the last try ${last.outcome}` : ''}` };
   }
   return { call: 'spawn', fix: { try: done.length + 1, of: FIX_TRIES_MAX, head: c.head, source: c.source, files: c.files ?? null } };

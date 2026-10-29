@@ -38,7 +38,7 @@ export function parseOperatorChecks(items) {
 }
 
 export const runUrl = (repo, id) => (id ? `https://github.com/${repo}/actions/runs/${id}` : null);
-const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
+export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // A fix try already made for this head: one whose worker finished without moving it. A review try
 // (kind `rereview`) moves no head by design, so it does not count here.
 const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview');
@@ -57,6 +57,9 @@ const stillRed = (done, fix) => `still red after ${tries(done.length)}: ${fix.ch
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => done.length >= FIX_TRIES_MAX || triedHere;
 const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
+// No try is left at this head: FIX_TRIES_MAX made, or a fix try made at it whose worker finished
+// without moving it. Base conflict fix tries (base-fix.mjs) count the same way.
+export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, operator (parsed),
 // reruns(name) -> reruns tried at s.head, cooledDown (the last rerun has had its gap to report),

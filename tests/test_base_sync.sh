@@ -31,6 +31,8 @@ EOF
 # The session registry: $T/agents.json when it exists, else empty.
 printf '#!/bin/sh\ncat "%s/agents.json" 2>/dev/null || echo "[]"\n' "$T" > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+# kill records the pid it was asked to stop, and stops nothing.
+printf '#!/bin/sh\necho "$@" >> "%s/kills"\n' "$T" > "$T/stub/kill"
 # git, but the first push to feat/x first moves origin's feat/x on (what the merge driver does when it
 # merges a PR into the base between the sync's fetch and its push). Armed by $T/race.arm, which holds the clone to push from.
 REAL_GIT=$(command -v git)
@@ -42,7 +44,7 @@ case " \$* " in *" push "*"refs/heads/feat/x"*)
 esac
 exec "$REAL_GIT" "\$@"
 EOF
-chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/git"
+chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/git" "$T/stub/kill"
 export PATH="$T/stub:$PATH" DESK_HOME="$T/desk" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
 
 # fresh <case> [batch-base-push value] [base]: an origin holding main and feat/x, with main two commits
@@ -182,6 +184,25 @@ check "DS-320 AC3 the gate waits on it, and is not put to the person" \
   '[[ "$out" == *"BASE GATE: waits on the conflict fix worker on feat/x"* ]] && [[ "$out" != *"WAITING ON YOU"*"BASE GATE"* ]] && [[ "$out" != *"by hand"* ]]'
 live; pass
 check "DS-320 AC3 while it runs, the gate still waits on it" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [[ "$out" == *"BASE GATE: waits on the conflict fix worker on feat/x"* ]]'
+rm -f "$T/agents.json"
+
+# A worker whose session hangs on after its park has finished: it is stopped, and the base goes to the
+# person, rather than every later pass waiting on it.
+: > "$T/spawns"; : > "$T/kills"; fresh bhang; feature; fixrow yes; conflict; pass; live
+ended "AUTOPILOT_PARK: both sides rewrite a.txt"; pass
+check "DS-320 a worker live after its park is stopped, and its try ends" \
+  '[ "$(cat "$T/kills")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x parked: both sides rewrite a.txt (session still live, stopped pid 1)"* ]]'
+check "DS-320 and the base goes to the person" '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"the last try parked: both sides rewrite a.txt"* ]]'
+rm -f "$T/agents.json"
+
+# A worker whose session stays live and writes nothing: quiet, then after six passes wedged and stopped.
+: > "$T/kills"; fresh bwedge; feature; fixrow yes; conflict; pass; live
+for _ in 1 2 3; do pass; done
+check "DS-320 a quiet base fix worker is reported quiet, and still waited on" \
+  '[[ "$out" == *"base-feat-x: quiet for 3 passes"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ] && [ ! -s "$T/kills" ]'
+for _ in 4 5 6; do pass; done
+check "DS-320 six quiet passes: stopped as wedged, and the base goes to the person" \
+  '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped as wedged, with no output for 6 passes"* ]]'
 rm -f "$T/agents.json"
 
 # An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4

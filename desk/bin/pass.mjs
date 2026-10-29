@@ -35,7 +35,7 @@ import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
@@ -1013,8 +1013,9 @@ let bf = fresh.base_fix ?? null;
 let baseFix = null;
 let baseFixLive = false;
 let gateConflict = null;
-// Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either.
-const baseFixRoom = !(held === PACE_HELD ? null : held) && !lowMemory && running.length < concurrency;
+// Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
+// machine budget binds it as it binds every worker.
+const baseFixRoom = !(held === PACE_HELD ? null : held) && !lowMemory && running.length < concurrency && MACHINE.room > 0;
 if (BASE && SOURCE && BASE !== SOURCE) {
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
@@ -1033,19 +1034,37 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   };
   const wt = ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE });
   if (wt.ok && wt.made) baseLines.push(`base worktree for ${BASE} made at ${wt.path}`);
-  // A try's worker that has finished leaves its outcome on the try. The registry unread, or a log
-  // written in the last two minutes that has not ended, reads as still at it.
+  // A try's worker that has finished leaves its outcome on the try. One whose last word is a park or a
+  // done has finished whether or not its session exits, and one quiet for six passes is wedged: either
+  // is stopped, as a ticket's worker is, so the try ends and the next conflict at this head goes to the
+  // person. Otherwise the registry unread, or a log written in the last two minutes that has not ended,
+  // reads as still at it.
   if (bf?.running) {
     const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
     let text = '';
     try { text = readFileSync(log, 'utf8'); } catch { /* no log yet: read as ended */ }
     const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
-    baseFixLive = !registryOk || liveSids.has(bf.running) || (recent && !endedNormally(text));
-    if (!baseFixLive) {
-      const outcome = baseFixOutcome(workerMarkers(text));
-      bf = { ...bf, running: null, port: null, tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)) };
+    const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
+    const idle = bytes > (bf.log_bytes ?? 0) ? 0 : (bf.idle_passes ?? 0) + 1;
+    const markers = workerMarkers(text);
+    const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
+    const sidLive = registryOk && liveSids.has(bf.running);
+    const outcome = idle >= 6 && !said ? `was stopped as wedged, with no output for ${idle} passes`
+      : registryOk && (said || (!sidLive && !(recent && !endedNormally(text)))) ? baseFixOutcome(markers)
+        : null;
+    if (outcome) {
+      const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
+      if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
+      bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
       if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-      baseLines.push(`base conflict fix: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}`);
+      baseLines.push(`base conflict fix: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
+    } else {
+      baseFixLive = true;
+      if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
+        bf = { ...bf, log_bytes: bytes, idle_passes: idle };
+        if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+      }
+      if (idle >= 3) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
   }
   const originSha = (b) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${b}`], { tolerant: true }) || null;
@@ -1079,7 +1098,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY });
     // A base that syncs is no longer in conflict, so a later conflict starts its tries afresh.
     if (s.ok && !s.dry && bf && !DRY) {
-      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${bf.tries.length} fix ${bf.tries.length === 1 ? 'try' : 'tries'}`);
+      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(bf.tries.length)}`);
       q('set-batch', 'base_fix=null');
       bf = null;
     }
@@ -1246,14 +1265,15 @@ const baselineBrief = () => {
 let attempts = baseFixLive ? 1 : 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
-// cannot see one another batch's pass has just handed out. Only running tickets hold one. A queue that will not parse is named in the report
-// and skipped, never a hold.
+// cannot see one another batch's pass has just handed out. Only running tickets and a running base
+// conflict fix hold one. A queue that will not parse is named in the report and skipped, never a hold.
 const unreadableQueues = new Set();
 function otherQueuePorts() {
   const ports = new Set();
   for (const { q: other, error } of otherQueues({ self: QUEUE_FILE })) {
     if (error) { unreadableQueues.add(error); continue; }
     for (const r of Object.values(other.tickets ?? {})) if (r?.state === 'running' && Number(r.port) > 0) ports.add(Number(r.port));
+    if (other.base_fix?.running && Number(other.base_fix.port) > 0) ports.add(Number(other.base_fix.port));
   }
   return ports;
 }
@@ -1476,10 +1496,10 @@ async function spawnBaseFix({ wt, fix }) {
   const key = BASE_FIX_KEY;
   mkdirSync(join(STATE, 'tickets'), { recursive: true });
   writeFileSync(join(STATE, 'tickets', `${key}.md`), baseFixTicket({ key, ...ctx }));
-  const tries = [...(bf?.tries ?? []), { try: fix.try, head: fix.head, source: fix.source, files: fix.files, at: PASS_AT }];
-  const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries, running: null, port: null, ...rest })}`);
+  const made = [...(bf?.tries ?? []), { try: fix.try, head: fix.head, source: fix.source, files: fix.files, at: PASS_AT }];
+  const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
   const failed = (outcome, line) => {
-    tries[tries.length - 1].outcome = outcome;
+    made[made.length - 1].outcome = outcome;
     record({});
     report.failed.push(`${key}: ${line}`);
   };
@@ -1492,15 +1512,15 @@ async function spawnBaseFix({ wt, fix }) {
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
-  logPreflight(key, pre.cost);
+  const logBytes = logPreflight(key, pre.cost);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: baseFixTask(ctx) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) { failed('could not be spawned', refused); return; }
-  tries[tries.length - 1].session = sid;
-  record({ running: sid, port });
+  made[made.length - 1].session = sid;
+  record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
   report.spawned.push(`${key} port=${port} model=${model || 'default'} (conflict fix try ${fix.try} of ${fix.of} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFix) await spawnBaseFix(baseFix);
