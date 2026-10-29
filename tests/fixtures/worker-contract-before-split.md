@@ -10,7 +10,7 @@ file and a skill disagree about anything else, **the skill wins**.
 
 **The desk skills are files, not Skill-tool entries.** You run with `--setting-sources ""`, which
 keeps your user's settings out and with them the skill registry: the Skill tool answers
-`Unknown skill: desk-ticket` (or `desk-review`, `pr-expert`, …) and that is expected, not a fault.
+`Unknown skill: desk-ticket` (or `desk-review`, …) and that is expected, not a fault.
 Never park on it. Instead **Read the skill's file directly**: `desk-env paths` prints
 `DESK_SKILLS_DIR`, and each skill is `$DESK_SKILLS_DIR/<name>/SKILL.md` with its references beside
 it. Wherever a skill or this file says "run `desk-review`" or "load `desk-ticket`", it means read
