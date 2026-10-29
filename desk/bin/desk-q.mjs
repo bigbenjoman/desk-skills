@@ -1052,10 +1052,8 @@ function costTag(x, { now, suppliersOf, repoless }) {
   return null;
 }
 
-// The bill `o` opens for a row: its largest supplier's, else the first it is billed by. The shared
-// row's is its largest shared line's.
-function billOf(x, { costs, c }) {
-  if (x.name === 'shared') { const p = c.sharedParts[0]; return p ? billingUrl(p.supplier, { team: p.team }) : null; }
+// The bill `o` opens for a name: its largest supplier's, else the first it is billed by.
+function billOf(x, { costs }) {
   const mine = costs.entries.filter((e) => e.name === x.name);
   const top = Object.entries(x.by ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? SUPPLIERS.find((s) => mine.some((e) => e.supplier === s));
   return top ? billingUrl(top, { team: mine.find((e) => e.supplier === top)?.team }) : null;
@@ -1080,7 +1078,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const rows = lines.map((x) => {
     const tag = x.name === 'shared' ? sharedTag : costTag(x, { now, suppliersOf, repoless });
     const r = segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], null);
-    return { ...r, bill: billOf(x, { costs, c }) };
+    return { ...r, bill: x.name === 'shared' ? null : billOf(x, { costs }) };
   });
   const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
   const most = Math.max(0, ...stale.map((r) => r.days));

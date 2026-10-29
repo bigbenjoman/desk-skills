@@ -461,7 +461,7 @@ function readsOf(r, s, period) {
 // What no name owns, line by line: GitHub's items by account, Vercel's lines charged to no name.
 function sharedPartsOf(r, s) {
   if (s === 'github') return Object.values(r.shared ?? {}).flatMap((a) => (a?.items ?? []).map((i) => ({ label: githubLabel(i), c: Math.round(i.charged * 100) })));
-  if (s === 'vercel') return Object.values(r.teams ?? {}).flatMap((t) => (t?.lines ?? []).filter((l) => l.name == null).map((l) => ({ label: vercelLabel(l), c: Math.round(l.charged * 100), team: t.team })));
+  if (s === 'vercel') return Object.values(r.teams ?? {}).flatMap((t) => (t?.lines ?? []).filter((l) => l.name == null).map((l) => ({ label: vercelLabel(l), c: Math.round(l.charged * 100) })));
   return [];
 }
 
@@ -473,7 +473,7 @@ function sharedPartsOf(r, s) {
 // figure was read (the oldest source's, with its newest failed attempt).
 //   -> { period, total, suppliers: [{ supplier, total }],
 //        names: [{ name, total | null, by: { supplier: usd }, credits, cantRead | null, free, reads: [{ supplier, at, failedAt }] }],
-//        shared | null, sharedParts: [{ supplier, label, total, team? }], credits },
+//        shared | null, sharedParts: [{ supplier, label, total }], credits },
 //      most charged first; null with no reading
 export function chargesByName({ cache, names = [] }) {
   const read = Object.keys(BILLED_BY).filter((s) => cache?.[s] && periodOf(cache[s], s) && hasFigure(cache[s], s));
@@ -509,8 +509,8 @@ export function chargesByName({ cache, names = [] }) {
       sum += c;
     }
     for (const p of sharedPartsOf(cache[s], s).filter((x) => x.c > 0)) {
-      const k = `${s}\u0000${p.label}\u0000${p.team ?? ''}`;
-      parts.set(k, { supplier: s, label: p.label, c: (parts.get(k)?.c ?? 0) + p.c, ...(p.team ? { team: p.team } : {}) });
+      const k = `${s}\u0000${p.label}`;
+      parts.set(k, { supplier: s, label: p.label, c: (parts.get(k)?.c ?? 0) + p.c });
     }
     for (const r of readsOf(cache[s], s, period)) {
       const had = row(r.name).reads[s];
