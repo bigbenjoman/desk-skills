@@ -131,7 +131,7 @@ repo('acme__nul', { raw: 'null' });
 p = plan('acme__a', { share: 2, running: 1, wanted: 3 });
 t('AC7 a queue that parses to something other than a queue is unreadable too, not a crash', p.slots === 1 && p.line.includes(`${queuePath('acme__nul')} is not a queue`), true);
 
-// DS-305: a named batch's queue sits beside its repo's standing one, in batches/<name>/queue.json.
+// A named batch's queue sits beside its repo's standing one, in batches/<name>/queue.json.
 const named = (slug, name, raw) => {
   const q = join(env.DESK_HOME, 'repos', slug, 'batches', name, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });

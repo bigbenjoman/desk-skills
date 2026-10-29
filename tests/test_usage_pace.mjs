@@ -82,7 +82,7 @@ log(B, 'B-1', ['{"type":"assistant"}'], 0);
 t('AC3 unit: a log last written over 6 hours ago does not count', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real }), null);
 writeFileSync(join(B, 'logs', 'B-2.log.round1.gz'), gzipSync(`${event(0.5, resetIn(real, 2 * DAY))}\n`));
 t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.5);
-// DS-305: a named batch's logs sit under its repo's state directory, in batches/<name>/.
+// A named batch's logs sit under its repo's state directory, in batches/<name>/.
 const dirsOf = (self) => JSON.stringify(P.stateDirs({ self, root }).sort());
 t('DS-305 AC5 unit: with only standing batches, the directories are the repos\'', dirsOf(A), JSON.stringify([A, B]));
 const X = join(A, 'batches', 'X-1');

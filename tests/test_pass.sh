@@ -309,7 +309,7 @@ check "DS-117 AC2 a port only another repo's done ticket recorded is used" '[ "$
 other '{"tickets": not json'
 spawn_one P-173
 check "DS-117 AC3 an unreadable queue does not stop the spawn, and the report names it" '[ "$(field P-173 state)" = "\"running\"" ] && [ "$(field P-173 port)" = 47501 ] && echo "$out" | grep -qF "ports: $T/desk/repos/acme__other/queue.json is not valid JSON ("'
-# DS-305: the same for a named batch's queue beside that repo's standing one.
+# The same for a named batch's queue beside that repo's standing one.
 X1="$T/desk/repos/acme__other/batches/X-1"; mkdir -p "$X1"; other '{"tickets":{}}'
 printf '%s\n' '{"tickets":{"X-2":{"key":"X-2","state":"running","port":47501}}}' > "$X1/queue.json"
 spawn_one P-174
