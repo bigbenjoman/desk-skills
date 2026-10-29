@@ -53,13 +53,14 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   once GitHub shows every blocker merged: never because "it probably does not really depend on it".
 - **STUCK**: a blocker can no longer merge on its own (it failed, is parked for its own reason,
   finished with no PR, or its PR was closed unmerged). The user decides: re-run or finish the
-  blocker, release the ticket anyway, or drop it.
+  blocker, release the ticket anyway, or drop it. Of those blockers, a failed or parked one is
+  already that question, so what is held behind it is not STUCK (below): only a blocker that
+  finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK.
 
 **Behind a failed or parked blocker, a held ticket is not a question of its own.** That blocker is
 already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
 depth, is listed once under `WAITING ON A PARK` and in `on_park`, never under `stuck` or `waiting`:
-the answer to the blocker settles it. Only a blocker that finished with no PR, closed its PR unmerged
-or is not in the batch leaves it STUCK.
+the answer to the blocker settles it.
 
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 
