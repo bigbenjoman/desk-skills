@@ -607,7 +607,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       // exit below rather than resumed on every pass.
       if (lifted(limit)) {
         const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
-        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`, `resume_reset=${limit.resetsAt ?? 'null'}`,
+        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
           `resume_limits=${usage.limits.length}`);
         report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
       }
@@ -1374,7 +1374,7 @@ async function spawnHandoff(t) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null', 'resume_limits=null', 'usage_paused=null');
+    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1464,7 +1464,7 @@ for (const t of spawnable) {
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
-    'resume=null', 'resume_why=null', 'resumes=null', 'resume_reset=null', 'resume_limits=null', 'usage_paused=null',
+    'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
@@ -1497,7 +1497,7 @@ borrowLock?.release();
   const was = queue().usage_hold;
   if (USAGE_HOLD) {
     const rec = { since: was?.since ?? PASS_AT, type: USAGE_HOLD.type, resets_at: USAGE_HOLD.resetsAt, preflight: USAGE_HOLD.preflight ?? null,
-      paused: usageHolds.map((h) => h.key), probe: PROBE ? { at: PASS_AT, ok: PROBE.ok, why: PROBE.why ?? null } : was?.probe ?? null };
+      paused: usageHolds.map((h) => h.key) };
     q('set-batch', `usage_hold=${JSON.stringify(rec)}`);
   } else if (was) q('set-batch', 'usage_hold=null');
 }

@@ -656,6 +656,17 @@ echo P-3 > "$T/bad-preflight"; q add P-3; q set P-3 state=triaged lane=A branch=
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 AC4 a preflight that fails for any other reason is marked failed as before" '[ "$(field P-3 state)" = "\"failed\"" ] && [ "$(field P-3 spawn_failed)" = true ] && echo "$out" | grep -q "P-3: preflight failed, not spawned" && [ "$(bfield usage_hold)" = null ]'
 q set P-3 state=done; : > "$T/bad-preflight"
+# AC4b: F-1's preflight is refused at the 5-hour limit. Its reset then passes while the probe is
+# still refused: the first pass after it spawns F-1 with no requeue and no park.
+probe_says limited $(( $(date +%s) + 3600 )) five_hour
+echo F-1 > "$T/limit-preflight"; q add F-1; q set F-1 state=triaged lane=A branch=fix/F-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-344 AC4b a preflight refused at the 5-hour limit holds the batch, not failed" '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(bfield usage_hold.type)" = "\"five_hour\"" ] && [ "$(bfield usage_hold.preflight)" = "\"F-1\"" ]'
+: > "$T/limit-preflight"
+q set-batch "usage_hold={\"since\":\"2026-10-29T00:00:00Z\",\"type\":\"five_hour\",\"resets_at\":$(( $(date +%s) - 60 )),\"preflight\":\"F-1\",\"paused\":[]}"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-344 AC4b once its reset passes, with the probe still refused, it spawns with no requeue or park" '[ "$(field F-1 state)" = "\"running\"" ] && [ "$(field F-1 park)" = null ] && [ "$(bfield usage_hold)" = null ] && echo "$out" | grep -q "the 5-hour usage limit lifted (its reset at .* UTC passed)"'
+q set F-1 state=done
 
 # ---- DS-185 AC6: a pass records its next planned pass in its heartbeat, and queue.mjs next-pass sets it later
 # The heartbeat's next pass, in whole seconds after its last pass, or "none".
