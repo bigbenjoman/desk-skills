@@ -114,11 +114,14 @@ cat > "$T/fixture.json" <<'EOF'
 EOF
 sed 's/"page_size": 3/"page_size": 3, "link_readback": "drop", "edit_drop": ["parent"]/' "$T/fixture.json" > "$T/fixture-drop.json"
 
+# shellcheck source=stub_jira.sh
+. "$S/stub_jira.sh"
 PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
-python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!
-DPORT=$((PORT + 1)); python3 "$S/stub_jira.py" "$DPORT" "$T/drop.log" "" "$T/fixture-drop.json" & DROP=$!
+trap 'rm -rf "$T"' EXIT
+stub_jira "$PORT" "$LOG" "" "$T/fixture.json"; STUB=$STUB_PID; PORT=$STUB_PORT
+trap 'kill $STUB 2>/dev/null; rm -rf "$T"' EXIT
+stub_jira $((PORT + 1)) "$T/drop.log" "" "$T/fixture-drop.json"; DROP=$STUB_PID; DPORT=$STUB_PORT
 trap 'kill $STUB $DROP 2>/dev/null; rm -rf "$T"' EXIT
-sleep 0.6
 
 # A repo whose desk config points at the stub.
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
@@ -208,7 +211,8 @@ for n in range(501, 621):
 f["children"]["KAN-500"] = kids
 json.dump(f, open(p, "w"))
 PY
-kill $STUB 2>/dev/null; sleep 0.2; python3 "$S/stub_jira.py" "$PORT" "$LOG" "" "$T/fixture.json" & STUB=$!; sleep 0.5
+kill $STUB 2>/dev/null; wait $STUB 2>/dev/null
+stub_jira "$PORT" "$LOG" "" "$T/fixture.json"; STUB=$STUB_PID; PORT=$STUB_PORT; mkcfg "http://127.0.0.1:$PORT" yes
 J children KAN-500 --json
 check "children survives pages bigger than an argv string (120 x 12 KB, over 1 MB)" '[ $rc -eq 0 ] && [ "$(printf "%s" "$out" | jq length)" = 120 ]'
 

@@ -3,7 +3,7 @@
 // per DS-238 criterion (per ticket) and per DS-239 criterion (per epic), plus the close rule a
 // verifier's results go through. Nothing reads the real Jira, GitHub or this checkout's history.
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -166,16 +166,20 @@ const fixture = { issues,
     'KAN-120': ['KAN-121', 'KAN-122'], 'KAN-170': ['KAN-171', 'KAN-172'] },
   search: Object.keys(issues).filter((k) => issues[k].status?.statusCategory?.key !== 'done') }
 writeFileSync(join(T, 'fixture.json'), JSON.stringify(fixture))
-const PORT = 20000 + Math.floor(Math.random() * 20000)
-stub = spawn('python3', [join(SRC, 'tests', 'stub_jira.py'), String(PORT), join(T, 'requests.log'), '', join(T, 'fixture.json')], { stdio: 'ignore' })
+// The stub writes the port it listens on (a free one if this one is taken) to the ready file.
+const ASKED = 20000 + Math.floor(Math.random() * 20000), READY = join(T, 'stub.port')
+stub = spawn('python3', [join(SRC, 'tests', 'stub_jira.py'), String(ASKED), join(T, 'requests.log'), '', join(T, 'fixture.json')],
+  { stdio: 'ignore', env: { ...process.env, STUB_READY: READY } })
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+for (let i = 0; i < 300 && !existsSync(READY); i++) sleep(100)
+const PORT = existsSync(READY) ? Number(readFileSync(READY, 'utf8')) : 0
+if (!PORT) { console.log(`FAIL the Jira stub (tests/stub_jira.py) did not listen on port ${ASKED} within 30 s`); process.exit(1) }
 
 const slug = /^SLUG='(.*)'$/m.exec(sh(R, 'node', env.DESK_ENV_MJS, 'where'))?.[1]
 t('the fixture repo has a slug', !!slug, true)
 const cfg = join(env.DESK_CONFIG_ROOT, 'repos', slug); mkdirSync(cfg, { recursive: true })
 writeFileSync(join(cfg, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Jira site | \`http://127.0.0.1:${PORT}\` |\n| Jira project | \`KAN\` "x" |\n`)
 writeFileSync(join(cfg, 'jira-email'), 'me@example.com'); writeFileSync(join(cfg, 'atlassian-token'), 'good-token', { mode: 0o600 })
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-for (let i = 0; i < 50 && spawnSync('desk-jira', ['whoami'], { cwd: R, env }).status !== 0; i++) sleep(100)
 
 const run = (...a) => spawnSync('node', [SCAN, ...a], { cwd: R, env, encoding: 'utf8' })
 const r = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--json')

@@ -1,4 +1,4 @@
-import base64, json, re, sys, time
+import base64, errno, json, os, re, sys, time
 from urllib.parse import urlparse, parse_qs
 DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # Optional fixture file (argv[4]): {"issues": {KEY: {...fields...}}, "children": {KEY: [KEY, ...]},
@@ -151,4 +151,16 @@ class H(BaseHTTPRequestHandler):
             return self._send(201, {"id": "10"})
         self._send(404, {"errorMessages": ["nope"]})
     do_GET = do_POST = do_PUT = do_DELETE = handle_any
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+# A taken port falls back to a free one. With STUB_READY set, the port it listens on is written
+# there once it accepts connections, so a suite waits for the file rather than sleeping.
+try:
+    server = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+except OSError as e:
+    if e.errno != errno.EADDRINUSE:
+        raise
+    server = HTTPServer(("127.0.0.1", 0), H)
+if os.environ.get("STUB_READY"):
+    with open(os.environ["STUB_READY"] + ".tmp", "w") as f:
+        f.write(str(server.server_address[1]))
+    os.replace(os.environ["STUB_READY"] + ".tmp", os.environ["STUB_READY"])
+server.serve_forever()
