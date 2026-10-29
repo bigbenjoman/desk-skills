@@ -23,6 +23,11 @@ git update-index --chmod=+x .githooks/pre-push      # git skips a hook that is n
 git commit -m "<§5 PR title format>: add the desk pre-push hook"
 ```
 
+An autopilot worker cannot read the checkout, and its settings refuse `cp` and `git update-index`.
+It reads both templates from `~/.claude/desk/templates/` instead (`install.sh` installs every
+template there, and worker settings grant it) with the Read tool, writes each to the same path in
+its worktree with the Write tool, and stages the hook with `git add --chmod=+x .githooks/pre-push`.
+
 Push it and open the PR through `desk-pr`, under §3 `git-push` and `pr-open`. Say that both paths
 fall under the merge holds proposed above, so a person merges it.
 

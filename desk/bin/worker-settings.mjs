@@ -561,6 +561,9 @@ if (mode === 'triage') {
   // The user's subagent definitions, which workers list and read when a skill names an agent.
   const agents = join(E.HOME, '.claude', 'agents');
   if (existsSync(agents)) dirs.add(agents);
+  // The installed desk templates (install.sh copies them beside bin), which a ticket may tell a worker to commit.
+  const templates = join(E.deskHome(), 'templates');
+  if (existsSync(templates)) dirs.add(templates);
 
   const mem = E.memoryDir();
   if (existsSync(mem)) dirs.add(mem);
