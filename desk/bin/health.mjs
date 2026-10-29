@@ -18,7 +18,7 @@
 //
 // A pass holds every new spawn while a required check fails. A remote check is told to the person
 // (a stall line and a push) only once it has failed on two runs in a row, as a blip clears by
-// itself; the local ones (browser, disk) on the first. Every remote check failing together is the
+// itself; the local ones (browser, disk) on the first. Every remote check unreachable together is the
 // network, one item (`health:<slug>:network`) with no sign-in fix; a network failure of one check
 // names its connection, not its sign-in. Otherwise one entry per failing check
 // (`health:<slug>:<id>`); whoever sends the pass's pushes sends a key once, so a check that stays
@@ -52,8 +52,9 @@ const byId = Object.fromEntries(CHECKS.map((c) => [c.id, c]));
 const isRemote = (id) => Boolean(byId[id]?.cmd);
 
 // What a failed command's output says when the host could not be reached, as against a refused sign-in.
-const NETWORK = /timed? ?out|timeout|could not resolve|couldn't resolve|no such host|name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|network is unreachable|connection (refused|reset)|error connecting|failed to connect|unable to connect|could not connect|internet connection|dial tcp|offline/i;
-export const failureKind = (why) => (NETWORK.test(why ?? '') ? 'network' : 'auth');
+// It is read over the whole output: a CLI often prints the connection error above a closing hint.
+const NETWORK = /timed? ?out|timeout|could not resolve|couldn't resolve|no such host|name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|network is unreachable|connection (refused|reset)|error connecting|failed to connect|unable to connect|could not connect|could not reach|internet connection|dial tcp|offline/i;
+const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
 
 export const healthFile = (state) => join(state, 'health.json');
 
@@ -91,15 +92,15 @@ function runCommand([cmd, ...args], timeoutMs) {
     const timer = setTimeout(() => {
       try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
       child.stdout.destroy(); child.stderr.destroy(); child.unref();
-      finish({ ok: false, why: 'timed out' });
+      finish({ ok: false, why: 'timed out', kind: 'network' });
     }, timeoutMs);
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { out += d; });
-    child.on('error', (e) => finish({ ok: false, why: e.code === 'ENOENT' ? `${cmd} not found` : e.message }));
+    child.on('error', (e) => finish({ ok: false, why: e.code === 'ENOENT' ? `${cmd} not found` : e.message, kind: e.code === 'ENOENT' ? 'auth' : failureKind(e.message) }));
     child.on('close', (code, signal) => {
       if (code === 0) finish({ ok: true });
       const last = out.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1);
-      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}` });
+      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out) });
     });
   });
 }
@@ -134,10 +135,9 @@ async function runCheck(id, env, timeoutMs, retryMs) {
   if (id === 'browser') return browserCheck();
   if (id === 'disk') return diskCheck(env);
   const r = await runCommand(byId[id].cmd, timeoutMs);
-  if (r.ok || failureKind(r.why) !== 'network') return r.ok ? r : { ...r, kind: 'auth' };
+  if (r.ok || r.kind !== 'network') return r;
   await new Promise((res) => setTimeout(res, retryMs));
-  const again = await runCommand(byId[id].cmd, timeoutMs);
-  return again.ok ? { ...again, retried: true } : { ...again, kind: failureKind(again.why), retried: true };
+  return { ...(await runCommand(byId[id].cmd, timeoutMs)), retried: true };
 }
 
 function readRecord(state) {
@@ -152,7 +152,7 @@ const fixOf = (id, r) => {
 const label = (id) => `${byId[id].name}${byId[id].cmd ? ` (${byId[id].cmd.join(' ')})` : ''}`;
 
 // How many runs in a row each failure has lasted, by check id (and `network` for every remote check
-// failing together). A failure of another kind than last run's starts again at 1.
+// unreachable together). A failure of another kind than last run's starts again at 1.
 function nextStreak(prev, units) {
   const was = prev?.streak ?? Object.fromEntries((prev?.failing ?? []).map((id) => [id, { kind: prev.results?.[id]?.kind ?? 'auth', n: 1 }]));
   return Object.fromEntries(units.map(({ key, kind }) => [key, { kind, n: was[key]?.kind === kind ? was[key].n + 1 : 1 }]));
@@ -183,7 +183,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   }
   const failing = wanted.filter((id) => !results[id].ok);
   const remote = wanted.filter(isRemote);
-  const network = remote.length > 1 && remote.every((id) => failing.includes(id));
+  const network = remote.length > 1 && remote.every((id) => !results[id].ok && results[id].kind === 'network');
   const units = [
     ...(network ? [{ key: 'network', kind: 'network', ids: remote }] : []),
     ...failing.filter((id) => !(network && isRemote(id))).map((id) => ({ key: id, kind: results[id].kind ?? 'auth', ids: [id] })),

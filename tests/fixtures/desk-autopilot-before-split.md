@@ -1123,7 +1123,7 @@ minutes while every check passes, and a failing run is checked again on the next
 always carries one `health:` line. A failing required check holds every new spawn (running workers
 carry on). A remote check is named under `STALLED` with the command that fixes it, and goes into
 `push` as `health:<slug>:<check>`, only once it has failed two runs in a row (the browser profile
-and the disk on the first); it is pushed once while it stays failing. Every remote check failing
+and the disk on the first); it is pushed once while it stays failing. Every remote check unreachable
 together is the network, one `health:<slug>:network` with no sign-in fix, and a single check that
 cannot reach its host names the connection, not the sign-in. Signing back in is always the
 person's; the line says `recovered` on the first pass that sees it pass.

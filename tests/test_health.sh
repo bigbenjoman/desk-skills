@@ -65,7 +65,8 @@ EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
 if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket=$1"; fi
 EOF
-# Each sign-in command answers per its mode file ($T/mode.<name>: ok, out or hang) and logs each check.
+# Each sign-in command answers per its mode file ($T/mode.<name>: ok, out, net, unreach, hang or once)
+# and logs each check.
 for c in gh claude codex desk-jira; do
   cat > "$T/stub/$c" <<EOF
 #!/bin/sh
@@ -76,7 +77,8 @@ case "\$1" in
 esac
 case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   out) echo "You are not logged in to $c" >&2; exit 1 ;;
-  net) echo "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" >&2; exit 1 ;;
+  net) printf '%s\n' "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" "- Active account: true" >&2; exit 1 ;;
+  unreach) echo "desk-jira: could not reach https://acme.atlassian.net (see the curl error above)" >&2; exit 1 ;;
   hang) sleep 5 ;;
   once) [ -f "$T/hung.$c" ] || { : > "$T/hung.$c"; sleep 5; } ;;
 esac
@@ -193,16 +195,39 @@ DESK_HEALTH_TIMEOUT_MS=500 pj
 check "DS-333 AC1 a timeout that passes on its retry passes" '[ "$(calls gh)" = 2 ] && grep -q "health: all checks pass (checked now)" <<< "$out"'
 mode gh ok
 
-# ---- DS-333 AC2: every remote check failing together is the network ---------------------------
-for c in gh claude codex desk-jira; do mode "$c" net; done
+
+# ---- one check that cannot reach its host -------------------------------------------------------
+# The connection error is above a closing hint, as gh prints it, so it is read from the whole output.
+mode gh net; : > "$T/calls.gh"
+pj
+check "DS-333 AC1 an unreachable host is retried"           '[ "$(calls gh)" = 2 ] && grep -q "rechecking before telling you: gh" <<< "$out"'
+pj
+check "DS-333 one unreachable check names the connection"   'grep -q "fix: check this machine.s connection to GitHub CLI" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out"'
+mode gh ok
+mode desk-jira unreach; : > "$T/calls.desk-jira"
+pj
+check "DS-333 AC1 desk-jira not reaching Jira is retried"   '[ "$(calls desk-jira)" = 2 ]'
+mode desk-jira ok
+pj
+
+# ---- every remote check unreachable together is the network ------------------------------------
+for c in gh claude codex desk-jira; do mode "$c" net; : > "$T/calls.$c"; done
 pj
 check "DS-333 AC2 all remote failing: named the network"    'grep -q "health: 4 check(s) failing — gh, jira, claude, codex, every remote check: the network — holding new spawns" <<< "$out"'
-check "DS-333 AC2 a network failure is retried"             '[ "$(calls gh)" -ge 2 ]'
+check "DS-333 AC2 a network failure is retried"             '[ "$(calls gh)" = 2 ] && [ "$(calls desk-jira)" = 2 ]'
 check "DS-333 AC2 not told on its first run"                '[ -z "$(pushes)" ]'
 pj
 check "DS-333 AC2 then one network push"                    '[[ "$(pushes)" =~ ^health:.+:network$ ]]'
 check "DS-333 AC2 it says the network"                      'grep -q "this machine looks offline, not signed out: check its network connection" <<< "$out"'
 check "DS-333 AC2 no credential remedy"                     '! grep -qE "gh auth login|renew the Jira|claude auth login|codex login" <<< "$out"'
+for c in gh claude codex desk-jira; do mode "$c" ok; done
+pj
+
+# ---- every remote check signed out together is still the sign-ins ------------------------------
+for c in gh claude codex desk-jira; do mode "$c" out; done
+pj; pj
+check "DS-333 AC3 all signed out: not called the network"   '! grep -q "the network" <<< "$out" && ! [[ "$(pushes)" =~ :network ]]'
+check "DS-333 AC3 all signed out: each sign-in fix pushed"  '[ "$(pushes | wc -w | tr -d " ")" = 4 ] && grep -q "fix: gh auth login" <<< "$out" && grep -q "fix: renew the Jira API token" <<< "$out"'
 for c in gh claude codex desk-jira; do mode "$c" ok; done
 pj
 
