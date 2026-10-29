@@ -5,7 +5,9 @@
 # usual; a failing required check holds new spawns, leaves running workers alone, names the check and
 # its fix, and pushes it; the real supervisor notifies once per newly failing check; a recovery says
 # so; codex and the browser profile are not required where §3 says no; results are reused for 15
-# minutes; a check that does not answer in time fails "timed out". Scratch HOME only.
+# minutes; a check that does not answer in time fails "timed out" and is retried; a remote check is
+# told only once it fails two runs in a row; every remote check unreachable together is the network,
+# with no sign-in fix. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -74,7 +76,9 @@ case "\$1" in
 esac
 case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   out) echo "You are not logged in to $c" >&2; exit 1 ;;
+  net) echo "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" >&2; exit 1 ;;
   hang) sleep 5 ;;
+  once) [ -f "$T/hung.$c" ] || { : > "$T/hung.$c"; sleep 5; } ;;
 esac
 exit 0
 EOF
@@ -89,7 +93,7 @@ signin "$(( $(date +%s) + 31536000 ))"
 
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test \
-  DESK_BROWSER_PROFILE="$T/profile" DESK_FREE_DISK_GB=100
+  DESK_BROWSER_PROFILE="$T/profile" DESK_FREE_DISK_GB=100 DESK_HEALTH_RETRY_MS=0
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(t?.[process.argv[3]] ?? null)' "$DESK_QUEUE" "$1" "$2"; }
@@ -117,6 +121,10 @@ mode gh out
 pj
 check "AC2 no new worker starts"                            '[ "$(field H-2 state)" = triaged ]'
 check "AC2 the running worker is left alone"                '[ "$(field H-1 state)" = running ]'
+check "AC2 a first failing run is rechecked, not told"      'grep -q "health: 1 check(s) failing — gh — holding new spawns (checked now; rechecking before telling you: gh)" <<< "$out" && [ -z "$(pushes)" ]'
+check "AC2 an auth failure is not retried"                  '[ "$(calls gh)" = 2 ]'
+pj
+check "DS-333 AC3 failing two runs in a row is told"        '[ "$(field H-2 state)" = triaged ] && ! grep -q "rechecking" <<< "$out"'
 check "AC2 the report names the failed check"               'grep -q "health: GitHub CLI (gh auth status) failed: You are not logged in to gh" <<< "$out"'
 check "AC2 the report names the fix"                        'grep -q "fix: gh auth login" <<< "$out"'
 check "AC2 the health line says spawns are held"            'grep -q "health: 1 check(s) failing — gh — holding new spawns" <<< "$out"'
@@ -152,6 +160,8 @@ q set H-3 state=done
 q add H-4; q set H-4 state=triaged branch=fix/H-4
 pj
 check "AC8 where §3 pr-images is yes, a stale login holds"  '[ "$(field H-4 state)" = triaged ] && grep -q "the GitHub login in $T/profile.github-session.json expired" <<< "$out"'
+check "a local check is told on its first failing run"     '[[ "$(pushes)" =~ :browser$ ]] && grep -q "rechecking before telling you: codex)" <<< "$out"'
+pj
 check "AC7 where §3 codex-review is yes, codex signed out holds" 'grep -q "health: Codex (codex login status) failed" <<< "$out"'
 mode codex ok
 signin "$(( $(date +%s) + 31536000 ))"
@@ -169,9 +179,32 @@ mode gh ok
 
 # ---- AC10: a check that does not answer in time ------------------------------------------------
 mode claude hang
+: > "$T/calls.claude"
+DESK_HEALTH_TIMEOUT_MS=500 pj
+check "DS-333 AC1 a timed-out check is retried"             '[ "$(calls claude)" = 2 ] && grep -q "rechecking before telling you: claude" <<< "$out" && [ -z "$(pushes)" ]'
 DESK_HEALTH_TIMEOUT_MS=500 pj
 check "AC10 the check fails as timed out"                   'grep -q "health: Claude (claude auth status) failed: timed out" <<< "$out"'
+check "DS-333 a timeout names the connection, not a sign-in" 'grep -q "fix: check this machine.s connection to Claude" <<< "$out" && ! grep -q "claude auth login" <<< "$out"'
 mode claude ok
+pj
+check "a timeout that clears: recovered, nothing pushed"   'grep -q "health: all checks pass (checked now; recovered: claude)" <<< "$out" && [ -z "$(pushes)" ]'
+mode gh once; : > "$T/calls.gh"
+DESK_HEALTH_TIMEOUT_MS=500 pj
+check "DS-333 AC1 a timeout that passes on its retry passes" '[ "$(calls gh)" = 2 ] && grep -q "health: all checks pass (checked now)" <<< "$out"'
+mode gh ok
+
+# ---- DS-333 AC2: every remote check failing together is the network ---------------------------
+for c in gh claude codex desk-jira; do mode "$c" net; done
+pj
+check "DS-333 AC2 all remote failing: named the network"    'grep -q "health: 4 check(s) failing — gh, jira, claude, codex, every remote check: the network — holding new spawns" <<< "$out"'
+check "DS-333 AC2 a network failure is retried"             '[ "$(calls gh)" -ge 2 ]'
+check "DS-333 AC2 not told on its first run"                '[ -z "$(pushes)" ]'
+pj
+check "DS-333 AC2 then one network push"                    '[[ "$(pushes)" =~ ^health:.+:network$ ]]'
+check "DS-333 AC2 it says the network"                      'grep -q "this machine looks offline, not signed out: check its network connection" <<< "$out"'
+check "DS-333 AC2 no credential remedy"                     '! grep -qE "gh auth login|renew the Jira|claude auth login|codex login" <<< "$out"'
+for c in gh claude codex desk-jira; do mode "$c" ok; done
+pj
 
 check "a test pass can turn the checks off"                 'out=$(AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" 2>&1); grep -q "health: checks off" <<< "$out"'
 
@@ -182,15 +215,17 @@ q add H-5; q set H-5 state=triaged branch=fix/H-5
 rm -f "$T/state/health.json" "$T/notify.calls"
 mode gh out
 sup(){ node "$B/supervisor.mjs" tick --foreground >/dev/null 2>&1; }
+notes(){ if [ -f "$T/notify.calls" ]; then wc -l < "$T/notify.calls" | tr -d ' '; else echo 0; fi; }
 sup
-check "AC3 gh newly failing: one notification"             '[ "$(wc -l < "$T/notify.calls" | tr -d " ")" = 1 ]'
-check "AC3 the notification names the check"                'grep -q "GitHub CLI check is failing" "$T/notify.calls"'
-rm -f "$T/state/health.json"
+check "DS-333 gh failing once: no notification yet"        '[ "$(notes)" = 0 ]'
 sup
-check "AC4 still failing on the next pass: no second one"   '[ "$(wc -l < "$T/notify.calls" | tr -d " ")" = 1 ]'
-mode gh ok; rm -f "$T/state/health.json"; sup
-mode gh out; rm -f "$T/state/health.json"; sup
-check "failing again after a recovery notifies again"       '[ "$(wc -l < "$T/notify.calls" | tr -d " ")" = 2 ]'
+check "AC3 gh failing two runs in a row: one notification" '[ "$(notes)" = 1 ]'
+check "AC3 the notification names the check and its fix"    'grep -q "GitHub CLI check is failing.*Fix: gh auth login" "$T/notify.calls"'
+sup
+check "AC4 still failing on the next pass: no second one"   '[ "$(notes)" = 1 ]'
+mode gh ok; sup
+mode gh out; rm -f "$T/state/health.json"; sup; sup
+check "failing again after a recovery notifies again"       '[ "$(notes)" = 2 ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

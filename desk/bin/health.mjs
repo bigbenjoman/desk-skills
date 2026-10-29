@@ -11,14 +11,22 @@
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no
 //   disk     free space on the worktrees disk, against config §3b "Free disk floor (GB)" (default 20)
 //
-// A check that does not answer within 20 seconds has failed, "timed out". The results are kept in
-// <state>/health.json and reused for 15 minutes, so a pass every few minutes does not run them each
-// time. A pass holds every new spawn while a required check fails, and pushes one entry per failing
-// check (`health:<slug>:<id>`); whoever sends the pass's pushes sends a key once, so a check that
-// stays failing is not pushed again, and one that recovers and fails again is.
+// A check that does not answer within 20 seconds has failed, "timed out". A remote check that times
+// out or cannot reach its host is a network failure: it is run once more, 5 seconds later, before it
+// counts. The results are kept in <state>/health.json and, while every check passes, reused for 15
+// minutes, so a pass every few minutes does not run them each time; a failing run is not reused.
+//
+// A pass holds every new spawn while a required check fails. A remote check is told to the person
+// (a stall line and a push) only once it has failed on two runs in a row, as a blip clears by
+// itself; the local ones (browser, disk) on the first. Every remote check failing together is the
+// network, one item (`health:<slug>:network`) with no sign-in fix; a network failure of one check
+// names its connection, not its sign-in. Otherwise one entry per failing check
+// (`health:<slug>:<id>`); whoever sends the pass's pushes sends a key once, so a check that stays
+// failing is not pushed again, and one that recovers and fails again is.
 //
 // AUTOPILOT_HEALTH_CHECKS=off skips them (the report says so); DESK_FREE_DISK_GB stands in for the
-// free-disk figure and DESK_HEALTH_TIMEOUT_MS for the 20 seconds, in tests.
+// free-disk figure, DESK_HEALTH_TIMEOUT_MS for the 20 seconds and DESK_HEALTH_RETRY_MS for the 5,
+// in tests.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,6 +36,7 @@ import { parseDfAvailableGB } from './machine.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
+export const RETRY_DELAY_MS = 5 * 1000;
 export const DEFAULT_DISK_FLOOR_GB = 20;
 const FLOOR_ROW = E.CONFIG_ROWS['disk-floor'].row;
 
@@ -40,6 +49,11 @@ export const CHECKS = Object.freeze([
   { id: 'disk', name: 'free disk' },
 ]);
 const byId = Object.fromEntries(CHECKS.map((c) => [c.id, c]));
+const isRemote = (id) => Boolean(byId[id]?.cmd);
+
+// What a failed command's output says when the host could not be reached, as against a refused sign-in.
+const NETWORK = /timed? ?out|timeout|could not resolve|couldn't resolve|no such host|name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|network is unreachable|connection (refused|reset)|error connecting|failed to connect|unable to connect|could not connect|internet connection|dial tcp|offline/i;
+export const failureKind = (why) => (NETWORK.test(why ?? '') ? 'network' : 'auth');
 
 export const healthFile = (state) => join(state, 'health.json');
 
@@ -116,60 +130,89 @@ function diskCheck(env) {
   return { ok: true, gb, floor: floor.gb, path };
 }
 
-async function runCheck(id, env, timeoutMs) {
+async function runCheck(id, env, timeoutMs, retryMs) {
   if (id === 'browser') return browserCheck();
   if (id === 'disk') return diskCheck(env);
-  return runCommand(byId[id].cmd, timeoutMs);
+  const r = await runCommand(byId[id].cmd, timeoutMs);
+  if (r.ok || failureKind(r.why) !== 'network') return r.ok ? r : { ...r, kind: 'auth' };
+  await new Promise((res) => setTimeout(res, retryMs));
+  const again = await runCommand(byId[id].cmd, timeoutMs);
+  return again.ok ? { ...again, retried: true } : { ...again, kind: failureKind(again.why), retried: true };
 }
 
 function readRecord(state) {
   try { return JSON.parse(readFileSync(healthFile(state), 'utf8')); } catch { return null; }
 }
 
-const fixOf = (id, r) => (id === 'disk' ? `free space on ${r.path ?? 'the worktrees disk'}` : byId[id].fix);
+const fixOf = (id, r) => {
+  if (id === 'disk') return `free space on ${r.path ?? 'the worktrees disk'}`;
+  if (r.kind === 'network') return `check this machine's connection to ${byId[id].name}; it is not reaching it, which is not a sign-in`;
+  return byId[id].fix;
+};
 const label = (id) => `${byId[id].name}${byId[id].cmd ? ` (${byId[id].cmd.join(' ')})` : ''}`;
 
-// Run the checks, or reuse the last run's results while they are under 15 minutes old, and say what
-// a pass does with them: `failing` holds spawns, `line` is the report's one health line, `stalls` the
-// lines naming each failure and its fix, and `push` one entry per failing check.
+// How many runs in a row each failure has lasted, by check id (and `network` for every remote check
+// failing together). A failure of another kind than last run's starts again at 1.
+function nextStreak(prev, units) {
+  const was = prev?.streak ?? Object.fromEntries((prev?.failing ?? []).map((id) => [id, { kind: prev.results?.[id]?.kind ?? 'auth', n: 1 }]));
+  return Object.fromEntries(units.map(({ key, kind }) => [key, { kind, n: was[key]?.kind === kind ? was[key].n + 1 : 1 }]));
+}
+
+// Run the checks, or reuse the last run's results while they all passed under 15 minutes ago, and
+// say what a pass does with them: `failing` holds spawns, `line` is the report's one health line,
+// `stalls` the lines naming each failure told to the person and its fix, `push` one entry for each,
+// and `unconfirmed` the remote failures rechecked before they are told.
 export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = Date.now(), env = process.env } = {}) {
   if (/^off$/i.test(env.AUTOPILOT_HEALTH_CHECKS ?? '')) {
-    return { off: true, failing: [], recovered: [], stalls: [], push: [], line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
+    return { off: true, failing: [], recovered: [], unconfirmed: [], stalls: [], push: [], line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
   }
   const skip = Object.fromEntries(CHECKS.map((c) => [c.id, notRequired(c.id)]).filter(([, why]) => why));
   const wanted = CHECKS.map((c) => c.id).filter((id) => !skip[id]);
   const prev = readRecord(state);
   const age = prev ? now - Date.parse(prev.at) : Infinity;
-  const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]);
+  const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok);
   let results;
   let at;
   if (reused) ({ results, at } = prev);
   else {
     const timeoutMs = Number(env.DESK_HEALTH_TIMEOUT_MS) > 0 ? Number(env.DESK_HEALTH_TIMEOUT_MS) : CHECK_TIMEOUT_MS;
-    const ran = await Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs)));
+    const retryMs = env.DESK_HEALTH_RETRY_MS != null && Number(env.DESK_HEALTH_RETRY_MS) >= 0 ? Number(env.DESK_HEALTH_RETRY_MS) : RETRY_DELAY_MS;
+    const ran = await Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs, retryMs)));
     results = Object.fromEntries(wanted.map((id, i) => [id, ran[i]]));
     at = new Date(now).toISOString();
   }
   const failing = wanted.filter((id) => !results[id].ok);
+  const remote = wanted.filter(isRemote);
+  const network = remote.length > 1 && remote.every((id) => failing.includes(id));
+  const units = [
+    ...(network ? [{ key: 'network', kind: 'network', ids: remote }] : []),
+    ...failing.filter((id) => !(network && isRemote(id))).map((id) => ({ key: id, kind: results[id].kind ?? 'auth', ids: [id] })),
+  ];
+  const streak = reused ? prev.streak ?? {} : nextStreak(prev, units);
+  const told = (u) => !isRemote(u.ids[0]) || (streak[u.key]?.n ?? 1) >= 2;
+  const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
   // Recovery is news only from a fresh run: a reused one is the run that reported the failure.
   const recovered = reused ? [] : (prev?.failing ?? []).filter((id) => byId[id] && !failing.includes(id));
   if (!reused) {
     mkdirSync(state, { recursive: true });
-    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing }, null, 2)}\n`);
+    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak }, null, 2)}\n`);
   }
 
   const when = reused ? `checked ${Math.round(age / 60000)} min ago, reused` : 'checked now';
   const notes = [when];
   if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
+  if (unconfirmed.length) notes.push(`rechecking before telling you: ${unconfirmed.join(', ')}`);
   const skipped = Object.entries(skip).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
   const line = failing.length
-    ? `health: ${failing.length} check(s) failing — ${failing.join(', ')} — holding new spawns (${notes.join('; ')})`
+    ? `health: ${failing.length} check(s) failing — ${failing.join(', ')}${network ? ', every remote check: the network' : ''} — holding new spawns (${notes.join('; ')})`
     : `health: all checks pass (${notes.join('; ')})`;
-  const stalls = failing.map((id) => `health: ${label(id)} failed: ${results[id].why} — fix: ${fixOf(id, results[id])}; no new worker starts until it passes`);
-  const push = failing.map((id) => ({
-    key: `health:${slug}:${id}`,
-    text: `desk ${slug}: the ${byId[id].name} check is failing (${results[id].why}), so no new worker starts. Fix: ${fixOf(id, results[id])}`,
-  }));
-  return { off: false, reused, at, results, failing, recovered, notRequired: skip, line, stalls, push };
+  const shown = units.filter(told);
+  const stalls = shown.map((u) => (u.key === 'network'
+    ? `health: every remote check failed (${u.ids.map((id) => `${id}: ${results[id].why}`).join('; ')}) — this machine looks offline, not signed out: check its network connection; no new worker starts until they pass`
+    : `health: ${label(u.key)} failed: ${results[u.key].why} — fix: ${fixOf(u.key, results[u.key])}; no new worker starts until it passes`));
+  const push = shown.map((u) => (u.key === 'network'
+    ? { key: `health:${slug}:network`, text: `desk ${slug}: every remote check is failing (${u.ids.join(', ')}), so this machine looks offline rather than signed out, and no new worker starts. Fix: check its network connection` }
+    : { key: `health:${slug}:${u.key}`, text: `desk ${slug}: the ${byId[u.key].name} check is failing (${results[u.key].why}), so no new worker starts. Fix: ${fixOf(u.key, results[u.key])}` }));
+  return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push };
 }
