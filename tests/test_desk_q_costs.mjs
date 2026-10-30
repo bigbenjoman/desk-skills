@@ -351,6 +351,54 @@ t('DS-293 AC8 with no reading for last month, the MONTH table has this month onl
 N8.ui.finish(0);
 process.env.DESK_COST_DIR = MAIN;
 
+// ---- DS-294: the Vercel screen: the plan and each extra seat, then one row per project, builds apart
+const vline = (label, builds, other, amount) => `  ${label.padEnd(16)}${builds.padStart(8)}${other.padStart(12)}${amount.padStart(12)}`;
+const LINE_HEAD = vline('LINE', 'BUILDS', 'OTHER USE', 'CHARGED');
+const BUILDS_NOTE = `note  ${'builds'.padEnd(15)}Vercel's build CPU minutes. Other use is everything else a project ran.`;
+const VERCEL = ['charged $59.78 by Vercel to voicepa in October, 1–26 · team voice-pa', '', LINE_HEAD,
+  vline('Pro plan', '', '', '$17.33'), vline('Extra seat', '', '', '$17.33'), vline('portal', '$12.44', '$1.97', '$14.41'),
+  vline('staging', '$6.88', '$1.74', '$8.62'), vline('voicepa', '$1.12', '$0.97', '$2.09'), vline('total', '$20.44', '$4.68', '$59.78'), '', BUILDS_NOTE];
+const VV = screen({ kind: 'repo', slug: 'bigbenjoman__voicepa' });
+await sleep(20);
+await VV.press('5');
+await VV.press('\x1b[B');
+const vercelRow = cents(selected(VV).slice(36, 47).trim());
+await VV.press('\r');
+const fvv = VV.frame();
+t('DS-294 AC1 enter on Vercel: desk-q › costs › voicepa › Vercel, the Costs tab highlighted', `${VV.crumbs()} | ${VV.tabOn()}`, 'desk-q › costs › voicepa › Vercel | 5 Costs');
+t('DS-294 AC1 AC4 the charged line, a LINE / BUILDS / OTHER USE / CHARGED table: the plan, the seat, each project, the total; then the builds note',
+  block(VV, VERCEL[0], VERCEL.length), VERCEL.join('\n'));
+// Each column read from what is drawn: LINE to 18, BUILDS to 26, OTHER USE to 38, then CHARGED.
+const vAt = fvv.indexOf(LINE_HEAD);
+const vRows = fvv.slice(vAt + 1, fvv.findIndex((l, i) => i > vAt && l.startsWith('  total ')) + 1).map((l) => [l.slice(18, 26), l.slice(26, 38), l.slice(38)].map((s) => s.trim()));
+const vTotal = vRows.pop();
+const colSum = (k) => vRows.reduce((a, r) => a + (r[k] ? cents(r[k]) : 0), 0);
+t('DS-294 AC2 BUILDS, OTHER USE and CHARGED each sum to the total row, and CHARGED to the Vercel row on voicepa\'s screen, in cents',
+  `${vRows.length} ${[0, 1, 2].map((k) => colSum(k) === cents(vTotal[k])).join(' ')} ${cents(vTotal[2]) === vercelRow && vercelRow === cents('$59.78')}`, '5 true true true true');
+const fixedLines = fvv.filter((l) => /^ {2}(Pro plan|Extra seat) /.test(l));
+t('DS-294 AC3 the plan and seat lines have blank BUILDS and OTHER USE cells', `${fixedLines.length} ${fixedLines.every((l) => !l.slice(18, 38).trim())}`, '2 true');
+t('DS-294 AC4 the builds note\'s tag is grey', VV.raw().some((l) => l.includes(`${GREY}builds `)), true);
+t('DS-294 AC7 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
+  `${fvv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fvv[keysAt(fvv) - 2]?.startsWith('Claude usage  ')} ${fvv[keysAt(fvv) - 1]}`, '0 true ');
+t('DS-294 the keys say o opens Vercel usage, and esc goes back', ['o open Vercel usage', 'esc back'].every((k) => fvv.slice(keysAt(fvv)).join(' ').includes(k)), true);
+await VV.press('o');
+t('DS-294 AC6 o opens the voice-pa team\'s Vercel usage page', VV.opened.join(' '), 'https://vercel.com/voice-pa/~/usage');
+VV.ui.finish(0);
+// forewatt is on ben-lavenders-projects, whose plan is shared: its own project only, no plan line.
+const FW = await costsAt(null);
+await FW.press('\x1b[B');
+await FW.press('\x1b[B');
+await FW.press('\r');
+await FW.press('\x1b[B');
+await FW.press('\x1b[B');
+await FW.press('\r');
+const FOREWATT = ['charged $0.11 by Vercel to forewatt in October, 1–26 · team ben-lavenders-projects', '', LINE_HEAD,
+  vline('forewatt', '$0.08', '$0.03', '$0.11'), vline('total', '$0.08', '$0.03', '$0.11'), '', BUILDS_NOTE];
+t('DS-294 AC5 forewatt on a shared team: its own project and no plan line, the header naming the team',
+  `${FW.crumbs()} | ${block(FW, FOREWATT[0], FOREWATT.length)} | ${FW.frame().some((l) => /plan|yield-index/.test(l))}`,
+  `desk-q › costs › forewatt › Vercel | ${FOREWATT.join('\n')} | false`);
+FW.ui.finish(0);
+
 // AC9: a repo with no cost sources.
 const SO = screen({ kind: 'repo', slug: slug });
 await sleep(20);

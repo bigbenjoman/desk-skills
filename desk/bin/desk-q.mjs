@@ -1336,8 +1336,30 @@ function awsParts(lines, mine) {
   return { lines: out, notes };
 }
 
+// A Vercel line's name on its supplier screen.
+const vercelLine = (l) => (l.kind === 'plan' ? `${l.label} plan` : l.kind === 'project' ? l.project
+  : l.kind === 'seats' ? (Math.round(l.quantity ?? 0) > 1 ? `${Math.round(l.quantity)} extra seats` : 'Extra seat') : l.label);
+const VERCEL_BUILDS_NOTE = "Vercel's build CPU minutes. Other use is everything else a project ran.";
+
+// Vercel's part of a name's charge: the lines charged to it, in the order its teams were read (the
+// plan and seats of a team it alone uses, then each project), then the total. Only a project's line
+// splits into builds and other use. Every sum is taken in whole cents.
+function vercelParts(cache, name) {
+  const lines = Object.values(cache?.vercel?.teams ?? {}).flatMap((t) => t?.lines ?? []).filter((l) => l.name === name);
+  if (!lines.length) return [];
+  const c = (n) => Math.round((n ?? 0) * 100);
+  const rows = lines.map((l) => ({ label: vercelLine(l), build: l.kind === 'project' ? c(l.build) : null, other: l.kind === 'project' ? c(l.other) : null, charged: c(l.charged) }));
+  const [build, other, charged] = ['build', 'other', 'charged'].map((k) => rows.reduce((a, r) => a + (r[k] ?? 0), 0));
+  const lw = Math.max(16, ...rows.map((r) => r.label.length + 2));
+  const bw = Math.max(8, usd(build / 100).length + 2), ow = Math.max(12, usd(other / 100).length + 3), cw = Math.max(12, usd(charged / 100).length + 3);
+  const cell = (v, w) => rpad(v == null ? '' : usd(v / 100), w);
+  return ['', bold(`  ${pad('LINE', lw)}${rpad('BUILDS', bw)}${rpad('OTHER USE', ow)}${rpad('CHARGED', cw)}`),
+    ...rows.map((r) => `  ${pad(r.label, lw)}${cell(r.build, bw)}${cell(r.other, ow)}${cell(r.charged, cw)}`),
+    segLine([[`  ${pad('total', lw)}`, GREY], [cell(build, bw), BOLD], [cell(other, ow), BOLD], [cell(charged, cw), BOLD]])];
+}
+
 // One supplier's part of a name's charge this month: the line with what it charged, then for GitHub
-// what it was charged for, and for AWS each service. `bill` is the page `o` opens.
+// and Vercel what it was charged for, and for AWS each service. `bill` is the page `o` opens.
 export function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache: raw = readCache(), width = null } = {}) {
   const mine = costs.entries.filter((e) => e.name === name && e.supplier === supplier);
   const bill = billingUrl(supplier, { team: mine[0]?.team });
@@ -1354,8 +1376,9 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
     ...(where.length ? [[` · ${where.join(', ')}`, GREY]] : []), ...(tag ? [['  ', null], tag] : [])]);
   const awsLines = supplier === 'aws' && total != null ? awsLinesOf(cache, name, c.period) : [];
   const aws = awsLines.length ? awsParts(awsLines, mine) : null;
-  const body = supplier === 'github' && total != null ? githubParts(cache, name, c.period, total) : aws?.lines ?? [];
-  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period) : aws?.notes ?? [];
+  const body = total == null ? [] : supplier === 'github' ? githubParts(cache, name, c.period, total) : supplier === 'vercel' ? vercelParts(cache, name) : aws?.lines ?? [];
+  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period)
+    : supplier === 'vercel' && body.length ? [{ tag: 'builds', sgr: GREY, text: [[VERCEL_BUILDS_NOTE, null]] }] : aws?.notes ?? [];
   return { head: [charged, ...body], rows: [], foot: notes.length ? ['', ...noteLines(notes, 14, width)] : [], bill };
 }
 
