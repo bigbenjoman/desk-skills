@@ -2,8 +2,10 @@
 // batch.mjs against a scratch repo with a bare origin, a throwaway HOME and DESK_HOME: start refuses a
 // second batch, a second live feature batch and a bad base; discard removes an unstarted batch and
 // deletes its branch only when main has all of it; the archive check moves a done-with batch under
-// batches/.done/ and hands open ticket PRs to the digest. PR states are injected, so no gh runs.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+// batches/.done/ and hands open ticket PRs to the digest. An epic planned, handed over and closed out
+// with --batch beside a live standing batch never writes the standing queue. PR states are injected, so
+// no gh runs.
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
@@ -125,6 +127,75 @@ t('AC10 the batch is removed', r.code === 0 && !existsSync(namedQ('X-2')), true)
 t('AC10 the branch is kept', onOrigin('feat/x-2'), true);
 t('AC10 the output names the branch and why', r.out.includes('feat/x-2 kept on origin: it has 1 commit(s) that are not on main'), true);
 
+// An epic's path as /desk-autopilot runs it, beside a live standing batch: every command names the
+// epic's batch with --batch, and the standing queue is never written.
+const standingQ = join(DESK_HOME, 'repos', SLUG, 'queue.json');
+// plan-batch runs queue.mjs from DESK_HOME's bin, as an installed one does.
+symlinkSync(BIN, join(DESK_HOME, 'bin'));
+const cli =(script, args, env = {}) => {
+  const x = spawnSync('node', [join(BIN, script), ...args], { cwd: REPO, encoding: 'utf8', env: { ...base, DESK_JIRA_NAME: 'Me', ...env } });
+  return { code: x.status, out: `${x.stdout}${x.stderr}` };
+};
+mkdirSync(dirname(standingQ), { recursive: true });
+writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 'standing-1', supervised: true, approved: { workers: true }, tickets: { 'S-1': { key: 'S-1', state: 'running' } } }));
+const standingBefore = readFileSync(standingQ, 'utf8');
+// What triage.sh and expand-parent.mjs write for the epic's children, in its batch's state.
+const triaged = (epic, keys) => {
+  mkdirSync(join(namedS(epic), 'triage'), { recursive: true });
+  for (const k of keys) writeFileSync(join(namedS(epic), 'triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: `feat/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [] }));
+  writeFileSync(join(namedS(epic), 'expansion.json'), JSON.stringify({ parent: epic, containers: {} }));
+};
+const plan = (epic, keys) => cli('plan-batch.mjs', ['--json', '--batch', epic, ...keys], { AUTOPILOT_WRITE_QUEUE: '1' });
+
+// A declined plan: the batch is discarded, and its branch, holding nothing main lacks, goes from origin.
+g(REPO, 'push', '-q', 'origin', 'main:feat/x-5');
+t('DS-312 AC4 setup: X-5 starts beside the standing batch', batch(['start', 'X-5', 'feat/x-5', '--batch', 'X-5']).code, 0);
+triaged('X-5', ['X-6', 'X-7']);
+t('DS-312 AC4 setup: its plan is seeded', plan('X-5', ['X-6', 'X-7']).code, 0);
+r = batch(['discard', 'X-5', '--batch', 'X-5']);
+t('DS-312 AC4 a declined plan discards the batch', r.code === 0 && !existsSync(dirname(namedQ('X-5'))) && !existsSync(namedS('X-5')), true);
+t('DS-312 AC4 and feat/x-5 is gone from origin', onOrigin('feat/x-5'), false);
+t('DS-312 AC4 the standing batch is unchanged', readFileSync(standingQ, 'utf8'), standingBefore);
+
+// AC1: expanded and planned with --batch, the children are seeded into the epic's queue only.
+g(REPO, 'push', '-q', 'origin', 'main:feat/x-5');
+t('DS-312 AC1 setup: X-5 starts again', batch(['start', 'X-5', 'feat/x-5', '--batch', 'X-5']).code, 0);
+triaged('X-5', ['X-6', 'X-7']);
+r = plan('X-5', ['X-6', 'X-7']);
+t('DS-312 AC1 plan-batch --batch X-5 exits 0', r.code, 0);
+t('DS-312 AC1 the children are seeded into X-5', Object.keys(readQ('X-5').tickets ?? {}).join(' '), 'X-6 X-7');
+t('DS-312 AC1 X-5 keeps its epic and base', `${readQ('X-5').epic} ${readQ('X-5').base}`, 'X-5 feat/x-5');
+t('DS-312 AC1 the standing queue is unchanged: its tickets, base and supervised flag', readFileSync(standingQ, 'utf8'), standingBefore);
+
+// AC2: the Stage 3 approvals and the hand-over land on X-5. Standing intake decides from the standing
+// queue alone (a batch on a base, or not handed over, admits nothing), and that queue is untouched.
+r = cli('queue.mjs', ['--batch', 'X-5', 'set-batch', 'supervised=true', 'approved.workers=true', 'approved.merge=true']);
+t('DS-312 AC2 the hand-over exits 0', r.code, 0);
+t('DS-312 AC2 X-5 is supervised with its approvals', `${readQ('X-5').supervised} ${readQ('X-5').approved?.workers} ${readQ('X-5').approved?.merge}`, 'true true true');
+t('DS-312 AC2 the standing queue is unchanged', readFileSync(standingQ, 'utf8'), standingBefore);
+const sq = JSON.parse(readFileSync(standingQ, 'utf8'));
+t('DS-312 AC2 so standing intake still finds it handed over and on no base', `${sq.supervised} ${sq.base ?? 'none'}`, 'true none');
+
+// AC3: another epic is refused while X-5 is live, naming it, with nothing made.
+r = batch(['start', 'X-8', 'feat/x-1', '--batch', 'X-8']);
+t('DS-312 AC3 another epic is refused naming the live batch', r.code === 11 && r.out.includes('feature batch X-5 is live'), true);
+t('DS-312 AC3 nothing is created for it', existsSync(dirname(namedQ('X-8'))) || existsSync(namedS('X-8')), false);
+
+// AC5: the close-out records the promotion PR it opened on X-5, where the archive check reads it.
+r = cli('queue.mjs', ['--batch', 'X-5', 'set-batch', 'promotion.pr=42']);
+t('DS-312 AC5 the promotion PR is recorded on X-5', r.code === 0 && readQ('X-5').promotion?.pr === 42, true);
+t('DS-312 AC5 and not on the standing batch', readFileSync(standingQ, 'utf8'), standingBefore);
+
+// AC7: plain tickets with no epic: Stage 0's init takes the standing slot as before, and X-5 is left alone.
+const x5Before = readFileSync(namedQ('X-5'), 'utf8');
+r = cli('queue.mjs', ['init', 'plain-1']);
+t('DS-312 AC7 init with no --batch writes the standing queue', r.code === 0 && JSON.parse(readFileSync(standingQ, 'utf8')).batch === 'plain-1', true);
+t('DS-312 AC7 and leaves the feature batch as it was', readFileSync(namedQ('X-5'), 'utf8'), x5Before);
+// The archive checks below start with no named batch live.
+rmSync(dirname(namedQ('X-5')), { recursive: true, force: true });
+rmSync(namedS('X-5'), { recursive: true, force: true });
+rmSync(standingQ, { force: true });
+
 // The archive check, with PR states injected: {pr: state}. Every merged PR merged at MERGED_AT.
 const MERGED_AT = '2026-10-30T12:00:00Z';
 const archive = (name, states) => run(`const s = ${JSON.stringify(states)}; const b = B.listBatches().find((x) => x.name === '${name}');
@@ -196,7 +267,6 @@ a = res(archive('X-4', { 9: 'MERGED' }));
 t('a live pass keeps the batch for the next tick', a.archived === false && existsSync(namedQ('X-4')) && (a.lines ?? []).join(' ').includes('a pass (pid'), true);
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
-const standingQ = join(DESK_HOME, 'repos', SLUG, 'queue.json');
 writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 's1', promotion: { pr: 9 }, tickets: {} }));
 t('the standing batch is never archived', res(run(`console.log(JSON.stringify(A.archiveCheck(B.listBatches()[0], { state: () => 'MERGED', mergedAt: () => '${MERGED_AT}' })))`)).archived === false && existsSync(standingQ), true);
 

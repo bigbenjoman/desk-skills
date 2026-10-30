@@ -11,7 +11,9 @@ the core's reference table names.
 # prompt: `node ~/.claude/desk/bin/<x>.mjs`, `~/.claude/desk/bin/<x>.sh`, `desk-env`. Never via a
 # shell variable such as $B: no allow rule matches a variable path. <state> is DESK_STATE from
 # `desk-env paths`, written out in full.
-node ~/.claude/desk/bin/expand-parent.mjs ABC-900                     # an epic -> its batch keys (stdout), drops on stderr
+node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-900   # an epic's own feature batch beside the standing one; refused while another is live
+node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900    # its plan declined: removes the batch, and its branch when main has all of it
+node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
 AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
@@ -73,6 +75,9 @@ node ~/.claude/desk/bin/queue.mjs set-batch concurrency=4 concurrency_by=user
 ```
 
 The keys above can be any of the three kinds: a tracker key, an §4 Other work id patterns id, or (Tracker `none`) `issue-<n>` or the slug stated at Stage 2.
+
+For an epic's batch, every command above takes `--batch <EPIC>` (*An epic as a batch*); without it
+a command acts on the standing batch.
 
 `pass.mjs` re-reads `concurrency` from the queue on every pass, so the ladder is applied by editing
 that one field between passes: never by hand-spawning, and never by holding tickets out of the batch.

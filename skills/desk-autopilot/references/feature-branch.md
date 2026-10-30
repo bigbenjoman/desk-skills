@@ -15,6 +15,9 @@ triage**:
 node ~/.claude/desk/bin/queue.mjs set-batch base=feat/<branch>   # base= clears it; init clears it too
 ```
 
+An epic's batch is the exception: `batch.mjs start` sets its base when it makes the batch, and the
+standing batch's queue is not touched (*An epic as a batch*).
+
 - It refuses a branch that is not on origin, and any production branch. Push the branch first.
 - `pass.mjs`, `triage.sh` and `merge-driver.sh` export it as `DESK_DEFAULT_BRANCH`. Worktrees then
   branch from it, workers rebase onto it and open their PRs against it (their system prompt names

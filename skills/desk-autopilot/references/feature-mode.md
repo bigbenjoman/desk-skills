@@ -8,6 +8,9 @@ table names.
 
 ### Feature mode
 
+A feature-mode batch is the epic's own batch, so every command below passes `--batch <EPIC>`
+(*An epic as a batch*).
+
 Children of one epic that share a schema or contract build it in parallel and collide, and nothing
 tests the epic's criteria until the last one merges. So an epic gets feature mode when **all** of
 these hold: the batch has a base (*A batch that targets a feature branch*), config §4 Acceptance
@@ -39,9 +42,9 @@ owner or contributor the batch does not build, an id the epic does not have, or 
 contributors that hold each other in a cycle, is a question on the epic. Put the draft, the table and those questions to the person at Stage 3.
 
 **Stage 3: approved.** File the spine under the epic through `desk-jira`'s gate (`create … parent=<EPIC>`),
-triage it (fetch as at Stage 1, `triage.sh <SPINE>`), set `"spine": "<SPINE>"` in `feature.json`,
+triage it (fetch as at Stage 1, `triage.sh <SPINE> --batch <EPIC>`), set `"spine": "<SPINE>"` in `feature.json`,
 and seed the queue with the spine named among the children:
-`AUTOPILOT_WRITE_QUEUE=1 plan-batch.mjs <SPINE> <children…>`. The spine is seeded first and runnable,
+`AUTOPILOT_WRITE_QUEUE=1 plan-batch.mjs <SPINE> <children…> --batch <EPIC>`. The spine is seeded first and runnable,
 and every other child is held behind it (`held by orchestrator: blocked by <SPINE> (feature spine)`),
 so nothing else spawns until its PR merges. Pass the printed `--deps` to the merge driver as usual.
 
@@ -62,14 +65,14 @@ spine is never left done: it parks, and its PR stays draft.
   children held behind it show as `WAITING ON APPROVAL` (never `STUCK`), the batch is not idle, and
   the pass exits 11. Put the specs to the person: do they mean what the criteria say? **Review them
   first**, because a page of specs hides the one that tests the wrong thing:
-  1. `node ~/.claude/desk/bin/spine-review.mjs brief <SPINE>` prints the reviewer's prompt: every
+  1. `node ~/.claude/desk/bin/spine-review.mjs brief <SPINE> --batch <EPIC>` prints the reviewer's prompt: every
      spec titled with a criterion id, its criterion and its file.
   2. Run Mira (`mira-playwright-expert`) with your own Agent call, read-only, on that prompt. It
      reports, per spec, a criterion clause the spec does not assert, two specs that contradict, a spec
      coupled to an internal module path, and an expected failure that would come from something other
      than the assertion (an import error, a typo). It changes no spec. Save its final text to
      `<state>/spine-review-<SPINE>.txt` and check `git -C <its worktree> status --porcelain` is clean.
-  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt`
+  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt --batch <EPIC>`
      prints one question per spec, each with its criterion, its file and the findings for it. A
      reviewer that failed or returned nothing (leave the file off) makes every question say its spec
      was not reviewed; never present those as clean. Findings naming no reviewed spec come back as
@@ -77,19 +80,19 @@ spine is never left done: it parks, and its PR stays draft.
   4. Ask them as `AskUserQuestion` carousels (*Asking*), one question per spec, its `question`
      text verbatim, options approve or send back. Every spec approved: approve the spine. Any sent
      back: reject it with every spec's note in one.
-  - Approved: `queue.mjs approve <SPINE>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
+  - Approved: `queue.mjs approve <SPINE> --batch <EPIC>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
     otherwise it tells you to undraft it), and it merges under the batch's merge rules: the merge
     driver where §3 `autopilot-merge` and `pr-merge-green` are `yes` or the batch approved merging at
     Stage 3, else each pass says
     `SPINE APPROVED — merge PR #<n>` until the person merges it. Once it merges, the children are
     released as any hold is, and spawn on a later pass. The driver releases nothing behind a spine
     that was never approved, even if its PR merged.
-  - Rejected: `queue.mjs reject <SPINE> "<their note>"`. The note goes into the spine's briefing as
+  - Rejected: `queue.mjs reject <SPINE> "<their note>" --batch <EPIC>`. The note goes into the spine's briefing as
     a binding answer, and the spine is requeued for a new worker on the same branch and PR. Nothing
     is released.
 - **`spine specs incomplete: <problems>`**: an id with no spec, or a spec not marked strict
   expected-fail, each named. `approve` refuses it; send it back with what to fix,
-  `queue.mjs reject <SPINE> "<note>"`. Its children wait on it, as above.
+  `queue.mjs reject <SPINE> "<note>" --batch <EPIC>`. Its children wait on it, as above.
 
 **Each child makes the specs it owns pass, and leaves the others alone.** Seeding records the owner
 table on the queue too (`owners`, `{<id>: <KEY>}`). A child that owns criteria gets a section in its
@@ -106,7 +109,7 @@ specs command once for each id the child owns, and for no other, in its worktree
 - an owned spec failing when run (the spec, the command and the tail of its output);
 - a spec another child owns that the branch added, removed or changed, with that spec's owner.
 
-Send it back with what to fix: `answer.mjs <KEY> "<note>"`, then `queue.mjs requeue <KEY>`. A child
+Send it back with what to fix: `answer.mjs <KEY> "<note>" --batch <EPIC>`, then `queue.mjs requeue <KEY> --batch <EPIC>`. A child
 that owns nothing runs as before.
 
 `answer.mjs` still never un-parks: approving is the orchestrator's decision, made on the person's
@@ -118,7 +121,7 @@ draft PR from the base to §0 Default branch, titled with the epic key, and reco
 commits beyond the default branch first gets one empty commit, pushed under §3 `batch-base-push`;
 opening the PR is §3 `pr-open`. It is tried once: a refused push, the rows, or a failed
 `gh pr create` opens nothing, the report names why under `WAITING ON YOU`, and the batch carries on.
-Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n>` so the gate can mark
+Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n> --batch <EPIC>` so the gate can mark
 it ready. **Once the person merges it while children are still to merge into the base**, the next
 pass opens the next one the same way, titled with its slice (`(slice 2)`), records it as `promotion`
 with `slice`, `since` (the merge time the next slice counts from) and `merged` (the earlier promotion
@@ -177,7 +180,7 @@ the end of the batch:
 - **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft (put back, as above, if
   it had left draft), while children keep
   spawning and merging into the base. The fix goes onto the base; the gate runs again on the first
-  pass after the base moves (or at once after `queue.mjs set-batch gate=null`). A gate that failed
+  pass after the base moves (or at once after `queue.mjs set-batch gate=null --batch <EPIC>`). A gate that failed
   only because merging §0 Default branch in conflicted is not yours: the pass hands the conflict to
   the base's conflict fix worker (`feature-branch.md`), the gate waits while it runs, and the conflict
   reaches `WAITING ON YOU` only once that worker may not take it or its tries are spent.
