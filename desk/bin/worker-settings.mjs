@@ -21,7 +21,8 @@
 //     `git config`, `git -c`, `git -C` anywhere else, aliases (any unknown subcommand), `git stash`,
 //     `rebase --exec` and `--upload-pack` are refused.
 //   - gh: named read subcommands, plus `pr create --draft`, `pr edit`, `pr comment`, `pr review`,
-//     `pr update-branch`, `run rerun` each only where its §3 row is `yes`. `gh api` (any method) and
+//     `pr update-branch`, `run rerun` each only where its §3 row is `yes`, and `workflow run` only as
+//     the exact §4 Worker workflows commands on the ticket's own branch. `gh api` (any method) and
 //     `gh alias` are denied: a GET cannot be told from a write by prefix.
 //   - the toolchain: the exact §4 command items (and their `<pm> run <script>` twins), behind §4
 //     Command prefix where there is one; never the package manager, the prefix binary, node or python
@@ -275,6 +276,25 @@ if (mode === 'triage') {
 } else {
   const WT = opt.wt.replace(/\/+$/, '');
   const DEFAULT = E.defaultBranch();
+  const BRANCH = (opt.branch ?? '').trim();
+  const BATCH_BASE = (() => { try { return E.batchBase(); } catch { return null; } })();
+  const baseFix = !!BATCH_BASE && T === E.baseFixKey(BATCH_BASE) && BRANCH === BATCH_BASE;
+  const branchOk = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(BRANCH) && !BRANCH.includes('..') && !BRANCH.endsWith('.lock') && BRANCH !== DEFAULT;
+  const REPO = (() => { try { return E.ghRepo(); } catch { return null; } })();
+  // §3 worker-workflow-dispatch: only the exact `gh workflow run` commands §4 Worker workflows names,
+  // each on this ticket's own branch, never the default branch or the batch base. An exact rule takes
+  // no further argument, so a worker cannot add `-f environment=production` or name another workflow.
+  const DISPATCH = E.permission('worker-workflow-dispatch');
+  const dispatchRef = branchOk && !baseFix && BRANCH !== BATCH_BASE;
+  const DISPATCH_RULES = [];
+  if (DISPATCH === 'yes') {
+    for (const raw of cfgList('worker-workflows')) {
+      const m = /^([A-Za-z0-9._-]+\.ya?ml)((?: -f [A-Za-z0-9_-]+=[A-Za-z0-9._:/-]+)*)$/.exec(raw.trim());
+      if (!m) { warns.push(`§4 Worker workflows item "${raw}" is not \`<file>.yml\` followed by \`-f key=value\` inputs — not allow-listed`); continue; }
+      if (!dispatchRef) continue;
+      for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
+    }
+  }
   const OWN_C = ` -C ${WT}`;
   // `git -C <this worktree>` is allowed for the reads, so the blanket `-C*` deny gives way to every
   // other deny repeated after `-C <this worktree>`. Any other `-C` (another worktree, a relative or
@@ -334,7 +354,9 @@ if (mode === 'triage') {
   deny.push(
     ...READ_DENY,
     ...bash('git', ...GIT_DENY_WT),
-    ...bash('gh', ...GH_DENY),
+    // `gh workflow` gives way only to the exact dispatches above; enable and disable stay denied.
+    ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
+    ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The desk-env subcommands that write: the machine profile and the cost sources are the user's to confirm.
     ...['machine write', 'costs write'].flatMap((w) => [
@@ -422,10 +444,6 @@ if (mode === 'triage') {
   // git push: only this ticket's branch, only as exact commands, never the default branch. The one
   // exception is the batch base's conflict fix worker (base-fix.mjs), whose branch is the base: one
   // exact push of it, under the grant every base sync needs (§3 batch-base-push).
-  const BRANCH = (opt.branch ?? '').trim();
-  const BATCH_BASE = (() => { try { return E.batchBase(); } catch { return null; } })();
-  const baseFix = !!BATCH_BASE && T === E.baseFixKey(BATCH_BASE) && BRANCH === BATCH_BASE;
-  const branchOk = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(BRANCH) && !BRANCH.includes('..') && !BRANCH.endsWith('.lock') && BRANCH !== DEFAULT;
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
   if (baseFix) {
@@ -445,7 +463,6 @@ if (mode === 'triage') {
   }
   deny.push(...bash('git', ...FORCE));
 
-  const REPO = (() => { try { return E.ghRepo(); } catch { return null; } })();
   const draftForms = [' pr create --draft', ...(REPO ? [` pr create --repo ${REPO} --draft`] : [])];
   grant('pr-open', bash('gh', ...draftForms), bash('gh', ' pr create'));
   grant('pr-edit', bash('gh', ' pr edit'));
@@ -455,6 +472,9 @@ if (mode === 'triage') {
   if (!grant('pr-reply', bash('gh', ' pr comment'), []) && !selfReview) deny.push(...bash('gh', ' pr comment', ' issue comment'));
   grant('pr-update-branch', bash('gh', ' pr update-branch'));
   grant('ci-rerun', bash('gh', ' run rerun'));
+  if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${DISPATCH})`);
+  else if (!DISPATCH_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
+  allow.push(...DISPATCH_RULES);
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);

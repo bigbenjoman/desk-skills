@@ -42,7 +42,8 @@ for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln 
 printf 'echo "[spawn] ticket=$1"\n' > "$T/desk/bin/spawn-worker.sh"
 printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 # gh: a PR is $T/gh/pr-<n>.json (none is a failed read), a branch's merged PR $T/gh/merged-<branch with
-# / as _>, the repo's variables $T/gh/vars.json ($T/gh/vars.fail fails the read). Anything else answers nothing.
+# / as _>, the repo's variables $T/gh/vars.json ($T/gh/vars.fail fails the read), an Actions run
+# $T/gh/run-<id>.json (none is a failed read). Anything else answers nothing.
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
@@ -52,6 +53,7 @@ case "\$1 \$2" in
     f="$T/gh/merged-\$(echo "\$h" | tr / _)"; [ -f "\$f" ] && cat "\$f"; exit 0 ;;
   "variable list") [ -f "$T/gh/vars.fail" ] && { echo "gh: HTTP 401: Bad credentials" >&2; exit 1; }
     cat "$T/gh/vars.json" 2>/dev/null || echo "[]"; exit 0 ;;
+  "run view") [ -f "$T/gh/run-\$3.json" ] && { cat "$T/gh/run-\$3.json"; exit 0; }; echo "gh: HTTP 404: run \$3 not found" >&2; exit 1 ;;
 esac
 exit 0
 EOF
@@ -62,6 +64,7 @@ cat > "$T/stub/desk-jira" <<EOF
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/desk-jira"
 pr(){ printf '{"state":"%s","isDraft":%s,"statusCheckRollup":[]}\n' "$2" "$3" > "$T/gh/pr-$1.json"; }
+run(){ printf '{"status":"%s","conclusion":"%s"}\n' "$2" "$3" > "$T/gh/run-$1.json"; }
 jira(){ printf '{"key":"%s","fields":{"status":{"name":"%s","statusCategory":{"key":"%s"}}}}\n' "$1" "$2" "$3" > "$T/jira/$1.json"; }
 
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
@@ -96,9 +99,16 @@ parked E-3 A "waiting on ABC-404" "ticket ABC-404 done"
 parked E-4 A "waiting on ABC-10" "ticket ABC-10 done"; jira ABC-10 "In Progress" indeterminate
 parked V-1 A "set DESK_DEPLOY_ON=local" "variable DESK_DEPLOY_ON set"; q set V-1 draft_pr=699
 pr 699 MERGED false; echo '[{"name":"DESK_DEPLOY_ON"}]' > "$T/gh/vars.json"
+# DS-349: a park that waits on an Actions run
+parked R-1 A "waiting on e2e run 41048026730" "run 41048026730 completed"; run 41048026730 completed failure
+parked R-2 A "waiting on e2e run 41048026731" "run 41048026731 completed"; run 41048026731 in_progress ""
+parked R-3 A "waiting on e2e run 41048026732" "run 41048026732 completed"
 parked W-1 B "waiting on review of #706" "pr 706 ready"; pr 706 OPEN false; echo 707 > "$T/gh/merged-feat_W-1"; pr 707 MERGED false
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
-check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, or none" <<< "$out"'
+check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, or none" <<< "$out"'
+out=$(node "$B/queue.mjs" clears-when E-2 "run abc completed" 2>&1); rc=$?
+check "DS-349 AC10 a run id that is not a number is refused, naming the forms" '[ $rc -ne 0 ] && grep -q "\"run abc completed\" is not one of: .*run <id> completed, or none" <<< "$out"'
+check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
 
 out=$(node "$B/pass.mjs" 2>&1)
@@ -112,6 +122,14 @@ check "DS-269 AC6 a failed Jira check leaves the park and is named" '[ "$(field 
 check "DS-269 AC6 a park with none is left alone and not reported" '[ "$(field E-2 state)" = "\"parked\"" ] && ! grep -q "E-2: \"\|E-2: could not" <<< "$out"'
 check "DS-269 AC7 a variable set and its own PR merged: recorded done, no person" '[ "$(field V-1 state)" = "\"done\"" ] && [ "$(field V-1 result.pr)" = 699 ] && [ "$(field V-1 park)" = null ] && grep -q "V-1: \"repo variable DESK_DEPLOY_ON set\" holds and its PR #699 merged: recorded done" <<< "$out"'
 check "DS-269 AC3 an own PR found merged from the branch closes it out" '[ "$(field W-1 state)" = "\"done\"" ] && [ "$(field W-1 result.pr)" = 707 ] && grep -q "W-1: \"PR #706 out of draft\" holds and its PR #707 merged: recorded done" <<< "$out"'
+check "DS-349 AC8 a finished run: requeued with no person, and the report names its conclusion" \
+  '[ "$(field R-1 state)" = "\"triaged\"" ] && grep -q "R-1: \"Actions run 41048026730 completed, conclusion failure\" holds: requeued" <<< "$out"'
+check "DS-349 AC8 the next worker is told the run's conclusion" \
+  '[ "$(field R-1 cleared.what)" = "\"Actions run 41048026730 completed, conclusion failure\"" ] && [ "$(field R-1 cleared.question)" = "\"waiting on e2e run 41048026730\"" ]'
+check "DS-349 AC9 a run in progress: the park stays, and the report shows it waiting" \
+  '[ "$(field R-2 state)" = "\"parked\"" ] && grep -q "R-2: waiting on \"Actions run 41048026731 completed\" (still in_progress): left parked" <<< "$out"'
+check "DS-349 a run that cannot be read leaves the park and is named" \
+  '[ "$(field R-3 state)" = "\"parked\"" ] && grep -q "R-3: could not check \"Actions run 41048026732 completed\" (gh run view 41048026732: gh: HTTP 404: run 41048026732 not found): left parked" <<< "$out"'
 check "DS-269 the report groups them under clears-when" 'grep -q "^clears-when:$" <<< "$out"'
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------

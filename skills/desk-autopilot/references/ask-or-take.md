@@ -49,12 +49,14 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   pass's `park inputs:` and read as none: the park is asked as usual, with no notice for the person to clear.
 - **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
   line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
-  `variable <NAME> set` for a repo Actions variable, or `none`), or
+  `variable <NAME> set` for a repo Actions variable, `run <id> completed` for a GitHub Actions run
+  to finish, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
   `references/orchestrator-recovery.md` says, with no model: a lane C ticket, or a lane D parked at triage on its design, stays for a
-  person, one whose own PR merged is recorded done, any other is requeued. Each outcome, and any
+  person, one whose own PR merged is recorded done, any other is requeued, its next worker told
+  what cleared it (a run's conclusion included). Each outcome, a run still in progress, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
   (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen.

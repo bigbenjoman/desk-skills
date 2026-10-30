@@ -79,6 +79,13 @@ Your settings are an **allow-list**: anything not named here is refused.
   in every form**, and `gh alias` too: read reviews with `gh pr view <n> --json reviews,comments`,
   and answer a review thread with a `gh pr comment` naming it (§3 `pr-reply`); resolving threads is
   the orchestrator's.
+- **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
+  §4 Worker workflows lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
+  with `--repo <§0 GitHub repo>` after the file), no input added or changed. Any other workflow, ref
+  or input is refused; so is `gh workflow enable`/`disable`. Once it starts, read the run's id with
+  `gh run list --workflow <file>.yml --branch <your branch> --limit 1 --json databaseId,status`,
+  then park on it with `AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`: you cannot wait, and the
+  first pass after the run finishes requeues you with its conclusion. Otherwise park naming the row.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
   is `yes`.
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
