@@ -55,7 +55,9 @@ if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket
 EOF
 printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
-chmod +x "$T/stub/claude" "$T/stub/gh"
+# The process listing a pass reads for each kept worktree (DS-348): what $T/lsof.out says, else nothing.
+printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
+chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
 
@@ -1833,5 +1835,45 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
 check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+
+# ---- DS-348: a pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
+# W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree
+# has an uncommitted change, W-3's branch a commit origin does not have. W-4 is a fix try with only an
+# untracked file, which setup-worktree.sh can leave itself: it spawns.
+export DESK_QUEUE="$T/queue-wb.json" DESK_AUTOPILOT_STATE="$T/state-wb"; mkdir -p "$T/state-wb/logs" "$T/wt/W-1/src"; : > "$T/wb-spawns"
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+EOF
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1" >> "$T/wb-spawns"; echo "[spawn] ticket=\$1"
+EOF
+git init -q --bare "$T/wb-origin.git"
+for k in 2 3 4; do
+  git clone -q "$T/wb-origin.git" "$T/wt/W-$k" 2>/dev/null; git -C "$T/wt/W-$k" checkout -q -b "fix/W-$k"
+  echo a > "$T/wt/W-$k/a.txt"; git -C "$T/wt/W-$k" add a.txt; git -C "$T/wt/W-$k" commit -q -m a; git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
+done
+echo b >> "$T/wt/W-2/a.txt"; git -C "$T/wt/W-3" commit -q --allow-empty -m "not pushed"; : > "$T/wt/W-4/settings.local.json.desk-disabled"
+printf 'p4242\ncclaude\nfcwd\nn%s/wt/W-1/src\n' "$T" > "$T/lsof.out"
+q init wb; q set-batch concurrency=4
+q add W-1; q set W-1 state=triaged lane=A branch=fix/W-1
+for k in 2 3 4; do q add "W-$k"; q set "W-$k" state=triaged lane=A "branch=fix/W-$k" 'fix={"try":1,"of":2,"pr":5'"$k"',"kind":"review","what":"a P1 review finding"}'; done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-348 AC1 a worktree another process works in is held, naming the pid" \
+  '[ "$(field W-1 state)" = "\"triaged\"" ] && ! grep -qx W-1 "$T/wb-spawns" && echo "$out" | grep -qF "W-1: WORKTREE IN USE — its worktree $T/wt/W-1 is the working directory of pid 4242 (claude), which the pass did not start"'
+check "DS-348 AC2 a fix try whose worktree has an uncommitted change is held, saying so" \
+  '[ "$(field W-2 state)" = "\"triaged\"" ] && ! grep -qx W-2 "$T/wb-spawns" && echo "$out" | grep -qF "W-2: WORKTREE IN USE — its worktree $T/wt/W-2 has uncommitted changes (a.txt)"'
+check "DS-348 AC2 a fix try whose branch is ahead of origin is held, saying so" \
+  '[ "$(field W-3 state)" = "\"triaged\"" ] && ! grep -qx W-3 "$T/wb-spawns" && echo "$out" | grep -qF "W-3: WORKTREE IN USE — its branch fix/W-3 is 1 commit(s) ahead of origin/fix/W-3, not pushed"'
+check "DS-348 an untracked file alone does not hold a fix try" '[ "$(field W-4 state)" = "\"running\"" ] && grep -qx W-4 "$T/wb-spawns"'
+: > "$T/lsof.out"; git -C "$T/wt/W-2" checkout -q -- a.txt; git -C "$T/wt/W-3" push -q origin fix/W-3 2>/dev/null
+# The repo's shared cap leaves this batch one slot a pass here: each spawned worker is finished before the next.
+held=""
+for k in 1 2 3; do
+  for w in W-1 W-2 W-3 W-4; do [ "$(field "$w" state)" = "\"running\"" ] && q set "$w" state=done session_id=null; done
+  out=$(node "$B/pass.mjs" 2>&1); echo "$out" | grep -q "WORKTREE IN USE" && held=yes
+done
+check "DS-348 AC3 once each cause clears, the next pass spawns the worker" \
+  '[ "$(grep -cxE "W-[123]" "$T/wb-spawns")" = 3 ] && [ -z "$held" ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

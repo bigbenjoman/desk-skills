@@ -4,8 +4,8 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync, readlinkSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
@@ -1695,11 +1695,77 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
+// Every process's working directory, as [{pid, cmd, cwd}], read once a pass: lsof, else Linux's /proc.
+// Null when neither can be read, and then no worktree is held for it.
+let CWDS;
+function processCwds() {
+  if (CWDS !== undefined) return CWDS;
+  CWDS = null;
+  const r = spawnSync('lsof', ['-n', '-w', '-d', 'cwd', '-Fpcn'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  if (!r.error) {
+    // lsof exits 1 when it could not read some process, which still leaves the rest.
+    CWDS = [];
+    let cur = null;
+    for (const l of (r.stdout ?? '').split('\n')) {
+      if (l[0] === 'p') { cur = { pid: Number(l.slice(1)), cmd: '' }; } else if (l[0] === 'c' && cur) cur.cmd = l.slice(1);
+      else if (l[0] === 'n' && cur) CWDS.push({ ...cur, cwd: l.slice(1) });
+    }
+    return CWDS;
+  }
+  try {
+    CWDS = readdirSync('/proc').filter((d) => /^\d+$/.test(d)).flatMap((d) => {
+      try {
+        let cmd = '';
+        try { cmd = readFileSync(`/proc/${d}/comm`, 'utf8').trim(); } catch { /* unnamed */ }
+        return [{ pid: Number(d), cmd, cwd: readlinkSync(`/proc/${d}/cwd`) }];
+      } catch { return []; }
+    });
+  } catch { CWDS = null; }
+  return CWDS;
+}
+// Why a ticket's worktree must not get a worker now, or null. A worktree another process works in (a
+// session fixing the branch by hand) would have the worker reset or push over its work, and the pass
+// sees only the sessions it spawned. A fix try is held too while the worktree has uncommitted changes
+// or its branch has commits not on origin: a fresh fix worker starts from the branch's pushed head.
+// Untracked files do not count: setup-worktree.sh leaves its own (agent links, a disabled settings
+// file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
+function busyWorktree(t) {
+  if (t.location === 'cloud') return null;
+  const resumed = toResume(t) || toHandoff(t);
+  const wt = resumed ? t.worktree : join(WORKTREES, t.key);
+  if (!wt || !existsSync(wt)) return null;
+  let real = wt;
+  try { real = realpathSync(wt); } catch { /* as recorded */ }
+  const inside = (p) => [wt, real].some((w) => p === w || p.startsWith(`${w}/`));
+  const users = (processCwds() ?? []).filter((p) => inside(p.cwd) && p.pid !== process.pid && p.pid !== process.ppid);
+  if (users.length) {
+    return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
+  }
+  if (!(t.fix && !t.fix.finished) || resumed) return null;
+  let dirty = [];
+  try {
+    dirty = execFileSync('git', ['-C', wt, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\n').filter(Boolean).map((l) => l.slice(3));
+  } catch { /* not a worktree git can read: setup-worktree.sh says so */ }
+  if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
+  const branch = shOut('git', ['-C', wt, 'rev-parse', '--abbrev-ref', 'HEAD']);
+  if (!branch.ok || branch.out === 'HEAD') return null;
+  const ahead = shOut('git', ['-C', wt, 'rev-list', '--count', `origin/${branch.out}..HEAD`]);
+  if (ahead.ok && Number(ahead.out) > 0) return `its branch ${branch.out} is ${ahead.out} commit(s) ahead of origin/${branch.out}, not pushed`;
+  return null;
+}
+
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit.
   if (baseHold || usageStop || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
+  // Held without taking a slot: another ticket may spawn in its place.
+  const busy = busyWorktree(t);
+  if (busy) {
+    report.waiting.push(`${t.key}: WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
+    continue;
+  }
   attempts += 1;
   if (toResume(t)) {
     // eslint-disable-next-line no-await-in-loop
