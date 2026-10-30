@@ -317,7 +317,9 @@ function byHand(keys, { state, by, front, now }) {
   const mayStart = E.permission('autopilot-workers') === 'yes';
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
   const said = (code, b) => ({
-    base: () => `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`,
+    base: () => (b.epic && !E.batchName()
+      ? `batch ${b.batch ?? '?'} runs on base ${b.base} in the standing slot: move it to epic ${b.epic}'s own slot (node ${join(HERE, 'move-batch.mjs')}), then admit these again`
+      : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
     session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
   }[code]?.() ?? null);
