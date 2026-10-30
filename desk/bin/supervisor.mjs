@@ -255,9 +255,15 @@ const logTo = (state) => (lines) => appendFileSync(join(state, 'supervisor.log')
 // What this tick has run once already for all its batches.
 const ranOnce = new Set();
 const firstTime = (what) => !ranOnce.has(what) && ranOnce.add(what);
-// Push keys this tick has sent for any batch: the check-in digest reaches every batch's pass, and goes
-// out once. Only this tick's: an idle batch's stored keys never change, and would silence a repeat.
+// Every batch's state folder this tick runs, and the push keys it has sent for any of them.
+let tickStates = [];
 const sentThisTick = new Set();
+// Whether another batch has sent `key`: the check-in digest reaches every batch, and goes out once.
+// Any key sent this tick counts. Only a digest key counts from another batch's stored list, since it
+// names its slot and never comes back: an idle batch's stored keys never change, and would silence a
+// repeat of any other.
+const sentElsewhere = (state, key) => sentThisTick.has(key)
+  || (key.startsWith('digest:') && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
 
 // Points this process, and every child it starts, at batch `name` (null for the standing batch).
 function enterBatch(name) {
@@ -273,6 +279,7 @@ const tickBatches = () => (batchPinned() ? [{ name: E.batchName(), queue: E.queu
 function interval() {
   const named = batchPinned();
   const batches = tickBatches();
+  tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
   const intake = runIntake();
@@ -384,7 +391,7 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
 // Sends one push unless its key went out already, and records the key once it has.
 function pushOnce(state, s, log, stamp, what, p) {
   if (!p?.key || !p.text || s.notified.includes(p.key)) return;
-  if (sentThisTick.has(p.key)) { s.notified.push(p.key); writeState(state, s); return; }
+  if (sentElsewhere(state, p.key)) { s.notified.push(p.key); writeState(state, s); return; }
   const err = notify(title(), p.text);
   log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
   if (!err) { s.notified.push(p.key); sentThisTick.add(p.key); writeState(state, s); }
@@ -464,7 +471,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const pushes = toPush(v);
   const items = pushes.map((p) => p.key);
-  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentThisTick.has(p.key));
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
   let sent = true;
   if (fresh.length) {
     const err = notify(title(), fresh.map((p) => p.text).join(' · '));

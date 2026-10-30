@@ -423,13 +423,22 @@ verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[
 notified=$(count "$T/notify.calls")
 out=$(mtick); out=$(mtick)
 check "DS-309: the check-in digest both passes carry goes out once, titled with the repo" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 08:00|$"'
-# X-1 keeps the key while the standing batch drops it; when it comes back, X-1's stored key is no reason to stay quiet.
-printf '%s\n' "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$DIG2]}" > "$T/verdict.X-1.json"
-verdict "$NOTHING"; out=$(mtick)
-verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$DIG2]}"
-notified=$(count "$T/notify.calls")
+# pv <push json>: a verdict that pushes it.
+pv(){ printf '{"status":"show_person","code":11,"message":"x","waiting":[],"parked":[],"notify":true,"push":[%s]}' "$1"; }
+# A health key both batches sent: X-1 keeps it while the standing batch drops it, and when it comes
+# back X-1's stored key is no reason to stay quiet.
+HK='{"key":"health:acme__widgets:gh","text":"gh check failing"}'
+verdict "$(pv "$HK")"; out=$(mtick)
+pv "$HK" > "$T/verdict.X-1.json"; verdict "$NOTHING"; out=$(mtick)
+verdict "$(pv "$HK")"; notified=$(count "$T/notify.calls")
 out=$(mtick)
-check "DS-309: a key another batch sent on an earlier tick is pushed again when it returns" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 08:00|$"'
+check "DS-309: a key another batch sent on an earlier tick is pushed again when it returns" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|gh check failing|$"'
+# A digest the standing batch sent reaches X-1 only on a later tick of its slot: it is not sent twice.
+DIG3='{"key":"digest:2026-10-30T17:00","text":"Check-in 17:00"}'
+printf '%s\n' "$NOTHING" > "$T/verdict.X-1.json"; verdict "$(pv "$DIG3")"; notified=$(count "$T/notify.calls")
+out=$(mtick)
+pv "$DIG3" > "$T/verdict.X-1.json"; out=$(mtick)
+check "DS-309: a digest another batch sent on an earlier tick goes out once" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 17:00|$"'
 rm -f "$T/verdict.X-1.json"
 verdict "$NOTHING"; printf 'not json\n' > "$T/verdict.standing.json"; : > "$T/pass.batches"
 out=$(mtick); rc=$?
