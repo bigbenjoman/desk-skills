@@ -46,7 +46,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { limitName } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
 export { LIVE_MS };
@@ -1296,20 +1296,9 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // "2027-03-31" -> "31 Mar 2027"; anything else as it is.
 const ymdText = (s) => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(s ?? ''); return m ? `${Number(m[3])} ${MONTHS[m[2] - 1]} ${m[1]}` : String(s ?? ''); };
 
-// A name's AWS lines for `period`, its profiles' merged by service: the profiles its AWS figure
-// counts (chargesByName), so the lines add up to it.
-function awsLinesOf(cache, name, period) {
-  const by = new Map();
-  for (const p of Object.values(cache?.aws?.profiles ?? {})) {
-    if (p?.name !== name || !p.lines || p.period?.year !== period.year || p.period?.month !== period.month) continue;
-    for (const l of p.lines) {
-      const m = by.get(l.service) ?? { service: l.service, used: 0, credits: 0, charged: 0, tax: !!l.tax };
-      for (const k of ['used', 'credits', 'charged']) m[k] = Math.round(m[k] * 100 + (l[k] ?? 0) * 100) / 100;
-      by.set(l.service, m);
-    }
-  }
-  return [...by.values()].sort((a, b) => Number(a.tax) - Number(b.tax) || b.used - a.used || a.service.localeCompare(b.service));
-}
+// A name's AWS lines for `period`, its profiles' merged by service, largest use first and tax last.
+const awsLinesOf = (cache, name, period) => [...(awsByName(cache?.aws, period)[name]?.lines ?? [])]
+  .sort((a, b) => Number(!!a.tax) - Number(!!b.tax) || b.used - a.used || a.service.localeCompare(b.service));
 
 // AWS's part of a name's charge: each service, largest first and tax last, then the total. On
 // credits, what each used, what credits covered and what was charged, and notes on the credits and
