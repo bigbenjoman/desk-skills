@@ -423,6 +423,14 @@ verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[
 notified=$(count "$T/notify.calls")
 out=$(mtick); out=$(mtick)
 check "DS-309: the check-in digest both passes carry goes out once, titled with the repo" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 08:00|$"'
+# X-1 keeps the key while the standing batch drops it; when it comes back, X-1's stored key is no reason to stay quiet.
+printf '%s\n' "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$DIG2]}" > "$T/verdict.X-1.json"
+verdict "$NOTHING"; out=$(mtick)
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$DIG2]}"
+notified=$(count "$T/notify.calls")
+out=$(mtick)
+check "DS-309: a key another batch sent on an earlier tick is pushed again when it returns" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 08:00|$"'
+rm -f "$T/verdict.X-1.json"
 verdict "$NOTHING"; printf 'not json\n' > "$T/verdict.standing.json"; : > "$T/pass.batches"
 out=$(mtick); rc=$?
 check "DS-309 AC3: the standing pass crashing still leaves X-1 its pass" '[ $rc -eq 0 ] && [ "$(tail -1 "$T/pass.batches")" = "X-1 feat/x" ] && grep "pass: exit" "$SS/supervisor.log" | tail -1 | grep -q "(error)" && grep "pass: exit" "$XS/supervisor.log" | tail -1 | grep -q "pass: exit 10 (nothing_yet)"'

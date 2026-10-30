@@ -57,7 +57,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
-import { listBatches } from './batches.mjs';
+import { listBatches, batchPinned } from './batches.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
@@ -252,13 +252,12 @@ function supervisorHolder(state) {
 const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 const logTo = (state) => (lines) => appendFileSync(join(state, 'supervisor.log'), `${lines.join('\n')}\n`);
 
-// Every batch's state folder this tick runs, and what it has run once already for all of them.
-let tickStates = [];
+// What this tick has run once already for all its batches.
 const ranOnce = new Set();
 const firstTime = (what) => !ranOnce.has(what) && ranOnce.add(what);
-// Push keys another batch of this repo has sent: the check-in digest reaches every batch's pass, and
-// goes out once.
-const pushedElsewhere = (state) => new Set(tickStates.filter((d) => d !== state).flatMap((d) => readState(d).notified));
+// Push keys this tick has sent for any batch: the check-in digest reaches every batch's pass, and goes
+// out once. Only this tick's: an idle batch's stored keys never change, and would silence a repeat.
+const sentThisTick = new Set();
 
 // Points this process, and every child it starts, at batch `name` (null for the standing batch).
 function enterBatch(name) {
@@ -267,15 +266,13 @@ function enterBatch(name) {
   else delete process.env.DESK_BATCH;
 }
 
-// An explicit DESK_BATCH, DESK_QUEUE or DESK_AUTOPILOT_STATE names one batch, and only it runs.
-const namedOne = () => Boolean(process.env.DESK_BATCH || process.env.DESK_QUEUE || process.env.DESK_AUTOPILOT_STATE);
-// -> [{ name, queue, state }]: the one batch named, else every batch the repo holds, the standing first.
-const tickBatches = () => (namedOne() ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
+// -> [{ name, queue, state }]: the one batch named explicitly, else every batch the repo holds, the
+// standing first.
+const tickBatches = () => (batchPinned() ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
 
 function interval() {
-  const named = namedOne();
+  const named = batchPinned();
   const batches = tickBatches();
-  tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
   const intake = runIntake();
@@ -387,10 +384,10 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
 // Sends one push unless its key went out already, and records the key once it has.
 function pushOnce(state, s, log, stamp, what, p) {
   if (!p?.key || !p.text || s.notified.includes(p.key)) return;
-  if (pushedElsewhere(state).has(p.key)) { s.notified.push(p.key); writeState(state, s); return; }
+  if (sentThisTick.has(p.key)) { s.notified.push(p.key); writeState(state, s); return; }
   const err = notify(title(), p.text);
   log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
-  if (!err) { s.notified.push(p.key); writeState(state, s); }
+  if (!err) { s.notified.push(p.key); sentThisTick.add(p.key); writeState(state, s); }
 }
 
 // An idle batch runs no pass, so the weekly maintenance window and the auto-release are moved on here;
@@ -467,12 +464,12 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const pushes = toPush(v);
   const items = pushes.map((p) => p.key);
-  const elsewhere = pushedElsewhere(state);
-  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !elsewhere.has(p.key));
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentThisTick.has(p.key));
   let sent = true;
   if (fresh.length) {
     const err = notify(title(), fresh.map((p) => p.text).join(' · '));
     sent = !err;
+    if (sent) fresh.forEach((p) => sentThisTick.add(p.key));
     out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
