@@ -309,6 +309,19 @@ const { fixBrief, fixTask } = await import('../desk/bin/fix-tries.mjs');
 t('DS-323 AC2 the fix worker\'s briefing quotes the call, and its task is to carry it out', `${fixBrief(i1q).includes(`> ${call323}`)} ${/carry out the person's call on the review gaps of PR #71/.test(fixTask(i1q))} ${/leave the PR in draft/.test(fixTask(i1q))}`, 'true true true');
 t('DS-323 AC2 desk-q no longer counts it as needing you', N.collect({ word: 'iota' }).items.some((i) => i.t.key === 'I-1'), false);
 
+// ---- DS-327: a draft whose §4 Check builds build is running, or whose check was re-run after it, is not the person's.
+const flowsRed = [{ name: 'Flows image', status: 'completed', conclusion: 'failure' }, ...passed];
+put('flows', { port: 4777, beat: 1, supervised: true, tickets: {
+  'FL-1': draftPr(81, flowsRed, { call: 'build', why: '"Flows image" red at h81, which §4 Check builds clears: `./scripts/ensure-flows-image.sh` runs at the head, then the check is re-run' }),
+  'FL-2': draftPr(82, flowsRed, { call: 'wait', why: 'its check build `./scripts/ensure-flows-image.sh` is running at h82, then "Flows image" is re-run' }),
+  'FL-3': draftPr(83, flowsRed, { call: 'rebuilt', why: 'its check build `./scripts/ensure-flows-image.sh` ran at h83, so "Flows image" is re-run' }),
+  'FL-4': draftPr(84, flowsRed, { call: 'person', why: 'its check build `./scripts/ensure-flows-image.sh` exited 1 at h84: no Docker context', action: 'fix the build, run it at the head of #84, then re-run "Flows image"' }),
+} });
+const flows = N.collect({ word: 'flows' }).items.map((i) => i.t.key).join();
+t('DS-327 AC1 a draft whose check build runs, or whose check was re-run after it, is not listed', flows.includes('FL-1') || flows.includes('FL-2') || flows.includes('FL-3'), false);
+t('DS-327 AC2 one whose build failed is, with the command, its exit code and its output', N.collect({ word: 'flows' }).items.find((i) => i.t.key === 'FL-4')?.need,
+  'PR #84: draft · check build `./scripts/ensure-flows-image.sh` exited 1 at h84: no Docker context: fix the build, run it at the head of #84, then re-run "Flows image"');
+
 // ---- DS-345: a draft whose gaps outlast its fix tries keeps undraft.call `findings` (DS-342's record),
 // and still takes the person's call on them; one with findings and no gaps does not.
 put('mu', { port: 4200, beat: 1, supervised: true, tickets: {

@@ -93,6 +93,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
 | §4 "Checks workers can't fix" | checks the pass never sends back to a fix worker: a PR red only on one is stuck, with what fixes it (*Fix tries*) |
+| §4 "Check builds" | a host-side command per check: a draft red only on these gets the command run once at its head, then the checks re-run (`references/merging.md`) |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
 | §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |

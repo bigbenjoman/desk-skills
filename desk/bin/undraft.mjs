@@ -9,6 +9,9 @@
 //   rerun   every red check was cancelled or timed out, so it never tested the code: where §3 ci-rerun
 //           is yes the pass reruns `runs` through rerun.sh, within the merge driver's per-head cap
 //           and cooldown (`gate` is what rerun.sh reads)
+//   build   every red check is one §4 Check builds names, and no build has run at this head: the pass
+//           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
+//   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
 //           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
@@ -138,9 +141,37 @@ function rerunCall(gate, cfg) {
   };
 }
 
+// A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
+// §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
+// buildRecord). `build` starts it, `wait` while it or another check runs, `rebuilt` re-runs the checks with --failed once
+// it succeeded, and `person` when it failed, its re-run was refused, or the checks are still red after
+// it. Anything else is null, handled as any red check.
+function buildCall(gate, cfg, n, head) {
+  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
+  const failing = gate.failing;
+  if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
+  const names = [...new Set(failing.map((f) => f.name))];
+  const checks = names.map((x) => `"${x}"`).join(', ');
+  if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${checks}, which §4 Check builds clears once they finish` };
+  const at = String(head ?? '?').slice(0, 9);
+  const rec = cfg.built?.(head) ?? null;
+  const command = rec?.command ?? [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
+  if (!rec) return { call: 'build', why: `${checks} red at ${at}, which §4 Check builds clears: \`${command}\` runs at the head, then the check is re-run`, command, checks: names, runs };
+  if (rec.state === 'running') return { call: 'wait', why: `its check build \`${command}\` is running at ${at}, then ${checks} is re-run` };
+  if (rec.code !== 0) {
+    const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
+    return { call: 'person', why: `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
+  }
+  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, checks: names, runs };
+  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}` };
+  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
+}
+
 // t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks } (checks as
 // pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey, judgement,
-// rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head, cooledDown (the last rerun has had its gap) }.
+// rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head, cooledDown (the last rerun has had its gap),
+// builds (§4 Check builds, parsed), built(head) -> the check build recorded at that head }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -179,6 +210,8 @@ export function undraftCall(t, pr, cfg) {
   if (gate.state !== 'pass' && !skipped) {
     const rr = rerunCall(gate, cfg);
     if (rr) return rr;
+    const bc = buildCall(gate, cfg, n, pr.head);
+    if (bc) return bc;
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
     return person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
   }

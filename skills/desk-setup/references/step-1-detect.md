@@ -155,6 +155,14 @@ How to turn what you find into rows:
   Propose each as `` `<check>: <what fixes it>` ``, the check named exactly as GitHub shows it; the
   user confirms each, and `none` is the default. Say that autopilot never sends a PR red only on one
   of these back to a worker: it is put to the user as stuck, with what fixes it.
+- **Check builds.** Where what fixes such a check is a command run on this computer (a script that
+  builds and pushes an image, "build it from the branch with: `./scripts/ensure-flows-image.sh`"),
+  propose it for §4 Check builds as well as the row above, as `` `<check>: <command>` ``, the check
+  named exactly as GitHub shows it and the command as the instructions give it, run from the repo
+  root. Never leave it as prose only. The user confirms each; `none` is the default. Say that the
+  autopilot pass runs the command once per head on this computer, in the ticket's worktree, for a
+  draft whose only red checks it names, then re-runs them, and that it needs whatever that command
+  needs in the supervisor's environment (a Docker context, cloud credentials).
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
   changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
