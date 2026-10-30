@@ -12,7 +12,8 @@ argument-hint: "<TICKET>... [--front]"
 # desk-admit
 
 One script makes every check and every write. **Read nothing else**: no queue, triage record or
-supervisor log, and do not load `desk-autopilot`. Never run `queue.mjs admit` yourself.
+supervisor log, and do not load `desk-autopilot` except for an epic the script says to plan (step
+1b). Never run `queue.mjs admit` yourself.
 
 ## 1. Admit
 
@@ -28,8 +29,20 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 It triages each ticket afresh, which takes a minute or two each, and admits none until every triage
 is done: give the call your longest foreground timeout, and if it moves to the background, wait for
 its notification rather than running it again. Exit 0: every ticket was admitted
-or was already in the batch. Print its lines and stop. The supervisor's next tick picks them up, so
-start no pass, loop or driver.
+or was already in the batch, and any epic is one to plan (step 1b). Print its lines, and stop unless
+there is an epic to plan. The supervisor's next tick picks the admitted tickets up, so start no
+pass, loop or driver for them. A child of an epic whose feature batch is running is admitted into
+that batch (`into feature batch <E>`), held behind its blockers there and the children it shares
+files with: the user naming it is the approval.
+
+## 1b. An epic to plan
+
+Each `plan <EPIC> as a feature batch beside the standing batch: /desk-autopilot <EPIC>` line means
+the user wants the epic run exactly as `/desk-autopilot <EPIC>` runs it: its own feature batch, beside
+the standing batch, which carries on untouched. Load `desk-autopilot` and run its epic flow for
+`<EPIC>` (*An epic as a batch*, from Stage 0), plan approval included; do not ask first how the epic
+should run. More than one such line: run the first; the others wait, since a repo runs one feature
+batch at a time.
 
 ## 2. Refused (exit 11)
 
@@ -44,9 +57,9 @@ below as `(Recommended)`, with its reason as the description:
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
 | `blocked by <B>, which is not done and not in the batch` | Admit `<B>` with it | Run step 1 with both |
-| `an epic` | Plan it as a feature batch: `/desk-autopilot <TICKET>` | |
+| `an epic, and feature batch <B> is already running` | Wait for `<B>` to finish: a repo runs one feature batch at a time | Run step 1 for the epic once it has |
 | `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most | Admit nothing for it |
-| `is a child of epic <E>, whose feature batch <E> is running` | Leave it to that feature batch: the standing batch never takes an epic's child while its batch runs | Admit nothing for it |
+| `is a child of epic <E>, but not admitted into its feature batch: …` | Settle what follows the colon, as the row above for it says | Run step 1 again for it |
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
 | `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
@@ -56,5 +69,5 @@ Do what each answer says, then run step 1 again only for the tickets now ready.
 
 ## 3. End
 
-Print one line per ticket: admitted (and held behind what, if held), already in the batch, or left
-out and why.
+Print one line per ticket: admitted (and into which batch, and held behind what, if held), already
+in the batch, an epic being planned as a feature batch, or left out and why.

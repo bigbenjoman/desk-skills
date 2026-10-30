@@ -118,7 +118,8 @@ export function liveBatch(name) {
 
 // Why `key` may not join the batch whose queue is `own`, or null: another unfinished batch holds it, or
 // its triage record `rec` names an epic whose feature batch is unfinished. -> {batch, why},
-// with `unreadable` set when another batch's queue cannot be read, so the key cannot be checked. Never
+// with `epic` set to that epic for its child, and `unreadable` set when another batch's queue cannot be
+// read, so the key cannot be checked. Never
 // throws: callers check one key of many. Outside a repo there are no batches to list.
 export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
   let others;
@@ -131,6 +132,6 @@ export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
   if (held) return { batch: label(held.b), why: `${key} is in ${where(held.b)}: a ticket is in one batch at most` };
   const epic = rec?.epic?.key;
   const feature = epic && live.find((x) => x.b.name === epic);
-  if (feature) return { batch: epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
+  if (feature) return { batch: epic, epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
   return null;
 }
