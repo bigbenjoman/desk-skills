@@ -48,6 +48,12 @@ t('AC2 the recorded start gives the session id', started.session, 'session_01Vy4
 t('AC2 and its URL', started.url, 'https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj?from=cli&m=0');
 t('AC2 terminal noise around it is ignored', parseCloudStart(`\x1b[?25l${fixture('created.txt').replace(/\n/g, '\r\n')}\x1b[0m`).session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
 t('AC2 so is the ^D and backspaces BSD script echoes when its input ends', parseCloudStart(`^D\b\b${fixture('created.txt')}`).session, 'session_01Vy49H7Z4T3CSgAhSxsuhqj');
+// A real start made as startCloud makes it on macOS, with no terminal of its own (2.1.314): its noise
+// includes ESC 7/ESC 8, ESC ( B and SI, and its title is the CLI's summary, not the description.
+const noTty = parseCloudStart(fixture('created-no-tty.txt'));
+t('AC4 the recorded no-TTY start gives the session id', noTty.session ?? JSON.stringify(noTty), 'session_01Vy49H8UHjQ9wbruRKguWDD');
+t('AC4 and its URL', noTty.url, 'https://claude.ai/code/session_01Vy49H8UHjQ9wbruRKguWDD?from=cli&m=0');
+t('AC4 and the title the CLI chose, free of terminal noise', noTty.title, 'No-TTY recording');
 t('AC4 print mode\'s refusal is an error, word for word', parseCloudStart(fixture('print-refused.txt')).error, 'Error: --cloud cannot be combined with --print.');
 t('AC4 stream-json\'s refusal is an error, word for word', parseCloudStart(fixture('stream-json-refused.txt')).error, 'Error: --cloud <session_id> does not support --output-format stream-json');
 t('AC4 a message queued to a session is not a start', !!parseCloudStart(fixture('send-json.json')).error, true);
@@ -61,6 +67,9 @@ t('AC2 spawned without a terminal, the session is read through script', real.ses
 let sent = '';
 try { sent = readFileSync(join(S, 'prompt.txt'), 'utf8'); } catch { /* not run */ }
 t('AC2 and the whole prompt reached claude --cloud as one argument', sent.includes('AC1: it works') && sent.includes('Work ticket K-1'), true);
+const okNoTty = fake('claude-ok-no-tty', `[ "$1" = --cloud ] || exit 9\ncat "${join(FIX, 'created-no-tty.txt')}"`);
+const realNoTty = startCloud(prompt, { claude: okNoTty, timeout: 30_000 });
+t('AC4 the no-TTY recording read back through script gives its session', realNoTty.session ?? JSON.stringify(realNoTty), 'session_01Vy49H8UHjQ9wbruRKguWDD');
 const refuses = fake('claude-no', `cat "${join(FIX, 'print-refused.txt')}" >&2\nexit 1`);
 t('AC4 a start the CLI refuses returns its error', startCloud(prompt, { claude: refuses, timeout: 30_000 }).error?.startsWith('Error: --cloud cannot be combined with --print.'), true);
 t('AC4 a claude that is not there is an error, not a session', !!startCloud(prompt, { claude: join(S, 'missing'), timeout: 30_000 }).error, true);

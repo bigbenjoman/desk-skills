@@ -48,12 +48,15 @@ export function cloudPrompt({ key, repo, base, branch, text, tests }) {
   ].join('\n');
 }
 
-// What `claude --cloud` printed, terminal noise removed: escape sequences, carriage returns, and
-// what a backspace erases, such as the `^D` BSD script echoes when its input ends.
+// What `claude --cloud` printed, terminal noise removed: escape sequences (CSI, OSC, and two-byte
+// ones such as ESC 7/ESC 8 and ESC ( B, which a start with no terminal of its own prints), carriage
+// returns, what a backspace erases, such as the `^D` BSD script echoes when its input ends, and any
+// control character left (SI among them).
 const clean = (s) => {
-  let out = String(s ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r/g, '');
+  let out = String(s ?? '').replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[ -/]*[0-~]/g, '').replace(/\r/g, '');
   while (/[^\x08\n]\x08/.test(out)) out = out.replace(/[^\x08\n]\x08/g, '');
-  return out.replace(/\x08/g, '');
+  return out.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 };
 
 // -> { session, url, title } from a start that worked, or { error } naming what the CLI said.
