@@ -13,7 +13,8 @@ feature batch, beside the standing batch, never over it.** For an epic, Stage 0 
 in place of `init`, which would write a fresh queue over the standing batch's and, by setting a base
 on it, stop standing intake; the standing batch, its supervisor and intake carry on untouched. A repo
 runs one feature batch per epic, each on its own branch, beside the standing batch and every other
-epic's; all of them share the repo's limits. **Start the batch, then expand the epic, both at Stage 0 before
+epic's; all of them share the repo's limits, and when more of them have ready work than the §3b cap
+has slots, the free slots go to each in turn. **Start the batch, then expand the epic, both at Stage 0 before
 triage**, and never triage, build, transition or edit the epic itself:
 
 ```bash
