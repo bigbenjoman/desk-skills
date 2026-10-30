@@ -10,9 +10,10 @@
 // promotion PR is marked ready (config §3 pr-ready). Merging the promotion PR stays the person's.
 //
 // The result is the queue's `gate`: { state: 'passed' | 'failed', sha, started, finished, failures,
-// close_out, pr, ready, note, slice }. `close_out` is the epic's criteria no spec covers, which the
+// close_out, pr, ready, note, slice, conflict }. `close_out` is the epic's criteria no spec covers, which the
 // close-out checks one by one; null when the criteria could not be read. `slice` is pass.mjs's record
-// of the children the run covers, kept as it was.
+// of the children the run covers, kept as it was. `conflict` is the files merging the default branch
+// in conflicted on, which pass.mjs hands to its base conflict fix worker (base-fix.mjs); else null.
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -34,6 +35,8 @@ try { sha = readQueue(E.queueFile()).gate?.sha ?? null; } catch { /* read again 
 // The base worktree, once this run has synced it clean: whatever the checks then write there is put
 // back, however the run ends. Before that, anything in it is the person's.
 let ours = null;
+// The files a sync of the base met in conflict, for the pass's conflict fix worker; null otherwise.
+let conflict = null;
 const git = (cwd, args) => { try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
 // Whatever happens, the queue gets a result: a gate that dies silently would hold the batch for ever.
@@ -62,7 +65,7 @@ function finish(extra = {}) {
   }
   const gate = {
     state: failures.length ? 'failed' : 'passed', sha, started, finished: new Date().toISOString(), pid: process.pid,
-    failures, close_out: null, pr, ready, note, slice: Q.gate?.slice ?? null, ...extra,
+    failures, close_out: null, pr, ready, note, slice: Q.gate?.slice ?? null, conflict, ...extra,
   };
   execFileSync('node', [join(BIN, 'queue.mjs'), 'set-batch', `gate=${JSON.stringify(gate)}`], { stdio: ['ignore', 'ignore', 'inherit'] });
   console.log(`base gate ${gate.state} at ${sha ?? '?'}${failures.length ? `:\n  ${failures.join('\n  ')}` : ''}${note ? `\n${note}` : ''}`);
@@ -98,12 +101,12 @@ function gate() {
   const path = wt.path;
 
   // The same grant every sync needs: one approval per batch where it is `ask`.
-  const perm = E.permissionOrUnset('batch-base-push') ?? 'ask';
-  const push = perm === 'yes' || (perm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED);
+  const { perm, key, ok: push } = E.basePushGrant();
   const s = syncBase({ path, base: BASE, branch: SOURCE, push });
   if (!s.ok) {
-    failures.push(s.reason === 'conflict' ? `merging ${SOURCE} into ${BASE} conflicts (${s.files.join(', ')}): resolve it in ${path} and push`
-      : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${E.permissionKey('batch-base-push')} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
+    if (s.reason === 'conflict') conflict = s.files;
+    failures.push(s.reason === 'conflict' ? `merging ${SOURCE} into ${BASE} conflicts (${s.files.join(', ')}): the pass hands it to a conflict fix worker where §3 lets one resolve it`
+      : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${key} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
         : `syncing ${BASE}: ${s.why}`);
     return;
   }

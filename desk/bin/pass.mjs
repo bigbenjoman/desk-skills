@@ -32,11 +32,12 @@ import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
-import { maintenance, stopForWindow, runningHere } from './maintenance.mjs';
+import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment, verdictCarries, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, undraftComment, verdictCarries, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
@@ -110,9 +111,7 @@ const HEADLESS_KEY = E.permissionKey('autopilot-workers');
 const maySpawn = headlessPerm === 'yes' || (headlessPerm === 'ask' && !!process.env.AUTOPILOT_USER_APPROVED);
 // Pushing a sync merge to the batch base is its own grant, unset meaning `ask`: one approval per
 // batch, asked at Stage 3 and passed to every pass as AUTOPILOT_BASE_PUSH_APPROVED=1.
-const basePushPerm = E.permissionOrUnset('batch-base-push') ?? 'ask';
-const BASE_PUSH_KEY = E.permissionKey('batch-base-push');
-const mayPushBase = basePushPerm === 'yes' || (basePushPerm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED);
+const { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } = E.basePushGrant();
 
 // The orchestrator's own name, for the worker's briefing. Resolve it from this process's own
 // session id, which Claude Code exports, and fall back to the env var. Nothing set the env var
@@ -219,6 +218,13 @@ const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.resetsAt)}`
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
 // the limit refused (the queue's usage_hold).
 const usageHolds = [];
+// A worker waiting at a usage limit until it lifts (or the grace after its reset) is paused, not quiet.
+// The limit passed in is one the worker has not answered since (usageLimit's `resumed` is false).
+const pausedOn = (limit) => !!limit && !limit.resumed && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
+// Passes with no log growth before a worker is reported quiet, and before it is stopped as wedged. Workers
+// log no partial messages, so a long model turn or a suite behind the test lock writes nothing until it ends.
+const QUIET_PASSES = 3;
+const WEDGE_PASSES = 6;
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -488,7 +494,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   for (const l of usage.limits.filter((x) => x.resumed)) {
     notes.push(`- [${t.key}] resumed after ${limitName(l.type)}${l.resetsAt != null ? ` (reset at ${resetText(l.resetsAt)})` : ''}`);
   }
-  const pausedOnLimit = !!limit && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
+  const pausedOnLimit = pausedOn(limit);
   // Kept below only while the ticket is still running once the loop is done.
   if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused });
   else if (t.usage_paused) q('set', t.key, 'usage_paused=null');
@@ -508,7 +514,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= 6 && !done && !handoff) {
+    if (idle >= WEDGE_PASSES && !done && !handoff) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
@@ -517,7 +523,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       wedged = true;
       q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
       report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
-    } else if (idle >= 3) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
+    } else if (idle >= QUIET_PASSES) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
   }
 
   // Screenshots the worker captured but cannot upload: one shared browser profile, so the
@@ -824,17 +830,22 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
 
 // ---- maintenance window ------------------------------------------------------
 // The weekly window (maintenance.mjs), one per computer, holds every spawn, resumes included, while it
-// drains, updates and restarts. A worker still running at its drain limit is stopped with its session
-// kept, and queued to resume once the window is done.
+// drains, updates and restarts. A worker still running at its drain limit, a base conflict fix's
+// included, is stopped with its session kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
   selfQueue: QUEUE_FILE,
-  running: Object.values(queue().tickets).filter(runningHere),
+  running: runningWorkers(queue()),
   stop: (t) => stopForWindow(t, {
     live: registryOk ? live : null,
     kill: (pid) => sh('kill', [String(pid)], { tolerant: true }),
     setQueue: (key, fields) => {
       const before = report.failed.length;
       q('set', key, ...fields);
+      return report.failed.length === before ? { ok: true } : { ok: false, why: report.failed.at(-1) };
+    },
+    setBaseFix: () => {
+      const before = report.failed.length;
+      q('set-batch', `base_fix=${JSON.stringify({ ...queue().base_fix, resume: 'maintenance' })}`);
       return report.failed.length === before ? { ok: true } : { ok: false, why: report.failed.at(-1) };
     },
   }),
@@ -986,7 +997,11 @@ const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
+// A base gate that failed on a conflict can start a base conflict fix worker with no ticket to spawn,
+// so it counts under the lock as a ticket's spawn does. Pacing holds no fix try (below).
+const gateFixDue = E.batchBase() != null && fresh.gate?.state === 'failed' && Array.isArray(fresh.gate.conflict) && !fresh.base_fix?.running;
+const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !(held === PACE_HELD ? null : held));
+if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -1000,10 +1015,12 @@ const plan = borrowPlan({
   on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: spawnable.length,
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
-const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
+// This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
+const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
+const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
 const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
 const REPO = repoBudget({
-  batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
+  batch: E.batchName(), running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
   batches: repoBatches,
 });
 // A repo's batches share its cap only under the lock: without it two passes could each count the same
@@ -1041,40 +1058,168 @@ const baseLines = [];
 let baseHold = false;
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
+// A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
+// (base-fix.mjs), which runs outside the tickets and is kept on the queue as `base_fix`. `baseFix` is
+// the try to start this pass, `baseFixLive` that a try's worker is still at it, and `gateConflict`
+// what became of a conflict the base gate met, for the gate's report.
+const BASE_FIX_KEY = BASE ? E.baseFixKey(BASE) : null;
+let bf = fresh.base_fix ?? null;
+let baseFix = null;
+let baseFixLive = false;
+// A try's worker that exited at the usage limit and is resumed this pass, after its reset.
+let baseFixResume = null;
+let gateConflict = null;
+// Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
+// machine budget and the repo's shared §3b cap bind it as they bind every worker.
+const baseFixRoom = !(held === PACE_HELD ? null : held) && !lowMemory && running.length < concurrency && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 if (BASE && SOURCE && BASE !== SOURCE) {
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
   const featureMode = fresh.feature === true;
   if (featureMode && SLICE.bad) report.waiting.push(SLICE.bad);
   const willSpawn = slots > 0 && spawnable.length > 0;
+  const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
   const blocked = (why) => {
-    report.waiting.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands'}`);
+    report.waiting.push(`base sync: ${why} — ${holdNote}`);
+    if (featureMode) baseHold = true;
+  };
+  // Held as a blocked sync is, but a worker's to clear, not the person's.
+  const heldForFix = (why) => {
+    baseLines.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing else spawns this pass' : holdNote}`);
     if (featureMode) baseHold = true;
   };
   const wt = ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE });
   if (wt.ok && wt.made) baseLines.push(`base worktree for ${BASE} made at ${wt.path}`);
+  // A try's worker that has finished leaves its outcome on the try. One whose last word is a park or a
+  // done has finished whether or not its session exits, and one quiet for six passes is wedged: either
+  // is stopped, as a ticket's worker is, so the try ends and the next conflict at this head goes to the
+  // person. Otherwise the registry unread, or a log written in the last two minutes that has not ended,
+  // reads as still at it.
+  // A try's worker resumes, after the usage limit or the maintenance window, only when a ticket's
+  // resume would: nothing holds spawns (pacing aside, which never holds a fix) and memory allows.
+  const resumeHeld = (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null);
+  if (bf?.running && bf.resume === 'maintenance') {
+    // Stopped for the maintenance window with its session kept: the same try, resumed once the window
+    // is done, never ended or counted as spent.
+    baseFixLive = true;
+    const ended = 'stopped for the maintenance window';
+    if (!resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume: null } };
+    else report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
+  } else if (bf?.running) {
+    const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
+    let text = '';
+    try { text = readFileSync(log, 'utf8'); } catch { /* no log yet: read as ended */ }
+    const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
+    const markers = workerMarkers(text);
+    const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
+    // At a usage limit it has not answered since, as a ticket's worker: never stopped or failed for it,
+    // and while it waits for the limit to lift it is paused, not quiet.
+    const usage = !said ? usageLimit(text) : null;
+    const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
+    const paused = pausedOn(atLimit);
+    const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
+    const idle = bytes > (bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
+    const sidLive = registryOk && liveSids.has(bf.running);
+    const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
+    // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's
+    // worker: held until the limit lifts, then resumed in its own session (resumeBaseFix), never ended
+    // as no marker. Once per limit: a resume that ends before the model answers, with no new rejection,
+    // leaves the same count of limits in the log, and then ends the try as any other exit.
+    const awaitsLift = exited && !!atLimit && bf.resume_limits !== usage.limits.length;
+    const outcome = awaitsLift ? null
+        : idle >= WEDGE_PASSES && !said ? `was stopped as wedged, with no output for ${idle} passes`
+          : registryOk && (said || exited) ? baseFixOutcome(markers)
+            : null;
+    if (outcome) {
+      const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
+      if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
+      bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+      if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+      baseLines.push(`base conflict fix: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
+    } else {
+      baseFixLive = true;
+      if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
+        bf = { ...bf, log_bytes: bytes, idle_passes: idle };
+        if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+      }
+      // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
+      // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
+      const up = awaitsLift && lifted(atLimit);
+      const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
+      if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
+      else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
+      else if (paused || awaitsLift) report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
+      else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
+    }
+  }
+  const originSha = (b) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${b}`], { tolerant: true }) || null;
+  // A conflict, met by the sync or by the base gate. A fix worker takes it where §3 lets one; what no
+  // worker may take, or what its tries left, is the person's, through `toPerson`.
+  const conflicted = (files, toPerson) => {
+    const c = baseFixCall(bf, { head: originSha(BASE), source: originSha(SOURCE), files, perm: E.permission('pr-conflict-unreviewed'), alive: baseFixLive,
+      push: { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } });
+    const said = `merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${files?.length ? files.join(', ') : 'not listed'}`;
+    if (c.call === 'person' || c.call === 'stuck') { toPerson(`${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push`); return null; }
+    if (c.call === 'wait') return `${said}. Conflict fix try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
+    if (!baseFixRoom) return `${said}. Conflict fix try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass)`;
+    baseFix = { wt: wt.path, fix: c.fix };
+    return `${said}. Conflict fix try ${c.fix.try} of ${c.fix.of} starts this pass in ${wt.path}`;
+  };
   // A slice gate runs in the base worktree while children still spawn: nothing else touches it until
   // the gate is done, and spawns carry on from origin's base as it stands.
   const gateBusy = gateAlive(fresh.gate);
+  let metConflict = false;
   if (!wt.ok) {
     if (willSpawn) blocked(wt.why);
     else report.waiting.push(`base worktree: ${wt.why}`);
   } else if (willSpawn && gateBusy) {
     baseLines.push(`base sync: skipped while the base gate runs in ${wt.path}; spawning carries on from ${BASE} as it stands`);
+  } else if (willSpawn && baseFixLive) {
+    // The worktree is the fix worker's until it ends.
+    metConflict = true;
+    const line = `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
+    heldForFix(line);
+    gateConflict = { worker: true, line };
   } else if (willSpawn) {
     const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY });
+    // A base that syncs is no longer in conflict, so a later conflict starts its tries afresh.
+    if (s.ok && !s.dry && bf && !DRY) {
+      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(bf.tries.length)}`);
+      q('set-batch', 'base_fix=null');
+      bf = null;
+    }
     if (s.ok && s.dry) baseLines.push(`base sync (dry run): would merge ${s.merged} commit(s) from ${SOURCE} into ${BASE}; nothing pushed`);
     else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}`);
     else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
-    else if (s.reason === 'conflict') blocked(`merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${s.files.join(', ')}. Resolve it by hand in ${wt.path} and push`);
-    else if (s.reason === 'permission') {
+    else if (s.reason === 'conflict') {
+      metConflict = true;
+      let person = null;
+      const line = conflicted(s.files, (why) => { person = why; blocked(why); });
+      if (line) heldForFix(line);
+      gateConflict = { worker: !!line, line: line ?? person, said: !line };
+    } else if (s.reason === 'permission') {
       blocked(`${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced` +
         (basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''));
     } else blocked(s.why);
   }
-  if (wt.ok && willSpawn && !gateBusy && !baseHold && baselineOn) recordBaseline(wt.path);
-  if (wt.ok && featureMode && fresh.promotion == null) openPromotion(wt.path);
-  else if (wt.ok && featureMode && fresh.promotion?.pr != null && !gateBusy) nextPromotion(wt.path, fresh.promotion);
+  // The base gate met a conflict at the head origin's base is still at: the same fix worker takes it,
+  // and the gate runs again once the base moves.
+  const g = fresh.gate;
+  if (wt.ok && !metConflict && !gateBusy && g?.state === 'failed' && Array.isArray(g.conflict)) {
+    sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], { tolerant: true });
+    if (baseFixLive) {
+      gateConflict = { worker: true, line: `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
+    } else if (g.sha && g.sha === originSha(BASE)) {
+      let person = null;
+      const line = conflicted(g.conflict, (why) => { person = why; });
+      gateConflict = line ? { worker: true, line } : { worker: false, line: person };
+    }
+  }
+  // The base worktree is a running fix worker's, or about to be, so nothing else works in it this pass.
+  const fixOwns = baseFixLive || baseFix != null;
+  if (wt.ok && willSpawn && !gateBusy && !baseHold && !fixOwns && baselineOn) recordBaseline(wt.path);
+  if (wt.ok && featureMode && !fixOwns && fresh.promotion == null) openPromotion(wt.path);
+  else if (wt.ok && featureMode && !fixOwns && fresh.promotion?.pr != null && !gateBusy) nextPromotion(wt.path, fresh.promotion);
 }
 
 // A promotion PR that merged into the default branch while children are still to merge into the base
@@ -1201,18 +1346,20 @@ const baselineBrief = () => {
 };
 
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
-// tickets a pass; a slots that is not a number spawns nothing.
-let attempts = 0;
+// tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
+// holds one.
+let attempts = baseFixLive ? 1 : 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
-// cannot see one another batch's pass has just handed out. Only running tickets hold one. A queue that will not parse is named in the report
-// and skipped, never a hold.
+// cannot see one another batch's pass has just handed out. Only running tickets and a running base
+// conflict fix hold one. A queue that will not parse is named in the report and skipped, never a hold.
 const unreadableQueues = new Set();
 function otherQueuePorts() {
   const ports = new Set();
   for (const { q: other, error } of otherQueues({ self: QUEUE_FILE })) {
     if (error) { unreadableQueues.add(error); continue; }
     for (const r of Object.values(other.tickets ?? {})) if (r?.state === 'running' && Number(r.port) > 0) ports.add(Number(r.port));
+    if (other.base_fix?.running && Number(other.base_fix.port) > 0) ports.add(Number(other.base_fix.port));
   }
   return ports;
 }
@@ -1222,7 +1369,8 @@ function otherQueuePorts() {
 // is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
 // spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
 async function freePort(own = null) {
-  const taken = new Set([...Object.values(queue().tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), ...otherQueuePorts()]);
+  const now = queue();
+  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts()]);
   if (Number(own?.port) > 0 && !taken.has(Number(own.port)) && !(await E.portInUse(Number(own.port)))) return Number(own.port);
   let port = E.workerPortFloor();
   while (taken.has(port) || await E.portInUse(port)) port += 1;
@@ -1469,8 +1617,90 @@ async function spawnHandoff(t) {
   return undefined;
 }
 
+// A base conflict fix try: a task worker in the base worktree, on the base, under BASE_FIX_KEY, which
+// reads its ticket file. The try is recorded however the spawn goes, so a try that could not start
+// counts as one made at this head, and the next pass at the same head puts it to the person.
+async function spawnBaseFix({ wt, fix }) {
+  const ctx = { base: BASE, source: SOURCE, fix };
+  if (DRY) { out.push(`base conflict fix (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
+  const key = BASE_FIX_KEY;
+  mkdirSync(join(STATE, 'tickets'), { recursive: true });
+  writeFileSync(join(STATE, 'tickets', `${key}.md`), baseFixTicket({ key, ...ctx }));
+  const made = [...(bf?.tries ?? []), { try: fix.try, head: fix.head, source: fix.source, files: fix.files, at: PASS_AT }];
+  const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
+  const failed = (outcome, line) => {
+    made[made.length - 1].outcome = outcome;
+    record({});
+    report.failed.push(`${key}: ${line}`);
+  };
+  attempts += 1;
+  const model = models.off ? '' : models[tierFor({ key })];
+  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
+  const briefPath = writeBrief({ key }, wt, baseFixBrief(ctx), { notes: true });
+  const pre = preflight(key, wt, workerEnv);
+  // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
+  if (pre.limit) { preflightHitLimit({ key }, pre.cost); return; }
+  if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
+  const sid = E.uuid();
+  const port = await freePort();
+  E.rotateRound(key);
+  const logBytes = logPreflight(key, pre.cost);
+  // Each try is a fresh session: an earlier try's handoff briefing or resume file must not stand in for it.
+  for (const p of [handoffPath(STATE, key), workerResumePath(STATE, key)]) if (existsSync(p)) renameSync(p, `${p}.old`);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: baseFixTask(ctx) },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) { failed('could not be spawned', refused); return; }
+  made[made.length - 1].session = sid;
+  record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
+  report.spawned.push(`${key} port=${port} model=${model || 'default'} (conflict fix try ${fix.try} of ${fix.of} on ${BASE}); ${preflightNote(pre.cost)}`);
+}
+if (baseFix) await spawnBaseFix(baseFix);
+
+// A try's worker that exited at a usage limit since lifted, or was stopped for the maintenance window,
+// resumed in its own session, worktree and log, as resumeKilled resumes a ticket's: the same try, not a
+// new one. `clear` is what the resume settles on base_fix. One that cannot be resumed ends its try,
+// and the next conflict at this head goes to the person with that reason.
+async function resumeBaseFix({ wt, why, ended, clear }) {
+  const key = BASE_FIX_KEY;
+  const sid = bf.running;
+  if (DRY) { out.push(`base conflict fix (dry run): would resume session ${sid} on ${BASE}, which ${ended}`); return; }
+  const fail = (reason) => {
+    const outcome = `could not be resumed after it ${ended}: ${reason}`;
+    bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+    q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+    report.failed.push(`${key}: ${ended}, and ${outcome}`);
+  };
+  if (!wt) return fail(why ?? 'the base worktree is gone');
+  const model = models.off ? '' : models[tierFor({ key })];
+  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
+  const pre = preflight(key, wt, workerEnv);
+  // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
+  if (pre.limit) return preflightHitLimit({ key }, pre.cost);
+  if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const port = await freePort();
+  const briefPath = join(STATE, 'briefings', `${key}.md`);
+  const prompt = `Your previous run of this session ended (${ended}). Carry on with your base conflict fix on ${BASE} from where you stopped, in your worktree ${wt}. ` +
+    'A command may have been cut off part way: check git status, git log and any suite you had running before you go on, and redo only what did not finish. ' +
+    `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.`;
+  const logBytes = logPreflight(key, pre.cost);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, ...(existsSync(briefPath) ? [briefPath] : [])], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return fail(refused);
+  bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
+  q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+}
+if (baseFixResume) await resumeBaseFix(baseFixResume);
+
 for (const t of spawnable) {
-  if (baseHold || !(attempts < slots)) break;
+  // usageStop: the base fix's preflight above was refused at the usage limit.
+  if (baseHold || usageStop || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
   attempts += 1;
@@ -1955,8 +2185,27 @@ function conflictFiles(branch) {
   const files = o?.split('\n').slice(1).filter(Boolean) ?? [];
   return files.length ? files : null;
 }
+// Whether anyone but the user's own handle, and not a bot, has reviewed or commented on PR n: the line
+// between §3 pr-conflict-unreviewed and pr-conflict-reviewed, read as a draft's is (undraft.mjs). Unread,
+// it counts as reviewed.
+const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
+function humanSeen(n) {
+  let v = null;
+  try { v = JSON.parse(sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'reviews,comments'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return true; }
+  if (!v || typeof v !== 'object') return true;
+  return humanReviewed(v, conflictHandle);
+}
 for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
   const n = s.pr;
+  // A conflict goes to a fix worker only under the §3 row the base's conflict reads too.
+  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') {
+    const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
+    const perm = E.permission(row);
+    if (perm !== 'yes') {
+      report.waiting.push(`${t.key}: CONFLICT — PR #${n} is out of draft and conflicts with ${DEFAULT_BRANCH}, and config §3 ${E.permissionKey(row)} is "${perm}", so no fix worker resolves it: resolve it on the PR's branch and push`);
+      continue;
+    }
+  }
   const ctx = {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), operator: operatorRow.checks,
     ...driverReruns(n, s.head),
@@ -2091,6 +2340,11 @@ function baseGate(qx) {
     g = { ...g, state: 'failed', finished: new Date().toISOString(), failures: [`the gate stopped without a result (pid ${g.pid ?? '?'}): see ${GATE_LOG}`] };
     q('set-batch', `gate=${JSON.stringify(g)}`);
   }
+  // The base worktree is a base conflict fix worker's while it runs: the gate waits for it.
+  if (baseFixLive || baseFix) {
+    out.push(`BASE GATE: waits on the conflict fix worker on ${BASE}${gateConflict?.line ? `: ${gateConflict.line}` : ''}`);
+    return true;
+  }
 
   // This promotion's children: merged into the base since the last promotion PR merged.
   const since = p.since ? Date.parse(p.since) : null;
@@ -2189,6 +2443,13 @@ function baseGate(qx) {
         : co.length ? `close-out: check only ${co.join(', ')} per criterion, which no spec covers; every other criterion's spec passed on ${BASE}`
           : `close-out: every criterion has a spec that passed on ${BASE}, so no per-criterion check is needed`);
     }
+  } else if (Array.isArray(g.conflict) && gateConflict && !gateConflict.worker) {
+    // No fix worker may take the conflict, or its tries are spent: put to the person once, by the base
+    // sync where it met it too.
+    (gateConflict.said ? out : report.waiting).push(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}: ${gateConflict.line}`);
+  } else if (Array.isArray(g.conflict) && gateConflict) {
+    out.push(`BASE GATE: failed on ${at}, since ${SOURCE} conflicts with ${BASE}: ${gateConflict.line}. The gate runs again once ${BASE} moves`);
+    return true;
   } else {
     for (const f of g.failures ?? []) report.waiting.push(`BASE GATE: ${f}`);
     report.waiting.push(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}. Fix it on ${BASE}: the gate runs again once ${BASE} moves, or now with queue.mjs set-batch gate=null`);

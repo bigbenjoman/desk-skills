@@ -39,7 +39,7 @@ export function parseOperatorChecks(items) {
 }
 
 export const runUrl = (repo, id) => (id ? `https://github.com/${repo}/actions/runs/${id}` : null);
-const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
+export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // A fix try already made for this head: one whose worker finished without moving it. A review try
 // (kind `rereview`) moves no head by design, so it does not count here.
 const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview');
@@ -58,6 +58,9 @@ const stillRed = (done, fix) => `still red after ${tries(done.length)}: ${fix.ch
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => done.length >= FIX_TRIES_MAX || triedHere;
 const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
+// No try is left at this head: FIX_TRIES_MAX made, or a fix try made at it whose worker finished
+// without moving it. Base conflict fix tries (base-fix.mjs) count the same way.
+export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 
 // A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. The
 // reason ends with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as

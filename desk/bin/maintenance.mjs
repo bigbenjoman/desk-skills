@@ -106,7 +106,17 @@ const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'
 // window neither waits for one nor stops it, in any repo.
 export const runningHere = (t) => t?.state === 'running' && t.location !== 'cloud';
 
-// Running tickets in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
+// A queue's workers running on this computer, as rows stopForWindow can stop: its running tickets, and
+// its base conflict fix while one runs (pass.mjs keeps it on the queue as `base_fix`, not as a ticket,
+// and runs it in the base worktree here). A base fix the window already stopped (`resume`) is not running.
+export function runningWorkers(q) {
+  const rows = Object.values(q?.tickets ?? {}).filter(runningHere);
+  const bf = q?.base_fix;
+  if (bf?.running && !bf.resume) rows.push({ key: E.baseFixKey(q.base ?? 'base'), session_id: bf.running, base_fix: true });
+  return rows;
+}
+
+// Running workers in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
 // the queues that cannot be read.
 function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
   const queues = otherQueues({ self: selfQueue });
@@ -116,7 +126,7 @@ function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
   const running = []; const unreadable = [];
   for (const { slug, q, error } of queues) {
     if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of Object.values(q?.tickets ?? {})) if (runningHere(t) && where(t)) running.push(`${slug} ${t.key}`);
+    for (const t of runningWorkers(q)) if (where(t)) running.push(`${slug} ${t.key}`);
   }
   return { running, unreadable };
 }
@@ -124,12 +134,16 @@ function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
 // Stops one of this repo's workers by its registry pid, with its session kept, and queues it to
 // resume after the window (pass.mjs resumes `resume=maintenance` without counting it as a kill).
 // `live` is the session registry (null when it could not be read), `setQueue(key, fields)` -> {ok, why}.
-export function stopForWindow(t, { live, kill, setQueue }) {
+// A base conflict fix (runningWorkers) is stopped the same way, and its try kept open with
+// `resume: 'maintenance'`, so pass.mjs resumes it as the same try rather than ending it: `setBaseFix()`
+// -> {ok, why} writes that.
+export function stopForWindow(t, { live, kill, setQueue, setBaseFix }) {
   if (!Array.isArray(live)) return { ok: false, why: 'the session registry could not be read' };
   const a = live.find((x) => x.sessionId === t.session_id);
   if (a && !a.pid) return { ok: false, why: `no pid for session ${t.session_id}` };
   if (a?.pid) kill(a.pid);
-  const r = setQueue(t.key, ['state=triaged', 'resume=maintenance', 'resume_why=stopped for the maintenance window']);
+  const r = t.base_fix ? (setBaseFix?.() ?? { ok: false, why: 'no way to record the base fix here' })
+    : setQueue(t.key, ['state=triaged', 'resume=maintenance', 'resume_why=stopped for the maintenance window']);
   return r.ok ? { ok: true, pid: a?.pid } : { ok: false, why: `queue write refused: ${r.why}` };
 }
 
@@ -491,12 +505,12 @@ if (isMain) {
     console.error('usage: maintenance.mjs step');
     process.exit(2);
   }
-  // Outside a pass (an idle batch): this repo's running tickets are stopped through the session
+  // Outside a pass (an idle batch): this repo's running workers are stopped through the session
   // registry and queued to resume, as a pass does.
   const qf = E.queueFile();
   let q = null;
   try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch { /* no queue: nothing running */ }
-  const running = Object.values(q?.tickets ?? {}).filter(runningHere);
+  const running = runningWorkers(q);
   let live;
   const stop = (t) => {
     if (live === undefined) { try { live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' })); } catch { live = null; } }
@@ -504,6 +518,7 @@ if (isMain) {
       live,
       kill: (pid) => spawnSync('kill', [String(pid)]),
       setQueue: (key, fields) => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setBaseFix: () => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
     });
   };
   console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));

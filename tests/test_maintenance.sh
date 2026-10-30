@@ -259,5 +259,27 @@ pj 2026-10-26T06:31:00Z
 check "a window row that does not read is named"            'grep -q "^maintenance: config §3b \"Maintenance window\" is \"Someday 25:00\"" <<< "$out"'
 check "the template has both rows and the §3 key"           'grep -q "^| Maintenance window | \`none\` |" "$SRC/desk-config.md" && grep -q "^| Maintenance drain limit (minutes) | \`60\` |" "$SRC/desk-config.md" && grep -qE "^\| \`machine-reboot\` \| .* \| \`ask\` \| \`TODO\` \|$" "$SRC/desk-config.md"'
 
+# Last: its windows are the latest weeks, after every case above.
+# ---- a base conflict fix is a worker the window drains and stops ---------------------------------
+# Another repo's running base fix keeps the window draining, as its tickets do.
+config "Mon 06:30 UTC" ask
+q add B-1; q set B-1 state=triaged branch=fix/B-1
+mkdir -p "$T/desk/repos/other"
+printf '{"version":1,"batch":"o","base":"feat/x","tickets":{},"base_fix":{"tries":[{"try":1}],"running":"sid-o","port":3510}}\n' > "$T/desk/repos/other/queue.json"
+pj 2026-11-02T06:31:00Z; pj 2026-11-02T06:50:00Z
+check "DS-320 another repo's running base conflict fix keeps the window draining" 'grep -q "none running here; waiting on 1 worker(s) in other repos (other base-feat-x)" <<< "$out"'
+rm -r "$T/desk/repos"; pj 2026-11-02T07:31:00Z; q set B-1 state=done
+# This repo's own: drained, then stopped at the limit with its try kept open to resume, not ended.
+# Written straight to the queue: set-batch would ask an origin this repo does not have for the base.
+worker; q add B-2; q set B-2 state=triaged branch=fix/B-2
+jq '. + {base: "feat/x", base_fix: {tries: [{try: 1, head: "abc"}], running: "live-1", port: 3511}}' "$DESK_QUEUE" > "$T/q.tmp" && mv "$T/q.tmp" "$DESK_QUEUE"
+pj 2026-11-09T06:31:00Z
+check "DS-320 the window waits on this repo's running base conflict fix" 'grep -q "^maintenance: draining.*1 running (base-feat-x)" <<< "$out" && alive'
+pj 2026-11-09T07:01:00Z
+bf(){ node -e 'const v = process.argv[2].split(".").reduce((o, k) => o?.[k], JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).base_fix); console.log(typeof v === "object" && v !== null ? JSON.stringify(v) : v ?? null)' "$DESK_QUEUE" "$1"; }
+check "DS-320 at the limit it is stopped, its session kept, and its try is not ended as no marker or wedged" \
+  '! alive && grep -q "stopped base-feat-x (pid [0-9]*)" <<< "$out" && [ "$(bf tries.0.try)" = 1 ] && ! bf tries.0.outcome | grep -qE "no marker|wedged"'
+jq 'del(.base, .base_fix)' "$DESK_QUEUE" > "$T/q.tmp" && mv "$T/q.tmp" "$DESK_QUEUE"; q set B-2 state=done
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

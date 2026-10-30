@@ -40,6 +40,27 @@ branch; no base worktree is made until then). In feature mode that pass spawns n
 spawning carries on from the base as it stands. Feature mode here is the decision `plan-batch`
 recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
 
+**A conflict goes to a conflict fix worker before it comes to you** (`base-fix.mjs`), where §3
+`pr-conflict-unreviewed` is `yes`: the base is merged work no reviewer has read as one change. The
+pass starts a task worker in the base worktree, under the id `base-<branch>` with its ticket file in
+`$DESK_STATE/tickets/`, and it merges §0 Default branch in (a merge, never a rebase or a force push),
+resolves the files git lists, verifies the merged tree and pushes the base under the same
+`batch-base-push` grant. It takes a worker slot, within the batch's worker count and the machine
+budget, and every batch counts it and its port as a running worker's. A session still live after its
+worker parked or finished is stopped, as is one quiet for six passes (wedged); either ends the try.
+One that reaches a usage limit is never stopped or failed for it: it is paused, and resumed in its
+own session as the same try once the limit lifts (its reset passes or a probe call succeeds), as a
+ticket's worker is. A preflight the limit refuses spends no try and holds the batch. The maintenance
+window drains it, and stops it at its limit, as any worker, and it resumes as the same try once the
+window is done; either resume waits while anything holds spawns. While it runs the pass leaves the base worktree
+alone (no sync, no baseline, no base gate) and, in feature mode, still spawns nothing else. The next
+pass that syncs the base clean says so and clears the tries, kept on the queue as `base_fix`. A base
+gets two tries, one per head of the base, as a PR in conflict does: after two, or a try that left
+the base where it was, or with the row not `yes` or no `batch-base-push` grant (a worker that could
+not push would only park), the conflict goes under `WAITING ON YOU`, naming
+its files and what the last try did (parked, finished, or no marker); resolve it in the base
+worktree and push.
+
 **Baseline checks (config §4 "Baseline checks" `on`).** Once the sync is done, and only when the
 base has moved since the last record, the pass runs §4 Install, Typecheck and Lint in the base
 worktree and records their errors in `<state>/baseline.json`. The report says

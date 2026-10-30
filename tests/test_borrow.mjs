@@ -219,6 +219,16 @@ named('acme__a', 'X-9', '{ not json');
 r = repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 });
 t('DS-308 a batch whose queue cannot be read counts at the cap, and is named', r.room === 0 && /batch X-9 unreadable \(.*X-9\/queue\.json is not valid JSON.*\), counted at the cap/.test(r.line), true);
 
+// DS-320: a running base conflict fix is a worker too, in the budget and in what borrowing reads.
+fresh();
+repo('acme__a', { share: 2, running: 1 });
+const fixing = repo('acme__b', { running: 2 });
+writeFileSync(fixing, JSON.stringify({ ...JSON.parse(readFileSync(fixing, 'utf8')), base_fix: { tries: [{ try: 1 }], running: 'sid-f', port: 3510 } }));
+t('DS-320 the machine budget counts another queue\'s running base conflict fix', budget(queuePath('acme__a'), 1), 'machine budget: 4 of the machine\'s 10 worker(s) running across every repo');
+t('DS-320 and so does borrowing', B.otherBatches({ self: queuePath('acme__a'), now: NOW }).find((o) => o.slug === 'acme__b').running, 3);
+writeFileSync(fixing, JSON.stringify({ ...JSON.parse(readFileSync(fixing, 'utf8')), base_fix: { tries: [{ try: 1 }], running: null, port: null } }));
+t('DS-320 a base conflict fix that has ended is not counted', budget(queuePath('acme__a'), 1), 'machine budget: 3 of the machine\'s 10 worker(s) running across every repo');
+
 // AC8: borrowing off, which is the default.
 t('AC8 the row is off when unset', B.borrowSetting(null).on, false);
 t('a row that is neither on nor off is said and read as off', B.borrowSetting('yes please').on === false && /Borrow idle workers" is "yes please"/.test(B.borrowSetting('yes please').bad), true);

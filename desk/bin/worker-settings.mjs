@@ -419,12 +419,20 @@ if (mode === 'triage') {
     return p === 'yes';
   };
 
-  // git push: only this ticket's branch, only as exact commands, never the default branch.
+  // git push: only this ticket's branch, only as exact commands, never the default branch. The one
+  // exception is the batch base's conflict fix worker (base-fix.mjs), whose branch is the base: one
+  // exact push of it, under the grant every base sync needs (§3 batch-base-push).
   const BRANCH = (opt.branch ?? '').trim();
+  const BATCH_BASE = (() => { try { return E.batchBase(); } catch { return null; } })();
+  const baseFix = !!BATCH_BASE && T === E.baseFixKey(BATCH_BASE) && BRANCH === BATCH_BASE;
   const branchOk = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(BRANCH) && !BRANCH.includes('..') && !BRANCH.endsWith('.lock') && BRANCH !== DEFAULT;
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
-  if (!branchOk) {
+  if (baseFix) {
+    const push = E.basePushGrant();
+    if (push.ok) allow.push(...exact('git', ` push origin ${BRANCH}`));
+    else { deny.push(...bash('git', ' push')); denied.push(`${push.key} (${push.perm})`); }
+  } else if (!branchOk) {
     deny.push(...bash('git', ' push'));
     denied.push(`${E.permissionKey('git-push')} (no usable branch for this ticket${BRANCH ? `: '${BRANCH}'` : ''})`);
   } else {
