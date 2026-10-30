@@ -11,7 +11,9 @@
 //
 // Each ticket the query finds, once (the register is <state>/intake.json):
 //   - already in the queue or another batch, or already admitted or handed on: nothing;
-//   - an epic: handed to the digest untriaged, pointing at /desk-admit, which plans it as a feature batch;
+//   - an epic: triaged, and its feature batch started beside the standing batch with its plan drafted
+//     and left for the person (epic-plan.mjs), one a run; handed to the digest when it cannot start,
+//     and left for later while another feature batch is live;
 //   - a child of an epic whose feature batch is live: not admitted, the report naming that batch and
 //     pointing at /desk-admit, which adds it there;
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
@@ -29,8 +31,10 @@
 // `admit` is the same gate for tickets named by hand: no search, no interval and no cap, every one
 // triaged afresh, and what fails a check is refused back to the person (exit 11) rather than handed to
 // the digest. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
-// An epic is reported as one to plan as its own feature batch beside the standing batch (the
-// /desk-autopilot epic flow), unless a feature batch is already live; a child of an epic whose feature
+// An epic has its own feature batch started beside the standing batch, its plan drafted headless and
+// left for the person in needs-you (epic-plan.mjs); without config §3 autopilot-workers `yes` it is
+// reported as one to plan in a session (the /desk-autopilot epic flow). Either way it is refused while
+// a feature batch is already live. A child of an epic whose feature
 // batch is live is admitted into that batch, held behind its blockers there and the unfinished
 // children it collides with. The person naming it is the approval.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
@@ -41,6 +45,7 @@ import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 import { designGap, needsPersonLane, readQueue as readQueueAt } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
+import { startEpic } from './epic-plan.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -188,6 +193,14 @@ function admitHeld(key, rec, tickets, by) {
   const a = queueCmd('admit', key, '--by', by, ...(held.length ? ['--hold', held.join(',')] : []));
   return a.status === 0 ? { held } : { why: lastLine(a) };
 }
+// The register entry for an epic whose feature batch was started, so intake never takes it again.
+const epicEntry = (s, by, now) => ({ at: now.toISOString(), outcome: 'admitted', batch: s.batch,
+  text: `feature batch ${s.batch} started, ${s.children.length} ${s.children.length === 1 ? 'child' : 'children'} held behind its plan, by ${by}` });
+function noteEpic(state, key, s, by, now) {
+  const reg = readIntake(state);
+  reg.tickets[key] = epicEntry(s, by, now);
+  writeIntake(state, reg);
+}
 const laneSize = (rec) => `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}`;
 const heldText = (held) => (held.length ? `, held behind ${held.join(', ')}` : '');
 
@@ -265,9 +278,28 @@ function intake({ state, query, reg, now }) {
   const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
     && !skipped(reg.tickets[k]) && !away(k);
-  // An epic is a feature batch's, with its spine and owner table approved first: never a worker's.
-  for (const i of found.filter((x) => isNew(x.key) && isEpic(x.fields?.issuetype))) hand(i.key, `an epic: /desk-admit ${i.key} plans it as a feature batch beside the standing batch`);
-  const fresh = found.map((i) => i.key).filter(isNew);
+  // An epic is a feature batch's, never a worker's: one a run has its batch started, and its plan
+  // drafted and left for the person; while a feature batch is live, the rest wait for it to finish.
+  const epicKeys = found.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key).filter(isNew);
+  for (const [n, key] of epicKeys.entries()) {
+    const live = liveFeatureBatches();
+    if (live.length) {
+      const text = `an epic, and feature batch ${live[0].name} is already running: a repo runs one feature batch at a time, so ${key} is taken once it finishes`;
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: live[0].name, text };
+      writeIntake(state, reg);
+      lines.push(`intake: ${key} not admitted: ${text}`);
+      continue;
+    }
+    if (n > 0) { lines.push(`intake: epic ${key} waits for the next intake: one epic's feature batch is started a run`); continue; }
+    const t = triage(key, state);
+    if (!t.rec) { lines.push(`intake: epic ${key} not admitted: ${t.why}; the next intake tries again`); continue; }
+    const s = startEpic(key, t.rec, { by: 'intake' });
+    if (s.why) { hand(key, `an epic, and its feature batch was not started: ${s.why}`); continue; }
+    reg.tickets[key] = epicEntry(s, 'intake', now);
+    writeIntake(state, reg);
+    lines.push(...s.lines.map((l) => `intake: ${l}`));
+  }
+  const fresh = found.map((i) => i.key).filter((k) => !epicKeys.includes(k) && isNew(k));
   for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
   const triageNow = fresh.slice(0, MAX_TRIAGE);
@@ -358,10 +390,12 @@ function byHand(keys, { state, by, front, now }) {
   const lines = [];
   const admitted = [];
   const refused = [];
-  // Epics to plan as a feature batch beside the standing batch: the /desk-autopilot epic flow.
+  // Epics to plan as a feature batch beside the standing batch in a session (the /desk-autopilot epic
+  // flow), and epics whose feature batch was started here, their plans waiting in needs-you.
   const plan = [];
+  const epics = [];
   const refuse = (key, text) => { refused.push(key); lines.push(`not admitted ${key}: ${text}`); };
-  const done = (extra = {}) => ({ ran: true, lines, admitted, refused, plan, ...extra });
+  const done = (extra = {}) => ({ ran: true, lines, admitted, refused, plan, epics, ...extra });
   // Starting a standing batch has no plan approval, so it needs what standing intake needs.
   const mayStart = E.permission('autopilot-workers') === 'yes';
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
@@ -391,8 +425,17 @@ function byHand(keys, { state, by, front, now }) {
       // A repo runs one feature batch at a time, beside the standing batch.
       const live = liveFeatureBatches();
       if (live.length) { refuse(key, `an epic, and feature batch ${live.map((b) => b.name).join(', ')} is already running: a repo runs one feature batch at a time, so plan ${key} once it finishes`); continue; }
-      plan.push(key);
-      lines.push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
+      // Without a standing grant for headless workers, a session plans it with the person.
+      if (!mayStart) {
+        plan.push(key);
+        lines.push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
+        continue;
+      }
+      const s = startEpic(key, t.rec, { by });
+      if (s.why) { refuse(key, `an epic, and its feature batch was not started: ${s.why}`); continue; }
+      noteEpic(state, key, s, by, now);
+      epics.push(key);
+      lines.push(...s.lines);
       continue;
     }
     recs[key] = t.rec;
@@ -423,7 +466,7 @@ function byHand(keys, { state, by, front, now }) {
       lines.push(f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`);
     }
   }
-  if (admitted.length) lines.push(`the supervisor's next tick picks ${admitted.length === 1 ? 'it' : 'them'} up`);
+  if (admitted.length || epics.length) lines.push(`the supervisor's next tick picks ${admitted.length + epics.length === 1 ? 'it' : 'them'} up`);
   return done({ started });
 }
 

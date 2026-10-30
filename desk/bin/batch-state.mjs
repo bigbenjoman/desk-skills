@@ -59,6 +59,11 @@ export function spinePark(t) {
   return s.startsWith(SPINE_APPROVAL_PREFIX) ? 'approval' : s.startsWith(SPINE_SPECS_PREFIX) ? 'specs' : null;
 }
 
+// An epic admitted with no session (epic-plan.mjs), parked in its own feature batch until the person
+// answers its drafted plan; its children are held behind it.
+export const FEATURE_PLAN_PREFIX = 'feature plan awaiting your answer';
+export const planPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(FEATURE_PLAN_PREFIX);
+
 // Why a triage record's design is not one a worker can build from, or null when its Design section
 // links at least one Claude Design canvas and each is saved on the batch's base or snapshotted
 // (ticket-facts.mjs records `design`).

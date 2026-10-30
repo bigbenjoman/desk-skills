@@ -421,6 +421,17 @@ const xi = N.collect({ word: 'xi' }).items;
 t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread is', xi.map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
 t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi[0]?.need, 'PR #92: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?" · resolve or answer it');
 
+// ---- DS-351 AC2: an epic admitted with no session waits on its drafted plan as one item, and its
+// children held behind it are not items of their own.
+const planQ = 'feature plan awaiting your answer: the spine and owner table for P-1 are drafted, with 2 children held behind it: read /s/plan.md, then start, edit or discard it';
+const behindP = { state: 'parked', lane: 'A', held_by: 'P-1', park: { question: 'held by orchestrator: blocked by P-1 — starts once their PRs merge' } };
+put('omicron', { port: 4555, beat: 1, supervised: true, tickets: { 'P-1': { ...parked('epic', 5, planQ), type: 'Epic' }, 'P-2': behindP, 'P-3': behindP } });
+const om = N.collect({ word: 'omicron' }).items;
+t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting', om.map((i) => `${i.t.key} ${i.kind}`).join(), 'P-1 plan');
+t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === planQ} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
+t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 start');
+t('DS-351 the skill names the plan kind', /`plan` \(an\nepic admitted with `\/desk-admit`/.test(skill), true);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

@@ -4,7 +4,7 @@
 // digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
-//   - a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
+//   - an epic's feature-plan park, a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
 //     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
 //     decider tool acts on, and a park asking again what the park its last requeue cleared asked,
 //     with no answer since (queue.mjs requeue keeps that park as `prev_park`);
@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
-import { needsSession } from './batch-state.mjs';
+import { needsSession, planPark } from './batch-state.mjs';
 import { questionKey } from './not-now.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
@@ -90,7 +90,9 @@ export function presort(items, state = null) {
   for (const item of items) {
     const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(item.text);
     const prevAt = item.prev?.since ?? item.prev?.requeued_at;
-    if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
+    if (item.kind === 'parked' && planPark({ state: 'parked', park: { question: item.text } })) {
+      hand.push({ item, why: 'an epic\'s drafted plan: only the person starts, edits or discards it' });
+    } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
