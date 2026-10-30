@@ -69,8 +69,9 @@ export function prOpen(n) {
 }
 // Finished: every ticket done with no PR still open. A failed ticket waits on the person, a queue with no
 // tickets is a session's between `queue.mjs init` and its plan, and a batch on a base still has its gate
-// and promotion to come: none of those is finished. Nothing archives a finished batch, so its queue stays
-// listed, and must not keep its keys or its epic's children out of every other batch.
+// and promotion to come: none of those is finished. Only a batch on a base is archived (batch.mjs), so a
+// finished batch's queue stays listed, and must not keep its keys or its epic's children out of every
+// other batch.
 export function finished(q) {
   const rows = Object.values(q.tickets ?? {});
   return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));

@@ -212,7 +212,7 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   const handed = Object.values(readHanded(r.state));
   for (const h of handed.filter((x) => x.kind !== 'parked')) {
     const key = questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`);
-    if (!answered[key]) out.push({ ticket: h.ticket, kind: h.kind === 'batch' ? 'batch' : 'handed on', text: `${h.text} (${h.why})`, key });
+    if (!answered[key]) out.push({ ticket: h.ticket, kind: ['batch', 'archive'].includes(h.kind) ? h.kind : 'handed on', text: `${h.text} (${h.why})`, key });
   }
   // What standing intake did not admit: fixed in the tracker, it is tried again once forgotten.
   for (const h of handedByIntake(r.state)) {
@@ -283,6 +283,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
         lines.push(`- [ ] \`${q.ticket}\` (${q.kind}): ${q.text}`);
         // The batch's own items have no ticket to answer: they go once a pass no longer lists them.
         lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it'
+          : q.kind === 'archive' ? '  no answer to record: it clears once the PR is merged or closed'
           : q.kind === 'intake' ? `  fix the ticket, or run it in a desk-ticket session; to let intake try it again: \`DESK_AUTOPILOT_STATE=${q.state} node ${join(bin, 'intake.mjs')} forget ${q.ticket}\``
             : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
       }

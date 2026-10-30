@@ -45,7 +45,7 @@ config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -404,6 +404,7 @@ verdict "$NOTHING"; : > "$T/pass.batches"; : > "$T/driver.batches"
 bq "$SQ" s1 true "$RUNNING"
 out=$(mtick)
 check "DS-309 AC8: with only the standing batch, a tick runs intake and one pass, as before" '[ "$(cat "$T/pass.batches")" = "- main" ] && [ "$(count "$T/intake.calls")" = 1 ] && grep -q "pass: exit 10 (nothing_yet)" "$SS/supervisor.log" && grep -q "^intake: nothing new$" "$SS/supervisor.log"'
+check "DS-311 AC11: with only the standing batch, no archive check runs and nothing is moved" '[ ! -e "$DESK_HOME/repos/acme__widgets/batches" ] && ! grep -q "archiv" "$SS/supervisor.log"'
 waitlines "$T/driver.batches" 1
 bq "$XQ" X-1 true "$XRUN" feat/x
 : > "$T/pass.batches"; : > "$T/driver.batches"
@@ -455,6 +456,30 @@ out=$(mtick)
 check "DS-309 AC7: a batch not handed over is not driven, and its own log says so" '! grep -q "^Y-1 " "$T/pass.batches" && [ "$(count "$T/pass.batches")" = 2 ] && grep -q "batch Y-1 is not handed over" "$YS/supervisor.log"'
 out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
 check "DS-309 AC6: status lists every batch with its state" 'grep -q "^batch s1: handed over$" <<< "$out" && grep -q "^X-1: batch X-1: handed over$" <<< "$out" && grep -q "^Y-1: batch Y-1: not handed over" <<< "$out"'
+
+# ---- DS-311: a feature batch whose promotion PR is merged or closed is archived -------------------
+# gh answers each PR's state from $T/gh/<n>, OPEN where there is none.
+mkdir -p "$T/gh"
+printf '#!/bin/sh\ncat "%s/gh/$3" 2>/dev/null || echo OPEN\n' "$T" > "$T/fakes/gh"
+# xq <tickets json>: X-1 on feat/x, handed over, its promotion PR #9.
+xq(){ printf '{"version":1,"batch":"X-1","supervised":true,"base":"feat/x","promotion":{"pr":9},"approved":{},"tickets":%s}\n' "$1" > "$XQ"; }
+echo CLOSED > "$T/gh/9"
+xq "$XRUN"; before=$(cat "$XQ"); : > "$T/pass.batches"
+out=$(mtick)
+check "DS-311 AC6: with a worker running, X-1 is not archived and is unchanged" '[ "$(cat "$XQ")" = "$before" ] && grep -q "^X-1 " "$T/pass.batches" && ! grep -q "archiv" "$XS/supervisor.log"'
+xq '{"X1":{"key":"X1","state":"done","result":{"pr":21}},"X2":{"key":"X2","state":"done","result":{"pr":22}}}'
+echo MERGED > "$T/gh/22"; : > "$T/pass.batches"
+out=$(mtick)
+check "DS-311 AC7: with a ticket PR still open, X-1 is not archived and still runs" '[ -f "$XQ" ] && grep -q "^X-1 " "$T/pass.batches"'
+check "DS-311 AC7: the open PR is handed to the digest, and the log says so" 'grep -q "\"id\": \"archive:X-1:X1:21\"" "$XS/handed.json" && grep -q "\"kind\": \"archive\"" "$XS/handed.json" && ! grep -q "\"X2\"" "$XS/handed.json" && grep -q "archive: batch X-1 waits on X1 (PR #21), handed to the digest" "$XS/supervisor.log"'
+echo CLOSED > "$T/gh/21"; : > "$T/pass.batches"
+out=$(mtick)
+DQ="$DESK_HOME/repos/acme__widgets/batches/.done/X-1/queue.json"
+check "DS-311 AC5: X-1 is moved under batches/.done/" '[ ! -e "$XQ" ] && [ -f "$DQ" ] && [ ! -e "$XS" ] && [ -d "$SS/batches/.done/X-1" ]'
+check "DS-311 AC5: the archive is logged in the standing batch's log" 'grep -q "batch X-1 archived: its promotion PR #9 is closed" "$SS/supervisor.log"'
+check "DS-311 AC5: X-1 is not driven" '! grep -q "^X-1 " "$T/pass.batches" && grep -q "^- " "$T/pass.batches"'
+out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
+check "DS-311 AC5: X-1 is no longer listed" '! grep -q "^X-1:" <<< "$out" && grep -q "^Y-1:" <<< "$out"'
 
 # ---- AC10: uninstall ----------------------------------------------------------------------------
 out=$(sup uninstall); rc=$?
