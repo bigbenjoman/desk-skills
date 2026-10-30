@@ -48,7 +48,9 @@
 // the standing batch, then each named batch. Each runs as above in its own state folder, with its own
 // merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
 // DESK_DEFAULT_BRANCH removed, so its pass and driver read its own base. One batch that fails leaves
-// the rest to run. Each named batch first gets its archive check (batch.mjs archiveCheck): once its
+// the rest to run. A named batch whose epic's plan has been answered in /desk-needs-you is acted on
+// before its pass (epic-plan.mjs actOnPlan): started, started with the edit applied, asked again
+// naming what could not be applied, or discarded. Each named batch first gets its archive check (batch.mjs archiveCheck): once its
 // last promotion PR is merged, or its promotion PR closed, with no ticket running and no ticket PR open, it is moved under
 // batches/.done/, logged in the standing batch's log, and not run. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
@@ -62,6 +64,7 @@ import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder, supervisorHolder } from './batches.mjs';
 import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
+import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
@@ -278,6 +281,7 @@ function interval() {
     if (!named) enterBatch(b.name);
     try {
       if (!named && b.name && archived(b, batches[0].state)) return;
+      if (b.name && planAnswered(b, batches[0].state)) return;
       batchInterval(i === 0 ? intake : []);
     } catch (e) {
       try {
@@ -295,6 +299,19 @@ function archived(b, standing) {
   if (a.lines.length) { mkdirSync(b.state, { recursive: true }); logTo(b.state)([`== ${stamp()} ${a.lines.join('\n')}`]); }
   if (a.archived) { mkdirSync(standing, { recursive: true }); logTo(standing)(a.log.map((l) => `== ${stamp()} ${l}`)); }
   return a.archived;
+}
+
+// A feature batch whose epic's plan the person answered (epic-plan.mjs actOnPlan): started, edited and
+// started, asked again, or discarded. A discarded batch's lines go in the standing batch's log, since
+// its own log went with it. -> whether the batch is gone.
+function planAnswered(b, standing) {
+  const lock = { take: () => { mkdirSync(b.state, { recursive: true }); return !takeLock(b.state); }, drop: () => dropLock(b.state) };
+  const p = actOnPlan(b, { lock });
+  if (!p.lines.length) return p.gone;
+  const to = p.gone ? standing : b.state;
+  mkdirSync(to, { recursive: true });
+  logTo(to)([`== ${stamp()} batch ${b.name}: the plan's answer`, ...p.lines]);
+  return p.gone;
 }
 
 function batchInterval(intake) {
@@ -347,16 +364,29 @@ function batchInterval(intake) {
     idleCheckin(state, s, log, stamp);
     return;
   }
-  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
+  const holder = takeLock(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
-  try { writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), { flag: 'wx' }); }
+  try { runPass(state, q, s, log, stamp, intake); }
+  finally { dropLock(state); }
+}
+
+// Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
+// (or the orchestrator's pass lock).
+function takeLock(state) {
+  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
+  if (holder) return holder;
+  const mine = () => JSON.stringify({ pid: process.pid, since: new Date().toISOString() });
+  try { writeFileSync(supervisorLock(state), mine(), { flag: 'wx' }); }
   catch {
     // A dead holder's lock is taken over; a live one started in the moment since the check above.
-    if (supervisorHolder(state)) { log([`== ${stamp()} skipped: a pass is still running (pid ${supervisorHolder(state)})`, ...intake]); return; }
-    writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
+    const live = supervisorHolder(state);
+    if (live) return live;
+    writeFileSync(supervisorLock(state), mine());
   }
-  try { runPass(state, q, s, log, stamp, intake); }
-  finally { try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ } }
+  return null;
+}
+function dropLock(state) {
+  try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ }
 }
 
 // Standing intake (intake.mjs), where config §3b "Intake query" names a query: the lines for the

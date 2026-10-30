@@ -41,7 +41,10 @@ Otherwise it prints:
 
 `<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
 epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
-for start, discard or an edit, and its children wait behind it), `triage`
+for start, discard or an edit, and its children wait behind it. The supervisor acts on the answer
+at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
+starts, and discard removes the batch and releases the children. An edit it cannot apply cleanly
+comes back as a new `plan` item naming why), `triage`
 (open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
