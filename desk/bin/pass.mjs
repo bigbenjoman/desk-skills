@@ -20,7 +20,8 @@ import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
-import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
+import { batchCost, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -31,7 +32,7 @@ import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
-import { maintenance, stopForWindow } from './maintenance.mjs';
+import { maintenance, stopForWindow, runningHere } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
@@ -417,8 +418,30 @@ const resumeRefusal = (t, why) => {
   return null;
 };
 
+// A cloud session (cloud-worker.mjs) writes no log here: its result is the PR it opened, on the branch
+// it was told to use or with the key in its title. Once one shows, the ticket is done on that PR's
+// branch, which the merge driver matches it by. Its tracker steps are left undone: the session has no
+// tracker access, and the report says so.
+function advanceCloud(t) {
+  const c = t.cloud ?? {};
+  const read = (args) => {
+    try { return JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'all', ...args, '--json', 'number,title,url,headRefName,createdAt'], { tolerant: true }) || '[]'); } catch { return []; }
+  };
+  const pr = findCloudPr([...read(['--head', t.branch ?? '']), ...read(['--search', `${t.key} in:title`])], { key: t.key, branch: t.branch, since: c.started });
+  if (!pr) {
+    report.quiet.push(`${t.key}: cloud session ${c.url ?? c.session}, no PR yet (${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started)`);
+    return;
+  }
+  const cloud = { ...c, pr_at: pr.createdAt };
+  const wall = wallTime(cloudWall(cloud) ?? 0);
+  q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
+    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
+  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${c.url} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+}
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
+  if (t.location === 'cloud' && t.cloud) { advanceCloud(t); continue; }
   const log = join(STATE, 'logs', `${t.key}.log`);
   if (!existsSync(log)) continue;
   const h = sh('node', [join(BIN, 'harvest.mjs'), log], { tolerant: true });
@@ -805,7 +828,7 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
 // kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
   selfQueue: QUEUE_FILE,
-  running: Object.values(queue().tickets).filter((t) => t.state === 'running'),
+  running: Object.values(queue().tickets).filter(runningHere),
   stop: (t) => stopForWindow(t, {
     live: registryOk ? live : null,
     kill: (pid) => sh('kill', [String(pid)], { tolerant: true }),
@@ -1361,6 +1384,50 @@ function resumeRound(t, { wt, kept, branch }) {
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
 // on the same branch, starting at the stage it named with the handoff briefing in its system prompt.
 // Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
+// A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, with no worktree,
+// preflight or local worker. The session reads nothing from this computer, the tracker included, so
+// its prompt carries the ticket's text. A start that fails parks with the CLI's error: it is never
+// run locally instead without asking.
+function cloudTicketText(key) {
+  if (E.ticketKind(key).kind !== 'tracker') return readFileSync(join(STATE, 'tickets', `${key}.md`), 'utf8');
+  const got = shOut('desk-jira', ['get', key]);
+  if (!got.ok) throw new Error(`desk-jira get ${key}: ${got.out.split('\n').pop()}`);
+  const comments = shOut('desk-jira', ['comments', key]);
+  return `${got.out}\n\n## Comments\n\n${comments.ok ? comments.out : `(not read: ${comments.out.split('\n').pop()})`}`;
+}
+function spawnCloud(t) {
+  const park = (why) => {
+    const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
+      `or run it on this computer with queue.mjs set ${t.key} location=null, then queue.mjs requeue ${t.key}`;
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+  };
+  // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
+  // fix brief, and the PR it has would no longer count as its result. Nor can a local worker take it:
+  // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
+  // base. The person resumes the session, or fixes the branch.
+  if (t.result?.pr != null) {
+    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
+      `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
+      `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+    return;
+  }
+  let text;
+  try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
+  if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
+  const tests = E.configValues('test-cmd') ?? [];
+  const started = new Date().toISOString();
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
+  if (s.error) { park(s.error); return; }
+  q('set', t.key, 'state=running', `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, 'stage=cloud',
+    'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null');
+  if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
+  report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
+  runningKeys.add(t.key);
+}
+
 async function spawnHandoff(t) {
   // queue.mjs stores a stage of 7 as a number.
   const stage = t.handoff_stage == null ? '' : String(t.handoff_stage);
@@ -1417,6 +1484,10 @@ for (const t of spawnable) {
     // eslint-disable-next-line no-await-in-loop
     await spawnHandoff(t);
     if (usageStop) break;
+    continue;
+  }
+  if (t.location === 'cloud') {
+    spawnCloud(t);
     continue;
   }
   const wt = join(WORKTREES, t.key);

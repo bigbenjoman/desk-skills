@@ -671,8 +671,8 @@ export function parseWorkerModels(raw) {
 }
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
 
-// Config §3b "Worker location": `local` (also when the row is unset) or `cloud`. Cloud workers do
-// not exist yet, so both run every worker locally, and the batch plan says so at `cloud`. Anything
+// Config §3b "Worker location": `local` (also when the row is unset) or `cloud`, where plan-batch
+// sends each ticket that needs nothing on this computer to a cloud session (cloud-worker.mjs). Anything
 // else is refused rather than read as local.
 //   -> 'local' | 'cloud', or throws DeskConfigError
 export function parseWorkerLocation(raw) {

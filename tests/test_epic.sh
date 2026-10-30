@@ -477,6 +477,16 @@ check "it records the owner table too, for the children's spec check" '[ "$(jq -
 check "AC2: every other child is held behind the spine" \
   '[ "$(qg KAN-1001 .held_by)" = KAN-1050 ] && [ "$(qg KAN-1002 .held_by)" = KAN-1050 ] && [ "$(qg KAN-1003 .held_by)" = "KAN-1002|KAN-1050" ] && [[ "$(qg KAN-1001 .park.question)" == "held by orchestrator: blocked by KAN-1050 (feature spine)"* ]]'
 check "a criterion agreed for the close-out is not asked again" '! printf "%s" "$out" | grep -q "close-out check?" && printf "%s\n" "$out" | grep -q "^  DoD3 .*close-out "'
+# DS-124: at worker location cloud the spine and a spec owner run locally, where their specs are checked.
+printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Worker location | `local` | `cloud` |\n' >> "$CD/config.md"
+for k in KAN-1001 KAN-1002 KAN-1050; do r "$k" A '[]' '"renders":false,"needs_db":false,"needs_local":null'; done
+P KAN-1001 KAN-1002 KAN-1003 KAN-1050
+check "DS-124 AC3 at cloud the feature spine runs locally, and the plan says why" \
+  'printf "%s\n" "$out" | grep -A3 "^KAN-1050 " | grep -q "^  runs: local — it is the feature spine"'
+check "DS-124 AC3 so does a child owning acceptance specs, while a contributor goes to the cloud" \
+  'printf "%s\n" "$out" | grep -A3 "^KAN-1001 " | grep -q "^  runs: local — it owns acceptance specs" && printf "%s\n" "$out" | grep -A3 "^KAN-1002 " | grep -qx "  runs: cloud"'
+for k in KAN-1001 KAN-1002 KAN-1050; do r "$k" A '[]'; done
+mkcfg "http://127.0.0.1:$PORT" yes '`tests/acceptance/` `pnpm vitest run tests/acceptance -t "{ids}"`'
 
 fplan '{"epic":"KAN-1000","spine":"KAN-1050","owners":{"DoD1":"KAN-1001","DoD9":"KAN-1002"},"untestable":{"DoD3":{"why":"x","close_out":true}}}'
 P KAN-1001 KAN-1002 KAN-1003 KAN-1050

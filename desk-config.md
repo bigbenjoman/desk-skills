@@ -252,7 +252,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Autopilot per-worker budget (USD) | `25` (a runaway guard) | `TODO` (`none` turns it off) |
 | Autopilot batch budget (USD) | `none` | `TODO` |
 | Worker models | `default` | `TODO` (`default`, or `standard=<model> high=<model>`: lane A or E sized XS or S runs on standard, the rest on high; either may add `finder=<alias>` (`sonnet`, `haiku`: the Agent tool takes no full name) for self-review finders and `text=<model>` for the Stage 7 PR and Jira session, both unset by default, so both run as they do today until a run of the eval harness (`desk/bin/skill-eval.mjs`) on each model shows finding quality holds) |
-| Worker location | `local` | `TODO` (`local`, or `cloud`: cloud workers are not available yet, so `cloud` still runs every worker locally and the batch plan says so) |
+| Worker location | `local` | `TODO` (`local`, or `cloud`: each ticket that needs nothing on this computer runs in a Claude Code cloud session, and the batch plan says where each runs and why) |
 | Batches run by | `supervisor` on macOS · `session` elsewhere | `TODO` (`supervisor` or `session`: once Stage 3 has asked, at `supervisor` the orchestrator hands the batch to the supervisor, installing it if it is not installed and loaded, writes a handoff and ends the session; at `session` it runs passes through `/loop` in the session. The supervisor needs macOS launchd. Unset is `session`) |
 | Borrow idle workers | `off` | `TODO` (`on`, or `off`: at `on` a pass may start workers above the batch's own number, up to the cap, into machine slots other live batches are not using) |
 | Park an unanswered question after (minutes) | `15` | `TODO` |
