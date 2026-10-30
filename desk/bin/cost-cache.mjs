@@ -744,6 +744,20 @@ export function chargesByName({ cache, names = [] }) {
     credits: rows.reduce((a, n) => a + Math.round(n.credits * 100), 0) / 100 };
 }
 
+// What GitHub charged in `period` for Actions minutes, storage left out, on the account gh reads:
+// its repos' figures and its shared line's. costs: costs.md, which says which account each repo is
+// billed to.  -> usd, or null with no GitHub reading for `period`
+export function actionsCharged({ cache, costs, period }) {
+  const g = cache?.github;
+  if (!g || !samePeriod(g.period, period) || !hasFigure(g, 'github')) return null;
+  const read = costs.entries.filter((e) => e.supplier === 'github' && e.readable !== false);
+  const accounts = new Set(read.map((e) => e.account));
+  const keys = new Set(read.map((e) => e.key));
+  const items = [...Object.entries(g.repos ?? {}).filter(([k]) => keys.has(k)).map(([, e]) => e),
+    ...Object.entries(g.shared ?? {}).filter(([a]) => accounts.has(a)).map(([, e]) => e)].flatMap((e) => e?.items ?? []);
+  return items.filter((i) => githubLabel(i) === 'Actions minutes').reduce((a, i) => a + Math.round(i.charged * 100), 0) / 100;
+}
+
 // Each supplier's sources in costs.md.
 const sourcesOf = (costs) => ({
   github: costs.entries.filter((e) => e.supplier === 'github'),
