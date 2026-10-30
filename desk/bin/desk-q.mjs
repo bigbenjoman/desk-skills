@@ -46,7 +46,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { limitName } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
 export { LIVE_MS };
@@ -1336,9 +1336,8 @@ function awsParts(lines, mine) {
   return { lines: out, notes };
 }
 
-// A Vercel line's name on its supplier screen.
-const vercelLine = (l) => (l.kind === 'plan' ? `${l.label} plan` : l.kind === 'project' ? l.project
-  : l.kind === 'seats' ? (Math.round(l.quantity ?? 0) > 1 ? `${Math.round(l.quantity)} extra seats` : 'Extra seat') : l.label);
+// A Vercel line's name on its supplier screen: as on the shared line, but seats are counted.
+const vercelLine = (l) => (l.kind === 'seats' ? (Math.round(l.quantity ?? 0) > 1 ? `${Math.round(l.quantity)} extra seats` : 'Extra seat') : vercelLabel(l));
 const VERCEL_BUILDS_NOTE = "Vercel's build CPU minutes. Other use is everything else a project ran.";
 
 // Vercel's part of a name's charge: the lines charged to it, in the order its teams were read (the

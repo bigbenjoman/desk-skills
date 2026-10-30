@@ -653,7 +653,7 @@ const figureIn = (e, s, period) => (s === 'aws' && !(e?.lines && samePeriod(e.pe
 // A GitHub item's name on the shared line: "storage", "Actions minutes", else its product.
 const githubLabel = (i) => (/storage/i.test(i.sku) ? 'storage' : /minute/i.test(i.unit) ? 'Actions minutes' : i.product || i.sku);
 // A Vercel line's name on the shared line: "Pro plan", its seats or service, else its project.
-const vercelLabel = (l) => (l.kind === 'plan' ? `${l.label} plan` : l.kind === 'project' ? l.project : l.label);
+export const vercelLabel = (l) => (l.kind === 'plan' ? `${l.label} plan` : l.kind === 'project' ? l.project : l.label);
 
 // Each figure's reading, by name: the time of each source's last good reading and of its last
 // failed attempt. Vercel's names are read with their team.
