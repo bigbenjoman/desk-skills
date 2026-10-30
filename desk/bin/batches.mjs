@@ -59,17 +59,30 @@ export function useTicketBatch(key, env = process.env) {
 // A PR's state: OPEN, MERGED or CLOSED, or null when it cannot be read. A merged or closed one stays so,
 // and is not asked again.
 const shut = new Map();
+// One field of PR `n`, or '' when it cannot be read.
+function prField(n, field) {
+  let repo;
+  try { repo = E.ghRepo(); } catch { return ''; }
+  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', field, '--jq', `.${field}`], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : '';
+}
 export function prState(n) {
   if (shut.has(String(n))) return shut.get(String(n));
-  let repo;
-  try { repo = E.ghRepo(); } catch { return null; }
-  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
-  const s = r.status === 0 ? r.stdout.trim() : '';
+  const s = prField(n, 'state');
   if (s === 'MERGED' || s === 'CLOSED') shut.set(String(n), s);
   return ['OPEN', 'MERGED', 'CLOSED'].includes(s) ? s : null;
 }
 // A PR whose state cannot be read counts as open.
 export const prOpen = (n) => !['MERGED', 'CLOSED'].includes(prState(n));
+// When PR `n` merged, or null.
+export const prMergedAt = (n) => prField(n, 'mergedAt') || null;
+
+// Whether a promotion PR that merged at `mergedAt` was a feature batch's last: every ticket had merged
+// into the base before it. A child merged after it still has to be promoted.
+export function lastPromotion(tickets, mergedAt) {
+  const at = mergedAt ? Date.parse(mergedAt) : null;
+  return Object.values(tickets ?? {}).every((t) => t.merged_at && at != null && Date.parse(t.merged_at) <= at);
+}
 
 // The pid holding a batch's pass lock, or its supervisor lock other than this process's own, or null.
 // A holder that has exited holds nothing.

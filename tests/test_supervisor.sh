@@ -409,7 +409,7 @@ out=$(mtick)
 check "DS-309 AC8: with only the standing batch, a tick runs intake and one pass, as before" '[ "$(cat "$T/pass.batches")" = "- main" ] && [ "$(count "$T/intake.calls")" = 1 ] && grep -q "pass: exit 10 (nothing_yet)" "$SS/supervisor.log" && grep -q "^intake: nothing new$" "$SS/supervisor.log"'
 waitlines "$T/driver.batches" 1
 # Nothing running and its last promotion merged: a named batch so would be archived, the standing one never.
-printf '{"version":1,"batch":"s1","supervised":true,"promotion":{"pr":9,"merged":[{"pr":9,"slice":1}]},"approved":{},"tickets":{}}\n' > "$SQ"
+printf '{"version":1,"batch":"s1","supervised":true,"promotion":{"pr":9},"approved":{},"tickets":{}}\n' > "$SQ"
 echo MERGED > "$T/gh/9"; out=$(mtick); rm -f "$T/gh/9"
 check "DS-311 AC11: with only the standing batch, no archive check runs and nothing is moved" '[ -f "$SQ" ] && [ -d "$SS" ] && [ ! -e "$DESK_HOME/repos/.done" ] && [ ! -e "$HOME/.desk-autopilot/.done" ] && ! grep -q "archiv" "$SS/supervisor.log"'
 bq "$SQ" s1 true "$RUNNING"

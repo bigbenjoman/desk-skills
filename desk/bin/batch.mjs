@@ -20,7 +20,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, EXIT, crashShowsPerson, describeCrash } from './batch-state.mjs';
-import { listBatches, finished, prState, orchestratorHolder, supervisorHolder } from './batches.mjs';
+import { listBatches, finished, prState, prMergedAt, lastPromotion, orchestratorHolder, supervisorHolder } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -135,17 +135,18 @@ function moveDone(dir, at) {
 
 // The archive check for one named batch {name, queue, state}. -> {archived, lines, log}: `lines` go in
 // the batch's own log, `log` in the standing batch's, since an archived batch's own log moves with it.
-export function archiveCheck(b, { state = prState, now = new Date() } = {}) {
+export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date() } = {}) {
   const none = { archived: false, lines: [], log: [] };
   if (!b?.name) return none;
   let q;
   try { q = readQueue(b.queue); } catch { return none; /* the tick says the queue is unreadable */ }
   const p = q.promotion?.pr;
   const ps = p != null ? state(p) : null;
-  // A merged promotion ends the batch only once the pass has recorded it as the last slice
-  // (pass.mjs nextPromotion); until then a merged slice is followed by the next one.
-  const last = (q.promotion?.merged ?? []).some((m) => m.pr === p);
-  const shut = (ps === 'MERGED' && last) || ps === 'CLOSED';
+  // A merged promotion ends the batch only when it was the last slice, as pass.mjs nextPromotion
+  // decides; an earlier merged slice is followed by the next one. It is decided here too, since no
+  // pass runs for a batch that went idle before its last promotion merged.
+  const last = ps === 'MERGED' && lastPromotion(q.tickets, mergedAt(p));
+  const shut = last || ps === 'CLOSED';
   // Only open ticket PRs of a shut promotion stay handed on: one merged or closed since goes.
   const rows = Object.values(q.tickets ?? {});
   const openPrs = shut ? rows.filter((t) => t.result?.pr != null && !['MERGED', 'CLOSED'].includes(state(t.result.pr))) : [];

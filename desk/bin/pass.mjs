@@ -42,7 +42,7 @@ import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
-import { listBatches } from './batches.mjs';
+import { listBatches, lastPromotion } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1233,10 +1233,7 @@ function nextPromotion(path, p) {
   if (v?.state !== 'MERGED') return;
   const slice = p.slice ?? 1;
   const merged = [...(p.merged ?? []), { pr: p.pr, slice, merged_at: v.mergedAt ?? null }];
-  // The last promotion is the one every child had merged into the base before: a child merged after it
-  // still has to be promoted.
-  const at = v.mergedAt ? Date.parse(v.mergedAt) : null;
-  if (Object.values(fresh.tickets).every((t) => t.merged_at && at != null && Date.parse(t.merged_at) <= at)) {
+  if (lastPromotion(fresh.tickets, v.mergedAt)) {
     if (!DRY) q('set-batch', `promotion.merged=${JSON.stringify(merged)}`);
     return;
   }
