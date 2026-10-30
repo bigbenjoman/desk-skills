@@ -300,4 +300,44 @@ check "AC2 a uv Install row still runs with the row refused" 'ok "uv sync --froz
 PMROW='`composer`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-install=yes)"
 check "AC1 composer: require allowed, never another directory" 'ok "composer require monolog/monolog" && no "composer require x -d /abs/other" "composer require x --working-dir=/abs/other"'
 
+# ---- §3 worker-workflow-dispatch and §4 Worker workflows: exact `gh workflow run` on the ticket's branch ----
+WF='| Worker workflows | `e2e-manual.yml -f environment=staging -f suite=all` |'
+RUN="gh workflow run e2e-manual.yml --ref fix/fix-thing -f environment=staging -f suite=all"
+RUN_REPO="gh workflow run e2e-manual.yml --repo acme/widgets --ref fix/fix-thing -f environment=staging -f suite=all"
+wf_rules(){ jq -c '[.permissions.allow[] | select(test("^Bash\\(gh workflow"))]' "$T/ws.json"; }
+settings '`bash tests/run.sh`' "$WF" "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-349 AC1 dispatch yes: exactly the listed run on the ticket's branch, with --repo as a variant" \
+  '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[\"Bash($RUN)\",\"Bash($RUN_REPO)\"]" ] && ok "$RUN" "$RUN_REPO" && [[ "$out" != *worker-workflow-dispatch* ]]'
+check "DS-349 AC1 dispatch yes: gh workflow is no longer denied" '! denies "Bash(gh workflow:*)"'
+check "DS-349 AC2 an extra input is refused"               'no "$RUN -f environment=production" "$RUN_REPO -f environment=production" "$RUN -f suite=smoke"'
+check "DS-349 AC2 a changed input is refused"              'no "gh workflow run e2e-manual.yml --ref fix/fix-thing -f environment=production -f suite=all"'
+check "DS-349 AC3 a workflow not listed is refused"        'no "gh workflow run production-deploy.yml" "gh workflow run production-deploy.yml --ref fix/fix-thing" "gh workflow run e2e-manual.yml"'
+check "DS-349 AC4 another ref is refused"                  'no "gh workflow run e2e-manual.yml --ref main -f environment=staging -f suite=all" "gh workflow run e2e-manual.yml --ref feat/epic -f environment=staging -f suite=all"'
+check "DS-349 AC5 enable and disable are refused"          'no "gh workflow enable e2e-manual.yml" "gh workflow disable e2e-manual.yml" && denies "Bash(gh workflow enable:*)" && denies "Bash(gh workflow disable:*)"'
+check "DS-349 the other gh denies stay"                    'denies "Bash(gh secret:*)" && denies "Bash(gh variable:*)" && denies "Bash(gh api:*)"'
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "DS-349 a dry run starts no workflow"                '[ $rc -eq 0 ] && denies "Bash(gh workflow:*)" && no "$RUN" "$RUN_REPO"'
+triage
+check "DS-349 a triage pass never dispatches"              '[ $rc -eq 0 ] && denies "Bash(gh workflow:*)" && [ "$(wf_rules)" = "[]" ]'
+for v in ask no; do
+  settings '`bash tests/run.sh`' "$WF" "$(rows3 worker-workflow-dispatch=$v)"
+  check "DS-349 AC6 dispatch $v: no rule, gh workflow denied, named" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && no "$RUN" && denied_line worker-workflow-dispatch $v'
+done
+settings '`bash tests/run.sh`' "$WF"
+check "DS-349 AC6 dispatch unset: treated as no"           '[ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && denied_line worker-workflow-dispatch no'
+settings '`bash tests/run.sh`' '| Worker workflows | `e2e-manual.yml -f environment=staging` `deploy.yml --ref main` `smoke.yml -f url=$(id)` `nightly.yml` |' "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-349 AC7 a malformed span warns by name and is skipped" \
+  '[ $rc -eq 0 ] && [[ "$out" == *"Worker workflows item \"deploy.yml --ref main\" is not"* ]] && [[ "$out" == *"Worker workflows item \"smoke.yml -f url=\$(id)\" is not"* ]] && ! jq -e ".permissions.allow[] | select(test(\"deploy.yml|smoke.yml\"))" "$T/ws.json" >/dev/null'
+check "DS-349 AC7 the valid spans still produce rules"     'ok "gh workflow run e2e-manual.yml --ref fix/fix-thing -f environment=staging" "gh workflow run nightly.yml --ref fix/fix-thing" && [ "$(wf_rules | jq length)" = 4 ]'
+settings '`bash tests/run.sh`' '| Worker workflows | `deploy.yml --ref main` |' "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-349 no usable span: gh workflow stays denied, and a warning says so" '[ $rc -eq 0 ] && denies "Bash(gh workflow:*)" && [[ "$out" == *"names no usable workflow"* ]]'
+# The default branch, or the batch base, as the worker's own branch gets no dispatch at all.
+settings '`bash tests/run.sh`' "$WF" "$(rows3 worker-workflow-dispatch=yes)"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch main --out "$T/ws.json" 2>&1); rc=$?
+check "DS-349 AC4 on the default branch: no rule, gh workflow denied" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && [[ "$out" == *"no branch of its own"* ]]'
+printf '{"batch":"b","base":"feat/epic","tickets":{}}\n' > "$DESK_QUEUE"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch feat/epic --out "$T/ws.json" 2>&1); rc=$?
+check "DS-349 AC4 on the batch base: no rule, gh workflow denied" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
+rm -f "$DESK_QUEUE"
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

@@ -751,6 +751,7 @@ const clearsRead = {
   }),
   variable: (name) => cached('variables', () => JSON.parse(readOrThrow('gh variable list', 'gh', ['variable', 'list', '--repo', GH_REPO, '--json', 'name'])))
     .some((v) => v?.name === name),
+  run: (id) => cached(`run:${id}`, () => JSON.parse(readOrThrow(`gh run view ${id}`, 'gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,conclusion']))),
 };
 // The ticket's own PR, if it merged: the one it recorded, else a merged PR from its branch.
 function ownMergedPr(t) {
@@ -765,10 +766,12 @@ for (const t of Object.values(queue().tickets)) {
   // A claimed ticket is released only by the claims loop below, once its session is idle and its
   // worktree clean, so a condition that holds never hands it to a worker under a live session.
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none') continue;
-  const what = describeCond(c);
+  const cond = describeCond(c);
   const r = checkCond(c, clearsRead);
-  if (r.error) { report.clears.push(`${t.key}: could not check "${what}" (${r.error}): left parked`); continue; }
-  if (!r.holds) continue;
+  if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
+  // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
+  if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); continue; }
+  const what = r.note ? `${cond}, ${r.note}` : cond;
   if (needsSession(t)) {
     report.clears.push(`${t.key}: "${what}" holds, but it is lane ${t.lane}: left parked for a person, never requeued for a headless worker`);
     continue;
@@ -784,6 +787,8 @@ for (const t of Object.values(queue().tickets)) {
     if (report.failed.length === before) report.clears.push(`${t.key}: "${what}" holds and its PR #${own} merged: recorded done`);
   } else {
     const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+    // The next worker's briefing says what cleared the park (writeBrief), so it acts on the result.
+    if (rq.ok) q('set', t.key, `cleared=${JSON.stringify({ what })}`);
     report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
   }
 }
@@ -1497,6 +1502,8 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     ownedBrief(t, wt),
     fixBrief(t),
     baselineBrief(),
+    t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
+      `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     notes && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
   ].filter(Boolean).join('\n');
@@ -1602,7 +1609,7 @@ async function spawnHandoff(t) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -1849,7 +1856,7 @@ for (const t of spawnable) {
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
   // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
   if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null',
+  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.

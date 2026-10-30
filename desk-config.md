@@ -195,6 +195,7 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
 | `worker-local-services` | Let a worker start a §4 Local services entry in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml up -d --no-recreate --no-deps <service>`); stopping, removing or recreating one stays refused | `ask` | `TODO` |
 | `worker-web-read` | Let a worker search the web and read public pages (WebSearch, WebFetch), so a public figure or a site's terms is looked up rather than parked for you | `ask` | `TODO` |
+| `worker-workflow-dispatch` | Let a worker start a §4 Worker workflows entry on its own branch (`gh workflow run <file>.yml --ref <its branch> -f …`), exactly as listed; never on the default branch or a batch base, and `gh workflow enable` or `disable` stays refused | `ask` | `TODO` |
 
 `autopilot-worker-mode` values: `dontAsk + generated allow-list` (workers are launched with
 `--setting-sources ""`, so your own Claude Code settings, including any broad `Bash(*)` allow, never
@@ -206,10 +207,13 @@ worker's own worktree, every other worktree denied, toolchain allow-listed) or `
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
 puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
 FileVault on, `yes` does as `ask` does: a restarted Mac waits at the unlock screen until you log in.
-`worker-dependency-install`, `worker-screenshots`, `worker-local-services` and `worker-web-read` are
-read by `worker-settings.mjs` when a worker spawns: anything short of `yes`, unset included, is
-refused to the worker, which parks naming the row. At `worker-web-read` `yes` the supervisor's
-decider also requeues a park that asks only for a public fact, rather than handing it to you.
+`worker-dependency-install`, `worker-screenshots`, `worker-local-services`, `worker-web-read` and
+`worker-workflow-dispatch` are read by `worker-settings.mjs` when a worker spawns: anything short of
+`yes`, unset included, is refused to the worker, which parks naming the row. At `worker-web-read`
+`yes` the supervisor's decider also requeues a park that asks only for a public fact, rather than
+handing it to you. At `worker-workflow-dispatch` `yes` a worker that starts a run parks with
+`AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`, and the first pass after the run finishes
+requeues it with the run's conclusion.
 
 ### Local and shared state
 
@@ -330,6 +334,7 @@ such thing.
 | Known flaky checks | `TODO` (checks the merge driver may waive when they are the only red, each as `` `<check>: <glob> [<glob>…]` ``, the globs being every path whose change can make that check fail for real, e.g. `` `Run e2e tests: e2e/** playwright.config.ts` ``; or `none`. A check is waived only once it is still red after the driver's two reruns, when the PR touches none of its globs, and never when it is a Required check (that would be a bypass). Each waiver is logged `WAIVED <check>` and files a ticket under §3 `jira-create`. Unset waives nothing; a row that does not parse stops the driver) |
 | Checks workers can't fix | `TODO` (checks that go red for a reason no worker can fix, each as `` `<check>: <what fixes it>` ``, e.g. `` `Flows image missing: build it: ensure-flows-image.sh` ``; or `none`. A ready batch PR red after the driver's two reruns, or in conflict with its base, goes back to a fix worker at most twice; a PR red only on one of these is never sent, and is put to you as stuck with what fixes it. Unset means a worker may try every check; a row that does not parse stops fix tries) |
 | Check builds | `TODO` (checks a build on this computer clears, each as `` `<check>: <command>` ``, the check named exactly as GitHub shows it, e.g. `` `Flows image: ./scripts/ensure-flows-image.sh` ``; or `none`. Where §3 `ci-rerun` is `yes` and a draft batch PR's only red checks are named here, the pass runs the command once per head on this computer, in the ticket's worktree at the PR's head, then re-runs those checks with `--failed`; a command that fails, or a check still red after it, is put to you with the command's output. Never run inside a worker. Unset runs nothing) |
+| Worker workflows | `TODO` (workflows a worker may start on its own branch where §3 `worker-workflow-dispatch` is `yes`, each as `` `<file>.yml [-f <key>=<value>…]` ``, e.g. `` `e2e-manual.yml -f environment=staging -f suite=all` ``; or `none`. Each becomes one exact `gh workflow run <file>.yml --ref <the worker's branch> -f …` rule, so a worker can add no input and name no other workflow. The run uses the workflow file on that branch, which the worker can edit, so list only a workflow whose secrets a pushed branch may already reach; a span in another shape is skipped with a warning. Unset or `none` allows none) |
 | Merge holds | `TODO` (paths a PR may touch only with a person merging it, each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)` ``; `<glob>#<key>` holds a JSON file only when that key changes, e.g. `` `package.json#scripts: changes the commands CI runs` ``; or `none`. /desk-setup proposes holds on CI, hooks and check config, each declinable. Autopilot and clearance never merge such a PR themselves; they report it with the reason) |
 | Incidental paths | `TODO` (globs a worker may change outside its triaged scope without it being reported, one span each, e.g. `` `pnpm-lock.yaml` `` `` `docs/**` ``; or `none`. Unset reads as the repo's lockfiles. Test files (`**/*.test.*`, `**/*.spec.*`, `test/**`, `tests/**`) are always incidental. Each autopilot pass lists the rest per ticket, and an idle batch gives the total; nothing parks on it) |
 | Merge method | `TODO` (`squash`, `merge` or `rebase`; what the skills pass to `gh pr merge`) |

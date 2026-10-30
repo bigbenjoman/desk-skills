@@ -734,6 +734,17 @@ hlog H-1 "AUTOPILOT_DONE: pr=55 jira=none"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC7 the ticket's cost adds the sessions that handed off to the one that finished" '[ "$(field H-1 state)" = "\"done\"" ] && [ "$(field H-1 cost)" = "\"1.50\"" ]'
 
+# DS-349 AC8: a park waiting on an Actions run is requeued once the run finishes, and the session that
+# follows is told the run's conclusion.
+handing H-7; hfile H-7 7 "typecheck: pass"; q set H-7 handoff_stage=7; q park H-7 "waiting on e2e run 4104"; q clears-when H-7 "run 4104 completed"
+printf '#!/bin/sh\ncase "$1 $2" in "run view") echo "{\\"status\\":\\"completed\\",\\"conclusion\\":\\"success\\"}" ;; esac\nexit 0\n' > "$T/stub/gh"
+out=$(node "$B/pass.mjs" 2>&1)
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+check "DS-349 AC8 the finished run requeues it with no person, and its next session spawns" 'echo "$out" | grep -q "H-7: \"Actions run 4104 completed, conclusion success\" holds: requeued" && [ "$(field H-7 state)" = "\"running\"" ]'
+check "DS-349 AC8 its briefing names the park and the run's conclusion" 'brief H-7 | grep -qF "## What cleared your last park" && brief H-7 | grep -qF "The last round parked on: waiting on e2e run 4104" && brief H-7 | grep -qF "A pass found it settled: Actions run 4104 completed, conclusion success."'
+check "DS-349 the note is cleared once a session has it" '[ "$(field H-7 cleared)" = null ]'
+q set H-7 state=done
+
 # AC6: the worktree, or the branch, is gone by the time the pass reads the handoff.
 q add H-2; q set H-2 state=running lane=A branch=fix/H-2 "worktree=$T/wt/H-2-gone" session_id=old-H-2; hfile H-2 4b x
 hlog H-2 "AUTOPILOT_HANDOFF: 4b"
