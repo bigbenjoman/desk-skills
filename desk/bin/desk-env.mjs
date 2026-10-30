@@ -831,10 +831,6 @@ export function basePushGrant() {
   const perm = permissionOrUnset('batch-base-push') ?? 'ask';
   return { perm, key: permissionKey('batch-base-push'), ok: perm === 'yes' || (perm === 'ask' && !!process.env.AUTOPILOT_BASE_PUSH_APPROVED) };
 }
-// A GitHub author that is a bot, not a person: GraphQL's Bot type, a `[bot]` login, or one of the
-// integrations that comment as an ordinary account. A missing author counts as a bot.
-const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate']);
-export const isBot = (a) => !a?.login || a.__typename === 'Bot' || /\[bot\]$/.test(a.login) || BOT_LOGINS.has(a.login.toLowerCase());
 export const skillsDir = () => expandHome(process.env.DESK_SKILLS_DIR ?? join(HOME, '.agents', 'skills'));
 export const lockDir = () => expandHome(process.env.DESK_LOCK_DIR ?? '/tmp');
 // Claude Code keys a project's memory dir by the absolute cwd with every non-alphanumeric char as `-`.

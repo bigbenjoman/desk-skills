@@ -31,9 +31,9 @@ import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
-import { maintenance, stopForWindow } from './maintenance.mjs';
+import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment, verdictCarries } from './undraft.mjs';
+import { undraftCall, undraftComment, verdictCarries, humanReviewed } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -807,17 +807,22 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
 
 // ---- maintenance window ------------------------------------------------------
 // The weekly window (maintenance.mjs), one per computer, holds every spawn, resumes included, while it
-// drains, updates and restarts. A worker still running at its drain limit is stopped with its session
-// kept, and queued to resume once the window is done.
+// drains, updates and restarts. A worker still running at its drain limit, a base conflict fix's
+// included, is stopped with its session kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
   selfQueue: QUEUE_FILE,
-  running: Object.values(queue().tickets).filter((t) => t.state === 'running'),
+  running: runningWorkers(queue()),
   stop: (t) => stopForWindow(t, {
     live: registryOk ? live : null,
     kill: (pid) => sh('kill', [String(pid)], { tolerant: true }),
     setQueue: (key, fields) => {
       const before = report.failed.length;
       q('set', key, ...fields);
+      return report.failed.length === before ? { ok: true } : { ok: false, why: report.failed.at(-1) };
+    },
+    setBaseFix: () => {
+      const before = report.failed.length;
+      q('set-batch', `base_fix=${JSON.stringify({ ...queue().base_fix, resume: 'maintenance' })}`);
       return report.failed.length === before ? { ok: true } : { ok: false, why: report.failed.at(-1) };
     },
   }),
@@ -983,10 +988,12 @@ const plan = borrowPlan({
   on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: spawnable.length,
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
-const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
+// This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
+const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
+const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
 const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
 const REPO = repoBudget({
-  batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
+  batch: E.batchName(), running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
   batches: repoBatches,
 });
 // A repo's batches share its cap only under the lock: without it two passes could each count the same
@@ -1036,8 +1043,8 @@ let baseFixLive = false;
 let baseFixResume = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
-// machine budget binds it as it binds every worker.
-const baseFixRoom = !(held === PACE_HELD ? null : held) && !lowMemory && running.length < concurrency && MACHINE.room > 0;
+// machine budget and the repo's shared §3b cap bind it as they bind every worker.
+const baseFixRoom = !(held === PACE_HELD ? null : held) && !lowMemory && running.length < concurrency && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 if (BASE && SOURCE && BASE !== SOURCE) {
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
@@ -1061,7 +1068,17 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // is stopped, as a ticket's worker is, so the try ends and the next conflict at this head goes to the
   // person. Otherwise the registry unread, or a log written in the last two minutes that has not ended,
   // reads as still at it.
-  if (bf?.running) {
+  // A try's worker resumes, after the usage limit or the maintenance window, only when a ticket's
+  // resume would: nothing holds spawns (pacing aside, which never holds a fix) and memory allows.
+  const resumeHeld = (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null);
+  if (bf?.running && bf.resume === 'maintenance') {
+    // Stopped for the maintenance window with its session kept: the same try, resumed once the window
+    // is done, never ended or counted as spent.
+    baseFixLive = true;
+    const ended = 'stopped for the maintenance window';
+    if (!resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume: null } };
+    else report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
+  } else if (bf?.running) {
     const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
     let text = '';
     try { text = readFileSync(log, 'utf8'); } catch { /* no log yet: read as ended */ }
@@ -1098,12 +1115,12 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         bf = { ...bf, log_bytes: bytes, idle_passes: idle };
         if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
       }
-      // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and no
-      // other limit still holds the batch.
-      const up = awaitsLift && lifted(atLimit) && !USAGE_HOLD;
+      // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
+      // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
+      const up = awaitsLift && lifted(atLimit);
       const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
-      if (up && !lowMemory) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, limits: usage.limits.length, ended };
-      else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once memory allows`);
+      if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
+      else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
       else if (paused || awaitsLift) report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
       else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
@@ -1571,15 +1588,16 @@ async function spawnBaseFix({ wt, fix }) {
 }
 if (baseFix) await spawnBaseFix(baseFix);
 
-// A try's worker that exited at the usage limit, resumed after the reset in its own session, worktree
-// and log, as resumeKilled resumes a ticket's: the same try, not a new one. One that cannot be resumed
-// ends its try, and the next conflict at this head goes to the person with that reason.
-async function resumeBaseFix({ wt, why, limits, ended }) {
+// A try's worker that exited at a usage limit since lifted, or was stopped for the maintenance window,
+// resumed in its own session, worktree and log, as resumeKilled resumes a ticket's: the same try, not a
+// new one. `clear` is what the resume settles on base_fix. One that cannot be resumed ends its try,
+// and the next conflict at this head goes to the person with that reason.
+async function resumeBaseFix({ wt, why, ended, clear }) {
   const key = BASE_FIX_KEY;
   const sid = bf.running;
   if (DRY) { out.push(`base conflict fix (dry run): would resume session ${sid} on ${BASE}, which ${ended}`); return; }
   const fail = (reason) => {
-    const outcome = `could not be resumed after the usage limit: ${reason}`;
+    const outcome = `could not be resumed after it ${ended}: ${reason}`;
     bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
     q('set-batch', `base_fix=${JSON.stringify(bf)}`);
     report.failed.push(`${key}: ${ended}, and ${outcome}`);
@@ -1603,9 +1621,9 @@ async function resumeBaseFix({ wt, why, limits, ended }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, resume_limits: limits };
+  bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-  report.spawned.push(`${key} resumed after the usage limit lifted — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
@@ -2073,13 +2091,14 @@ function conflictFiles(branch) {
   return files.length ? files : null;
 }
 // Whether anyone but the user's own handle, and not a bot, has reviewed or commented on PR n: the line
-// between §3 pr-conflict-unreviewed and pr-conflict-reviewed. Unread, it counts as reviewed.
+// between §3 pr-conflict-unreviewed and pr-conflict-reviewed, read as a draft's is (undraft.mjs). Unread,
+// it counts as reviewed.
 const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
 function humanSeen(n) {
   let v = null;
   try { v = JSON.parse(sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'reviews,comments'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return true; }
   if (!v || typeof v !== 'object') return true;
-  return [...(v.reviews ?? []), ...(v.comments ?? [])].some((x) => !E.isBot(x.author) &&x.author.login.toLowerCase() !== String(conflictHandle ?? '').toLowerCase());
+  return humanReviewed(v, conflictHandle);
 }
 for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
   const n = s.pr;

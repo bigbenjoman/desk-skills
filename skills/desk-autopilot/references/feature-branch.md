@@ -50,7 +50,9 @@ budget, and every batch counts it and its port as a running worker's. A session 
 worker parked or finished is stopped, as is one quiet for six passes (wedged); either ends the try.
 One that reaches a usage limit is never stopped or failed for it: it is paused, and resumed in its
 own session as the same try once the limit lifts (its reset passes or a probe call succeeds), as a
-ticket's worker is. A preflight the limit refuses spends no try and holds the batch. While it runs the pass leaves the base worktree
+ticket's worker is. A preflight the limit refuses spends no try and holds the batch. The maintenance
+window drains it, and stops it at its limit, as any worker, and it resumes as the same try once the
+window is done; either resume waits while anything holds spawns. While it runs the pass leaves the base worktree
 alone (no sync, no baseline, no base gate) and, in feature mode, still spawns nothing else. The next
 pass that syncs the base clean says so and clears the tries, kept on the queue as `base_fix`. A base
 gets two tries, one per head of the base, as a PR in conflict does: after two, or a try that left

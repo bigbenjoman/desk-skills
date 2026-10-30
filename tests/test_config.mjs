@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, isBot } from '../desk/bin/desk-env.mjs';
+import { cellItems } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const items = (cell) => cellItems(cell).join(' | ');
@@ -186,13 +186,6 @@ for (const k of ['git-force-with-lease', 'worktree-remove', 'pr-ready', 'pr-merg
   t(`AC1 ${k} is recommended yes`, `${fromRows[k]}/${fromTpl[k]}`, 'yes/yes');
 }
 rmSync(T, { recursive: true, force: true });
-
-// DS-320: one bot test, shared by the pass's pr-conflict-* split and desk-clearance.
-t('isBot: a listed integration', isBot({ login: 'Renovate' }), true);
-t('isBot: GraphQL\'s Bot type, whatever the login', isBot({ login: 'acme-deployer', __typename: 'Bot' }), true);
-t('isBot: a [bot] login', isBot({ login: 'acme[bot]' }), true);
-t('isBot: no author', isBot(null), true);
-t('isBot: a person', isBot({ login: 'someone', __typename: 'User' }), false);
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');
 process.exit(fails ? 1 : 0);

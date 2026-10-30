@@ -210,7 +210,7 @@ check "DS-320 six quiet passes: stopped as wedged, and the base goes to the pers
   '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped as wedged, with no output for 6 passes"* ]]'
 rm -f "$T/agents.json"
 
-# A worker at a usage limit (DS-344): never stopped or failed for it, paused rather than wedged, and
+# A worker at a usage limit: never stopped or failed for it, paused rather than wedged, and
 # resumed in its own session once the limit lifts, as a ticket's worker is. The claude stub answers the
 # pass's one probe call with no answer, so a probe never lifts a limit here unless probe_ok is set.
 limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" >> "$C/state/logs/base-feat-x.log"; }
@@ -228,12 +228,28 @@ age_log(){ touch -t 202001010000 "$C/state/logs/base-feat-x.log"; }
 conflict; pass; sid=$(jq -r .base_fix.running "$DESK_QUEUE"); limit_event "$(( $(date +%s) + 3600 ))"; age_log; pass
 check "DS-320 a worker whose session exited at the limit is held until it lifts, not ended as no marker" \
   '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "*"then it resumes"* ]] && [[ "$out" != *"no marker"* ]] && [[ "$out" != *"by hand"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
-limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+limit_event "$(( $(date +%s) - 60 ))"; age_log
+# A lifted limit still waits while anything holds spawns, as a ticket's resume does.
+sed -i.bak 's/Run detached headless workers | `yes` | `yes`/Run detached headless workers | `yes` | `no`/' "$C/config.md"; pass
+check "DS-320 a lifted limit's resume waits while spawns are held" \
+  '! grep -q "RESUME" "$T/spawns" && [[ "$out" == *"base-feat-x: exited at the 5-hour usage limit, which lifted"*"it resumes once nothing holds spawns (config §3 autopilot-workers is \"no\")"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ]'
+sed -i.bak 's/Run detached headless workers | `yes` | `no`/Run detached headless workers | `yes` | `yes`/' "$C/config.md"; pass
 check "DS-320 after the reset it is resumed in its own session, as the same try" \
-  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"base-feat-x resumed after the usage limit lifted — exited at the 5-hour usage limit, which lifted (its reset at "*"passed)"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r .base_fix.resume_limits "$DESK_QUEUE")" = 2 ]'
+  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"base-feat-x resumed — exited at the 5-hour usage limit, which lifted (its reset at "*"passed)"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r .base_fix.resume_limits "$DESK_QUEUE")" = 2 ]'
 age_log; pass
 check "DS-320 once per limit: a resume that ends at the same limit ends the try" \
   '[ "$(grep -c "RESUME" "$T/spawns")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x ended with no marker"* ]]'
+# A try the maintenance window stopped (maintenance.mjs stopForWindow) is resumed as the same try once
+# nothing holds spawns, never ended or spent.
+: > "$T/spawns"; fresh bmaint; feature; fixrow yes
+conflict; pass; sid=$(jq -r .base_fix.running "$DESK_QUEUE"); age_log
+node "$B/queue.mjs" set-batch "base_fix=$(jq -c '.base_fix + {resume: "maintenance"}' "$DESK_QUEUE")" >/dev/null
+sed -i.bak 's/Run detached headless workers | `yes` | `yes`/Run detached headless workers | `yes` | `no`/' "$C/config.md"; pass
+check "DS-320 a try stopped for the maintenance window waits while spawns are held, its try open" \
+  '! grep -q "RESUME" "$T/spawns" && [[ "$out" == *"base-feat-x: stopped for the maintenance window; it resumes once nothing holds spawns"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ]'
+sed -i.bak 's/Run detached headless workers | `yes` | `no`/Run detached headless workers | `yes` | `yes`/' "$C/config.md"; pass
+check "DS-320 then it is resumed in its own session as the same try, and the flag cleared" \
+  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"base-feat-x resumed — stopped for the maintenance window"* ]] && [ "$(jq -r .base_fix.resume "$DESK_QUEUE")" = null ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ]'
 # The retired autopilot-usage-resume row stops nothing: a worker at the limit is paused whatever it says.
 : > "$T/kills"; fresh bnoresume; feature; fixrow yes; echo '| `autopilot-usage-resume` | Resume across the usage limit | `no` | `no` |' >> "$C/config.md"
 conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"; pass
@@ -257,7 +273,7 @@ EOF
 : > "$T/spawns"; fresh bprelimit; feature; fixrow yes; conflict; touch "$T/preflight.limit"; pass; rm -f "$T/preflight.limit"
 check "DS-344 a base fix preflight refused at the limit spends no try and holds the batch" \
   '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && [ "$(jq -r .usage_hold.preflight "$DESK_QUEUE")" = base-feat-x ] && [[ "$out" == *"base-feat-x: its preflight was refused at"* ]] && [[ "$out" != *"failed its preflight"* ]] && [ "$(grep -c "^T-1 " "$T/spawns")" = 0 ]'
-# Each try is a fresh session (DS-339): an earlier try's resume file and handoff briefing are moved aside.
+# Each try is a fresh session: an earlier try's resume file and handoff briefing are moved aside.
 : > "$T/spawns"; fresh bresume; feature; fixrow yes; conflict
 mkdir -p "$C/state/resume" "$C/state/handoffs"; echo '{"branch":"feat/x"}' > "$C/state/resume/base-feat-x.json"; echo '{}' > "$C/state/handoffs/base-feat-x.json"
 pass
