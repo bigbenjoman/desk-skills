@@ -409,7 +409,7 @@ check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd
 rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
 out=$(admit E-10 --by ben); rc=$?
 check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
-config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-11 A '"summary":"the third epic child"'; printf 'E-11\n' > "$T/children/E-9"
+config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-352: standing intake starts another epic's feature batch beside a live one" '[ "$(eget E-9 base)" = feat/E-9-third ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && grep -q "^intake: started feature batch E-9 on feat/E-9-third, beside the standing batch$" <<< "$out" && ! grep -q "E-9 not admitted" <<< "$out"'
 
