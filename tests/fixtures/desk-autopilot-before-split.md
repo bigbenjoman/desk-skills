@@ -207,7 +207,7 @@ You are a reader. Each pass re-derives state from disk and forgets it.
 
 | # | Stage | What happens |
 |---|---|---|
-| 0 | Claim | `queue.mjs init`. It refuses, before triage, when the repo's settings start sessions in `defaultMode` `dontAsk` ("defaultMode is dontAsk: the orchestrator cannot ask questions or run monitors"): stop, name the file it gives, and offer `/desk-setup` to remove it. `pass.mjs` takes an exclusive lock at `<state>/orchestrator.lock` and refuses to run if a live orchestrator holds it; a lock from a dead process is taken over automatically. Each pass also writes a heartbeat under `<state>/orchestrators/`, so another batch's `init` sees this one between passes (fresh = under 15 minutes). `init` backs up and re-seeds `batch-notes.md`: **check the `## MEMORY` heading is there**. See *Sharing the machine*. |
+| 0 | Claim | `queue.mjs init`: tickets with no epic take the standing slot. **An epic never runs `init`**: it runs as its own feature batch beside the standing one, started on its feature branch with `batch.mjs start`, and every later command for it passes `--batch <EPIC>` (*An epic as a batch*). `init` refuses, before triage, when the repo's settings start sessions in `defaultMode` `dontAsk` ("defaultMode is dontAsk: the orchestrator cannot ask questions or run monitors"): stop, name the file it gives, and offer `/desk-setup` to remove it. `pass.mjs` takes an exclusive lock at `<state>/orchestrator.lock` and refuses to run if a live orchestrator holds it; a lock from a dead process is taken over automatically. Each pass also writes a heartbeat under `<state>/orchestrators/`, so another batch's `init` sees this one between passes (fresh = under 15 minutes). `init` backs up and re-seeds `batch-notes.md`: **check the `## MEMORY` heading is there**. See *Sharing the machine*. |
 | 0b | Share the machine | `ListAgents`, handshake every live session (in any repo: the machine is shared even where the state is not), start the memory monitors. Before any worker spawns, not after. See *Sharing the machine*. |
 | 1 | Triage | First write the ticket file for every non-tracker key (see *What a batch argument can be*); triage refuses one without it. Snapshot any Claude Design artifact a ticket links (*A design in Claude Design*). Run `git -C <§2 Primary repo root> fetch origin --quiet` **once**, so triage reads a current `origin/<default>`: triage is read-only and cannot fetch, and concurrent fetches race on the refs. Then `triage.sh` per ticket: read-only, no worktree. Returns lane, files, unknowns, `renders`, `ben_steps` (steps only the user can take, each with a proposed blocker ticket), and `prior_art`: any branch already touching those files, which changes the shape of a ticket more than its description does. |
 | 1b | Challenge | Only for a ticket triage put in **C or D**. A second read-only pass re-derives the lane and either confirms it or downgrades to A, B or E. It can never upgrade, and a missing or malformed verdict leaves the first pass untouched. `AUTOPILOT_SKIP_CHALLENGE=1` turns it off. See *Why C and D get a second look*. |
@@ -332,7 +332,7 @@ Once the batch is handed over, the session does not stay open to watch it:
    supervisor runs the passes, starts the driver and brings both back after a reboot.
 
 A session opened from that handoff shows the batch from `supervisor.mjs status` and `queue.mjs
-render`, then deals only with what waits on the person: parks, answers (Stage 5), gates to relay
+render` (`queue.mjs render --batch <EPIC>` for an epic's batch), then deals only with what waits on the person: parks, answers (Stage 5), gates to relay
 (Stage 6c), the items the decider handed on (`<state>/handed.json`) and the close-out. It runs no
 pass of its own, and starts no loop or driver, while the batch stays handed over.
 
@@ -377,36 +377,60 @@ mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs ho
 
 ## An epic as a batch
 
-A large feature runs as an epic: one key whose children are the tickets. **Expand it at Stage 0,
-before triage**, and never triage, build, transition or edit the epic itself:
+A large feature runs as an epic: one key whose children are the tickets. **An epic runs as its own
+feature batch, beside the standing batch, never over it.** For an epic, Stage 0 starts that batch
+in place of `init`, which would write a fresh queue over the standing batch's and, by setting a base
+on it, stop standing intake; the standing batch, its supervisor and intake carry on untouched. A repo
+runs one feature batch at a time. **Start the batch, then expand the epic, both at Stage 0 before
+triage**, and never triage, build, transition or edit the epic itself:
 
 ```bash
-node ~/.claude/desk/bin/expand-parent.mjs ABC-900   # the batch keys on stdout, the report on stderr
-node ~/.claude/desk/bin/queue.mjs set-batch epic=ABC-900
+git -C <§2 Primary repo root> fetch origin --quiet
+git -C <§2 Primary repo root> push origin origin/<default>:refs/heads/feat/ABC-900-<slug>   # only when it is not on origin yet
+node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-900          # the batch ABC-900, its epic and base set
+node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900   # the batch keys on stdout, the report on stderr
 ```
 
-- It keeps the epic's children that are this repo's keys and not started, in Jira rank order. A
+- **The feature branch** is named as §5 Branch names says, cut from `origin/<default>`, and is the
+  batch's base from the start. Pushing it is §3 `git-push`: at anything but `yes`, ask it now, the
+  one question before `start`. A branch already on origin is used as it is.
+- **`start` refuses (exit 11) and makes nothing** while another epic's feature batch is live in the
+  repo, naming it: show the person and stop. It refuses a batch that already exists for this epic
+  too: an earlier session started it, so pick it up with `--batch ABC-900` rather than start it
+  again. The batch is not handed to the supervisor until Stage 4.
+- **Every later command for this batch passes `--batch <EPIC>`**: triage, the plan, every pass, the
+  merge driver, answers, holds, admits, approvals, the hand-over at Stage 4 (`queue.mjs set-batch
+  supervised=true … --batch <EPIC>`), and the close-out; the Stage 4 handoff says so. Without it a
+  command acts on the standing batch.
+- **The epic's children merge into its feature branch, never into §0 Default branch**, so production
+  carries no half-built feature: the whole feature reaches the default branch through the promotion
+  PR the person merges (*Epic close-out*). `start` refuses the default branch as a base. From here
+  on, the base works as *A batch that targets a feature branch* says.
+- Tickets the user names with the epic that are not its children are not in its batch: say so, and
+  run them on their own, in the standing slot (`/desk-autopilot` with no epic, or `/desk-admit`).
+- **A declined plan discards the batch.** When the person declines the epic's plan at Stage 3, run
+  `node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900` and report what it prints. It
+  removes the batch's queue and state folders, and deletes the feature branch from origin when that
+  holds no commit §0 Default branch lacks; otherwise it keeps the branch and says why, naming the
+  command to delete it by hand. It refuses a batch with a started ticket or one handed to the
+  supervisor.
+- `expand-parent` keeps the epic's children that are this repo's keys and not started, in Jira rank order. A
   child story that has open subtasks is replaced by them (one level), **whether the story itself is
   To Do or In Progress**, and its Blocks links pass to them (`<state>/expansion.json`, read by
   `plan-batch`). Done children are dropped; **in-progress children are dropped** too (one may
   already have a PR), and so is an In Progress story with no open subtask: include one only if the
   user names it. The subtasks of a story are read before its own status is, because an In Progress
   story is where open subtasks usually sit, and dropping it first made them vanish unreported.
-- Exit 4 means the key is not an epic: run it as an ordinary ticket. A story runs as its subtasks
-  only when the user asks for exactly that (`--subtasks`); a bug or story named on its own with QA
-  or checklist subtasks runs as itself, as it always has. Exit 3: nothing open under it; say so.
+- Exit 4 means the key is not an epic: discard the batch (as for a declined plan) and run the key as
+  an ordinary ticket in the standing slot. A story runs as its subtasks only when the user asks for
+  exactly that (`--subtasks`); a bug or story named on its own with QA or checklist subtasks runs as
+  itself, as it always has. Exit 3: nothing open under it; discard the batch and say so.
 - **State the expanded list and every drop with its reason in the Stage 2 report.** A child the
   user named alongside the epic is one key, not two.
-- **Half an epic on the default branch: ask now, at Stage 0, before triage.** With no batch base,
-  each child merges to §0 Default branch as it goes green, so production carries a half-built feature
-  until the last one lands. Ask this one question straight after expansion (an `AskUserQuestion`,
-  recommending `set-batch base=<feature branch>` unless each child is invisible or flagged until the
-  feature is complete), because the base must be set before triage reads prior art against it
-  (*A batch that targets a feature branch*). Everything else waits for Stage 3.
 - Triage reads the epic's description for context; each child's own criteria are its scope.
 - Tickets filed during the batch (an L split into children, a close-out follow-up) are written in
   desk-jira's `references/ticket-template.md` layout for their type, each child with its own
-  criteria and its dependencies as Blocks links, and join the batch one at a time: fetch as at Stage 1, `triage.sh <KEY>`, then `queue.mjs admit <KEY>` (and `queue.mjs hold` if it is blocked by a
+  criteria and its dependencies as Blocks links, and join the batch one at a time: fetch as at Stage 1, `triage.sh <KEY> --batch <EPIC>`, then `queue.mjs admit <KEY> --batch <EPIC>` (and `queue.mjs hold <KEY> <BLOCKER> --batch <EPIC>` if it is blocked by a
   ticket in the batch), or they wait for the next batch.
 
 ### Dependencies from Jira links
@@ -487,9 +511,9 @@ owner or contributor the batch does not build, an id the epic does not have, or 
 contributors that hold each other in a cycle, is a question on the epic. Put the draft, the table and those questions to the person at Stage 3.
 
 **Stage 3: approved.** File the spine under the epic through `desk-jira`'s gate (`create … parent=<EPIC>`),
-triage it (fetch as at Stage 1, `triage.sh <SPINE>`), set `"spine": "<SPINE>"` in `feature.json`,
+triage it (fetch as at Stage 1, `triage.sh <SPINE> --batch <EPIC>`), set `"spine": "<SPINE>"` in `feature.json`,
 and seed the queue with the spine named among the children:
-`AUTOPILOT_WRITE_QUEUE=1 plan-batch.mjs <SPINE> <children…>`. The spine is seeded first and runnable,
+`AUTOPILOT_WRITE_QUEUE=1 plan-batch.mjs <SPINE> <children…> --batch <EPIC>`. The spine is seeded first and runnable,
 and every other child is held behind it (`held by orchestrator: blocked by <SPINE> (feature spine)`),
 so nothing else spawns until its PR merges. Pass the printed `--deps` to the merge driver as usual.
 
@@ -510,14 +534,14 @@ spine is never left done: it parks, and its PR stays draft.
   children held behind it show as `WAITING ON APPROVAL` (never `STUCK`), the batch is not idle, and
   the pass exits 11. Put the specs to the person: do they mean what the criteria say? **Review them
   first**, because a page of specs hides the one that tests the wrong thing:
-  1. `node ~/.claude/desk/bin/spine-review.mjs brief <SPINE>` prints the reviewer's prompt: every
+  1. `node ~/.claude/desk/bin/spine-review.mjs brief <SPINE> --batch <EPIC>` prints the reviewer's prompt: every
      spec titled with a criterion id, its criterion and its file.
   2. Run Mira (`mira-playwright-expert`) with your own Agent call, read-only, on that prompt. It
      reports, per spec, a criterion clause the spec does not assert, two specs that contradict, a spec
      coupled to an internal module path, and an expected failure that would come from something other
      than the assertion (an import error, a typo). It changes no spec. Save its final text to
      `<state>/spine-review-<SPINE>.txt` and check `git -C <its worktree> status --porcelain` is clean.
-  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt`
+  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt --batch <EPIC>`
      prints one question per spec, each with its criterion, its file and the findings for it. A
      reviewer that failed or returned nothing (leave the file off) makes every question say its spec
      was not reviewed; never present those as clean. Findings naming no reviewed spec come back as
@@ -525,19 +549,19 @@ spine is never left done: it parks, and its PR stays draft.
   4. Ask them as `AskUserQuestion` carousels (*Asking*), one question per spec, its `question`
      text verbatim, options approve or send back. Every spec approved: approve the spine. Any sent
      back: reject it with every spec's note in one.
-  - Approved: `queue.mjs approve <SPINE>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
+  - Approved: `queue.mjs approve <SPINE> --batch <EPIC>`. The spine is done, its PR leaves draft (§3 `pr-ready`;
     otherwise it tells you to undraft it), and it merges under the batch's merge rules: the merge
     driver where §3 `autopilot-merge` and `pr-merge-green` are `yes` or the batch approved merging at
     Stage 3, else each pass says
     `SPINE APPROVED — merge PR #<n>` until the person merges it. Once it merges, the children are
     released as any hold is, and spawn on a later pass. The driver releases nothing behind a spine
     that was never approved, even if its PR merged.
-  - Rejected: `queue.mjs reject <SPINE> "<their note>"`. The note goes into the spine's briefing as
+  - Rejected: `queue.mjs reject <SPINE> "<their note>" --batch <EPIC>`. The note goes into the spine's briefing as
     a binding answer, and the spine is requeued for a new worker on the same branch and PR. Nothing
     is released.
 - **`spine specs incomplete: <problems>`**: an id with no spec, or a spec not marked strict
   expected-fail, each named. `approve` refuses it; send it back with what to fix,
-  `queue.mjs reject <SPINE> "<note>"`. Its children wait on it, as above.
+  `queue.mjs reject <SPINE> "<note>" --batch <EPIC>`. Its children wait on it, as above.
 
 **Each child makes the specs it owns pass, and leaves the others alone.** Seeding records the owner
 table on the queue too (`owners`, `{<id>: <KEY>}`). A child that owns criteria gets a section in its
@@ -554,7 +578,7 @@ specs command once for each id the child owns, and for no other, in its worktree
 - an owned spec failing when run (the spec, the command and the tail of its output);
 - a spec another child owns that the branch added, removed or changed, with that spec's owner.
 
-Send it back with what to fix: `answer.mjs <KEY> "<note>"`, then `queue.mjs requeue <KEY>`. A child
+Send it back with what to fix: `answer.mjs <KEY> "<note>" --batch <EPIC>`, then `queue.mjs requeue <KEY> --batch <EPIC>`. A child
 that owns nothing runs as before.
 
 `answer.mjs` still never un-parks: approving is the orchestrator's decision, made on the person's
@@ -566,7 +590,7 @@ draft PR from the base to §0 Default branch, titled with the epic key, and reco
 commits beyond the default branch first gets one empty commit, pushed under §3 `batch-base-push`;
 opening the PR is §3 `pr-open`. It is tried once: a refused push, the rows, or a failed
 `gh pr create` opens nothing, the report names why under `WAITING ON YOU`, and the batch carries on.
-Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n>` so the gate can mark
+Opened by hand later, record it with `queue.mjs set-batch promotion.pr=<n> --batch <EPIC>` so the gate can mark
 it ready. **Once the person merges it while children are still to merge into the base**, the next
 pass opens the next one the same way, titled with its slice (`(slice 2)`), records it as `promotion`
 with `slice`, `since` (the merge time the next slice counts from) and `merged` (the earlier promotion
@@ -625,7 +649,7 @@ the end of the batch:
 - **Failed**: each failure is under `WAITING ON YOU` and the PR stays draft (put back, as above, if
   it had left draft), while children keep
   spawning and merging into the base. The fix goes onto the base; the gate runs again on the first
-  pass after the base moves (or at once after `queue.mjs set-batch gate=null`).
+  pass after the base moves (or at once after `queue.mjs set-batch gate=null --batch <EPIC>`).
 
 ### Epic close-out
 
@@ -643,10 +667,15 @@ When the batch is idle with no held ticket left:
    already checked every criterion with a spec**: verify only the ones its `close-out:` line names
    (the criteria no spec covers, such as those left to the close-out at Stage 2), or every one when
    it says the criteria could not be read.
-3. With a batch base, the promotion PR (base → default) is the user's to merge. Title it with the epic
+3. The promotion PR (base → default) is the user's to merge. Title it with the epic
    key so `/desk-review` checks the epic's criteria against the whole feature, and say so. In feature
    mode it is already open, titled that way, and the last slice's gate marked it ready; earlier
-   slices' promotion PRs may already have merged.
+   slices' promotion PRs may already have merged. Otherwise open it now, under §3 `pr-open` (at
+   anything but `yes`, ask, or give the person the command):
+   `gh pr create --repo <repo> --base <default> --head <base> --title "ABC-900: <the epic's summary>" --body "Promotion PR for ABC-900: everything its batch merged into <base>. Merging it is the person's call."`
+   (with no terminal, `gh` refuses a PR with no body).
+   Then record it on the batch, `node ~/.claude/desk/bin/queue.mjs set-batch promotion.pr=<n> --batch ABC-900`,
+   so the supervisor archives the batch once it merges.
 4. **Never transition the epic**, whatever the result.
 
 ### A design in Claude Design
@@ -697,7 +726,8 @@ node ~/.claude/desk/bin/queue.mjs set-batch base=feat/<branch>   # base= clears 
   branch from it, workers rebase onto it and open their PRs against it (their system prompt names
   it), and the merge driver merges only PRs based on it.
 - Interactive sessions in the same repo never read the queue, so they keep §0 Default branch.
-- `queue.mjs render` shows `base <branch>`. Say it in the Stage 2 report.
+- `queue.mjs render` (an epic's batch: `queue.mjs render --batch <EPIC>`) shows `base <branch>`.
+  Say it in the Stage 2 report.
 
 **Check before the first spawn that CI runs on PRs into that branch.** A workflow filtered to
 `branches: [<default>]` reports nothing on such a PR, so every required check reads "has not
@@ -1534,7 +1564,9 @@ contract, which is never truncated.
 # prompt: `node ~/.claude/desk/bin/<x>.mjs`, `~/.claude/desk/bin/<x>.sh`, `desk-env`. Never via a
 # shell variable such as $B: no allow rule matches a variable path. <state> is DESK_STATE from
 # `desk-env paths`, written out in full.
-node ~/.claude/desk/bin/expand-parent.mjs ABC-900                     # an epic -> its batch keys (stdout), drops on stderr
+node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-900   # an epic's own feature batch beside the standing one; refused while another is live
+node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900    # its plan declined: removes the batch, and its branch when main has all of it
+node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
 AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"

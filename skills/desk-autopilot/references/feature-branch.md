@@ -15,12 +15,16 @@ triage**:
 node ~/.claude/desk/bin/queue.mjs set-batch base=feat/<branch>   # base= clears it; init clears it too
 ```
 
+An epic's batch is the exception: `batch.mjs start` sets its base when it makes the batch, and the
+standing batch's queue is not touched (*An epic as a batch*).
+
 - It refuses a branch that is not on origin, and any production branch. Push the branch first.
 - `pass.mjs`, `triage.sh` and `merge-driver.sh` export it as `DESK_DEFAULT_BRANCH`. Worktrees then
   branch from it, workers rebase onto it and open their PRs against it (their system prompt names
   it), and the merge driver merges only PRs based on it.
 - Interactive sessions in the same repo never read the queue, so they keep §0 Default branch.
-- `queue.mjs render` shows `base <branch>`. Say it in the Stage 2 report.
+- `queue.mjs render` (an epic's batch: `queue.mjs render --batch <EPIC>`) shows `base <branch>`.
+  Say it in the Stage 2 report.
 
 **Check before the first spawn that CI runs on PRs into that branch.** A workflow filtered to
 `branches: [<default>]` reports nothing on such a PR, so every required check reads "has not

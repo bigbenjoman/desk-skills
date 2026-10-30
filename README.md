@@ -23,7 +23,8 @@ cd ~/desk-skills && ./install.sh     # once per machine; asks before touching yo
    [Checking a repo's setup](#checking-a-repos-setup)).
 
 Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> …` for a batch, or
-`/desk-autopilot <EPIC>` for a large feature written as an epic.
+`/desk-autopilot <EPIC>` for a large feature written as an epic, which runs as its own feature batch
+on its feature branch while the standing batch carries on.
 
 ## Skills
 
