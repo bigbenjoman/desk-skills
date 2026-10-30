@@ -38,7 +38,7 @@ const tree = (dir) => (existsSync(dir) ? readdirSync(dir, { recursive: true, wit
 const everything = () => `${tree(join(DESK_HOME, 'repos'))}\n${tree(join(HOME, '.desk-autopilot'))}`;
 const reset = () => { rmSync(join(DESK_HOME, 'repos'), { recursive: true, force: true }); rmSync(join(HOME, '.desk-autopilot'), { recursive: true, force: true }); };
 const queue = (extra) => JSON.stringify({ version: 1, batch: '2026-10-12T07:29', concurrency: 2, tickets: {
-  'K-1': { key: 'K-1', state: 'running', pid: 4242 },
+  'K-1': { key: 'K-1', state: 'triaged', handoff: 'pending', handoff_stage: '4b' },
   'K-2': { key: 'K-2', state: 'parked', park: { question: 'which colour?' } },
   'K-3': { key: 'K-3', state: 'done', result: { pr: 7 } },
 }, ...extra }, null, 2);
@@ -86,6 +86,31 @@ before = everything();
 r = move();
 t('a pass holding the lock: refused', r.code === 11 && r.out.includes(`a pass is running in the standing batch (pid ${process.pid})`), true);
 t('a pass holding the lock: nothing changed', everything(), before);
+// A queue lock is never taken over, even one a dead writer left: queue.mjs clears that under its own lock.
+const dead = Number(spawnSync('bash', ['-c', 'true & echo $!'], { encoding: 'utf8' }).stdout.trim());
+for (const [why, pid, says] of [['a live queue write', process.pid, `a queue write holds ${standingQ}.lock (pid ${process.pid})`], ['a dead writer\'s queue lock', dead, `a queue write that has exited (pid ${dead})`]]) {
+  reset();
+  put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true }));
+  put(join(`${standingQ}.lock`, 'pid'), `${pid}\n`);
+  before = everything();
+  r = move();
+  t(`${why}: refused, naming it`, r.code === 11 && r.out.includes(says), true);
+  t(`${why}: nothing changed, the lock left in place`, everything(), before);
+}
+// Only a batch the supervisor runs moves, and only while no worker runs.
+for (const [why, extra, says] of [
+  ['a batch a session runs', { supervised: false }, 'is run by a session, not the supervisor'],
+  ['a running worker', { supervised: true, tickets: { 'K-1': { key: 'K-1', state: 'running' }, 'K-2': { key: 'K-2', state: 'running' } } }, 'K-1, K-2 are running'],
+  ['a running base fix', { supervised: true, base_fix: { running: true } }, 'the base fix is running'],
+]) {
+  reset();
+  put(standingQ, queue({ base: 'feat/x', epic: 'E-1', ...extra }));
+  put(join(standingS, 'handoffs', 'K-1.json'), '{"ticket":"K-1"}');
+  before = everything();
+  r = move();
+  t(`${why}: refused, naming it`, r.code === 11 && r.out.includes(says), true);
+  t(`${why}: nothing changed`, everything(), before);
+}
 
 // AC1: a live standing batch on a feature branch moves whole to batches/E-1/, and the slot is empty.
 reset();
@@ -97,7 +122,7 @@ const moving = {
   'logs/K-1.log': '{"type":"system"}\n',
   'triage/K-1.json': '{"ticket":"K-1"}',
   'batch-notes.md': '# Batch notes\n',
-  'supervisor.json': '{"idle":null}',
+  'handoffs/K-1.json': '{"ticket":"K-1","stage":"4b"}',
   'merge-driver.log': 'merge driver exited 0\n',
 };
 const staying = {
@@ -109,6 +134,8 @@ for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(stan
 // A merge driver holding its lock: a process that outlives this check, reparented so it is reaped.
 const sleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
 put(join(standingS, 'merge-driver.lock.d', 'pid'), `${sleeper}\n`);
+// The supervisor had read the batch as idle, with that driver running.
+put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: 'abc123', notified: ['x'], driver: { pid: sleeper, started: 'then', failures: 1 } }));
 r = move();
 t('AC1 moved: exit 0', r.code, 0);
 t('AC1 moved: says where it went', r.out.includes('from the standing slot to batch E-1') && r.out.includes(namedQ('E-1')) && r.out.includes(namedS('E-1')), true);
@@ -126,10 +153,31 @@ let driverAlive = true;
 try { process.kill(sleeper, 0); } catch { driverAlive = false; }
 t('AC1 the merge driver was stopped, for the supervisor to start again in E-1', driverAlive, false);
 t('AC1 and the output says so', r.out.includes(`its merge driver (pid ${sleeper}) was stopped`), true);
+const sup = JSON.parse(read(join(namedS('E-1'), 'supervisor.json')));
+t('AC2 the supervisor no longer reads the moved batch as idle, so its next tick runs a pass', sup.idle, null);
+t('AC2 the stopped driver counts no failed start', `${sup.driver.pid}/${sup.driver.failures}`, 'null/1');
+t('AC2 the rest of the supervisor state moved unchanged', JSON.stringify(sup.notified), '["x"]');
 const listed = spawnSync('node', ['--input-type=module', '-e', `import * as B from '${join(BIN, 'batches.mjs')}'; console.log(B.listBatches().map((b) => b.name ?? '-').join(' ')); console.log(B.batchHolding('K-2')?.name)`], { encoding: 'utf8', env: base });
 t('AC1 the repo lists the standing slot and batch E-1', listed.stdout.trim(), '- E-1\nE-1');
 r = move();
 t('AC1 run again with the slot empty: nothing to move', r.code === 0 && r.out.includes('there is no standing batch'), true);
+
+// AC2: a screenshot folder the queue records under the old state folder follows the move.
+reset();
+put(standingQ, queue({ base: 'feat/epics', epic: 'E-1', supervised: true }));
+const withImages = JSON.parse(read(standingQ));
+withImages.tickets['K-1'].images_dir = join(standingS, 'images', 'K-1');
+withImages.tickets['K-3'].images_dir = '/elsewhere/K-3';
+put(standingQ, JSON.stringify(withImages, null, 2));
+put(join(standingS, 'images', 'K-1', 'shot.png'), 'png');
+r = move();
+t('AC2 with screenshots: moved', r.code, 0);
+const after = JSON.parse(read(namedQ('E-1')));
+t('AC2 an images_dir under the old folder points at the moved one', after.tickets['K-1'].images_dir, join(namedS('E-1'), 'images', 'K-1'));
+t('AC2 and the screenshot is there', existsSync(join(after.tickets['K-1'].images_dir, 'shot.png')), true);
+t('AC2 an images_dir elsewhere is left alone', after.tickets['K-3'].images_dir, '/elsewhere/K-3');
+t('AC2 everything else in the queue unchanged', JSON.stringify({ ...after, tickets: null }), JSON.stringify({ ...withImages, tickets: null }));
+t('AC2 with screenshots: the standing slot has no queue', existsSync(standingQ), false);
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');
