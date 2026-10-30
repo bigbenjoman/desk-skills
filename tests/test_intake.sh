@@ -314,7 +314,7 @@ rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
 out=$(admit X-6); rc=$?
 check "DS-300 AC4: in feature mode a child is held behind the unfinished spine, as plan-batch holds every child" '[ $rc -eq 0 ] && [ "$(nget tickets.X-6.held_by)" = X-2 ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-2$" <<< "$out"'
 rec E-2 A '"type":"Epic"'
-out=$(admit E-2); rc=$?
+config ask; out=$(admit E-2); rc=$?; config yes
 check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'
 rec X-1 A '"type":"Epic"'
 out=$(admit X-1); rc=$?
