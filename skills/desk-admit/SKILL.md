@@ -47,7 +47,7 @@ below as `(Recommended)`, with its reason as the description:
 | `an epic` | Plan it as a feature batch: `/desk-autopilot <TICKET>` | |
 | `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most | Admit nothing for it |
 | `is a child of epic <E>, whose feature batch <E> is running` | Leave it to that feature batch: the standing batch never takes an epic's child while its batch runs | Admit nothing for it |
-| `runs on base <B> in the standing slot: move it to epic <E>'s own slot` | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch | Run step 1 again |
+| `runs on base <B> in the standing slot: move it to epic <E>'s own slot` | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
 | `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |

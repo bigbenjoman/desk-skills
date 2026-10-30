@@ -97,20 +97,50 @@ for (const [why, pid, says] of [['a live queue write', process.pid, `a queue wri
   t(`${why}: refused, naming it`, r.code === 11 && r.out.includes(says), true);
   t(`${why}: nothing changed, the lock left in place`, everything(), before);
 }
-// Only a batch the supervisor runs moves, and only while no worker runs.
+// Only a batch the supervisor runs moves.
+reset();
+put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: false }));
+put(join(standingS, 'handoffs', 'K-1.json'), '{"ticket":"K-1"}');
+before = everything();
+r = move();
+t('a batch a session runs: refused, naming it', r.code === 11 && r.out.includes('is run by a session, not the supervisor'), true);
+t('a batch a session runs: nothing changed', everything(), before);
+// AC2: a batch with workers running drains instead: its spawns pause, nothing moves, and the running
+// workers and their files are left as they are.
 for (const [why, extra, says] of [
-  ['a batch a session runs', { supervised: false }, 'is run by a session, not the supervisor'],
-  ['a running worker', { supervised: true, tickets: { 'K-1': { key: 'K-1', state: 'running' }, 'K-2': { key: 'K-2', state: 'running' } } }, 'K-1, K-2 are running'],
-  ['a running base fix', { supervised: true, base_fix: { running: true } }, 'the base fix is running'],
+  ['a running worker', { tickets: { 'K-1': { key: 'K-1', state: 'running' }, 'K-2': { key: 'K-2', state: 'running' } } }, 'K-1, K-2 are running'],
+  ['a running base fix', { base_fix: { running: true } }, 'the base fix is running'],
 ]) {
   reset();
-  put(standingQ, queue({ base: 'feat/x', epic: 'E-1', ...extra }));
+  put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true, concurrency: 3, ...extra }));
   put(join(standingS, 'handoffs', 'K-1.json'), '{"ticket":"K-1"}');
-  before = everything();
+  const was = JSON.parse(read(standingQ));
   r = move();
-  t(`${why}: refused, naming it`, r.code === 11 && r.out.includes(says), true);
-  t(`${why}: nothing changed`, everything(), before);
+  t(`AC2 ${why}: drains, naming it`, r.code === 12 && r.out.includes(says) && r.out.includes('new spawns are paused'), true);
+  const dq = JSON.parse(read(standingQ));
+  t(`AC2 ${why}: spawns paused as the user's worker count of 0`, `${dq.concurrency}/${dq.concurrency_by}/${dq.concurrency_user}`, '0/user/0');
+  t(`AC2 ${why}: the count it had is kept`, `${dq.move_drain?.epic} ${dq.move_drain?.concurrency} ${dq.move_drain?.concurrency_by}`, 'E-1 3 null');
+  t(`AC2 ${why}: tickets untouched`, JSON.stringify(dq.tickets), JSON.stringify(was.tickets));
+  t(`AC2 ${why}: nothing moved`, existsSync(namedQ('E-1')) || !existsSync(join(standingS, 'handoffs', 'K-1.json')), false);
+  t(`AC2 ${why}: no lock is left behind`, existsSync(`${standingQ}.lock`) || existsSync(join(standingS, 'orchestrator.lock')), false);
 }
+// Run again while still draining: the kept count is not overwritten by the pause.
+r = move();
+t('AC2 run again while draining: still drains, keeping the count it had', `${r.code} ${JSON.parse(read(standingQ)).move_drain?.concurrency}`, '12 3');
+// Once the workers have parked or finished, the move runs and sets the count back.
+const drainedQ = JSON.parse(read(standingQ));
+delete drainedQ.base_fix;
+put(standingQ, JSON.stringify(drainedQ, null, 2));
+r = move();
+const back = JSON.parse(read(namedQ('E-1')));
+t('AC2 drained: moved', r.code === 0 && r.out.includes('is 3 again'), true);
+t('AC2 drained: the worker count is set back and the drain cleared', `${back.concurrency} ${'concurrency_by' in back} ${'concurrency_user' in back} ${'move_drain' in back}`, '3 false false false');
+// A count the person set while it drained is theirs: the move leaves it.
+reset();
+put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true, concurrency: 1, concurrency_by: 'user', concurrency_user: 1, move_drain: { epic: 'E-1', concurrency: 3, concurrency_by: null, concurrency_user: null } }));
+r = move();
+const kept = JSON.parse(read(namedQ('E-1')));
+t('AC2 a count set while draining: moved, keeping it', `${r.code} ${kept.concurrency} ${kept.concurrency_by} ${'move_drain' in kept}`, '0 1 user false');
 reset();
 put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true }));
 put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: null, decider: { pid: process.pid, out: join(standingS, 'decider', 'd.json') } }));

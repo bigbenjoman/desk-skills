@@ -11,9 +11,13 @@
 // write runs halfway through, and it stops the batch's merge driver first: the supervisor's next tick
 // starts one again in the moved batch's folder. Only a batch the supervisor runs moves, and only while
 // no worker runs: a live worker writes its park, handoff and resume files to the folder it was spawned
-// with, which a pass of the moved batch never reads. A screenshot folder the queue records under the
-// old folder is rewritten to the new one.
-// Exits 0 (moved, or nothing to move) or 11 (refused, with nothing moved).
+// with, which a pass of the moved batch never reads. A batch with workers running drains instead: its
+// new spawns pause (worker count 0, kept as the user's) while those workers carry on to a park, a
+// handoff or a PR and the merge driver keeps merging, so a window to move always comes; run this again
+// then, and the move sets the count back. A screenshot folder the queue records under the old folder
+// is rewritten to the new one.
+// Exits 0 (moved, or nothing to move), 11 (refused, with nothing moved) or 12 (draining: spawns paused,
+// nothing moved yet).
 import { existsSync, readFileSync, writeFileSync, readdirSync, renameSync, mkdirSync, rmSync, rmdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
@@ -80,7 +84,26 @@ writeFileSync(join(queueLock, 'pid'), `${process.pid}\n`);
 const cur = readQueue(from.queue);
 if (cur.supervised !== true) refuse(`the standing batch ${name} is run by a session, not the supervisor: that session's next pass would look for it in the standing slot. Hand it to the supervisor first (queue.mjs set-batch supervised=true, desk-autopilot Stage 4), then run this again. Nothing was moved`);
 const running = [...Object.values(cur.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => t.key), ...(cur.base_fix?.running ? ['the base fix'] : [])];
-if (running.length) refuse(`${running.join(', ')} ${running.length === 1 ? 'is' : 'are'} running: a running worker writes its park, handoff and resume files to the standing slot it was spawned in. Run this again once no worker is running (each parks, hands off or finishes). Nothing was moved`);
+const DRAIN = ['concurrency', 'concurrency_by', 'concurrency_user'];
+const writeQueue = (file, obj) => { const tmp = `${file}.tmp.${process.pid}`; writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`); renameSync(tmp, file); };
+if (running.length) {
+  // A worker count of 0 is a pause pass.mjs and borrowing both honour, resumes and the base fix
+  // included. The count it replaces is kept, unless this batch is already draining: a count the
+  // person has set since then is theirs, and replaces it.
+  if (!cur.move_drain || cur.concurrency !== 0) {
+    cur.move_drain = { epic, at: new Date().toISOString(), ...Object.fromEntries(DRAIN.map((k) => [k, cur[k] ?? null])) };
+    Object.assign(cur, { concurrency: 0, concurrency_by: 'user', concurrency_user: 0 });
+    writeQueue(from.queue, cur);
+  }
+  console.log(`move-batch: ${running.join(', ')} ${running.length === 1 ? 'is' : 'are'} running, and a running worker writes its park, handoff and resume files to the standing slot it was spawned in, so batch ${name} drains first. Its new spawns are paused (worker count 0) since ${cur.move_drain.at}; ${running.length === 1 ? 'that worker carries' : 'those workers carry'} on, and its merge driver keeps merging. Run this again once none is running (each parks, hands off or finishes): the move sets the worker count back. Nothing was moved yet`);
+  process.exit(12);
+}
+// The move sets back the worker count the drain paused, unless the person has set one since.
+const drained = !!cur.move_drain;
+if (drained) {
+  if (cur.concurrency === 0) for (const k of DRAIN) { if (cur.move_drain[k] == null) delete cur[k]; else cur[k] = cur.move_drain[k]; }
+  delete cur.move_drain;
+}
 // The supervisor's decider session (decider.mjs) writes into the folder it was started with, too.
 const sup = join(from.state, 'supervisor.json');
 const s = existsSync(sup) ? JSON.parse(readFileSync(sup, 'utf8')) : null;
@@ -120,10 +143,8 @@ try {
     renameSync(join(from.state, f), join(to.state, f));
     moved.push(f);
   }
-  if (images.length) {
-    const tmp = `${to.queue}.tmp.${process.pid}`;
-    writeFileSync(tmp, `${JSON.stringify(cur, null, 2)}\n`);
-    renameSync(tmp, to.queue);
+  if (images.length || drained) {
+    writeQueue(to.queue, cur);
     unlinkSync(from.queue);
   } else renameSync(from.queue, to.queue);
 } catch (e) {
@@ -139,6 +160,7 @@ console.log(`move-batch: moved batch ${name} (base ${cur.base}, ${tickets} ticke
 console.log(`  queue: ${to.queue}`);
 console.log(`  state: ${to.state}`);
 if (images.length) console.log(`  screenshot folders now under it: ${images.map((t) => t.key).join(', ')}`);
+if (drained) console.log(`  its worker count, paused while it drained, is ${cur.concurrency ?? 'the §3b default'} again`);
 if (driver) console.log(`  its merge driver (pid ${driver}) was stopped: the supervisor's next tick starts it again in batch ${epic}`);
 if (notes.length) console.log(`  close-out notes now name its queue: ${notes.length}`);
 const onDefault = E.configValue('default-branch') || 'the default branch';
