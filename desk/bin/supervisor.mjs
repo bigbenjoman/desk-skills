@@ -305,7 +305,8 @@ function archived(b, standing) {
 // started, asked again, or discarded. A discarded batch's lines go in the standing batch's log, since
 // its own log went with it. -> whether the batch is gone.
 function planAnswered(b, standing) {
-  const p = actOnPlan(b);
+  const lock = { take: () => { mkdirSync(b.state, { recursive: true }); return !takeLock(b.state); }, drop: () => dropLock(b.state) };
+  const p = actOnPlan(b, { lock });
   if (!p.lines.length) return p.gone;
   const to = p.gone ? standing : b.state;
   mkdirSync(to, { recursive: true });
@@ -363,16 +364,29 @@ function batchInterval(intake) {
     idleCheckin(state, s, log, stamp);
     return;
   }
-  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
+  const holder = takeLock(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
-  try { writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), { flag: 'wx' }); }
+  try { runPass(state, q, s, log, stamp, intake); }
+  finally { dropLock(state); }
+}
+
+// Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
+// (or the orchestrator's pass lock).
+function takeLock(state) {
+  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
+  if (holder) return holder;
+  const mine = () => JSON.stringify({ pid: process.pid, since: new Date().toISOString() });
+  try { writeFileSync(supervisorLock(state), mine(), { flag: 'wx' }); }
   catch {
     // A dead holder's lock is taken over; a live one started in the moment since the check above.
-    if (supervisorHolder(state)) { log([`== ${stamp()} skipped: a pass is still running (pid ${supervisorHolder(state)})`, ...intake]); return; }
-    writeFileSync(supervisorLock(state), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
+    const live = supervisorHolder(state);
+    if (live) return live;
+    writeFileSync(supervisorLock(state), mine());
   }
-  try { runPass(state, q, s, log, stamp, intake); }
-  finally { try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ } }
+  return null;
+}
+function dropLock(state) {
+  try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ }
 }
 
 // Standing intake (intake.mjs), where config §3b "Intake query" names a query: the lines for the

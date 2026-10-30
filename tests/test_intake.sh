@@ -351,8 +351,9 @@ mkdirSync(s, { recursive: true });
 writeFileSync(s + '/expansion.json', JSON.stringify({ parent: key, containers: {}, criteria: [{ id: 'AC1', text: 'it works' }] }));
 process.stdout.write(readFileSync('$T/children/' + key, 'utf8'));
 EOF
-# Each line of $T/plan.qs is a question on the epic's owner table. With AUTOPILOT_WRITE_QUEUE it seeds
-# the named tickets, each held behind the spine where feature.json names one, as plan-batch does.
+# As plan-batch does, it asks on the epic when feature.json's AC1 owner is not a ticket it was given, and
+# with AUTOPILOT_WRITE_QUEUE it seeds the named tickets, each held behind the spine where feature.json
+# names one.
 cat > "$T/bin/plan-batch.mjs" <<EOF
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -360,7 +361,8 @@ const s = process.env.DESK_AUTOPILOT_STATE, epic = process.env.DESK_BATCH, seed 
 const keys = process.argv.slice(2).filter((a) => a !== '--json');
 appendFileSync('$T/plan.calls', epic + ' ' + process.argv.slice(2).join(' ') + (seed ? ' (seed)' : '') + '\n');
 const plan = existsSync(s + '/feature.json') ? JSON.parse(readFileSync(s + '/feature.json', 'utf8')) : null;
-const qs = existsSync('$T/plan.qs') ? readFileSync('$T/plan.qs', 'utf8').split('\n').filter(Boolean) : [];
+const owner = plan?.owners?.AC1;
+const qs = owner && !keys.includes(owner) ? ["AC1's owner " + owner + ' is not a child this batch builds: name another owner'] : [];
 const message = ['FEATURE MODE — on', plan ? '  AC1 owner ' + plan.owners.AC1 : '  no feature plan yet'];
 const needs = [...(plan?.spine ? [] : [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }]), ...qs.map((q) => ({ ticket: epic, why: 'question', detail: q }))];
 if (seed) {
@@ -437,12 +439,20 @@ n=$(count "$T/claude.calls"); out=$(btick)
 check "DS-354: an answer already acted on is not acted on again" '[ "$(count "$T/claude.calls")" = "$n" ] && grep -q "your edit could not be applied: AC9" <<< "$(pq E-5)"'
 
 # An edit the editor applies, but that leaves the owner table with a question, is not applied either.
-echo "AC1's owner E-12 is not a child this batch builds: name another owner" > "$T/plan.qs"
 editor '{"plan": {"draft": "Spine: AC1", "owners": {"AC1": "E-12"}}, "drop": []}'
 answer E-5 "make E-12 own AC1"; out=$(btick)
 check "DS-354 AC3: an edit that leaves the owner table unsettled asks again, naming plan-batch's question" 'grep -q "because your edit could not be applied cleanly: AC1.s owner E-12 is not a child this batch builds: name another owner: read " <<< "$(pq E-5)" && ! grep -q "(seed)" "$T/plan.calls"'
 check "DS-354 AC3: the plan is left as it was" '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).owners.AC1)" "$ES/E-5/feature.json")" = E-6 ]'
-rm -f "$T/plan.qs"
+
+# A start on an owner table plan-batch questions asks again before its spine is filed; and while another
+# live run holds the batch's supervisor.lock, the answer waits for it.
+owner(){ node -e 'const fs=require("fs"),f=process.argv[1],p=JSON.parse(fs.readFileSync(f,"utf8")); p.owners.AC1=process.argv[2]; fs.writeFileSync(f, JSON.stringify(p))' "$ES/E-5/feature.json" "$1"; }
+owner E-12; printf '{"pid":%s}\n' "$$" > "$ES/E-5/supervisor.lock"
+q0=$(pq E-5); answer E-5 start; out=$(btick)
+check "DS-354: an answer is not acted on while another run holds the batch's lock" '[ "$(pq E-5)" = "$q0" ]'
+rm -f "$ES/E-5/supervisor.lock"; out=$(btick)
+check "DS-354: a start the owner table cannot take asks again, and files no spine" 'grep -q "because plan-batch has questions on its owner table: AC1.s owner E-12 is not a child this batch builds" <<< "$(pq E-5)" && ! grep -q "^create" "$T/jira.calls" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-5/feature.json")" = null ]'
+owner E-6
 q0=$(pq E-5); answer E-5 "not now"; out=$(btick)
 check "DS-354: a not-now answer leaves the plan waiting" '[ "$(pq E-5)" = "$q0" ] && [ -e "$EB/E-5" ]'
 
@@ -477,6 +487,8 @@ out=$(admit E-15 --by ben); n=$(count "$T/claude.calls")
 answer E-15 start; out=$(btick)
 check "DS-354 AC1: an approved plan starts the feature batch on its feature branch" '[ "$(eget E-15 base)" = feat/E-15-approved ] && [ "$(eget E-15 tickets.E-15)" = undefined ] && [ "$(eget E-15 tickets.E-11.state)" = triaged ] && [ "$(eget E-15 tickets.E-16.held_by)" = E-11 ] && grep -q "^E-15 --json E-11 E-16 (seed)$" "$T/plan.calls"'
 check "DS-354 AC1: no editor runs on a plain start" '[ "$(count "$T/claude.calls")" = "$n" ] && grep -q "^E-15.s feature batch started on feat/E-15-approved, with its spine E-11 first: 1 child seeded by plan-batch$" "$ES/E-15/supervisor.log"'
+filed=$(node --input-type=module -e "import { readEdit } from '$B/epic-plan.mjs'; const out = (plan) => JSON.stringify({ type: 'result', result: 'PLAN_EDIT: ' + JSON.stringify({ plan, drop: [] }) }); const plan = { spine: 'E-11', draft: 'Spine: AC1', owners: { AC1: 'E-6' } }; console.log(readEdit(out({ draft: 'Spine: AC1 and AC2', owners: { AC1: 'E-6' } }), { children: ['E-6'], plan }).cannot ?? 'applied'); console.log(readEdit(out({ draft: 'Spine: AC1', owners: { AC1: 'E-7' } }), { children: ['E-6', 'E-7'], plan }).plan?.owners.AC1)")
+check "DS-354: an edit to a spine already filed cannot be applied, and one to its owner table can" '[ "$filed" = "$(printf "it changes the spine, which is already filed as E-11: edit E-11 in Jira, then answer start\nE-7")" ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
