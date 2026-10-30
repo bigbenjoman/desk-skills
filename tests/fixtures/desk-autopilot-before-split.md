@@ -332,7 +332,7 @@ Once the batch is handed over, the session does not stay open to watch it:
    supervisor runs the passes, starts the driver and brings both back after a reboot.
 
 A session opened from that handoff shows the batch from `supervisor.mjs status` and `queue.mjs
-render`, then deals only with what waits on the person: parks, answers (Stage 5), gates to relay
+render` (`queue.mjs render --batch <EPIC>` for an epic's batch), then deals only with what waits on the person: parks, answers (Stage 5), gates to relay
 (Stage 6c), the items the decider handed on (`<state>/handed.json`) and the close-out. It runs no
 pass of its own, and starts no loop or driver, while the batch stays handed over.
 
@@ -672,7 +672,8 @@ When the batch is idle with no held ticket left:
    mode it is already open, titled that way, and the last slice's gate marked it ready; earlier
    slices' promotion PRs may already have merged. Otherwise open it now, under §3 `pr-open` (at
    anything but `yes`, ask, or give the person the command):
-   `gh pr create --repo <repo> --base <default> --head <base> --title "ABC-900: <the epic's summary>"`.
+   `gh pr create --repo <repo> --base <default> --head <base> --title "ABC-900: <the epic's summary>" --body "Promotion PR for ABC-900: everything its batch merged into <base>. Merging it is the person's call."`
+   (with no terminal, `gh` refuses a PR with no body).
    Then record it on the batch, `node ~/.claude/desk/bin/queue.mjs set-batch promotion.pr=<n> --batch ABC-900`,
    so the supervisor archives the batch once it merges.
 4. **Never transition the epic**, whatever the result.
@@ -725,7 +726,8 @@ node ~/.claude/desk/bin/queue.mjs set-batch base=feat/<branch>   # base= clears 
   branch from it, workers rebase onto it and open their PRs against it (their system prompt names
   it), and the merge driver merges only PRs based on it.
 - Interactive sessions in the same repo never read the queue, so they keep §0 Default branch.
-- `queue.mjs render` shows `base <branch>`. Say it in the Stage 2 report.
+- `queue.mjs render` (an epic's batch: `queue.mjs render --batch <EPIC>`) shows `base <branch>`.
+  Say it in the Stage 2 report.
 
 **Check before the first spawn that CI runs on PRs into that branch.** A workflow filtered to
 `branches: [<default>]` reports nothing on such a PR, so every required check reads "has not

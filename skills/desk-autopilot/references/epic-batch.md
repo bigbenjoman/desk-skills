@@ -85,7 +85,8 @@ When the batch is idle with no held ticket left:
    mode it is already open, titled that way, and the last slice's gate marked it ready; earlier
    slices' promotion PRs may already have merged. Otherwise open it now, under §3 `pr-open` (at
    anything but `yes`, ask, or give the person the command):
-   `gh pr create --repo <repo> --base <default> --head <base> --title "ABC-900: <the epic's summary>"`.
+   `gh pr create --repo <repo> --base <default> --head <base> --title "ABC-900: <the epic's summary>" --body "Promotion PR for ABC-900: everything its batch merged into <base>. Merging it is the person's call."`
+   (with no terminal, `gh` refuses a PR with no body).
    Then record it on the batch, `node ~/.claude/desk/bin/queue.mjs set-batch promotion.pr=<n> --batch ABC-900`,
    so the supervisor archives the batch once it merges.
 4. **Never transition the epic**, whatever the result.

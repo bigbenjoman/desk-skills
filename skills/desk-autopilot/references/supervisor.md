@@ -67,7 +67,7 @@ Once the batch is handed over, the session does not stay open to watch it:
 For an epic's batch the handoff also says that every command for it takes `--batch <EPIC>`.
 
 A session opened from that handoff shows the batch from `supervisor.mjs status` and `queue.mjs
-render`, then deals only with what waits on the person: parks, answers (Stage 5), gates to relay
+render` (`queue.mjs render --batch <EPIC>` for an epic's batch), then deals only with what waits on the person: parks, answers (Stage 5), gates to relay
 (Stage 6c), the items the decider handed on (`<state>/handed.json`) and the close-out. It runs no
 pass of its own, and starts no loop or driver, while the batch stays handed over.
 

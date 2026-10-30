@@ -2,7 +2,8 @@
 // covers: skills/desk-autopilot/** desk/bin/**
 // An epic runs as its own batch beside the standing one, so a desk/bin command run on its path without
 // `--batch <EPIC>` acts on the standing batch. The epic path is desk-autopilot's epic-batch.md (the
-// start, expansion, plan and close-out) and feature-mode.md (an epic's feature mode). A command is
+// start, expansion, plan and close-out) and feature-mode.md (an epic's feature mode), plus the parts of
+// feature-branch.md and supervisor.md an epic's batch reads as every batch does. A command is
 // inline code or a code-block line that runs one of desk/bin's scripts with an argument.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -51,6 +52,27 @@ for (const f of EPIC_PATH) {
   const found = commands(text);
   t(`${f}: its commands are read (${found.length})`, found.length >= 5, true);
   t(`${f}: every desk/bin command passes --batch <EPIC>`, unnamed(text), []);
+}
+
+// Files an epic's batch reads as every batch does: each command in them also gives its --batch <EPIC>
+// form in the same file, apart from those an epic's session never runs on its batch (by script and
+// verb): the standing batch's own set-up and intake, the supervisor's own pass, the repo-wide reads,
+// and a worker's checks in its worktree.
+const SHARED = {
+  'feature-branch.md': ['queue.mjs set-batch', 'batch.mjs start', 'desk-env baseline'],
+  'supervisor.md': ['run-by.mjs stage4', 'pass.mjs --json', 'supervisor.mjs status', 'queue.mjs init',
+    'queue.mjs admit', 'intake.mjs forget', 'intake.mjs admit'],
+};
+const verb = (c) => /([\w.-]+\.(?:mjs|sh)|desk-env)[ \t]+([\w-]+)/.exec(c)?.slice(1).join(' ') ?? c;
+const untwinned = (text, exempt = []) => {
+  const named = new Set(commands(text).filter((c) => NAMED.test(c)).map(verb));
+  return unnamed(text).filter((c) => !named.has(verb(c)) && !exempt.includes(verb(c)));
+};
+t('a shared command with no --batch form is caught', untwinned('`queue.mjs render` shows it'), ['queue.mjs render']);
+t('one with its --batch form beside it passes', untwinned('`queue.mjs render` (`queue.mjs render --batch <EPIC>`)'), []);
+for (const [f, exempt] of Object.entries(SHARED)) {
+  const text = readFileSync(join(refs, f), 'utf8');
+  t(`${f}: every desk/bin command an epic runs gives its --batch <EPIC> form`, untwinned(text, exempt), []);
 }
 
 console.log(fails ? `${fails} failed` : 'all passed');
