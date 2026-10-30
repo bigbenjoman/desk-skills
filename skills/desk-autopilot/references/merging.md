@@ -91,14 +91,18 @@ rules say. **Where the batch is handed to the supervisor, do not start one**: it
 handed-over batch and starts it again after a reboot (*The supervisor*).
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
-a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes`, skips
+a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes` (first
+resolving each thread an earlier desk-review by that handle opened, once the latest desk-review
+verdict reads as §4 Clean review verdict at the head; anyone else's thread stays), skips
 a PR under a §4 Merge holds glob (logging `HELD` and the reason), disarming any auto-merge armed on
 either, merges with §4 Merge method and `--match-head-commit <sha>` when the head is green, updates
 a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, skips a `DIRTY` PR,
 and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
-`merge_blocked=` (a hold, or behind without `pr-update-branch`), which `queue.mjs render` shows. It
+`merge_blocked=` (a hold, behind without `pr-update-branch`, or a green PR held for unresolved
+threads on two loops, naming the first), which `queue.mjs render` shows and desk-q and needs-you
+list as needing the person. It
 matches a ticket's PR by the recorded branch and base (above). `--tickets` is the starting set:
 every loop also takes in each ticket in the queue, so a ticket admitted or requeued mid-batch is
 merged with no restart. `--tickets` takes whitespace- or comma-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket

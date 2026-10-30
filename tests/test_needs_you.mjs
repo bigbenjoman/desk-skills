@@ -54,7 +54,7 @@ function put(name, r) {
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
     `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
-    '| `autopilot-merge` | The merge driver merges | `ask` | `no` |\n| `pr-merge-green` | Merge a green PR | `ask` | `no` |\n\n' +
+    `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n`);
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -408,6 +408,18 @@ t('DS-314 AC2 desk-q\'s Queue lists it under Needs you, held by them on its PR',
 t('DS-314 AC2 its ticket page says how to release it',
   /Held by you: you put its PR #51 back to draft/.test(ticketScreen(er, 'E-1')) && ticketScreen(er, 'E-1').includes('gh pr ready 51 --repo acme/iota'), true);
 t('DS-314 AC2 done records nothing', N.record({ word: 'iota', ticket: 'E-1', action: 'done' }).ok, true);
+
+// ---- DS-347 AC3: a green PR the merge driver has held on two loops for an unresolved thread is the
+// person's, naming the thread; a green PR it merges is not.
+const greenPr = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, ...more,
+  pr_status: { pr, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', head: `h${pr}`, checks: passed, at: minsAgo(1) } });
+put('xi', { port: 4300, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'X-1': greenPr(91),
+  'X-2': greenPr(92, { merge_blocked: 'review feedback: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?"' }),
+} });
+const xi = N.collect({ word: 'xi' }).items;
+t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread is', xi.map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
+t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi[0]?.need, 'PR #92: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?" · resolve or answer it');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

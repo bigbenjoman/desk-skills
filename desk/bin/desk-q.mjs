@@ -215,6 +215,9 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
   // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
   if (String(t.merge_blocked ?? '').startsWith('merge hold:')) return needs(['merge hold: merge it', null]);
+  // It records a green PR it has held for unresolved review threads on two loops, naming the first.
+  const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
+  if (fb) return needs([fb[1], WARN], [' · resolve or answer it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = (t.fix_tries?.length ?? 0) < FIX_TRIES_MAX;
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {

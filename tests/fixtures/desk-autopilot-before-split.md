@@ -191,7 +191,7 @@ bounds, so never widen a worker's grants on the strength of the deny list.
 | `pr-ready` | `pass.mjs` undrafts once the checks in Stage 7 hold | `ask`: ask once at Stage 3 for the whole batch, never once per PR: "Undraft this batch's PRs once each is clean and green?" Approved: `queue.mjs set-batch approved.undraft=true`, then each pass undrafts each PR without asking once the checks in Stage 7 hold, and notes the approval each time in `batch-notes.md`. Declined, or `no`: the pass reports the PR as ready to undraft |
 | `pr-auto-merge` | not used in a batch: neither you nor the driver arms auto-merge, because the platform's idea of green is not the config's | — |
 | `autopilot-merge` **and** `pr-merge-green` | the merge driver merges on green, pinned to the head | each `yes` or `ask`, and at least one `ask`: ask once at Stage 3 for the whole batch, never once per green PR: "Merge each of this batch's PRs once it is green?" Approved: `queue.mjs set-batch approved.merge=true`, then the merge driver (yours, or the supervisor's) merges each green PR without asking, under the same holds and `merge-feedback-first`, and notes each merge in `batch-notes.md`; the approval lasts this batch only, since `queue.mjs init` starts the next without it. Declined: `queue.mjs set-batch approved.merge=false`; the driver refuses to start (exit 1), and each pass reports a green PR as `READY TO MERGE`, or as `CHANGES REQUESTED` while `merge-feedback-first` holds it (under a supervisor, the next check-in digest lists it). Either one `no`: don't ask; the driver refuses to start and the pass reports green PRs the same way |
-| `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms any auto-merge armed on it | the checks alone decide; feedback is still worked and reported |
+| `merge-feedback-first` | the driver skips a PR with `CHANGES_REQUESTED` or an unresolved thread, and disarms any auto-merge armed on it; it resolves the earlier desk-review threads a clean desk-review verdict at the head settles, and a green PR it holds on two loops is listed for the person | the checks alone decide; feedback is still worked and reported |
 
 Never widen a row because the batch would go faster. Offer `/desk-setup` instead.
 
@@ -813,14 +813,18 @@ rules say. **Where the batch is handed to the supervisor, do not start one**: it
 handed-over batch and starts it again after a reboot (*The supervisor*).
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
-a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes`, skips
+a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes` (first
+resolving each thread an earlier desk-review by that handle opened, once the latest desk-review
+verdict reads as §4 Clean review verdict at the head; anyone else's thread stays), skips
 a PR under a §4 Merge holds glob (logging `HELD` and the reason), disarming any auto-merge armed on
 either, merges with §4 Merge method and `--match-head-commit <sha>` when the head is green, updates
 a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, skips a `DIRTY` PR,
 and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
-`merge_blocked=` (a hold, or behind without `pr-update-branch`), which `queue.mjs render` shows. It
+`merge_blocked=` (a hold, behind without `pr-update-branch`, or a green PR held for unresolved
+threads on two loops, naming the first), which `queue.mjs render` shows and desk-q and needs-you
+list as needing the person. It
 matches a ticket's PR by the recorded branch and base (above). `--tickets` is the starting set:
 every loop also takes in each ticket in the queue, so a ticket admitted or requeued mid-batch is
 merged with no restart. `--tickets` takes whitespace- or comma-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket

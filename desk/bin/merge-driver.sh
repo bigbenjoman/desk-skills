@@ -26,7 +26,13 @@
 #   - touches a §4 Merge holds path          held for a person, with the hold's reason
 #   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
 #                                            unless §3 merge-feedback-first is explicitly `no`
-#                                            (unset, ask and yes are all the strict default)
+#                                            (unset, ask and yes are all the strict default). A
+#                                            thread an earlier desk-review of the author's opened is
+#                                            resolved once the latest desk-review verdict is clean
+#                                            (§4 Clean review verdict) at the head (review-threads.mjs);
+#                                            anyone else's stays. Held so on two loops while green, it
+#                                            is recorded as merge_blocked for the person
+#                                            (`review feedback: …`, naming the first thread)
 #   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
@@ -197,6 +203,10 @@ cd "$DESK_REPO_ROOT" || exit 1
 log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
 Q="$DESK_BIN/queue.mjs"
 GATE="$DESK_BIN/gate.mjs"
+THREADS="$DESK_BIN/review-threads.mjs"
+THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
+# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
+CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
@@ -247,14 +257,34 @@ prs(){
         | select(($k | length) > 0)
         | "\($p.number)\t\($p.isDraft)\t\($k[0])\t\($p.baseRefName)"' 2>/dev/null | sort -n
 }
-# Prints "<reviewDecision> <unresolved thread count>". An empty reviewDecision is not an approval.
+# The PR's review decision and unresolved threads, as review-threads.mjs reads them (one JSON line):
+# those a clean desk-review verdict at the head settles are in `resolve`, the rest in `left`. Nothing
+# when GitHub could not be read. An empty reviewDecision is not an approval.
 feedback(){
-  gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query='
-    query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
-      reviewDecision reviewThreads(first:100){nodes{isResolved}}}}}' \
-    --jq '.data.repository.pullRequest | "\(.reviewDecision // "NONE") \([.reviewThreads.nodes[] | select(.isResolved|not)] | length)"' 2>/dev/null
+  gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
+    | node "$THREADS" read --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null
+}
+# Prints true once GitHub has resolved the thread.
+resolve_thread(){
+  gh api graphql -f id="$1" -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
+    --jq '.data.resolveReviewThread.thread.isResolved' 2>/dev/null
 }
 queue_note(){ node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; }
+# A green PR held for unresolved threads on two loops in a row is the person's: the queue names the
+# first thread, so desk-q and needs-you list it rather than showing it merging. Cleared once it is not.
+feedback_stall(){ # feedback_stall <n> <key> <gate state> <count> <thread>
+  local f="$SD/feedback-$1" c s=s
+  [ "$3" = pass ] || { feedback_clear "$1" "$2"; return; }
+  c=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$f"
+  [ "$4" -eq 1 ] && s=""
+  [ "$c" -ge 2 ] && queue_note "$2" "review feedback: $4 unresolved thread$s on a green PR, first $5"
+}
+feedback_clear(){
+  rm -f "$SD/feedback-$1"
+  case "$(jq -r --arg k "$2" '.tickets[$k].merge_blocked // ""' "$DESK_QUEUE" 2>/dev/null)" in
+    "review feedback:"*) node "$Q" set "$2" merge_blocked=null >/dev/null 2>&1 || true ;;
+  esac
+}
 
 # Tickets join the batch after the driver starts, so each loop adds every queue ticket not yet in
 # KEY_LIST, checked as a --tickets entry is. A refused id is logged once and never retried.
@@ -443,7 +473,7 @@ close_merged(){
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds fb decision unresolved green_at out waived label grant
+  local n="$1" key="$2" g sha ms state holds fb decision unresolved held settled tid text green_at out waived label grant
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -460,12 +490,29 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   if [ -n "$FEEDBACK_STRICT" ]; then
     fb=$(feedback "$n")
     if [ -z "$fb" ]; then log "#$n could not read review state — not merging it this loop"; return 1; fi
-    decision=${fb% *}; unresolved=${fb##* }
-    if [ "$decision" = "CHANGES_REQUESTED" ] || [ "${unresolved:-0}" -gt 0 ]; then
+    decision=$(printf '%s' "$fb" | jq -r .decision)
+    held=$(printf '%s' "$fb" | jq -r '.left[].text')
+    settled=$(printf '%s' "$fb" | jq -r '.resolve[] | "\(.id)\t\(.text)"')
+    # The desk-review threads a clean verdict at the head settles are resolved; one GitHub refuses still holds.
+    while IFS="$TAB" read -r tid text; do
+      [ -n "$tid" ] || continue
+      if [ "$(resolve_thread "$tid")" = true ]; then
+        log "#$n resolved desk-review thread $text: the clean desk-review verdict at $(printf '%s' "$fb" | jq -r '.verdict[:9]') settles it"
+      else
+        log "#$n could not resolve desk-review thread $text"; held="$held${held:+$'\n'}$text"
+      fi
+    done <<EOF_RESOLVE
+$settled
+EOF_RESOLVE
+    unresolved=$(printf '%s' "$held" | grep -c .)
+    if [ "$decision" = "CHANGES_REQUESTED" ] || [ "$unresolved" -gt 0 ]; then
       [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
       log "#$n has outstanding review feedback ($decision, $unresolved unresolved) — work it first; not merging (§3 merge-feedback-first: $FEEDBACK_RAW)"
+      if [ "$unresolved" -gt 0 ]; then feedback_stall "$n" "$key" "$state" "$unresolved" "$(printf '%s\n' "$held" | head -1)"
+      else feedback_clear "$n" "$key"; fi
       return 1
     fi
+    feedback_clear "$n" "$key"
   fi
 
   case "$ms" in
