@@ -1742,11 +1742,9 @@ function busyWorktree(t) {
     return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
   }
   if (!(t.fix && !t.fix.finished) || resumed) return null;
-  let dirty = [];
-  try {
-    dirty = execFileSync('git', ['-C', wt, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      .split('\n').filter(Boolean).map((l) => l.slice(3));
-  } catch { /* not a worktree git can read: setup-worktree.sh says so */ }
+  // Tracked paths changed against HEAD, staged or not. A worktree git cannot read: setup-worktree.sh says so.
+  const diff = shOut('git', ['-C', wt, 'diff', '--name-only', 'HEAD']);
+  const dirty = diff.ok ? diff.out.split('\n').filter(Boolean) : [];
   if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
   const branch = shOut('git', ['-C', wt, 'rev-parse', '--abbrev-ref', 'HEAD']);
   if (!branch.ok || branch.out === 'HEAD') return null;

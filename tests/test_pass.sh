@@ -55,7 +55,7 @@ if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket
 EOF
 printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
-# The process listing a pass reads for each kept worktree (DS-348): what $T/lsof.out says, else nothing.
+# The process listing a pass reads for each kept worktree: what $T/lsof.out says, else nothing.
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
@@ -1836,7 +1836,7 @@ check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try"
 check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
 
-# ---- DS-348: a pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
+# ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree
 # has an uncommitted change, W-3's branch a commit origin does not have. W-4 is a fix try with only an
 # untracked file, which setup-worktree.sh can leave itself: it spawns.
