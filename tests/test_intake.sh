@@ -388,9 +388,22 @@ check "DS-351 AC2: the line says the plan waits in /desk-needs-you" 'grep -q "it
 out=$(cd "$T/repo" && env -u DESK_QUEUE -u DESK_AUTOPILOT_STATE node "$T/bin/queue.mjs" requeue E-5 --batch E-5 2>&1); rc=$?
 check "DS-351: no queue.mjs requeue sends the epic to a worker" '[ $rc -ne 0 ] && grep -q "E-5 is lane epic" <<< "$out" && [ "$(eget E-5 tickets.E-5.state)" = parked ]'
 check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd "$T/repo" && node --input-type=module -e "import { presort } from \"$B/decider.mjs\"; const r = presort([{ id: \"p\", ticket: \"E-5\", kind: \"parked\", lane: \"epic\", text: process.argv[1] }]); console.log(r.hand.length, r.ask.length)" "$(eget E-5 tickets.E-5.park.question)")" = "1 0" ]'
+rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
+out=$(admit E-10 --by ben); rc=$?
+check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-351: standing intake leaves an epic for later while a feature batch is live" '[ ! -e "$EB/E-9" ] && grep -q "intake: E-9 not admitted: an epic, and feature batch E-5 is already running" <<< "$out"'
+
+# A start cut off before the hand-over (the supervisor's intake timeout) leaves its mark, by a pid
+# that has exited: the next intake discards that batch and hands its epic on, rather than reading it
+# as live forever.
+mkdir -p "$EB/O-1" "$ES/O-1"; dead=$(sh -c 'echo $$')
+printf '{"version":1,"batch":"O-1","epic":"O-1","base":"feat/O-1-cut","tickets":{}}\n' > "$EB/O-1/queue.json"
+printf '{"pid":%s}\n' "$dead" > "$ES/O-1/epic-start.json"
+out=$(intake)
+check "DS-351: a feature batch whose start was cut off is discarded, and its epic handed on" '[ ! -e "$EB/O-1" ] && [ ! -e "$ES/O-1" ] && grep -q "^handed: an epic, and feature batch O-1.s start was cut off (pid $dead) before it was handed to the supervisor: discarded$" <<< "$(handed O-1)"'
+check "DS-351: a finished start leaves no mark behind" '[ ! -e "$ES/E-5/epic-start.json" ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

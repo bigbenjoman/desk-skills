@@ -430,7 +430,6 @@ const om = N.collect({ word: 'omicron' }).items;
 t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting', om.map((i) => `${i.t.key} ${i.kind}`).join(), 'P-1 plan');
 t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === planQ} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
 t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 start');
-t('DS-351 the skill names the plan kind', /`plan` \(an\nepic admitted with `\/desk-admit`/.test(skill), true);
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

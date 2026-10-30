@@ -253,19 +253,25 @@ export function startDecider({ state, slug, bin, report, items, rules, webRead =
   return { id, pid: child.pid ?? null, started: now.toISOString(), out, items };
 }
 
+// The payload on the last `mark` line of a headless session's `--output-format json` text:
+// {cost, payload}, or {cost, error} when there is no result line, no mark line or no JSON after it.
+export function markedResult(text, mark) {
+  let d = null;
+  for (const line of String(text ?? '').split('\n').reverse()) { try { const x = JSON.parse(line); if (x?.type === 'result') { d = x; break; } } catch { /* not JSON */ } }
+  if (!d) return { cost: null, error: `no result (${String(text ?? '').trim().split('\n').slice(-1)[0]?.slice(0, 120) || 'empty output'})` };
+  const cost = Number(d.total_cost_usd) || 0;
+  const line = String(d.result ?? '').split('\n').reverse().find((l) => l.trimStart().startsWith(mark));
+  if (!line) return { cost, error: `no ${mark} line` };
+  try { return { cost, payload: JSON.parse(line.trimStart().slice(mark.length)) }; } catch { return { cost, error: `an unreadable ${mark} line` }; }
+}
+
 // The session's answer from its JSON result: {cost, settled: {id: did}, handed: {id: why}} or
 // {cost, error} when there is no result line to read.
 export function readResult(out) {
   let text = '';
   try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
-  let d = null;
-  for (const line of text.split('\n').reverse()) { try { const x = JSON.parse(line); if (x?.type === 'result') { d = x; break; } } catch { /* not JSON */ } }
-  if (!d) return { cost: null, error: `no result (${text.trim().split('\n').slice(-1)[0]?.slice(0, 120) || 'empty output'})` };
-  const cost = Number(d.total_cost_usd) || 0;
-  const line = String(d.result ?? '').split('\n').reverse().find((l) => l.trimStart().startsWith(RESULT_MARK));
-  if (!line) return { cost, error: `no ${RESULT_MARK} line` };
-  let r;
-  try { r = JSON.parse(line.trimStart().slice(RESULT_MARK.length)); } catch { return { cost, error: `an unreadable ${RESULT_MARK} line` }; }
+  const { cost, error, payload: r } = markedResult(text, RESULT_MARK);
+  if (error) return { cost, error };
   const pairs = (xs, k) => Object.fromEntries((Array.isArray(xs) ? xs : []).filter((x) => x?.id).map((x) => [x.id, String(x[k] ?? '')]));
   return { cost, settled: pairs(r.settled, 'did'), handed: pairs(r.handed, 'why') };
 }

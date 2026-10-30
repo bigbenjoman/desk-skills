@@ -7,12 +7,14 @@
 // startEpic is the /desk-autopilot epic flow's Stages 0 to 2 (desk-autopilot's epic-batch.md and
 // feature-mode.md) with the person's plan approval moved to needs-you. Anything that fails before the
 // batch is handed over discards it (batch.mjs discard), so a refusal leaves nothing behind.
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { FEATURE_PLAN_PREFIX } from './batch-state.mjs';
+import { FEATURE_PLAN_PREFIX, readQueue } from './batch-state.mjs';
+import { listBatches } from './batches.mjs';
+import { markedResult } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -35,6 +37,31 @@ function batchEnv(epic) {
 }
 const run = (cmd, args, env, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', env, maxBuffer: 64 << 20, ...opts });
 const node = (script, args, env) => run(process.execPath, [join(HERE, script), ...args], env);
+
+// In a batch's state from its start until it is handed to the supervisor. A start killed in between
+// (the supervisor's intake timeout) never reaches its discard, so the next one finds this left behind
+// by a pid that has exited.
+const START_MARK = 'epic-start.json';
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+// Discards each feature batch whose epic's start was cut off, which would otherwise read as live and
+// refuse every later epic. -> [{batch, text}], one per batch found.
+export function clearAbandoned() {
+  let all;
+  try { all = listBatches().filter((b) => b.name); } catch { return []; /* outside a repo there are none */ }
+  const out = [];
+  for (const b of all) {
+    const m = readJson(join(b.state, START_MARK), null);
+    if (!m || alive(m.pid)) continue;
+    let supervised = false;
+    try { supervised = readQueue(b.queue).supervised === true; } catch { /* unreadable: batch.mjs discard says so */ }
+    // Cut off after the hand-over: the batch is whole, and only the mark is left.
+    if (supervised) { rmSync(join(b.state, START_MARK), { force: true }); continue; }
+    const d = node('batch.mjs', ['discard', b.name], batchEnv(b.name));
+    out.push({ batch: b.name, text: `feature batch ${b.name}'s start was cut off (pid ${m.pid}) before it was handed to the supervisor: ${d.status === 0 ? 'discarded' : `not discarded (${lastLine(d)})`}` });
+  }
+  return out;
+}
 
 // The feature branch on origin, cut from origin/<default> and pushed under §3 git-push when it is not
 // there yet: null, or why not.
@@ -83,15 +110,10 @@ export function draftPrompt({ epic, epicText, criteria, children }) {
 
 // The drafter's plan from its JSON output: {draft, owners, contributors, untestable} or {why}.
 export function readDraft(text) {
-  let d = null;
-  for (const line of String(text ?? '').split('\n').reverse()) { try { const x = JSON.parse(line); if (x?.type === 'result') { d = x; break; } } catch { /* not JSON */ } }
-  if (!d) return { why: 'the drafter left no result' };
-  const line = String(d.result ?? '').split('\n').reverse().find((l) => l.trimStart().startsWith(RESULT_MARK));
-  if (!line) return { why: `the drafter gave no ${RESULT_MARK} line` };
-  let p;
-  try { p = JSON.parse(line.trimStart().slice(RESULT_MARK.length)); } catch { return { why: `the drafter's ${RESULT_MARK} line is not JSON` }; }
+  const { cost, error, payload: p } = markedResult(text, RESULT_MARK);
+  if (error) return { why: `the drafter's answer has ${error}` };
   if (typeof p?.draft !== 'string' || !p.draft.trim() || typeof p.owners !== 'object' || !p.owners) return { why: 'the drafter gave no spine draft or owner table' };
-  return { draft: p.draft, owners: p.owners, contributors: p.contributors ?? {}, untestable: p.untestable ?? {}, cost: Number(d.total_cost_usd) || null };
+  return { draft: p.draft, owners: p.owners, contributors: p.contributors ?? {}, untestable: p.untestable ?? {}, cost };
 }
 
 // One headless session drafts the plan: {plan} or {why}.
@@ -131,6 +153,8 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   const state = env.DESK_AUTOPILOT_STATE;
   const st = node('batch.mjs', ['start', key, branch], env);
   if (st.status !== 0) return { why: lastLine(st).replace(/^batch: /, '') };
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, START_MARK), `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
   const lines = [`started feature batch ${key} on ${branch}, beside the standing batch`];
   const discard = (why) => {
     const d = node('batch.mjs', ['discard', key], env);
@@ -174,6 +198,7 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
     ?? children.reduce((w, c) => w ?? admit(c), null)
     ?? q(['set-batch', 'supervised=true']);
   if (why) return discard(`its batch could not be written (${why})`);
+  rmSync(join(state, START_MARK), { force: true });
   lines.push(`${key}'s ${children.length} ${children.length === 1 ? 'child is' : 'children are'} held behind it, and its plan waits for you in /desk-needs-you; the batch is handed to the supervisor`);
   return { batch: key, children, lines };
 }

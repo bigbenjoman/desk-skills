@@ -43,9 +43,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, needsPersonLane, readQueue as readQueueAt } from './batch-state.mjs';
+import { designGap, needsPersonLane, planPark, readQueue as readQueueAt } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
-import { startEpic } from './epic-plan.mjs';
+import { startEpic, clearAbandoned } from './epic-plan.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -278,6 +278,9 @@ function intake({ state, query, reg, now }) {
   const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
     && !skipped(reg.tickets[k]) && !away(k);
+  // A feature batch whose start was cut off is discarded, and its epic handed on rather than started
+  // again into the same timeout.
+  for (const a of clearAbandoned()) hand(a.batch, `an epic, and ${a.text}`);
   // An epic is a feature batch's, never a worker's: one a run has its batch started, and its plan
   // drafted and left for the person; while a feature batch is live, the rest wait for it to finish.
   const epicKeys = found.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key).filter(isNew);
@@ -378,7 +381,9 @@ function joinFeature(key, epic, { by }) {
   const reasons = reasonsAgainst(t.rec, tickets);
   if (reasons.length) return { why: reasons.join('; ') };
   const spine = fq.feature === true && fq.spine && fq.spine !== key && tickets[fq.spine] && tickets[fq.spine].state !== 'done' ? [fq.spine] : [];
-  const holds = [...new Set([...spine, ...openBlockers(t.rec).filter((x) => tickets[x])])];
+  // An epic still waiting on its drafted plan (epic-plan.mjs) holds a child that joins, as it holds the first.
+  const plan = planPark(tickets[epic]) ? [epic] : [];
+  const holds = [...new Set([...plan, ...spine, ...openBlockers(t.rec).filter((x) => tickets[x])])];
   const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-collisions', ...(holds.length ? ['--hold', holds.join(',')] : [])]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds;
@@ -411,6 +416,8 @@ function byHand(keys, { state, by, front, now }) {
   try { q = readQueue(); } catch (e) { lines.push(`admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done({ refused: keys }); }
   const why = nowhere(q);
   if (why) { lines.push(`admits nothing: ${why}`); return done({ refused: keys }); }
+  // A feature batch whose start was cut off would read as live, and hold its own epic.
+  for (const a of clearAbandoned()) lines.push(a.text);
 
   // Triage every one first, so a blocker named in the same call is admitted before what it blocks.
   const recs = {};
