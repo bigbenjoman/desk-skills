@@ -308,7 +308,10 @@ out=$(admit X-6); rc=$?
 check "DS-300 AC4: in feature mode a child is held behind the unfinished spine, as plan-batch holds every child" '[ $rc -eq 0 ] && [ "$(nget tickets.X-6.held_by)" = X-2 ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-2$" <<< "$out"'
 rec E-2 A '"type":"Epic"'
 out=$(admit E-2); rc=$?
-check "DS-300 AC3: with a feature batch live, another epic is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted E-2: an epic, and feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan E-2" <<< "$out"'
+check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'
+rec X-1 A '"type":"Epic"'
+out=$(admit X-1); rc=$?
+check "DS-352 AC1: an epic whose own feature batch is live is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted X-1: an epic, and its feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan X-1" <<< "$out"'
 n=$(count "$T/triage.calls"); out=$(admit X-2); rc=$?
 check "DS-307 AC4: /desk-admit refuses a ticket in another batch before any triage" '[ $rc -eq 11 ] && grep -q "^not admitted X-2: X-2 is in batch X-1" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
 mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"

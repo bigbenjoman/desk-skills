@@ -30,7 +30,7 @@
 // triaged afresh, and what fails a check is refused back to the person (exit 11) rather than handed to
 // the digest. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
 // An epic is reported as one to plan as its own feature batch beside the standing batch (the
-// /desk-autopilot epic flow), unless a feature batch is already live; a child of an epic whose feature
+// /desk-autopilot epic flow), unless its own feature batch is already live; a child of an epic whose feature
 // batch is live is admitted into that batch, held behind its blockers there and the unfinished
 // children it collides with. The person naming it is the approval.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
@@ -388,9 +388,8 @@ function byHand(keys, { state, by, front, now }) {
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
     if (isEpic({ name: t.rec.type })) {
-      // A repo runs one feature batch at a time, beside the standing batch.
-      const live = liveFeatureBatches();
-      if (live.length) { refuse(key, `an epic, and feature batch ${live.map((b) => b.name).join(', ')} is already running: a repo runs one feature batch at a time, so plan ${key} once it finishes`); continue; }
+      // Each epic runs as its own feature batch, beside the standing batch and any other epic's.
+      if (liveFeatureBatches().some((b) => b.name === key)) { refuse(key, `an epic, and its feature batch ${key} is already running: admit its children, which join that batch`); continue; }
       plan.push(key);
       lines.push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
       continue;

@@ -86,10 +86,15 @@ t('AC2 a second start is refused', r.code, 11);
 t('AC2 naming the existing batch', r.out.includes('batch X-1 already exists'), true);
 t('AC2 the batch is unchanged', readFileSync(namedQ('X-1'), 'utf8'), before);
 
-// AC3: another epic's batch is refused while X-1 is live.
-r = batch(['start', 'X-2', 'feat/x-2']);
-t('AC3 another epic is refused while X-1 is live', r.code === 11 && r.out.includes('feature batch X-1 is live'), true);
+// AC3: another epic's batch on X-1's branch is refused; on its own branch it starts beside X-1.
+r = batch(['start', 'X-2', 'feat/x-1']);
+t('AC3 another epic on X-1\'s branch is refused naming X-1', r.code === 11 && r.out.includes('feature batch X-1 is live on feat/x-1'), true);
 t('AC3 no X-2 batch was made', existsSync(namedQ('X-2')), false);
+r = batch(['start', 'X-2', 'feat/x-2']);
+t('DS-352 AC1 another epic on its own branch starts while X-1 is live', r.code, 0);
+t('DS-352 AC1 both are listed', listed(), '- X-1 X-2');
+t('DS-352 AC1 X-1 is unchanged', readFileSync(namedQ('X-1'), 'utf8'), before);
+t('DS-352 AC1 setup: X-2 is discarded again', batch(['discard', 'X-2']).code, 0);
 
 t('a name that is no batch name is refused', batch(['start', '../x', 'feat/x-1']).code, 11);
 
@@ -121,7 +126,7 @@ t('AC8 the batch is no longer listed', listed(), '-');
 t('discarding a batch that does not exist is refused', batch(['discard', 'X-1']).code, 11);
 
 // AC10: a branch with commits main lacks is kept, and the output names it and why.
-t('AC10 setup: X-2 starts once X-1 is gone', batch(['start', 'X-2', 'feat/x-2']).code, 0);
+t('AC10 setup: X-2 starts', batch(['start', 'X-2', 'feat/x-2']).code, 0);
 r = batch(['discard', 'X-2']);
 t('AC10 the batch is removed', r.code === 0 && !existsSync(namedQ('X-2')), true);
 t('AC10 the branch is kept', onOrigin('feat/x-2'), true);
@@ -176,10 +181,20 @@ t('DS-312 AC2 the standing queue is unchanged', readFileSync(standingQ, 'utf8'),
 const sq = JSON.parse(readFileSync(standingQ, 'utf8'));
 t('DS-312 AC2 so standing intake still finds it handed over and on no base', `${sq.supervised} ${sq.base ?? 'none'}`, 'true none');
 
-// AC3: another epic is refused while X-5 is live, naming it, with nothing made.
-r = batch(['start', 'X-8', 'feat/x-1', '--batch', 'X-8']);
-t('DS-312 AC3 another epic is refused naming the live batch', r.code === 11 && r.out.includes('feature batch X-5 is live'), true);
+// AC3: another epic on X-5's branch is refused, naming X-5, with nothing made.
+r = batch(['start', 'X-8', 'feat/x-5', '--batch', 'X-8']);
+t('DS-312 AC3 another epic on the live batch\'s branch is refused naming it', r.code === 11 && r.out.includes('feature batch X-5 is live on feat/x-5'), true);
 t('DS-312 AC3 nothing is created for it', existsSync(dirname(namedQ('X-8'))) || existsSync(namedS('X-8')), false);
+// On its own branch it gets its own slot beside the standing batch and X-5, which are left alone.
+g(REPO, 'push', '-q', 'origin', 'main:feat/x-8');
+const x5Live = readFileSync(namedQ('X-5'), 'utf8');
+r = batch(['start', 'X-8', 'feat/x-8', '--batch', 'X-8']);
+t('DS-352 AC1 a second epic starts while X-5 is live', r.code, 0);
+t('DS-352 AC1 in its own slot, with its epic and base', `${readQ('X-8').epic} ${readQ('X-8').base}`, 'X-8 feat/x-8');
+t('DS-352 AC1 three batches are listed', listed(), '- X-5 X-8');
+t('DS-352 AC1 X-5 and the standing queue are unchanged', readFileSync(namedQ('X-5'), 'utf8') === x5Live && readFileSync(standingQ, 'utf8') === standingBefore, true);
+rmSync(dirname(namedQ('X-8')), { recursive: true, force: true });
+rmSync(namedS('X-8'), { recursive: true, force: true });
 
 // AC5: the close-out records the promotion PR it opened on X-5, where the archive check reads it.
 r = cli('queue.mjs', ['--batch', 'X-5', 'set-batch', 'promotion.pr=42']);
