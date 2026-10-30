@@ -11,8 +11,9 @@
 //
 // Each ticket the query finds, once (the register is <state>/intake.json):
 //   - already in the queue or another batch, or already admitted or handed on: nothing;
-//   - an epic: handed to the digest untriaged (a feature batch, planned in a session);
-//   - a child of an epic whose feature batch is live: not admitted, the report naming that batch;
+//   - an epic: handed to the digest untriaged, pointing at /desk-admit, which plans it as a feature batch;
+//   - a child of an epic whose feature batch is live: not admitted, the report naming that batch and
+//     pointing at /desk-admit, which adds it there;
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
 //     or XL, or a blocker that is not done and not in the batch;
@@ -28,14 +29,18 @@
 // `admit` is the same gate for tickets named by hand: no search, no interval and no cap, every one
 // triaged afresh, and what fails a check is refused back to the person (exit 11) rather than handed to
 // the digest. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
+// An epic is reported as one to plan as its own feature batch beside the standing batch (the
+// /desk-autopilot epic flow), unless a feature batch is already live; a child of an epic whose feature
+// batch is live is admitted into that batch, held behind its blockers there and the unfinished
+// children it collides with. The person naming it is the approval.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, needsPersonLane } from './batch-state.mjs';
-import { belongsElsewhere, liveBatch, finished, prOpen } from './batches.mjs';
+import { designGap, needsPersonLane, readQueue as readQueueAt } from './batch-state.mjs';
+import { belongsElsewhere, liveBatch, finished, prOpen, listBatches } from './batches.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -100,7 +105,18 @@ const waitFor = (b) => ({
 }[closed(b)]?.() ?? null);
 const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? JSON.parse(readFileSync(qf, 'utf8')) : null; };
 
-const queueCmd = (...args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env: process.env });
+const queueCmdIn = (env, args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env });
+const queueCmd = (...args) => queueCmdIn(process.env, args);
+// The environment that points queue.mjs and triage.sh at named batch `b` (listBatches), whatever this
+// one pins: the batch's base comes from its queue, never this process's default branch.
+const batchEnv = (b) => {
+  const { DESK_DEFAULT_BRANCH: _pinned, ...env } = process.env;
+  return { ...env, DESK_BATCH: b.name, DESK_QUEUE: b.queue, DESK_AUTOPILOT_STATE: b.state };
+};
+// The named batches that are live (listed, readable and not finished): feature batches, by name.
+function liveFeatureBatches() {
+  try { return listBatches().filter((b) => b.name && liveBatch(b.name)); } catch { return []; /* outside a repo there are none */ }
+}
 
 // ---- one run -----------------------------------------------------------------------------------
 export function runIntake({ state = E.stateDir(), force = false, now = new Date() } = {}) {
@@ -135,9 +151,9 @@ function blockersFirst(recs) {
   return order;
 }
 
-// Run triage.sh for one ticket: its record, or why there is none.
-function triage(key, state) {
-  const t = spawnSync(join(HERE, 'triage.sh'), [key], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
+// Run triage.sh for one ticket, in the batch `env` names: its record, or why there is none.
+function triage(key, state, env = process.env) {
+  const t = spawnSync(join(HERE, 'triage.sh'), [key], { encoding: 'utf8', env, maxBuffer: 64 << 20 });
   const rec = t.status === 0 ? readJson(join(state, 'triage', `${key}.json`), null) : null;
   return rec ? { rec } : { why: t.status === 0 ? 'triage wrote no record' : `triage failed: ${lastLine(t)}` };
 }
@@ -244,7 +260,7 @@ function intake({ state, query, reg, now }) {
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
     && !skipped(reg.tickets[k]) && !away(k);
   // An epic is a feature batch's, with its spine and owner table approved first: never a worker's.
-  for (const i of found.filter((x) => isNew(x.key) && isEpic(x.fields?.issuetype))) hand(i.key, 'an epic: run it as a feature batch in a session');
+  for (const i of found.filter((x) => isNew(x.key) && isEpic(x.fields?.issuetype))) hand(i.key, `an epic: /desk-admit ${i.key} plans it as a feature batch beside the standing batch`);
   const fresh = found.map((i) => i.key).filter(isNew);
   for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
@@ -276,9 +292,10 @@ function intake({ state, query, reg, now }) {
     if (r.closed) { lines.push(waitFor(r.cur)); return done({ started }); }
     if (r.elsewhere?.unreadable) { lines.push(`intake: not admitted: ${r.elsewhere.why}; the next intake tries again`); continue; }
     if (r.elsewhere) {
-      reg.tickets[key] ={ at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: r.elsewhere.why };
+      const why = r.elsewhere.epic ? `${r.elsewhere.why}: /desk-admit ${key} adds it to that batch` : r.elsewhere.why;
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: why };
       writeIntake(state, reg);
-      lines.push(`intake: ${key} not admitted: ${r.elsewhere.why}`);
+      lines.push(`intake: ${key} not admitted: ${why}`);
       continue;
     }
     if (r.reasons) { hand(key, r.reasons.join('; ')); continue; }
@@ -307,12 +324,38 @@ export function admitByHand(keys, { state = E.stateDir(), by = 'hand', front = f
   return withLock(state, now, () => byHand([...new Set(keys)], { state, by, front, now }));
 }
 
+// Admit a child of `epic` into that epic's live feature batch, triaged again there: on the batch's
+// base, where the spine and the other children have added files, and into its state, where queue.mjs
+// reads it. Held behind the spine until it is done (as plan-batch holds every child it seeds), its
+// blockers there, and every unfinished ticket there whose files it shares, so it waits for their PRs
+// to merge. -> {batch, held, rec} or {why}.
+function joinFeature(key, epic, { by }) {
+  const b = liveFeatureBatches().find((x) => x.name === epic);
+  if (!b) return { why: `its epic ${epic}'s feature batch is no longer live: run /desk-admit ${key} again` };
+  const t = triage(key, b.state, batchEnv(b));
+  if (!t.rec) return { why: `${t.why} in feature batch ${epic}: fix it and run /desk-admit ${key} again` };
+  let fq;
+  try { fq = readQueueAt(b.queue); } catch (e) { return { why: `feature batch ${epic}'s queue cannot be read (${e.message})` }; }
+  const tickets = fq.tickets ?? {};
+  const reasons = reasonsAgainst(t.rec, tickets);
+  if (reasons.length) return { why: reasons.join('; ') };
+  const spine = fq.feature === true && fq.spine && fq.spine !== key && tickets[fq.spine] && tickets[fq.spine].state !== 'done' ? [fq.spine] : [];
+  const holds = [...new Set([...spine, ...openBlockers(t.rec).filter((x) => tickets[x])])];
+  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-collisions', ...(holds.length ? ['--hold', holds.join(',')] : [])]);
+  if (a.status !== 0) return { why: lastLine(a) };
+  let held = holds;
+  try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter(Boolean); } catch { /* admitted: say the holds asked for */ }
+  return { batch: b, held, rec: t.rec };
+}
+
 function byHand(keys, { state, by, front, now }) {
   const lines = [];
   const admitted = [];
   const refused = [];
+  // Epics to plan as a feature batch beside the standing batch: the /desk-autopilot epic flow.
+  const plan = [];
   const refuse = (key, text) => { refused.push(key); lines.push(`not admitted ${key}: ${text}`); };
-  const done = (extra = {}) => ({ ran: true, lines, admitted, refused, ...extra });
+  const done = (extra = {}) => ({ ran: true, lines, admitted, refused, plan, ...extra });
   // Starting a standing batch has no plan approval, so it needs what standing intake needs.
   const mayStart = E.permission('autopilot-workers') === 'yes';
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
@@ -338,14 +381,29 @@ function byHand(keys, { state, by, front, now }) {
     if (away) { refuse(key, away.why); continue; }
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
-    if (isEpic({ name: t.rec.type })) { refuse(key, 'an epic: run it as a feature batch with /desk-autopilot'); continue; }
+    if (isEpic({ name: t.rec.type })) {
+      // A repo runs one feature batch at a time, beside the standing batch.
+      const live = liveFeatureBatches();
+      if (live.length) { refuse(key, `an epic, and feature batch ${live.map((b) => b.name).join(', ')} is already running: a repo runs one feature batch at a time, so plan ${key} once it finishes`); continue; }
+      plan.push(key);
+      lines.push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
+      continue;
+    }
     recs[key] = t.rec;
   }
   let started = null;
   for (const key of blockersFirst(recs)) {
-    const rec = recs[key];
-    const r = placeOne(key, rec, { started, by, now, mayStart });
+    let rec = recs[key];
+    let r = placeOne(key, rec, { started, by, now, mayStart });
     if (r.started) { started = r.started; lines.push(`started standing batch ${started}, handed to the supervisor`); }
+    // A child of an epic whose feature batch is live joins that batch: the standing queue is untouched.
+    let feature = null;
+    if (r.elsewhere?.epic) {
+      const j = joinFeature(key, r.elsewhere.epic, { by });
+      r = j.why ? { admitFailed: `${key} is a child of epic ${r.elsewhere.epic}, but not admitted into its feature batch: ${j.why}` } : { held: j.held };
+      feature = j.batch ?? null;
+      rec = j.rec ?? rec;
+    }
     const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.elsewhere?.why ?? r.reasons?.join('; ')
       ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
     if (fail) { refuse(key, fail); continue; }
@@ -353,9 +411,9 @@ function byHand(keys, { state, by, front, now }) {
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r.held)}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`admitted ${key} by ${by} into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r.held)}`);
+    lines.push(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r.held)}`);
     if (front) {
-      const f = queueCmd('front', key);
+      const f = feature ? queueCmdIn(batchEnv(feature), ['front', key]) : queueCmd('front', key);
       lines.push(f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`);
     }
   }

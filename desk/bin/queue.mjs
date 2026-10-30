@@ -380,9 +380,11 @@ switch (cmd) {
   case 'admit': {
     // --by names who admitted it, where that is not the orchestrator: `intake` for standing intake.
     // --hold holds it behind blockers in this batch in the same write, so no pass sees it runnable first.
+    // --hold-collisions holds it behind every unfinished ticket it collides with too, so it waits for
+    // their PRs to merge rather than only for them to stop running.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]]   (after triage.sh <TICKET>)');
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-collisions]   (after triage.sh <TICKET>)');
     const holds = args.includes('--hold') ? String(args[args.indexOf('--hold') + 1] ?? '').split(/[,|]/).filter(Boolean) : [];
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
     for (const p of holds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
@@ -409,6 +411,7 @@ switch (cmd) {
         other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
       }
     }
+    if (args.includes('--hold-collisions')) for (const k of collides) if (!holds.includes(k)) holds.push(k);
     // A hold would let a release send a ticket parked for its own reason to a worker (hold, above).
     if (park && holds.length) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
     q.tickets[key] = {

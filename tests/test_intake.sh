@@ -55,12 +55,14 @@ echo "\$*" >> "$T/jira.calls"
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
 EOF
-# Triage: copies the set record for the ticket, or fails while $T/recs/<KEY>.fails exists.
+# Triage: copies the set record for the ticket into the state of the batch it runs in, or fails while
+# $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
 cat > "$T/bin/triage.sh" <<EOF
 #!/bin/sh
 echo "\$1" >> "$T/triage.calls"
+[ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
-cp "$T/recs/\$1.json" "$T/state/triage/\$1.json"
+mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
 EOF
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync } from 'node:fs';
@@ -146,7 +148,8 @@ check "AC5: open triage questions are not admitted, and go to the digest" '[ "$(
 check "AC6: size XL is not admitted, and the digest item says it needs splitting" '[ "$(qget tickets.X-1)" = undefined ] && [ "$(handed X-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
 n=$(count "$T/triage.calls")
 echo '{"issues":[{"key":"E-1","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
-check "an epic is handed on untriaged: it keeps its feature-batch approvals" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.E-1)" = undefined ] && [ "$(handed E-1)" = "handed: an epic: run it as a feature batch in a session" ]'
+check "an epic is handed on untriaged: it keeps its feature-batch approvals" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.E-1)" = undefined ] && [ "$(handed E-1)" = "handed: an epic: /desk-admit E-1 plans it as a feature batch beside the standing batch" ]'
+check "DS-300 AC5: the intake line for an epic points at /desk-admit" 'grep -q "intake: handed E-1 to the digest: an epic: /desk-admit E-1 plans it" <<< "$out"'
 search C-1 Q-1 X-1; out=$(intake)
 check "AC8: a ticket already handed on is not triaged again" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
 
@@ -254,7 +257,12 @@ check "admit: a blocker named in the same call goes first, and the other is held
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
 rec H-6 A '"type":"Epic"'
 out=$(admit H-6); rc=$?
-check "admit: an epic is refused toward a feature batch" '[ $rc -eq 11 ] && grep -q "not admitted H-6: an epic" <<< "$out"'
+check "DS-300 AC1: an epic is reported as one to plan as a feature batch, not refused" '[ $rc -ne 11 ] && grep -q "^plan H-6 as a feature batch beside the standing batch: /desk-autopilot H-6$" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(qget tickets.H-6)" = undefined ]'
+rec H-8 A
+out=$(admit H-6 H-8); rc=$?
+check "DS-300 AC2: an epic and a ticket in one call: the ticket is admitted, the epic reported to plan" '[ $rc -ne 11 ] && [ "$(qget tickets.H-8.state)" = triaged ] && grep -q "^admitted H-8 by hand into batch b1" <<< "$out" && grep -q "^plan H-6 as a feature batch" <<< "$out"'
+SK="$S/../skills/desk-admit/SKILL.md"
+check "DS-300: the desk-admit skill routes a plan line to the /desk-autopilot epic flow" 'grep -q "^Each \`plan <EPIC> as a feature batch beside the standing batch: /desk-autopilot <EPIC>\` line means" "$SK" && grep -q "Load \`desk-autopilot\` and run its epic flow" "$SK" && ! grep -q "| \`an epic\` | Plan it as a feature batch" "$SK"'
 printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","state":"running"}}}\n' > "$DESK_QUEUE"
 rec H-7 A; n=$(count "$T/triage.calls")
 out=$(admit H-7); rc=$?
@@ -277,11 +285,30 @@ check "DS-307 AC2: a ticket in another batch is not triaged, admitted or handed 
 search X-3; out=$(intake)
 check "DS-307 AC3: a new child of an epic with a live feature batch is not admitted" '[ "$(qget tickets.X-3)" = undefined ] && grep -q "^elsewhere: " <<< "$(handed X-3)"'
 check "DS-307 AC3: the intake line names the feature batch" 'grep -q "intake: X-3 not admitted: X-3 is a child of epic X-1, whose feature batch X-1 is running" <<< "$out"'
+check "DS-300 AC5: the intake line for a running epic's child points at /desk-admit" 'grep -q "intake: X-3 not admitted: .*: /desk-admit X-3 adds it to that batch$" <<< "$out"'
 n=$(count "$T/triage.calls"); out=$(intake)
 check "DS-307 AC3: it is not triaged again while that batch is live" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
 before=$(cat "$DESK_QUEUE")
-out=$(admit X-4); rc=$?
-check "DS-307 AC4: /desk-admit refuses a live epic's child, naming its feature batch" '[ $rc -eq 11 ] && grep -q "^not admitted X-4: X-4 is a child of epic X-1, whose feature batch X-1 is running" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+NQ="$NB/queue.json"; NS="$HOME/.desk-autopilot/acme__widgets/batches/X-1"
+nget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$NQ" "$1"; }
+# Pinned, as a session that has loaded its paths is: the child's triage in X-1 must not inherit it.
+out=$(DESK_DEFAULT_BRANCH=main admit X-4 --by ben); rc=$?
+check "DS-300 AC4: /desk-admit adds a live epic's child to its feature batch" '[ $rc -eq 0 ] && [ "$(nget tickets.X-4.state)" = triaged ] && [ "$(nget tickets.X-4.admitted_by)" = ben ] && grep -q "^admitted X-4 by ben into feature batch X-1 (lane A, size S)$" <<< "$out"'
+check "DS-300 AC4: the standing queue is unchanged" '[ "$(cat "$DESK_QUEUE")" = "$before" ] && [ -f "$NS/triage/X-4.json" ]'
+check "DS-300 AC4: the child is triaged again in its feature batch, on that batch's base rather than a pinned default" 'grep -qx "X-4 X-1 unpinned" "$T/triage.batch"'
+# X-5 is blocked by X-4, now in the feature batch, and shares a file with X-2, running there.
+mkdir -p "$NS/triage"; printf '{"ticket":"X-2","files_in_scope":["src/shared.js"]}\n' > "$NS/triage/X-2.json"
+rec X-5 A '"epic":{"key":"X-1","summary":"a feature"},"files_in_scope":["src/shared.js"],"blockers":[{"key":"X-4","category":"new"}]'
+out=$(admit X-5); rc=$?
+check "DS-300 AC4: a child is held behind its blocker there and behind an in-flight child it collides with" '[ $rc -eq 0 ] && [ "$(nget tickets.X-5.state)" = parked ] && [ "$(nget tickets.X-5.held_by)" = "X-4|X-2" ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-4, X-2$" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+# In feature mode, X-2 is the spine: a child sharing nothing with it still waits for it.
+node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); q.feature=true; q.spine="X-2"; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
+rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
+out=$(admit X-6); rc=$?
+check "DS-300 AC4: in feature mode a child is held behind the unfinished spine, as plan-batch holds every child" '[ $rc -eq 0 ] && [ "$(nget tickets.X-6.held_by)" = X-2 ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-2$" <<< "$out"'
+rec E-2 A '"type":"Epic"'
+out=$(admit E-2); rc=$?
+check "DS-300 AC3: with a feature batch live, another epic is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted E-2: an epic, and feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan E-2" <<< "$out"'
 n=$(count "$T/triage.calls"); out=$(admit X-2); rc=$?
 check "DS-307 AC4: /desk-admit refuses a ticket in another batch before any triage" '[ $rc -eq 11 ] && grep -q "^not admitted X-2: X-2 is in batch X-1" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
 mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"
