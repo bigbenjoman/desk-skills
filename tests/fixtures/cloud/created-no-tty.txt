@@ -1,0 +1,4 @@
+^D7[r8[?25h[?25l[?2004h[?2031h[?1004h[<u[>5u[>4;2m[>0q[?u]7501;?[c[>4m[<u[?1004l[?2031l[?2004lCreated cloud session: No-TTY recording
+View: https://claude.ai/code/session_01Vy49H8UHjQ9wbruRKguWDD?from=cli&m=0
+Resume with: claude --teleport session_01Vy49H8UHjQ9wbruRKguWDD
+[?1006l[?1003l[?1002l[?1000l(B[?1016l[?1006l[?1003l[?1002l[?1000l[>4m[?1004l[?2031l[?2004l[<u[?25h7[r8]9;4;0;]0;
