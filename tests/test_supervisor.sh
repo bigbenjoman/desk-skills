@@ -45,12 +45,19 @@ config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+# The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
+# verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import * as E from './desk-env.mjs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
 appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
-const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
+let base;
+try { E.applyBatchBase(); base = E.defaultBranch(); } catch { base = 'REFUSED'; }
+appendFileSync('$T/pass.batches', \`\${process.env.DESK_BATCH ?? '-'} \${base}\\n\`);
+const own = \`$T/verdict.\${process.env.DESK_BATCH ?? 'standing'}.json\`;
+const v = JSON.parse(readFileSync(existsSync(own) ? own : '$T/verdict.json', 'utf8'));
 console.log(JSON.stringify(v));
 process.exitCode = v.code;
 EOF
@@ -70,6 +77,7 @@ echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/mainte
 # `hang` keeps it running, holding the lock. driver.calls is written last, once its log lines are out.
 cat > "$T/bin/merge-driver.sh" <<EOF
 #!/bin/sh
+echo "\${DESK_BATCH:--} \$*" >> "$T/driver.batches"
 case "\$(cat "$T/driver.mode" 2>/dev/null)" in
   fail) echo "00:00:01Z FAIL: gh is signed out (HTTP 401: Bad credentials) — nothing can merge until \\\`gh auth login\\\`; stopping"
         echo "00:00:01Z merge driver exited 1"; echo "\$@" >> "$T/driver.calls"; exit 1 ;;
@@ -372,6 +380,81 @@ out=$(DESK_AGENT_VERSION=new1 tick)
 check "DS-224 AC5: so does a tick whose queue is unreadable" '[ "$(code)" = "new1 new1 false new1 false" ]'
 mv "$T/queue.away" "$DESK_QUEUE"
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d"
+
+# ---- DS-309: a tick runs every batch in the repo, each on its own base ---------------------------
+# No explicit queue or state here: the repo's own paths, the standing batch and batches/<name>/ under it.
+SQ="$DESK_HOME/repos/acme__widgets/queue.json"; SS="$HOME/.desk-autopilot/acme__widgets"
+XQ="$DESK_HOME/repos/acme__widgets/batches/X-1/queue.json"; XS="$SS/batches/X-1"
+YQ="$DESK_HOME/repos/acme__widgets/batches/Y-1/queue.json"; YS="$SS/batches/Y-1"
+mtick(){ (unset DESK_QUEUE DESK_AUTOPILOT_STATE; tick); }
+XRUN='{"X1":{"key":"X1","state":"running"}}'
+# bq <queue file> <batch> <supervised> <tickets json> [base]
+bq(){ mkdir -p "$(dirname "$1")"; b=""; [ -n "${5:-}" ] && b="\"base\":\"$5\","
+  printf '{"version":1,"batch":"%s","supervised":%s,%s"approved":{},"tickets":%s}\n' "$2" "$3" "$b" "$4" > "$1"; }
+# Intake that is always due, counting its runs.
+rm -f "$T/bin/intake.mjs"
+cat > "$T/bin/intake.mjs" <<EOF
+import { appendFileSync } from 'node:fs';
+export const intakeQuery = () => 'project = ACME';
+export const prOpen = () => true;
+export const handedByIntake = () => [];
+if (process.argv[2] === 'run') { appendFileSync('$T/intake.calls', 'run\n'); console.log(JSON.stringify({ lines: ['intake: nothing new'] })); }
+EOF
+verdict "$NOTHING"; : > "$T/pass.batches"; : > "$T/driver.batches"
+bq "$SQ" s1 true "$RUNNING"
+out=$(mtick)
+check "DS-309 AC8: with only the standing batch, a tick runs intake and one pass, as before" '[ "$(cat "$T/pass.batches")" = "- main" ] && [ "$(count "$T/intake.calls")" = 1 ] && grep -q "pass: exit 10 (nothing_yet)" "$SS/supervisor.log" && grep -q "^intake: nothing new$" "$SS/supervisor.log"'
+waitlines "$T/driver.batches" 1
+bq "$XQ" X-1 true "$XRUN" feat/x
+: > "$T/pass.batches"; : > "$T/driver.batches"
+out=$(DESK_DEFAULT_BRANCH=feat/x mtick)
+check "DS-309 AC1: intake runs once and each batch gets one pass, the standing batch first" '[ "$(count "$T/intake.calls")" = 2 ] && [ "$(count "$T/pass.batches")" = 2 ]'
+check "DS-309 AC1: each pass is logged in its own state folder" '[ "$(grep -c "pass: exit 10" "$XS/supervisor.log")" = 1 ] && [ "$(grep -c "pass: exit 10" "$SS/supervisor.log")" = 2 ] && ! grep -q "intake:" "$XS/supervisor.log"'
+check "DS-309 AC2: the standing pass targets main and X-1 its own base, though feat/x was inherited" '[ "$(head -1 "$T/pass.batches")" = "- main" ] && [ "$(tail -1 "$T/pass.batches")" = "X-1 feat/x" ]'
+waitlines "$T/driver.batches" 2
+check "DS-309 AC4: each batch starts its own merge driver on its own queue" 'grep -qx -- "- --tickets A B --log" "$T/driver.batches" && grep -qx -- "X-1 --tickets X1 --log" "$T/driver.batches" && grep -q "^merge driver: started" "$XS/supervisor.log"'
+notified=$(count "$T/notify.calls")
+printf '%s\n' '{"status":"show_person","code":11,"message":"x","waiting":[],"parked":[],"notify":true,"push":[{"key":"urgent:acme__widgets:X1","text":"X1: PRODUCTION BROKEN: checkout 500s"}]}' > "$T/verdict.X-1.json"
+out=$(mtick)
+check "DS-309 AC5: a notification about X-1 names the repo and X-1" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets X-1|X1: PRODUCTION BROKEN: checkout 500s|$"'
+rm -f "$T/verdict.X-1.json"
+DIG2='{"key":"digest:2026-10-30T08:00","text":"Check-in 08:00"}'
+verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"x\",\"waiting\":[],\"parked\":[],\"notify\":true,\"push\":[$DIG2]}"
+notified=$(count "$T/notify.calls")
+out=$(mtick); out=$(mtick)
+check "DS-309: the check-in digest both passes carry goes out once, titled with the repo" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 08:00|$"'
+# pv <push json>: a verdict that pushes it.
+pv(){ printf '{"status":"show_person","code":11,"message":"x","waiting":[],"parked":[],"notify":true,"push":[%s]}' "$1"; }
+# A health key both batches sent: X-1 keeps it while the standing batch drops it, and when it comes
+# back X-1's stored key is no reason to stay quiet.
+HK='{"key":"health:acme__widgets:gh","text":"gh check failing"}'
+verdict "$(pv "$HK")"; out=$(mtick)
+pv "$HK" > "$T/verdict.X-1.json"; verdict "$NOTHING"; out=$(mtick)
+verdict "$(pv "$HK")"; notified=$(count "$T/notify.calls")
+out=$(mtick)
+check "DS-309: a key another batch sent on an earlier tick is pushed again when it returns" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|gh check failing|$"'
+# A digest the standing batch sent reaches X-1 only on a later tick of its slot: it is not sent twice.
+DIG3='{"key":"digest:2026-10-30T17:00","text":"Check-in 17:00"}'
+printf '%s\n' "$NOTHING" > "$T/verdict.X-1.json"; verdict "$(pv "$DIG3")"; notified=$(count "$T/notify.calls")
+out=$(mtick)
+pv "$DIG3" > "$T/verdict.X-1.json"; out=$(mtick)
+check "DS-309: a digest another batch sent on an earlier tick goes out once" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 17:00|$"'
+# So does main's failed release, which names its commit.
+RF='{"key":"release-failed-def","text":"main tests check failed on def"}'
+printf '%s\n' "$NOTHING" > "$T/verdict.X-1.json"; verdict "$(pv "$RF")"; notified=$(count "$T/notify.calls")
+out=$(mtick)
+pv "$RF" > "$T/verdict.X-1.json"; out=$(mtick)
+check "DS-309: a failed release another batch sent on an earlier tick goes out once" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|main tests check failed on def|$"'
+rm -f "$T/verdict.X-1.json"
+verdict "$NOTHING"; printf 'not json\n' > "$T/verdict.standing.json"; : > "$T/pass.batches"
+out=$(mtick); rc=$?
+check "DS-309 AC3: the standing pass crashing still leaves X-1 its pass" '[ $rc -eq 0 ] && [ "$(tail -1 "$T/pass.batches")" = "X-1 feat/x" ] && grep "pass: exit" "$SS/supervisor.log" | tail -1 | grep -q "(error)" && grep "pass: exit" "$XS/supervisor.log" | tail -1 | grep -q "pass: exit 10 (nothing_yet)"'
+rm -f "$T/verdict.standing.json"
+bq "$YQ" Y-1 false "$XRUN"; : > "$T/pass.batches"
+out=$(mtick)
+check "DS-309 AC7: a batch not handed over is not driven, and its own log says so" '! grep -q "^Y-1 " "$T/pass.batches" && [ "$(count "$T/pass.batches")" = 2 ] && grep -q "batch Y-1 is not handed over" "$YS/supervisor.log"'
+out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
+check "DS-309 AC6: status lists every batch with its state" 'grep -q "^batch s1: handed over$" <<< "$out" && grep -q "^X-1: batch X-1: handed over$" <<< "$out" && grep -q "^Y-1: batch Y-1: not handed over" <<< "$out"'
 
 # ---- AC10: uninstall ----------------------------------------------------------------------------
 out=$(sup uninstall); rc=$?

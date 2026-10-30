@@ -38,12 +38,16 @@ export function batchHolding(key, slug = E.repoSlug()) {
 
 export const label = (b) => b.name ?? 'the standing batch';
 
+// Whether the environment already pins one batch: a batch named (--batch, DESK_BATCH), or an explicit
+// queue or state path.
+export const batchPinned = (env = process.env) => Boolean(env.DESK_BATCH || env.DESK_QUEUE || env.DESK_AUTOPILOT_STATE);
+
 // Points a command about one ticket, and every child it starts, at the batch holding `key` by setting
-// DESK_BATCH. A batch already named (--batch, DESK_BATCH) or an explicit queue or state path wins, and
-// the key is not looked up. A key in the standing batch or in none changes nothing, and a key in two
-// batches throws, naming both, before the command writes anything. -> the batch name, or null.
+// DESK_BATCH. A batch already pinned wins, and the key is not looked up. A key in the standing batch
+// or in none changes nothing, and a key in two batches throws, naming both, before the command writes
+// anything. -> the batch name, or null.
 export function useTicketBatch(key, env = process.env) {
-  if (!key || env.DESK_BATCH || env.DESK_QUEUE || env.DESK_AUTOPILOT_STATE) return null;
+  if (!key || batchPinned(env)) return null;
   let slug;
   try { slug = E.repoSlug(); } catch { return null; /* outside a repo there are no batches */ }
   const b = batchHolding(key, slug);
