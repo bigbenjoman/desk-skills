@@ -85,9 +85,30 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'run' && a[1] === 'rerun') {
   // recorded in gh.log above; run 9116 is one GitHub refuses to rerun
   if (a[2] === '9116') { console.error('run 9116 cannot be rerun'); process.exit(1); }
+} else if (a[0] === 'api' && a.includes('graphql') && a.some((x) => x.includes('resolveReviewThread'))) {
+  // Resolving a thread: recorded in resolved.log; an id with REFUSED in it is one GitHub refuses.
+  const id = (a.find((x) => x.startsWith('id=')) ?? '').slice(3);
+  if (id.includes('REFUSED')) { console.error('Resource not accessible by integration'); process.exit(1); }
+  fs.appendFileSync('$T/resolved.log', id + '\n');
+  out('true');
 } else if (a[0] === 'api' && a.includes('graphql')) {
-  // A PR's review decision and unresolved threads, as the driver's --jq gives them.
-  out(prs[(a.find((x) => x.startsWith('n=')) ?? '').slice(2)]?.feedback ?? 'NONE 0');
+  // A PR's review decision, reviews and threads. "payload" is a recorded GraphQL response (its threads
+  // plus "extra" ones), its ids prefixed with the PR number; "feedback" ("<decision> <n>") is n
+  // threads someone else opened. A thread id in resolved.log reads as resolved.
+  const n = (a.find((x) => x.startsWith('n=')) ?? '').slice(2), p = prs[n] ?? {};
+  const done = new Set(fs.existsSync('$T/resolved.log') ? fs.readFileSync('$T/resolved.log', 'utf8').split('\n') : []);
+  let pr;
+  if (p.payload) {
+    pr = JSON.parse(fs.readFileSync(p.payload, 'utf8')).data.repository.pullRequest;
+    pr.reviewThreads.nodes.push(...(p.extra ?? []));
+  } else {
+    const [dec, count] = (p.feedback ?? 'NONE 0').split(' ');
+    pr = { reviewDecision: dec === 'NONE' ? null : dec, reviews: { nodes: [] }, reviewThreads: { nodes: Array.from({ length: Number(count) }, (_, i) => ({
+      id: 'T' + i, isResolved: false, path: 'src/a.txt', line: 1, comments: { nodes: [{ author: { login: 'someone' }, body: 'a comment', pullRequestReview: null }] } })) } };
+  }
+  pr.headRefOid = p.sha;
+  for (const t of pr.reviewThreads.nodes) { t.id = n + '-' + t.id; if (done.has(t.id)) t.isResolved = true; }
+  out({ data: { repository: { pullRequest: pr } } });
 } else if (a[0] === 'api') {
   const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
   out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
@@ -393,5 +414,46 @@ cloop "$T/config-noclose.md"; cloop "$T/config-noclose.md"
 check "DS-336 AC3: with jira-close-own-merged not yes, a merge moves nothing" '[ "$(merged)" = "131 132 134" ] && ! grep -q "T-34" "$T/jira-close.log" && echo "$out" | grep -q "#134 T-34 left as it is: config §3 jira-close-own-merged is ask"'
 mpj "$T/config-close.md"
 check "DS-336 AC4: a ticket done with no PR merged (a triage already-fixed) is never closed" '! grep -q "T-33" "$T/jira-close.log" && [ "$(grep -c "^transition" "$T/jira-close.log")" = 1 ]'
+
+# ---- DS-347: a clean desk-review verdict at the head settles the desk-review threads before it -----
+# The payloads are #282 and #271 as they stood: a round-4 P0 thread, fixed, with clean verdicts since.
+sed -e 's/| GitHub handle | `tester` |/| GitHub handle | `bigbenjoman` |/' "$T/config.md" > "$T/config-threads.md"
+echo '| Clean review verdict | `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0` |' >> "$T/config-threads.md"
+FX="$S/fixtures"; H282=3cdbb0d2756940c6579c70f60fea68b36f8d19a7; H271=1088c7a85aa3ec1c8ed4ce97114412c4e57168bd
+SHA43=d333333333333333333333333333333333333333
+cat > "$T/prs.json" <<EOF
+{
+  "141": { "head": "fix/T-41", "base": "main", "author": "bigbenjoman", "sha": "$H282", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]],
+           "payload": "$FX/review-threads-282.json" },
+  "142": { "head": "fix/T-42", "base": "main", "author": "bigbenjoman", "sha": "$H271", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]],
+           "payload": "$FX/review-threads-271.json",
+           "extra": [{ "id": "human", "isResolved": false, "isOutdated": false, "path": "desk/bin/pass.mjs", "line": 970,
+                       "comments": { "nodes": [{ "author": { "login": "colleague" }, "body": "Why does this hold not show in desk-q?\nIt reads as merging.", "pullRequestReview": { "id": "PRR_colleague" } }] } }] },
+  "143": { "head": "fix/T-43", "base": "main", "author": "bigbenjoman", "sha": "$SHA43", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]],
+           "payload": "$FX/review-threads-282.json" }
+}
+EOF
+q init merge-threads
+for k in T-41 T-42 T-43; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; : > "$T/gh.log"; rm -f "$T/resolved.log"
+tloop(){ out=$(DESK_CONFIG="$T/config-threads.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41 T-42 T-43" 2>&1); rc=$?; }
+tloop
+check "DS-347 AC1: #282's fixed P0 thread is resolved once the clean verdict is at its head" 'grep -qx "141-PRRT_kwDOUtzuUs5282p0" "$T/resolved.log" && echo "$out" | grep -qF "#141 resolved desk-review thread desk/bin/desk-q.mjs:1215 \"**P0**: the supplier screen reads the raw cache" && echo "$out" | grep -q "settles it$"'
+check "DS-347 AC1: with it resolved, the driver counts nothing unresolved and holds #282 as green" '! echo "$out" | grep -q "#141 has outstanding review feedback" && echo "$out" | grep -q "#141 green at 3cdbb0d27 — confirming"'
+check "DS-347 AC1: #271's outdated P0 thread is resolved too"         'grep -qx "142-PRRT_kwDOUtzuUs5271p0" "$T/resolved.log" && echo "$out" | grep -qF "#142 resolved desk-review thread desk/bin/pass.mjs:968"'
+check "DS-347 AC2: a thread a colleague opened stays unresolved and still holds the PR" '! grep -q "142-human" "$T/resolved.log" && echo "$out" | grep -q "#142 has outstanding review feedback (NONE, 1 unresolved)"'
+check "DS-347: a clean verdict for an older head settles nothing"     '! grep -q "^143-" "$T/resolved.log" && echo "$out" | grep -q "#143 has outstanding review feedback (NONE, 1 unresolved)"'
+check "DS-347 AC3: one refusal is not yet the person'\''s"            '[ "$(qf T-42 .merge_blocked)" = null ]'
+tloop
+check "DS-347 AC1: #282 merges, and its thread is not resolved twice" '[ "$(merged)" = 141 ] && [ "$(grep -c "resolveReviewThread" "$T/gh.log")" = 2 ]'
+tloop
+check "DS-347 AC3: refused on two loops while green, the PR is recorded for the person with the thread" '[ "$(qf T-42 .merge_blocked)" = "review feedback: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 \"Why does this hold not show in desk-q?\"" ]'
+echo "142-human" >> "$T/resolved.log"
+tloop
+check "DS-347 AC3: once the thread is resolved, the record is cleared and the PR goes on to merge" '[ "$(qf T-42 .merge_blocked)" = null ] && echo "$out" | grep -q "#142 green at 1088c7a85 — confirming"'
+# A thread GitHub refuses to resolve still holds the PR, and says so.
+jq '."143".sha = "'"$H282"'" | ."143".extra = [{ id: "REFUSED", isResolved: false, path: "src/b.ts", line: 2, comments: { nodes: [{ author: { login: "bigbenjoman" }, body: "**P1**: x", pullRequestReview: { id: "PRR_kwDOUtzuUs8AAAABU_uh9Q" } }] } }]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+tloop; tloop   # the first merges #142, so only the second reaches #143
+check "DS-347: a thread GitHub refuses to resolve still holds the PR"  'echo "$out" | grep -qF "#143 could not resolve desk-review thread src/b.ts:2" && echo "$out" | grep -q "#143 has outstanding review feedback (NONE, 1 unresolved)"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

@@ -1,0 +1,27 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "headRefOid": "1088c7a85aa3ec1c8ed4ce97114412c4e57168bd",
+        "reviewDecision": null,
+        "reviews": {
+          "nodes": [
+            { "id": "PRR_kwDOUtzuUs8AAAABU3v94Q", "author": { "login": "bigbenjoman" }, "commit": { "oid": "35652012b8c30543aa48058b40d85eef33547bd5" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=35652012b8c30543aa48058b40d85eef33547bd5 p0=0 p1=0 p2=0 deferred=0 gaps=1 unrefuted=0 partial=0 vendor=codex-cross round=3 -->\n**desk-review, round 3: not clean: 1 requirement gap at `3565201`** · codex read the diff cold · refuted cross-vendor" },
+            { "id": "PRR_kwDOUtzuUs8AAAABU8jxBA", "author": { "login": "bigbenjoman" }, "commit": { "oid": "13a184919cf8ea8fc8975ed2e715d61ec2b06357" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=13a184919cf8ea8fc8975ed2e715d61ec2b06357 p0=1 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=4 -->\n**desk-review, round 4: not clean: 1 P0 outstanding at `13a1849`** · codex read the diff cold · refuted cross-vendor" },
+            { "id": "PRR_kwDOUtzuUs8AAAABU9ctWg", "author": { "login": "bigbenjoman" }, "commit": { "oid": "1088c7a85aa3ec1c8ed4ce97114412c4e57168bd" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=1088c7a85aa3ec1c8ed4ce97114412c4e57168bd p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=5 -->\n**desk-review, round 5: No P0, P1 or P2 findings at `1088c7a`** · codex read the diff cold · refuted cross-vendor" }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            { "id": "PRRT_kwDOUtzuUs5271p0", "isResolved": false, "isOutdated": true, "path": "desk/bin/pass.mjs", "line": null, "originalLine": 968,
+              "comments": { "nodes": [ { "author": { "login": "bigbenjoman" }, "pullRequestReview": { "id": "PRR_kwDOUtzuUs8AAAABU8jxBA" },
+                "body": "**P0**: the no-lock hold from 13a1849 is not recorded as a hold, and it fires when no sibling batch is live." } ] } }
+          ]
+        }
+      }
+    }
+  }
+}

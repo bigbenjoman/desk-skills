@@ -1,0 +1,29 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "headRefOid": "3cdbb0d2756940c6579c70f60fea68b36f8d19a7",
+        "reviewDecision": null,
+        "reviews": {
+          "nodes": [
+            { "id": "PRR_kwDOUtzuUs8AAAABU9p56Q", "author": { "login": "bigbenjoman" }, "commit": { "oid": "934f4fc47b7653d12c530481280391bbf53052a2" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=934f4fc47b7653d12c530481280391bbf53052a2 p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=3 -->\n**desk-review, round 3, fix range 4970878..934f4fc: No P0, P1 or P2 findings at `934f4fc`** · codex read the diff cold · refuted cross-vendor" },
+            { "id": "PRR_kwDOUtzuUs8AAAABU_uh9Q", "author": { "login": "bigbenjoman" }, "commit": { "oid": "e633abb2ae3946f9ece1e4cce799be6077d653fc" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=e633abb2ae3946f9ece1e4cce799be6077d653fc p0=1 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=4 -->\n**desk-review, round 4, fix range 934f4fc..e633abb: not clean: 1 P0 outstanding at `e633abb`** · codex read the diff cold · refuted cross-vendor" },
+            { "id": "PRR_kwDOUtzuUs8AAAABU_xa8A", "author": { "login": "bigbenjoman" }, "commit": { "oid": "cee32503f19dc5d0ba3487ac2442b0e3fb2c564e" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=cee32503f19dc5d0ba3487ac2442b0e3fb2c564e p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=5 -->\n**desk-review, round 5, fix range e633abb..cee3250: No P0, P1 or P2 findings at `cee3250`** · codex read the diff cold · refuted cross-vendor" },
+            { "id": "PRR_kwDOUtzuUs8AAAABVBbyAw", "author": { "login": "bigbenjoman" }, "commit": { "oid": "3cdbb0d2756940c6579c70f60fea68b36f8d19a7" },
+              "body": "<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=3cdbb0d2756940c6579c70f60fea68b36f8d19a7 p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=6 -->\n**desk-review, round 6, fix range cee3250..3cdbb0d: No P0, P1 or P2 findings at `3cdbb0d`** · codex read the diff cold · refuted cross-vendor" }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            { "id": "PRRT_kwDOUtzuUs5282p0", "isResolved": false, "isOutdated": true, "path": "desk/bin/desk-q.mjs", "line": null, "originalLine": 1215,
+              "comments": { "nodes": [ { "author": { "login": "bigbenjoman" }, "pullRequestReview": { "id": "PRR_kwDOUtzuUs8AAAABU_uh9Q" },
+                "body": "**P0**: the supplier screen reads the raw cache, so its AWS charge disagrees with the repo screen's AWS row after DS-325" } ] } }
+          ]
+        }
+      }
+    }
+  }
+}
