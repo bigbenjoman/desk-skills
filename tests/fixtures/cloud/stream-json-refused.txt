@@ -1,0 +1,1 @@
+Error: --cloud <session_id> does not support --output-format stream-json

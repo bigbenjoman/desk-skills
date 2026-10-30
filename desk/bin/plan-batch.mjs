@@ -13,7 +13,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget } from './desk-env.mjs';
+import { placement } from './cloud-worker.mjs';
 import { SIZES } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 
@@ -343,15 +344,23 @@ const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b =
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 
-// Config §3b "Worker location". Every worker runs locally until cloud workers exist; a repo that
-// asks for cloud is told so here rather than finding out from where its workers ran.
+// Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer
+// runs in a cloud session (cloud-worker.mjs placement), and the plan says where each runs, and why a
+// ticket stays local, before any worker starts. A cloud session takes no budget flag.
 let location;
-try { location = workerLocation(); } catch (e) { refuse(e.message); }
+let budget;
+try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
+const featureRole = (k) => (!feature?.on ? null
+  : k === feature.spine ? 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval'
+    : Object.values(feature.plan?.owners ?? {}).includes(k) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null);
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket) })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
-say(location === 'cloud'
-  ? 'workers: local — config §3b "Worker location" is cloud, but cloud workers are not available yet, so every worker runs locally'
-  : 'workers: local');
+if (location === 'cloud') {
+  const n = admitted.filter((r) => placed[r.ticket].where === 'cloud').length;
+  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) in a cloud session, the rest local (config §3b "Worker location")`);
+  say(`budget: ${budget.off ? 'no cap' : `$${budget.usd}`} per local worker (config §3b "Autopilot per-worker budget (USD)"); a cloud session takes no budget, and its tokens and cost are not reported`);
+} else say('workers: local');
 if (notOurs.length) {
   say('\nNOT YOURS — excluded from the batch:');
   for (const r of notOurs) say(`  ${r.ticket}: assigned to ${r.assignee}`);
@@ -368,6 +377,7 @@ for (const r of order) {
   say(`\n${r.ticket}  lane ${r.lane}  size ${r.size ?? '-'}  ${ticketVerdict(r)}`);
   say(`  ${r.summary}`);
   say(`  branch: ${r.branch}`);
+  if (location === 'cloud' && admitted.includes(r)) say(`  runs: ${placed[r.ticket].where}${placed[r.ticket].why ? ` — ${placed[r.ticket].why}` : ''}`);
   if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
@@ -504,6 +514,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `collides_with=${collidesWith(t).join('|') || 'null'}`,
       `open_questions=${laneOk(r) ? qsOf(r).length : (r.unknowns ?? []).length}`,
       `held_by=${held(t) ? preds[t].join('|') : 'null'}`,
+      `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
     const park = lanePark(r)

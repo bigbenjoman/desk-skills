@@ -46,7 +46,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { limitName } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
 export { LIVE_MS };
@@ -271,6 +271,7 @@ function runningCheck(checks, now) {
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
 function draftNeed(q, t, needs, merging) {
   const u = t.undraft;
+  if (heldDraft(t)) return needs(['held by you in draft', null], [' · undraft it to release it', null]);
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
@@ -321,6 +322,12 @@ const stalledFor = (t, now) => {
 // A done ticket whose PR the last pass read as open or closed unmerged. One merged, with no PR, or not
 // read yet is done, as unmergedBlockers takes it.
 const prRow = (t) => !t?.merged_at && ['OPEN', 'CLOSED'].includes(prStatusOf(t)?.state);
+// A PR the user put back to draft, which the last pass recorded as their hold (`undraft` held):
+// nothing undrafts or merges it until they undraft it.
+export const heldDraft = (t) => {
+  const ps = prStatusOf(t);
+  return ps?.state === 'OPEN' && ps.isDraft === true && t.undraft?.call === 'held' && (t.undraft.pr == null || t.undraft.pr === ps.pr);
+};
 // The fix try a requeued ticket is on, until its worker finishes.
 const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : null);
 
@@ -1080,16 +1087,58 @@ function billOf(x, { costs }) {
   return top ? billingUrl(top, { team: mine.find((e) => e.supplier === top)?.team }) : null;
 }
 
+// The total this month and each supplier's, most first: "$899.97 in October, 1–26 │ GitHub $620.52 · …".
+const chargedSegs = (c) => [[usd(c.total), BOLD], [` in ${monthText(c.period)}`, GREY],
+  ...c.suppliers.flatMap((s, i) => [i ? [' · ', GREY] : BAR, [`${SUPPLIER_LABEL[s.supplier]} `, GREY], [usd(s.total), BOLD]])];
+// How many figures were not read today, and the oldest: "1 bill from 2 days ago"; null with none.
+function staleBills(c, now) {
+  const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now));
+  if (!stale.length) return null;
+  const most = Math.max(...stale.map((r) => r.days));
+  return `${stale.length} bill${stale.length === 1 ? '' : 's'} from ${stale.every((r) => r.days === most) ? '' : 'up to '}${daysAgo(most)}`;
+}
+// The ▲ budget note once GitHub's Actions minutes this month reach the budget saved in setup.
+// cache: as forCosts gives it.
+function budgetNotes(costs, cache, period) {
+  const budget = costs.budget?.actionsUsd;
+  if (budget == null || !Number.isFinite(budget)) return [];
+  const spent = actionsCharged({ cache, costs, period });
+  if (spent == null || Math.round(spent * 100) < Math.round(budget * 100)) return [];
+  return [{ tag: '▲ budget', sgr: WARN, text: [[`GitHub Actions budget used up: ${usd(spent)} of ${usd(budget)}.`, null]] }];
+}
+
+// Home's line under Claude usage, its label as wide as that line's: this month's charge by supplier,
+// ending in how many figures were not read today, which goes under the figures when `width` is too
+// narrow for both. And home's notes on it: the Actions budget used up, and the use AWS credits are
+// covering. No line with no cost sources.
+const CHARGED_LABEL = 'Charged       ';
+function homeCost({ now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), width = null } = {}) {
+  if (!costs.exists || !costs.entries.length) return { lines: [], notes: [] };
+  const fc = forCosts(cache, costs);
+  const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
+  if (!c) return { lines: [segLine([[`${CHARGED_LABEL}no reading yet`, GREY]])], notes: [] };
+  const old = staleBills(c, now);
+  const covered = c.names.filter((x) => x.credits > 0).map((x) => x.name);
+  const line = segLine([[CHARGED_LABEL, GREY], ...chargedSegs(c)]);
+  const tail = old ? `◌ ${old}` : null;
+  return {
+    lines: !tail ? [line] : width != null && line.line.length + 2 + tail.length > width
+      ? [line, segLine([[' '.repeat(CHARGED_LABEL.length), null], [tail, GREY]])] : [segLine([...line.segs, [`  ${tail}`, GREY]])],
+    notes: [...budgetNotes(costs, fc, c.period), ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN,
+      text: [[`AWS credits are covering ${usd(c.credits)} of use for ${andList(covered)}. It becomes a charge when they run out.`, null]] }] : [])],
+  };
+}
+
 // Every name's charge this month, most first, then shared and the total, under a line with the total
 // by supplier. A name the cost sources list with no figure reads –. A row ends in what its figure
 // leaves out, the total in how many figures were not read today, and a note under them says each.
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
-  const c = chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] });
+  const fc = forCosts(cache, costs);
+  const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
   if (!c) return { head: [NO_COST_READING], rows: [], foot };
-  const charged = segLine([['charged ', GREY], [usd(c.total), BOLD], [` in ${monthText(c.period)}`, GREY],
-    ...c.suppliers.flatMap((s, i) => [i ? [' · ', GREY] : BAR, [`${SUPPLIER_LABEL[s.supplier]} `, GREY], [usd(s.total), BOLD]])]);
+  const charged = segLine([['charged ', GREY], ...chargedSegs(c)]);
   const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
   const aw = Math.max(10, usd(c.total).length + 3);
@@ -1103,9 +1152,10 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
     return { ...r, bill: x.name === 'shared' ? null : billOf(x, { costs }) };
   });
   const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
-  const most = Math.max(0, ...stale.map((r) => r.days));
-  const includes = stale.length ? [['  ', null], [`includes ${stale.length} bill${stale.length === 1 ? '' : 's'} from ${stale.every((r) => r.days === most) ? '' : 'up to '}${daysAgo(most)}`, GREY]] : [];
+  const old = staleBills(c, now);
+  const includes = old ? [['  ', null], [`includes ${old}`, GREY]] : [];
   const notes = [
+    ...budgetNotes(costs, fc, c.period),
     ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits are covering ${usd(c.credits)} of use. It becomes a charge when they run out.`, null]] }] : []),
     ...stale.map((r) => ({ tag: `◌ ${r.name}`, sgr: GREY, text: [[r.failedToday
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
@@ -1157,7 +1207,8 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const mine = costs.entries.filter((e) => e.name === name);
   if (!mine.length) return { head: [noCostSourcesFor(label)], rows: [], foot };
-  const c = chargesByName({ cache: forCosts(cache, costs), names: [name] });
+  const fc = forCosts(cache, costs);
+  const c = chargesByName({ cache: fc, names: [name] });
   if (!c) return { head: [NO_COST_READING], rows: [], foot };
   const x = c.names.find((n) => n.name === name);
   const money = (n) => (n == null ? '–' : usd(n));
@@ -1171,8 +1222,10 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
     return { ...r, bill: billingUrl(s, { team: mine.find((e) => e.supplier === s)?.team }) };
   });
   const charged = segLine([['charged ', GREY], [money(x.total), BOLD], [` to ${name} in ${monthText(c.period)}`, GREY]]);
-  const notes = x.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
-    usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`, null]] }] : [];
+  // The budget note on a name GitHub bills; it is the account's budget, not the name's.
+  const notes = [...(mine.some((e) => e.supplier === 'github') ? budgetNotes(costs, fc, c.period) : []),
+    ...(x.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
+      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`, null]] }] : [])];
   return { head: [charged, '', bold(`  ${pad('SUPPLIER', SUPPLIER_W)}${pad('FOR', FOR_W)}${rpad('CHARGED', aw)}`)], rows,
     foot: [segLine([[`  ${pad('total', SUPPLIER_W + FOR_W)}`, GREY], [rpad(money(x.total), aw), BOLD]]), ...(notes.length ? ['', ...noteLines(notes, 14, width)] : []), ...foot] };
 }
@@ -1225,7 +1278,7 @@ function githubParts(cache, name, period, total) {
 
 // One supplier's part of a name's charge this month: the line with what it charged, then for GitHub
 // what it was charged for. `bill` is the page `o` opens.
-export function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache: raw = readCache() } = {}) {
+export function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache: raw = readCache(), width = null } = {}) {
   const mine = costs.entries.filter((e) => e.name === name && e.supplier === supplier);
   const bill = billingUrl(supplier, { team: mine[0]?.team });
   // The cache as costs.md has it now, as on the repo screen, so both count the same profiles.
@@ -1240,7 +1293,8 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
   const charged = segLine([['charged ', GREY], [total == null ? '–' : usd(total), BOLD], [` by ${SUPPLIER_LABEL[supplier]} to ${name} in ${monthText(c.period)}`, GREY],
     ...(where.length ? [[` · ${where.join(', ')}`, GREY]] : []), ...(tag ? [['  ', null], tag] : [])]);
   const body = supplier === 'github' && total != null ? githubParts(cache, name, c.period, total) : [];
-  return { head: [charged, ...body], rows: [], foot: [], bill };
+  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period) : [];
+  return { head: [charged, ...body], rows: [], foot: notes.length ? ['', ...noteLines(notes, 14, width)] : [], bill };
 }
 
 // The screens' header note on tickets that need the user's answer.
@@ -1431,10 +1485,10 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 
 // Every repo's header: a band for each batch no pass can run, what needs the user, the machine, then
 // usage.
-function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false } = {}) {
+function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, charged = [] } = {}) {
   const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
   return [...list.flatMap(bandsOf), needsLine(list, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
-    ...(pinUsage ? [] : [usageLine(usageOf(repos, now, list), { now, solid })])];
+    ...(pinUsage ? [] : [usageLine(usageOf(repos, now, list), { now, solid }), ...charged])];
 }
 
 // Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
@@ -1455,14 +1509,15 @@ function homeLayout(list, w, width, now, checkin) {
   return { ...l, cols: NUM_COLS.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
 }
 
-function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false } = {}) {
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
   const list = shownRepos(repos, all);
+  const cost = homeCost({ now, costs, cache, width });
   const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
   // REPO fits the names with a row; with a width, only those on screen.
   const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.name.length + 2));
   const lay = homeLayout(list, w, width, now, checkin);
   const head = [
-    ...overviewHead(repos, list, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage }),
+    ...overviewHead(repos, list, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, charged: cost.lines }),
     '',
     bold(`  ${pad('REPO', w)}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('ALL DONE BY', lay.qdW)}  WORKERS`),
   ];
@@ -1496,6 +1551,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       notes.push({ tag: '▲ ports', sgr: WARN, text: [[`${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, null]] });
     }
   }
+  notes.push(...cost.notes);
   // What a narrow table left out: merging counts, in cyan, then ready tickets with no free slot.
   const ok = list.filter((r) => !r.error);
   if (lay.drop.includes('MERGING')) {
@@ -1514,7 +1570,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
   if (notes.length) foot.push('', ...noteLines(notes, w, width));
-  return { head, rows, foot };
+  // Pinned, the Charged line goes under the Claude usage line above the keys.
+  return { head, rows, foot, ...(pinUsage ? { charged: cost.lines } : {}) };
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
@@ -1828,6 +1885,10 @@ function moveOf(r, row, k, t, h, now) {
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${f ? `${segText(fixSegs(f, true))}, ` : ''}${runningStage(r, row)}.` };
+  if (heldDraft(t)) {
+    return { text: `Needs you. Held by you: you put its PR #${t.result.pr} back to draft, so no pass undrafts it and nothing merges it.`,
+      lead: 'Undraft it to release it, and it merges once it is green:', cmds: [`gh pr ready ${t.result.pr} --repo ${r.slug.replace('__', '/')}`] };
+  }
   if (row.pr) {
     const m = segText(prSegs(r, t, now).slice(2));
     return { text: m ? `${groupOf(k) === 'needs' ? 'Needs you' : 'Moves without you'}: PR #${t.result.pr}, ${m}.` : `PR #${t.result.pr}.` };
@@ -2471,7 +2532,7 @@ export function interactive({
       const s = supplierParts(repos, costName(), { now, pinUsage: true, width: w, label: r?.repo, slug: view.kind === 'cost' ? null : view.slug });
       return { badge: '', ...s, ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${s.rows.length ? 'enter open · ' : ''}${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
     }
-    if (view.kind === 'supplier') return { badge: '', ...supplierPageParts(repos, view.name, view.supplier, { now }), ...claude(shownRepos(repos, false)), keys: `${VIEW_KEYS} · o open ${SUPPLIER_BILL[view.supplier]} · ${cmdKeys}` };
+    if (view.kind === 'supplier') return { badge: '', ...supplierPageParts(repos, view.name, view.supplier, { now, width: w }), ...claude(shownRepos(repos, false)), keys: `${VIEW_KEYS} · o open ${SUPPLIER_BILL[view.supplier]} · ${cmdKeys}` };
     if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true, width: w }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · enter open · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
@@ -2540,7 +2601,7 @@ export function interactive({
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
     // Claude usage line stays put above it and the keys, a blank line between.
-    const status = [...(screen.usage ? [fit(screen.usage), ''] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
+    const status = [...(screen.usage ? [fit(screen.usage), ...(screen.charged ?? []).map(fit), ''] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + head.length;
     let top = 0;

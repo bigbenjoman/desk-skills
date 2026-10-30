@@ -20,7 +20,8 @@ import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
-import { batchCost, costTable, preflightLine } from './worker-cost.mjs';
+import { batchCost, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -33,7 +34,7 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment, verdictCarries, humanReviewed } from './undraft.mjs';
+import { undraftCall, undraftComment, verdictCarries, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -423,8 +424,30 @@ const resumeRefusal = (t, why) => {
   return null;
 };
 
+// A cloud session (cloud-worker.mjs) writes no log here: its result is the PR it opened, on the branch
+// it was told to use or with the key in its title. Once one shows, the ticket is done on that PR's
+// branch, which the merge driver matches it by. Its tracker steps are left undone: the session has no
+// tracker access, and the report says so.
+function advanceCloud(t) {
+  const c = t.cloud ?? {};
+  const read = (args) => {
+    try { return JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'all', ...args, '--json', 'number,title,url,headRefName,createdAt'], { tolerant: true }) || '[]'); } catch { return []; }
+  };
+  const pr = findCloudPr([...read(['--head', t.branch ?? '']), ...read(['--search', `${t.key} in:title`])], { key: t.key, branch: t.branch, since: c.started });
+  if (!pr) {
+    report.quiet.push(`${t.key}: cloud session ${c.url ?? c.session}, no PR yet (${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started)`);
+    return;
+  }
+  const cloud = { ...c, pr_at: pr.createdAt };
+  const wall = wallTime(cloudWall(cloud) ?? 0);
+  q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
+    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
+  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${c.url} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+}
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
+  if (t.location === 'cloud' && t.cloud) { advanceCloud(t); continue; }
   const log = join(STATE, 'logs', `${t.key}.log`);
   if (!existsSync(log)) continue;
   const h = sh('node', [join(BIN, 'harvest.mjs'), log], { tolerant: true });
@@ -1509,6 +1532,50 @@ function resumeRound(t, { wt, kept, branch }) {
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
 // on the same branch, starting at the stage it named with the handoff briefing in its system prompt.
 // Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
+// A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, with no worktree,
+// preflight or local worker. The session reads nothing from this computer, the tracker included, so
+// its prompt carries the ticket's text. A start that fails parks with the CLI's error: it is never
+// run locally instead without asking.
+function cloudTicketText(key) {
+  if (E.ticketKind(key).kind !== 'tracker') return readFileSync(join(STATE, 'tickets', `${key}.md`), 'utf8');
+  const got = shOut('desk-jira', ['get', key]);
+  if (!got.ok) throw new Error(`desk-jira get ${key}: ${got.out.split('\n').pop()}`);
+  const comments = shOut('desk-jira', ['comments', key]);
+  return `${got.out}\n\n## Comments\n\n${comments.ok ? comments.out : `(not read: ${comments.out.split('\n').pop()})`}`;
+}
+function spawnCloud(t) {
+  const park = (why) => {
+    const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
+      `or run it on this computer with queue.mjs set ${t.key} location=null, then queue.mjs requeue ${t.key}`;
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+  };
+  // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
+  // fix brief, and the PR it has would no longer count as its result. Nor can a local worker take it:
+  // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
+  // base. The person resumes the session, or fixes the branch.
+  if (t.result?.pr != null) {
+    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
+      `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
+      `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+    return;
+  }
+  let text;
+  try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
+  if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
+  const tests = E.configValues('test-cmd') ?? [];
+  const started = new Date().toISOString();
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
+  if (s.error) { park(s.error); return; }
+  q('set', t.key, 'state=running', `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, 'stage=cloud',
+    'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null');
+  if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
+  report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
+  runningKeys.add(t.key);
+}
+
 async function spawnHandoff(t) {
   // queue.mjs stores a stage of 7 as a number.
   const stage = t.handoff_stage == null ? '' : String(t.handoff_stage);
@@ -1647,6 +1714,10 @@ for (const t of spawnable) {
     // eslint-disable-next-line no-await-in-loop
     await spawnHandoff(t);
     if (usageStop) break;
+    continue;
+  }
+  if (t.location === 'cloud') {
+    spawnCloud(t);
     continue;
   }
   const wt = join(WORKTREES, t.key);
@@ -1934,6 +2005,9 @@ const gateLists = () => {
   const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
   return { required: list('required-checks'), advisory: list('advisory-checks') };
 };
+// The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
+// or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
+const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt'];
 if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
@@ -1957,7 +2031,17 @@ if (drafts.length) {
       verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git: (args) => shOut('git', ['-C', MAIN, ...args]) });
     const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
     if (!c) continue;
-    let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null, carried_from: c.carried ?? null };
+    // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
+    // build, and no review or fix worker. The events are read only where the record cannot settle it
+    // and the call would act.
+    let hold = personHold(t, n);
+    if (!hold && UNDRAFT_ACTS.includes(c.call)) {
+      const ev = shOut('gh', ['api', '--paginate', `repos/${GH_REPO}/issues/${n}/events?per_page=100`, '--jq', REDRAFT_JQ]);
+      if (!ev.ok) { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: its events, which say whether a person put it back to draft, could not be read (${ev.out.split('\n').pop()}); the next pass tries again`); continue; }
+      hold = personHold(t, n, ev.out.split('\n').filter(Boolean).map((l) => { const [at, by] = l.split('\t'); return { at, by }; }));
+    }
+    let rec = hold ? { call: 'held', why: hold.why, action: hold.action, sha: v.headRefOid ?? null, carried_from: null, pr: n }
+      : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null, carried_from: c.carried ?? null, pr: n };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
     // fix worker, which reviews its new head again.
     // An interactive desk-review posts its P0s and P1s inline: unread, they leave only the body's.
@@ -1967,14 +2051,15 @@ if (drafts.length) {
       return r.comments;
     };
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
-    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
+    const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !operatorRow.errors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, operator: operatorRow.checks })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) }) : null;
     // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on.
     if (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
     const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
-    if (rf) applyFix(t, n, v.headRefOid, rf);
+    if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
+    else if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
@@ -2000,8 +2085,14 @@ if (drafts.length) {
       }
     }
     const was = t.undraft ?? {};
-    if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
+    if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
+}
+// The person's own undraft releases their hold: recorded as out of draft, so putting it back holds it again.
+for (const { t, s } of undrafted) {
+  if (t.undraft?.call !== 'held' || (t.undraft.pr != null && t.undraft.pr !== s.pr)) continue;
+  out.push(`released: PR #${s.pr} (${t.key}) was undrafted by a person; the merge driver merges it once it is green`);
+  if (!DRY) q('set', t.key, `undraft=${JSON.stringify({ call: 'ready', why: 'a person undrafted it', action: null, sha: s.head, pr: s.pr, at: PASS_AT })}`);
 }
 
 // A draft red only on checks §4 Check builds names gets their build, on the host, in the ticket's

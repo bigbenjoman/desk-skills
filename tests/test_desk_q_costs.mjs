@@ -79,8 +79,11 @@ const TABLE = [
   row('pranicuk', '–', "◌ can't read: billed to GitHub account pranichealinguk"), row('shared', '$19.61', 'Vercel Pro plan $17.05 · GitHub storage $2.56'),
   row('total', '$899.97', 'includes 1 bill from 2 days ago'),
 ];
+// The fixture saves a $600 Actions budget, and its Actions minutes come to $617.96 (storage left out).
+const BUDGET_NOTE = 'note  ▲ budget       GitHub Actions budget used up: $617.96 of $600.00.';
 const NOTES = [
-  'note  ▲ credits      AWS credits are covering $61.24 of use. It becomes a charge when they run out.',
+  BUDGET_NOTE,
+  '      ▲ credits      AWS credits are covering $61.24 of use. It becomes a charge when they run out.',
   "      ◌ forewatt     Its AWS bill couldn't be read today, so this shows the 25 Oct figure. desk-q tries again every hour.",
 ];
 const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
@@ -221,7 +224,7 @@ const VOICEPA = ['charged $317.11 to voicepa in October, 1–26', '', SUP_HEAD,
   sup('GitHub', 'CI minutes', '$255.74'), sup('Vercel', 'hosting and builds', '$59.78'), sup('AWS', 'hosting and CI runners', '$1.59'), supTotal('$317.11')];
 const PR_NINJA = ['charged $277.48 to pr-ninja in October, 1–26', '', SUP_HEAD,
   sup('GitHub', 'CI minutes', '$251.33'), sup('Vercel', 'hosting and builds', '$26.15'), sup('AWS', 'hosting and CI runners', '$0.00', '▲ on credits'), supTotal('$277.48')];
-const CREDITS_NOTE = 'note  ▲ credits      AWS credits covered $31.73. Without them, pr-ninja would have been charged $309.21.';
+const CREDITS_NOTE = '      ▲ credits      AWS credits covered $31.73. Without them, pr-ninja would have been charged $309.21.';
 const block = (S, first, n) => { const f = S.frame(); const i = f.indexOf(first); return i < 0 ? null : f.slice(i, i + n).map((l) => l.replace(/^›/, ' ')).join('\n'); };
 const selected = (S) => S.frame().find((l) => l.startsWith('›')) ?? '';
 const supRaw = (S, name) => S.raw().find((l) => l.replace(ANSI, '').slice(2).startsWith(`${name} `)) ?? '';
@@ -357,8 +360,8 @@ SO.ui.finish(0);
 
 // AC13: desk-q costs <repo>, piped, prints this screen as plain text.
 const out292 = Q.run(['costs', 'voicepa'], { now: FIXED });
-t('DS-292 AC13 desk-q costs voicepa prints the screen as plain text', `${/\x1b/.test(out292)} | ${out292}`, `false | ${[...VOICEPA, '', 'Claude usage  no reading yet'].join('\n')}`);
-t('DS-292 AC13 and pr-ninja\'s, its note unwrapped', Q.run(['costs', 'pr-ninja'], { now: FIXED }), [...PR_NINJA, '', CREDITS_NOTE, '', 'Claude usage  no reading yet'].join('\n'));
+t('DS-292 AC13 desk-q costs voicepa prints the screen as plain text', `${/\x1b/.test(out292)} | ${out292}`, `false | ${[...VOICEPA, '', BUDGET_NOTE, '', 'Claude usage  no reading yet'].join('\n')}`);
+t('DS-292 AC13 and pr-ninja\'s, its notes unwrapped', Q.run(['costs', 'pr-ninja'], { now: FIXED }), [...PR_NINJA, '', BUDGET_NOTE, CREDITS_NOTE, '', 'Claude usage  no reading yet'].join('\n'));
 t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo'], { now: FIXED }).split('\n')[0], Q.noCostSourcesFor('solo'));
 // A second AWS profile under voicepa, read today and since removed from costs.md.
 const gone = fixture();
@@ -366,6 +369,96 @@ gone.aws.profiles['voicepa-old'] = { ...gone.aws.profiles['voicepa-admin'], prof
 t('DS-325 AC3 a profile removed from costs.md is in no supplier\'s figure', Q.supplierScreen([], 'voicepa', { now: FIXED, cache: gone, pinUsage: true }).split('\n').slice(0, VOICEPA.length).join('\n'), VOICEPA.join('\n'));
 const awsPage = (cache) => JSON.stringify(Q.supplierPageParts([], 'voicepa', 'aws', { now: FIXED, cache }).head);
 t('DS-293 AC10 (DS-325 AC3) the AWS screen leaves out a profile removed from costs.md, as the repo screen does', awsPage(gone), awsPage(fixture()));
+
+// ---- DS-296: home's Charged line under Claude usage, and its budget and credits notes
+// Home on a cost reading and cost sources, each written to its own place.
+const homeAt = async ({ cache = fixture(), costs = readFileSync(join(FIX, 'costs.md'), 'utf8'), columns = 104 } = {}) => {
+  process.env.DESK_COST_DIR = join(T, `variant-${++variants}`);
+  mkdirSync(process.env.DESK_COST_DIR);
+  if (cache) writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify(cache));
+  process.env.DESK_COSTS = join(T, `costs-${variants}.md`);
+  if (costs) writeFileSync(process.env.DESK_COSTS, costs);
+  const S = screen(undefined, columns);
+  await sleep(20);
+  return S;
+};
+const chargedOf = (S) => S.frame().find((l) => l.startsWith('Charged ')) ?? null;
+const budgetSaved = (usd) => readFileSync(join(FIX, 'costs.md'), 'utf8').replace('| `actions-budget-usd` | `600` |', `| \`actions-budget-usd\` | \`${usd}\` |`);
+// forewatt's AWS figure read today, so no figure is old.
+const fresh = fixture();
+Object.assign(fresh.aws.profiles.forewatt, { at: FIXED, failed: null });
+const CHARGED_HOME = 'Charged       $899.97 in October, 1–26 │ GitHub $620.52 · AWS $175.88 · Vercel $103.57';
+
+const H1 = await homeAt({ cache: fresh });
+const f1 = H1.frame();
+t('DS-296 AC1 the line under Claude usage reads Charged, both labels the same width, above a blank line and the keys',
+  `${f1[keysAt(f1) - 3]?.slice(0, 14)}| ${f1[keysAt(f1) - 2]} | ${f1[keysAt(f1) - 1]}`, `Claude usage  | ${CHARGED_HOME} | `);
+const sup1 = [...(chargedOf(H1) ?? '').matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]+)/g)].map((m) => cents(m[1]));
+const total1 = cents(/^Charged +(\S+)/.exec(chargedOf(H1) ?? '')?.[1] ?? 'NaN');
+await H1.press('5');
+const costsTotal = cents(H1.frame().find((l) => /^ {2}total /.test(l))?.trim().split(/\s+/)[1] ?? 'NaN');
+t('DS-296 AC2 its suppliers add up to its total and to the Costs tab\'s total, in cents',
+  `${sup1.length} ${sup1.reduce((a, c) => a + c, 0) === total1} ${total1 === costsTotal}`, '3 true true');
+H1.ui.finish(0);
+
+const H3 = await homeAt({ cache: null, costs: null });
+const f3 = H3.frame();
+t('DS-296 AC3 with no cost sources, no Charged line, and the usage line sits where it does today',
+  `${chargedOf(H3)} | ${f3[keysAt(f3) - 2]?.startsWith('Claude usage  ')} | ${f3[keysAt(f3) - 1]}`, 'null | true | ');
+H3.ui.finish(0);
+
+const H4 = await homeAt({ cache: null });
+t('DS-296 AC4 with sources and no reading, the line reads no reading yet, grey',
+  `${chargedOf(H4)} | ${H4.raw().some((l) => l.includes(`${GREY}Charged       no reading yet`))}`, 'Charged       no reading yet | true');
+H4.ui.finish(0);
+
+// The fixture's Actions minutes are $617.96 on bigbenjoman: $2.56 of storage and pranicuk's other account are left out.
+const H5 = await homeAt();
+t('DS-296 AC5 a saved budget the Actions minutes reach: a ▲ budget note, amber',
+  `${noteText(H5, '▲ budget')} | ${H5.raw().some((l) => l.includes(`${AMBER}▲ budget       `))}`, 'GitHub Actions budget used up: $617.96 of $600.00. | true');
+t('DS-296 AC7 a ▲ credits note names who credits are covering',
+  `${noteText(H5, '▲ credits')} | ${H5.raw().some((l) => l.includes(`${AMBER}▲ credits      `))}`,
+  'AWS credits are covering $61.24 of use for pr-ninja and yield-index. It becomes a charge when they run out. | true');
+const f10 = H5.frame();
+const at10 = f10.findIndex((l) => l.slice(6).startsWith('▲ credits'));
+const charged10 = f10.indexOf(CHARGED_HOME);
+t('DS-296 AC10 at 104 columns the Charged line and both notes fit, a note wrapping under its first line, the old bill under the figures',
+  `${f10.filter((l) => l.endsWith('…') || [...l].length > 104).length} | ${f10[at10 + 1]?.startsWith(`${' '.repeat(21)}charge when`)} | ${f10[charged10 + 1]}`,
+  `0 | true | ${' '.repeat(14)}◌ 1 bill from 2 days ago`);
+H5.ui.finish(0);
+const H9 = await homeAt({ columns: 140 });
+t('DS-296 AC9 a figure last read two days ago ends the Charged line, grey',
+  `${chargedOf(H9)} | ${H9.raw().some((l) => l.includes(`${GREY}  ◌ 1 bill from 2 days ago`))}`, `${CHARGED_HOME}  ◌ 1 bill from 2 days ago | true`);
+H9.ui.finish(0);
+
+const H6 = await homeAt({ costs: budgetSaved('617.97') });
+const H6n = await homeAt({ costs: budgetSaved('none') });
+t('DS-296 AC6 under the budget, or with none saved, no budget note', `${noteText(H6, '▲ budget')} | ${noteText(H6n, '▲ budget')}`, 'null | null');
+H6.ui.finish(0);
+H6n.ui.finish(0);
+const H6e = await homeAt({ costs: budgetSaved('617.96') });
+t('DS-296 AC5 at the budget to the cent, the note', noteText(H6e, '▲ budget'), 'GitHub Actions budget used up: $617.96 of $617.96.');
+H6e.ui.finish(0);
+const nc = fixture();
+for (const p of Object.values(nc.aws.profiles)) for (const l of p.lines ?? []) l.credits = 0;
+const H7n = await homeAt({ cache: nc });
+t('DS-296 AC7 with no credits covering use, no credits note', noteText(H7n, '▲ credits'), null);
+H7n.ui.finish(0);
+
+// AC8: the Costs tab, voicepa's screen and its GitHub screen carry the same note.
+const H8 = await homeAt();
+await H8.press('5');
+const tab8 = noteText(H8, '▲ budget');
+await H8.press('\r');
+const repo8 = noteText(H8, '▲ budget');
+await H8.press('\r');
+const gh8 = `${H8.crumbs()} | ${noteText(H8, '▲ budget')}`;
+t('DS-296 AC8 the Costs tab, a repo\'s screen and the GitHub screen carry the ▲ budget note', `${tab8} | ${repo8} | ${gh8}`,
+  ['GitHub Actions budget used up: $617.96 of $600.00.', 'GitHub Actions budget used up: $617.96 of $600.00.',
+    'desk-q › costs › voicepa › GitHub', 'GitHub Actions budget used up: $617.96 of $600.00.'].join(' | '));
+H8.ui.finish(0);
+process.env.DESK_COST_DIR = MAIN;
+process.env.DESK_COSTS = env.DESK_COSTS;
 
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);

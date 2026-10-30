@@ -102,11 +102,15 @@ export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).f
 // This repo's slug, for what the machine-wide state says about it.
 const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'; } };
 
-// A queue's running workers, as rows stopForWindow can stop: its running tickets, and its base conflict
-// fix while one runs (pass.mjs keeps it on the queue as `base_fix`, not as a ticket). A base fix the
-// window already stopped (`resume`) is not running.
+// A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so the
+// window neither waits for one nor stops it, in any repo.
+export const runningHere = (t) => t?.state === 'running' && t.location !== 'cloud';
+
+// A queue's workers running on this computer, as rows stopForWindow can stop: its running tickets, and
+// its base conflict fix while one runs (pass.mjs keeps it on the queue as `base_fix`, not as a ticket,
+// and runs it in the base worktree here). A base fix the window already stopped (`resume`) is not running.
 export function runningWorkers(q) {
-  const rows = Object.values(q?.tickets ?? {}).filter((t) => t?.state === 'running');
+  const rows = Object.values(q?.tickets ?? {}).filter(runningHere);
   const bf = q?.base_fix;
   if (bf?.running && !bf.resume) rows.push({ key: E.baseFixKey(q.base ?? 'base'), session_id: bf.running, base_fix: true });
   return rows;

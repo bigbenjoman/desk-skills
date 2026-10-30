@@ -157,7 +157,8 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
-  "needs_db": <true if verifying it needs a database, seed, or integration test>
+  "needs_db": <true if verifying it needs a database, seed, or integration test>,
+  "needs_local": <null, or one clause naming what verifying it needs that only this computer has: a local dev server, the browser, local stub binaries, a local service. A cloud session has the repo from GitHub and nothing else>
 }
 
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.

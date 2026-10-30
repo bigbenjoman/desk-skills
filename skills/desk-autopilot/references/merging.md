@@ -152,7 +152,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   green too, then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
   are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
-  ticket as `undraft`; a feature spine is left to `queue.mjs approve`. The driver merges a ready PR,
+  ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
+  to draft is theirs to hold**: one the pass undrafted before, or whose PR events hold a
+  `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
+  builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
+  own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
   pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3

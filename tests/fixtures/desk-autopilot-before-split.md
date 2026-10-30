@@ -52,7 +52,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §0 "GitHub repo", "Default branch" | where PRs live; what every worktree branches from and rebases onto (`<default>` below) |
 | §1 "GitHub handle", "Jira display name" | the merge driver's `--author`; `plan-batch`'s "unassigned or yours" test |
 | §2 "Primary repo root", "Worktrees directory", "Running on WSL?", "Signed-in browser profile" | where worktrees go; which memory guidance applies; the image uploader |
-| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)", "Usage pacing headroom (points)", "Maintenance window", "Maintenance drain limit (minutes)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (always locally for now), whether a batch may borrow idle machine slots, how often a worker a reboot or crash killed is resumed in its own session, how far 7-day usage may run ahead of an even weekly pace before new spawns hold, and when the weekly maintenance window drains, updates and restarts (with §3 `machine-reboot`) |
+| §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)", "Usage pacing headroom (points)", "Maintenance window", "Maintenance drain limit (minutes)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (locally, or in cloud sessions: `references/stalls-and-spend.md`), whether a batch may borrow idle machine slots, how often a worker a reboot or crash killed is resumed in its own session, how far 7-day usage may run ahead of an even weekly pace before new spawns hold, and when the weekly maintenance window drains, updates and restarts (with §3 `machine-reboot`) |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
 | §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
@@ -869,7 +869,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   green too, then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
   are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
-  ticket as `undraft`; a feature spine is left to `queue.mjs approve`. The driver merges a ready PR,
+  ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
+  to draft is theirs to hold**: one the pass undrafted before, or whose PR events hold a
+  `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
+  builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
+  own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
   pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
@@ -1325,8 +1329,19 @@ preflight with a `FINDER` or `TEXT` line naming the row and the value, and no wo
 is set until the eval harness shows finding quality holds on the cheaper model.
 
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
-`cloud`. Cloud workers are not available yet, so every worker runs locally either way, and at
-`cloud` the batch plan's `workers:` line says so. Any other value refuses the plan, naming the row.
+`cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
+and `budget:` lines say how many tickets run in a cloud session and that a cloud session takes no
+per-worker budget, and each admitted ticket's `runs:` line says where it runs. A ticket stays local,
+with the reason, when its triage record says it renders (the browser lock and a dev server), needs a
+database, or names in `needs_local` anything else only this computer has (stub binaries, a local
+service), and when the record predates `needs_local`. A cloud ticket (`location: cloud` on the queue)
+gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
+prompt carrying the ticket's text, and the session pushes a branch and opens a draft PR. The pass
+records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
+the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
+left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+The report's cost table shows a cloud worker's session URL and its wall time from session start to
+PR, and its tokens and cost as "not reported for cloud".
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded

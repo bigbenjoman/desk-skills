@@ -1082,6 +1082,12 @@ if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('state,')) {
   fs.writeFileSync('$T/u/' + n + '.ready', '');
 } else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) {
+  // A PR's convert_to_draft events, as REDRAFT_JQ prints them, from u/<n>.events; u/<n>.events-fail refuses.
+  const f = '$T/u/' + a[2].match(/issues\/(\d+)\//)[1] + '.events';
+  if (fs.existsSync(f + '-fail')) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
+  if (fs.existsSync(f)) process.stdout.write(fs.readFileSync(f, 'utf8'));
+}
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
@@ -1148,7 +1154,8 @@ check "DS-222 AC5 a head GitHub has not checked for conflicts yet stays draft an
 check "DS-222 AC6 a feature spine's PR is never undrafted by this step" '[ "$(readied 706)" = 0 ] && [ "$(field U-6 undraft)" = null ] && ! echo "$out" | grep -q "#706 stays draft"'
 check "DS-222 AC7 a failed gh pr ready leaves it draft and the pass record holds the error" \
   '[ "$(field U-7 undraft.call)" = "\"failed\"" ] && pass_rec undraft_errors | grep -q "U-7: gh pr ready 707 failed: GraphQL: Something went wrong"'
-rm -f "$T/u/707.fail" "$T/u/701.ready"; q set-batch approved.undraft=false
+# #701 goes back to a fresh draft: its record goes too, or the pass reads it as put back by a person.
+rm -f "$T/u/707.fail" "$T/u/701.ready"; q set U-1 undraft=null; q set-batch approved.undraft=false
 uconfig yes; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-222 AC7 the next pass tries again, and the error is gone from the record" '[ "$(readied 707)" = 1 ] && [ "$(pass_rec undraft_errors)" = "[]" ]'
 check "DS-222 AC1 pr-ready yes: a clean, green draft at its head is marked ready, with no batch-notes line" \
@@ -1159,6 +1166,34 @@ check "DS-278 AC1 and the comment quotes the verdict" 'grep -q "^> .sha=$HEAD_A 
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-222 a PR already ready is not undrafted again" '[ "$(grep -c "^pr ready" "$T/gh-calls")" = 0 ]'
 check "DS-278 AC1 nor commented on again" '[ "$(grep -c "^pr comment" "$T/gh-calls")" = 0 ]'
+
+# ---- DS-314: a PR a person put back to draft is theirs to hold
+# The person runs gh pr ready 701 --undo on the PR the pass undrafted above.
+rm -f "$T/u/701.ready"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-314 AC1 a PR the pass undrafted and a person put back to draft is not marked ready" \
+  '[ "$(readied 701)" = 0 ] && [ "$(field U-1 undraft.call)" = "\"held\"" ] && [ "$(field U-1 undraft.pr)" = 701 ]'
+check "DS-314 AC2 and it is put to the person as held, undrafting it the way to release it" \
+  'echo "$out" | grep -q "U-1: HELD — PR #701 stays draft: it was put back to draft after the pass undrafted it. Undraft #701 to release it; the merge driver then merges it once it is green (gh pr ready 701 --repo acme/widgets)"'
+check "DS-314 the pass's own undraft settles it with no read of the PR's events" '! grep -q "^api .*/issues/701/events" "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-314 AC1 a later pass leaves it draft too" '[ "$(readied 701)" = 0 ] && [ "$(field U-1 undraft.call)" = "\"held\"" ]'
+# The person undrafts it.
+touch "$T/u/701.ready"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-314 AC3 the person's undraft releases the hold, and the pass leaves the PR to the driver" \
+  '[ "$(field U-1 undraft.call)" = "\"ready\"" ] && echo "$out" | grep -q "released: PR #701 (U-1) was undrafted by a person" && [ "$(grep -c "^pr ready" "$T/gh-calls")" = 0 ]'
+rm -f "$T/u/701.ready"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-314 AC1 put back to draft again, it is held again" '[ "$(field U-1 undraft.call)" = "\"held\"" ]'
+# Drafts the pass never undrafted: #709 a person put back to draft (it was opened ready), #710 never
+# left draft, and #711's events cannot be read.
+for k in 9 10 11; do q add "U-$k"; done
+q set U-9 state=done result.pr=709; q set U-10 state=done result.pr=710; q set U-11 state=done result.pr=711
+printf '2026-10-28T06:32:27Z\tben\n' > "$T/u/709.events"; touch "$T/u/711.events-fail"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-314 AC1 a draft whose events hold a convert_to_draft is held, naming who and when" \
+  '[ "$(readied 709)" = 0 ] && [ "$(field U-9 undraft.call)" = "\"held\"" ] && echo "$out" | grep -q "U-9: HELD — PR #709 stays draft: it was put back to draft by ben at 2026-10-28T06:32:27Z"'
+check "DS-314 AC4 a worker's draft nobody put back is undrafted as before" '[ "$(readied 710)" = 1 ] && [ "$(field U-10 undraft.call)" = "\"ready\"" ]'
+check "DS-314 a draft whose events cannot be read stays draft until a later pass reads them" \
+  '[ "$(readied 711)" = 0 ] && echo "$out" | grep -q "PR #711 (U-11) stays draft for now: its events, which say whether a person put it back to draft, could not be read (HTTP 502: Bad Gateway)"'
 
 # ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
 # The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver
@@ -1327,6 +1362,7 @@ else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readF
 else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
 else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
@@ -1442,6 +1478,11 @@ frx 753 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 753 953
 q set C-4 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"checks","what":"red: tests"}]'; frx 754 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 754 954
 frx 755 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 755
 q set C-6 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks"},{"try":2,"head":"'"$H1"'","kind":"rereview"}]'; frx 756 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 756
+# DS-314: held drafts a review or fix worker would otherwise get. C-7 a person put back to draft (its
+# events say so) with a red check; C-8 the pass undrafted before, now draft again with no verdict line.
+for k in 7 8; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "result.pr=75$k"; done
+frx 757 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 757 957; printf '2026-10-29T09:00:00Z\tben\n' > "$T/fr/757.events"
+q set C-8 'undraft={"call":"ready","why":null,"action":null,"sha":"'"$H0"'","pr":758}'; frx 758 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 758
 : > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-316 AC1 a verdict carried across a merge of the base undrafts the PR at the new head" \
   'grep -q "^pr ready 751 --repo acme/widgets" "$T/gh-calls" && [ "$(field C-1 state)" = "\"done\"" ] && [ "$(field C-1 fix_tries)" = null ]'
@@ -1458,6 +1499,10 @@ check "DS-316 AC5 still red at a head a fix try was made for: stuck, with why" \
   '[ "$(field C-4 state)" = "\"done\"" ] && [ "$(field C-4 stuck.why)" = "\"still red after 1 fix try: tests\"" ] && echo "$out" | grep -q "C-4: STUCK — PR #754: still red after 1 fix try: tests"'
 check "DS-316 AC3 a review with no desk-review verdict line sends the head to a review worker" \
   '[ "$(field C-5 state)" = "\"triaged\"" ] && [ "$(field C-5 fix.what)" = "\"review its head: no desk-review verdict is posted on it\"" ]'
+check "DS-314 a red draft a person put back to draft is held, not sent to a fix worker" \
+  '[ "$(field C-7 state)" = "\"done\"" ] && [ "$(field C-7 fix)" = null ] && [ "$(field C-7 undraft.call)" = "\"held\"" ] && echo "$out" | grep -q "C-7: HELD — PR #757 stays draft: it was put back to draft by ben at 2026-10-29T09:00:00Z"'
+check "DS-314 a draft the pass undrafted before, with no verdict at its head, is held, not sent to a review worker" \
+  '[ "$(field C-8 state)" = "\"done\"" ] && [ "$(field C-8 fix)" = null ] && [ "$(field C-8 undraft.call)" = "\"held\"" ] && ! grep -q "^pr ready 758" "$T/gh-calls"'
 check "DS-316 AC5 with its tries spent it reaches the person, with what the pass read last" \
   '[ "$(field C-6 state)" = "\"done\"" ] && [ "$(field C-6 stuck.why)" = "\"no review verdict readable at its head after 2 fix tries: no desk-review verdict is posted on it\"" ] && echo "$out" | grep -q "C-6: STUCK — PR #756: no review verdict readable"'
 out=$(node "$B/pass.mjs" 2>&1)
@@ -1510,6 +1555,8 @@ mkdir -p "$T/state-rc/logs"
 q init rc; q set-batch concurrency=5
 for k in 1 2 3; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "result.pr=74$k"; done
 frc 741 "$H1"; frc 742 "$H1" kim; frc 743 "$H1"
+# DS-314: C-4's conflicted draft was put back to draft by a person, so no conflict worker gets it.
+q add C-4; q set C-4 state=done lane=A branch=fix/C-4 result.pr=744; frc 744 "$H1"; printf '2026-10-29T10:00:00Z\tben\n' > "$T/fr/744.events"
 q set C-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"conflict"},{"try":2,"head":"'"$H2"'","kind":"conflict"}]' \
   'fix={"try":2,"of":2,"pr":743,"head":"'"$H2"'","kind":"conflict","draft":true,"finished":"2026-10-29T12:00:00Z"}' 'result.summary=pr=743 jira=In Progress said=src/x.ts left unresolved'
 conflictcfg ask yes
@@ -1524,6 +1571,8 @@ q set C-2 state=done session_id=null result.pr=742 fix=null fix_tries=null
 check "DS-318 AC1 no human review and pr-conflict-unreviewed yes: requeued once for a conflict fix worker" \
   '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 fix.kind)" = "\"conflict\"" ] && [ "$(field C-1 fix.draft)" = true ] && [ "$(field C-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: C-1 requeued for PR #741 — draft conflicts with main"'
 check "DS-318 AC1 and it is neither undrafted nor put to the person" '! grep -q "^pr ready 741" "$T/gh-calls" && ! echo "$out" | grep -q "C-1: DRAFT"'
+check "DS-314 a conflicted draft a person put back to draft is held, not sent to a conflict fix worker" \
+  '[ "$(field C-4 state)" = "\"done\"" ] && [ "$(field C-4 fix)" = null ] && [ "$(field C-4 undraft.call)" = "\"held\"" ] && echo "$out" | grep -q "C-4: HELD — PR #744 stays draft: it was put back to draft by ben at 2026-10-29T10:00:00Z"'
 check "DS-318 AC2 a human comment with pr-conflict-reviewed ask is the person's as now" \
   '[ "$(field C-2 state)" = "\"done\"" ] && [ "$(field C-2 fix)" = null ] && echo "$out" | grep -q "C-2: DRAFT — PR #742 stays draft: it has a merge conflict with its base"'
 check "DS-318 AC5 after 2 conflict tries it is recorded stuck and put to the person, with the reason the last try gave" \
@@ -1597,6 +1646,7 @@ fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'rerun') { if (fs.existsSync('$T/fb/rerun.fail')) { console.error('run 9003 cannot be rerun'); process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was put back to draft */ }
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
@@ -1733,5 +1783,55 @@ check "DS-303 AC3 pass.mjs --batch X-1 spawns X-1's ticket" '[ "$(x1field X-9 st
 check "DS-303 AC3 the worktree setup it starts acts on X-1" '[ "$(cat "$T/x1-setup" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the worker it starts acts on X-1" '[ "$(cat "$T/x1-spawn" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the pass keeps its own state in X-1's folder" '[ -d "$X1S/logs" ]'
+
+# ---- DS-124: cloud workers
+# A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, run through script
+# since the pass has no terminal, is done once GitHub shows its PR, and parks when the start fails.
+# The stub claude answers --cloud with the recorded output (tests/fixtures/cloud/).
+export DESK_QUEUE="$T/queue-cl.json" DESK_AUTOPILOT_STATE="$T/state-cl"
+mkdir -p "$T/state-cl/logs" "$T/state-cl/tickets"
+cat > "$T/stub/claude" <<EOF
+#!/bin/sh
+if [ "\$1" = --cloud ]; then
+  printf '%s' "\$2" > "$T/cloud-prompt"
+  [ -e "$T/cloud-fail" ] && { cat "$S/fixtures/cloud/print-refused.txt" >&2; exit 1; }
+  cat "$S/fixtures/cloud/created.txt"; exit 0
+fi
+echo '[{"sessionId": "live-1"}]'
+EOF
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+[ "\$1 \$2" = "pr list" ] && [ -e "$T/cloud-prs.json" ] && cat "$T/cloud-prs.json"
+exit 0
+EOF
+chmod +x "$T/stub/claude" "$T/stub/gh"
+cloud_ticket(){ q add "$1"; q set "$1" state=triaged lane=A "branch=feat/$1" location=cloud
+  printf '# %s\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' "$1" > "$T/state-cl/tickets/$1.md"; }
+q init cl; q set-batch concurrency=2
+cloud_ticket CW-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field CW-1 state)" = "\"running\"" ] && [ "$(field CW-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
+check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q "AC1: it saves" "$T/cloud-prompt" && grep -q "feat/CW-1" "$T/cloud-prompt"'
+check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field CW-1 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
+# The session opens its PR 40 minutes after it started, on a branch of its own.
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 31, title: "feat(w): CW-1 save", url: "u", headRefName: "claude/cw-1-abc", createdAt: new Date(s + 2400e3).toISOString() }]))' "$(field CW-1 cloud.started)" > "$T/cloud-prs.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1 state)" = "\"done\"" ] && [ "$(field CW-1 result.pr)" = 31 ] && [ "$(field CW-1 branch)" = "\"claude/cw-1-abc\"" ]'
+check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
+all_done; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
+cloud_ticket CW-2; : > "$T/cloud-fail"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
+check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
+# Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
+rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
+q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
+check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
+check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
