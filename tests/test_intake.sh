@@ -36,6 +36,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`$1\` |
 | \`autopilot-merge\` | The merge driver merges | \`ask\` | \`yes\` |
 | \`pr-merge-green\` | Merge on green | \`ask\` | \`yes\` |
+| \`git-push\` | Push a branch | \`ask\` | \`yes\` |
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -46,7 +47,7 @@ EOF
 config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
-cp "$B/intake.mjs" "$B/supervisor.mjs" "$T/bin/"
+cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
 for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -147,9 +148,12 @@ search Q-1 X-1; out=$(intake)
 check "AC5: open triage questions are not admitted, and go to the digest" '[ "$(qget tickets.Q-1)" = undefined ] && [ "$(handed Q-1)" = "handed: open question(s): which plan tier?" ]'
 check "AC6: size XL is not admitted, and the digest item says it needs splitting" '[ "$(qget tickets.X-1)" = undefined ] && [ "$(handed X-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
 n=$(count "$T/triage.calls")
+# An epic whose triage names no branch has no feature batch to start: it goes to the digest with why.
+rec E-1 A '"type":"Epic"'
 echo '{"issues":[{"key":"E-1","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
-check "an epic is handed on untriaged: it keeps its feature-batch approvals" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.E-1)" = undefined ] && [ "$(handed E-1)" = "handed: an epic: /desk-admit E-1 plans it as a feature batch beside the standing batch" ]'
-check "DS-300 AC5: the intake line for an epic points at /desk-admit" 'grep -q "intake: handed E-1 to the digest: an epic: /desk-admit E-1 plans it" <<< "$out"'
+check "DS-351: an epic is triaged as an epic, never admitted into the standing batch" '[ "$(count "$T/triage.calls")" = $((n + 1)) ] && [ "$(qget tickets.E-1)" = undefined ]'
+check "DS-351: an epic whose feature batch cannot start goes to the digest with why" '[ "$(handed E-1)" = "handed: an epic, and its feature batch was not started: its triage record names no branch for the feature batch: run /desk-autopilot E-1" ]'
+n=$(count "$T/triage.calls")
 search C-1 Q-1 X-1; out=$(intake)
 check "AC8: a ticket already handed on is not triaged again" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
 
@@ -255,12 +259,15 @@ rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)
 check "admit: a blocker named in the same call goes first, and the other is held behind it" '[ "$(qget tickets.H-4.state)" = triaged ] && [ "$(qget tickets.H-5.held_by)" = H-4 ]'
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
+# Without autopilot-workers yes, a session plans an epic with the person.
+config ask '`none`'
 rec H-6 A '"type":"Epic"'
 out=$(admit H-6); rc=$?
-check "DS-300 AC1: an epic is reported as one to plan as a feature batch, not refused" '[ $rc -ne 11 ] && grep -q "^plan H-6 as a feature batch beside the standing batch: /desk-autopilot H-6$" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(qget tickets.H-6)" = undefined ]'
+check "DS-300 AC1: without autopilot-workers yes, an epic is reported as one to plan as a feature batch, not refused" '[ $rc -ne 11 ] && grep -q "^plan H-6 as a feature batch beside the standing batch: /desk-autopilot H-6$" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(qget tickets.H-6)" = undefined ]'
 rec H-8 A
 out=$(admit H-6 H-8); rc=$?
 check "DS-300 AC2: an epic and a ticket in one call: the ticket is admitted, the epic reported to plan" '[ $rc -ne 11 ] && [ "$(qget tickets.H-8.state)" = triaged ] && grep -q "^admitted H-8 by hand into batch b1" <<< "$out" && grep -q "^plan H-6 as a feature batch" <<< "$out"'
+config yes '`none`'
 SK="$S/../skills/desk-admit/SKILL.md"
 check "DS-300: the desk-admit skill routes a plan line to the /desk-autopilot epic flow" 'grep -q "^Each \`plan <EPIC> as a feature batch beside the standing batch: /desk-autopilot <EPIC>\` line means" "$SK" && grep -q "Load \`desk-autopilot\` and run its epic flow" "$SK" && ! grep -q "| \`an epic\` | Plan it as a feature batch" "$SK"'
 printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","state":"running"}}}\n' > "$DESK_QUEUE"
@@ -325,6 +332,78 @@ search Z-2 Z-3; out=$(intake); rc=$?
 check "DS-307: another batch's unreadable queue is reported per ticket, and the run carries on" '[ $rc -eq 0 ] && grep -q "intake: not admitted: Z-2 cannot be checked against batch Z-1" <<< "$out" && grep -q "Z-3 cannot be checked" <<< "$out" && [ "$(qget tickets.Z-2)" = undefined ]'
 rm -rf "$ZB"; out=$(intake)
 check "DS-307: once that queue is fixed, the ticket is taken" '[ "$(qget tickets.Z-2.state)" = triaged ]'
+
+# ---- DS-351: an epic admitted with no session ------------------------------------------------------
+# The checkout gets an origin to push the feature branch to. expand-parent and plan-batch are fakes in
+# the batch's state: the children named in $T/children/<EPIC>, and a feature-mode plan that wants a
+# spine and owner table until feature.json holds one. The drafter is a fake claude answering as told.
+git init -q --bare "$T/origin.git"
+git -C "$T/repo" init -q -b main
+git -C "$T/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
+mkdir -p "$T/children"
+cat > "$T/bin/expand-parent.mjs" <<EOF
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+const key = process.argv[2], s = process.env.DESK_AUTOPILOT_STATE;
+mkdirSync(s, { recursive: true });
+writeFileSync(s + '/expansion.json', JSON.stringify({ parent: key, containers: {}, criteria: [{ id: 'AC1', text: 'it works' }] }));
+process.stdout.write(readFileSync('$T/children/' + key, 'utf8'));
+EOF
+cat > "$T/bin/plan-batch.mjs" <<EOF
+import { existsSync, readFileSync, appendFileSync } from 'node:fs';
+const s = process.env.DESK_AUTOPILOT_STATE, epic = process.env.DESK_BATCH;
+appendFileSync('$T/plan.calls', epic + ' ' + process.argv.slice(2).join(' ') + '\n');
+const plan = existsSync(s + '/feature.json') ? JSON.parse(readFileSync(s + '/feature.json', 'utf8')) : null;
+const message = ['FEATURE MODE — on', plan ? '  AC1 owner ' + plan.owners.AC1 : '  no feature plan yet'];
+console.log(JSON.stringify({ status: 'show_person', code: 11, message, needs_person: [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }] }));
+process.exitCode = 11;
+EOF
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: one strict expected-fail spec for AC1\", \"owners\": {\"AC1\": \"E-6\"}}"}
+EOF
+printf '#!/bin/sh\nprintf "%%s\\n" "$1 $2" | head -1 >> "%s/claude.calls"\n[ -f "%s/claude.fails" ] && { echo "claude: session limit" >&2; exit 1; }\ncat "%s/claude.out"\n' "$T" "$T" "$T" > "$T/fakes/claude"
+chmod +x "$T/fakes/claude"
+EB="$DESK_HOME/repos/acme__widgets/batches"; ES="$HOME/.desk-autopilot/acme__widgets/batches"
+eget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$EB/$1/queue.json" "$2"; }
+rec E-6 A '"summary":"the first child"'; rec E-7 A '"summary":"the second child"'
+printf 'E-6\nE-7\n' > "$T/children/E-5"; printf 'E-6\n' > "$T/children/E-8"
+rec E-5 A '"type":"Epic","branch":"feat/E-5-a-feature"'; rec E-8 A '"type":"Epic","branch":"feat/E-8-another"'
+
+# A plan the drafter cannot write leaves no batch behind.
+touch "$T/claude.fails"; before=$(cat "$DESK_QUEUE")
+out=$(admit E-8 --by ben); rc=$?
+check "DS-351: an epic whose plan cannot be drafted is refused with why, and its batch discarded" '[ $rc -eq 11 ] && grep -q "^not admitted E-8: an epic, and its feature batch was not started: the plan drafter failed (claude: session limit); batch E-8 discarded$" <<< "$out" && [ ! -e "$EB/E-8" ] && [ ! -e "$ES/E-8" ]'
+rm -f "$T/claude.fails"
+
+out=$(admit E-5 --by ben); rc=$?
+check "DS-351 AC1: /desk-admit accepts an epic, not refused" '[ $rc -eq 0 ] && ! grep -q "not admitted" <<< "$out" && grep -q "^started feature batch E-5 on feat/E-5-a-feature, beside the standing batch$" <<< "$out"'
+check "DS-351 AC1: its feature batch is created on the epic's branch, pushed to origin" '[ "$(eget E-5 epic)" = E-5 ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && [ -n "$(git -C "$T/repo" ls-remote --heads origin feat/E-5-a-feature)" ]'
+check "DS-351 AC1: the batch is handed to the supervisor, and the standing queue is untouched" '[ "$(eget E-5 supervised)" = true ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+check "DS-351 AC2: the spine and owner table are drafted headless into the batch" '[ "$(count "$T/claude.calls")" = 2 ] && grep -q -- "-p You are drafting the feature plan for epic E-5" "$T/claude.calls" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).owners.AC1)" "$ES/E-5/feature.json")" = E-6 ]'
+check "DS-351 AC2: the drafter is given the epic's criteria and its children" 'grep -q "^- AC1: it works$" "$ES/E-5/plan-draft.prompt.md" && grep -q "^- E-7: the second child" "$ES/E-5/plan-draft.prompt.md"'
+check "DS-351 AC2: the plan is written for the person, as plan-batch gives it with the draft" 'grep -q "AC1 owner E-6" "$ES/E-5/plan.md"'
+check "DS-351 AC2: the epic waits in its batch on one feature-plan park naming the plan" '[ "$(eget E-5 tickets.E-5.state)" = parked ] && [ "$(eget E-5 tickets.E-5.lane)" = epic ] && grep -q "^feature plan awaiting your answer: the spine and owner table for E-5 are drafted, with 2 children held behind it: read $ES/E-5/plan.md" <<< "$(eget E-5 tickets.E-5.park.question)"'
+check "DS-351 AC2: its children are triaged in the batch and wait held behind the epic" '[ "$(eget E-5 tickets.E-6.held_by)" = E-5 ] && [ "$(eget E-5 tickets.E-7.held_by)" = E-5 ] && [ "$(eget E-5 tickets.E-7.admitted_by)" = ben ] && [ -f "$ES/E-5/triage/E-7.json" ]'
+check "DS-351 AC2: the line says the plan waits in /desk-needs-you" 'grep -q "its plan waits for you in /desk-needs-you" <<< "$out" && grep -q "^admitted: feature batch E-5 started, 2 children held behind its plan, by ben$" <<< "$(handed E-5)"'
+out=$(cd "$T/repo" && env -u DESK_QUEUE -u DESK_AUTOPILOT_STATE node "$T/bin/queue.mjs" requeue E-5 --batch E-5 2>&1); rc=$?
+check "DS-351: no queue.mjs requeue sends the epic to a worker" '[ $rc -ne 0 ] && grep -q "E-5 is lane epic" <<< "$out" && [ "$(eget E-5 tickets.E-5.state)" = parked ]'
+check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd "$T/repo" && node --input-type=module -e "import { presort } from \"$B/decider.mjs\"; const r = presort([{ id: \"p\", ticket: \"E-5\", kind: \"parked\", lane: \"epic\", text: process.argv[1] }]); console.log(r.hand.length, r.ask.length)" "$(eget E-5 tickets.E-5.park.question)")" = "1 0" ]'
+rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
+out=$(admit E-10 --by ben); rc=$?
+check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
+config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'
+echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
+check "DS-351: standing intake leaves an epic for later while a feature batch is live" '[ ! -e "$EB/E-9" ] && grep -q "intake: E-9 not admitted: an epic, and feature batch E-5 is already running" <<< "$out"'
+
+# A start cut off before the hand-over (the supervisor's intake timeout) leaves its mark, by a pid
+# that has exited: the next intake discards that batch and hands its epic on, rather than reading it
+# as live forever.
+mkdir -p "$EB/O-1" "$ES/O-1"; dead=$(sh -c 'echo $$')
+printf '{"version":1,"batch":"O-1","epic":"O-1","base":"feat/O-1-cut","tickets":{}}\n' > "$EB/O-1/queue.json"
+printf '{"pid":%s}\n' "$dead" > "$ES/O-1/epic-start.json"
+out=$(intake)
+check "DS-351: a feature batch whose start was cut off is discarded, and its epic handed on" '[ ! -e "$EB/O-1" ] && [ ! -e "$ES/O-1" ] && grep -q "^handed: an epic, and feature batch O-1.s start was cut off (pid $dead) before it was handed to the supervisor: discarded$" <<< "$(handed O-1)"'
+check "DS-351: a finished start leaves no mark behind" '[ ! -e "$ES/E-5/epic-start.json" ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

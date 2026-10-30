@@ -39,7 +39,9 @@ Otherwise it prints:
 `<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch). Pass it to
 `record` as it is printed.
 
-`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `triage`
+`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
+epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
+for start, discard or an edit, and its children wait behind it), `triage`
 (open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
