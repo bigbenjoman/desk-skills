@@ -11,39 +11,28 @@
 // Every refusal exits 11 (show the person) and changes nothing.
 //
 // The supervisor runs the archive check for each named batch on every tick. A batch is archived once
-// its promotion PR is merged or closed, no ticket runs, no ticket PR is open, and no pass, merge driver
+// its last promotion PR is merged, or its promotion PR is closed, no ticket runs, no ticket PR is open, and no pass, merge driver
 // or queue write holds it. A ticket PR still open then is the person's to merge or close, never desk's:
 // it goes to the check-in digest, handed on as kind `archive` until it is merged or closed.
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, EXIT, crashShowsPerson, describeCrash } from './batch-state.mjs';
-import { listBatches, finished } from './batches.mjs';
+import { listBatches, finished, prState, orchestratorHolder, supervisorHolder } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const DONE_DIR = '.done';
+const DONE_DIR = '.done';
 
-export class BatchRefusal extends Error {}
+class BatchRefusal extends Error {}
 const refuse = (msg) => { throw new BatchRefusal(msg); };
 
 const git = (args) => execFileSync('git', ['-C', E.repoRoot(), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const firstLine = (e) => String(e?.stderr || e?.message || e).split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 const defaultBranch = () => E.configValue('default-branch') || 'main';
 const onOrigin = (branch) => git(['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]) !== '';
-
-// Why `branch` cannot be a feature batch's base, or null.
-export function baseRefusal(branch) {
-  if (!branch) return 'no branch was given';
-  if (!E.BRANCH_NAME.test(branch) || branch.includes('..') || branch.endsWith('.lock')) return `"${branch}" is not a valid branch name`;
-  if (branch === defaultBranch()) return `${branch} is the default branch, and a feature batch runs on the epic's own branch`;
-  if (E.PRODUCTION_BRANCH.test(branch)) return `${branch} is a production branch, which only ever takes promotion PRs`;
-  let found;
-  try { found = onOrigin(branch); } catch (e) { return `origin could not be asked for ${branch} (${firstLine(e)})`; }
-  return found ? null : `${branch} is not on origin: push it first`;
-}
 
 const named = (slug, epic) => listBatches(slug).find((b) => b.name === epic);
 const checkName = (epic) => {
@@ -55,14 +44,15 @@ function queueCmd(epic, args) {
   const env = { ...process.env, DESK_BATCH: epic };
   for (const k of ['DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_DEFAULT_BRANCH']) delete env[k];
   const r = spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { env, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`queue.mjs ${args.join(' ')} failed: ${`${r.stderr}${r.stdout}`.trim()}`);
+  return r.status === 0 ? null : `${r.stderr}${r.stdout}`.trim().replace(/^queue: /, '');
 }
 
-// -> lines saying what was made.
-export function start(epic, branch, slug = E.repoSlug()) {
+// -> lines saying what was made. The base's other rules (a valid name, never a production branch, on
+// origin) are queue.mjs set-batch base='s; it clears the default branch rather than refusing it.
+function start(epic, branch, slug = E.repoSlug()) {
   checkName(epic);
-  const why = baseRefusal(branch);
-  if (why) refuse(`no batch started for ${epic}: ${why}`);
+  if (!branch) refuse(`no batch started for ${epic}: no branch was given`);
+  if (branch === defaultBranch()) refuse(`no batch started for ${epic}: ${branch} is the default branch, and a feature batch runs on the epic's own branch`);
   const all = listBatches(slug);
   const own = E.batchPaths(slug, epic);
   if (all.some((b) => b.name === epic) || existsSync(own.queue)) refuse(`batch ${epic} already exists (${own.queue}): no second batch started for it`);
@@ -71,8 +61,14 @@ export function start(epic, branch, slug = E.repoSlug()) {
     try { q = readQueue(b.queue); } catch (e) { refuse(`no batch started for ${epic}: batch ${b.name}'s queue cannot be read, so it may be a live feature batch (${describeCrash(e)})`); }
     if (!finished(q)) refuse(`no batch started for ${epic}: feature batch ${b.name} is live in this repo, and a repo runs one feature batch at a time`);
   }
-  queueCmd(epic, ['init', epic]);
-  queueCmd(epic, ['set-batch', `epic=${epic}`, `base=${branch}`]);
+  const failed = queueCmd(epic, ['init', epic]);
+  if (failed) throw new Error(`queue.mjs init ${epic} failed: ${failed}`);
+  const why = queueCmd(epic, ['set-batch', `epic=${epic}`, `base=${branch}`]);
+  if (why) {
+    rmSync(dirname(own.queue), { recursive: true, force: true });
+    rmSync(own.state, { recursive: true, force: true });
+    refuse(`no batch started for ${epic}: ${why}`);
+  }
   return [`batch ${epic} started on ${branch}: ${own.queue}. It is not handed to the supervisor until Stage 4 runs queue.mjs --batch ${epic} set-batch supervised=true`];
 }
 
@@ -80,7 +76,7 @@ export function start(epic, branch, slug = E.repoSlug()) {
 const startedTicket = (t) => t.spawned_at != null || ['running', 'done', 'failed'].includes(t.state) || t.result?.pr != null;
 
 // -> lines saying what was removed and what became of the branch.
-export function discard(epic, slug = E.repoSlug()) {
+function discard(epic, slug = E.repoSlug()) {
   checkName(epic);
   const b = named(slug, epic);
   if (!b) refuse(`no batch ${epic} in this repo: nothing removed`);
@@ -113,24 +109,13 @@ function branchFate(base) {
   }
 }
 
-// A PR's state: OPEN, MERGED or CLOSED, or null when it cannot be read.
-export function prState(n) {
-  let repo;
-  try { repo = E.ghRepo(); } catch { return null; }
-  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
-  const s = r.status === 0 ? r.stdout.trim() : '';
-  return ['OPEN', 'MERGED', 'CLOSED'].includes(s) ? s : null;
-}
-
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-const lockPid = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')).pid ?? null; } catch { return null; } };
 // What still holds a batch's folders: a pass, the supervisor's own run of it, its merge driver, or a
 // queue write. A holder that has exited holds nothing.
 function holder(b) {
-  const pass = lockPid(join(b.state, 'orchestrator.lock'));
-  if (pass && alive(pass)) return `a pass (pid ${pass})`;
-  const sup = lockPid(join(b.state, 'supervisor.lock'));
-  if (sup && sup !== process.pid && alive(sup)) return `a supervisor run (pid ${sup})`;
+  const pass = orchestratorHolder(b.state);
+  if (pass) return `a pass (pid ${pass})`;
+  const sup = supervisorHolder(b.state);
+  if (sup) return `a supervisor run (pid ${sup})`;
   if (E.mergeDriverHolder(b.state)) return 'its merge driver';
   if (existsSync(`${b.queue}.lock`)) return 'a queue write';
   return null;
@@ -157,7 +142,10 @@ export function archiveCheck(b, { state = prState, now = new Date() } = {}) {
   try { q = readQueue(b.queue); } catch { return none; /* the tick says the queue is unreadable */ }
   const p = q.promotion?.pr;
   const ps = p != null ? state(p) : null;
-  const shut = ps === 'MERGED' || ps === 'CLOSED';
+  // A merged promotion ends the batch only once the pass has recorded it as the last slice
+  // (pass.mjs nextPromotion); until then a merged slice is followed by the next one.
+  const last = (q.promotion?.merged ?? []).some((m) => m.pr === p);
+  const shut = (ps === 'MERGED' && last) || ps === 'CLOSED';
   // Only open ticket PRs of a shut promotion stay handed on: one merged or closed since goes.
   const rows = Object.values(q.tickets ?? {});
   const openPrs = shut ? rows.filter((t) => t.result?.pr != null && !['MERGED', 'CLOSED'].includes(state(t.result.pr))) : [];

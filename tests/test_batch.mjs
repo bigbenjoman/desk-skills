@@ -60,8 +60,16 @@ const readQ = (n) => JSON.parse(readFileSync(namedQ(n), 'utf8'));
 const writeQ = (n, q) => { mkdirSync(dirname(namedQ(n)), { recursive: true }); writeFileSync(namedQ(n), JSON.stringify({ version: 1, batch: n, ...q })); };
 const listed = () => run("console.log(B.listBatches().map((b) => b.name ?? '-').join(' '))").out;
 
+// AC4: a base that is main, a production branch, or not on origin; checked with no other batch live.
+let r;
+for (const [b, why] of [['main', 'main is the default branch'], ['production', 'never merges into a production branch'], ['feat/nope', 'feat/nope does not exist on origin'], ['bad..name', 'is not a valid branch name']]) {
+  r = batch(['start', 'Z-1', b]);
+  t(`AC4 ${b} is refused naming the reason`, r.code === 11 && r.out.includes(why), true);
+}
+t('AC4 no Z-1 batch was made', existsSync(dirname(namedQ('Z-1'))) || existsSync(namedS('Z-1')), false);
+
 // AC1: a batch for X-1 on its branch, its epic and base set, not handed to the supervisor.
-let r = batch(['start', 'X-1', 'feat/x-1']);
+r = batch(['start', 'X-1', 'feat/x-1']);
 t('AC1 start exits 0', r.code, 0);
 const q1 = existsSync(namedQ('X-1')) ? readQ('X-1') : {};
 t('AC1 the X-1 batch has its epic and base', `${q1.batch} ${q1.epic} ${q1.base}`, 'X-1 X-1 feat/x-1');
@@ -81,12 +89,6 @@ r = batch(['start', 'X-2', 'feat/x-2']);
 t('AC3 another epic is refused while X-1 is live', r.code === 11 && r.out.includes('feature batch X-1 is live'), true);
 t('AC3 no X-2 batch was made', existsSync(namedQ('X-2')), false);
 
-// AC4: a base that is main, a production branch, or not on origin.
-for (const [b, why] of [['main', 'main is the default branch'], ['production', 'production is a production branch'], ['feat/nope', 'feat/nope is not on origin'], ['bad..name', 'is not a valid branch name']]) {
-  r = batch(['start', 'Z-1', b]);
-  t(`AC4 ${b} is refused naming the reason`, r.code === 11 && r.out.includes(why), true);
-}
-t('AC4 no Z-1 batch was made', existsSync(namedQ('Z-1')), false);
 t('a name that is no batch name is refused', batch(['start', '../x', 'feat/x-1']).code, 11);
 
 // AC9: a started ticket, or a batch handed to the supervisor, refuses the discard and removes nothing.
@@ -142,6 +144,9 @@ writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', promotion: { pr: 9 }, tickets: { 
 t('an open promotion PR: not archived', res(archive('X-3', { 9: 'OPEN', 10: 'MERGED' })).archived, false);
 writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', tickets: { 'X-6': { key: 'X-6', state: 'done', result: { pr: 10 } } } });
 t('no promotion PR: not archived', res(archive('X-3', { 10: 'MERGED' })).archived, false);
+// A merged slice the pass has not recorded as the last is followed by the next one: the batch stays.
+writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', promotion: { pr: 9 }, tickets: { 'X-6': { key: 'X-6', state: 'triaged' } } });
+t('a merged promotion slice with children still to come: not archived', res(archive('X-3', { 9: 'MERGED' })).archived, false);
 
 // AC7: a closed promotion with a ticket PR still open: not archived, and the digest lists the PR.
 writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', promotion: { pr: 9 }, tickets: {
@@ -172,19 +177,24 @@ t('AC5 its queue is under batches/.done/', existsSync(doneQ('X-3')) && readFileS
 t('AC5 so is its state', existsSync(doneS('X-3')) && !existsSync(namedS('X-3')), true);
 t('AC5 the log line says why and where', (a.log ?? []).join(' ').includes('batch X-3 archived: its promotion PR #9 is closed'), true);
 t('AC5 it is no longer listed', listed(), '-');
-// A second batch of the same name archives beside the first.
-writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', promotion: { pr: 9 }, tickets: {} });
+// A second batch of the same name, its last promotion merged, archives beside the first.
+const last = { pr: 9, merged: [{ pr: 9, slice: 1 }] };
+writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', promotion: last, tickets: {} });
 a = res(archive('X-3', { 9: 'MERGED' }));
 t('AC5 a second X-3 archives beside the first', a.archived === true && existsSync(doneQ('X-3')) && (a.log ?? []).join(' ').includes('.done/X-3.'), true);
+t('AC5 a last promotion merged is logged as merged', (a.log ?? []).join(' ').includes('its promotion PR #9 is merged'), true);
 
 // A pass or merge driver still holding the batch keeps it for the next tick.
-writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: { pr: 9 }, tickets: {} });
+writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: last, tickets: {} });
 mkdirSync(namedS('X-4'), { recursive: true });
 writeFileSync(join(namedS('X-4'), 'orchestrator.lock'), JSON.stringify({ pid: process.pid }));
 a = res(archive('X-4', { 9: 'MERGED' }));
 t('a live pass keeps the batch for the next tick', a.archived === false && existsSync(namedQ('X-4')) && (a.lines ?? []).join(' ').includes('a pass (pid'), true);
 
-t('the standing batch is never archived', res(run(`console.log(JSON.stringify(A.archiveCheck(B.listBatches()[0], { state: () => 'MERGED' })))`)).archived, false);
+// The standing batch is never archived, even with a promotion that would archive a named one.
+const standingQ = join(DESK_HOME, 'repos', SLUG, 'queue.json');
+writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 's1', promotion: last, tickets: {} }));
+t('the standing batch is never archived', res(run(`console.log(JSON.stringify(A.archiveCheck(B.listBatches()[0], { state: () => 'MERGED' })))`)).archived === false && existsSync(standingQ), true);
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

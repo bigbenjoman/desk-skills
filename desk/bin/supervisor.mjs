@@ -49,7 +49,7 @@
 // merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
 // DESK_DEFAULT_BRANCH removed, so its pass and driver read its own base. One batch that fails leaves
 // the rest to run. Each named batch first gets its archive check (batch.mjs archiveCheck): once its
-// promotion PR is merged or closed, with no ticket running and no ticket PR open, it is moved under
+// last promotion PR is merged, or its promotion PR closed, with no ticket running and no ticket PR open, it is moved under
 // batches/.done/, logged in the standing batch's log, and not run. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
@@ -59,7 +59,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
-import { listBatches, batchPinned } from './batches.mjs';
+import { listBatches, batchPinned, alive, orchestratorHolder, supervisorHolder } from './batches.mjs';
 import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -83,7 +83,6 @@ const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.ex
 const label = supervisorLabel;
 const plistPath = (slug) => join(AGENTS, `${label(slug)}.plist`);
 const domain = launchdDomain;
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 // ---- launchd ---------------------------------------------------------------------------------
 const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
@@ -176,13 +175,7 @@ function fingerprint(q) {
   return createHash('sha1').update(JSON.stringify([q.batch ?? null, rows])).digest('hex');
 }
 
-// The pid holding a lock, or null. A merge-driver lock with no pid yet is a driver starting up.
-function orchestratorHolder(state) {
-  try {
-    const { pid } = JSON.parse(readFileSync(join(state, 'orchestrator.lock'), 'utf8'));
-    return pid && alive(pid) ? pid : null;
-  } catch { return null; }
-}
+// The pid holding the merge-driver lock, or null. A lock with no pid yet is a driver starting up.
 const driverHolder = E.mergeDriverHolder;
 
 // What runs old desk code: this agent, by the version its plist was loaded at, and the running merge
@@ -245,12 +238,6 @@ function tick() {
 
 // The supervisor's own run, held in <state>/supervisor.lock from the pass to the last log line.
 const supervisorLock = (state) => join(state, 'supervisor.lock');
-function supervisorHolder(state) {
-  try {
-    const { pid } = JSON.parse(readFileSync(supervisorLock(state), 'utf8'));
-    return pid && pid !== process.pid && alive(pid) ? pid : null;
-  } catch { return null; }
-}
 
 const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 const logTo = (state) => (lines) => appendFileSync(join(state, 'supervisor.log'), `${lines.join('\n')}\n`);

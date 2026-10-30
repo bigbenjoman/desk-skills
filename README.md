@@ -236,8 +236,8 @@ the orchestrator handed over at Stage 4, and appends each report to `<state>/sup
 the batch's merge driver running, sends one macOS notification for each new set of items that need
 you, and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
-named batch, each on its own base, with its own log and merge driver. A named batch whose promotion
-PR is merged or closed, with no ticket running and no ticket PR open, is archived under
+named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
+PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under
 `batches/.done/` instead; a ticket PR still open then goes to the check-in digest for you to merge or
 close. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
 `batch.mjs discard <EPIC>` removes one no ticket has started in.
