@@ -125,7 +125,7 @@ check "DS-269 AC3 an own PR found merged from the branch closes it out" '[ "$(fi
 check "DS-349 AC8 a finished run: requeued with no person, and the report names its conclusion" \
   '[ "$(field R-1 state)" = "\"triaged\"" ] && grep -q "R-1: \"Actions run 41048026730 completed, conclusion failure\" holds: requeued" <<< "$out"'
 check "DS-349 AC8 the next worker is told the run's conclusion" \
-  '[ "$(field R-1 cleared.what)" = "\"Actions run 41048026730 completed, conclusion failure\"" ] && [ "$(field R-1 cleared.question)" = "\"waiting on e2e run 41048026730\"" ]'
+  '[ "$(field R-1 cleared.what)" = "\"Actions run 41048026730 completed, conclusion failure\"" ] && [ "$(field R-1 prev_park.question)" = "\"waiting on e2e run 41048026730\"" ]'
 check "DS-349 AC9 a run in progress: the park stays, and the report shows it waiting" \
   '[ "$(field R-2 state)" = "\"parked\"" ] && grep -q "R-2: waiting on \"Actions run 41048026731 completed\" (still in_progress): left parked" <<< "$out"'
 check "DS-349 a run that cannot be read leaves the park and is named" \

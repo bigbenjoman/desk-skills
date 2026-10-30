@@ -29,8 +29,8 @@ a worker cannot:
   opens PRs only with a command beginning `gh pr create --draft` or
   `gh pr create --repo <§0 GitHub repo> --draft`;
 - run `gh workflow` beyond the exact §4 Worker workflows dispatches on its own branch where §3
-  `worker-workflow-dispatch` is `yes`: no other workflow, input or ref, and never
-  `gh workflow enable` or `disable`;
+  `worker-workflow-dispatch` is `yes`: no other workflow, input or ref, none in a dry run, and
+  never `gh workflow enable` or `disable`;
 - run the package manager beyond `install` with no arguments and the configured rows (no `add`,
   no `exec`/`dlx`/`x`, no `npx`/`bunx`/`uvx`), or the §4 Command prefix on its own;
 - run `sed`, `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`; `codex` other than

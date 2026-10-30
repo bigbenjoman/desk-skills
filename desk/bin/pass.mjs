@@ -788,7 +788,7 @@ for (const t of Object.values(queue().tickets)) {
   } else {
     const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
     // The next worker's briefing says what cleared the park (writeBrief), so it acts on the result.
-    if (rq.ok) q('set', t.key, `cleared=${JSON.stringify({ question: t.park?.question ?? null, what, at: new Date().toISOString() })}`);
+    if (rq.ok) q('set', t.key, `cleared=${JSON.stringify({ what })}`);
     report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
   }
 }
@@ -1502,7 +1502,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     ownedBrief(t, wt),
     fixBrief(t),
     baselineBrief(),
-    t.cleared?.what && `## What cleared your last park\n\n${t.cleared.question ? `The last round parked on: ${t.cleared.question}\n` : ''}` +
+    t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     notes && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',

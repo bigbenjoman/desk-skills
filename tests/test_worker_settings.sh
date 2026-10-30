@@ -315,6 +315,8 @@ check "DS-349 AC3 a workflow not listed is refused"        'no "gh workflow run 
 check "DS-349 AC4 another ref is refused"                  'no "gh workflow run e2e-manual.yml --ref main -f environment=staging -f suite=all" "gh workflow run e2e-manual.yml --ref feat/epic -f environment=staging -f suite=all"'
 check "DS-349 AC5 enable and disable are refused"          'no "gh workflow enable e2e-manual.yml" "gh workflow disable e2e-manual.yml" && denies "Bash(gh workflow enable:*)" && denies "Bash(gh workflow disable:*)"'
 check "DS-349 the other gh denies stay"                    'denies "Bash(gh secret:*)" && denies "Bash(gh variable:*)" && denies "Bash(gh api:*)"'
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "DS-349 a dry run starts no workflow"                '[ $rc -eq 0 ] && denies "Bash(gh workflow:*)" && no "$RUN" "$RUN_REPO"'
 triage
 check "DS-349 a triage pass never dispatches"              '[ $rc -eq 0 ] && denies "Bash(gh workflow:*)" && [ "$(wf_rules)" = "[]" ]'
 for v in ask no; do
