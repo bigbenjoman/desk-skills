@@ -46,7 +46,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { limitName } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, isFull } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 
 export { LIVE_MS };
@@ -1152,8 +1152,8 @@ function supplierTag(x, s, now) {
 
 // One name's charge this month by supplier, most first, then the total, under the line with the
 // name's total. A supplier the cost sources list with no figure reads –. `label` names the repo when
-// it has no cost sources.
-function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, label = name } = {}) {
+// it has no cost sources. Enter on a supplier opens its screen, from the place at `slug`.
+function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, label = name, slug = null } = {}) {
   const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const mine = costs.entries.filter((e) => e.name === name);
   if (!mine.length) return { head: [noCostSourcesFor(label)], rows: [], foot };
@@ -1167,7 +1167,7 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   const rows = list.map(({ s, total }) => {
     const tag = supplierTag(x, s, now);
     const r = segRow(`supplier ${SUPPLIER_LABEL[s]}`, [[`  ${pad(SUPPLIER_LABEL[s], SUPPLIER_W)}${pad(SUPPLIER_FOR[s], FOR_W)}`, null],
-      [rpad(money(total), aw), total == null ? GREY : null], ...(tag ? [['  ', null], tag] : [])], null);
+      [rpad(money(total), aw), total == null ? GREY : null], ...(tag ? [['  ', null], tag] : [])], { kind: 'supplier', slug, name, supplier: s });
     return { ...r, bill: billingUrl(s, { team: mine.find((e) => e.supplier === s)?.team }) };
   });
   const charged = segLine([['charged ', GREY], [money(x.total), BOLD], [` to ${name} in ${monthText(c.period)}`, GREY]]);
@@ -1178,6 +1178,70 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
 }
 
 export const supplierScreen = (repos, name, opts) => joined(supplierParts(repos, name, opts));
+
+// A GitHub SKU's name on its supplier screen; one desk has no name for reads as GitHub's own.
+const SKU_LABEL = { actions_linux: 'Linux runners', actions_macos: 'macOS runners', actions_windows: 'Windows runners' };
+const usedText = (i) => `${i.quantity.toLocaleString('en-US', { maximumFractionDigits: 3 })} ${/^minutes?$/i.test(i.unit) ? 'min' : i.unit}`;
+// What `o` opens on each supplier's screen.
+const SUPPLIER_BILL = { github: 'GitHub billing', vercel: 'Vercel usage', aws: 'Cost Explorer' };
+
+// GitHub's part of a name's charge: what each runner type used and was charged, most first, then the
+// total; then this month against last, flagged amber once this month has passed last month's charge.
+function githubParts(cache, name, period, total) {
+  const mine = Object.values(cache?.github?.repos ?? {}).filter((e) => e?.name === name && typeof e.total === 'number');
+  const by = new Map();
+  for (const i of mine.flatMap((e) => e.items ?? [])) {
+    const s = by.get(i.sku) ?? { sku: i.sku, unit: i.unit, quantity: 0, c: 0 };
+    s.quantity += i.quantity;
+    s.c += Math.round(i.charged * 100);
+    by.set(i.sku, s);
+  }
+  const items = [...by.values()].sort((a, b) => b.c - a.c || a.sku.localeCompare(b.sku));
+  // Last month's charge, only when every one of the name's repos has a figure for it.
+  const lm = cache?.github?.lastMonth;
+  const want = prevMonth(period);
+  const last = lm?.period?.year === want.year && lm.period.month === want.month ? Object.values(lm.repos ?? {}).filter((e) => e?.name === name) : [];
+  const lastC = last.length && last.every((e) => typeof e.total === 'number') ? last.reduce((a, e) => a + Math.round(e.total * 100), 0) : null;
+  const thisC = Math.round(total * 100);
+  // Both tables share their columns, so the charges line up.
+  const ww = Math.max(17, ...items.map((i) => (SKU_LABEL[i.sku] ?? i.sku).length + 2));
+  const uw = Math.max(14, ...items.map((i) => usedText(i).length + 2));
+  const mw = ww + uw, aw = Math.max(13, usd(Math.max(thisC, lastC ?? 0) / 100).length + 3);
+  const lines = [];
+  if (items.length) {
+    lines.push('', bold(`  ${pad('WHAT', ww)}${rpad('USED', uw)}${rpad('CHARGED', aw)}`),
+      ...items.map((i) => `  ${pad(SKU_LABEL[i.sku] ?? i.sku, ww)}${rpad(usedText(i), uw)}${rpad(usd(i.c / 100), aw)}`),
+      segLine([[`  ${pad('total', mw)}`, GREY], [rpad(usd(total), aw), BOLD]]));
+  }
+  const left = Number(fullMonth(period.year, period.month).to.slice(8)) - Number(period.to.slice(8));
+  const lastName = lastC == null ? null : monthText(lm.period);
+  const tag = lastC != null && thisC > lastC
+    ? [`  ▲ ${lastC > 0 ? `${(thisC / lastC).toFixed(1)}× ${lastName}` : `over ${lastName}`}${left > 0 ? `, with ${left} day${left === 1 ? '' : 's'} to go` : ''}`, WARN] : null;
+  lines.push('', bold(`  ${pad('MONTH', mw)}${rpad('CHARGED', aw)}`),
+    ...(lastC == null ? [] : [`  ${pad(lastName, mw)}${rpad(usd(lastC / 100), aw)}`]),
+    segLine([[`  ${pad(monthText(period), mw)}${rpad(usd(total), aw)}`, null], ...(tag ? [tag] : [])]));
+  return lines;
+}
+
+// One supplier's part of a name's charge this month: the line with what it charged, then for GitHub
+// what it was charged for. `bill` is the page `o` opens.
+export function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache: raw = readCache() } = {}) {
+  const mine = costs.entries.filter((e) => e.name === name && e.supplier === supplier);
+  const bill = billingUrl(supplier, { team: mine[0]?.team });
+  // The cache as costs.md has it now, as on the repo screen, so both count the same profiles.
+  const cache = forCosts(raw, costs);
+  const c = chargesByName({ cache, names: [name] });
+  if (!c) return { head: [NO_COST_READING], rows: [], foot: [], bill };
+  const x = c.names.find((n) => n.name === name);
+  const total = x.by[supplier] ?? null;
+  const where = supplier === 'vercel' ? [...new Set(mine.map((e) => e.team).filter(Boolean))].map((t) => `team ${t}`)
+    : supplier === 'aws' ? mine.map((e) => `account ${e.key}`) : [];
+  const tag = supplierTag(x, supplier, now);
+  const charged = segLine([['charged ', GREY], [total == null ? '–' : usd(total), BOLD], [` by ${SUPPLIER_LABEL[supplier]} to ${name} in ${monthText(c.period)}`, GREY],
+    ...(where.length ? [[` · ${where.join(', ')}`, GREY]] : []), ...(tag ? [['  ', null], tag] : [])]);
+  const body = supplier === 'github' && total != null ? githubParts(cache, name, c.period, total) : [];
+  return { head: [charged, ...body], rows: [], foot: [], bill };
+}
 
 // The screens' header note on tickets that need the user's answer.
 const parkedBadge = (checkin) => (checkin ? 'Tickets that need your answer dated at the next check-in · c to undo'
@@ -2297,7 +2361,7 @@ function step(rows, i, d) {
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
 const KEY = /^(←→ or 1–5|\+ −|\S+) (.+)$/;
-const MOVES_ON = /^(select|open(?! the bill)|view|back|scroll)\b/;
+const MOVES_ON = new RegExp(`^(select|open(?! the bill|${Object.values(SUPPLIER_BILL).map((t) => ` ${t}`).join('|')})|view|back|scroll)\\b`);
 function keyLines(s, w) {
   const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
   const text = (list) => list.map(([k, d]) => (d ? `${k} ${d}` : k)).join(' · ');
@@ -2355,8 +2419,8 @@ export function interactive({
   const height = () => Math.max(5, output.rows || 24);
   // A place's `slug` is its batch row's id: the repo's slug for its standing batch.
   const repoOf = (slug) => repos.find((r) => r.id === slug);
-  const hasTabs = () => ['overview', 'repo', 'epic', 'cost'].includes(view.kind);
-  const tabOk = (id) => (view.kind === 'cost' ? id === 'costs' : view.kind !== 'epic' || !['epics', 'costs'].includes(id));
+  const hasTabs = () => ['overview', 'repo', 'epic', 'cost', 'supplier'].includes(view.kind);
+  const tabOk = (id) => (view.kind === 'cost' || (view.kind === 'supplier' && !view.slug) ? id === 'costs' : view.kind !== 'epic' || !['epics', 'costs'].includes(id));
   // The supplier screen: Costs on a repo's place or a name's own.
   const bySupplier = () => tab === 'costs' && ['repo', 'cost'].includes(view.kind);
   const costName = () => (view.kind === 'cost' ? view.name : costNameOf(readCosts(costsPath()), repoOf(view.slug)?.slug));
@@ -2372,6 +2436,11 @@ export function interactive({
     const parts = [{ label: 'desk-q', to: { kind: 'overview', all: false } }];
     // A repo's Costs sit under home's: "desk-q › costs › voicepa".
     if (bySupplier()) return spans([...parts, { label: 'costs', to: { kind: 'costs' } }, { label: view.kind === 'cost' ? view.name : r?.name ?? view.slug, to: null }], ' › ');
+    // A supplier's screen sits under its name's: "desk-q › costs › voicepa › GitHub".
+    if (view.kind === 'supplier') {
+      return spans([...parts, { label: 'costs', to: { kind: 'costs' } }, { label: view.slug ? r?.name ?? view.slug : view.name, to: { kind: 'costs', name: view.name, slug: view.slug } },
+        { label: SUPPLIER_LABEL[view.supplier], to: null }], ' › ');
+    }
     if (view.slug) parts.push({ label: r?.name ?? view.slug, to: { kind: 'repo', slug: view.slug } });
     if (view.epic) parts.push({ label: cut(epicShort(epicFacts()?.epics?.[view.epic] ?? { key: view.epic }), 40), to: { kind: 'epic', slug: view.slug, epic: view.epic } });
     if (view.key) parts.push({ label: view.key, to: { kind: 'ticket', slug: view.slug, key: view.key, ...(view.epic ? { epic: view.epic } : {}) } });
@@ -2398,7 +2467,11 @@ export function interactive({
     const own = r?.q && !r.error ? [r] : null;
     if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     // Costs carry the Claude usage line but none of home's batch lines.
-    if (bySupplier()) return { badge: '', ...supplierParts(repos, costName(), { now, pinUsage: true, width: w, label: r?.repo }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
+    if (bySupplier()) {
+      const s = supplierParts(repos, costName(), { now, pinUsage: true, width: w, label: r?.repo, slug: view.kind === 'cost' ? null : view.slug });
+      return { badge: '', ...s, ...claude(shownRepos(repos, false)), keys: `↑↓ select · ${s.rows.length ? 'enter open · ' : ''}${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
+    }
+    if (view.kind === 'supplier') return { badge: '', ...supplierPageParts(repos, view.name, view.supplier, { now }), ...claude(shownRepos(repos, false)), keys: `${VIEW_KEYS} · o open ${SUPPLIER_BILL[view.supplier]} · ${cmdKeys}` };
     if (tab === 'costs') return { badge: '', ...costsParts(repos, { now, pinUsage: true, width: w }), ...claude(shownRepos(repos, false)), keys: `↑↓ select · enter open · ${VIEW_KEYS} · o open the bill · ${cmdKeys}` };
     if (tab !== 'queue' && hasTabs()) {
       const tl = tab === 'timeline';
@@ -2533,9 +2606,11 @@ export function interactive({
     view = p.place; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
     keepTab();
   }
-  // A view this place lacks leaves the view as it is and says why.
+  // A view this place lacks leaves the view as it is and says why. A supplier's screen is Costs: another
+  // view is its name's place's.
   function setTab(id) {
-    if (!tabOk(id)) { msg = view.kind === 'cost' ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
+    if (!tabOk(id)) { msg = ['cost', 'supplier'].includes(view.kind) ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
+    if (view.kind === 'supplier') { if (id !== 'costs') { back(); setTab(id); } return; }
     tab = id; sel = 0; selId = null; scroll = null; msg = '';
   }
 
@@ -2696,6 +2771,10 @@ export function interactive({
       const x = rows[sel];
       if (!x?.bill) msg = x ? `No billing page to open for ${x.id.replace(/^(cost|supplier) /, '')}.` : 'No row to open the bill of.';
       else { try { opener(x.bill); msg = `Opened ${x.bill}`; } catch (e) { msg = `Could not open ${x.bill}: ${describeCrash(e)}`; } }
+    } else if (str === 'o' && view.kind === 'supplier') {
+      const url = screen?.bill;
+      if (!url) msg = `No ${SUPPLIER_BILL[view.supplier]} page to open for ${view.name}.`;
+      else { try { opener(url); msg = `Opened ${url}`; } catch (e) { msg = `Could not open ${url}: ${describeCrash(e)}`; } }
     } else if (str === 'o' && view.kind === 'ticket') {
       const url = jiraUrlFor(repoOf(view.slug)?.slug ?? view.slug, view.key);
       if (!url) msg = `No Jira site in ${repoOf(view.slug)?.name ?? view.slug}'s config, so there is nothing to open.`;

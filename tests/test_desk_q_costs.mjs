@@ -84,7 +84,7 @@ const NOTES = [
   "      ◌ forewatt     Its AWS bill couldn't be read today, so this shows the 25 Oct figure. desk-q tries again every hour.",
 ];
 const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
-const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('move  '));
+const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('←→ or 1–5 view') || l.startsWith('move  '));
 
 // ---- AC1: home's tab line and keys
 const H = screen();
@@ -241,9 +241,30 @@ t('DS-292 AC3 FOR is fixed by supplier', fv.filter((l) => /^[ ›] (GitHub|Verce
 t('DS-292 AC12 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
   `${fv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fv[keysAt(fv) - 2]?.startsWith('Claude usage  ')} ${fv[keysAt(fv) - 1]}`, '0 true ');
 t('DS-292 the keys say o opens the bill, and esc goes back', ['o open the bill', 'esc back'].every((k) => fv.slice(keysAt(fv)).join(' ').includes(k)), true);
-const before292 = V.frame().join('\n');
+
+// ---- DS-293: enter on a supplier opens its screen; GitHub's shows its runners and this month against last
+const what = (label, used, amount) => `  ${label.padEnd(17)}${used.padStart(14)}${amount.padStart(13)}`;
+const month = (label, amount, tag) => `  ${label.padEnd(31)}${amount.padStart(13)}${tag ? `  ${tag}` : ''}`;
+const WHAT_HEAD = what('WHAT', 'USED', 'CHARGED'), MONTH_HEAD = month('MONTH', 'CHARGED');
+const UP = '▲ 1.9× September, with 5 days to go';
+const GITHUB = ['charged $255.74 by GitHub to voicepa in October, 1–26', '', WHAT_HEAD, what('Linux runners', '44,972 min', '$255.74'), month('total', '$255.74'),
+  '', MONTH_HEAD, month('September', '$131.67'), month('October, 1–26', '$255.74', UP)];
 await V.press('\r');
-t('DS-292 AC11 enter on a supplier row leaves the screen as it is', V.frame().join('\n') === before292, true);
+const fg = V.frame();
+t('DS-293 AC1 enter on GitHub: desk-q › costs › voicepa › GitHub, the Costs tab highlighted', `${V.crumbs()} | ${V.tabOn()}`, 'desk-q › costs › voicepa › GitHub | 5 Costs');
+t('DS-293 AC1 AC5 AC6 the charged line, a WHAT / USED / CHARGED table and a MONTH / CHARGED table', block(V, GITHUB[0], GITHUB.length), GITHUB.join('\n'));
+const whatCents = fg.slice(fg.indexOf(WHAT_HEAD) + 1, fg.findIndex((l) => l.startsWith('  total '))).map((l) => cents(l.slice(33).trim()));
+t('DS-293 AC4 the WHAT rows sum to its total and to the GitHub row on voicepa\'s screen, in cents',
+  `${whatCents.length} ${whatCents.reduce((a, c) => a + c, 0) === cents(fg.find((l) => l.startsWith('  total '))?.slice(33).trim() ?? 'NaN')} ${whatCents.reduce((a, c) => a + c, 0) === cents('$255.74')}`, '1 true true');
+t('DS-293 AC6 the ▲ tag is amber', V.raw().some((l) => l.includes(`${AMBER}  ${UP}`)), true);
+t('DS-293 AC12 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
+  `${fg.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fg[keysAt(fg) - 2]?.startsWith('Claude usage  ')} ${fg[keysAt(fg) - 1]}`, '0 true ');
+t('DS-293 the keys say o opens GitHub billing, and esc goes back', ['o open GitHub billing', 'esc back'].every((k) => fg.slice(keysAt(fg)).join(' ').includes(k)), true);
+await V.press('o');
+t('DS-293 AC11 o opens GitHub\'s billing page', V.opened.join(' '), 'https://github.com/settings/billing/usage');
+V.opened.length = 0;
+await V.press('\x1b');
+t('DS-293 AC9 esc: back on voicepa by supplier, GitHub selected', `${V.crumbs()} | ${V.tabOn()} | ${selected(V).startsWith('› GitHub ')}`, 'desk-q › costs › voicepa | 5 Costs | true');
 await V.press('o');
 await V.press('\x1b[B');
 await V.press('o');
@@ -251,6 +272,19 @@ await V.press('\x1b[B');
 await V.press('o');
 t('DS-292 AC10 o opens the selected supplier\'s billing page', V.opened.join(' '),
   'https://github.com/settings/billing/usage https://vercel.com/voice-pa/~/usage https://console.aws.amazon.com/costmanagement/home#/cost-explorer');
+// DS-293 AC10: Vercel's and AWS's screens are places too, with their charged line.
+await V.press('\r');
+const aws10 = `${V.crumbs()} | ${V.frame().find((l) => l.startsWith('charged '))}`;
+await V.press('\x1b');
+const awsBack = selected(V).startsWith('› AWS ');
+await V.press('\x1b[A');
+await V.press('\r');
+const vercel10 = `${V.crumbs()} | ${V.frame().find((l) => l.startsWith('charged '))}`;
+await V.press('\x1b');
+t('DS-293 AC10 enter on AWS, then on Vercel: each one\'s breadcrumb and charged line, and esc back with it selected',
+  `${aws10} | ${awsBack} || ${vercel10} | ${selected(V).startsWith('› Vercel ')}`,
+  'desk-q › costs › voicepa › AWS | charged $1.59 by AWS to voicepa in October, 1–26 · account voicepa-admin | true || '
+  + 'desk-q › costs › voicepa › Vercel | charged $59.78 by Vercel to voicepa in October, 1–26 · team voice-pa | true');
 await V.press('\x1b');
 t('DS-292 AC6 esc: back on the Costs tab, voicepa selected', `${V.crumbs()} | ${V.tabOn()} | ${selected(V).startsWith('› voicepa ')}`, 'desk-q › costs | 5 Costs | true');
 await V.press('\x1b[B');
@@ -278,6 +312,42 @@ await VP.press('\x1b');
 t('DS-292 AC8 esc: home\'s Costs tab, voicepa selected', `${VP.crumbs()} | ${VP.tabOn()} | ${selected(VP).startsWith('› voicepa ')}`, 'desk-q › costs | 5 Costs | true');
 VP.ui.finish(0);
 
+// DS-293 AC2, AC3, AC7, AC8: voicepa's GitHub screen from its own place, on a variant reading.
+const githubAt = async (cache) => {
+  process.env.DESK_COST_DIR = join(T, `variant-${++variants}`);
+  mkdirSync(process.env.DESK_COST_DIR);
+  writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify(cache));
+  const S = screen({ kind: 'repo', slug: 'bigbenjoman__voicepa' });
+  await sleep(20);
+  await S.press('5');
+  await S.press('\r');
+  return S;
+};
+const runners = fixture();
+const vp = runners.github.repos['bigbenjoman/voicepa'];
+const sku = (name, quantity, charged) => ({ sku: name, product: 'actions', unit: 'Minutes', quantity, charged, discount: 'none' });
+vp.items = [sku('actions_linux', 44972, 200.5), sku('actions_macos', 1200, 30.24), sku('actions_windows', 900, 15), sku('actions_linux_16_core', 160, 10)];
+vp.total = 255.74;
+const R = await githubAt(runners);
+const fr = R.frame();
+t('DS-293 AC2 AC3 one row per runner type, most charged first; one desk has no name for reads as GitHub\'s SKU',
+  fr.slice(fr.findIndex((l) => l.startsWith('  WHAT ')), fr.findIndex((l) => l.startsWith('  total '))).join('\n'),
+  [['WHAT', 'USED', 'CHARGED'], ['Linux runners', '44,972 min', '$200.50'], ['macOS runners', '1,200 min', '$30.24'], ['Windows runners', '900 min', '$15.00'],
+    ['actions_linux_16_core', '160 min', '$10.00']].map(([l, u, a]) => `  ${l.padEnd(23)}${u.padStart(14)}${a.padStart(13)}`).join('\n'));
+R.ui.finish(0);
+const equal = fixture();
+equal.github.lastMonth.repos['bigbenjoman/voicepa'].total = 255.74;
+const E7 = await githubAt(equal);
+t('DS-293 AC7 this month at last month\'s charge has no tag', E7.frame().find((l) => l.startsWith('  October, 1–26 ')), month('October, 1–26', '$255.74'));
+E7.ui.finish(0);
+const none = fixture();
+delete none.github.lastMonth.repos['bigbenjoman/voicepa'];
+const N8 = await githubAt(none);
+const f8 = N8.frame();
+t('DS-293 AC8 with no reading for last month, the MONTH table has this month only', f8.slice(f8.indexOf(MONTH_HEAD), f8.indexOf(MONTH_HEAD) + 3).join('\n'), [MONTH_HEAD, month('October, 1–26', '$255.74'), ''].join('\n'));
+N8.ui.finish(0);
+process.env.DESK_COST_DIR = MAIN;
+
 // AC9: a repo with no cost sources.
 const SO = screen({ kind: 'repo', slug: slug });
 await sleep(20);
@@ -294,6 +364,8 @@ t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo']
 const gone = fixture();
 gone.aws.profiles['voicepa-old'] = { ...gone.aws.profiles['voicepa-admin'], profile: 'voicepa-old', lines: [{ service: 'Amazon EC2', used: 40, credits: 0, charged: 40 }], total: 40 };
 t('DS-325 AC3 a profile removed from costs.md is in no supplier\'s figure', Q.supplierScreen([], 'voicepa', { now: FIXED, cache: gone, pinUsage: true }).split('\n').slice(0, VOICEPA.length).join('\n'), VOICEPA.join('\n'));
+const awsPage = (cache) => JSON.stringify(Q.supplierPageParts([], 'voicepa', 'aws', { now: FIXED, cache }).head);
+t('DS-293 AC10 (DS-325 AC3) the AWS screen leaves out a profile removed from costs.md, as the repo screen does', awsPage(gone), awsPage(fixture()));
 
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);

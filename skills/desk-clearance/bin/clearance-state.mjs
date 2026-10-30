@@ -213,8 +213,6 @@ function resolveMergeMethod(allowed) {
   return { method: null, source: 'config §4 Merge method unset - run /desk-setup; nothing is merged until it is set', warn: null }
 }
 
-const isBot = E.isBot
-
 async function gh(args, { json = true } = {}) {
   try {
     const { stdout } = await exec('gh', args, { maxBuffer: 64 * 1024 * 1024 })
@@ -408,7 +406,7 @@ function checkState(checks, name) {
 const GATE_WORD = { pass: 'SUCCESS', pending: 'PENDING', absent: 'ABSENT', fail: 'FAILURE' }
 
 function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base, runsByHead = {} }) {
-  const isHuman = (a) => a && !isBot(a) && a.login !== AUTHOR
+  const isHuman = (a) => G.isHuman(a, AUTHOR)
   const head = p.commits?.nodes?.[0]?.commit
   if (!head) die(`#${p.number}: no head commit in response`)
 
@@ -851,7 +849,7 @@ async function capacity(prs) {
 // Deliberately not automated further: grouping these is a judgement call.
 async function corpus() {
   const AUTHOR = await resolveAuthor()
-  const isHuman = (a) => a && !isBot(a) && a.login !== AUTHOR
+  const isHuman = (a) => G.isHuman(a, AUTHOR)
   const data = await gh(['api', 'graphql',
     '-F', `q=repo:${GH.full} is:pr is:open author:${AUTHOR}`,
     '-f', `query=${QUERY}`])

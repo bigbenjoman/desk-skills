@@ -6,7 +6,7 @@
 // detail lives here and only a summary reaches the conversation.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
@@ -35,12 +35,13 @@ import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
+import { listBatches } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -945,7 +946,8 @@ if (blockedByDone.length) {
 // repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
 // machine has room, then above it up to the §3b cap into slots no other live batch has first claim
 // on (borrow.mjs). Either way, with a machine profile its worker cap is a hard limit across every
-// repo (machineBudget), counted under the same lock when it can be taken.
+// repo (machineBudget), counted under the same lock when it can be taken. And the repo's §3b cap is
+// shared by all its batches (repoBudget).
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
 const PACE_HELD = '7-day usage ahead of pace holds every spawn';
@@ -961,10 +963,13 @@ const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOL
 // it starts within the worker count as any spawn does.
 const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
 const spawnHeld = held === PACE_HELD && spawnable.length ? null : held;
+let REPO_SLUG = null;
+try { REPO_SLUG = E.repoSlug(); } catch { /* outside a repo there are no batches */ }
+const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve(b.queue) !== resolve(QUEUE_FILE) && existsSync(b.queue));
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
+if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -972,15 +977,25 @@ if ((BORROW.on || MACHINE_CAP != null) && concurrency > 0 && spawnable.length &&
   } else lockWhy = l.why;
 }
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
-const otherRepos = MACHINE_CAP != null || borrowLock ? otherQueues({ self: QUEUE_FILE }) : [];
+const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const plan = borrowPlan({
   on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: spawnable.length,
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
 const MACHINE = machineBudget({ running: running.length, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
-const slots = MAINT.hold ? 0 : Math.min(plan.slots, MACHINE.room);
+const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
+const REPO = repoBudget({
+  batch: E.batchName(), running: running.length, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
+  batches: repoBatches,
+});
+// A repo's batches share its cap only under the lock: without it two passes could each count the same
+// free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)
+// starts nothing this pass rather than counting unlocked. An idle sibling shares nothing, so it does not.
+const repoUnlocked = lockWhy != null && repoBatches.some((o) => o.error || o.live || o.running > 0);
+const slots = MAINT.hold || repoUnlocked ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
 const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
+const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${lockWhy}` : REPO.line;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -1885,8 +1900,10 @@ for (const m of merges) out.push(`merge recorded: ${m}`);
 // ---- undraft -------------------------------------------------------------
 // Each done ticket's draft PR leaves draft under Stage 7's own rules (undraft.mjs), whoever runs the
 // pass, so a supervised batch does not stall on its first draft. One it may not undraft is recorded
-// on the ticket as `undraft` and put to the person; a gh pr ready that fails is kept in the pass
-// record and tried again next pass, since the PR is still a draft.
+// on the ticket as `undraft` and put to the person, unless a worker can take it on (fix-tries.mjs):
+// P0s and P1s in its review, a red check, a head with no verdict to read, or a merge conflict §3
+// pr-conflict-unreviewed or -reviewed lets a worker resolve. A gh pr ready that fails is kept in the
+// pass record and tried again next pass, since the PR is still a draft.
 const undraftErrors = [];
 // §4 Checks workers can't fix, for a draft's red checks here and a ready PR's in the fix tries below.
 const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
@@ -1900,6 +1917,7 @@ if (drafts.length) {
   const cfg = {
     perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
+    conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
     ...gateLists(), builds: buildRow.checks,
   };
@@ -1907,7 +1925,7 @@ if (drafts.length) {
   const notesFile = join(STATE, 'batch-notes.md');
   for (const { t, s } of drafts) {
     const n = s.pr;
-    const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,mergeable,mergeStateStatus,body,reviews,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,mergeable,mergeStateStatus,body,reviews,comments,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
     let v;
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
@@ -1915,7 +1933,7 @@ if (drafts.length) {
     // A verdict for an older head holds at this one when only clean merges of the base came since.
     const carry = (sha) => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok &&
       verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git: (args) => shOut('git', ['-C', MAIN, ...args]) });
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
     if (!c) continue;
     let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null, carried_from: c.carried ?? null };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
@@ -1929,7 +1947,10 @@ if (drafts.length) {
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !operatorRow.errors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, operator: operatorRow.checks })
-        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why }) : null;
+        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why })
+          : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) }) : null;
+    // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on.
+    if (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
     const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
     if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
@@ -1937,7 +1958,7 @@ if (drafts.length) {
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
     else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
     else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
-    else if (['person', 'findings', 'checks', 'review'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
+    else if (['person', 'findings', 'checks', 'review', 'conflict'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}${carried}`);
     else {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
@@ -2453,6 +2474,7 @@ lines.push(`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}
 lines.push(CEILING.line);
 lines.push(CONC.line);
 lines.push(machineLine);
+if (repoLine) lines.push(repoLine);
 if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);
 if (borrowLine) lines.push(borrowLine);
 lines.push('');
@@ -2471,6 +2493,8 @@ const heldWhy = report.spawned.length || !eligible.length ? null
   : held ?? (baseHold ? 'the batch base sync holds every spawn'
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
+  : repoUnlocked ? `the repo's shared cap: ${repoLine}`
+  : REPO.room <= 0 ? `the repo's shared cap: ${REPO.line}`
   : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);

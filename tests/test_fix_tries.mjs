@@ -1,5 +1,5 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -104,6 +104,13 @@ t('DS-281 AC3 a clean re-review at the new head is undrafted with its verdict', 
 t('DS-281 AC4 a try already made for this head is not made again', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' } })?.why, 'review not clean after 1 fix try: 1 P1');
 const r5 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' } });
 t('DS-281 AC5 after 2 tries it is stuck, with the P1 count', `${r5?.call} | ${r5?.why}`, 'stuck | review not clean after 2 fix tries: 1 P1');
+const r3Body = ['<!-- desk-review:local -->', `<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=3 -->`,
+  `**desk-review, round 3 (fix range ddddddd..aaaaaaa): 1 P1 at \`aaaaaaa\`** · codex read the diff cold`, `<!-- desk-review:carried v=1 p2=1 since=${'d'.repeat(40)} -->`, '', '- **P1** `src/b.ts:3` second formatter'].join('\n');
+const u335 = undraftCall(tk(), draft(r3Body), ucfg);
+const f335 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: u335?.verdict, body: u335?.review });
+t('DS-335 AC1 a worker\'s round-3 review with a P1 at the head goes to a fix try with that finding', `${u335?.call} ${f335?.call} ${f335?.fix.try}/${f335?.fix.of} ${JSON.stringify(f335?.fix.findings)}`, 'findings requeue 1/2 [{"sev":"P1","text":"- **P1** `src/b.ts:3` second formatter"}]');
+const r335 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' }, body: p1Body });
+t('DS-335 AC2 once the tries are spent, the stuck text names each finding with its file:line', r335?.why, 'review not clean after 2 fix tries: 1 P1 — P1: packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original');
 const p2only = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=2')), ucfg);
 t('DS-281 AC6 only P2s: not a findings call, the person settles them as today', `${p2only?.call} ${p2only?.action}`, 'person settle the findings or gaps on #702');
 t('DS-281 AC6 and reviewFix leaves it alone', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '0', p2: '2' } }), null);
@@ -195,5 +202,47 @@ t('DS-316 AC5 still red at a head a fix try was made for: the person\'s', draftC
 t('DS-316 a review try at this head does not count as a fix of its checks', draftChecksFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, failing: ucheck.failing }, { repo: 'acme/widgets', operator })?.call, 'requeue');
 t('DS-316 nor of a ready PR\'s', fixCall(tk({ fix_tries: rvTried }), both, ctx())?.call, 'requeue');
 t('DS-316 an older verdict is not read at the head without a carry', undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=0'), { head: OLD }), ucfg)?.call, 'review');
+
+// ---- a draft in conflict with its base goes to a fix worker where §3 lets one resolve it
+const cleanBody = reviewBody('p0=0 p1=0 p2=0');
+const conflicted = (o = {}) => draft(cleanBody, { mergeable: 'CONFLICTING', mergeState: 'DIRTY', ...o });
+const ccfg = (unreviewed, reviewed = 'ask') => ({ ...ucfg, conflictUnreviewed: unreviewed, conflictReviewed: reviewed });
+const someone = { author: { login: 'kim' }, body: 'Why not reuse the formatter?' };
+const u318 = undraftCall(tk(), conflicted(), ccfg('yes'));
+t('DS-318 AC1 no human review and pr-conflict-unreviewed yes: a conflict call', u318?.call, 'conflict');
+t('DS-318 AC1 a bot\'s comment is no human review', undraftCall(tk(), conflicted({ comments: [{ author: { login: 'vercel' }, body: 'Preview ready' }, { author: { login: 'codex[bot]' }, body: 'x' }] }), ccfg('yes'))?.call, 'conflict');
+t('DS-318 AC1 the person\'s own review, in another case, is no human review', undraftCall(tk(), conflicted({ reviews: [{ author: { login: 'Ben' }, body: cleanBody }] }), ccfg('yes', 'ask'))?.call, 'conflict');
+t('DS-318 AC2 a human comment, pr-conflict-reviewed yes: a conflict call', undraftCall(tk(), conflicted({ comments: [someone] }), ccfg('yes', 'yes'))?.call, 'conflict');
+const asked = undraftCall(tk(), conflicted({ reviews: [{ author: { login: 'ben' }, body: cleanBody }, someone] }), ccfg('yes', 'ask'));
+t('DS-318 AC2 a human review, pr-conflict-reviewed ask: the person\'s as now', `${asked?.call} | ${asked?.action}`, 'person | resolve the conflict on #702; it then needs a fresh review');
+t('DS-318 AC3 pr-conflict-unreviewed not yes: the person\'s as now', undraftCall(tk(), conflicted(), ccfg('ask', 'yes'))?.call, 'person');
+const cf = conflictFix(tk(), { pr: 702, head: HEAD, base: 'main', files: ['src/a.ts'] });
+t('DS-318 AC1 the conflict is requeued for try 1 on the draft', `${cf?.call} ${cf?.fix.try} ${cf?.fix.kind} ${cf?.fix.draft}`, 'requeue 1 conflict true');
+const brief318 = fixBrief(tk({ fix: cf.fix }));
+t('DS-318 AC1 the brief says it is a draft in conflict and names the files', brief318.includes('is a draft on this branch, and it conflicts with main') && brief318.includes('Conflicting files: src/a.ts.'), true);
+const task318 = fixTask(tk({ fix: cf.fix }));
+t('DS-318 AC4 the task merges the base, reviews the new head and posts it, and leaves the PR in draft',
+  task318.includes('merge origin/main into your branch') && task318.includes('review the new head with desk-review and post that review on the PR') && task318.includes('leave the PR in draft'), true);
+const stale318 = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=0'), { head: 'd'.repeat(40) }), ccfg('yes'));
+t('DS-318 AC4 the new head\'s old review is stale, so it goes to a review worker (DS-316), never undrafted on it', `${stale318?.call} ${stale318?.why.includes('not the head')}`, 'review true');
+t('DS-318 a review try at this head does not count as a conflict fix try, as it does not for a red check', conflictFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, base: 'main' })?.call, 'requeue');
+t('DS-318 the brief of a draft\'s last conflict try says it goes to the person still in conflict', brief318.includes('A PR still in conflict after try 2 goes to the person.'), true);
+// One pool of tries per PR, as reviewFix and fixCall count it, so every counter and desk-q agree.
+t('DS-318 a review try counts towards the conflict tries', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.fix.try, 2);
+t('DS-318 two review tries leave no conflict try', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
+t('DS-318 and a conflict try counts towards the review tries', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] })?.fix.try, 2);
+t('DS-318 a try already made for this head is not made again', conflictFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'conflict' }] }), { pr: 702, head: HEAD, base: 'main', files: null })?.why, 'still in conflict with main after 1 fix try');
+const c318 = conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }, { try: 2, head: 'c'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, base: 'main', files: ['src/a.ts', 'src/b.ts'] });
+t('DS-318 AC5 after 2 conflict tries it is stuck, naming the files still in conflict', `${c318?.call} | ${c318?.why}`, 'stuck | still in conflict with main after 2 fix tries: src/a.ts, src/b.ts');
+t('DS-318 AC5 the conflict task asks the worker for its reason on its DONE line', task318.includes('End with AUTOPILOT_DONE: pr=702 jira=<its status> said=<one line: what you resolved, or what is still in conflict and why>.'), true);
+t('DS-318 AC5 and only the conflict task', fixTask(tk({ fix: { try: 1, of: 2, pr: 702, kind: 'review', findings: [] } })).includes('said='), false);
+const said318 = { fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }, { try: 2, head: 'c'.repeat(40), kind: 'conflict' }], result: { pr: 702, summary: 'pr=702 jira=In Progress said=src/a.ts left unresolved: both sides rename the export' } };
+t('DS-318 AC5 and with the reason the last try gave, once its worker has finished',
+  conflictFix(tk({ ...said318, fix: { try: 2, kind: 'conflict', draft: true, finished: '2026-10-29T12:00:00Z' } }), { pr: 702, head: HEAD, base: 'main', files: ['src/a.ts'] })?.why,
+  'still in conflict with main after 2 fix tries: src/a.ts; the last try said: pr=702 jira=In Progress said=src/a.ts left unresolved: both sides rename the export');
+t('DS-318 AC5 the same for a conflict out of draft', fixCall(tk({ ...said318, fix: { try: 2, kind: 'conflict', finished: '2026-10-29T12:00:00Z' } }), dirty, ctx())?.why,
+  'still in conflict with main after 2 fix tries; the last try said: pr=702 jira=In Progress said=src/a.ts left unresolved: both sides rename the export');
+t('DS-318 AC5 a last try that was not for the conflict gave no reason for it', conflictFix(tk({ ...said318, fix: { try: 2, kind: 'review', finished: '2026-10-29T12:00:00Z' } }), { pr: 702, head: HEAD, base: 'main' })?.why,
+  'still in conflict with main after 2 fix tries');
 
 process.exit(fails ? 1 : 0);

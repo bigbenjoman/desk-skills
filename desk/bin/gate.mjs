@@ -22,6 +22,8 @@
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
+//   isBot(author)            a PR author, reviewer or commenter ({ login, __typename? }) that is a bot
+//   isHuman(author, self)    one that is neither a bot nor `self`
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
@@ -40,6 +42,13 @@ export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'ac
 // `if:`. A head whose every check was skipped still fails clause 3 (no success).
 const REQUIRED_PASS = new Set(['success', 'skipped']);
 const lc = (s) => String(s ?? '').toLowerCase();
+
+// The services that comment on PRs under a login of their own. A personal-token bot goes here too,
+// for desk-clearance and the pass alike.
+export const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate']);
+export const isBot = (a) => !a?.login || a.__typename === 'Bot' || /\[bot\]$/.test(a.login) || BOT_LOGINS.has(lc(a.login));
+// A person other than `self` (a login, in any case; with none, every person counts).
+export const isHuman = (a, self) => !isBot(a) && !(self && lc(a.login) === lc(self));
 
 // One check or status context, whatever API it came from, to { name, status, conclusion, runId }.
 //   CheckRun (GraphQL / gh --json statusCheckRollup): name, status, conclusion, detailsUrl
