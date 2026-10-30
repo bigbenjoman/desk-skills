@@ -163,11 +163,11 @@ t('DS-305 an unreadable named batch\'s queue is named and counted at its repo\'s
 
 // A repo's batches share its §3b cap. A named batch of `slug` with `running` and `ready` tickets and
 // a heartbeat `beat` minutes old in its own state directory, planning its next pass in `next` minutes.
-function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next } = {}) {
+function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next, last } = {}) {
   const tickets = {};
   for (let i = 1; i <= running; i++) tickets[`${name}-R${i}`] = { key: `${name}-R${i}`, state: 'running' };
   for (let i = 1; i <= ready; i++) tickets[`${name}-Y${i}`] = { key: `${name}-Y${i}`, state: 'triaged', open_questions: 0 };
-  const q = named(slug, name, JSON.stringify({ version: 1, batch: name, concurrency: share, tickets }));
+  const q = named(slug, name, JSON.stringify({ version: 1, batch: name, concurrency: share, tickets, ...(last ? { last_start: last } : {}) }));
   if (beat != null) {
     const dir = join(env.HOME, '.desk-autopilot', slug, 'batches', name, 'orchestrators');
     mkdirSync(dir, { recursive: true });
@@ -188,7 +188,7 @@ t('DS-308 AC5 the line names each batch and the running total against the cap', 
 repo('acme__a', { conc: '2 / 3', share: 2, running: 2, ready: 1 });
 r = repoRoom(queuePath('acme__a'), { running: 2, wanted: 1 });
 t('DS-308 AC3 the standing batch, holding every slot but one, leaves it for X-1', r.room, 0);
-t('DS-308 AC3 and says so', r.line, 'repo workers: 2 of the §3b cap of 3 running — the standing batch (this pass) 2, batch X-1 0; 2 kept for batch X-1, which has 2 ready and 0 running: nothing starts this pass');
+t('DS-308 AC3 and says so', r.line, 'repo workers: 2 of the §3b cap of 3 running — the standing batch (this pass) 2, batch X-1 0; 1 kept for batch X-1, which has 2 ready and 0 running: nothing starts this pass');
 fresh();
 repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 1 });
 x1q = batchOf('acme__a', 'X-1', { running: 1, ready: 1 });
@@ -218,6 +218,33 @@ t('DS-308 AC6 with only a standing batch there is no repo budget and no line', `
 named('acme__a', 'X-9', '{ not json');
 r = repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 });
 t('DS-308 a batch whose queue cannot be read counts at the cap, and is named', r.room === 0 && /batch X-9 unreadable \(.*X-9\/queue\.json is not valid JSON.*\), counted at the cap/.test(r.line), true);
+
+// Three batches with 2 ready each pass in the same order every tick; the workers of one tick have
+// finished by the next. A batch that starts any records when, as pass.mjs does. -> who started, by tick.
+function ticks(cap, n) {
+  fresh();
+  const names = ['X-1', 'X-2', 'X-3'];
+  const last = {};
+  const started = [];
+  for (let tick = 1; tick <= n; tick++) {
+    for (const b of names) batchOf('acme__a', b, { ready: 2, last: last[b] });
+    const now = [];
+    for (const b of names) {
+      const room = repoRoom(namedQueue('acme__a', b), { batch: b, running: 0, wanted: 2, last: last[b] ?? null, cap }).room;
+      if (room <= 0) continue;
+      last[b] = minsAgo(10 - tick);
+      batchOf('acme__a', b, { running: room, ready: 2 - room, last: last[b] });
+      now.push(b);
+    }
+    started.push(now);
+  }
+  return started;
+}
+const rota = ticks(2, 2);
+t('DS-355 AC1 at a cap of 2, each tick starts no more than the cap', rota.every((s) => s.length <= 2), true);
+t('DS-355 AC1 three batches with ready work each get a worker within two ticks', [...new Set(rota.flat())].sort().join(' '), 'X-1 X-2 X-3');
+t('DS-355 AC1 the batch left out of the first tick starts in the second', rota.map((s) => s.join(' ')).join(' | '), 'X-1 X-2 | X-1 X-3');
+t('DS-355 AC2 with a slot for every batch with ready work, each keeps one', ticks(3, 1)[0].join(' '), 'X-1 X-2 X-3');
 
 // DS-320: a running base conflict fix is a worker too, in the budget and in what borrowing reads.
 fresh();

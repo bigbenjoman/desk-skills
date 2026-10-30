@@ -1024,9 +1024,10 @@ const plan = borrowPlan({
 const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
 const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
 const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
+// A base conflict fix due with no ticket to spawn still wants its one slot.
 const REPO = repoBudget({
-  batch: E.batchName(), running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), cap: E.concurrencyLimits().cap,
-  batches: repoBatches,
+  batch: E.batchName(), running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length) || (gateFixDue ? 1 : 0),
+  last: fresh.last_start ?? null, cap: E.concurrencyLimits().cap, batches: repoBatches,
 });
 // A repo's batches share its cap only under the lock: without it two passes could each count the same
 // free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)
@@ -1661,6 +1662,7 @@ async function spawnBaseFix({ wt, fix }) {
   record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
   report.spawned.push(`${key} port=${port} model=${model || 'default'} (conflict fix try ${fix.try} of ${fix.of} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
+const spawnedBefore = report.spawned.length;
 if (baseFix) await spawnBaseFix(baseFix);
 
 // A try's worker that exited at a usage limit since lifted, or was stopped for the maintenance window,
@@ -1887,7 +1889,9 @@ for (const t of spawnable) {
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'rereview' ? ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
-// Every worker started under the lock is recorded running in this queue, so other passes count it.
+// Every worker started under the lock is recorded running in this queue, so other passes count it,
+// and so is when, so the repo's batches take the shared cap's free slots in turn (repoBudget).
+if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
 borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
 // the first pass that held until the one that finds it lifted.

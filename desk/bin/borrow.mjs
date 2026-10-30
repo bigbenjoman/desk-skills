@@ -133,24 +133,25 @@ const isReady = (t) => t?.state === 'triaged' && (t.open_questions ?? 0) === 0 &
 const batchLabel = (b) => (b == null ? 'the standing batch' : `batch ${b}`);
 
 // The repo's §3b cap is shared by its batches: a pass starts at most the cap less every batch's
-// running workers, less the slots kept for the others. A live batch with ready work and nothing
-// running keeps one slot; a named (feature) batch also keeps, from the standing batch, the part of its
-// own number it has not filled, so spare slots go to it first. A batch with nothing running keeps one
-// slot for itself whatever the others keep: a named batch first, the standing batch from what is left
-// after each named batch with nothing running has its one. A batch that cannot be read counts at the cap.
+// running workers, less the slots kept for the others. The free slots are dealt one at a time among
+// this batch and each live batch with ready work below its own number, each to the one running the
+// fewest, so a batch with nothing running keeps one slot while there are slots for every such batch.
+// Ties go to the batch whose last worker start is oldest (one with none first), so over successive
+// passes the slots rotate and no batch starves; then a named batch before the standing one, then this
+// batch. A batch that cannot be read counts at the cap.
 //   batch     this batch's name, null for the standing batch
 //   running   this batch's running workers
 //   wanted    the slots this pass would otherwise fill
+//   last      when this batch last started a worker (its queue's last_start), or null
 //   batches   otherBatches() of this repo
 // -> { room, line }   room is Infinity, and line null, with no other batch live or running
-export function repoBudget({ batch = null, running, wanted = 0, cap, batches = [] }) {
+export function repoBudget({ batch = null, running, wanted = 0, last = null, cap, batches = [] }) {
   const shown = batches.filter((o) => o.error || o.live || o.running > 0);
   if (!shown.length) return { room: Infinity, line: null };
   let all = running;
   const each = [`${batchLabel(batch)} (this pass) ${running}`];
-  const kept = [];
-  let keep = 0;
-  let firsts = 0;
+  const self = { self: true, batch, running, want: Math.max(0, wanted), last, got: 0 };
+  const claims = [self];
   for (const o of shown) {
     if (o.error) {
       all += cap;
@@ -159,23 +160,29 @@ export function repoBudget({ batch = null, running, wanted = 0, cap, batches = [
     }
     all += o.running;
     each.push(`${batchLabel(o.batch)} ${o.running}`);
-    if (!o.live || o.ready === 0 || o.share <= 0) continue;
-    if (o.batch != null && o.running === 0) firsts += 1;
-    const k = batch == null && o.batch != null ? Math.min(o.ready, Math.max(0, o.share - o.running)) : o.running === 0 ? 1 : 0;
-    if (!k) continue;
-    keep += k;
-    kept.push(`${k} kept for ${batchLabel(o.batch)}, which has ${o.ready} ready and ${o.running} running`);
+    if (!o.live || o.share <= 0) continue;
+    const want = Math.min(o.ready, Math.max(0, o.share - o.running));
+    if (want > 0) claims.push({ ...o, want, got: 0 });
   }
   const free = Math.max(0, cap - all);
-  const own = running > 0 || wanted <= 0 ? 0 : Math.min(1, batch != null ? free : Math.max(0, free - firsts));
-  const room = Math.max(own, free - keep);
+  const startedAt = (c) => (c.last ? Date.parse(c.last) || 0 : -Infinity);
+  const before = (a, b) => (a.running + a.got) - (b.running + b.got) || startedAt(a) - startedAt(b)
+    || (a.batch == null) - (b.batch == null) || (b.self ? 1 : 0) - (a.self ? 1 : 0);
+  for (let n = 0; n < free; n++) {
+    const open = claims.filter((c) => c.got < c.want);
+    if (!open.length) break;
+    open.sort(before)[0].got += 1;
+  }
+  const room = self.got;
+  const kept = claims.filter((c) => !c.self && c.got > 0)
+    .map((c) => `${c.got} kept for ${batchLabel(c.batch)}, which has ${c.ready} ready and ${c.running} running`);
   const head = `repo workers: ${all} of the §3b cap of ${cap} running — ${each.join(', ')}`;
   const held = kept.length ? `; ${kept.join('; ')}` : '';
   const tail = room === 0 && wanted > 0 ? ': nothing starts this pass' : room < wanted ? `: starting at most ${room}` : '';
   return { room, line: head + held + tail };
 }
 
-// What borrowing needs from each other queue: { slug, batch, live, running, ready, share }, or
+// What borrowing needs from each other queue: { slug, batch, live, running, ready, share, last }, or
 // { slug, batch, error }.
 export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stateRoot = join(E.HOME, '.desk-autopilot'), queues = otherQueues({ self, home }) } = {}) {
   return queues.map(({ slug, batch = null, path, q, error }) => {
@@ -188,6 +195,7 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
       running: runningIn(q),
       ready: tickets.filter(isReady).length,
       share: batchConcurrency(q, E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency'))).n,
+      last: q.last_start ?? null,
     };
   });
 }
