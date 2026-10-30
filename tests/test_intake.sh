@@ -55,12 +55,14 @@ echo "\$*" >> "$T/jira.calls"
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
 EOF
-# Triage: copies the set record for the ticket, or fails while $T/recs/<KEY>.fails exists.
+# Triage: copies the set record for the ticket into the state of the batch it runs in, or fails while
+# $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
 cat > "$T/bin/triage.sh" <<EOF
 #!/bin/sh
 echo "\$1" >> "$T/triage.calls"
+[ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
-cp "$T/recs/\$1.json" "$T/state/triage/\$1.json"
+mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
 EOF
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync } from 'node:fs';
@@ -292,11 +294,17 @@ nget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"
 out=$(admit X-4 --by ben); rc=$?
 check "DS-300 AC4: /desk-admit adds a live epic's child to its feature batch" '[ $rc -eq 0 ] && [ "$(nget tickets.X-4.state)" = triaged ] && [ "$(nget tickets.X-4.admitted_by)" = ben ] && grep -q "^admitted X-4 by ben into feature batch X-1 (lane A, size S)$" <<< "$out"'
 check "DS-300 AC4: the standing queue is unchanged" '[ "$(cat "$DESK_QUEUE")" = "$before" ] && [ -f "$NS/triage/X-4.json" ]'
+check "DS-300 AC4: the child is triaged again in its feature batch, on that batch's base rather than a pinned default" 'grep -qx "X-4 X-1 unpinned" "$T/triage.batch"'
 # X-5 is blocked by X-4, now in the feature batch, and shares a file with X-2, running there.
 mkdir -p "$NS/triage"; printf '{"ticket":"X-2","files_in_scope":["src/shared.js"]}\n' > "$NS/triage/X-2.json"
 rec X-5 A '"epic":{"key":"X-1","summary":"a feature"},"files_in_scope":["src/shared.js"],"blockers":[{"key":"X-4","category":"new"}]'
 out=$(admit X-5); rc=$?
 check "DS-300 AC4: a child is held behind its blocker there and behind an in-flight child it collides with" '[ $rc -eq 0 ] && [ "$(nget tickets.X-5.state)" = parked ] && [ "$(nget tickets.X-5.held_by)" = "X-4|X-2" ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-4, X-2$" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+# In feature mode, X-2 is the spine: a child sharing nothing with it still waits for it.
+node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); q.feature=true; q.spine="X-2"; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
+rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
+out=$(admit X-6); rc=$?
+check "DS-300 AC4: in feature mode a child is held behind the unfinished spine, as plan-batch holds every child" '[ $rc -eq 0 ] && [ "$(nget tickets.X-6.held_by)" = X-2 ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-2$" <<< "$out"'
 rec E-2 A '"type":"Epic"'
 out=$(admit E-2); rc=$?
 check "DS-300 AC3: with a feature batch live, another epic is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted E-2: an epic, and feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan E-2" <<< "$out"'

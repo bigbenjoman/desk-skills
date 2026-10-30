@@ -32,8 +32,8 @@ its notification rather than running it again. Exit 0: every ticket was admitted
 or was already in the batch, and any epic is one to plan (step 1b). Print its lines, and stop unless
 there is an epic to plan. The supervisor's next tick picks the admitted tickets up, so start no
 pass, loop or driver for them. A child of an epic whose feature batch is running is admitted into
-that batch (`into feature batch <E>`), held behind its blockers there and the children it shares
-files with: the user naming it is the approval.
+that batch (`into feature batch <E>`), held behind its spine, its blockers there and the children it
+shares files with: the user naming it is the approval.
 
 ## 1b. An epic to plan
 
@@ -65,7 +65,8 @@ below as `(Recommended)`, with its reason as the description:
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
 
-Do what each answer says, then run step 1 again only for the tickets now ready.
+Do what each answer says, then run step 1 again only for the tickets now ready. A `plan <EPIC> …`
+line in the same output is not refused: run step 1b for it once these are settled.
 
 ## 3. End
 
