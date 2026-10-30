@@ -10,13 +10,12 @@ Verification section. `tests/test_cloud_worker.mjs` reads them.
 - `send-json.json`: `claude -p "<msg>" --cloud <session-id> --output-format json`. It queues the
   message and does not wait for the reply.
 - `stream-json-refused.txt`: `claude -p "<msg>" --cloud <session-id> --output-format stream-json`.
-
-No route found gives a cloud session's tokens or cost: `claude --teleport <session-id>` replays the
-conversation, but `/cost` then shows only local turns, and no local transcript is written.
 - `created-no-tty.txt`: `claude --cloud "<description>"` started exactly as `startCloud` does on
   macOS (`script -q /dev/null claude --cloud …`, stdin closed, no TTY of its own). Recorded by
   Ben's session on 2026-10-30 with Claude Code 2.1.314, raw bytes as `script` returned them. Two
   things differ from `created.txt`: the output carries `ESC 7`/`ESC 8` (save/restore cursor),
-  `ESC ( B` and `SI`, which `clean()` does not remove, so `parseCloudStart` fails on it as of
-  this commit; and the session title (`No-TTY recording`) is the CLI's own summary, not the
-  description passed in.
+  `ESC ( B` and `SI`, which `clean()` strips; and the session title (`No-TTY recording`) is the
+  CLI's own summary, not the description passed in.
+
+No route found gives a cloud session's tokens or cost: `claude --teleport <session-id>` replays the
+conversation, but `/cost` then shows only local turns, and no local transcript is written.
