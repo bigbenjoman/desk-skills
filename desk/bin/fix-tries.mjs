@@ -4,7 +4,8 @@
 // yes a requirement gap (reviewFix), within the same tries, and one whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
-// (reviewTry) to a review worker, both within the same tries.
+// (reviewTry) to a review worker, both within the same tries, and so does a draft in conflict with
+// its base that §3 lets a worker resolve (conflictFix).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -58,6 +59,13 @@ const stillRed = (done, fix) => `still red after ${tries(done.length)}: ${fix.ch
 const spent = (done, triedHere) => done.length >= FIX_TRIES_MAX || triedHere;
 const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
 
+// A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. The
+// reason ends with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as
+// result.summary) when that try was a conflict try whose worker has finished.
+const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null });
+const lastSaid = (t) => (t.fix?.kind === 'conflict' && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
+const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(done.length)}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
+
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, operator (parsed),
 // reruns(name) -> reruns tried at s.head, cooledDown (the last rerun has had its gap to report),
 // waived(names) -> the driver merges past these as known flaky checks, conflictFiles() -> [file] | null }.
@@ -67,7 +75,7 @@ export function fixCall(t, s, ctx) {
   const conflict = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   let fix;
   if (conflict) {
-    fix = { kind: 'conflict', what: `conflicts with ${ctx.base}`, base: ctx.base, files: ctx.conflictFiles?.() ?? null };
+    fix = conflictTry(ctx.base, ctx.conflictFiles?.(), false);
   } else {
     const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
     if (gate.state !== 'fail' || gate.pending.length) return null;
@@ -78,7 +86,7 @@ export function fixCall(t, s, ctx) {
     fix = checksFix(mine, notMine, ctx.repo);
   }
   if (spent(done, fixedAt(done, s.head))) {
-    return { call: 'stuck', why: conflict ? `still in conflict with ${ctx.base} after ${tries(done.length)}` : stillRed(done, fix) };
+    return { call: 'stuck', why: conflict ? stillInConflict(t, done, ctx.base) : stillRed(done, fix) };
   }
   return nextTry(done, s.pr, s.head, fix);
 }
@@ -216,6 +224,15 @@ export function draftChecksFix(t, { pr, head, failing }, ctx) {
   return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillRed(done, fix) } : nextTry(done, pr, head, fix);
 }
 
+// A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3
+// pr-conflict-unreviewed or -reviewed, goes back to a fix worker under the same tries as fixCall (one
+// per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files } (files: [file] | null).
+export function conflictFix(t, { pr, head, base, files }) {
+  if (!head) return null;
+  const done = t.fix_tries ?? [];
+  return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextTry(done, pr, head, conflictTry(base, files, true));
+}
+
 // The fix worker's briefing section, while its try is open.
 export function fixBrief(t) {
   const f = t.fix;
@@ -233,7 +250,9 @@ export function fixBrief(t) {
   }
   const lines = [`## Fix try ${f.try} of ${f.of}: PR #${f.pr}`, ''];
   if (f.kind === 'conflict') {
-    lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
+    lines.push(f.draft
+      ? `Your PR #${f.pr} is a draft on this branch, and it conflicts with ${f.base}, so the pass cannot take it out of draft. Its review was for the old head, so the new head needs one of its own.`
+      : `Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
   } else if (f.kind === 'review') {
     lines.push(`Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean (\`${f.verdict}\`).`);
@@ -259,7 +278,8 @@ export function fixBrief(t) {
     for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}. A person runs that; leave it red.`);
     if (f.draft) lines.push('', 'Read each failing run\'s log with gh run view <run id> --log-failed (the id is the number in its URL).');
   }
-  const left = f.kind !== 'review' ? (f.draft ? 'red' : 'red or in conflict') : `with a P0 or P1${f.gaps?.length ? ' or a gap' : ''} in its review`;
+  const left = f.kind === 'review' ? `with a P0 or P1${f.gaps?.length ? ' or a gap' : ''} in its review`
+    : f.kind === 'conflict' && f.draft ? 'in conflict' : f.draft ? 'red' : 'red or in conflict';
   lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
@@ -274,7 +294,7 @@ export function fixTask(t) {
       `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
   const gaps = f.kind === 'gaps';
-  // A draft's red checks are fixed in draft and reviewed again, as a review fix is.
+  // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is.
   const review = f.kind === 'review' || gaps || f.draft === true;
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
@@ -285,11 +305,13 @@ export function fixTask(t) {
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';
+  // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
+  const said = f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>' : '';
   const task = gaps
     ? `Your task is to carry out the person's call on the review gaps of PR #${f.pr}, already open on your branch: the "Your call" section of your briefing quotes it. `
     : `Your task is fix try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. `;
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +
     `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
-    `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+    `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
 }

@@ -1477,6 +1477,54 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-299 AC1 the fix worker's briefing quotes the inline finding with its file and line" \
   'grep -q "^- P1: src/tax.ts:40 VAT applied twice$" "$T/state-ri/briefings/I-1.md"'
 
+# ---- a draft in conflict with its base goes to a fix worker where §3 pr-conflict-* lets one resolve it
+# frc <n> <head> [commenter]: a draft with a clean review by ben at H1, in conflict with its base, and
+# one PR comment by <commenter> when one is named.
+frc(){
+  frx "$1" "$2" "$H1" 'p0=0 p1=0 p2=0'
+  node -e 'const [f, who] = process.argv.slice(1); const fs = require("fs"); const v = JSON.parse(fs.readFileSync(f, "utf8"));
+    fs.writeFileSync(f, JSON.stringify({ ...v, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", comments: who ? [{ author: { login: who }, body: "Why not reuse the formatter?" }] : [] }))' "$T/fr/$1.json" "${3:-}"
+}
+conflictcfg(){ node -e 'const [f, u, r] = process.argv.slice(1); const fs = require("fs");
+  fs.writeFileSync(f.replace(/r\.md$/, "c.md"), fs.readFileSync(f, "utf8").replace("| `pr-ready`", `| \`pr-conflict-unreviewed\` | Resolve an unreviewed conflict | \`yes\` | \`${u}\` |\n| \`pr-conflict-reviewed\` | Resolve a reviewed conflict | \`ask\` | \`${r}\` |\n| \`pr-ready\``))' "$T/config-r.md" "$1" "$2"; }
+export DESK_CONFIG="$T/config-c.md" DESK_QUEUE="$T/queue-rc.json" DESK_AUTOPILOT_STATE="$T/state-rc"
+mkdir -p "$T/state-rc/logs"
+q init rc; q set-batch concurrency=5
+for k in 1 2 3; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "result.pr=74$k"; done
+frc 741 "$H1"; frc 742 "$H1" kim; frc 743 "$H1"
+q set C-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"conflict"},{"try":2,"head":"'"$H2"'","kind":"conflict"}]' \
+  'fix={"try":2,"of":2,"pr":743,"head":"'"$H2"'","kind":"conflict","draft":true,"finished":"2026-10-29T12:00:00Z"}' 'result.summary=pr=743 jira=In Progress said=src/x.ts left unresolved'
+conflictcfg ask yes
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-318 AC3 with pr-conflict-unreviewed not yes, a conflicted draft is the person's as now" \
+  '[ "$(field C-1 state)" = "\"done\"" ] && [ "$(field C-1 fix)" = null ] && echo "$out" | grep -q "C-1: DRAFT — PR #741 stays draft: it has a merge conflict with its base. Resolve the conflict on #741"'
+check "DS-318 AC2 a human comment with pr-conflict-reviewed yes starts a fix worker" \
+  '[ "$(field C-2 state)" = "\"triaged\"" ] && [ "$(field C-2 fix.kind)" = "\"conflict\"" ]'
+conflictcfg yes ask
+q set C-2 state=done session_id=null result.pr=742 fix=null fix_tries=null
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-318 AC1 no human review and pr-conflict-unreviewed yes: requeued once for a conflict fix worker" \
+  '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 fix.kind)" = "\"conflict\"" ] && [ "$(field C-1 fix.draft)" = true ] && [ "$(field C-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: C-1 requeued for PR #741 — draft conflicts with main"'
+check "DS-318 AC1 and it is neither undrafted nor put to the person" '! grep -q "^pr ready 741" "$T/gh-calls" && ! echo "$out" | grep -q "C-1: DRAFT"'
+check "DS-318 AC2 a human comment with pr-conflict-reviewed ask is the person's as now" \
+  '[ "$(field C-2 state)" = "\"done\"" ] && [ "$(field C-2 fix)" = null ] && echo "$out" | grep -q "C-2: DRAFT — PR #742 stays draft: it has a merge conflict with its base"'
+check "DS-318 AC5 after 2 conflict tries it is recorded stuck and put to the person, with the reason the last try gave" \
+  '[ "$(field C-3 state)" = "\"done\"" ] && [ "$(field C-3 stuck.why)" = "\"still in conflict with main after 2 fix tries; the last try said: pr=743 jira=In Progress said=src/x.ts left unresolved\"" ] && echo "$out" | grep -q "C-3: STUCK — PR #743: still in conflict with main after 2 fix tries; the last try said: pr=743"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-318 AC4 the fix worker merges the base, reviews its new head and posts that review" \
+  'grep -q "^C-1 .*Your task is fix try 1 of 2 on PR #741.*merge origin/main into your branch.*review the new head with desk-review and post that review on the PR.*leave the PR in draft" "$T/spawns"'
+check "DS-318 AC1 its briefing says the draft conflicts with main" 'grep -q "is a draft on this branch, and it conflicts with main" "$T/state-rc/briefings/C-1.md"'
+# C-1's worker pushed H2, resolved; its old review at H1 is stale and never undrafts it.
+q set C-1 state=done session_id=null result.pr=741; frx 741 "$H2" "$H1" 'p0=0 p1=0 p2=0'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-318 AC4 a resolved head reviewed only at the old head is not undrafted: its stale review goes to a review worker (DS-316)" \
+  '! grep -q "^pr ready 741" "$T/gh-calls" && [ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 fix.kind)" = "\"rereview\"" ] && [ "$(field C-1 fix_tries | jq length)" = 2 ] && field C-1 undraft.why | grep -q "not the head 222222222" && echo "$out" | grep -q "review try 2 of 2: C-1 requeued for PR #741"'
+check "DS-318 AC4 and it is not put to the person" '! echo "$out" | grep -q "C-1: DRAFT"'
+# A person resolved C-3's conflict: it is no longer stuck on it.
+frx 743 "$H1" "$H1" 'p0=0 p1=0 p2=0'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-318 AC5 a stuck conflict the person resolved is cleared" '[ "$(field C-3 stuck)" = null ]'
+
 # ---- under §3 autopilot-judgement yes, a review with only requirement gaps goes to a fix worker too
 # frg <pr> <head> <sha> <gaps> [none]: a draft whose review at <sha> counts <gaps> gaps and lists one,
 # or none with `none`.

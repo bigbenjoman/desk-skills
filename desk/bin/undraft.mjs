@@ -24,6 +24,9 @@
 //           (fix-tries.mjs reviewFix), and only once no try is left, or the review lists none of them
 //           (a P0 or P1 by file:line in its body or inline comments, a gap under its gaps heading), does
 //           it put them to the person (`why` and `action` say what for)
+//   conflict  the head conflicts with its base and §3 pr-conflict-unreviewed (no one but the person's
+//           handle has reviewed or commented) or pr-conflict-reviewed (someone has) is `yes`: the pass
+//           sends it to a fix worker (fix-tries.mjs conflictFix), and to the person once no try is left
 //
 // The facts, in order: the review verdict on the PR's current head reads as §4 Clean review verdict
 // (none with §4 Local review command `none`, so reviewing is the person's call; a row of plain text such
@@ -35,7 +38,7 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
-import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
+import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
 import { RERUNS_MAX } from './fix-tries.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
@@ -203,12 +206,19 @@ function buildCall(gate, cfg, n, head) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
 }
 
-// t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks, carry } (checks
-// as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at the
-// head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
+// Whether anyone but `handle`, and not a bot, has reviewed or commented on the PR: the line between
+// §3 pr-conflict-unreviewed and pr-conflict-reviewed. With no handle to tell them apart, everyone counts.
+export function humanReviewed(pr, handle) {
+  return [...(pr.reviews ?? []), ...(pr.comments ?? [])].some((x) => isHuman(x.author, handle));
+}
+
+// t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, comments, checks, carry }
+// (checks as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at
+// the head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
-// check build recorded at that head }.
+// check build recorded at that head, conflictUnreviewed, conflictReviewed (§3 pr-conflict-unreviewed
+// and -reviewed) }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -244,7 +254,8 @@ export function undraftCall(t, pr, cfg) {
     return { ...person(v.why, `settle the ${gaps ? 'findings or gaps' : 'findings'} on #${n}`), call: 'findings', verdict: found, review: review.body, reviewId: review.id };
   }
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {
-    return person(`it has a merge conflict with its base`, `resolve the conflict on #${n}; it then needs a fresh review`);
+    const c = person('it has a merge conflict with its base', `resolve the conflict on #${n}; it then needs a fresh review`);
+    return (humanReviewed(pr, cfg.handle) ? cfg.conflictReviewed : cfg.conflictUnreviewed) === 'yes' ? { ...c, call: 'conflict' } : c;
   }
   if (pr.mergeable !== 'MERGEABLE') return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})` };
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
