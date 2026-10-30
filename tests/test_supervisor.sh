@@ -439,6 +439,12 @@ printf '%s\n' "$NOTHING" > "$T/verdict.X-1.json"; verdict "$(pv "$DIG3")"; notif
 out=$(mtick)
 pv "$DIG3" > "$T/verdict.X-1.json"; out=$(mtick)
 check "DS-309: a digest another batch sent on an earlier tick goes out once" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|Check-in 17:00|$"'
+# So does main's failed release, which names its commit.
+RF='{"key":"release-failed-def","text":"main tests check failed on def"}'
+printf '%s\n' "$NOTHING" > "$T/verdict.X-1.json"; verdict "$(pv "$RF")"; notified=$(count "$T/notify.calls")
+out=$(mtick)
+pv "$RF" > "$T/verdict.X-1.json"; out=$(mtick)
+check "DS-309: a failed release another batch sent on an earlier tick goes out once" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|desk: acme__widgets|main tests check failed on def|$"'
 rm -f "$T/verdict.X-1.json"
 verdict "$NOTHING"; printf 'not json\n' > "$T/verdict.standing.json"; : > "$T/pass.batches"
 out=$(mtick); rc=$?

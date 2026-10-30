@@ -258,12 +258,13 @@ const firstTime = (what) => !ranOnce.has(what) && ranOnce.add(what);
 // Every batch's state folder this tick runs, and the push keys it has sent for any of them.
 let tickStates = [];
 const sentThisTick = new Set();
-// Whether another batch has sent `key`: the check-in digest reaches every batch, and goes out once.
-// Any key sent this tick counts. Only a digest key counts from another batch's stored list, since it
-// names its slot and never comes back: an idle batch's stored keys never change, and would silence a
-// repeat of any other.
+// Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
+// key sent this tick counts. From another batch's stored list only a key that names what it is about
+// counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
+// commit). An idle batch's stored keys never change, and would silence a repeat of any other.
+const ONCE_EVER = ['digest:', 'release-failed-'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
-  || (key.startsWith('digest:') && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
+  || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
 
 // Points this process, and every child it starts, at batch `name` (null for the standing batch).
 function enterBatch(name) {
