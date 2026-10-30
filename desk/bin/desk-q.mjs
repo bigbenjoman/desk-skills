@@ -271,6 +271,7 @@ function runningCheck(checks, now) {
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
 function draftNeed(q, t, needs, merging) {
   const u = t.undraft;
+  if (heldDraft(t)) return needs(['held by you in draft', null], [' · undraft it to release it', null]);
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
@@ -321,6 +322,12 @@ const stalledFor = (t, now) => {
 // A done ticket whose PR the last pass read as open or closed unmerged. One merged, with no PR, or not
 // read yet is done, as unmergedBlockers takes it.
 const prRow = (t) => !t?.merged_at && ['OPEN', 'CLOSED'].includes(prStatusOf(t)?.state);
+// A PR the user put back to draft, which the last pass recorded as their hold (`undraft` held):
+// nothing undrafts or merges it until they undraft it.
+export const heldDraft = (t) => {
+  const ps = prStatusOf(t);
+  return ps?.state === 'OPEN' && ps.isDraft === true && t.undraft?.call === 'held' && (t.undraft.pr == null || t.undraft.pr === ps.pr);
+};
 // The fix try a requeued ticket is on, until its worker finishes.
 const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : null);
 
@@ -1878,6 +1885,10 @@ function moveOf(r, row, k, t, h, now) {
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${f ? `${segText(fixSegs(f, true))}, ` : ''}${runningStage(r, row)}.` };
+  if (heldDraft(t)) {
+    return { text: `Needs you. Held by you: you put its PR #${t.result.pr} back to draft, so no pass undrafts it and nothing merges it.`,
+      lead: 'Undraft it to release it, and it merges once it is green:', cmds: [`gh pr ready ${t.result.pr} --repo ${r.slug.replace('__', '/')}`] };
+  }
   if (row.pr) {
     const m = segText(prSegs(r, t, now).slice(2));
     return { text: m ? `${groupOf(k) === 'needs' ? 'Needs you' : 'Moves without you'}: PR #${t.result.pr}, ${m}.` : `PR #${t.result.pr}.` };

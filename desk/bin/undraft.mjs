@@ -13,6 +13,8 @@
 //           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
+//   held    (personHold, read by the pass before acting on any other call) a person put it back to
+//           draft: it stays draft, and nothing undrafts it or sends it to a worker until they undraft it
 //   review  no review verdict the pass can read is at its head (none posted, one it cannot read, or
 //           one for an older head that more than merges of the base have moved past), or desk-gate's
 //           verdict check alone is red, as it is on a carried verdict: the pass sends
@@ -210,6 +212,21 @@ function buildCall(gate, cfg, n, head) {
 // §3 pr-conflict-unreviewed and pr-conflict-reviewed. With no handle to tell them apart, everyone counts.
 export function humanReviewed(pr, handle) {
   return [...(pr.reviews ?? []), ...(pr.comments ?? [])].some((x) => isHuman(x.author, handle));
+}
+
+// Whether a person holds a ticket's draft PR #n by having put it back to draft: { why, action }, or
+// null. The pass's own undraft of #n (the ticket's `undraft` record says `ready`), or a hold already
+// recorded, settles it with no read. Otherwise `redrafts` is the PR's convert_to_draft events,
+// [{ at, by }] oldest first: nothing in a batch converts a ticket's PR back, so any one is a person's.
+// REDRAFT_JQ reads them from the PR's issue events, one `<at>\t<by>` line each.
+export const REDRAFT_JQ = '.[] | select(.event == "convert_to_draft") | [.created_at, (.actor.login // "")] | @tsv';
+export function personHold(t, n, redrafts = []) {
+  const was = t.undraft?.pr == null || t.undraft.pr === n ? t.undraft ?? {} : {};
+  if (was.call === 'held') return { why: was.why, action: was.action };
+  const last = redrafts.at(-1);
+  if (was.call !== 'ready' && !last) return null;
+  const how = last ? `${last.by ? ` by ${last.by}` : ''}${last.at ? ` at ${last.at}` : ''}` : ' after the pass undrafted it';
+  return { why: `it was put back to draft${how}`, action: `undraft #${n} to release it; the merge driver then merges it once it is green` };
 }
 
 // t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, comments, checks, carry }
