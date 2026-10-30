@@ -1190,11 +1190,12 @@ const SUPPLIER_W = 10, FOR_W = 24;
 
 // What a supplier's figure leaves out: a bill that can't be read, a figure not read today, use AWS
 // credits covered, CI minutes GitHub discounted in full, a Neon org on the free plan.
-function supplierTag(x, s, now) {
+// The AWS screen leaves credits out (`credits` false): its notes say what they covered.
+function supplierTag(x, s, now, { credits = true } = {}) {
   if (x.cantRead?.supplier === s) return [x.cantRead.text ? `◌ ${x.cantRead.text}` : `◌ can't read: billed to account ${x.cantRead.account}`, GREY];
   const stale = staleReads(x, now).find((r) => r.supplier === s);
   if (stale) return [`◌ last read ${dayMonth(stale.at)}, ${daysAgo(stale.days)}`, GREY];
-  if (s === 'aws' && x.credits > 0) return ['▲ on credits', WARN];
+  if (s === 'aws' && credits && x.credits > 0) return ['▲ on credits', WARN];
   if (s === 'github' && x.free) return ['public, so its CI is free', GREY];
   if (s === 'neon' && x.freePlan) return ['free plan', GREY];
   return null;
@@ -1276,8 +1277,75 @@ function githubParts(cache, name, period, total) {
   return lines;
 }
 
+// An AWS service's plain name and AWS's own short one, by Cost Explorer's service name. A service
+// with none reads as Cost Explorer names it, with no AWS NAME.
+const AWS_SERVICE = {
+  'Amazon Relational Database Service': ['Database', 'RDS'],
+  'Amazon Elastic Container Service': ['Containers', 'ECS'],
+  AmazonCloudWatch: ['Logs and metrics', 'CloudWatch'],
+  'Amazon Virtual Private Cloud': ['Network', 'VPC'],
+  'AWS Step Functions': ['Workflows', 'Step Functions'],
+  'Amazon Simple Storage Service': ['File storage', 'S3'],
+  'Amazon EC2 Container Registry (ECR)': ['Container images', 'ECR'],
+  'AWS Secrets Manager': ['Secrets', 'Secrets Manager'],
+  'Amazon API Gateway': ['API', 'API Gateway'],
+  'AWS Cost Explorer': ['Cost reports', 'Cost Explorer'],
+  Tax: ['Tax', 'Tax'],
+};
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// "2027-03-31" -> "31 Mar 2027"; anything else as it is.
+const ymdText = (s) => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(s ?? ''); return m ? `${Number(m[3])} ${MONTHS[m[2] - 1]} ${m[1]}` : String(s ?? ''); };
+
+// A name's AWS lines for `period`, its profiles' merged by service: the profiles its AWS figure
+// counts (chargesByName), so the lines add up to it.
+function awsLinesOf(cache, name, period) {
+  const by = new Map();
+  for (const p of Object.values(cache?.aws?.profiles ?? {})) {
+    if (p?.name !== name || !p.lines || p.period?.year !== period.year || p.period?.month !== period.month) continue;
+    for (const l of p.lines) {
+      const m = by.get(l.service) ?? { service: l.service, used: 0, credits: 0, charged: 0, tax: !!l.tax };
+      for (const k of ['used', 'credits', 'charged']) m[k] = Math.round(m[k] * 100 + (l[k] ?? 0) * 100) / 100;
+      by.set(l.service, m);
+    }
+  }
+  return [...by.values()].sort((a, b) => Number(a.tax) - Number(b.tax) || b.used - a.used || a.service.localeCompare(b.service));
+}
+
+// AWS's part of a name's charge: each service, largest first and tax last, then the total. On
+// credits, what each used, what credits covered and what was charged, and notes on the credits and
+// on the balance setup saved. lines: the cache's AWS lines for the name; mine: its AWS entries.
+function awsParts(lines, mine) {
+  const c = (n) => Math.round((n ?? 0) * 100);
+  const sum = (k) => lines.reduce((a, l) => a + c(l[k]), 0);
+  const credited = sum('credits') > 0;
+  const named = lines.map((l) => ({ ...l, plain: AWS_SERVICE[l.service]?.[0] ?? l.service, own: AWS_SERVICE[l.service]?.[1] ?? '' }));
+  const neg = (n) => (c(n) ? `−${usd(n)}` : usd(0));
+  const ww = Math.max(20, ...named.map((l) => l.plain.length + 2)), nw = 18;
+  const most = (k, f = usd) => Math.max(f(sum(k) / 100).length, ...lines.map((l) => f(l[k]).length));
+  const uw = Math.max(9, most('used') + 3), kw = Math.max(11, most('credits', neg) + 3), aw = Math.max(11, most('charged') + 3);
+  const lead = (l) => [[`  ${pad(l.plain, ww)}`, null], [pad(l.own, nw), GREY]];
+  const out = [''];
+  if (!credited) {
+    out.push(bold(`  ${pad('SERVICE', ww)}${pad('AWS NAME', nw)}${rpad('CHARGED', aw)}`),
+      ...named.map((l) => segLine([...lead(l), [rpad(usd(l.charged), aw), null]])),
+      segLine([[`  ${pad('total', ww + nw)}`, GREY], [rpad(usd(sum('charged') / 100), aw), BOLD]]));
+    return { lines: out, notes: [] };
+  }
+  out.push(bold(`  ${pad('SERVICE', ww)}${pad('AWS NAME', nw)}${rpad('USED', uw)}${rpad('CREDITS', kw)}${rpad('CHARGED', aw)}`),
+    ...named.map((l) => segLine([...lead(l), [rpad(usd(l.used), uw), WARN], [rpad(neg(l.credits), kw), null], [rpad(usd(l.charged), aw), null]])),
+    segLine([[`  ${pad('total', ww + nw)}`, GREY], [rpad(usd(sum('used') / 100), uw), WARN], [rpad(neg(sum('credits') / 100), kw), BOLD], [rpad(usd(sum('charged') / 100), aw), BOLD]]));
+  const [used, credits] = [usd(sum('used') / 100), usd(sum('credits') / 100)];
+  const notes = [{ tag: '▲ credits', sgr: WARN, text: [[sum('credits') >= sum('used')
+    ? `Credits cover all ${used} of this month's use so far. It becomes a charge when they run out.`
+    : `Credits covered ${credits} of ${used} of this month's use so far. The rest was charged.`, null]] }];
+  const saved = mine.filter((e) => e.credit?.usd != null);
+  notes.push(...(saved.length ? saved.map((e) => ({ tag: '◌ balance', sgr: GREY, text: [[`Credit left was ${usd(e.credit.usd)} on ${ymdText(e.credit.entered)}, ending ${ymdText(e.credit.ends)}.`, null]] }))
+    : [{ tag: '◌ balance', sgr: GREY, text: [["Credit left is unknown: AWS doesn't report it. Add the balance and end date in desk-setup.", null]] }]));
+  return { lines: out, notes };
+}
+
 // One supplier's part of a name's charge this month: the line with what it charged, then for GitHub
-// what it was charged for. `bill` is the page `o` opens.
+// what it was charged for, and for AWS each service. `bill` is the page `o` opens.
 export function supplierPageParts(repos, name, supplier, { now = Date.now(), costs = readCosts(costsPath()), cache: raw = readCache(), width = null } = {}) {
   const mine = costs.entries.filter((e) => e.name === name && e.supplier === supplier);
   const bill = billingUrl(supplier, { team: mine[0]?.team });
@@ -1289,11 +1357,13 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
   const total = x.by[supplier] ?? null;
   const where = supplier === 'vercel' ? [...new Set(mine.map((e) => e.team).filter(Boolean))].map((t) => `team ${t}`)
     : supplier === 'aws' ? mine.map((e) => `account ${e.key}`) : [];
-  const tag = supplierTag(x, supplier, now);
+  const tag = supplierTag(x, supplier, now, { credits: supplier !== 'aws' });
   const charged = segLine([['charged ', GREY], [total == null ? '–' : usd(total), BOLD], [` by ${SUPPLIER_LABEL[supplier]} to ${name} in ${monthText(c.period)}`, GREY],
     ...(where.length ? [[` · ${where.join(', ')}`, GREY]] : []), ...(tag ? [['  ', null], tag] : [])]);
-  const body = supplier === 'github' && total != null ? githubParts(cache, name, c.period, total) : [];
-  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period) : [];
+  const awsLines = supplier === 'aws' && total != null ? awsLinesOf(cache, name, c.period) : [];
+  const aws = awsLines.length ? awsParts(awsLines, mine) : null;
+  const body = supplier === 'github' && total != null ? githubParts(cache, name, c.period, total) : aws?.lines ?? [];
+  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period) : aws?.notes ?? [];
   return { head: [charged, ...body], rows: [], foot: notes.length ? ['', ...noteLines(notes, 14, width)] : [], bill };
 }
 

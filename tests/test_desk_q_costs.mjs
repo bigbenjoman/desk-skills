@@ -460,6 +460,88 @@ H8.ui.finish(0);
 process.env.DESK_COST_DIR = MAIN;
 process.env.DESK_COSTS = env.DESK_COSTS;
 
+// ---- DS-295: the AWS screen, each service in plain words, credits apart, and the credit balance
+const svc = (plain, own, amount) => `  ${plain.padEnd(20)}${own.padEnd(18)}${amount.padStart(11)}`;
+const credSvc = (plain, own, used, credits, charged) => `  ${plain.padEnd(20)}${own.padEnd(18)}${used.padStart(9)}${credits.padStart(11)}${charged.padStart(11)}`;
+const FOREWATT_AWS = ['charged $119.10 by AWS to forewatt in October, 1–26 · account forewatt', '', svc('SERVICE', 'AWS NAME', 'CHARGED'),
+  svc('Database', 'RDS', '$56.87'), svc('Containers', 'ECS', '$19.08'), svc('Logs and metrics', 'CloudWatch', '$11.98'), svc('Network', 'VPC', '$5.66'),
+  svc('Workflows', 'Step Functions', '$3.08'), svc('File storage', 'S3', '$1.81'), svc('Container images', 'ECR', '$0.42'), svc('Secrets', 'Secrets Manager', '$0.34'),
+  svc('API', 'API Gateway', '$0.01'), svc('Tax', 'Tax', '$19.85'), `  ${'total'.padEnd(38)}${'$119.10'.padStart(11)}`];
+const PR_NINJA_AWS = ['charged $0.00 by AWS to pr-ninja in October, 1–26 · account prninja-admin', '', credSvc('SERVICE', 'AWS NAME', 'USED', 'CREDITS', 'CHARGED'),
+  credSvc('Database', 'RDS', '$19.25', '−$19.25', '$0.00'), credSvc('Logs and metrics', 'CloudWatch', '$6.78', '−$6.78', '$0.00'),
+  credSvc('Network', 'VPC', '$3.20', '−$3.20', '$0.00'), credSvc('Container images', 'ECR', '$2.50', '−$2.50', '$0.00'),
+  credSvc('total', '', '$31.73', '−$31.73', '$0.00')];
+const FULL_COVER = "Credits cover all $31.73 of this month's use so far. It becomes a charge when they run out.";
+const NO_BALANCE = "Credit left is unknown: AWS doesn't report it. Add the balance and end date in desk-setup.";
+// The AWS screen as plain lines, on a reading and the cost sources at DESK_COSTS.
+const awsText = (name, cache = fixture()) => { const p = Q.supplierPageParts([], name, 'aws', { now: FIXED, cache }); return [...p.head, ...p.foot].map((l) => (typeof l === 'string' ? l : l.line)); };
+const note = (lines, tag) => lines.find((l) => l.slice(6).startsWith(tag))?.slice(21) ?? null;
+
+// forewatt read today, so its charged line ends where the board's does.
+const FA = await costsAt(fresh);
+await FA.press('\x1b[B');
+await FA.press('\x1b[B');
+await FA.press('\r');
+const repoAws = cents(supRaw(FA, 'AWS').replace(ANSI, '').slice(36, 47).trim());
+await FA.press('\r');
+const ffa = FA.frame();
+t('DS-295 AC1 enter on AWS: desk-q › costs › forewatt › AWS, the charged line and a SERVICE / AWS NAME / CHARGED table, largest first, Tax last, a total row',
+  `${FA.crumbs()} | ${FA.tabOn()}\n${block(FA, FOREWATT_AWS[0], FOREWATT_AWS.length)}`, `desk-q › costs › forewatt › AWS | 5 Costs\n${FOREWATT_AWS.join('\n')}`);
+t('DS-295 AC2 AWS NAME is grey', ['RDS', 'CloudWatch', 'Tax'].every((n) => FA.raw().some((l) => l.includes(`${GREY}${n}  `))), true);
+const awsHead = ffa.indexOf(FOREWATT_AWS[2]), awsTot = ffa.findIndex((l) => l.startsWith('  total '));
+const awsRows = ffa.slice(awsHead + 1, awsTot).map((l) => cents(l.slice(40).trim()));
+const awsTotal = cents(ffa[awsTot]?.slice(40).trim() ?? 'NaN');
+t('DS-295 AC4 the rows sum to the total row and to the AWS row on forewatt\'s screen, in cents',
+  `${awsRows.length} ${awsRows.reduce((a, c) => a + c, 0) === awsTotal} ${awsTotal === repoAws} ${repoAws}`, '10 true true 11910');
+t('DS-295 AC11 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
+  `${ffa.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${ffa[keysAt(ffa) - 2]?.startsWith('Claude usage  ')} ${ffa[keysAt(ffa) - 1]}`, '0 true ');
+t('DS-295 AC10 the keys say o opens Cost Explorer', ffa.slice(keysAt(ffa)).join(' ').includes('o open Cost Explorer'), true);
+await FA.press('o');
+t('DS-295 AC10 o opens AWS Cost Explorer', FA.opened.join(' '), 'https://console.aws.amazon.com/costmanagement/home#/cost-explorer');
+FA.ui.finish(0);
+process.env.DESK_COST_DIR = MAIN;
+
+// AC3: a service desk has no plain name for reads as AWS names it, with no AWS NAME; SERVICE widens to fit it.
+const EC2 = 'Amazon Elastic Compute Cloud - Compute';
+t('DS-295 AC3 a service with no plain name in desk shows AWS\'s own', awsText('voicepa').slice(3, 5).join('\n'),
+  [`  ${EC2.padEnd(40)}${''.padEnd(18)}${'$1.33'.padStart(11)}`, `  ${'Tax'.padEnd(40)}${'Tax'.padEnd(18)}${'$0.26'.padStart(11)}`].join('\n'));
+
+// AC5, AC6, AC8: pr-ninja on credits, with no balance saved.
+const PN = await costsAt(null);
+await PN.press('\x1b[B');
+await PN.press('\r');
+await PN.press('\x1b[B');
+await PN.press('\x1b[B');
+await PN.press('\r');
+t('DS-295 AC5 pr-ninja on credits: USED, CREDITS and CHARGED columns, credits as negatives', `${PN.crumbs()}\n${block(PN, PR_NINJA_AWS[0], PR_NINJA_AWS.length)}`,
+  `desk-q › costs › pr-ninja › AWS\n${PR_NINJA_AWS.join('\n')}`);
+t('DS-295 AC5 USED is amber', ['$19.25', '$31.73'].every((a) => PN.raw().some((l) => l.includes(`${AMBER}${a.padStart(9)}`))), true);
+t('DS-295 AC6 credits covering all of the month\'s use: the ▲ credits note, amber', `${noteText(PN, '▲ credits')} | ${PN.raw().some((l) => l.includes(`${AMBER}▲ credits      `))}`, `${FULL_COVER} | true`);
+t('DS-295 AC8 no balance saved: a grey ◌ balance note', `${noteText(PN, '◌ balance')} | ${PN.raw().some((l) => l.includes(`${GREY}◌ balance      `))}`, `${NO_BALANCE} | true`);
+const fpn = PN.frame();
+t('DS-295 AC11 pr-ninja at 104 columns: no line cut or wider, the Claude usage line above the keys',
+  `${fpn.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fpn[keysAt(fpn) - 2]?.startsWith('Claude usage  ')}`, '0 true');
+PN.ui.finish(0);
+
+// AC7: credits covering part of the month's use.
+const part = fixture();
+Object.assign(part.aws.profiles['prninja-admin'].lines[0], { credits: 10, charged: 9.25 });
+part.aws.profiles['prninja-admin'].total = 9.25;
+const p7 = awsText('pr-ninja', part);
+t('DS-295 AC7 credits covering part of the month\'s use: the note says how much, and the table charges the rest',
+  `${note(p7, '▲ credits')} | ${p7[3]} | ${p7[0].startsWith('charged $9.25 ')}`,
+  `Credits covered $22.48 of $31.73 of this month's use so far. The rest was charged. | ${credSvc('Database', 'RDS', '$19.25', '−$10.00', '$9.25')} | true`);
+
+// AC9: a balance and end date saved in setup.
+process.env.DESK_COSTS = join(T, 'costs-balance.md');
+writeFileSync(process.env.DESK_COSTS, readFileSync(join(FIX, 'costs.md'), 'utf8')
+  .replace('| `prninja-admin` | `none` | `none` | `none` |', '| `prninja-admin` | `250` | `2027-03-31` | `2026-10-20` |'));
+const p9 = awsText('pr-ninja');
+t('DS-295 AC9 a saved balance: the ◌ balance note says what was entered and when, and when it ends',
+  `${note(p9, '◌ balance')} | ${note(p9, '▲ credits')}`, `Credit left was $250.00 on 20 Oct 2026, ending 31 Mar 2027. | ${FULL_COVER}`);
+process.env.DESK_COSTS = env.DESK_COSTS;
+t('DS-295 a name with no credits has no credits or balance note', `${note(awsText('forewatt'), '▲ credits')} ${note(awsText('forewatt'), '◌ balance')}`, 'null null');
+
 // ---- AC10: sources set up, no reading yet
 copyFileSync(join(FIX, 'costs.md'), env.DESK_COSTS);
 process.env.DESK_COST_DIR = join(T, 'no-reading');
