@@ -13,6 +13,12 @@
 //           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
+//   review  no review verdict the pass can read is at its head (none posted, one it cannot read, or
+//           one for an older head that more than merges of the base have moved past), or desk-gate's
+//           verdict check alone is red, as it is on a carried verdict: the pass sends
+//           it to a review worker (fix-tries.mjs reviewTry), and to the person once no try is left
+//   checks  a required check is red: the pass sends it to a fix worker (fix-tries.mjs draftChecksFix),
+//           and to the person once no try is left; `failing` is the gate's failing checks
 //   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
 //           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
 //           (fix-tries.mjs reviewFix), and only once no try is left, or the review lists none of them
@@ -27,12 +33,15 @@
 // the pass could not upload, no `_drag <file>_` placeholder left), and only then the grant: §3 pr-ready `yes`, or `ask` with the
 // batch's Stage 3 approval (queue approved.undraft). A feature spine is never undrafted here:
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
-// verdict it read, for the comment the PR gets on leaving draft (undraftComment).
+// verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
+// commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
 import { RERUNS_MAX } from './fix-tries.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
+// The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
+export const VERDICT_CHECK = 'desk-review verdict';
 
 // key=value pairs, as the §4 Clean review verdict row writes them.
 export function pairs(text) {
@@ -113,12 +122,38 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   return { clean: true, why: null, verdict: stated };
 }
 
+// Whether a review verdict posted on `from` still holds at `head`: `head` is reached from `from` by
+// merges of the base alone, each a two-parent merge whose second parent is on `base` and whose tree
+// is exactly the one git merges the two to (git merge-tree), so it resolved no conflict and added
+// nothing, and the PR's own commits are the ones reviewed. git(args) runs git and returns { ok, out };
+// false whenever git cannot say.
+export function verdictCarries({ from, head, base, git }) {
+  if (!from || !head || !base) return false;
+  const at = git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]);
+  if (!at.ok || !git(['merge-base', '--is-ancestor', at.out, head]).ok) return false;
+  const r = git(['rev-list', '--first-parent', '--parents', `${at.out}..${head}`]);
+  const chain = r.ok ? r.out.split('\n').filter(Boolean).map((l) => l.split(' ')) : [];
+  // The first-parent chain must come down to the reviewed commit itself, not pass it on a side branch.
+  if (!chain.length || chain[chain.length - 1][1] !== at.out) return false;
+  return chain.every(([c, ours, theirs, ...more]) => {
+    if (!theirs || more.length || !git(['merge-base', '--is-ancestor', theirs, base]).ok) return false;
+    const merged = git(['merge-tree', '--write-tree', '--no-messages', ours, theirs]);
+    const tree = git(['rev-parse', `${c}^{tree}`]);
+    return merged.ok && tree.ok && merged.out.split('\n')[0] === tree.out;
+  });
+}
+
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
-// review's line stating the §4 value, as a string).
-export function undraftComment(verdict, head, clean) {
+// review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on
+// when it was carried to this head.
+export function undraftComment(verdict, head, clean, carried = null) {
   const line = typeof verdict === 'string' ? verdict : Object.entries(verdict ?? {}).map(([k, x]) => `${k}=${x}`).join(' ');
   const what = typeof verdict === 'string' ? 'review' : 'desk-review verdict';
-  return `Out of draft: the ${what} posted on this head (\`${String(head ?? '').slice(0, 12)}\`) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
+  const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
+  if (carried) {
+    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base.\n\n> \`${line}\``;
+  }
+  return `Out of draft: the ${what} posted on this head (${short(head)}) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
 }
 
 // A red gate whose every failing check was cancelled or timed out: a `rerun` call while §3 ci-rerun is
@@ -168,10 +203,12 @@ function buildCall(gate, cfg, n, head) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
 }
 
-// t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks } (checks as
-// pr_status keeps them). cfg: { spine, perm, approved, localReview, clean, handle, required, advisory, permKey, judgement,
-// rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head, cooledDown (the last rerun has had its gap),
-// builds (§4 Check builds, parsed), built(head) -> the check build recorded at that head }.
+// t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, checks, carry } (checks
+// as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at the
+// head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
+// advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
+// cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
+// check build recorded at that head }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -192,8 +229,15 @@ export function undraftCall(t, pr, cfg) {
   // it against desk-review's own counts), and its P0s and P1s go the same way.
   const review = latestReview(pr.reviews, cfg.handle);
   const verdict = plain ? null : review?.verdict ?? null;
-  const v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
+  let v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
   const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
+  // A verdict for an older head that only merges of the base have moved past is read as at the head.
+  let carried = null;
+  if (!v.clean && !v.settle && found?.sha && pr.head && !pr.head.startsWith(found.sha) && pr.carry?.(found.sha)) {
+    v = { ...verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean), ...(plain ? { verdict: found } : {}) };
+    carried = found.sha;
+  }
+  const withCarried = (c) => (carried ? { ...c, carried } : c);
   // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
   const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;
   if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || gaps)) {
@@ -207,22 +251,37 @@ export function undraftCall(t, pr, cfg) {
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   // Checks a workflow skips on a draft never go green there, so only the person's undraft runs them.
   const skipped = gate.state !== 'pass' && skippedOnly(pr.checks);
-  if (gate.state !== 'pass' && !skipped) {
+  // A red check is a code change for a fix worker, and a head with no verdict to read is a review for a
+  // review worker: the pass sends them there (fix-tries.mjs), and to the person once no try is left.
+  // Cancelled or timed-out checks are re-run and §4 Check builds ones built first (above them here).
+  // desk-gate's verdict check reads the review on the head, not the code, so no fix turns it green:
+  // red alone, it is a review worker's (below), and beside other red checks the fix worker's review
+  // after its fix clears it.
+  const red = gate.state !== 'pass' && !skipped;
+  if (red) {
     const rr = rerunCall(gate, cfg);
     if (rr) return rr;
     const bc = buildCall(gate, cfg, n, pr.head);
     if (bc) return bc;
-    const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
-    return person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
   }
-  if (!v.clean) return person(v.why, v.settle ? `settle the findings or gaps on #${n}` : `review #${n} at its head`);
+  const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
+  if (red && (codeRed.length || !gate.failing.length)) {
+    const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
+    return { ...person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`), call: 'checks', failing: codeRed };
+  }
+  if (!v.clean && !v.settle) return { ...person(v.why, `review #${n} at its head`), call: 'review' };
+  if (!v.clean) return person(v.why, `settle the findings or gaps on #${n}`);
+  if (red) {
+    const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
+    return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
+  }
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
   if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
-  if (cfg.perm === 'yes') return { call: 'ready', why: null, note: null, verdict: read };
+  if (cfg.perm === 'yes') return withCarried({ call: 'ready', why: null, note: null, verdict: read });
   if (cfg.perm === 'ask' && cfg.approved) {
-    return { call: 'ready', why: null, verdict: read, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` };
+    return withCarried({ call: 'ready', why: null, verdict: read, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` });
   }
-  return person(`it is clean and green, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`);
+  return withCarried(person(`it is clean and green, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
 }

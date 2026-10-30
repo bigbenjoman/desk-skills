@@ -33,9 +33,9 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment } from './undraft.mjs';
+import { undraftCall, undraftComment, verdictCarries } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
 import { INTAKE_EVERY_MS } from './intake.mjs';
@@ -1500,7 +1500,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'rereview' ? ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it.
@@ -1680,6 +1680,8 @@ for (const m of merges) out.push(`merge recorded: ${m}`);
 // on the ticket as `undraft` and put to the person; a gh pr ready that fails is kept in the pass
 // record and tried again next pass, since the PR is still a draft.
 const undraftErrors = [];
+// §4 Checks workers can't fix, for a draft's red checks here and a ready PR's in the fix tries below.
+const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
 // What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
 const gateLists = () => {
   const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
@@ -1702,9 +1704,12 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
+    // A verdict for an older head holds at this one when only clean merges of the base came since.
+    const carry = (sha) => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok &&
+      verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git: (args) => shOut('git', ['-C', MAIN, ...args]) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
     if (!c) continue;
-    let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null };
+    let rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null, carried_from: c.carried ?? null };
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
     // fix worker, which reviews its new head again.
     // An interactive desk-review posts its P0s and P1s inline: unread, they leave only the body's.
@@ -1713,20 +1718,24 @@ if (drafts.length) {
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement }) : null;
+    // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
+    const rf = c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
+      : c.call === 'checks' && !operatorRow.errors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, operator: operatorRow.checks })
+        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why }) : null;
+    const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
     if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
     else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
     else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
-    else if (c.call === 'person' || c.call === 'findings') report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
-    else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}`);
+    else if (['person', 'findings', 'checks', 'review'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
+    else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}${carried}`);
     else {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
       if (r.ok) {
-        out.push(`undrafted: PR #${n} (${t.key}) at ${String(v.headRefOid).slice(0, 12)}; the merge driver merges it once it is green`);
-        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean)]);
+        out.push(`undrafted: PR #${n} (${t.key}) at ${String(v.headRefOid).slice(0, 12)}${carried}; the merge driver merges it once it is green`);
+        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean, c.carried)]);
         if (!said.ok) out.push(`undraft: PR #${n} (${t.key}) left draft, but its comment was not posted (${said.out.split('\n').pop()})`);
         if (c.note) {
           if (!existsSync(notesFile)) writeFileSync(notesFile, '# Batch notes\n\n');
@@ -1740,7 +1749,7 @@ if (drafts.length) {
       }
     }
     const was = t.undraft ?? {};
-    if (!DRY && ['call', 'why', 'action', 'sha'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
+    if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
   }
 }
 
@@ -1820,7 +1829,6 @@ function reviewComments(id) {
 // goes back to a fix worker on the same branch, at most twice (fix-tries.mjs). What no worker can
 // fix, a §4 Checks workers can't fix check or a third failure, is recorded on the ticket as `stuck`
 // and put to the person. The driver's per-head rerun record is read from its state directory.
-const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
 if (operatorRow.errors.length && undrafted.length) {
   out.push(`fix tries: none this pass, since config §4 Checks workers can't fix does not parse: ${operatorRow.errors.join(', ')} (want \`<check>: <what fixes it>\`). Run /desk-setup`);
 }
@@ -1871,7 +1879,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, at: PASS_AT }])}`, 'stuck=null');
-  out.push(`fix try ${f.try} of ${f.of}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  out.push(`${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {

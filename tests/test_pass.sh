@@ -1384,17 +1384,69 @@ check "DS-281 AC1 its briefing quotes the P1 with its file and line" \
   'grep -q "^- P1: src/money.ts:12         second currency formatter$" "$T/state-r/briefings/R-1.md" && ! grep -q "pager.ts" "$T/state-r/briefings/R-1.md"'
 check "DS-281 AC4 a PR whose fix worker is running is not requeued again" '[ "$(field R-1 fix_tries | jq length)" = 1 ] && [ "$(grep -c "^R-1 " "$T/spawns")" = 1 ]'
 
-# R-1's worker pushed H2 and has not reviewed it yet: no undraft, no second try.
+# R-1's worker pushed H2 and finished without reviewing it: no undraft, and no second fix try, but
+# (DS-316) a review worker for the new head.
 q set R-1 state=done session_id=null result.pr=721; frx 721 "$H2" "$H1" 'p0=0 p1=1 p2=1'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-281 AC2 a new head with no review of its own is not undrafted, nor requeued" \
-  '! grep -q "^pr ready 721" "$T/gh-calls" && [ "$(field R-1 fix_tries | jq length)" = 1 ] && [ "$(field R-1 state)" = "\"done\"" ] && field R-1 undraft.why | grep -q "not the head 222222222"'
+check "DS-281 AC2 a new head with no review of its own is not undrafted, and goes to a review worker, not a fix" \
+  '! grep -q "^pr ready 721" "$T/gh-calls" && [ "$(field R-1 fix_tries | jq -c "[.[].kind]")" = "[\"review\",\"rereview\"]" ] && [ "$(field R-1 state)" = "\"triaged\"" ] && field R-1 undraft.why | grep -q "not the head 222222222"'
 # Its review of H2 is clean: out of draft, with one comment quoting the verdict.
-frx 721 "$H2" "$H2" 'p0=0 p1=0 p2=0'
+q set R-1 state=done session_id=null result.pr=721; frx 721 "$H2" "$H2" 'p0=0 p1=0 p2=0'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-281 AC3 a clean re-review on the new head undrafts it" '[ "$(grep -c "^pr ready 721 --repo acme/widgets" "$T/gh-calls")" = 1 ]'
 check "DS-281 AC3 with one comment saying its review on that head was clean, quoting the verdict" \
   '[ "$(grep -c "^pr comment 721 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.222222222222.) is clean" "$T/gh-calls")" = 1 ] && grep -q "^> .sha=$H2 p0=0 p1=0 p2=0 deferred=0" "$T/gh-calls"'
+
+# ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
+# worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's
+# reviewed commit CA has main merged in (CB); C-2 has a commit of its own after CA.
+git init -q --bare -b main "$T/carry-origin.git"
+git init -q -b main "$T/carry"; git -C "$T/carry" remote add origin "$T/carry-origin.git"
+cmt(){ echo "$2" > "$T/carry/$1"; git -C "$T/carry" add -A; git -C "$T/carry" commit -q -m "$1"; git -C "$T/carry" rev-parse HEAD; }
+cmt a.txt base >/dev/null
+git -C "$T/carry" checkout -q -b fix/C-1; CA=$(cmt b.txt pr)
+git -C "$T/carry" checkout -q main; cmt c.txt moved >/dev/null
+git -C "$T/carry" checkout -q fix/C-1; git -C "$T/carry" merge -q --no-edit main; CB=$(git -C "$T/carry" rev-parse HEAD)
+git -C "$T/carry" checkout -q -b fix/C-2 "$CA"; cmt d.txt own >/dev/null; git -C "$T/carry" merge -q --no-edit main; CC=$(git -C "$T/carry" rev-parse HEAD)
+git -C "$T/carry" checkout -q main; git -C "$T/carry" push -q origin main fix/C-1 fix/C-2
+# redcheck <n> <run id>: its tests check failed. plainrev <n>: its review has no desk-review verdict line.
+redcheck(){ node -e 'const fs = require("fs"); const [f, id] = process.argv.slice(1); const j = JSON.parse(fs.readFileSync(f, "utf8"));
+  j.statusCheckRollup = [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${id}/job/1` }]; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json" "$2"; }
+plainrev(){ node -e 'const fs = require("fs"); const f = process.argv[1]; const j = JSON.parse(fs.readFileSync(f, "utf8")); j.reviews[0].body = "Verdict: p0=0 p1=0 gaps=0"; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json"; }
+sed "s#$T/repo#$T/carry#" "$T/config-r.md" > "$T/config-c.md"
+export DESK_CONFIG="$T/config-c.md" DESK_QUEUE="$T/queue-c.json" DESK_AUTOPILOT_STATE="$T/state-c"
+mkdir -p "$T/state-c/logs"
+q init c; q set-batch concurrency=6
+for k in 1 2 3 4 5 6; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "result.pr=75$k"; done
+frx 751 "$CB" "$CA" 'p0=0 p1=0 p2=0'
+frx 752 "$CC" "$CA" 'p0=0 p1=0 p2=0'
+frx 753 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 753 953
+q set C-4 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"checks","what":"red: tests"}]'; frx 754 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 754 954
+frx 755 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 755
+q set C-6 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks"},{"try":2,"head":"'"$H1"'","kind":"rereview"}]'; frx 756 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 756
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-316 AC1 a verdict carried across a merge of the base undrafts the PR at the new head" \
+  'grep -q "^pr ready 751 --repo acme/widgets" "$T/gh-calls" && [ "$(field C-1 state)" = "\"done\"" ] && [ "$(field C-1 fix_tries)" = null ]'
+check "DS-316 AC1 and the pass record says it was carried from the reviewed commit" \
+  '[ "$(field C-1 undraft.carried_from)" = "\"$CA\"" ] && echo "$out" | grep -qF "undrafted: PR #751 (C-1) at ${CB:0:12}; its review verdict is carried from ${CA:0:12}, as only clean merges of main came since"'
+check "DS-316 AC1 its comment names the commit reviewed and the head it holds on" \
+  'grep -qF "pr comment 751 --repo acme/widgets --body Out of draft: the desk-review verdict posted on \`${CA:0:12}\` is clean" "$T/gh-calls" && grep -qF "holds on this head (\`${CB:0:12}\`)" "$T/gh-calls"'
+check "DS-316 AC2 a verdict its own commits moved past sends the head to a review worker" \
+  '[ "$(field C-2 state)" = "\"triaged\"" ] && [ "$(field C-2 fix.kind)" = "\"rereview\"" ] && [ "$(field C-2 fix.head)" = "\"$CC\"" ] && ! grep -q "^pr ready 752" "$T/gh-calls" && echo "$out" | grep -qF "review try 1 of 2: C-2 requeued for PR #752 — review its head: its review verdict is for ${CA:0:9}"'
+check "DS-316 AC2 and it is not put to the person" '! echo "$out" | grep -q "C-2: DRAFT"'
+check "DS-316 AC4 a red required check sends the draft to a fix worker, with the check and its run" \
+  '[ "$(field C-3 state)" = "\"triaged\"" ] && [ "$(field C-3 fix | jq -c "[.kind, .draft, .what, .checks[0].url]")" = "[\"checks\",true,\"red: tests\",\"https://github.com/acme/widgets/actions/runs/953\"]" ] && ! echo "$out" | grep -q "C-3: DRAFT"'
+check "DS-316 AC5 still red at a head a fix try was made for: stuck, with why" \
+  '[ "$(field C-4 state)" = "\"done\"" ] && [ "$(field C-4 stuck.why)" = "\"still red after 1 fix try: tests\"" ] && echo "$out" | grep -q "C-4: STUCK — PR #754: still red after 1 fix try: tests"'
+check "DS-316 AC3 a review with no desk-review verdict line sends the head to a review worker" \
+  '[ "$(field C-5 state)" = "\"triaged\"" ] && [ "$(field C-5 fix.what)" = "\"review its head: no desk-review verdict is posted on it\"" ]'
+check "DS-316 AC5 with its tries spent it reaches the person, with what the pass read last" \
+  '[ "$(field C-6 state)" = "\"done\"" ] && [ "$(field C-6 stuck.why)" = "\"no review verdict readable at its head after 2 fix tries: no desk-review verdict is posted on it\"" ] && echo "$out" | grep -q "C-6: STUCK — PR #756: no review verdict readable"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-316 AC2 the review worker's task is to review the head and post it, changing no code" \
+  'grep -q "^C-2 .*Your task is review try 1 of 2 on PR #752.*Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code" "$T/spawns"'
+check "DS-316 AC4 the fix worker's briefing names the failing check, its run and how to read its log" \
+  'grep -q "^- tests: https://github.com/acme/widgets/actions/runs/953$" "$T/state-c/briefings/C-3.md" && grep -q "gh run view <run id> --log-failed" "$T/state-c/briefings/C-3.md"'
 
 # ---- a review whose P0s and P1s are posted inline goes to a fix worker too
 export DESK_QUEUE="$T/queue-ri.json" DESK_AUTOPILOT_STATE="$T/state-ri"
@@ -1545,8 +1597,8 @@ built(){ for _ in $(seq 1 100); do [ -f "$T/state-b/check-builds/$1-$2.code" ] &
 check "DS-327 AC1 a draft red only on a named check gets its command, once, in its worktree at its head" \
   '[ "$(cat "$T/built")" = "$(cd "$T/wt/V-1" && pwd -P) $HB1" ] && echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Flows image\" red at ${HB1:0:9}, which §4 Check builds clears"'
 check "DS-327 AC1 while it runs, the PR is not put to the person" '[ "$(field V-1 undraft.call)" = "\"build\"" ] && ! echo "$out" | grep -q "V-1: DRAFT"'
-check "DS-327 AC4 a red check the row does not name is handled as before: nothing is built" \
-  '[ ! -e "$T/state-b/check-builds/762-$HB2.json" ] && echo "$out" | grep -q "V-2: DRAFT — PR #762 stays draft: its checks are not green: .*Fix or re-run the checks on #762"'
+check "DS-327 AC4 a red check the row does not name is handled as before: nothing is built, and a fix worker gets it (DS-316)" \
+  '[ ! -e "$T/state-b/check-builds/762-$HB2.json" ] && [ "$(field V-2 state)" = "\"triaged\"" ] && echo "$out" | grep -q "fix try 1 of 2: V-2 requeued for PR #762"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-327 AC1 once it succeeds, the check is re-run with --failed" '[ "$(grep -c "^run rerun 9001 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ]'
 check "DS-327 AC1 and the PR is not put to the person" '[ "$(field V-1 undraft.call)" = "\"rebuilt\"" ] && ! echo "$out" | grep -q "V-1: DRAFT"'
