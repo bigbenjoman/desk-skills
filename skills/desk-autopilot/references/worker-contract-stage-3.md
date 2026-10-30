@@ -86,6 +86,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   `gh run list --workflow <file>.yml --branch <your branch> --limit 1 --json databaseId,status`,
   then park on it with `AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`: you cannot wait, and the
   first pass after the run finishes requeues you with its conclusion. Otherwise park naming the row.
+  Which entry you start, and the line on why in that park, follow the Stage 4 file's "A CI or
+  end-to-end run you ask for is the narrowest one that covers your change": read it first.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
   is `yes`.
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,

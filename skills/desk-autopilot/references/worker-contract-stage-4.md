@@ -125,6 +125,25 @@ are yours to run too, capped and locked:
   follow §3 `tests-shared-db`. With a blank database, a suite that needs one is a park naming the
   suite, not a skip.
 
+**A CI or end-to-end run you ask for is the narrowest one that covers your change.** Whether you park
+asking for a run or run one of the §4 Worker workflows commands your settings allow, the request
+names the tag, spec or project to run (a workflow input such as `suite=billing`, a `--grep @billing`,
+a spec file, a test project) and gives one line on why that covers the change: which tests exercise
+the code you touched. Find them before you ask: `rg -l` the changed component, route or symbol across
+the end-to-end directory, then read the tags on the specs it names. For a run you start, you cannot
+add or change an input, so narrowest means choosing among the §4 Worker workflows entries as
+listed, and the line on why goes in the park on its run id, after the run id.
+
+- **Every test is the exception.** A request for everything (`all`, or no filter) states why nothing
+  narrower covers the change, such as a shared layout or config every journey loads. "To be safe" is
+  not a reason: a full run on a hosted runner can take over an hour, hang, and cost money, for a
+  change two specs cover.
+- **A tag the workflow does not offer is said, not widened.** Where the covering tests sit under a
+  tag the workflow has no input for (it offers `all`, `smoke` and `auth`, and yours are `@billing`),
+  never fall back to everything: say in the park that the workflow does not offer it, name the tag
+  that would cover the change (`suite=billing`, or the specs by file), and leave the person to add the
+  input or run those specs.
+
 ### Self-review — `desk-ticket` Stage 4b
 
 Run §4 Local review command on your branch once the change is verified and **before you capture any
