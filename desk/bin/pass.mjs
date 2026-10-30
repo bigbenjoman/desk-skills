@@ -974,7 +974,11 @@ const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && spawnable.length && !spawnHeld && !lowMemory) {
+// A base gate that failed on a conflict can start a base conflict fix worker with no ticket to spawn,
+// so it counts under the lock as a ticket's spawn does. Pacing holds no fix try (below).
+const gateFixDue = E.batchBase() != null && fresh.gate?.state === 'failed' && Array.isArray(fresh.gate.conflict) && !fresh.base_fix?.running;
+const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !(held === PACE_HELD ? null : held));
+if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;

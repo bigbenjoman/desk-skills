@@ -191,6 +191,17 @@ live; pass
 check "DS-320 AC3 while it runs, the gate still waits on it" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [[ "$out" == *"BASE GATE: waits on the conflict fix worker on feat/x"* ]]'
 rm -f "$T/agents.json"
 
+# The gate's conflict with no ticket to spawn still counts under the shared lock: with a running
+# sibling batch in this repo and the lock unmakeable, the try waits rather than count a slot unlocked.
+: > "$T/spawns"; fresh bgatelock; feature; fixrow yes; conflict; node "$B/queue.mjs" set T-1 state=done >/dev/null
+node "$B/queue.mjs" set-batch "gate={\"state\":\"failed\",\"sha\":\"$(origin_tip)\",\"failures\":[\"merging main into feat/x conflicts (a.txt)\"],\"conflict\":[\"a.txt\"]}" >/dev/null
+SIB="$DESK_HOME/repos/acme__widgets/queue.json"; mkdir -p "$(dirname "$SIB")"
+echo '{"tickets":{"S-1":{"key":"S-1","state":"running"}}}' > "$SIB"; : > "$T/not-a-dir"
+out=$(DESK_REPO_OVERRIDE=acme/widgets DESK_LOCK_DIR="$T/not-a-dir" node "$B/pass.mjs" 2>&1); rc=$?
+check "DS-320 a gate conflict with a running sibling batch and no lock starts no fix worker" \
+  '! grep -q "^base-" "$T/spawns" && [[ "$out" == *"repo workers: nothing starts this pass"*"cannot be made"* ]] && [[ "$out" == *"starts once a worker may"* ]]'
+rm -f "$SIB" "$T/not-a-dir"
+
 # A worker whose session hangs on after its park has finished: it is stopped, and the base goes to the
 # person, rather than every later pass waiting on it.
 : > "$T/spawns"; : > "$T/kills"; fresh bhang; feature; fixrow yes; conflict; pass; live
