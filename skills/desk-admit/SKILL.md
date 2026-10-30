@@ -48,8 +48,8 @@ Each `plan <EPIC> as a feature batch beside the standing batch: /desk-autopilot 
 the user wants the epic run exactly as `/desk-autopilot <EPIC>` runs it: its own feature batch, beside
 the standing batch, which carries on untouched. Load `desk-autopilot` and run its epic flow for
 `<EPIC>` (*An epic as a batch*, from Stage 0), plan approval included; do not ask first how the epic
-should run. More than one such line: run the first; the others wait, since a repo runs one feature
-batch at a time.
+should run. More than one such line: run the first, then each of the others in turn; every epic gets
+its own feature batch, on its own branch.
 
 ## 2. Refused (exit 11)
 
