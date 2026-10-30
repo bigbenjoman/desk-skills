@@ -4,6 +4,10 @@ Part of the autopilot worker contract, read when you reach Stage 5, even when th
 evidence, and before you push or open a PR (or earlier, as the core says). It binds exactly as the
 core does.
 
+**A park asking for a CI or end-to-end run**, at Stage 7 as anywhere, follows the Stage 4 file's "A
+CI or end-to-end run you ask for is the narrowest one that covers your change": a session that
+started at Stage 7 has not read it, so read it before you write that park.
+
 ## 4. Before you push: rebase
 
 The default branch moves while you work. `git fetch origin`, and if

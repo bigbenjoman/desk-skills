@@ -91,6 +91,12 @@ t('DS-356 AC2 a request for every test says why nothing narrower covers it',
   stage4.includes('**Every test is the exception.** A request for everything (`all`, or no filter) states why nothing narrower covers the change'), true);
 t('DS-356 AC3 a tag the workflow does not offer is named in the park, not widened to everything',
   stage4.includes('**A tag the workflow does not offer is said, not widened.**') && stage4.includes('never fall back to everything: say in the park that the workflow does not offer it, name the tag that would cover the change'), true);
+t('DS-356 AC1 a started run chooses among the listed entries, and its why goes in the park on its run id',
+  stage4.includes('narrowest means choosing among the §4 Worker workflows entries as listed, and the line on why goes in the park on its run id'), true);
+t('DS-356 AC1 the Stage 5 file sends a Stage 7 session asking for a run to the Stage 4 rule',
+  stage5.replace(/\s+/g, ' ').includes('a session that started at Stage 7 has not read it, so read it before you write that park.'), true);
+t('DS-356 AC1 the Stage 3 workflow-dispatch rule points at the Stage 4 rule',
+  stage3.replace(/\s+/g, ' ').includes('follow the Stage 4 file\'s "A CI or end-to-end run you ask for is the narrowest one that covers your change": read it first.'), true);
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');

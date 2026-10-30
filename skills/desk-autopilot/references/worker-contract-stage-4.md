@@ -130,7 +130,9 @@ asking for a run or run one of the §4 Worker workflows commands your settings a
 names the tag, spec or project to run (a workflow input such as `suite=billing`, a `--grep @billing`,
 a spec file, a test project) and gives one line on why that covers the change: which tests exercise
 the code you touched. Find them before you ask: `rg -l` the changed component, route or symbol across
-the end-to-end directory, then read the tags on the specs it names.
+the end-to-end directory, then read the tags on the specs it names. For a run you start, you cannot
+add or change an input, so narrowest means choosing among the §4 Worker workflows entries as
+listed, and the line on why goes in the park on its run id, after the run id.
 
 - **Every test is the exception.** A request for everything (`all`, or no filter) states why nothing
   narrower covers the change, such as a shared layout or config every journey loads. "To be safe" is
