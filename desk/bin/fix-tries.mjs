@@ -2,7 +2,9 @@
 // FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
 // So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
 // yes a requirement gap (reviewFix), within the same tries, and one whose review gaps the person
-// ruled on through desk-needs-you (gapsFix), outside them.
+// ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
+// (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
+// (reviewTry) to a review worker, both within the same tries.
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -37,6 +39,24 @@ export function parseOperatorChecks(items) {
 
 export const runUrl = (repo, id) => (id ? `https://github.com/${repo}/actions/runs/${id}` : null);
 const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
+// A fix try already made for this head: one whose worker finished without moving it. A review try
+// (kind `rereview`) moves no head by design, so it does not count here.
+const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview');
+
+// A gate's failing checks, one per name, split into those a worker fixes and those §4 Checks workers
+// can't fix names ({ name, command }).
+function splitFailing(failing, operator) {
+  const all = [...new Map(failing.map((f) => [f.name, f])).values()];
+  const op = new Map((operator ?? []).map((o) => [o.name, o.command]));
+  return { mine: all.filter((f) => !op.has(f.name)), notMine: all.filter((f) => op.has(f.name)).map((f) => ({ name: f.name, command: op.get(f.name) })) };
+}
+const operatorStuck = (notMine) => ({ call: 'stuck', why: notMine.map((o) => `${o.name} · ${o.command}`).join('; ') });
+// A red-checks fix: each check a worker fixes with its run, and those it leaves to a person.
+const checksFix = (mine, notMine, repo) => ({ kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}`, checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })), not_mine: notMine });
+const stillRed = (done, fix) => `still red after ${tries(done.length)}: ${fix.checks.map((c) => c.name).join(', ')}`;
+// No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
+const spent = (done, triedHere) => done.length >= FIX_TRIES_MAX || triedHere;
+const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, operator (parsed),
 // reruns(name) -> reruns tried at s.head, cooledDown (the last rerun has had its gap to report),
@@ -51,20 +71,16 @@ export function fixCall(t, s, ctx) {
   } else {
     const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
     if (gate.state !== 'fail' || gate.pending.length) return null;
-    const failing = [...new Map(gate.failing.map((f) => [f.name, f])).values()];
-    const op = new Map((ctx.operator ?? []).map((o) => [o.name, o.command]));
-    const notMine = failing.filter((f) => op.has(f.name)).map((f) => ({ name: f.name, command: op.get(f.name) }));
-    const mine = failing.filter((f) => !op.has(f.name));
-    if (!mine.length) return notMine.length ? { call: 'stuck', why: notMine.map((o) => `${o.name} · ${o.command}`).join('; ') } : null;
+    const { mine, notMine } = splitFailing(gate.failing, ctx.operator);
+    if (!mine.length) return notMine.length ? operatorStuck(notMine) : null;
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
-    fix = { kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}`, checks: mine.map((f) => ({ name: f.name, url: runUrl(ctx.repo, f.runId) })), not_mine: notMine };
+    fix = checksFix(mine, notMine, ctx.repo);
   }
-  // A try already made for this head is one whose worker finished without moving it.
-  if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === s.head)) {
-    return { call: 'stuck', why: conflict ? `still in conflict with ${ctx.base} after ${tries(done.length)}` : `still red after ${tries(done.length)}: ${fix.checks.map((c) => c.name).join(', ')}` };
+  if (spent(done, fixedAt(done, s.head))) {
+    return { call: 'stuck', why: conflict ? `still in conflict with ${ctx.base} after ${tries(done.length)}` : stillRed(done, fix) };
   }
-  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, ...fix } };
+  return nextTry(done, s.pr, s.head, fix);
 }
 
 // A line of a posted desk-review body that opens a section: a `###` heading, an all-caps one as the
@@ -156,7 +172,7 @@ export function reviewFix(t, review, opts = {}) {
   const what = [counts, gapsOpen ? gapCount(gapsOpen) : ''].filter(Boolean).join(', ');
   if (!what || !review.head) return null;
   const done = t.fix_tries ?? [];
-  if (done.length >= FIX_TRIES_MAX || done.some((x) => x.head === review.head)) {
+  if (spent(done, fixedAt(done, review.head))) {
     // The review at this head is the last try's own, so its gaps say why each is still open.
     const left = gapsOpen ? reviewGaps(review.body) : [];
     return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${what}${left.length ? ` — ${left.join('; ')}` : ''}` };
@@ -168,12 +184,37 @@ export function reviewFix(t, review, opts = {}) {
   const gaps = gapsOpen ? reviewGaps(review.body) : [];
   if (counts ? !findings.length : !gaps.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return { call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
+  return nextTry(done, review.pr, review.head, { kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) });
 }
 
 // The person's call on a draft's review gaps (desk-needs-you), as the fix it sends back: not one of
 // the FIX_TRIES_MAX tries, which are the pass's own.
 export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head ?? null, what: 'review gaps: your call', answer });
+
+// A draft with no review verdict the pass can read at its head (undraft.mjs `review`: none posted, one
+// it cannot read, or one for an older head) goes to a review worker, which reviews the head and posts
+// it. Its try is one of the FIX_TRIES_MAX, once per head: still unread after one, it is the person's,
+// with `why` saying what the pass read last.
+export function reviewTry(t, { pr, head, why }) {
+  if (!head) return null;
+  const done = t.fix_tries ?? [];
+  if (spent(done, done.some((x) => x.head === head && x.kind === 'rereview'))) {
+    return { call: 'stuck', why: `no review verdict readable at its head after ${tries(done.length)}: ${why}` };
+  }
+  return nextTry(done, pr, head, { kind: 'rereview', what: `review its head: ${why}` });
+}
+
+// A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
+// check's name and run, under the same tries as fixCall. There are no driver reruns to wait for: the
+// merge driver reruns only a PR out of draft. ctx: { repo, operator (parsed) }.
+export function draftChecksFix(t, { pr, head, failing }, ctx) {
+  if (!head) return null;
+  const { mine, notMine } = splitFailing(failing ?? [], ctx.operator);
+  if (!mine.length) return notMine.length ? operatorStuck(notMine) : null;
+  const done = t.fix_tries ?? [];
+  const fix = { ...checksFix(mine, notMine, ctx.repo), draft: true };
+  return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillRed(done, fix) } : nextTry(done, pr, head, fix);
+}
 
 // The fix worker's briefing section, while its try is open.
 export function fixBrief(t) {
@@ -183,6 +224,12 @@ export function fixBrief(t) {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
       `Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
+  }
+  if (f.kind === 'rereview') {
+    return [`## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
+      `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head: /, '')}.`,
+      'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1 or a gap the review finds goes to a fix worker at the next pass.', '',
+      `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
   }
   const lines = [`## Fix try ${f.try} of ${f.of}: PR #${f.pr}`, ''];
   if (f.kind === 'conflict') {
@@ -205,11 +252,14 @@ export function fixBrief(t) {
     }
     lines.push('Its P2 findings are not part of this try.');
   } else {
-    lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
+    lines.push(f.draft
+      ? `Your PR #${f.pr} is a draft on this branch, and these required checks are red at ${String(f.head).slice(0, 12)}, so it cannot leave draft:`
+      : `Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
     for (const c of f.checks) lines.push(`- ${c.name}: ${c.url ?? 'no run URL reported'}`);
     for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}. A person runs that; leave it red.`);
+    if (f.draft) lines.push('', 'Read each failing run\'s log with gh run view <run id> --log-failed (the id is the number in its URL).');
   }
-  const left = f.kind !== 'review' ? 'red or in conflict' : `with a P0 or P1${f.gaps?.length ? ' or a gap' : ''} in its review`;
+  const left = f.kind !== 'review' ? (f.draft ? 'red' : 'red or in conflict') : `with a P0 or P1${f.gaps?.length ? ' or a gap' : ''} in its review`;
   lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
@@ -217,12 +267,19 @@ export function fixBrief(t) {
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
 export function fixTask(t) {
   const f = t.fix;
+  if (f.kind === 'rereview') {
+    return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
+      `Your task is review try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
+      'Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code. ' +
+      `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+  }
   const gaps = f.kind === 'gaps';
-  const review = f.kind === 'review' || gaps;
+  // A draft's red checks are fixed in draft and reviewed again, as a review fix is.
+  const review = f.kind === 'review' || gaps || f.draft === true;
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
     : gaps ? 'do what the call says about each gap, and nothing else'
-      : review ? (f.gaps?.length
+      : f.kind === 'review' ? (f.gaps?.length
         ? `${f.findings?.length ? 'fix each P0 and P1 finding it quotes and ' : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
         : 'fix each P0 and P1 finding it quotes, and nothing else')
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';

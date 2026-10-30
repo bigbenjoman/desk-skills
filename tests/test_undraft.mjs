@@ -2,9 +2,9 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, undraftComment, leftOver, DESK_REVIEW_CLEAN } from '../desk/bin/undraft.mjs';
+import { undraftCall, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -27,7 +27,7 @@ t('AC1 it carries the marker it read', zero?.verdict?.sha, HEAD);
 for (const k of ['p2', 'deferred', 'gaps', 'unrefuted', 'partial']) {
   t(`AC1 a marker with ${k}=1 alone is not`, call('no findings', [review(marker(ALL_ZERO.replace(`${k}=0`, `${k}=1`)))])?.why.includes(`${k}=1`), true);
 }
-t('AC1 a marker missing a count is not', call('no findings', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'person');
+t('AC1 a marker missing a count is not: the head is reviewed again (DS-316)', call('no findings', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'review');
 const unread = marker('p0=0 p1=0 gaps=0').replace(/\nclean$/, `\n${CLEAN_TEXT}`);
 t('AC1 nor read as a plain review under a heading stating the value', call('no findings', [review(unread)])?.why, 'its desk-review verdict marker is not one the review gate reads');
 t('AC1 a marker for an older head is not', call('no findings', [review(marker(ALL_ZERO, OLD), OLD)])?.why.includes('not the head'), true);
@@ -47,14 +47,14 @@ t('AC2 "deferred: none" is not left over', leftOver('Deferred: none\nCarried: 0\
 t('AC2 "deferred: no timeout…" defers an item', leftOver('Deferred: no timeout on outbound requests\nCarried: 0 retries for transient failures').length, 2);
 t('AC2 a deferral named "no …" keeps it draft', call('no findings', [review(`${CLEAN_TEXT}\nDeferred: no timeout on outbound requests`)])?.call, 'person');
 t('AC2 a review stating it at an older commit is not read', call('no findings', [review(CLEAN_TEXT, OLD)])?.why.includes(`is for ${OLD.slice(0, 9)}, not the head`), true);
-t('AC2 nor one with no commit recorded', call('no findings', [review(CLEAN_TEXT, '')])?.call, 'person');
+t('AC2 nor one with no commit recorded: it goes to a review worker (DS-316)', call('no findings', [review(CLEAN_TEXT, '')])?.call, 'review');
 t('AC2 a review that does not state it is not clean', call('no findings', [review('Two issues, see inline.')])?.why.includes('does not open a line with "no findings"'), true);
 t('AC2 nor one that only mentions it beside a finding', call('no findings', [review('Correctness: 1 finding, null deref at x.js:10\nSecurity: no findings. Nothing deferred or carried.')])?.call, 'person');
 t('AC2 nor one that goes on to name a finding', call('no findings', [review(`${CLEAN_TEXT}\n\nCorrectness: 1 finding at x.js:10`)])?.why.includes('"Correctness: 1 finding at x.js:10"'), true);
 t('AC2 nor "no findings in the docs"', call('no findings', [review('No findings in the docs; nothing deferred.')])?.call, 'person');
 t('AC2 nor one silent on what is deferred or carried', call('no findings', [review('No findings.')])?.why.includes('not that nothing is deferred or carried'), true);
 t('AC2 under "clean", "not clean" is not clean', call('clean', [review('Not clean. Nothing deferred.')])?.call, 'person');
-t('AC2 only the handle\'s own review counts', call('no findings', [review(CLEAN_TEXT, HEAD, 'someone')])?.call, 'person');
+t('AC2 only the handle\'s own review counts', call('no findings', [review(CLEAN_TEXT, HEAD, 'someone')])?.call, 'review');
 t('AC2 an empty review (a reply to an inline comment) does not hide the verdict', call('no findings', [review(CLEAN_TEXT), review('')])?.call, 'ready');
 t('AC2 a later review at the head that reports findings wins', call('no findings', [review(CLEAN_TEXT), review('2 findings, see inline.')])?.call, 'person');
 // DS-281: and its P0 is a findings call for a fix worker, as under key=value counts.
@@ -63,7 +63,7 @@ t('AC2 a marker with only a P2 under "no findings" is the person\'s', call('no f
 
 // AC3: key=value counts read as before; a review with no marker is no verdict.
 t('AC3 key=value counts still undraft a clean marker', call('p0=0 p1=0 gaps=0', [review(marker(ALL_ZERO))])?.call, 'ready');
-t('AC3 but not a marker the review gate rejects', call('p0=0 p1=0 gaps=0', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'person');
+t('AC3 but not a marker the review gate rejects: the head is reviewed again (DS-316)', call('p0=0 p1=0 gaps=0', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'review');
 t('AC3 and still ignore a plain review', call('p0=0 p1=0 gaps=0', [review(CLEAN_TEXT)])?.why, 'no desk-review verdict is posted on it');
 
 // AC4: unset or not filled in.
@@ -92,18 +92,19 @@ t('DS-330 AC1 a cancelled and a timed-out run are re-run', `${rr?.call} ${rr?.ru
 t('DS-330 AC1 with the gate as rerun.sh reads it', JSON.stringify(rr?.gate), '{"pending":[],"failedRuns":["11","12"],"reasons":["required check \\"tests\\" is cancelled","\\"lint\\" timed_out"],"failing":[{"name":"tests","runId":"11"},{"name":"lint","runId":"12"}]}');
 const running = rerunPr([...cancelled, { name: 'build', status: 'in_progress', conclusion: null, runId: 11 }]);
 t('DS-330 AC1 while another check still runs it waits, spending no rerun', `${running?.call} | ${running?.why}`, 'wait | checks still running (build) beside cancelled or timed-out ones, re-run once they finish');
-t('DS-330 AC2 a failure beside a cancelled check of the same name is not re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 15 }, cancelled[0]])?.call, 'person');
+// A red check no rerun or build clears takes the failed-check path: a checks call, for a fix worker (DS-316).
+t('DS-330 AC2 a failure beside a cancelled check of the same name is not re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 15 }, cancelled[0]])?.call, 'checks');
 t('DS-330 AC1 and not put to the person', rr?.action, undefined);
 t('DS-330 AC1 within the last rerun\'s cooldown it waits', rerunPr(cancelled, { cooledDown: false })?.call, 'wait');
 t('DS-330 AC1 one rerun spent leaves another', rerunPr(cancelled, { reruns: () => 1 })?.call, 'rerun');
 const again = rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 13 }], { reruns: () => 1 });
-t('DS-330 AC2 a rerun that fails takes the failed-check path', `${again?.call} | ${again?.why}`, 'person | its checks are not green: required check "tests" is failure');
-t('DS-330 AC2 so does a cancel beside a failure', rerunPr([cancelled[0], { name: 'build', status: 'completed', conclusion: 'failure', runId: 14 }])?.call, 'person');
+t('DS-330 AC2 a rerun that fails takes the failed-check path', `${again?.call} | ${again?.why}`, 'checks | its checks are not green: required check "tests" is failure');
+t('DS-330 AC2 so does a cancel beside a failure', rerunPr([cancelled[0], { name: 'build', status: 'completed', conclusion: 'failure', runId: 14 }])?.call, 'checks');
 const spent = rerunPr(cancelled, { reruns: (name) => (name === 'tests' ? 2 : 1) });
-t('DS-330 AC3 two reruns spent: the person, with the conclusion', `${spent?.call} | ${spent?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out, still after 2 reruns at this head');
+t('DS-330 AC3 two reruns spent: the failed-check path, with the conclusion', `${spent?.call} | ${spent?.why}`, 'checks | its checks are not green: required check "tests" is cancelled; "lint" timed_out, still after 2 reruns at this head');
 for (const rerun of ['ask', 'no', undefined]) {
   const c = rerunPr(cancelled, { rerun });
-  t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
+  t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run, and no fix worker spends a try on it`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
 }
 t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
 
@@ -147,9 +148,9 @@ t('DS-327 AC3 still red after the build and its re-run: the person, naming the c
 t('DS-327 AC3 a build at another head is not this head\'s', buildPr([FLOWS], null, { built: (h) => (h === OLD ? ok : null) })?.call, 'build');
 t('DS-327 AC4 a red check the row does not name beside it is handled as before', buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.why,
   'its checks are not green: "Flows image" failure; "lint" failure');
-t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'person');
+t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'checks');
 t('DS-327 a named check still pending beside another waits', buildPr([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])?.call, 'wait');
-for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'person');
+for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
 
 // DS-327 AC5: /desk-setup proposes the row from the instructions, and the row is a config row.
 const doc = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
@@ -161,5 +162,67 @@ const cbList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mj
   { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(cbDir, 'config.md'), DESK_MACHINE: join(cbDir, 'none.md'), HOME: cbDir } });
 t('DS-327 AC5 desk-env reads the row as check-builds', `${cbList.status} ${cbList.stdout.trim()}`, '0 Flows image: ./scripts/ensure-flows-image.sh');
 rmSync(cbDir, { recursive: true, force: true });
+
+// DS-316: a verdict for an older head is read at the head when only clean merges of the base came since.
+const withCarry = (reviews, carry, clean = 'p0=0 p1=0 gaps=0', checks = green) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks, carry },
+  { perm: 'yes', localReview: '/desk-review', clean, handle: 'ben', required: ['tests'] });
+const older = [review(marker(ALL_ZERO, OLD), OLD)];
+const cr = withCarry(older, (sha) => sha === OLD);
+t('DS-316 AC1 a verdict that carries to the head undrafts it, saying where from', `${cr?.call} ${cr?.carried === OLD}`, 'ready true');
+const crComment = undraftComment(cr.verdict, HEAD, 'p0=0 p1=0 gaps=0', cr.carried);
+t('DS-316 AC1 its comment names the commit reviewed and the head it holds on', crComment.includes(`posted on \`${OLD.slice(0, 12)}\` is clean`) && crComment.includes(`holds on this head (\`${HEAD.slice(0, 12)}\`): every commit since is a clean merge of the base`), true);
+t('DS-316 AC1 under a plain-text row too', `${withCarry(older, () => true, 'no findings')?.call} ${withCarry(older, () => true, 'no findings')?.carried === OLD}`, 'ready true');
+t('DS-316 a carried verdict with a P1 is that head\'s findings', withCarry([review(marker(ALL_ZERO.replace('p1=0', 'p1=1'), OLD), OLD)], () => true)?.call, 'findings');
+const nc = withCarry(older, () => false);
+t('DS-316 AC2 a verdict that does not carry sends the head to a review worker', `${nc?.call} | ${nc?.action} | ${nc?.carried}`, 'review | review #701 at its head | undefined');
+let asked = 0;
+withCarry([review(marker(ALL_ZERO))], () => { asked++; return true; });
+t('DS-316 a verdict at the head asks for no carry', asked, 0);
+const rc = withCarry([review(marker(ALL_ZERO))], undefined, 'p0=0 p1=0 gaps=0', [{ name: 'tests', status: 'completed', conclusion: 'failure', runId: '77' }]);
+t('DS-316 AC4 a red required check is a checks call, with the failing check', `${rc?.call} ${rc?.failing?.[0]?.name} ${rc?.failing?.[0]?.runId}`, 'checks tests 77');
+// desk-gate's verdict check reads only a verdict on the head, so no code fix turns it green.
+const gateRed = { name: VERDICT_CHECK, status: 'completed', conclusion: 'failure', runId: '78' };
+const gc = withCarry(older, (sha) => sha === OLD, 'p0=0 p1=0 gaps=0', [...green, gateRed]);
+t('DS-316 a carried verdict whose verdict check is red goes to a review worker, saying where from', `${gc?.call} | ${gc?.carried === OLD} | ${gc?.action}`, 'review | true | review #701 at its head');
+t('DS-316 and its reason names the check and the carry', gc?.why, `its desk-review verdict check reads only a verdict posted on the head, and its verdict is carried from ${OLD.slice(0, 9)}`);
+t('DS-316 a stale verdict whose verdict check is red goes to a review worker, not a fix worker', withCarry(older, () => false, 'p0=0 p1=0 gaps=0', [...green, gateRed])?.call, 'review');
+const both = withCarry(older, () => true, 'p0=0 p1=0 gaps=0', [{ ...green[0], conclusion: 'failure', runId: '77' }, gateRed]);
+t('DS-316 beside a red code check, only the code check goes to the fix worker', `${both?.call} ${both?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+
+// verdictCarries, against a real repository: the reviewed commit A, the base merged in to make B.
+const dir = mkdtempSync(join(tmpdir(), 'undraft-carry-'));
+const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const git = (args) => { try { return { ok: true, out: g(...args) }; } catch (e) { return { ok: false, out: String(e.stderr ?? '') }; } };
+const put = (file, text) => writeFileSync(join(dir, file), text);
+const commit = (msg) => { g('add', '-A'); g('commit', '-q', '-m', msg); return g('rev-parse', 'HEAD'); };
+const carries = (from, head) => verdictCarries({ from, head, base: 'main', git });
+g('init', '-q', '-b', 'main');
+put('a.txt', 'one\ntwo\nthree\n'); const BASE = commit('base');
+g('checkout', '-q', '-b', 'pr');
+put('b.txt', 'pr work\n'); const A = commit('pr work');
+g('checkout', '-q', 'main'); put('c.txt', 'other\n'); commit('main moves');
+g('checkout', '-q', 'pr'); g('merge', '-q', '--no-edit', 'main'); const B = g('rev-parse', 'HEAD');
+t('DS-316 AC1 a clean merge of the base carries the verdict', carries(A, B), true);
+t('DS-316 AC1 from an abbreviated sha too', carries(A.slice(0, 9), B), true);
+put('b.txt', 'pr work, changed\n'); const C = commit('own change');
+t('DS-316 AC2 an own commit since is not a carry', carries(A, C), false);
+t('DS-316 nor a head the reviewed commit is not under', carries(C, B), false);
+g('checkout', '-q', 'main'); put('d.txt', 'more\n'); commit('main again');
+g('checkout', '-q', '-b', 'pr2', B); g('merge', '-q', '--no-commit', 'main'); put('b.txt', 'slipped in\n'); g('add', '-A'); g('commit', '-q', '--no-edit');
+t('DS-316 a base merge that adds a change of its own is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
+g('checkout', '-q', '-b', 'pr3', A); put('a.txt', 'one\nTWO pr\nthree\n'); const A3 = commit('pr edits a');
+g('checkout', '-q', 'main'); put('a.txt', 'one\nTWO main\nthree\n'); commit('main edits a');
+g('checkout', '-q', 'pr3'); git(['merge', '-q', '--no-edit', 'main']); put('a.txt', 'one\nTWO both\nthree\n'); g('add', '-A'); g('commit', '-q', '--no-edit');
+t('DS-316 a base merge that resolved a conflict is not a carry', carries(A3, g('rev-parse', 'HEAD')), false);
+g('checkout', '-q', '-b', 'side', A); put('e.txt', 'side\n'); commit('side');
+g('checkout', '-q', '-b', 'pr4', A); g('merge', '-q', '--no-ff', '--no-edit', 'side');
+t('DS-316 a merge of a branch that is not the base is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
+g('checkout', '-q', 'main'); g('merge', '-q', '--no-ff', '--no-edit', 'pr');
+t('DS-316 a head whose first parents pass the reviewed commit by is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
+// Its only commit since is a clean merge of the base, but its first parent is older than the reviewed commit.
+g('checkout', '-q', '-b', 'pr5', BASE); g('merge', '-q', '--no-ff', '--no-edit', 'main');
+t('DS-316 a clean base merge onto a commit before the reviewed one is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
+rmSync(dir, { recursive: true, force: true });
 
 process.exit(fails ? 1 : 0);

@@ -154,6 +154,14 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per
   check per head and its 12-minute gap, in the same `reruns-<n>-<sha>` and `cooldown-<n>` files.
   Red again with a failure, or still red after both reruns, it goes on as any red draft does.
+- **A draft with a stale review or a red check goes to a worker before it reaches you.** A verdict
+  for an older head still holds at the current one when every commit since is a clean merge of the
+  base, and the ticket records it as carried from that commit. Otherwise a draft with no verdict
+  readable at its head goes to a review worker, and one with a red required check to a fix worker
+  with each check's name and run, within the same two tries as a ready PR's fixes (`fix-tries.mjs`
+  `reviewTry`, `draftChecksFix`). desk-gate's own verdict check reads only the head, so a draft red
+  on it alone goes to a review worker. Such a draft is under WAITING ON YOU only once those tries are
+  spent, or when its red check is one §4 Checks workers can't fix names.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3
   `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, in the
   ticket's worktree at the PR's head, detached so a pass that ends leaves it running, with its output

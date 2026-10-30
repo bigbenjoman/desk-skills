@@ -1,5 +1,5 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -84,7 +84,7 @@ const ucfg = { perm: 'yes', localReview: '/desk-review', clean: CLEAN, handle: '
 const u1 = undraftCall(tk(), draft(p1Body), ucfg);
 t('DS-281 AC1 a review at the head with a P1 is a findings call, with its review', `${u1?.call} ${u1?.verdict?.p1} ${u1?.review === p1Body}`, 'findings 1 true');
 t('DS-281 AC1 found before red checks or a conflict', undraftCall(tk(), draft(p1Body, { mergeable: 'CONFLICTING', mergeState: 'DIRTY', checks: [red('tests', '9')] }), ucfg)?.call, 'findings');
-t('DS-281 AC2 a P1 review of an older head is not this head\'s findings', undraftCall(tk(), draft(p1Body, { head: 'b'.repeat(40) }), ucfg)?.call, 'person');
+t('DS-281 AC2 a P1 review of an older head is not this head\'s findings: the head goes to a review worker (DS-316)', undraftCall(tk(), draft(p1Body, { head: 'b'.repeat(40) }), ucfg)?.call, 'review');
 const r1 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: u1.verdict, body: u1.review });
 t('DS-281 AC1 requeued for try 1 of 2, of kind review', `${r1?.call} ${r1?.fix.try}/${r1?.fix.of} ${r1?.fix.kind} ${r1?.fix.what}`, 'requeue 1/2 review review not clean: 1 P1');
 t('DS-281 AC1 the findings read are the P1 only, with its file:line', JSON.stringify(r1?.fix.findings), JSON.stringify([{ sev: 'P1', text: 'packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original' }]));
@@ -164,5 +164,36 @@ t('DS-319 a P1 and a gap go in one try, both quoted', `${p1g?.fix.what} | ${p1g?
 t('DS-319 the terminal report\'s gaps are read, and an unverified code claim is not a gap', JSON.stringify(reviewGaps('REQUIREMENT GAPS (2, 1 unverified)  ABC-123\n AC3: "export includes VAT" — no VAT column\n AC1: "keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only\n\nUNPROVEN PREMISES (1)\n src/a.ts:1 assumes retries')), JSON.stringify(['AC3: "export includes VAT" — no VAT column']));
 t('DS-319 a bold-only heading opens and ends the gaps section', JSON.stringify(reviewGaps('**Requirement gaps**\n- AC1: "x" — not done\n**Scope**\n- src/a.ts:3 out of scope')), JSON.stringify(['AC1: "x" — not done']));
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
+
+// ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix worker
+const OLD = 'b'.repeat(40);
+const plainReview = draft('Verdict: p0=0 p1=0 gaps=0');
+t('DS-316 AC3 a review with no desk-review verdict line is a review call', `${undraftCall(tk(), plainReview, ucfg)?.call} | ${undraftCall(tk(), plainReview, ucfg)?.why}`, 'review | no desk-review verdict is posted on it');
+t('DS-316 AC3 so is a draft with no review at all', undraftCall(tk(), { ...plainReview, reviews: [] }, ucfg)?.call, 'review');
+const rv1 = reviewTry(tk(), { pr: 702, head: HEAD, why: 'no desk-review verdict is posted on it' });
+t('DS-316 AC2 a review worker is requeued for try 1 of 2, of kind rereview', `${rv1?.call} ${rv1?.fix.try}/${rv1?.fix.of} ${rv1?.fix.kind} ${rv1?.fix.head === HEAD}`, 'requeue 1/2 rereview true');
+const briefRv = fixBrief(tk({ fix: rv1.fix }));
+t('DS-316 AC2 its brief says why and asks for a desk-review posted on the head, with no code change', briefRv.includes('## Review try 1 of 2: PR #702') && briefRv.includes(`at its head ${HEAD.slice(0, 12)}: no desk-review verdict is posted on it.`) && briefRv.includes('Review that head with desk-review and post the review on the PR') && briefRv.includes('Change no code'), true);
+const taskRv = fixTask(tk({ fix: rv1.fix }));
+t('DS-316 AC2 its task is the review try, leaving the PR in draft', taskRv.includes('review try 1 of 2 on PR #702') && taskRv.includes('change no code') && taskRv.includes('leave the PR in draft') && !taskRv.includes('git push'), true);
+const rvTried = [{ try: 1, head: HEAD, kind: 'rereview' }];
+t('DS-316 AC5 a review try already made at this head leaves it to the person, saying what is unread', reviewTry(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, why: 'no desk-review verdict is posted on it' })?.why, 'no review verdict readable at its head after 1 fix try: no desk-review verdict is posted on it');
+t('DS-316 AC5 so does one with both tries spent', reviewTry(tk({ fix_tries: tried }), { pr: 702, head: HEAD, why: 'x' })?.call, 'stuck');
+t('DS-316 a review try at this head does not use up a fix of the findings it then posts', reviewFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, verdict: u1.verdict, body: u1.review })?.call, 'requeue');
+
+const redDraft = draft(reviewBody('p0=0 p1=0 p2=0'), { checks: [ok('tests'), red('tests-i18n', '931')] });
+const ucheck = undraftCall(tk(), redDraft, { ...ucfg, required: ['tests', 'tests-i18n'] });
+t('DS-316 AC4 a red required check is a checks call with the failing check', `${ucheck?.call} ${ucheck?.failing.map((f) => f.name).join(',')}`, 'checks tests-i18n');
+const dc = draftChecksFix(tk(), { pr: 702, head: HEAD, failing: ucheck.failing }, { repo: 'acme/widgets', operator });
+t('DS-316 AC4 a fix worker is requeued with the check\'s name and run', `${dc?.call} ${dc?.fix.kind} ${dc?.fix.draft} ${dc?.fix.what} ${dc?.fix.checks[0].url}`, 'requeue checks true red: tests-i18n https://github.com/acme/widgets/actions/runs/931');
+const briefDc = fixBrief(tk({ fix: dc.fix }));
+t('DS-316 AC4 its brief names the draft\'s red check, its run and how to read its log', briefDc.includes('is a draft on this branch, and these required checks are red') && briefDc.includes('- tests-i18n: https://github.com/acme/widgets/actions/runs/931') && briefDc.includes('gh run view <run id> --log-failed') && !briefDc.includes('two reruns'), true);
+const taskDc = fixTask(tk({ fix: dc.fix }));
+t('DS-316 AC4 its task fixes the cause, keeps the draft and reviews the new head', taskDc.includes('fix the cause, never the check') && taskDc.includes('leave the PR in draft') && taskDc.includes('review the new head with desk-review'), true);
+t('DS-316 AC4 a check only an operator fixes is the person\'s, with its command', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red('Flows image missing', '9')] }, { repo: 'acme/widgets', operator })?.why, 'Flows image missing · build it: ensure-flows-image.sh');
+t('DS-316 AC5 still red at a head a fix try was made for: the person\'s', draftChecksFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'checks' }] }), { pr: 702, head: HEAD, failing: ucheck.failing }, { repo: 'acme/widgets', operator })?.why, 'still red after 1 fix try: tests-i18n');
+t('DS-316 a review try at this head does not count as a fix of its checks', draftChecksFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, failing: ucheck.failing }, { repo: 'acme/widgets', operator })?.call, 'requeue');
+t('DS-316 nor of a ready PR\'s', fixCall(tk({ fix_tries: rvTried }), both, ctx())?.call, 'requeue');
+t('DS-316 an older verdict is not read at the head without a carry', undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=0'), { head: OLD }), ucfg)?.call, 'review');
 
 process.exit(fails ? 1 : 0);
