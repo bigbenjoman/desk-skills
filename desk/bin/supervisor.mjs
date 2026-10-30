@@ -6,7 +6,7 @@
 //                                                  install or update this repo's launchd agent (default
 //                                                  180s); --reload reloads it even when unchanged
 //   node supervisor.mjs uninstall                  remove it: no further passes run for this repo
-//   node supervisor.mjs status                     the agent, whether the batch is handed over, the log's tail
+//   node supervisor.mjs status                     the agent, then each batch: whether it is handed over, its log's tail
 //   node supervisor.mjs tick [--foreground]        one interval; launchd runs this at login and every interval.
 //                                                  It starts the work detached and returns; --foreground does it here
 //
@@ -43,6 +43,13 @@
 //     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
 // this agent and the running merge driver started at an older one (`old_code`).
+//
+// A tick runs intake once, then every batch the repo holds (batches.mjs listBatches), one after another:
+// the standing batch, then each named batch. Each runs as above in its own state folder, with its own
+// merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
+// DESK_DEFAULT_BRANCH removed, so its pass and driver read its own base. One batch that fails leaves
+// the rest to run. An explicit DESK_BATCH, DESK_QUEUE or DESK_AUTOPILOT_STATE names one batch, and a
+// tick runs only that one.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -50,6 +57,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
+import { listBatches } from './batches.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
@@ -221,6 +229,8 @@ function notify(title, body) {
   const r = spawnSync('osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body], { encoding: 'utf8' });
   return r.status === 0 ? null : (r.error?.message ?? (r.stderr || `osascript exited ${r.status}`).trim());
 }
+// A notification's title names the repo, and the batch where it is a named one.
+const title = () => `desk: ${E.repoSlug()}${E.batchName() ? ` ${E.batchName()}` : ''}`;
 
 // ---- one interval ----------------------------------------------------------------------------
 // launchd runs `tick`, which starts the interval's work detached and returns at once: launchd starts
@@ -239,14 +249,51 @@ function supervisorHolder(state) {
   } catch { return null; }
 }
 
+const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+const logTo = (state) => (lines) => appendFileSync(join(state, 'supervisor.log'), `${lines.join('\n')}\n`);
+
+// Every batch's state folder this tick runs, and what it has run once already for all of them.
+let tickStates = [];
+const ranOnce = new Set();
+const firstTime = (what) => !ranOnce.has(what) && ranOnce.add(what);
+// Push keys another batch of this repo has sent: the check-in digest reaches every batch's pass, and
+// goes out once.
+const pushedElsewhere = (state) => new Set(tickStates.filter((d) => d !== state).flatMap((d) => readState(d).notified));
+
+// Points this process, and every child it starts, at batch `name` (null for the standing batch).
+function enterBatch(name) {
+  delete process.env.DESK_DEFAULT_BRANCH;
+  if (name) process.env.DESK_BATCH = name;
+  else delete process.env.DESK_BATCH;
+}
+
+// An explicit DESK_BATCH, DESK_QUEUE or DESK_AUTOPILOT_STATE names one batch, and only it runs.
+const namedOne = () => Boolean(process.env.DESK_BATCH || process.env.DESK_QUEUE || process.env.DESK_AUTOPILOT_STATE);
+// -> [{ name, queue, state }]: the one batch named, else every batch the repo holds, the standing first.
+const tickBatches = () => (namedOne() ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
+
 function interval() {
+  const named = namedOne();
+  const batches = tickBatches();
+  tickStates = batches.map((b) => b.state);
+  // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
+  if (!named) enterBatch(null);
+  const intake = runIntake();
+  batches.forEach((b, i) => {
+    if (!named) enterBatch(b.name);
+    try { batchInterval(i === 0 ? intake : []); } catch (e) {
+      try {
+        mkdirSync(b.state, { recursive: true });
+        logTo(b.state)([`== ${stamp()} batch ${b.name ?? 'standing'}: the tick failed and the next tries again; any other batch still runs: ${describeCrash(e)}`]);
+      } catch { /* nowhere to say it */ }
+    }
+  });
+}
+
+function batchInterval(intake) {
   const state = E.stateDir();
   mkdirSync(state, { recursive: true });
-  const logFile = join(state, 'supervisor.log');
-  const log = (lines) => appendFileSync(logFile, `${lines.join('\n')}\n`);
-  const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  // Standing intake first: it may start the batch this tick then passes.
-  const intake = runIntake();
+  const log = logTo(state);
   // What runs old code is kept on every tick: with no batch, a queue unreadable, or a pass skipped.
   noteCode(state);
   if (!existsSync(E.queueFile())) {
@@ -286,7 +333,7 @@ function interval() {
     intakeAlone();
     // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
-    const driver = watchDriver(state, s, driverHolder(state), E.repoSlug());
+    const driver = watchDriver(state, s, driverHolder(state));
     if (reaped.length || driver.length) writeState(state, s);
     if (reaped.length) log([`== ${stamp()} ${reaped.join('\n')}`]);
     if (driver.length) log([`== ${stamp()} idle: the merge driver`, ...driver]);
@@ -321,7 +368,9 @@ function runIntake() {
 // The check-in reads Jira and GitHub; one that hangs is killed so the tick still ends.
 const CHECKIN_TIMEOUT_MS = Number(process.env.DESK_CHECKIN_TIMEOUT_MS) || 5 * 60 * 1000;
 function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
-  if (maintenance) idleMaintenance(state, s, log, stamp);
+  // Both are the repo's, not a batch's: a tick with several idle batches runs each once.
+  if (maintenance && firstTime('maintenance')) idleMaintenance(state, s, log, stamp);
+  if (!firstTime('checkin')) return;
   const r = spawnSync(process.execPath, [join(HERE, 'digest.mjs'), 'checkin'], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CHECKIN_TIMEOUT_MS, killSignal: 'SIGKILL' });
   if (r.error?.code === 'ETIMEDOUT') {
     log([`== ${stamp()} idle check-in: timed out after ${CHECKIN_TIMEOUT_MS / 1000}s and was killed; the next tick tries again`]);
@@ -338,7 +387,8 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
 // Sends one push unless its key went out already, and records the key once it has.
 function pushOnce(state, s, log, stamp, what, p) {
   if (!p?.key || !p.text || s.notified.includes(p.key)) return;
-  const err = notify(`desk: ${E.repoSlug()}`, p.text);
+  if (pushedElsewhere(state).has(p.key)) { s.notified.push(p.key); writeState(state, s); return; }
+  const err = notify(title(), p.text);
   log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
   if (!err) { s.notified.push(p.key); writeState(state, s); }
 }
@@ -389,7 +439,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   out.push(...reaped, ...decide(state, s, v, qAfter));
   s.idle = null;
   const driver = driverHolder(state);
-  out.push(...watchDriver(state, s, driver, slug));
+  out.push(...watchDriver(state, s, driver));
   if (v.status !== 'idle') {
     const keys = toMerge(qAfter);
     const grant = E.mergeGrant(qAfter);
@@ -417,10 +467,11 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const pushes = toPush(v);
   const items = pushes.map((p) => p.key);
-  const fresh = pushes.filter((p) => !s.notified.includes(p.key));
+  const elsewhere = pushedElsewhere(state);
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !elsewhere.has(p.key));
   let sent = true;
   if (fresh.length) {
-    const err = notify(`desk: ${slug}`, fresh.map((p) => p.text).join(' · '));
+    const err = notify(title(), fresh.map((p) => p.text).join(' · '));
     sent = !err;
     out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
@@ -473,7 +524,7 @@ function driverStop(state, from) {
 // The lines a tick logs about the driver it last started: nothing while one runs, why it stopped
 // once, and one notification after DRIVER_NOTIFY_AFTER failed starts in a row. A driver that exits
 // 0 (a one-loop run) did not fail; one that logged no exit code was killed, and counts.
-function watchDriver(state, s, holder, slug) {
+function watchDriver(state, s, holder) {
   const d = s.driver;
   if (!d) return [];
   const lines = [];
@@ -487,7 +538,7 @@ function watchDriver(state, s, holder, slug) {
   }
   // Retried each tick until it is out, so a notification that failed is not lost.
   if (d.failures >= DRIVER_NOTIFY_AFTER && !d.notified) {
-    const err = notify(`desk: ${slug}`, `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
+    const err = notify(title(), `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
     d.notified = !err;
     lines.push(err ? `notification: failed (${err}) for the merge driver; the next tick tries again` : `notification: sent for the merge driver (${d.failures} failed starts in a row)`);
   }
@@ -557,22 +608,24 @@ function status() {
   const slug = E.repoSlug();
   const interval = installedInterval(slug);
   console.log(`agent: ${label(slug)} ${interval ? `installed (every ${interval}s), ${loaded(slug) ? 'loaded' : 'not loaded'}` : 'not installed (supervisor.mjs install)'}`);
-  const state = E.stateDir();
-  const qf = E.queueFile();
-  let batch = 'no batch';
-  if (existsSync(qf)) {
-    try {
-      const q = readQueue(qf);
-      const s = readState(state);
-      batch = `batch ${q.batch ?? '?'}: ${q.supervised !== true ? 'not handed over (queue.mjs set-batch supervised=true at Stage 4)'
-        : s.idle === fingerprint(q) ? 'idle, nothing runs until a new batch starts' : 'handed over'}`;
-    } catch (e) { batch = `queue unreadable: ${describeCrash(e)}`; }
-  }
-  console.log(batch);
-  const logFile = join(state, 'supervisor.log');
-  if (existsSync(logFile)) {
-    console.log(`log: ${logFile}, last lines:`);
-    for (const l of readFileSync(logFile, 'utf8').trimEnd().split('\n').slice(-10)) console.log(`  ${l}`);
+  for (const { name, queue: qf, state } of tickBatches()) {
+    // A named batch's lines lead with its name; the standing batch's read as they always have.
+    const lead = name ? `${name}: ` : '';
+    let batch = 'no batch';
+    if (existsSync(qf)) {
+      try {
+        const q = readQueue(qf);
+        const s = readState(state);
+        batch = `batch ${q.batch ?? '?'}: ${q.supervised !== true ? 'not handed over (queue.mjs set-batch supervised=true at Stage 4)'
+          : s.idle === fingerprint(q) ? 'idle, nothing runs until a new batch starts' : 'handed over'}`;
+      } catch (e) { batch = `queue unreadable: ${describeCrash(e)}`; }
+    }
+    console.log(`${lead}${batch}`);
+    const logFile = join(state, 'supervisor.log');
+    if (existsSync(logFile)) {
+      console.log(`${lead}log: ${logFile}, last lines:`);
+      for (const l of readFileSync(logFile, 'utf8').trimEnd().split('\n').slice(-10)) console.log(`  ${l}`);
+    }
   }
   process.exitCode = interval && loaded(slug) ? 0 : 1;
 }
