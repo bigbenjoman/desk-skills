@@ -20,7 +20,7 @@ const env = {
 };
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_PORT_FLOOR',
-  'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED']) delete process.env[k];
+  'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED', 'DESK_BATCH']) delete process.env[k];
 Object.assign(process.env, env);
 mkdirSync(env.DESK_LOCK_DIR, { recursive: true });
 const profile = (path, cap) => writeFileSync(path, `## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | \`5 / ${cap}\` | x |\n`);
@@ -31,7 +31,9 @@ const B = await import(join(BIN, 'borrow.mjs'));
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 const queuePath = (slug) => join(env.DESK_HOME, 'repos', slug, 'queue.json');
-const runningIn = (slug) => Object.values(JSON.parse(readFileSync(queuePath(slug), 'utf8')).tickets).filter((x) => x.state === 'running').length;
+const namedQueue = (slug, name) => join(env.DESK_HOME, 'repos', slug, 'batches', name, 'queue.json');
+const runningAt = (q) => Object.values(JSON.parse(readFileSync(q, 'utf8')).tickets).filter((x) => x.state === 'running').length;
+const runningIn = (slug) => runningAt(queuePath(slug));
 
 // One repo: its config's concurrency row, its queue (`running` and `ready` counts, or raw text) and
 // a heartbeat `beat` minutes old (none when null).
@@ -159,6 +161,64 @@ t('DS-305 borrowing reads a named batch\'s heartbeat from its own state director
 named('acme__b', 'Y-1', '{ not json');
 t('DS-305 an unreadable named batch\'s queue is named and counted at its repo\'s cap', /acme\/b batch Y-1's queue cannot be read \(.*batches\/Y-1\/queue\.json is not valid JSON.*\), so it counts at its cap of 4 workers/.test(budget(queuePath('acme__a'), 1)), true);
 
+// A repo's batches share its §3b cap. A named batch of `slug` with `running` and `ready` tickets and
+// a heartbeat `beat` minutes old in its own state directory, planning its next pass in `next` minutes.
+function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next } = {}) {
+  const tickets = {};
+  for (let i = 1; i <= running; i++) tickets[`${name}-R${i}`] = { key: `${name}-R${i}`, state: 'running' };
+  for (let i = 1; i <= ready; i++) tickets[`${name}-Y${i}`] = { key: `${name}-Y${i}`, state: 'triaged', open_questions: 0 };
+  const q = named(slug, name, JSON.stringify({ version: 1, batch: name, concurrency: share, tickets }));
+  if (beat != null) {
+    const dir = join(env.HOME, '.desk-autopilot', slug, 'batches', name, 'orchestrators');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'q.json'), JSON.stringify({ queue: q, batch: name, pid: 1, at: minsAgo(beat), ...(next != null ? { next: minsAgo(-next) } : {}) }));
+  }
+  return q;
+}
+const repoRoom = (self, mine) => B.repoBudget({ cap: 3, ...mine, batches: B.otherBatches({ self, now: NOW }).filter((o) => o.slug === 'acme__a') });
+fresh();
+repo('acme__a', { conc: '2 / 3', share: 2, running: 2 });
+let x1q = batchOf('acme__a', 'X-1', { ready: 2 });
+repo('acme__b', { running: 4 });
+let r = repoRoom(x1q, { batch: 'X-1', running: 0, wanted: 2 });
+t('DS-308 AC1 with the standing batch running 2 of a cap of 3, X-1 starts at most 1', r.room, 1);
+t('DS-308 AC1 another repo\'s workers do not count against this repo\'s cap', r.line.startsWith('repo workers: 2 of the §3b cap of 3 running'), true);
+t('DS-308 AC5 the line names each batch and the running total against the cap', r.line,
+  'repo workers: 2 of the §3b cap of 3 running — batch X-1 (this pass) 0, the standing batch 2: starting at most 1');
+repo('acme__a', { conc: '2 / 3', share: 2, running: 2, ready: 1 });
+r = repoRoom(queuePath('acme__a'), { running: 2, wanted: 1 });
+t('DS-308 AC3 the standing batch, holding every slot but one, leaves it for X-1', r.room, 0);
+t('DS-308 AC3 and says so', r.line, 'repo workers: 2 of the §3b cap of 3 running — the standing batch (this pass) 2, batch X-1 0; 2 kept for batch X-1, which has 2 ready and 0 running: nothing starts this pass');
+fresh();
+repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 1 });
+x1q = batchOf('acme__a', 'X-1', { running: 1, ready: 1 });
+t('DS-308 AC4 each batch holding one slot of 3: the standing batch leaves the spare one for X-1', repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 }).room, 0);
+t('DS-308 AC4 and X-1 may take it', repoRoom(x1q, { batch: 'X-1', running: 1, wanted: 1 }).room, 1);
+fresh();
+repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 1 });
+batchOf('acme__a', 'X-1', { running: 0, ready: 1, beat: 16 });
+t('DS-308 a batch whose orchestrator has gone, with nothing running, neither keeps a slot nor counts', String(repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 }).room), 'Infinity');
+batchOf('acme__a', 'X-1', { running: 0, ready: 1, beat: 16, next: 5 });
+t('DS-308 a batch waiting longer than 15 minutes for the next pass it recorded still keeps its slot', repoRoom(queuePath('acme__a'), { running: 1, wanted: 2 }).room, 1);
+fresh();
+repo('acme__a', { conc: '2 / 3', share: 2, ready: 1 });
+x1q = batchOf('acme__a', 'X-1', { share: 3, running: 2, ready: 1 });
+t('DS-308 the standing batch, with ready work and nothing running, takes the last slot rather than both keeping it for the other',
+  `${repoRoom(queuePath('acme__a'), { running: 0, wanted: 1 }).room} ${repoRoom(x1q, { batch: 'X-1', running: 2, wanted: 1 }).room}`, '1 0');
+fresh();
+repo('acme__a', { conc: '1 / 1', share: 1, ready: 1 });
+x1q = batchOf('acme__a', 'X-1', { share: 1, ready: 1 });
+t('DS-308 at a cap of 1 the one slot goes to the feature batch, not to both or neither',
+  `${repoRoom(queuePath('acme__a'), { running: 0, wanted: 1, cap: 1 }).room} ${repoRoom(x1q, { batch: 'X-1', running: 0, wanted: 1, cap: 1 }).room}`, '0 1');
+fresh();
+repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 3 });
+repo('acme__b', { running: 2 });
+r = repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 });
+t('DS-308 AC6 with only a standing batch there is no repo budget and no line', `${r.room} ${r.line}`, 'Infinity null');
+named('acme__a', 'X-9', '{ not json');
+r = repoRoom(queuePath('acme__a'), { running: 1, wanted: 1 });
+t('DS-308 a batch whose queue cannot be read counts at the cap, and is named', r.room === 0 && /batch X-9 unreadable \(.*X-9\/queue\.json is not valid JSON.*\), counted at the cap/.test(r.line), true);
+
 // AC8: borrowing off, which is the default.
 t('AC8 the row is off when unset', B.borrowSetting(null).on, false);
 t('a row that is neither on nor off is said and read as off', B.borrowSetting('yes please').on === false && /Borrow idle workers" is "yes please"/.test(B.borrowSetting('yes please').bad), true);
@@ -200,15 +260,17 @@ function passWorld(machine) {
   return W;
 }
 // This repo in that world: a git checkout, a config at `conc` with `borrow`, and a queue of `running`
-// and `ready` tickets. -> a function that runs one pass and resolves to its output.
-function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'on', minAvail = '0', floor }) {
+// and `ready` tickets. With `batch`, the queue is that named batch's, and the repo is known by its
+// slug so its other batches are found; `machine: false` runs with no machine profile; `prefix` starts
+// the ticket keys. -> a function that runs one pass and resolves to its output.
+function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'on', minAvail = '0', floor, batch, machine = true, prefix = '', lockDir }) {
   const R = join(W, slug);
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(W, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '[user]\n  email = t@example.com\n  name = t\n');
   spawnSync('git', ['init', '-q', '-b', 'main', join(R, 'repo')], { env: gitEnv });
   spawnSync('git', ['-C', join(R, 'repo'), 'commit', '-q', '--allow-empty', '-m', 'init'], { env: gitEnv });
   mkdirSync(join(R, 'wt'), { recursive: true });
-  const state = join(env.HOME, '.desk-autopilot', slug);
+  const state = join(env.HOME, '.desk-autopilot', slug, ...(batch ? ['batches', batch] : []));
   mkdirSync(join(state, 'logs'), { recursive: true });
   // Where every repo's config lives, so the other pass reads this one's own number.
   const config = join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
@@ -220,15 +282,17 @@ function passRepo(W, slug, { conc = '2 / 4', running = 2, ready = 3, borrow = 'o
     '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', `| Autopilot worker concurrency | \`2 / 3\` | \`${conc}\` |`,
     ...(borrow ? [`| Borrow idle workers | \`off\` | \`${borrow}\` |`] : []), '',
   ].join('\n'));
-  const q = queuePath(slug);
+  const q = batch ? namedQueue(slug, batch) : queuePath(slug);
   const tickets = {};
-  for (let i = 1; i <= running; i++) tickets[`R-${i}`] = { key: `R-${i}`, state: 'running', session_id: 'live-1', branch: `fix/R-${i}` };
-  for (let i = 1; i <= ready; i++) tickets[`Y-${i}`] = { key: `Y-${i}`, state: 'triaged', open_questions: 0, branch: `fix/Y-${i}` };
+  for (let i = 1; i <= running; i++) tickets[`${prefix}R-${i}`] = { key: `${prefix}R-${i}`, state: 'running', session_id: 'live-1', branch: `fix/${prefix}R-${i}` };
+  for (let i = 1; i <= ready; i++) tickets[`${prefix}Y-${i}`] = { key: `${prefix}Y-${i}`, state: 'triaged', open_questions: 0, branch: `fix/${prefix}Y-${i}` };
   mkdirSync(dirname(q), { recursive: true });
-  writeFileSync(q, JSON.stringify({ version: 1, batch: slug, tickets }));
+  writeFileSync(q, JSON.stringify({ version: 1, batch: batch ?? slug, tickets }));
   const penv = { ...gitEnv, PATH: `${join(W, 'stub')}:${process.env.PATH}`, DESK_CONFIG: config, DESK_QUEUE: q,
-    DESK_AUTOPILOT_STATE: state, DESK_MACHINE: join(W, 'machine.md'), WT_DIR: join(R, 'wt'),
-    AUTOPILOT_MIN_AVAIL_GB: minAvail, AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor) };
+    DESK_AUTOPILOT_STATE: state, DESK_MACHINE: join(W, machine ? 'machine.md' : 'no-machine.md'), WT_DIR: join(R, 'wt'),
+    AUTOPILOT_MIN_AVAIL_GB: minAvail, AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor),
+    ...(lockDir ? { DESK_LOCK_DIR: lockDir } : {}),
+    ...(batch !== undefined ? { DESK_REPO_OVERRIDE: slug.replace('__', '/'), ...(batch ? { DESK_BATCH: batch } : {}) } : {}) };
   return () => new Promise((res) => {
     const c = spawn('node', [join(BIN, 'pass.mjs')], { env: penv, cwd: join(R, 'repo') });
     let out = '';
@@ -279,6 +343,49 @@ const outs = await Promise.all([passA(), passB()]);
 t('AC4 exactly one worker starts', runningIn('acme__a') + runningIn('acme__b'), 3);
 t('AC4 the other pass says there is no free machine slot', outs.filter((o) => /starting nothing above it: no free machine slot \(machine 3: 3 running/.test(o)).length, 1);
 t('AC4 the lock is released afterwards', existsSync(join(env.DESK_LOCK_DIR, 'desk-borrow.lock.d')), false);
+
+// A repo's batches share its §3b cap, with no machine profile and borrowing off. AC1 and AC5: the
+// standing batch runs 2 of a cap of 3, and X-1 has 2 ready and nothing running.
+W = passWorld(10);
+passRepo(W, 'acme__a', { conc: '2 / 3', running: 2, ready: 0, borrow: null, batch: null, machine: false, floor: 45700 });
+out = await passRepo(W, 'acme__a', { conc: '2 / 3', running: 0, ready: 2, borrow: null, batch: 'X-1', machine: false, floor: 45800, prefix: 'X' })();
+t('DS-308 pass AC1: X-1 starts 1, the one slot the standing batch leaves', runningAt(namedQueue('acme__a', 'X-1')), 1);
+t('DS-308 pass AC5: the report names each batch and the running total against the cap',
+  /^repo workers: 2 of the §3b cap of 3 running — batch X-1 \(this pass\) 0, the standing batch 2: starting at most 1$/m.test(out), true);
+
+// AC2: two named batches at a cap of 1, each with 1 ready, passing at the same moment. The shared
+// count is taken under the lock, so only one of them starts.
+W = passWorld(10);
+const passX1 = passRepo(W, 'acme__a', { conc: '1 / 1', running: 0, ready: 1, borrow: null, batch: 'X-1', machine: false, floor: 45900, prefix: 'A' });
+const passX2 = passRepo(W, 'acme__a', { conc: '1 / 1', running: 0, ready: 1, borrow: null, batch: 'X-2', machine: false, floor: 46000, prefix: 'B' });
+const raced = await Promise.all([passX1(), passX2()]);
+t('DS-308 pass AC2: exactly one worker starts across the two batches', runningAt(namedQueue('acme__a', 'X-1')) + runningAt(namedQueue('acme__a', 'X-2')), 1);
+t('DS-308 pass AC2: the other pass says nothing starts', raced.filter((o) => /^repo workers: 1 of the §3b cap of 1 running — .*: nothing starts this pass$/m.test(o)).length, 1);
+
+// AC2 without the lock: X-1 with a running sibling batch, the lock unmakeable (its folder is a file).
+// Unlocked it could count a slot another pass is counting too, so it starts nothing and says why.
+W = passWorld(10);
+passRepo(W, 'acme__a', { conc: '1 / 3', running: 1, ready: 0, borrow: null, batch: null, machine: false, floor: 46050 });
+writeFileSync(join(W, 'not-a-dir'), '');
+out = await passRepo(W, 'acme__a', { conc: '2 / 3', running: 0, ready: 2, borrow: null, batch: 'X-1', machine: false, floor: 46060, prefix: 'X', lockDir: join(W, 'not-a-dir') })();
+t('DS-308 pass AC2: with a running sibling batch and no lock, X-1 starts nothing', runningAt(namedQueue('acme__a', 'X-1')), 0);
+t('DS-308 pass AC2: and says the lock is why', /^repo workers: nothing starts this pass: the repo's batches share its §3b cap, and the borrow lock .* cannot be made/m.test(out), true);
+t('DS-308 pass AC2: and records it as the pass\'s hold', /^the repo's shared cap: repo workers: nothing starts this pass: .*cannot be made/.test(JSON.parse(readFileSync(namedQueue('acme__a', 'X-1'), 'utf8')).pass?.held ?? ''), true);
+
+// The same with the sibling idle (a queue on disk, nothing running, no pass): it shares nothing, so
+// there is no race, and X-1 starts as it would with no sibling.
+W = passWorld(10);
+passRepo(W, 'acme__a', { conc: '0 / 3', running: 0, ready: 0, borrow: null, batch: null, machine: false, floor: 46070 });
+writeFileSync(join(W, 'not-a-dir'), '');
+out = await passRepo(W, 'acme__a', { conc: '2 / 3', running: 0, ready: 2, borrow: null, batch: 'X-1', machine: false, floor: 46080, prefix: 'X', lockDir: join(W, 'not-a-dir') })();
+t('DS-308 pass AC2: with only an idle sibling and no lock, X-1 starts its 2', runningAt(namedQueue('acme__a', 'X-1')), 2);
+t('DS-308 pass AC2: and says nothing about the repo\'s batches', /^repo workers:/m.test(out), false);
+
+// AC6: only a standing batch: it starts as many as before, and says nothing about the repo's batches.
+W = passWorld(10);
+out = await passRepo(W, 'acme__a', { conc: '2 / 4', running: 0, ready: 3, borrow: null, batch: null, machine: false, floor: 46100 })();
+t('DS-308 pass AC6: a lone standing batch starts its own number of 2', runningIn('acme__a'), 2);
+t('DS-308 pass AC6: and prints no repo workers line', /repo workers/.test(out), false);
 
 console.log(fails ? `${fails} FAILED` : 'all borrow checks passed');
 process.exit(fails ? 1 : 0);
