@@ -12,7 +12,8 @@ A large feature runs as an epic: one key whose children are the tickets. **An ep
 feature batch, beside the standing batch, never over it.** For an epic, Stage 0 starts that batch
 in place of `init`, which would write a fresh queue over the standing batch's and, by setting a base
 on it, stop standing intake; the standing batch, its supervisor and intake carry on untouched. A repo
-runs one feature batch at a time. **Start the batch, then expand the epic, both at Stage 0 before
+runs one feature batch per epic, each on its own branch, beside the standing batch and every other
+epic's; all of them share the repo's limits. **Start the batch, then expand the epic, both at Stage 0 before
 triage**, and never triage, build, transition or edit the epic itself:
 
 ```bash
@@ -25,8 +26,8 @@ node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900   # the batch 
 - **The feature branch** is named as §5 Branch names says, cut from `origin/<default>`, and is the
   batch's base from the start. Pushing it is §3 `git-push`: at anything but `yes`, ask it now, the
   one question before `start`. A branch already on origin is used as it is.
-- **`start` refuses (exit 11) and makes nothing** while another epic's feature batch is live in the
-  repo, naming it: show the person and stop. It refuses a batch that already exists for this epic
+- **`start` refuses (exit 11) and makes nothing** while another epic's feature batch is live on the
+  same branch, naming it: show the person and stop. It refuses a batch that already exists for this epic
   too: an earlier session started it, so pick it up with `--batch ABC-900` rather than start it
   again. The batch is not handed to the supervisor until Stage 4.
 - **Every later command for this batch passes `--batch <EPIC>`**: triage, the plan, every pass, the

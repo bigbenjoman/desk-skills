@@ -11,7 +11,7 @@ the core's reference table names.
 # prompt: `node ~/.claude/desk/bin/<x>.mjs`, `~/.claude/desk/bin/<x>.sh`, `desk-env`. Never via a
 # shell variable such as $B: no allow rule matches a variable path. <state> is DESK_STATE from
 # `desk-env paths`, written out in full.
-node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-900   # an epic's own feature batch beside the standing one; refused while another is live
+node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-900   # an epic's own feature batch beside the standing one; refused while another is live on its branch
 node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900    # its plan declined: removes the batch, and its branch when main has all of it
 node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree

@@ -316,8 +316,11 @@ rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
 out=$(admit X-6); rc=$?
 check "DS-300 AC4: in feature mode a child is held behind the unfinished spine, as plan-batch holds every child" '[ $rc -eq 0 ] && [ "$(nget tickets.X-6.held_by)" = X-2 ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-2$" <<< "$out"'
 rec E-2 A '"type":"Epic"'
-out=$(admit E-2); rc=$?
-check "DS-300 AC3: with a feature batch live, another epic is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted E-2: an epic, and feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan E-2" <<< "$out"'
+config ask; out=$(admit E-2); rc=$?; config yes
+check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'
+rec X-1 A '"type":"Epic"'
+out=$(admit X-1); rc=$?
+check "DS-352 AC1: an epic whose own feature batch is live is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted X-1: an epic, and its feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan X-1" <<< "$out"'
 n=$(count "$T/triage.calls"); out=$(admit X-2); rc=$?
 check "DS-307 AC4: /desk-admit refuses a ticket in another batch before any triage" '[ $rc -eq 11 ] && grep -q "^not admitted X-2: X-2 is in batch X-1" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
 mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"
@@ -406,9 +409,9 @@ check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd
 rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
 out=$(admit E-10 --by ben); rc=$?
 check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
-config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'
+config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-11 A '"summary":"the third epic child"'; printf 'E-11\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
-check "DS-351: standing intake leaves an epic for later while a feature batch is live" '[ ! -e "$EB/E-9" ] && grep -q "intake: E-9 not admitted: an epic, and feature batch E-5 is already running" <<< "$out"'
+check "DS-352: standing intake starts another epic's feature batch beside a live one" '[ "$(eget E-9 base)" = feat/E-9-third ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && grep -q "^intake: started feature batch E-9 on feat/E-9-third, beside the standing batch$" <<< "$out" && ! grep -q "E-9 not admitted" <<< "$out"'
 
 # A start cut off before the hand-over (the supervisor's intake timeout) leaves its mark, by a pid
 # that has exited: the next intake discards that batch and hands its epic on, rather than reading it

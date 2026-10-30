@@ -31,10 +31,10 @@
 // `admit` is the same gate for tickets named by hand: no search, no interval and no cap, every one
 // triaged afresh, and what fails a check is refused back to the person (exit 11) rather than handed to
 // the digest. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
-// An epic has its own feature batch started beside the standing batch, its plan drafted headless and
-// left for the person in needs-you (epic-plan.mjs); without config §3 autopilot-workers `yes` it is
-// reported as one to plan in a session (the /desk-autopilot epic flow). Either way it is refused while
-// a feature batch is already live. A child of an epic whose feature
+// An epic has its own feature batch started beside the standing batch and any other epic's, its plan
+// drafted headless and left for the person in needs-you (epic-plan.mjs); without config §3
+// autopilot-workers `yes` it is reported as one to plan in a session (the /desk-autopilot epic flow).
+// Either way it is refused while its own feature batch is already live. A child of an epic whose feature
 // batch is live is admitted into that batch, held behind its blockers there and the unfinished
 // children it collides with. The person naming it is the approval.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
@@ -282,13 +282,12 @@ function intake({ state, query, reg, now }) {
   // again into the same timeout.
   for (const a of clearAbandoned()) hand(a.batch, `an epic, and ${a.text}`);
   // An epic is a feature batch's, never a worker's: one a run has its batch started, and its plan
-  // drafted and left for the person; while a feature batch is live, the rest wait for it to finish.
+  // drafted and left for the person, beside the standing batch and any other epic's.
   const epicKeys = found.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key).filter(isNew);
   for (const [n, key] of epicKeys.entries()) {
-    const live = liveFeatureBatches();
-    if (live.length) {
-      const text = `an epic, and feature batch ${live[0].name} is already running: a repo runs one feature batch at a time, so ${key} is taken once it finishes`;
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: live[0].name, text };
+    if (liveFeatureBatches().some((b) => b.name === key)) {
+      const text = `an epic, and its feature batch ${key} is already running: its children join that batch`;
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: key, text };
       writeIntake(state, reg);
       lines.push(`intake: ${key} not admitted: ${text}`);
       continue;
@@ -429,9 +428,8 @@ function byHand(keys, { state, by, front, now }) {
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
     if (isEpic({ name: t.rec.type })) {
-      // A repo runs one feature batch at a time, beside the standing batch.
-      const live = liveFeatureBatches();
-      if (live.length) { refuse(key, `an epic, and feature batch ${live.map((b) => b.name).join(', ')} is already running: a repo runs one feature batch at a time, so plan ${key} once it finishes`); continue; }
+      // Each epic runs as its own feature batch, beside the standing batch and any other epic's.
+      if (liveFeatureBatches().some((b) => b.name === key)) { refuse(key, `an epic, and its feature batch ${key} is already running: admit its children, which join that batch`); continue; }
       // Without a standing grant for headless workers, a session plans it with the person.
       if (!mayStart) {
         plan.push(key);

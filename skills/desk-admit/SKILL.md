@@ -48,8 +48,8 @@ Each `plan <EPIC> as a feature batch beside the standing batch: /desk-autopilot 
 the user wants the epic run exactly as `/desk-autopilot <EPIC>` runs it: its own feature batch, beside
 the standing batch, which carries on untouched. Load `desk-autopilot` and run its epic flow for
 `<EPIC>` (*An epic as a batch*, from Stage 0), plan approval included; do not ask first how the epic
-should run. More than one such line: run the first; the others wait, since a repo runs one feature
-batch at a time.
+should run. More than one such line: run the first, then each of the others in turn; every epic gets
+its own feature batch, on its own branch.
 
 ## 2. Refused (exit 11)
 
@@ -64,7 +64,7 @@ below as `(Recommended)`, with its reason as the description:
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
 | `blocked by <B>, which is not done and not in the batch` | Admit `<B>` with it | Run step 1 with both |
-| `an epic, and feature batch <B> is already running` | Wait for `<B>` to finish: a repo runs one feature batch at a time | Run step 1 for the epic once it has |
+| `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |
 | `an epic, and its feature batch was not started: …` | Settle what follows the colon (the line names the push or fix), as the rows here say for it; nothing was left behind | Run step 1 again for it, or plan it in a session: `/desk-autopilot <EPIC>` |
 | `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most | Admit nothing for it |
 | `is a child of epic <E>, but not admitted into its feature batch: …` | Settle what follows the colon, as the row above for it says | Run step 1 again for it |
