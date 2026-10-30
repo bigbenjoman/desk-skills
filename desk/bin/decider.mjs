@@ -4,7 +4,7 @@
 // digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
-//   - a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
+//   - an epic's feature-plan park, a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
 //     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
 //     decider tool acts on, and a park asking again what the park its last requeue cleared asked,
 //     with no answer since (queue.mjs requeue keeps that park as `prev_park`);
@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
-import { needsSession } from './batch-state.mjs';
+import { needsSession, planPark } from './batch-state.mjs';
 import { questionKey } from './not-now.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
@@ -90,7 +90,9 @@ export function presort(items, state = null) {
   for (const item of items) {
     const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(item.text);
     const prevAt = item.prev?.since ?? item.prev?.requeued_at;
-    if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
+    if (item.kind === 'parked' && planPark({ state: 'parked', park: { question: item.text } })) {
+      hand.push({ item, why: 'an epic\'s drafted plan: only the person starts, edits or discards it' });
+    } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
@@ -251,19 +253,25 @@ export function startDecider({ state, slug, bin, report, items, rules, webRead =
   return { id, pid: child.pid ?? null, started: now.toISOString(), out, items };
 }
 
+// The payload on the last `mark` line of a headless session's `--output-format json` text:
+// {cost, payload}, or {cost, error} when there is no result line, no mark line or no JSON after it.
+export function markedResult(text, mark) {
+  let d = null;
+  for (const line of String(text ?? '').split('\n').reverse()) { try { const x = JSON.parse(line); if (x?.type === 'result') { d = x; break; } } catch { /* not JSON */ } }
+  if (!d) return { cost: null, error: `no result (${String(text ?? '').trim().split('\n').slice(-1)[0]?.slice(0, 120) || 'empty output'})` };
+  const cost = Number(d.total_cost_usd) || 0;
+  const line = String(d.result ?? '').split('\n').reverse().find((l) => l.trimStart().startsWith(mark));
+  if (!line) return { cost, error: `no ${mark} line` };
+  try { return { cost, payload: JSON.parse(line.trimStart().slice(mark.length)) }; } catch { return { cost, error: `an unreadable ${mark} line` }; }
+}
+
 // The session's answer from its JSON result: {cost, settled: {id: did}, handed: {id: why}} or
 // {cost, error} when there is no result line to read.
 export function readResult(out) {
   let text = '';
   try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
-  let d = null;
-  for (const line of text.split('\n').reverse()) { try { const x = JSON.parse(line); if (x?.type === 'result') { d = x; break; } } catch { /* not JSON */ } }
-  if (!d) return { cost: null, error: `no result (${text.trim().split('\n').slice(-1)[0]?.slice(0, 120) || 'empty output'})` };
-  const cost = Number(d.total_cost_usd) || 0;
-  const line = String(d.result ?? '').split('\n').reverse().find((l) => l.trimStart().startsWith(RESULT_MARK));
-  if (!line) return { cost, error: `no ${RESULT_MARK} line` };
-  let r;
-  try { r = JSON.parse(line.trimStart().slice(RESULT_MARK.length)); } catch { return { cost, error: `an unreadable ${RESULT_MARK} line` }; }
+  const { cost, error, payload: r } = markedResult(text, RESULT_MARK);
+  if (error) return { cost, error };
   const pairs = (xs, k) => Object.fromEntries((Array.isArray(xs) ? xs : []).filter((x) => x?.id).map((x) => [x.id, String(x[k] ?? '')]));
   return { cost, settled: pairs(r.settled, 'did'), handed: pairs(r.handed, 'why') };
 }

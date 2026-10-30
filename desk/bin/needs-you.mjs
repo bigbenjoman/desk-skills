@@ -9,7 +9,8 @@
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask
-//       answer "<answer>"   answer it only (digest.mjs answer): triage questions. On a draft PR whose
+//       answer "<answer>"   answer it only (digest.mjs answer): triage questions, and an epic's drafted
+//                           plan (start, discard, or an edit), recorded on the epic. On a draft PR whose
 //                           review left gaps, the call on them: posted on the PR, kept for its next
 //                           worker, and requeued for a worker on the PR
 //       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
@@ -28,7 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
-import { isHeld, spinePark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
@@ -100,6 +101,7 @@ function itemOf(r, x) {
   }
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
+    if (planPark(t)) return { kind: 'plan', need, actions: [['answer', 'say start, discard, or the edit to make; it is recorded on the epic for its batch to act on'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
@@ -122,7 +124,7 @@ function itemOf(r, x) {
 // question and park inputs; anything else to its ticket and kind, since several tickets share a need's
 // words, with its need, PR head and blockers' states as inputs, so a moved head or a blocker that went
 // done brings it back. A PR's need is left out: it carries the age of its running checks.
-const PARK_KINDS = ['parked', 'session', 'spine'];
+const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   const inputs = { ticket: t.key };
