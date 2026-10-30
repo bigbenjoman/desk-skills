@@ -57,9 +57,9 @@ t('AC5 a standing batch on main: says it runs on the default branch', r.out.incl
 t('AC5 a standing batch on main: nothing changed', everything(), before);
 t('AC5 a standing batch on main: no batch slot made', existsSync(join(DESK_HOME, 'repos', SLUG, 'batches')) || existsSync(join(standingS, 'batches')), false);
 
-// AC4: a standing batch on a base whose epic cannot be read is refused, naming it, and nothing changes.
+// AC4: a standing batch on a base whose slot cannot be named is refused, naming why, and nothing changes.
 for (const [why, extra, says] of [
-  ['no epic', {}, 'its queue names no epic'],
+  ['no epic, and a base that makes no batch name', { base: '//' }, 'its queue names no epic, and its base "//" makes no batch name'],
   ['an epic that is not a batch name', { epic: '../x' }, '"../x" is not a batch name'],
 ]) {
   reset();
@@ -225,6 +225,27 @@ t('AC2 and the screenshot is there', existsSync(join(after.tickets['K-1'].images
 t('AC2 an images_dir elsewhere is left alone', after.tickets['K-3'].images_dir, '/elsewhere/K-3');
 t('AC2 everything else in the queue unchanged', JSON.stringify({ ...after, tickets: null }), JSON.stringify({ ...withImages, tickets: null }));
 t('AC2 with screenshots: the standing slot has no queue', existsSync(standingQ), false);
+
+// A batch whose tickets span several epics names no epic: it moves to a slot named after its branch.
+reset();
+const multi = queue({ base: 'feat/epics-coverage-to-podcasts', supervised: true });
+put(standingQ, multi);
+put(join(standingS, 'parks', 'K-2.json'), '{"question":"which colour?"}');
+put(join(standingS, 'answers', 'K-2.txt'), 'blue');
+put(join(standingS, 'intake.json'), '{"seen":{}}');
+r = move();
+const slotted = 'feat-epics-coverage-to-podcasts';
+t('several epics: moved', r.code, 0);
+t('several epics: says where it went', r.out.includes(`from the standing slot to batch ${slotted}`), true);
+t('several epics: the queue is under the branch-named slot, unchanged', existsSync(namedQ(slotted)) && read(namedQ(slotted)), multi);
+t('several epics: its parks and answers moved', `${read(join(namedS(slotted), 'parks', 'K-2.json'))} ${read(join(namedS(slotted), 'answers', 'K-2.txt'))}`, '{"question":"which colour?"} blue');
+t('several epics: the standing slot has no queue', existsSync(standingQ), false);
+t('several epics: intake\'s register stays with the standing slot', existsSync(join(standingS, 'intake.json')), true);
+const listed2 = spawnSync('node', ['--input-type=module', '-e', `import * as B from '${join(BIN, 'batches.mjs')}'; console.log(B.listBatches().map((b) => b.name ?? '-').join(' '))`], { encoding: 'utf8', env: base });
+t('several epics: the repo lists the standing slot and the branch-named batch', listed2.stdout.trim(), `- ${slotted}`);
+// The slot name keeps only what a batch name may hold.
+const slots = spawnSync('node', ['--input-type=module', '-e', `import { slotFor } from '${join(BIN, 'batches.mjs')}'; console.log(JSON.stringify(['feat/a b..c/', '-x/y', 'ok'].map((base) => slotFor({ base }).name)), slotFor({ base: 'feat/x', epic: 'E-2' }).name)`], { encoding: 'utf8', env: base });
+t('slotFor: a branch name made a batch name, an epic used as it is', slots.stdout.trim(), '["feat-a-b.c","x-y","ok"] E-2');
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

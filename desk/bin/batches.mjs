@@ -38,6 +38,18 @@ export function batchHolding(key, slug = E.repoSlug()) {
 
 export const label = (b) => b.name ?? 'the standing batch';
 
+// The named slot a standing batch on a base moves to (move-batch.mjs): its epic's, or, where its queue
+// names no epic (its tickets come from several), one named after its base branch, with each run of
+// characters a batch name cannot hold made a '-'. -> {name, by: 'epic' | 'branch'} or {why}.
+export function slotFor(q) {
+  if (q.epic != null && q.epic !== '') {
+    const epic = String(q.epic);
+    return E.SAFE_ID.test(epic) && !epic.includes('..') ? { name: epic, by: 'epic' } : { why: `its epic "${epic}" is not a batch name (letters, digits, . _ - only; no ..)` };
+  }
+  const name = String(q.base ?? '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.').slice(0, 100).replace(/^[^A-Za-z0-9]+|[-.]+$/g, '');
+  return E.SAFE_ID.test(name) ? { name, by: 'branch' } : { why: `its queue names no epic, and its base "${q.base}" makes no batch name` };
+}
+
 // Whether the environment already pins one batch: a batch named (--batch, DESK_BATCH), or an explicit
 // queue or state path.
 export const batchPinned = (env = process.env) => Boolean(env.DESK_BATCH || env.DESK_QUEUE || env.DESK_AUTOPILOT_STATE);
