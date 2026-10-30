@@ -3,6 +3,7 @@
 // (the spine and the owner table, in feature mode) is drafted headless, and the plan goes to the
 // person as one needs-you item. The batch then waits: the epic is parked in it with a feature-plan
 // park, and every child is admitted held behind the epic, so nothing spawns until it is answered.
+// The supervisor acts on the answer (actOnPlan): start, an edit applied before it starts, or discard.
 //
 // startEpic is the /desk-autopilot epic flow's Stages 0 to 2 (desk-autopilot's epic-batch.md and
 // feature-mode.md) with the person's plan approval moved to needs-you. Anything that fails before the
@@ -12,9 +13,10 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { FEATURE_PLAN_PREFIX, readQueue } from './batch-state.mjs';
+import { FEATURE_PLAN_PREFIX, readQueue, planPark } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
-import { markedResult } from './decider.mjs';
+import { markedResult, answers } from './decider.mjs';
+import { NOT_NOW } from './not-now.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -201,4 +203,196 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   rmSync(join(state, START_MARK), { force: true });
   lines.push(`${key}'s ${children.length} ${children.length === 1 ? 'child is' : 'children are'} held behind it, and its plan waits for you in /desk-needs-you; the batch is handed to the supervisor`);
   return { batch: key, children, lines };
+}
+
+// ---- the person's answer to the plan -------------------------------------------------------------
+// The supervisor reads it on each tick, before the batch's pass. A start files the spine (feature
+// mode) and seeds the batch as the /desk-autopilot epic flow's Stage 3 does; an edit is applied as it
+// stands and the batch starts, with no second round, unless it cannot be applied cleanly, which asks
+// again naming why; a discard removes the batch (batch.mjs discard), which releases the children.
+
+export const EDIT_MARK = 'PLAN_EDIT:';
+const START_WORDS = /^(start|start it|approve|approved|yes|go|ok|okay)[.!]?$/i;
+const DISCARD_WORDS = /^(discard|discard it|reject|rejected|no)[.!]?$/i;
+// What an answer asks for: 'start', 'discard', or 'edit' (anything else).
+export const answerKind = (text) => {
+  const s = String(text ?? '').trim();
+  return START_WORDS.test(s) ? 'start' : DISCARD_WORDS.test(s) ? 'discard' : 'edit';
+};
+
+// The park asked again when an answer could not be carried out: the needs-you plan item, naming why.
+export const replanQuestion = (epic, why, path) => `${FEATURE_PLAN_PREFIX}: the plan for ${epic} was not started, because ${why}: read ${path}, then start, edit or discard it`;
+
+// The editor's prompt: the plan as it stands, the children, and the person's edit, verbatim.
+export function editPrompt({ epic, edit, planText, plan, children }) {
+  return [
+    `You are applying the person's edit to the plan for epic ${epic}, headless: nobody is reading, and you cannot ask anything.`,
+    'Apply the edit exactly as it stands and change nothing else. If any part of it cannot be applied to this plan as it is written (it names a criterion or a child the plan does not have, contradicts itself, or asks for something the plan does not hold), apply none of it and say which part, and why.',
+    '',
+    '## The plan as the person read it',
+    '',
+    cut(String(planText ?? '').trim(), TEXT_MAX) || '(the plan file could not be read)',
+    '',
+    '## The spine and owner table (feature.json)',
+    '',
+    plan ? JSON.stringify({ draft: plan.draft, owners: plan.owners ?? {}, contributors: plan.contributors ?? {}, untestable: plan.untestable ?? {} }, null, 2)
+      : '(none: this batch runs as an ordinary epic batch, so the only edit the plan holds is which children it builds)',
+    '',
+    '## Its children',
+    '',
+    ...children.map((c) => `- ${c}`),
+    '',
+    '## The edit',
+    '',
+    cut(String(edit).trim(), TEXT_MAX),
+    '',
+    '## Your answer',
+    '',
+    `End your reply with one line, at the start of a line: \`${EDIT_MARK} {"plan": ${plan ? '{"draft": "<the spine ticket>", "owners": {"<id>": "<KEY>"}, "contributors": {"<id>": ["<KEY>"]}, "untestable": {"<id>": {"why": "<why>"}}}' : 'null'}, "drop": ["<KEY of a child the batch no longer builds>"]}\`, or, when the edit cannot be applied, \`${EDIT_MARK} {"cannot": "<the part that cannot be applied, and why>"}\`.`,
+  ].join('\n');
+}
+
+// The editor's answer: {plan, drop}, {cannot} for an edit it could not apply, or {why} when it failed.
+export function readEdit(text, { children, plan }) {
+  const { error, payload: p } = markedResult(text, EDIT_MARK);
+  if (error) return { why: `the plan editor's answer has ${error}` };
+  if (typeof p?.cannot === 'string' && p.cannot.trim()) return { cannot: p.cannot.trim() };
+  const drop = Array.isArray(p?.drop) ? p.drop.map(String) : [];
+  const stray = drop.filter((k) => !children.includes(k));
+  if (stray.length) return { cannot: `it drops ${stray.join(', ')}, which ${stray.length === 1 ? 'is not a child' : 'are not children'} of this batch` };
+  if (!plan) return p?.plan ? { cannot: 'this batch has no spine or owner table to change' } : { plan: null, drop };
+  const e = p?.plan;
+  if (typeof e?.draft !== 'string' || !e.draft.trim() || typeof e.owners !== 'object' || !e.owners) return { why: 'the plan editor gave no spine draft or owner table' };
+  return { plan: { ...plan, draft: e.draft, owners: e.owners, contributors: e.contributors ?? {}, untestable: e.untestable ?? {} }, drop };
+}
+
+// Questions plan-batch puts on the epic itself: an owner table it cannot use.
+const epicQuestions = (v, epic) => (v.needs_person ?? []).filter((n) => n.ticket === epic && n.why === 'question').map((n) => n.detail);
+const wantsSpine = (v, epic) => (v.needs_person ?? []).some((n) => n.ticket === epic && n.why === 'feature_plan');
+
+// Files the drafted spine under the epic (desk-jira's gate, §3 jira-create): {key} or {why}.
+function fileSpine({ epic, state, env, draft }) {
+  const grant = E.permission('jira-create');
+  if (grant !== 'yes') return { why: `filing its spine needs config §3 ${E.permissionKey('jira-create')} to be "yes" (it is "${grant}")` };
+  const lines = String(draft).trim().split('\n');
+  const summary = lines[0].replace(/^#+\s*/, '').replace(/^(summary|title)\s*:\s*/i, '').replace(/\*\*/g, '').trim();
+  const file = join(state, 'spine.md');
+  writeFileSync(file, `${lines.slice(1).join('\n').trim() || summary}\n`);
+  // desk-jira sends a body only from inside the repo, $DESK_STATE or a temp dir.
+  const r = run('desk-jira', ['create', 'Story', summary, file, `parent=${epic}`], { ...env, DESK_STATE: state });
+  const key = /^created ([A-Z][A-Z0-9_]*-\d+)/m.exec(r.stdout ?? '')?.[1];
+  return r.status === 0 && key ? { key } : { why: `filing its spine was refused (${lastLine(r)})` };
+}
+
+// Seeds the batch with `children` (and, in feature mode, the spine, filed first) and takes the epic out
+// of it: -> {lines} or {why}.
+function startPlan({ epic, state, env, children }) {
+  let v = planOf(children, env);
+  if (v.why) return v;
+  let spine = null;
+  if (wantsSpine(v, epic)) {
+    const path = join(state, 'feature.json');
+    const plan = readJson(path, null);
+    if (!plan?.draft) return { why: `it has no drafted spine in ${path}` };
+    spine = plan.spine;
+    // Filed once: a start that stops after filing finds its key here next time.
+    if (!spine) {
+      const f = fileSpine({ epic, state, env, draft: plan.draft });
+      if (f.why) return f;
+      spine = f.key;
+      writeFileSync(path, `${JSON.stringify({ ...plan, spine }, null, 2)}\n`);
+    }
+    if (!readJson(join(state, 'triage', `${spine}.json`), null)) {
+      const t = run(join(HERE, 'triage.sh'), [spine], env);
+      if (t.status !== 0 || !readJson(join(state, 'triage', `${spine}.json`), null)) return { why: `its spine ${spine} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})` };
+    }
+    v = planOf([spine, ...children], env);
+    if (v.why) return v;
+  }
+  const qs = epicQuestions(v, epic);
+  if (qs.length) return { why: `plan-batch has questions on its owner table: ${qs.join('; ')}` };
+  const seed = node('plan-batch.mjs', ['--json', ...(spine ? [spine] : []), ...children], { ...env, AUTOPILOT_WRITE_QUEUE: '1' });
+  let sv = null;
+  try { sv = JSON.parse(seed.stdout); } catch { /* reported below */ }
+  if (!sv || sv.status === 'error') return { why: `plan-batch did not seed it (${sv?.message ?? lastLine(seed)})` };
+  const q = (args) => { const r = node('queue.mjs', args, env); return r.status === 0 ? null : lastLine(r); };
+  // A child plan-batch made runnable still carries the epic's hold park, which nothing reads once it is
+  // triaged; it is cleared so the queue says what the ticket waits on.
+  const after = readQueue(env.DESK_QUEUE);
+  const stale = Object.values(after.tickets ?? {}).filter((t) => t.key !== epic && t.state === 'triaged' && t.park);
+  const why = stale.reduce((w, t) => w ?? q(['set', t.key, 'park=null']), null) ?? q(['drop', epic]);
+  if (why) return { why: `its queue could not be written (${why})` };
+  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`] };
+}
+
+// Applies an edit to the plan, then starts the batch: -> {lines} or {why} (asked again).
+function editPlan({ epic, state, env, children, edit, claude }) {
+  const path = join(state, 'feature.json');
+  const before = readJson(path, null);
+  const plan = before?.draft ? before : null;
+  let planText = '';
+  try { planText = readFileSync(planFile(state), 'utf8'); } catch { /* the prompt says so */ }
+  const prompt = editPrompt({ epic, edit, planText, plan, children });
+  writeFileSync(join(state, 'plan-edit.prompt.md'), prompt);
+  const r = run(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
+    '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)], env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (r.error || r.status !== 0) return { why: `your edit was not applied: the plan editor failed (${lastLine(r)})` };
+  const e = readEdit(r.stdout, { children, plan });
+  if (e.why) return { why: `your edit was not applied: ${e.why}` };
+  if (e.cannot) return { why: `your edit could not be applied: ${e.cannot}` };
+  const kept = children.filter((c) => !e.drop.includes(c));
+  if (!kept.length) return { why: 'your edit could not be applied: it leaves no child to build' };
+  if (e.plan) writeFileSync(path, `${JSON.stringify(e.plan, null, 2)}\n`);
+  const v = planOf(kept, env);
+  const qs = v.why ? [v.why] : epicQuestions(v, epic);
+  if (qs.length) {
+    if (e.plan) writeFileSync(path, `${JSON.stringify(before, null, 2)}\n`);
+    return { why: `your edit could not be applied cleanly: ${qs.join('; ')}` };
+  }
+  const q = (args) => { const x = node('queue.mjs', args, env); return x.status === 0 ? null : lastLine(x); };
+  const dropped = e.drop.reduce((w, c) => w ?? q(['drop', c]), null);
+  if (dropped) return { why: `your edit could not be applied: its queue could not be written (${dropped})` };
+  writeFileSync(planFile(state), `# The plan for ${epic}\n\n${[].concat(v.message ?? []).join('\n')}\n\nEdited on your answer: ${edit}\n`);
+  const s = startPlan({ epic, state, env, children: kept });
+  const did = `your edit to ${epic}'s plan was applied${e.drop.length ? `, and ${e.drop.join(', ')} left the batch` : ''}`;
+  return s.why ? { why: `${did}, but ${s.why}` } : { lines: [did, ...s.lines] };
+}
+
+// Removes the batch on the person's word: -> {lines, gone} or {why}.
+function discardPlan({ name, env, children }) {
+  const sup = node('queue.mjs', ['set-batch', 'supervised=false'], env);
+  if (sup.status !== 0) return { why: `discarding it was refused (${lastLine(sup)})` };
+  const d = node('batch.mjs', ['discard', name], env);
+  if (d.status !== 0) {
+    node('queue.mjs', ['set-batch', 'supervised=true'], env);
+    return { why: `discarding it was refused (${lastLine(d).replace(/^batch: /, '')})` };
+  }
+  const freed = children.length ? `; ${children.join(', ')} ${children.length === 1 ? 'is' : 'are'} released: no batch holds ${children.length === 1 ? 'it' : 'them'}, and /desk-admit or intake can take ${children.length === 1 ? 'it' : 'each'} again` : '';
+  return { gone: true, lines: [...d.stdout.trim().split('\n').filter(Boolean), `discarded on your answer to its plan${freed}`] };
+}
+
+// Acts on the person's answer to the plan of feature batch `b` ({name, queue, state}), if one came since
+// the epic parked: -> {acted: null | 'start' | 'edit' | 'discard' | 'asked', lines, gone}. `gone`: the
+// batch's folders are removed, so its lines belong in the standing batch's log.
+export function actOnPlan(b, { claude = 'claude' } = {}) {
+  const none = { acted: null, lines: [], gone: false };
+  if (!b?.name) return none;
+  let q;
+  try { q = readQueue(b.queue); } catch { return none; /* the batch's own tick reports it */ }
+  const epic = q.epic ?? b.name;
+  const t = q.tickets?.[epic];
+  if (q.supervised !== true || !planPark(t)) return none;
+  const last = answers(b.state, { ticket: epic, at: t.park.since }).pop();
+  // "not now" puts the item off (not-now.mjs): nothing to act on.
+  if (!last || NOT_NOW.test(last.text)) return none;
+  const env = batchEnv(b.name);
+  const children = Object.keys(q.tickets).filter((k) => k !== epic);
+  const kind = answerKind(last.text);
+  const r = kind === 'discard' ? discardPlan({ name: b.name, env, children })
+    : kind === 'start' ? startPlan({ epic, state: b.state, env, children })
+      : editPlan({ epic, state: b.state, env, children, edit: last.text, claude });
+  if (!r.why) return { acted: kind, lines: r.lines, gone: r.gone === true };
+  // Parked again with why: a new needs-you item, and an answer to it is newer than this park.
+  const p = node('queue.mjs', ['park', epic, replanQuestion(epic, r.why, planFile(b.state))], env);
+  return { acted: 'asked', gone: false, lines: [`${epic}: your answer to its plan was not carried out, because ${r.why}; ${p.status === 0 ? 'asked again in /desk-needs-you' : `and asking again failed (${lastLine(p)})`}`] };
 }

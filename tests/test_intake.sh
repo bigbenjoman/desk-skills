@@ -37,6 +37,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`autopilot-merge\` | The merge driver merges | \`ask\` | \`yes\` |
 | \`pr-merge-green\` | Merge on green | \`ask\` | \`yes\` |
 | \`git-push\` | Push a branch | \`ask\` | \`yes\` |
+| \`jira-create\` | Create a ticket | \`ask\` | \`yes\` |
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -48,11 +49,12 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists.
 cat > "$T/fakes/desk-jira" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/jira.calls"
+[ "\$1" = create ] && { echo "created E-11"; exit 0; }
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
 EOF
@@ -349,14 +351,25 @@ mkdirSync(s, { recursive: true });
 writeFileSync(s + '/expansion.json', JSON.stringify({ parent: key, containers: {}, criteria: [{ id: 'AC1', text: 'it works' }] }));
 process.stdout.write(readFileSync('$T/children/' + key, 'utf8'));
 EOF
+# Each line of $T/plan.qs is a question on the epic's owner table. With AUTOPILOT_WRITE_QUEUE it seeds
+# the named tickets, each held behind the spine where feature.json names one, as plan-batch does.
 cat > "$T/bin/plan-batch.mjs" <<EOF
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
-const s = process.env.DESK_AUTOPILOT_STATE, epic = process.env.DESK_BATCH;
-appendFileSync('$T/plan.calls', epic + ' ' + process.argv.slice(2).join(' ') + '\n');
+import { execFileSync } from 'node:child_process';
+const s = process.env.DESK_AUTOPILOT_STATE, epic = process.env.DESK_BATCH, seed = Boolean(process.env.AUTOPILOT_WRITE_QUEUE);
+const keys = process.argv.slice(2).filter((a) => a !== '--json');
+appendFileSync('$T/plan.calls', epic + ' ' + process.argv.slice(2).join(' ') + (seed ? ' (seed)' : '') + '\n');
 const plan = existsSync(s + '/feature.json') ? JSON.parse(readFileSync(s + '/feature.json', 'utf8')) : null;
+const qs = existsSync('$T/plan.qs') ? readFileSync('$T/plan.qs', 'utf8').split('\n').filter(Boolean) : [];
 const message = ['FEATURE MODE — on', plan ? '  AC1 owner ' + plan.owners.AC1 : '  no feature plan yet'];
-console.log(JSON.stringify({ status: 'show_person', code: 11, message, needs_person: [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }] }));
-process.exitCode = 11;
+const needs = [...(plan?.spine ? [] : [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }]), ...qs.map((q) => ({ ticket: epic, why: 'question', detail: q }))];
+if (seed) {
+  const q = (...a) => execFileSync(process.execPath, ['$T/bin/queue.mjs', ...a], { stdio: 'ignore' });
+  for (const k of keys) { q('add', k, 'Story', 'A'); q('set', k, 'state=triaged', 'held_by=null'); }
+  for (const k of keys) if (plan?.spine && k !== plan.spine) q('hold', k, plan.spine);
+}
+console.log(JSON.stringify({ status: needs.length ? 'show_person' : 'go_on', code: needs.length ? 11 : 0, message, needs_person: needs }));
+process.exitCode = needs.length ? 11 : 0;
 EOF
 cat > "$T/claude.out" <<'EOF'
 {"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: one strict expected-fail spec for AC1\", \"owners\": {\"AC1\": \"E-6\"}}"}
@@ -404,6 +417,66 @@ printf '{"pid":%s}\n' "$dead" > "$ES/O-1/epic-start.json"
 out=$(intake)
 check "DS-351: a feature batch whose start was cut off is discarded, and its epic handed on" '[ ! -e "$EB/O-1" ] && [ ! -e "$ES/O-1" ] && grep -q "^handed: an epic, and feature batch O-1.s start was cut off (pid $dead) before it was handed to the supervisor: discarded$" <<< "$(handed O-1)"'
 check "DS-351: a finished start leaves no mark behind" '[ ! -e "$ES/E-5/epic-start.json" ]'
+
+# ---- DS-354: the person's answer to the plan, acted on by the supervisor -------------------------
+# Answered with the real answer.mjs, as /desk-needs-you records it; each tick runs every batch, with
+# intake off. The editor is the fake claude, answering what $T/claude.out holds.
+config yes '`none`'
+answer(){ (cd "$T/repo" && env -u DESK_QUEUE -u DESK_AUTOPILOT_STATE node "$T/bin/answer.mjs" "$@" >/dev/null 2>&1); }
+btick(){ (cd "$T/repo" && env -u DESK_QUEUE -u DESK_AUTOPILOT_STATE node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
+pq(){ eget "$1" "tickets.$1.park.question"; }
+editor(){ printf '{"type":"result","total_cost_usd":0.05,"result":"Done.\\nPLAN_EDIT: %s"}\n' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')" > "$T/claude.out"; }
+SL="$HOME/.desk-autopilot/acme__widgets/supervisor.log"
+
+editor '{"cannot": "AC9 is not one of the criteria"}'
+answer E-5 "make E-7 own AC9"; out=$(btick)
+check "DS-354 AC3: an edit the editor cannot apply asks again in needs-you, naming what it could not apply" '[ "$(eget E-5 tickets.E-5.state)" = parked ] && [ "$(pq E-5)" = "feature plan awaiting your answer: the plan for E-5 was not started, because your edit could not be applied: AC9 is not one of the criteria: read $ES/E-5/plan.md, then start, edit or discard it" ]'
+check "DS-354 AC3: nothing is started, and the children stay held behind the epic" '[ "$(eget E-5 tickets.E-6.held_by)" = E-5 ] && ! grep -q "(seed)" "$T/plan.calls" && ! grep -q "^create" "$T/jira.calls"'
+check "DS-354 AC2: the editor is given the plan and the edit, verbatim" 'grep -q -- "-p You are applying the person.s edit to the plan for epic E-5" "$T/claude.calls" && grep -q "^make E-7 own AC9$" "$ES/E-5/plan-edit.prompt.md" && grep -q "AC1 owner E-6" "$ES/E-5/plan-edit.prompt.md" && grep -q "\"AC1\": \"E-6\"" "$ES/E-5/plan-edit.prompt.md"'
+n=$(count "$T/claude.calls"); out=$(btick)
+check "DS-354: an answer already acted on is not acted on again" '[ "$(count "$T/claude.calls")" = "$n" ] && grep -q "your edit could not be applied: AC9" <<< "$(pq E-5)"'
+
+# An edit the editor applies, but that leaves the owner table with a question, is not applied either.
+echo "AC1's owner E-12 is not a child this batch builds: name another owner" > "$T/plan.qs"
+editor '{"plan": {"draft": "Spine: AC1", "owners": {"AC1": "E-12"}}, "drop": []}'
+answer E-5 "make E-12 own AC1"; out=$(btick)
+check "DS-354 AC3: an edit that leaves the owner table unsettled asks again, naming plan-batch's question" 'grep -q "because your edit could not be applied cleanly: AC1.s owner E-12 is not a child this batch builds: name another owner: read " <<< "$(pq E-5)" && ! grep -q "(seed)" "$T/plan.calls"'
+check "DS-354 AC3: the plan is left as it was" '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).owners.AC1)" "$ES/E-5/feature.json")" = E-6 ]'
+rm -f "$T/plan.qs"
+q0=$(pq E-5); answer E-5 "not now"; out=$(btick)
+check "DS-354: a not-now answer leaves the plan waiting" '[ "$(pq E-5)" = "$q0" ] && [ -e "$EB/E-5" ]'
+
+# AC4: discarded on the answer, and the children released.
+answer E-5 discard; out=$(btick)
+check "DS-354 AC4: a rejected plan discards the feature batch and its branch" '[ ! -e "$EB/E-5" ] && [ ! -e "$ES/E-5" ] && [ -z "$(git -C "$T/repo" ls-remote --heads origin feat/E-5-a-feature)" ]'
+check "DS-354 AC4: the standing log says the children are released" 'grep -q "^discarded on your answer to its plan; E-6, E-7, E-10 are released: no batch holds them" "$SL"'
+out=$(admit E-10 --by ben); rc=$?
+check "DS-354 AC4: a released child can be admitted again" '[ $rc -eq 0 ] && [ "$(qget tickets.E-10.state)" = triaged ]'
+
+# AC2: an edit applied as it stands, and the batch starts with no second needs-you round.
+rec E-11 A '"summary":"the spine"'; rec E-13 A '"summary":"the third child"'; rec E-14 A '"summary":"the fourth child"'
+printf 'E-13\nE-14\n' > "$T/children/E-12"; rec E-12 A '"type":"Epic","branch":"feat/E-12-edited"'
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: one strict expected-fail spec for AC1\", \"owners\": {\"AC1\": \"E-13\"}}"}
+EOF
+out=$(admit E-12 --by ben)
+editor '{"plan": {"draft": "Spine: one strict expected-fail spec for AC1\nIt lands the AC1 spec.", "owners": {"AC1": "E-14"}}, "drop": []}'
+answer E-12 "make E-14 own AC1, not E-13"; out=$(btick)
+check "DS-354 AC2: the edit is applied to the plan" '[ "$(node -e "const f=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")); console.log(f.owners.AC1, f.spine)" "$ES/E-12/feature.json")" = "E-14 E-11" ] && grep -q "^Edited on your answer: make E-14 own AC1, not E-13$" "$ES/E-12/plan.md"'
+check "DS-354 AC2: the spine is filed under the epic from the edited draft" 'grep -q "^create Story Spine: one strict expected-fail spec for AC1 $ES/E-12/spine.md parent=E-12$" "$T/jira.calls" && grep -q "^It lands the AC1 spec.$" "$ES/E-12/spine.md" && [ -f "$ES/E-12/triage/E-11.json" ]'
+check "DS-354 AC2: the batch starts, seeded spine first, with no second needs-you round" 'grep -q "^E-12 --json E-11 E-13 E-14 (seed)$" "$T/plan.calls" && [ "$(eget E-12 tickets.E-12)" = undefined ] && [ "$(eget E-12 tickets.E-11.state)" = triaged ] && [ "$(eget E-12 tickets.E-11.park)" = null ] && [ "$(eget E-12 tickets.E-14.held_by)" = E-11 ]'
+check "DS-354 AC2: the batch's log says what was done" 'grep -q "^your edit to E-12.s plan was applied$" "$ES/E-12/supervisor.log" && grep -q "^E-12.s feature batch started on feat/E-12-edited, with its spine E-11 first: 2 children seeded by plan-batch$" "$ES/E-12/supervisor.log"'
+
+# AC1: approved as it stands. The edited batch above is cleared away, so a second epic can start.
+rm -rf "$EB/E-12" "$ES/E-12"
+rec E-16 A '"summary":"the only child"'; printf 'E-16\n' > "$T/children/E-15"; rec E-15 A '"type":"Epic","branch":"feat/E-15-approved"'
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: the AC1 spec\", \"owners\": {\"AC1\": \"E-16\"}}"}
+EOF
+out=$(admit E-15 --by ben); n=$(count "$T/claude.calls")
+answer E-15 start; out=$(btick)
+check "DS-354 AC1: an approved plan starts the feature batch on its feature branch" '[ "$(eget E-15 base)" = feat/E-15-approved ] && [ "$(eget E-15 tickets.E-15)" = undefined ] && [ "$(eget E-15 tickets.E-11.state)" = triaged ] && [ "$(eget E-15 tickets.E-16.held_by)" = E-11 ] && grep -q "^E-15 --json E-11 E-16 (seed)$" "$T/plan.calls"'
+check "DS-354 AC1: no editor runs on a plain start" '[ "$(count "$T/claude.calls")" = "$n" ] && grep -q "^E-15.s feature batch started on feat/E-15-approved, with its spine E-11 first: 1 child seeded by plan-batch$" "$ES/E-15/supervisor.log"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -10,7 +10,8 @@
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask
 //       answer "<answer>"   answer it only (digest.mjs answer): triage questions, and an epic's drafted
-//                           plan (start, discard, or an edit), recorded on the epic. On a draft PR whose
+//                           plan (start, discard, or an edit), recorded on the epic for the supervisor to
+//                           act on (epic-plan.mjs actOnPlan). On a draft PR whose
 //                           review left gaps, the call on them: posted on the PR, kept for its next
 //                           worker, and requeued for a worker on the PR
 //       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
@@ -101,7 +102,7 @@ function itemOf(r, x) {
   }
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
-    if (planPark(t)) return { kind: 'plan', need, actions: [['answer', 'say start, discard, or the edit to make; it is recorded on the epic for its batch to act on'], ['not-now']] };
+    if (planPark(t)) return { kind: 'plan', need, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
