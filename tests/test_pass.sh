@@ -1740,30 +1740,30 @@ chmod +x "$T/stub/claude" "$T/stub/gh"
 cloud_ticket(){ q add "$1"; q set "$1" state=triaged lane=A "branch=feat/$1" location=cloud
   printf '# %s\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' "$1" > "$T/state-cl/tickets/$1.md"; }
 q init cl; q set-batch concurrency=2
-cloud_ticket C-1
+cloud_ticket CW-1
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field C-1 state)" = "\"running\"" ] && [ "$(field C-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
-check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q "AC1: it saves" "$T/cloud-prompt" && grep -q "feat/C-1" "$T/cloud-prompt"'
-check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/C-1" ] && [ "$(field C-1 session_id)" = null ] && echo "$out" | grep -q "C-1 in a cloud session: https://claude.ai/code/"'
+check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field CW-1 state)" = "\"running\"" ] && [ "$(field CW-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
+check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q "AC1: it saves" "$T/cloud-prompt" && grep -q "feat/CW-1" "$T/cloud-prompt"'
+check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field C-1 state)" = "\"running\"" ] && echo "$out" | grep -q "C-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
+check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field CW-1 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
 # The session opens its PR 40 minutes after it started, on a branch of its own.
-node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 31, title: "feat(w): C-1 save", url: "u", headRefName: "claude/c-1-abc", createdAt: new Date(s + 2400e3).toISOString() }]))' "$(field C-1 cloud.started)" > "$T/cloud-prs.json"
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 31, title: "feat(w): CW-1 save", url: "u", headRefName: "claude/cw-1-abc", createdAt: new Date(s + 2400e3).toISOString() }]))' "$(field CW-1 cloud.started)" > "$T/cloud-prs.json"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field C-1 state)" = "\"done\"" ] && [ "$(field C-1 result.pr)" = 31 ] && [ "$(field C-1 branch)" = "\"claude/c-1-abc\"" ]'
-check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "C-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
+check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1 state)" = "\"done\"" ] && [ "$(field CW-1 result.pr)" = 31 ] && [ "$(field CW-1 branch)" = "\"claude/cw-1-abc\"" ]'
+check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
 all_done; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  C-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  C-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
-cloud_ticket C-2; : > "$T/cloud-fail"
+check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
+cloud_ticket CW-2; : > "$T/cloud-fail"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field C-2 state)" = "\"parked\"" ] && field C-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
-check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/C-2" ] && ! echo "$out" | grep -q "C-2 port="'
+check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
+check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
 # Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
-rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket C-3
-q set C-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
+rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
+q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field C-3 state)" = "\"parked\"" ] && field C-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
-check "DS-124 and names the session to resume, never a local requeue" 'field C-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field C-3 park.question | grep -q "location=null"'
-check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/C-3" ] && ! echo "$out" | grep -q "C-3 port="'
+check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
+check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
+check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
