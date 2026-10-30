@@ -84,6 +84,14 @@ t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the rev
   stage4.includes('**Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.**') && stage4.includes('`AUTOPILOT_DONE: pr=<n> jira=<status> review=round 3 left <counts> for a fix try`'), true);
 t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 
+// A CI or end-to-end run a worker asks for is the narrowest that covers its change, with its reason.
+t('DS-356 AC1 a requested run names its tag, spec or project and why it covers the change',
+  stage4.includes('**A CI or end-to-end run you ask for is the narrowest one that covers your change.** Whether you park asking for a run or run one of the §4 Worker workflows commands your settings allow, the request names the tag, spec or project to run') && stage4.includes('gives one line on why that covers the change'), true);
+t('DS-356 AC2 a request for every test says why nothing narrower covers it',
+  stage4.includes('**Every test is the exception.** A request for everything (`all`, or no filter) states why nothing narrower covers the change'), true);
+t('DS-356 AC3 a tag the workflow does not offer is named in the park, not widened to everything',
+  stage4.includes('**A tag the workflow does not offer is said, not widened.**') && stage4.includes('never fall back to everything: say in the park that the workflow does not offer it, name the tag that would cover the change'), true);
+
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
