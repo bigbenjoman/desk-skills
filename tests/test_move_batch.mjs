@@ -111,6 +111,13 @@ for (const [why, extra, says] of [
   t(`${why}: refused, naming it`, r.code === 11 && r.out.includes(says), true);
   t(`${why}: nothing changed`, everything(), before);
 }
+reset();
+put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true }));
+put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: null, decider: { pid: process.pid, out: join(standingS, 'decider', 'd.json') } }));
+before = everything();
+r = move();
+t('a running decider: refused, naming it', r.code === 11 && r.out.includes(`decider session (pid ${process.pid}) is running`), true);
+t('a running decider: nothing changed', everything(), before);
 
 // AC1: a live standing batch on a feature branch moves whole to batches/E-1/, and the slot is empty.
 reset();
@@ -135,7 +142,12 @@ for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(stan
 const sleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
 put(join(standingS, 'merge-driver.lock.d', 'pid'), `${sleeper}\n`);
 // The supervisor had read the batch as idle, with that driver running.
-put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: 'abc123', notified: ['x'], driver: { pid: sleeper, started: 'then', failures: 1 } }));
+put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: 'abc123', notified: ['x'], driver: { pid: sleeper, started: 'then', failures: 1 },
+  decider: { pid: dead, out: join(standingS, 'decider', 'd.json') } }));
+put(join(standingS, 'decider', 'd.json'), '{"result":"x"}');
+// A close-out note for this queue, and one written for another.
+put(join(standingS, 'closed-out', 'K-2.json'), `${JSON.stringify({ ticket: 'K-2', how: 'done', pr: null, at: 'then', queue: standingQ })}\n`);
+put(join(standingS, 'closed-out', 'K-9.json'), `${JSON.stringify({ ticket: 'K-9', how: 'merged', pr: 3, at: 'then', queue: '/other/queue.json' })}\n`);
 r = move();
 t('AC1 moved: exit 0', r.code, 0);
 t('AC1 moved: says where it went', r.out.includes('from the standing slot to batch E-1') && r.out.includes(namedQ('E-1')) && r.out.includes(namedS('E-1')), true);
@@ -157,6 +169,11 @@ const sup = JSON.parse(read(join(namedS('E-1'), 'supervisor.json')));
 t('AC2 the supervisor no longer reads the moved batch as idle, so its next tick runs a pass', sup.idle, null);
 t('AC2 the stopped driver counts no failed start', `${sup.driver.pid}/${sup.driver.failures}`, 'null/1');
 t('AC2 the rest of the supervisor state moved unchanged', JSON.stringify(sup.notified), '["x"]');
+t('AC2 an ended decider\'s result is read from where it moved', sup.decider.out, join(namedS('E-1'), 'decider', 'd.json'));
+t('AC2 and it is there', existsSync(sup.decider.out), true);
+const note = JSON.parse(read(join(namedS('E-1'), 'closed-out', 'K-2.json')));
+t('AC2 a close-out note for the batch names its moved queue, so a pass applies it', `${note.queue} ${note.how}`, `${namedQ('E-1')} done`);
+t('AC2 a note written for another queue is left alone', JSON.parse(read(join(namedS('E-1'), 'closed-out', 'K-9.json'))).queue, '/other/queue.json');
 const listed = spawnSync('node', ['--input-type=module', '-e', `import * as B from '${join(BIN, 'batches.mjs')}'; console.log(B.listBatches().map((b) => b.name ?? '-').join(' ')); console.log(B.batchHolding('K-2')?.name)`], { encoding: 'utf8', env: base });
 t('AC1 the repo lists the standing slot and batch E-1', listed.stdout.trim(), '- E-1\nE-1');
 r = move();

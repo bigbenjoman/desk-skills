@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, renameSync, mkdir
 import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
+import { readCloseouts } from './closeout.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -80,9 +81,15 @@ const cur = readQueue(from.queue);
 if (cur.supervised !== true) refuse(`the standing batch ${name} is run by a session, not the supervisor: that session's next pass would look for it in the standing slot. Hand it to the supervisor first (queue.mjs set-batch supervised=true, desk-autopilot Stage 4), then run this again. Nothing was moved`);
 const running = [...Object.values(cur.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => t.key), ...(cur.base_fix?.running ? ['the base fix'] : [])];
 if (running.length) refuse(`${running.join(', ')} ${running.length === 1 ? 'is' : 'are'} running: a running worker writes its park, handoff and resume files to the standing slot it was spawned in. Run this again once no worker is running (each parks, hands off or finishes). Nothing was moved`);
+// The supervisor's decider session (decider.mjs) writes into the folder it was started with, too.
+const sup = join(from.state, 'supervisor.json');
+const s = existsSync(sup) ? JSON.parse(readFileSync(sup, 'utf8')) : null;
+if (s?.decider?.pid && alive(s.decider.pid)) refuse(`the supervisor's decider session (pid ${s.decider.pid}) is running: it writes to the standing slot it was started in. Run this again once it ends. Nothing was moved`);
 const oldRoot = `${from.state}/`;
 const images = Object.values(cur.tickets ?? {}).filter((t) => typeof t?.images_dir === 'string' && E.expandHome(t.images_dir).startsWith(oldRoot));
 for (const t of images) t.images_dir = join(to.state, E.expandHome(t.images_dir).slice(oldRoot.length));
+// A close-out note names the queue it was written for, and a pass applies only its own queue's.
+const notes = readCloseouts(from.state).filter((n) => n.queue === from.queue).map((n) => ({ file: n.file, was: readFileSync(n.file, 'utf8') }));
 
 const driver = E.mergeDriverHolder(from.state);
 if (driver === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
@@ -97,16 +104,17 @@ if (driver) {
 mkdirSync(to.state, { recursive: true });
 mkdirSync(dirname(to.queue), { recursive: true });
 const moved = [];
-const sup = join(from.state, 'supervisor.json');
 try {
   // The supervisor's next tick must run a pass, not read the batch as the idle one it was: only a
   // pass starts a merge driver. A driver this move stopped did not fail, so it counts no failed start.
-  if (existsSync(sup)) {
-    const s = JSON.parse(readFileSync(sup, 'utf8'));
+  // An ended decider's result is read on that tick, from where it now is.
+  if (s) {
     s.idle = null;
     if (driver && s.driver) s.driver.pid = null;
+    if (typeof s.decider?.out === 'string' && s.decider.out.startsWith(oldRoot)) s.decider.out = join(to.state, s.decider.out.slice(oldRoot.length));
     writeFileSync(sup, `${JSON.stringify(s, null, 2)}\n`);
   }
+  for (const n of notes) writeFileSync(n.file, `${JSON.stringify({ ...JSON.parse(n.was), queue: to.queue })}\n`);
   for (const f of readdirSync(from.state)) {
     if (STAYS.includes(f)) continue;
     renameSync(join(from.state, f), join(to.state, f));
@@ -121,6 +129,7 @@ try {
 } catch (e) {
   if (existsSync(from.queue)) rmSync(to.queue, { force: true });
   const stuck = moved.reverse().filter((f) => { try { renameSync(join(to.state, f), join(from.state, f)); return false; } catch { return true; } });
+  for (const n of notes) { try { if (existsSync(n.file)) writeFileSync(n.file, n.was); } catch { /* left naming the new queue */ } }
   try { rmdirSync(to.state); rmdirSync(dirname(to.queue)); } catch { /* not empty */ }
   refuse(`could not move the batch (${e.message})${stuck.length ? `; still in ${to.state}, to move back by hand: ${stuck.join(', ')}` : ': nothing was moved'}`);
 }
@@ -131,4 +140,9 @@ console.log(`  queue: ${to.queue}`);
 console.log(`  state: ${to.state}`);
 if (images.length) console.log(`  screenshot folders now under it: ${images.map((t) => t.key).join(', ')}`);
 if (driver) console.log(`  its merge driver (pid ${driver}) was stopped: the supervisor's next tick starts it again in batch ${epic}`);
-console.log(`  the standing slot is free on ${E.configValue('default-branch') || 'the default branch'}: /desk-admit admits plain tickets there`);
+if (notes.length) console.log(`  close-out notes now name its queue: ${notes.length}`);
+const onDefault = E.configValue('default-branch') || 'the default branch';
+const workers = E.permission('autopilot-workers');
+console.log(workers === 'yes'
+  ? `  the standing slot is free on ${onDefault}: /desk-admit admits plain tickets there`
+  : `  the standing slot is free on ${onDefault}, with no batch in it: /desk-admit starts one only where config §3 ${E.permissionKey('autopilot-workers')} is "yes" (it is "${workers}"), so plan one with /desk-autopilot <TICKET>...`);
