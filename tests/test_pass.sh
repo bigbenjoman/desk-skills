@@ -1368,11 +1368,11 @@ check "DS-281 AC1 and it is not undrafted" '! grep -q "^pr ready 721" "$T/gh-cal
 check "DS-281 AC6 a review with only P2s is not requeued and stays draft for the person, as today" \
   '[ "$(field R-2 state)" = "\"done\"" ] && [ "$(field R-2 fix)" = null ] && [ "$(field R-2 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "R-2: DRAFT — PR #722 stays draft: its review verdict at 111111111 is not clean (p2=1)"'
 check "DS-281 AC7 a checks try counts toward the limit: the review try is try 2" '[ "$(field R-3 fix.try)" = 2 ] && [ "$(field R-3 fix_tries | jq -r ".[1].kind")" = review ]'
-check "DS-281 AC5 after 2 fix tries it is not requeued again, and is recorded stuck" \
-  '[ "$(field R-4 state)" = "\"done\"" ] && [ "$(field R-4 fix_tries | jq length)" = 2 ] && [ "$(field R-4 stuck.why)" = "\"review not clean after 2 fix tries: 1 P1\"" ]'
-check "DS-281 AC5 and it is put to the person" 'echo "$out" | grep -q "R-4: STUCK — PR #724: review not clean after 2 fix tries: 1 P1"'
+check "DS-281 AC5 after 2 fix tries it is not requeued again, and is recorded stuck, naming the finding (DS-335 AC2)" \
+  '[ "$(field R-4 state)" = "\"done\"" ] && [ "$(field R-4 fix_tries | jq length)" = 2 ] && [ "$(field R-4 stuck.why | jq -r .)" = "review not clean after 2 fix tries: 1 P1 — P1: src/money.ts:12         second currency formatter" ]'
+check "DS-281 AC5 and it is put to the person" 'echo "$out" | grep -qF "R-4: STUCK — PR #724: review not clean after 2 fix tries: 1 P1 — P1: src/money.ts:12"'
 check "DS-281 AC4 a try already made for this head is not made again" \
-  '[ "$(field R-5 state)" = "\"done\"" ] && [ "$(field R-5 fix_tries | jq length)" = 1 ] && [ "$(field R-5 stuck.why)" = "\"review not clean after 1 fix try: 1 P1\"" ]'
+  '[ "$(field R-5 state)" = "\"done\"" ] && [ "$(field R-5 fix_tries | jq length)" = 1 ] && [ "$(field R-5 stuck.why | jq -r .)" = "review not clean after 1 fix try: 1 P1 — P1: src/money.ts:12         second currency formatter" ]'
 check "DS-281 AC1 a P0 its review body does not list with a file:line is not requeued, and stays draft for the person" \
   '[ "$(field R-6 state)" = "\"done\"" ] && [ "$(field R-6 fix)" = null ] && echo "$out" | grep -q "R-6: DRAFT — PR #726 stays draft: its review verdict at 111111111 is not clean (p0=1)"'
 
