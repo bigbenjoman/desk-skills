@@ -143,13 +143,21 @@ export function handItems(state, handed, now = new Date()) {
   return added;
 }
 
+// Removes the handed items `ids`.
+export function dropHanded(state, ids) {
+  const r = readHanded(state);
+  for (const id of ids) delete r[id];
+  writeHanded(state, r);
+}
+
 // Drops every handed item the latest pass no longer lists: it was settled some other way. One it still
-// lists keeps its time and takes the line's latest wording.
+// lists keeps its time and takes the line's latest wording. The archive check's own items (kind
+// `archive`, batch.mjs) are no pass's, and that check drops them.
 export function pruneHanded(state, items) {
   const r = readHanded(state);
   const live = new Map(items.map((i) => [i.id, i.text]));
-  const kept = Object.fromEntries(Object.entries(r).filter(([id]) => live.has(id)));
-  const reworded = Object.entries(kept).filter(([id, e]) => e.text !== live.get(id));
+  const kept = Object.fromEntries(Object.entries(r).filter(([id, e]) => live.has(id) || e.kind === 'archive'));
+  const reworded = Object.entries(kept).filter(([id, e]) => live.has(id) && e.text !== live.get(id));
   for (const [id, e] of reworded) e.text = live.get(id);
   if (Object.keys(kept).length !== Object.keys(r).length || reworded.length) writeHanded(state, kept);
   return kept;

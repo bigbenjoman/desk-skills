@@ -1,7 +1,7 @@
 // A repo's batches: its standing batch, then one named batch per epic in `batches/<name>/` beside its
 // queue. An archived batch sits under `batches/.done/` and is not listed. A ticket's key finds the one
 // batch that holds it.
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
@@ -56,21 +56,51 @@ export function useTicketBatch(key, env = process.env) {
   return b.name;
 }
 
-// A PR whose state cannot be read counts as open. A merged or closed one stays so, and is not asked again.
-const shut = new Set();
-export function prOpen(n) {
-  if (shut.has(String(n))) return false;
+// A PR's state: OPEN, MERGED or CLOSED, or null when it cannot be read. A merged or closed one stays so,
+// and is not asked again.
+const shut = new Map();
+// One field of PR `n`, or '' when it cannot be read.
+function prField(n, field) {
   let repo;
-  try { repo = E.ghRepo(); } catch { return true; }
-  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state', '--jq', '.state'], { encoding: 'utf8' });
-  const open = !(r.status === 0 && ['MERGED', 'CLOSED'].includes(r.stdout.trim()));
-  if (!open) shut.add(String(n));
-  return open;
+  try { repo = E.ghRepo(); } catch { return ''; }
+  const r = spawnSync('gh', ['pr', 'view', String(n), '--repo', repo, '--json', field, '--jq', `.${field}`], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : '';
+}
+export function prState(n) {
+  if (shut.has(String(n))) return shut.get(String(n));
+  const s = prField(n, 'state');
+  if (s === 'MERGED' || s === 'CLOSED') shut.set(String(n), s);
+  return ['OPEN', 'MERGED', 'CLOSED'].includes(s) ? s : null;
+}
+// A PR whose state cannot be read counts as open.
+export const prOpen = (n) => !['MERGED', 'CLOSED'].includes(prState(n));
+// When PR `n` merged, or null.
+export const prMergedAt = (n) => prField(n, 'mergedAt') || null;
+
+// Whether a promotion PR that merged at `mergedAt` was a feature batch's last: every ticket had merged
+// into the base before it. A child merged after it still has to be promoted.
+export function lastPromotion(tickets, mergedAt) {
+  const at = mergedAt ? Date.parse(mergedAt) : null;
+  return Object.values(tickets ?? {}).every((t) => t.merged_at && at != null && Date.parse(t.merged_at) <= at);
+}
+
+// The pid holding a batch's pass lock, or its supervisor lock other than this process's own, or null.
+// A holder that has exited holds nothing.
+export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const lockPid = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')).pid ?? null; } catch { return null; } };
+export function orchestratorHolder(state) {
+  const pid = lockPid(join(state, 'orchestrator.lock'));
+  return pid && alive(pid) ? pid : null;
+}
+export function supervisorHolder(state) {
+  const pid = lockPid(join(state, 'supervisor.lock'));
+  return pid && pid !== process.pid && alive(pid) ? pid : null;
 }
 // Finished: every ticket done with no PR still open. A failed ticket waits on the person, a queue with no
 // tickets is a session's between `queue.mjs init` and its plan, and a batch on a base still has its gate
-// and promotion to come: none of those is finished. Nothing archives a finished batch, so its queue stays
-// listed, and must not keep its keys or its epic's children out of every other batch.
+// and promotion to come: none of those is finished. Only a batch on a base is archived (batch.mjs), so a
+// finished batch's queue stays listed, and must not keep its keys or its epic's children out of every
+// other batch.
 export function finished(q) {
   const rows = Object.values(q.tickets ?? {});
   return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
