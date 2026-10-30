@@ -168,6 +168,12 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
   `--failed`. A command that fails, or a check still red after the re-run, goes to the person with the
   command, its exit code and its last lines; it is not run again at that head. A worker never runs it.
+- **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
+  (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
+  is `yes`: it merges `<default>` in, reviews its new head and posts that review, within the same two
+  tries as the fixes above (`fix-tries.mjs` `conflictFix`). A new head it leaves with no review of its
+  own is a stale review, so it goes to a review worker as above. Such a draft reaches WAITING ON YOU
+  only once its tries are spent, as `STUCK` with what the last try reported.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart

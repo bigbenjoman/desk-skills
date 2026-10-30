@@ -153,7 +153,8 @@ unprotected branch it can mean nothing ran at all, which is why the script asser
 Of 87 non-author issue comments across one open set, **86 were `github-actions`**. Filter on
 `author.__typename == "Bot"` plus a `[bot]` suffix check, or every PR reads as having feedback. A
 bot that posts through a personal token (not an app) will not be caught by either: add its login to
-the script's `BOT_LOGINS` if the render keeps counting it as a reviewer.
+`BOT_LOGINS` in `desk/bin/gate.mjs` if the render keeps counting it as a reviewer (the autopilot
+pass reads reviewers through the same list).
 
 ## Threads: reply and resolve are GraphQL only
 
