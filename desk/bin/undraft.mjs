@@ -267,7 +267,10 @@ export function undraftCall(t, pr, cfg) {
   const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
   if (red && (codeRed.length || !gate.failing.length)) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
-    return { ...person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`), call: 'checks', failing: codeRed };
+    const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
+    // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.
+    if (!spent && codeRed.length && codeRed.every((f) => INTERRUPTED.has(f.conclusion))) return notGreen;
+    return { ...notGreen, call: 'checks', failing: codeRed };
   }
   if (!v.clean && !v.settle) return { ...person(v.why, `review #${n} at its head`), call: 'review' };
   if (!v.clean) return person(v.why, `settle the findings or gaps on #${n}`);

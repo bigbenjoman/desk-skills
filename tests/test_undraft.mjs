@@ -104,9 +104,9 @@ const spent = rerunPr(cancelled, { reruns: (name) => (name === 'tests' ? 2 : 1) 
 t('DS-330 AC3 two reruns spent: the failed-check path, with the conclusion', `${spent?.call} | ${spent?.why}`, 'checks | its checks are not green: required check "tests" is cancelled; "lint" timed_out, still after 2 reruns at this head');
 for (const rerun of ['ask', 'no', undefined]) {
   const c = rerunPr(cancelled, { rerun });
-  t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run`, `${c?.call} | ${c?.why}`, 'checks | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
+  t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run, and no fix worker spends a try on it`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
 }
-t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'checks');
+t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
 
 // DS-330: the pass reruns through rerun.sh, the merge driver's own rerun, against a fake gh.
 const tmp = mkdtempSync(join(tmpdir(), 'undraft-rerun-'));
@@ -198,7 +198,7 @@ const put = (file, text) => writeFileSync(join(dir, file), text);
 const commit = (msg) => { g('add', '-A'); g('commit', '-q', '-m', msg); return g('rev-parse', 'HEAD'); };
 const carries = (from, head) => verdictCarries({ from, head, base: 'main', git });
 g('init', '-q', '-b', 'main');
-put('a.txt', 'one\ntwo\nthree\n'); commit('base');
+put('a.txt', 'one\ntwo\nthree\n'); const BASE = commit('base');
 g('checkout', '-q', '-b', 'pr');
 put('b.txt', 'pr work\n'); const A = commit('pr work');
 g('checkout', '-q', 'main'); put('c.txt', 'other\n'); commit('main moves');
@@ -220,6 +220,9 @@ g('checkout', '-q', '-b', 'pr4', A); g('merge', '-q', '--no-ff', '--no-edit', 's
 t('DS-316 a merge of a branch that is not the base is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
 g('checkout', '-q', 'main'); g('merge', '-q', '--no-ff', '--no-edit', 'pr');
 t('DS-316 a head whose first parents pass the reviewed commit by is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
+// Its only commit since is a clean merge of the base, but its first parent is older than the reviewed commit.
+g('checkout', '-q', '-b', 'pr5', BASE); g('merge', '-q', '--no-ff', '--no-edit', 'main');
+t('DS-316 a clean base merge onto a commit before the reviewed one is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
 rmSync(dir, { recursive: true, force: true });
 
 process.exit(fails ? 1 : 0);
