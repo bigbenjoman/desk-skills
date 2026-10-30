@@ -416,10 +416,15 @@ mpj "$T/config-close.md"
 check "DS-336 AC4: a ticket done with no PR merged (a triage already-fixed) is never closed" '! grep -q "T-33" "$T/jira-close.log" && [ "$(grep -c "^transition" "$T/jira-close.log")" = 1 ]'
 
 # ---- DS-347: a clean desk-review verdict at the head settles the desk-review threads before it -----
-# The payloads are #282 and #271 as they stood: a round-4 P0 thread, fixed, with clean verdicts since.
+# The payloads are #282 and #271's real GraphQL responses (review-threads.mjs query): a round-4 P0
+# thread, fixed, with clean verdicts since. They were recorded after the threads were resolved by
+# hand on 2026-10-30, so this copy reads them unresolved, as they stood when the merges stuck.
 sed -e 's/| GitHub handle | `tester` |/| GitHub handle | `bigbenjoman` |/' "$T/config.md" > "$T/config-threads.md"
 echo '| Clean review verdict | `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0` |' >> "$T/config-threads.md"
-FX="$S/fixtures"; H282=3cdbb0d2756940c6579c70f60fea68b36f8d19a7; H271=1088c7a85aa3ec1c8ed4ce97114412c4e57168bd
+FX="$T/fixtures"; H282=3cdbb0d2756940c6579c70f60fea68b36f8d19a7; H271=1088c7a85aa3ec1c8ed4ce97114412c4e57168bd
+mkdir -p "$FX"
+jq '.data.repository.pullRequest.reviewThreads.nodes[].isResolved = false' "$S/fixtures/review-threads-282.json" > "$FX/review-threads-282.json"
+jq '.data.repository.pullRequest.reviewThreads.nodes[].isResolved = false' "$S/fixtures/review-threads-271.json" > "$FX/review-threads-271.json"
 SHA43=d333333333333333333333333333333333333333
 cat > "$T/prs.json" <<EOF
 {
@@ -438,9 +443,9 @@ for k in T-41 T-42 T-43; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=d
 : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$T/resolved.log"
 tloop(){ out=$(DESK_CONFIG="$T/config-threads.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41 T-42 T-43" 2>&1); rc=$?; }
 tloop
-check "DS-347 AC1: #282's fixed P0 thread is resolved once the clean verdict is at its head" 'grep -qx "141-PRRT_kwDOUtzuUs5282p0" "$T/resolved.log" && echo "$out" | grep -qF "#141 resolved desk-review thread desk/bin/desk-q.mjs:1215 \"**P0**: the supplier screen reads the raw cache" && echo "$out" | grep -q "settles it$"'
+check "DS-347 AC1: #282's fixed P0 thread is resolved once the clean verdict is at its head" 'grep -qx "141-PRRT_kwDOUtzuUs6xubre" "$T/resolved.log" && echo "$out" | grep -qF "#141 resolved desk-review thread desk/bin/desk-q.mjs:1227 \"**P0** This reads the raw cache." && echo "$out" | grep -q "settles it$"'
 check "DS-347 AC1: with it resolved, the driver counts nothing unresolved and holds #282 as green" '! echo "$out" | grep -q "#141 has outstanding review feedback" && echo "$out" | grep -q "#141 green at 3cdbb0d27 — confirming"'
-check "DS-347 AC1: #271's outdated P0 thread is resolved too"         'grep -qx "142-PRRT_kwDOUtzuUs5271p0" "$T/resolved.log" && echo "$out" | grep -qF "#142 resolved desk-review thread desk/bin/pass.mjs:968"'
+check "DS-347 AC1: #271's outdated P0 thread is resolved too"         'grep -qx "142-PRRT_kwDOUtzuUs6xoZmC" "$T/resolved.log" && echo "$out" | grep -qF "#142 resolved desk-review thread desk/bin/pass.mjs:968"'
 check "DS-347 AC2: a thread a colleague opened stays unresolved and still holds the PR" '! grep -q "142-human" "$T/resolved.log" && echo "$out" | grep -q "#142 has outstanding review feedback (NONE, 1 unresolved)"'
 check "DS-347: a clean verdict for an older head settles nothing"     '! grep -q "^143-" "$T/resolved.log" && echo "$out" | grep -q "#143 has outstanding review feedback (NONE, 1 unresolved)"'
 check "DS-347 AC3: one refusal is not yet the person'\''s"            '[ "$(qf T-42 .merge_blocked)" = null ]'
