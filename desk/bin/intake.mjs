@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 import { designGap, needsPersonLane, readQueue as readQueueAt } from './batch-state.mjs';
-import { belongsElsewhere, liveBatch, finished, prOpen, listBatches } from './batches.mjs';
+import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -98,9 +98,15 @@ export { prOpen };
 const free = (q) => !q || finished(q);
 // Why no ticket may join this batch now: 'base', 'session' (not handed over), or null.
 const closed = (b) => (!b || free(b) ? null : b.base ? 'base' : b.supervised !== true ? 'session' : null);
+// Where move-batch.mjs would move standing batch `b` on a base, or null: in a named batch, or with no slot.
+const moveTo = (b) => {
+  if (E.batchName() || !b?.base) return null;
+  const s = slotFor(b);
+  return s.why ? null : s.by === 'epic' ? `epic ${s.name}'s own slot` : `its own slot ${s.name}, named after its branch`;
+};
 // Why intake admits nothing into this batch now, or null.
 const waitFor = (b) => ({
-  base: () => `intake: admits nothing while batch ${b.batch ?? '?'} runs on base ${b.base}: its tickets merge there, and intake's go to the default branch`,
+  base: () => `intake: admits nothing while batch ${b.batch ?? '?'} runs on base ${b.base}: its tickets merge there, and intake's go to the default branch${moveTo(b) ? `. Move it to ${moveTo(b)} to free the standing slot: node ${join(HERE, 'move-batch.mjs')}` : ''}`,
   session: () => `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`,
 }[closed(b)]?.() ?? null);
 const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? JSON.parse(readFileSync(qf, 'utf8')) : null; };
@@ -360,8 +366,8 @@ function byHand(keys, { state, by, front, now }) {
   const mayStart = E.permission('autopilot-workers') === 'yes';
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
   const said = (code, b) => ({
-    base: () => (b.epic && !E.batchName()
-      ? `batch ${b.batch ?? '?'} runs on base ${b.base} in the standing slot: move it to epic ${b.epic}'s own slot (node ${join(HERE, 'move-batch.mjs')}), then admit these again`
+    base: () => (moveTo(b)
+      ? `batch ${b.batch ?? '?'} runs on base ${b.base} in the standing slot: move it to ${moveTo(b)} (node ${join(HERE, 'move-batch.mjs')}), then admit these again`
       : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
     session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,

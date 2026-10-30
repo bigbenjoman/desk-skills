@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Moves a standing batch that runs on a base (an epic's feature branch) into that epic's own batch slot,
-// `batches/<epic>/` (batches.mjs), so the standing slot is free on the default branch again and plain
+// Moves a standing batch that runs on a base (an epic's feature branch) into its own batch slot,
+// `batches/<name>/` (batches.mjs), so the standing slot is free on the default branch again and plain
 // tickets can be admitted there. Run it from inside the repo:
 //   node move-batch.mjs        move it, or say why not
-// The epic is the queue's `epic` (queue.mjs set-batch epic=<KEY>). The queue moves whole, so its
+// The slot is named after the queue's `epic` (queue.mjs set-batch epic=<KEY>), or, where it names none
+// because the batch spans several epics, after its base branch (batches.mjs slotFor). The queue moves whole, so its
 // tickets, parks, base and supervised flag stay as they were, and so does every file in the batch's
 // state folder except those that belong to the slot (STAYS). A standing batch on the default branch, or
 // none, is left alone.
@@ -23,6 +24,7 @@ import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
+import { slotFor } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -52,12 +54,12 @@ if (!q.base) {
   console.log(`move-batch: the standing batch ${name} runs on the default branch: nothing to move`);
   process.exit(0);
 }
-if (!q.epic) refuse(`the standing batch ${name} runs on base ${q.base}, but its queue names no epic, so it has no slot to move to: set it with queue.mjs set-batch epic=<KEY>, then run this again. Nothing was moved`);
-if (!E.SAFE_ID.test(String(q.epic)) || String(q.epic).includes('..')) refuse(`the standing batch ${name}'s epic "${q.epic}" is not a batch name (letters, digits, . _ - only; no ..). Nothing was moved`);
-const epic = String(q.epic);
+const slot = slotFor(q);
+if (slot.why) refuse(`the standing batch ${name} runs on base ${q.base}, but ${slot.why}, so it has no slot to move to: set its epic with queue.mjs set-batch epic=<KEY>, then run this again. Nothing was moved`);
+const epic = slot.name;
 const to = E.batchPaths(slug, epic);
 const taken = [to.queue, to.state].filter((p) => existsSync(p));
-if (taken.length) refuse(`batch ${epic} already has ${taken.join(' and ')}: a repo holds one batch per epic. Nothing was moved`);
+if (taken.length) refuse(`batch ${epic} already has ${taken.join(' and ')}: a repo holds one batch per ${slot.by}. Nothing was moved`);
 
 mkdirSync(from.state, { recursive: true });
 const passLock = join(from.state, 'orchestrator.lock');
