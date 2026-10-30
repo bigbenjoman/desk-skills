@@ -195,6 +195,12 @@ t('DS-352 AC1 three batches are listed', listed(), '- X-5 X-8');
 t('DS-352 AC1 X-5 and the standing queue are unchanged', readFileSync(namedQ('X-5'), 'utf8') === x5Live && readFileSync(standingQ, 'utf8') === standingBefore, true);
 rmSync(dirname(namedQ('X-8')), { recursive: true, force: true });
 rmSync(namedS('X-8'), { recursive: true, force: true });
+// A standing batch still on a feature branch holds that branch as a named batch does.
+writeFileSync(standingQ, JSON.stringify({ ...JSON.parse(standingBefore), base: 'feat/x-8' }));
+r = batch(['start', 'X-8', 'feat/x-8', '--batch', 'X-8']);
+t('an epic on the standing batch\'s branch is refused naming it', r.code === 11 && r.out.includes('the standing batch is live on feat/x-8'), true);
+t('and nothing is created for it', existsSync(dirname(namedQ('X-8'))) || existsSync(namedS('X-8')), false);
+writeFileSync(standingQ, standingBefore);
 
 // AC5: the close-out records the promotion PR it opened on X-5, where the archive check reads it.
 r = cli('queue.mjs', ['--batch', 'X-5', 'set-batch', 'promotion.pr=42']);

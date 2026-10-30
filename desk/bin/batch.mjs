@@ -56,10 +56,11 @@ function start(epic, branch, slug = E.repoSlug()) {
   const all = listBatches(slug);
   const own = E.batchPaths(slug, epic);
   if (all.some((b) => b.name === epic) || existsSync(own.queue)) refuse(`batch ${epic} already exists (${own.queue}): no second batch started for it`);
-  for (const b of all.filter((x) => x.name)) {
+  // The standing batch counts too: an older one may still run on a feature branch (move-batch.mjs).
+  for (const b of all.filter((x) => x.name || existsSync(x.queue))) {
     let q;
-    try { q = readQueue(b.queue); } catch (e) { refuse(`no batch started for ${epic}: batch ${b.name}'s queue cannot be read, so it may be a live feature batch on ${branch} (${describeCrash(e)})`); }
-    if (q.base === branch && !finished(q)) refuse(`no batch started for ${epic}: feature batch ${b.name} is live on ${branch}, and each feature batch runs on its own branch`);
+    try { q = readQueue(b.queue); } catch (e) { refuse(`no batch started for ${epic}: ${b.name ? `batch ${b.name}'s` : 'the standing batch\'s'} queue cannot be read, so it may be live on ${branch} (${describeCrash(e)})`); }
+    if (q.base === branch && !finished(q)) refuse(`no batch started for ${epic}: ${b.name ? `feature batch ${b.name}` : 'the standing batch'} is live on ${branch}, and each feature batch runs on its own branch`);
   }
   const failed = queueCmd(epic, ['init', epic]);
   if (failed) throw new Error(`queue.mjs init ${epic} failed: ${failed}`);
