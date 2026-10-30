@@ -48,9 +48,9 @@ resolves the files git lists, verifies the merged tree and pushes the base under
 `batch-base-push` grant. It takes a worker slot, within the batch's worker count and the machine
 budget, and every batch counts it and its port as a running worker's. A session still live after its
 worker parked or finished is stopped, as is one quiet for six passes (wedged); either ends the try.
-One that reaches the 5-hour usage limit is held where §3 `autopilot-usage-resume` is `yes`, and
-resumed in its own session after the reset as the same try, as a ticket's worker is; otherwise it is
-stopped there and the try ends. While it runs the pass leaves the base worktree
+One that reaches a usage limit is never stopped or failed for it: it is paused, and resumed in its
+own session as the same try once the limit lifts (its reset passes or a probe call succeeds), as a
+ticket's worker is. A preflight the limit refuses spends no try and holds the batch. While it runs the pass leaves the base worktree
 alone (no sync, no baseline, no base gate) and, in feature mode, still spawns nothing else. The next
 pass that syncs the base clean says so and clears the tries, kept on the queue as `base_fix`. A base
 gets two tries, one per head of the base, as a PR in conflict does: after two, or a try that left

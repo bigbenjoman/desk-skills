@@ -1053,22 +1053,21 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
     const markers = workerMarkers(text);
     const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
-    // At the 5-hour usage limit, as a ticket's worker: stopped there unless §3 lets it resume, and while
-    // it waits for the reset it is paused, not quiet.
-    const limit = !said ? usageLimit(text).last : null;
-    const atLimit = limit?.kind === 'limit' ? limit : null;
+    // At a usage limit it has not answered since, as a ticket's worker: never stopped or failed for it,
+    // and while it waits for the limit to lift it is paused, not quiet.
+    const usage = !said ? usageLimit(text) : null;
+    const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
     const paused = pausedOn(atLimit);
     const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
     const idle = bytes > (bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
     const sidLive = registryOk && liveSids.has(bf.running);
     const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
-    // A headless worker ends its session at the limit rather than waiting for the reset. Under the grant
-    // to resume across it, as a ticket's worker: held until the reset, then resumed in its own session
-    // (resumeBaseFix), never ended as no marker. Once per limit: a resume that ends before the model
-    // answers leaves the same limit last in the log, and then ends the try as any other exit.
-    const awaitsReset = exited && !!atLimit && !atLimit.resumed && mayResumeOnLimit && bf.resume_reset !== atLimit.resetsAt;
-    const outcome = registryOk && atLimit && !mayResumeOnLimit ? `was stopped at the 5-hour usage limit, since config §3 ${USAGE_KEY} is "${usagePerm}"`
-      : awaitsReset ? null
+    // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's
+    // worker: held until the limit lifts, then resumed in its own session (resumeBaseFix), never ended
+    // as no marker. Once per limit: a resume that ends before the model answers, with no new rejection,
+    // leaves the same count of limits in the log, and then ends the try as any other exit.
+    const awaitsLift = exited && !!atLimit && bf.resume_limits !== usage.limits.length;
+    const outcome = awaitsLift ? null
         : idle >= WEDGE_PASSES && !said ? `was stopped as wedged, with no output for ${idle} passes`
           : registryOk && (said || exited) ? baseFixOutcome(markers)
             : null;
@@ -1084,10 +1083,13 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         bf = { ...bf, log_bytes: bytes, idle_passes: idle };
         if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
       }
-      const reset = awaitsReset && Date.now() >= atLimit.resetsAt * 1000;
-      if (reset && !lowMemory) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, reset: atLimit.resetsAt, ended: `exited at the 5-hour usage limit, which reset ${resetText(atLimit.resetsAt)}` };
-      else if (reset) report.paused.push(`${BASE_FIX_KEY}: its usage limit reset ${resetText(atLimit.resetsAt)}; it resumes once memory allows`);
-      else if (paused || awaitsReset) report.paused.push(`${BASE_FIX_KEY} until ${resetText(atLimit.resetsAt)}, then it resumes (config §3 ${USAGE_KEY} is "yes")`);
+      // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and no
+      // other limit still holds the batch.
+      const up = awaitsLift && lifted(atLimit) && !USAGE_HOLD;
+      const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
+      if (up && !lowMemory) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, limits: usage.limits.length, ended };
+      else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once memory allows`);
+      else if (paused || awaitsLift) report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
       else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
   }
@@ -1533,11 +1535,15 @@ async function spawnBaseFix({ wt, fix }) {
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
   const briefPath = writeBrief({ key }, wt, baseFixBrief(ctx), { notes: true });
   const pre = preflight(key, wt, workerEnv);
+  // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
+  if (pre.limit) { preflightHitLimit({ key }, pre.cost); return; }
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
   const logBytes = logPreflight(key, pre.cost);
+  // Each try is a fresh session: an earlier try's handoff briefing or resume file must not stand in for it.
+  for (const p of [handoffPath(STATE, key), workerResumePath(STATE, key)]) if (existsSync(p)) renameSync(p, `${p}.old`);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: baseFixTask(ctx) },
@@ -1553,7 +1559,7 @@ if (baseFix) await spawnBaseFix(baseFix);
 // A try's worker that exited at the usage limit, resumed after the reset in its own session, worktree
 // and log, as resumeKilled resumes a ticket's: the same try, not a new one. One that cannot be resumed
 // ends its try, and the next conflict at this head goes to the person with that reason.
-async function resumeBaseFix({ wt, why, reset, ended }) {
+async function resumeBaseFix({ wt, why, limits, ended }) {
   const key = BASE_FIX_KEY;
   const sid = bf.running;
   if (DRY) { out.push(`base conflict fix (dry run): would resume session ${sid} on ${BASE}, which ${ended}`); return; }
@@ -1567,6 +1573,8 @@ async function resumeBaseFix({ wt, why, reset, ended }) {
   const model = models.off ? '' : models[tierFor({ key })];
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
   const pre = preflight(key, wt, workerEnv);
+  // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
+  if (pre.limit) return preflightHitLimit({ key }, pre.cost);
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort();
   const briefPath = join(STATE, 'briefings', `${key}.md`);
@@ -1580,14 +1588,15 @@ async function resumeBaseFix({ wt, why, reset, ended }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, resume_reset: reset };
+  bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, resume_limits: limits };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-  report.spawned.push(`${key} resumed after the usage limit reset — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} resumed after the usage limit lifted — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
 for (const t of spawnable) {
-  if (baseHold || !(attempts < slots)) break;
+  // usageStop: the base fix's preflight above was refused at the usage limit.
+  if (baseHold || usageStop || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
   attempts += 1;

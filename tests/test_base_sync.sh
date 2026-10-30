@@ -210,34 +210,59 @@ check "DS-320 six quiet passes: stopped as wedged, and the base goes to the pers
   '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped as wedged, with no output for 6 passes"* ]]'
 rm -f "$T/agents.json"
 
-# A worker at the 5-hour usage limit: paused, not wedged, where §3 autopilot-usage-resume is yes, and
-# stopped at the limit where it is not.
+# A worker at a usage limit (DS-344): never stopped or failed for it, paused rather than wedged, and
+# resumed in its own session once the limit lifts, as a ticket's worker is. The claude stub answers the
+# pass's one probe call with no answer, so a probe never lifts a limit here unless probe_ok is set.
 limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" >> "$C/state/logs/base-feat-x.log"; }
-: > "$T/kills"; fresh bpause; feature; fixrow yes; echo '| `autopilot-usage-resume` | Resume across the usage limit | `no` | `yes` |' >> "$C/config.md"
+: > "$T/kills"; fresh bpause; feature; fixrow yes
 conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"
 for _ in 1 2 3 4 5 6 7; do pass; done
-check "DS-320 a worker paused on the usage limit with resume granted is waited on, not wedged" \
-  '[ ! -s "$T/kills" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ] && [[ "$out" == *"base-feat-x until "*"then it resumes"* ]] && [[ "$out" != *"by hand"* ]]'
+check "DS-320 a worker paused on the usage limit is waited on, not wedged" \
+  '[ ! -s "$T/kills" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "*"then it resumes, or sooner once a probe call succeeds"* ]] && [[ "$out" != *"by hand"* ]]'
 rm -f "$T/agents.json"
-# Its session exits at the limit, as a headless worker's does: held until the reset, never ended as no
-# marker, then resumed in its own session as the same try, once per limit. The log is aged so the exit
-# is not read as a worker the registry has not caught up with.
+# Its session exits at the limit, as a headless worker's does: held until the limit lifts, never ended
+# as no marker, then resumed in its own session as the same try, once per limit. The log is aged so the
+# exit is not read as a worker the registry has not caught up with.
 age_log(){ touch -t 202001010000 "$C/state/logs/base-feat-x.log"; }
-usage_row='| `autopilot-usage-resume` | Resume across the usage limit | `no` | `yes` |'
-: > "$T/spawns"; fresh bexit; feature; fixrow yes; echo "$usage_row" >> "$C/config.md"
+: > "$T/spawns"; fresh bexit; feature; fixrow yes
 conflict; pass; sid=$(jq -r .base_fix.running "$DESK_QUEUE"); limit_event "$(( $(date +%s) + 3600 ))"; age_log; pass
-check "DS-320 a worker whose session exited at the limit is held until the reset, not ended as no marker" \
-  '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [[ "$out" == *"base-feat-x until "*"then it resumes"* ]] && [[ "$out" != *"no marker"* ]] && [[ "$out" != *"by hand"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
+check "DS-320 a worker whose session exited at the limit is held until it lifts, not ended as no marker" \
+  '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "*"then it resumes"* ]] && [[ "$out" != *"no marker"* ]] && [[ "$out" != *"by hand"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
 limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
 check "DS-320 after the reset it is resumed in its own session, as the same try" \
-  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"base-feat-x resumed after the usage limit reset"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r .base_fix.resume_reset "$DESK_QUEUE")" != null ]'
+  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"base-feat-x resumed after the usage limit lifted — exited at the 5-hour usage limit, which lifted (its reset at "*"passed)"* ]] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = "$sid" ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r .base_fix.resume_limits "$DESK_QUEUE")" = 2 ]'
 age_log; pass
 check "DS-320 once per limit: a resume that ends at the same limit ends the try" \
   '[ "$(grep -c "RESUME" "$T/spawns")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x ended with no marker"* ]]'
-: > "$T/kills"; fresh bnoresume; feature; fixrow yes; conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"; pass
-check "DS-320 without the resume grant it is stopped at the limit, and the base goes to the person" \
-  '[ "$(cat "$T/kills")" = 1 ] && [ $rc -eq 11 ] && [[ "$out" == *"the last try was stopped at the 5-hour usage limit, since config §3 autopilot-usage-resume is \"no\""* ]]'
+# The retired autopilot-usage-resume row stops nothing: a worker at the limit is paused whatever it says.
+: > "$T/kills"; fresh bnoresume; feature; fixrow yes; echo '| `autopilot-usage-resume` | Resume across the usage limit | `no` | `no` |' >> "$C/config.md"
+conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"; pass
+check "DS-344 a base fix worker at the limit is paused, never stopped, whatever the retired row says" \
+  '[ ! -s "$T/kills" ] && [ $rc -ne 11 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]] && [[ "$out" != *"by hand"* ]]'
 rm -f "$T/agents.json"
+# A probe call that succeeds lifts the limit before its reset (a subscription switch): the exited
+# worker is resumed then, not at the reset.
+probe_ok(){ printf '#!/bin/sh\nif [ "$1" = -p ]; then echo "{\\"type\\":\\"result\\",\\"is_error\\":false,\\"result\\":\\"ok\\"}"; exit 0; fi\ncat "%s/agents.json" 2>/dev/null || echo "[]"\n' "$T" > "$T/stub/claude"; }
+probe_off(){ printf '#!/bin/sh\ncat "%s/agents.json" 2>/dev/null || echo "[]"\n' "$T" > "$T/stub/claude"; }
+: > "$T/spawns"; fresh bprobe; feature; fixrow yes
+conflict; pass; sid=$(jq -r .base_fix.running "$DESK_QUEUE"); limit_event "$(( $(date +%s) + 86400 ))"; age_log; probe_ok; pass; probe_off
+check "DS-344 a probe call that succeeds resumes an exited base fix worker before its reset" \
+  'grep -q "^base-feat-x .*RESUME session=$sid " "$T/spawns" && [[ "$out" == *"which lifted (a probe call succeeded)"* ]]'
+# A base fix whose preflight the usage limit refused: no try is spent, nothing else spawns, and the
+# batch holds on the limit rather than failing the try.
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ] && [ -f "$T/preflight.limit" ]; then echo "[preflight] usage-limit: the account is at its usage limit"; exit 1; fi
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3 \$AUTOPILOT_RESUME}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
+: > "$T/spawns"; fresh bprelimit; feature; fixrow yes; conflict; touch "$T/preflight.limit"; pass; rm -f "$T/preflight.limit"
+check "DS-344 a base fix preflight refused at the limit spends no try and holds the batch" \
+  '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && [ "$(jq -r .usage_hold.preflight "$DESK_QUEUE")" = base-feat-x ] && [[ "$out" == *"base-feat-x: its preflight was refused at"* ]] && [[ "$out" != *"failed its preflight"* ]] && [ "$(grep -c "^T-1 " "$T/spawns")" = 0 ]'
+# Each try is a fresh session (DS-339): an earlier try's resume file and handoff briefing are moved aside.
+: > "$T/spawns"; fresh bresume; feature; fixrow yes; conflict
+mkdir -p "$C/state/resume" "$C/state/handoffs"; echo '{"branch":"feat/x"}' > "$C/state/resume/base-feat-x.json"; echo '{}' > "$C/state/handoffs/base-feat-x.json"
+pass
+check "DS-339 a base fix try moves an earlier try's resume file and handoff aside" \
+  'grep -q "^base-feat-x " "$T/spawns" && [ ! -e "$C/state/resume/base-feat-x.json" ] && [ -e "$C/state/resume/base-feat-x.json.old" ] && [ ! -e "$C/state/handoffs/base-feat-x.json" ]'
 
 # An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4
 # Acceptance specs is unset, so feature mode is off): a failed sync holds no spawns.
