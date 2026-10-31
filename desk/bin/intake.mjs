@@ -16,6 +16,9 @@
 //     and left for later while another feature batch is live;
 //   - a child of an epic whose feature batch is live: not admitted, the report naming that batch and
 //     pointing at /desk-admit, which adds it there;
+//   - one whose files in scope are not on the standing batch's base but are on a running named batch's:
+//     admitted there when the supervisor runs it, else pointed at /desk-admit as a child is; on two such
+//     bases, handed to the digest to say which;
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
 //     or XL, or a blocker that is not done and not in the batch;
@@ -45,7 +48,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, designPark, needsPersonLane, planPark, unreadCanvases, readQueue as readQueueAt } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
 
@@ -134,6 +137,11 @@ const batchEnv = (b) => {
 function liveFeatureBatches() {
   try { return listBatches().filter((b) => b.name && liveBatch(b.name)); } catch { return []; /* outside a repo there are none */ }
 }
+// Whether live named batch `name` is handed to the supervisor.
+function handedOver(name) {
+  const b = liveFeatureBatches().find((x) => x.name === name);
+  try { return !!b && readQueueAt(b.queue).supervised === true; } catch { return false; }
+}
 
 // ---- one run -----------------------------------------------------------------------------------
 export function runIntake({ state = E.stateDir(), force = false, now = new Date() } = {}) {
@@ -211,6 +219,27 @@ function noteEpic(state, key, s, by, now) {
 const laneSize = (rec) => `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}`;
 const heldText = (held) => (held.length ? `, held behind ${held.join(', ')}` : '');
 
+// Whether `path` is on origin's `base`, as the passes fetch it.
+const onBase = (base, path) => spawnSync('git', ['-C', E.repoRoot(), 'cat-file', '-e', `origin/${base}:${path}`], { stdio: 'ignore' }).status === 0;
+// The running batch on another base that has files the ticket names and its own base `own` lacks: one
+// such batch is where it joins, {route, supervised, why}; two are a question, {reasons}; none, null.
+function baseRoute(key, rec, own) {
+  const files = [...new Set((rec.files_in_scope ?? []).map(String).filter(Boolean))];
+  let missing;
+  try { missing = files.filter((f) => !onBase(own, f)); } catch { return null; /* outside a repo there are no bases */ }
+  if (!missing.length) return null;
+  const hits = liveFeatureBatches().flatMap((b) => {
+    let bq;
+    try { bq = readQueueAt(b.queue); } catch { return []; }
+    const on = bq.base && bq.base !== own ? missing.filter((f) => onBase(bq.base, f)) : [];
+    return on.length ? [{ name: b.name, base: bq.base, on, supervised: bq.supervised === true }] : [];
+  });
+  const where = (h) => `batch ${h.name}'s base ${h.base}`;
+  if (hits.length > 1) return { reasons: [`it names files not on ${own} that are on ${hits.map((h) => `${where(h)} (${h.on.join(', ')})`).join(' and on ')}: say which batch it joins`] };
+  const h = hits[0];
+  return h ? { route: h.name, batch: h.name, supervised: h.supervised, why: `${key} names ${h.on.join(', ')}, which ${h.on.length === 1 ? 'is' : 'are'} on ${where(h)} and not on ${own}: it joins that batch` } : null;
+}
+
 // One triaged ticket into the batch, both paths: the queue read again whole (triage took minutes, and a
 // session may have started its own batch meanwhile), the batch gate, the ticket's checks, a standing
 // batch started where none is live, then the admit. Returns the one thing that happened:
@@ -222,6 +251,9 @@ function placeOne(key, rec, { started, by, now, mayStart = true }) {
   if (closed(cur)) return { closed: closed(cur), cur };
   const away = belongsElsewhere(key, rec, E.queueFile());
   if (away) return { elsewhere: away };
+  const route = baseRoute(key, rec, cur?.base ?? (E.configValue('default-branch') || 'main'));
+  if (route?.reasons) return { reasons: route.reasons };
+  if (route) return { elsewhere: route };
   // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it.
   const startNew = !started && free(cur);
   if (startNew && !mayStart) return { closed: 'free', cur };
@@ -281,7 +313,9 @@ function intake({ state, query, reg, now }) {
   // for its epic's feature batch is skipped while that batch is live. One that cannot be checked, because
   // another batch's queue cannot be read, waits for the next intake and is said to.
   const unchecked = new Map();
-  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch);
+  // One routed to a session-run batch by its files waits only until that batch is handed over: then the
+  // next intake triages it again and joins it there, as the standing batch's own gate does.
+  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch) && !(e.handover && handedOver(e.batch));
   const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
     && !skipped(reg.tickets[k]) && !away(k);
@@ -338,6 +372,24 @@ function intake({ state, query, reg, now }) {
     if (r.unreadable) { lines.push(`intake: admits nothing more: ${r.unreadable}`); return done({ started }); }
     if (r.closed) { lines.push(waitFor(r.cur)); return done({ started }); }
     if (r.elsewhere?.unreadable) { lines.push(`intake: not admitted: ${r.elsewhere.why}; the next intake tries again`); continue; }
+    // A ticket whose files are on another running batch's base joins that batch, where the supervisor runs it.
+    if (r.elsewhere?.route && r.elsewhere.supervised) {
+      const j = joinFeature(key, r.elsewhere.route, { by: 'intake' });
+      if (j.why) { hand(key, `${r.elsewhere.why}, but it was not admitted there: ${j.why}`); continue; }
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', batch: r.elsewhere.route, text: `${laneSize(j.rec)}${heldText(j.held)}, into batch ${r.elsewhere.route}` };
+      writeIntake(state, reg);
+      admitted.push(key);
+      lines.push(`intake: admitted ${key} by intake into batch ${r.elsewhere.route} (${laneSize(j.rec)})${heldText(j.held)}: ${r.elsewhere.why}`);
+      continue;
+    }
+    // One a session runs is the session's until it is handed over (closed's 'session'): it waits for that.
+    if (r.elsewhere?.route) {
+      const why = `${r.elsewhere.why}, once a session hands batch ${r.elsewhere.route} to the supervisor (queue.mjs set-batch supervised=true): /desk-admit ${key} adds it now`;
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.route, handover: true, text: why };
+      writeIntake(state, reg);
+      lines.push(`intake: ${key} not admitted yet: ${why}`);
+      continue;
+    }
     if (r.elsewhere) {
       const why = r.elsewhere.epic ? `${r.elsewhere.why}: /desk-admit ${key} adds it to that batch` : r.elsewhere.why;
       reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: why };
@@ -372,14 +424,15 @@ export function admitByHand(keys, { state = E.stateDir(), by = 'hand', front = f
   return withLock(state, now, () => byHand([...new Set(keys)], { state, by, front, now }));
 }
 
-// Admit a child of `epic` into that epic's live feature batch, triaged again there: on the batch's
+// Admit a ticket into the live named batch `epic` (its epic's feature batch, or the batch whose base has
+// its files), triaged again there: on the batch's
 // base, where the spine and the other children have added files, and into its state, where queue.mjs
 // reads it. Held behind the spine until it is done (as plan-batch holds every child it seeds), its
 // blockers there, and every unfinished ticket there whose files it shares, so it waits for their PRs
 // to merge. -> {batch, held, rec} or {why}.
 function joinFeature(key, epic, { by }) {
   const b = liveFeatureBatches().find((x) => x.name === epic);
-  if (!b) return { why: `its epic ${epic}'s feature batch is no longer live: run /desk-admit ${key} again` };
+  if (!b) return { why: `batch ${epic} is no longer live: run /desk-admit ${key} again` };
   const t = triage(key, b.state, batchEnv(b));
   if (!t.rec) return { why: `${t.why} in feature batch ${epic}: fix it and run /desk-admit ${key} again` };
   let fq;
@@ -387,11 +440,9 @@ function joinFeature(key, epic, { by }) {
   const tickets = fq.tickets ?? {};
   const reasons = reasonsAgainst(t.rec, tickets);
   if (reasons.length) return { why: reasons.join('; ') };
-  const spine = fq.feature === true && fq.spine && fq.spine !== key && tickets[fq.spine] && tickets[fq.spine].state !== 'done' ? [fq.spine] : [];
-  // An epic still waiting on its drafted plan (epic-plan.mjs) holds a child that joins, as it holds the first.
-  const plan = planPark(tickets[epic]) ? [epic] : [];
-  const holds = [...new Set([...plan, ...spine, ...openBlockers(t.rec).filter((x) => tickets[x])])];
-  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-collisions', ...(holds.length ? ['--hold', holds.join(',')] : [])]);
+  // queue.mjs adds the spine and an epic still waiting on its drafted plan (--hold-spine).
+  const holds = [...new Set(openBlockers(t.rec).filter((x) => tickets[x]))];
+  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', '--hold-collisions', ...(holds.length ? ['--hold', holds.join(',')] : [])]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter(Boolean); } catch { /* admitted: say the holds asked for */ }
@@ -461,11 +512,14 @@ function byHand(keys, { state, by, front, now }) {
     let rec = recs[key];
     let r = placeOne(key, rec, { started, by, now, mayStart });
     if (r.started) { started = r.started; lines.push(`started standing batch ${started}, handed to the supervisor`); }
-    // A child of an epic whose feature batch is live joins that batch: the standing queue is untouched.
+    // A child of an epic whose feature batch is live joins that batch, and so does a ticket whose files
+    // are on another running batch's base: the standing queue is untouched.
     let feature = null;
-    if (r.elsewhere?.epic) {
-      const j = joinFeature(key, r.elsewhere.epic, { by });
-      r = j.why ? { admitFailed: `${key} is a child of epic ${r.elsewhere.epic}, but not admitted into its feature batch: ${j.why}` } : { held: j.held };
+    const joinTo = r.elsewhere?.epic ?? r.elsewhere?.route;
+    if (joinTo) {
+      const j = joinFeature(key, joinTo, { by });
+      const why = r.elsewhere.epic ? `${key} is a child of epic ${joinTo}, but not admitted into its feature batch` : `${r.elsewhere.why}, but it was not admitted there`;
+      r = j.why ? { admitFailed: `${why}: ${j.why}` } : { held: j.held };
       feature = j.batch ?? null;
       rec = j.rec ?? rec;
     }

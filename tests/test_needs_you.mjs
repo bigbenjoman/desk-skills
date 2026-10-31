@@ -617,6 +617,50 @@ const q3 = N.record({ word: 'psi', ticket: 'Q-3', action: 'done' });
 t('DS-378 AC5 an unreadable PR says its state could not be read, and is not marked done',
   `${q3.ok} ${/could not read PR #143's state from GitHub \(GraphQL: Could not resolve to a PullRequest \(143\)\), so it is not marked done and stays on your list\./.test(q3.line)} ${queueOf('psi').tickets['Q-3'].done_check} ${'Q-3' in psi()}`, 'false true undefined true');
 
+// ---- DS-380: a parked ticket moved into the repo's other running batch, on that batch's base
+put('omega', { port: 3900, beat: 1, supervised: true, tickets: {
+  'M-1': parked('A', 30, 'a worker cannot change its own base: please move it to batch F-1'),
+  'M-2': parked('A', 20, 'the file is on the feature branch'),
+  'M-3': parked('A', 10, 'this one too'),
+  'M-4': parked('A', 9, 'and this one'),
+  'M-5': parked('A', 8, 'and this one'),
+}, triage: { 'M-1': { lane: 'A', size: 'S', files_in_scope: ['src/m1.js'] }, 'M-2': { lane: 'A', size: 'S', files_in_scope: ['src/m2.js'] }, 'M-3': { lane: 'A', size: 'S' }, 'M-4': { lane: 'A', size: 'S' }, 'M-5': { lane: 'A', size: 'S' } } });
+const omegaRoot = join(T, 'repos', 'omega');
+const og = (...a) => spawnSync('git', ['-C', omegaRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+og('commit', '-q', '--allow-empty', '-m', 'init'); og('branch', '-M', 'main'); og('update-ref', 'refs/remotes/origin/main', 'HEAD');
+// M-1's last worker left a worktree cut from main with no work of its own; M-2's committed to its own.
+const wt = (k) => join(`${omegaRoot}-worktrees`, k);
+og('worktree', 'add', '-q', '-b', 'fix/M-1', wt('M-1'), 'main');
+og('worktree', 'add', '-q', '-b', 'fix/M-2', wt('M-2'), 'main');
+spawnSync('git', ['-C', wt('M-2'), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'work']);
+const fq = join(env.DESK_HOME, 'repos', 'acme__omega', 'batches', 'F-1', 'queue.json');
+const fs = join(env.HOME, '.desk-autopilot', 'acme__omega', 'batches', 'F-1');
+mkdirSync(dirname(fq), { recursive: true });
+writeFileSync(fq, JSON.stringify({ version: 1, batch: 'f1-batch', base: 'feat/f', concurrency: 1, supervised: true, tickets: { 'F-2': { key: 'F-2', state: 'running', lane: 'A', added_at: minsAgo(60) } } }));
+const fQueue = () => JSON.parse(readFileSync(fq, 'utf8'));
+const omegaList = cli('list', 'omega').out.split('\n');
+t('DS-380 a parked ticket offers move, naming the running batch and its base', omegaList.some((l) => l.startsWith('omega M-1 parked') && l.includes('move (move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f))')), true);
+const m1 = N.record({ word: 'omega', ticket: 'M-1', action: 'move', text: 'F-1' });
+const mv1 = fQueue().tickets['M-1'];
+t('DS-380 AC1 the ticket is out of the first queue and queued in the feature batch', `${m1.ok} ${'M-1' in queueOf('omega').tickets} ${mv1?.state} ${mv1?.moved_from?.base}`, 'true false triaged main');
+t('DS-380 AC1 its triage record goes with it, so the feature batch admits it', existsSync(join(fs, 'triage', 'M-1.json')), true);
+t('DS-380 AC1 its next worker starts on the feature branch: the stale worktree and branch cut from main are gone', `${/its next worker starts on feat\/f\. Its worktree .*M-1, cut from main with no work of its own, was removed/.test(m1.line)} ${existsSync(wt('M-1'))} ${og('show-ref', '--verify', '--quiet', 'refs/heads/fix/M-1').status}`, 'true false 1');
+const m2 = N.record({ word: 'omega', ticket: 'M-2', action: 'move', text: 'omega:F-1' });
+t('DS-380 a worktree holding its own commits is never removed, and nothing moves', `${m2.ok} ${/holds work cut from main \(1 commit\(s\) not on origin\/main\)/.test(m2.line)} ${existsSync(wt('M-2'))} ${'M-2' in queueOf('omega').tickets} ${'M-2' in fQueue().tickets}`, 'false true true true false');
+const m3 = N.record({ word: 'omega', ticket: 'M-3', action: 'move', text: 'G-9' });
+t('DS-380 AC2 a move naming a batch that is not running is refused, naming those that are', `${m3.ok} ${m3.line}`, 'false omega M-3: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).');
+t('DS-380 AC2 and nothing moved', `${'M-3' in queueOf('omega').tickets} ${'M-3' in fQueue().tickets}`, 'true false');
+// A feature batch whose spine is not done holds a ticket moved into it behind that spine.
+writeFileSync(fq, JSON.stringify({ ...fQueue(), feature: true, spine: 'F-2' }));
+const m4 = N.record({ word: 'omega', ticket: 'M-4', action: 'move', text: 'F-1' });
+const mv4 = fQueue().tickets['M-4'];
+t('DS-380 a ticket moved into a feature batch waits behind its unfinished spine', `${m4.ok} ${mv4?.state} ${mv4?.held_by}`, 'true parked F-2');
+// New files nobody committed are work too: the worktree stays, and nothing moves.
+og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
+writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
+const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
+t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

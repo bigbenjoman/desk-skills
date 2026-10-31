@@ -18,6 +18,9 @@
 //       requeue             send a ticket whose worker stopped, or whose PR was closed unmerged, back to
 //                           a worker (queue.mjs requeue)
 //       drop                take a ticket whose PR was closed unmerged out of the batch (queue.mjs drop)
+//       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
+//                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
+//                           not running is refused, naming those that are
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
 //       not-now             put it off (the not-now register), asked again once its inputs change
@@ -148,6 +151,19 @@ export function runner(r) {
   return r.run?.by === 'supervisor' ? { by: 'supervisor' } : { by: 'session', name: r.q?.batch ?? null };
 }
 
+// The other batches of r's repo a parked or stopped ticket can be moved into, as queue.mjs transfer
+// judges them (queue.mjs running, in that repo's checkout). -> [{ name, base, word }], the standing
+// batch's name null.
+const MOVABLE = ['parked', 'stopped'];
+export function moveTargets(r) {
+  try {
+    const q = queueRun(r, ['running'], checkoutOf(r, 'list its batches'));
+    return q.ok ? JSON.parse(q.out).map((b) => ({ ...b, word: b.name ?? 'standing' })) : [];
+  } catch { return []; /* no checkout to ask in: nothing to offer */ }
+}
+const targetsText = (ts) => ts.map((b) => `${b.word} (on ${b.base})`).join(', ');
+const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`]] : []; };
+
 // A batch held on a usage limit is one item, named by this in place of a ticket: its paused workers
 // and held tickets are none of them stopped, so none is an item of its own.
 const USAGE_ITEM = 'usage-limit';
@@ -184,7 +200,7 @@ function itemOf(r, x) {
   const wb = worktreeBusy(t);
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', SESSION_WHY], ['not-now']] };
-  if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
+  if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now'], ...moveAction(r)] };
   // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
   if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
   // A held ticket with a question of its own is asked that question, below.
@@ -208,7 +224,7 @@ function itemOf(r, x) {
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...offer] };
+    return { kind: 'parked', need, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
@@ -322,12 +338,15 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
   const [verb, id] = action.split(/\s+/);
-  const allowed = item.actions.map(([a]) => a.split(' ')[0]);
+  // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
+  // refused naming those that are.
+  const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
   if (!allowed.includes(verb)) return { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
   const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}`, message });
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
+  if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
   // The person's call on a draft's review gaps: posted on the PR, kept in the briefing and as the fix
   // its next worker starts on, then requeued. Requeued whoever runs the batch: the next pass closes a
@@ -426,6 +445,17 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       }
       addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString() }), r.stateDir);
       return say(true, `put off (${notNowPath(r.stateDir)}).`);
+    }
+    // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
+    // whoever runs either batch: the move holds both queue locks, and the next pass there spawns it.
+    case 'move': {
+      const said = one(text);
+      const to = said.startsWith(`${r.repo}:`) ? said.slice(r.repo.length + 1) : said;
+      const ts = moveTargets(r);
+      const dest = ts.find((b) => b.word === to || (!b.name && to === r.repo));
+      if (!dest) return say(false, `${to} is not a batch running in ${r.repo} beside this one, so nothing was moved. ${ts.length ? `The batches running are ${targetsText(ts)}.` : 'No other batch is running there.'}`);
+      const q = queueCmd(r, ['transfer', ticket, dest.word]);
+      return q.ok ? say(true, `${q.out} (queue.mjs transfer); the next pass there can spawn it.`) : say(false, `move refused: ${q.out}`);
     }
     // Nothing spawns from a drop, so it is made here whoever runs the batch.
     case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, 'dropped from the batch (queue.mjs drop).') : say(false, `drop refused: ${q.out}`); }
