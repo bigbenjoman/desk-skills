@@ -1764,6 +1764,9 @@ function busyWorktree(t) {
   return null;
 }
 
+// A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
+// needing the person (desk-q worktreeBusy) and not as ready; it is dropped once a pass finds it clean.
+const busyNow = new Set();
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit.
   if (baseHold || usageStop || !(attempts < slots)) break;
@@ -1772,6 +1775,8 @@ for (const t of spawnable) {
   // Held without taking a slot: another ticket may spawn in its place.
   const busy = busyWorktree(t);
   if (busy) {
+    busyNow.add(t.key);
+    if (!DRY && t.worktree_busy?.why !== busy) q('set', t.key, `worktree_busy=${JSON.stringify({ why: busy, at: PASS_AT })}`);
     report.waiting.push(`${t.key}: WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
     continue;
   }
@@ -1890,6 +1895,14 @@ for (const t of spawnable) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'rereview' ? ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+}
+// A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
+// moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
+if (!DRY) {
+  for (const t of Object.values(queue().tickets)) {
+    if (!t.worktree_busy || busyNow.has(t.key)) continue;
+    if (t.state !== 'triaged' || !busyWorktree(t)) q('set', t.key, 'worktree_busy=null');
+  }
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it,
 // and so is when, so the repo's batches take the shared cap's free slots in turn (repoBudget).

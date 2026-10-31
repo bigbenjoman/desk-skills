@@ -482,6 +482,69 @@ t('DS-375 a reason recorded before the pass kept its checks holds as it was writ
 const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
 t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);
 
+// ---- desk-q's Queue lists under Needs you only what needsCount counts: a row put off with not-now is
+// under Put off, grey, until its inputs change.
+const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+put('rho', { port: 4700, beat: 1, supervised: true, tickets: { 'R-1': parked('A', 30, 'Which copy?'), 'R-2': parked('A', 20, 'Which colour?') } });
+N.record({ word: 'rho', ticket: 'R-2', action: 'not-now' });
+const rhoScreen = () => strip(repoScreen(loadRepos().find((x) => x.slug === 'acme__rho')));
+t('a put-off row is not under Needs you, which counts what needsCount does', `${/Needs you · 1\b/.test(rhoScreen())} ${/Put off · 1\b/.test(rhoScreen())}`, 'true true');
+t('a put-off row reads put off, the one asked about needs you',
+  `${/R-1 +◆ needs you +Which copy\?/.test(rhoScreen())} ${/R-2 +◇ put off +Which colour\?/.test(rhoScreen())}`, 'true true');
+t('Put off comes after Needs you, and the key says what it means',
+  `${rhoScreen().indexOf('Needs you · 1') < rhoScreen().indexOf('Put off · 1')} ${rhoScreen().includes('◇ put off: you put it off with not-now; back in Needs you once it changes')}`, 'true true');
+put('rho', { port: 4700, beat: 1, supervised: true, tickets: { 'R-1': parked('A', 30, 'Which copy?'), 'R-2': parked('A', 20, 'Which colour, red or blue?') } });
+t('once its inputs change it is back under Needs you, and Put off is gone', `${/Needs you · 2\b/.test(rhoScreen())} ${rhoScreen().includes('Put off')}`, 'true false');
+
+// ---- A PR closed unmerged: drop is recommended (desk-q says "requeue or drop it"), requeue offered.
+const closedPr = (pr) => ({ state: 'done', lane: 'A', result: { pr }, pr_status: { pr, state: 'CLOSED', url: null, isDraft: false, head: `h${pr}`, checks: [], at: minsAgo(1) } });
+put('tau', { port: 4800, beat: 1, supervised: true, tickets: { 'T-1': closedPr(111), 'T-2': closedPr(112) } });
+const tau = Object.fromEntries(N.collect({ word: 'tau' }).items.map((i) => [i.t.key, i]));
+t('a closed PR recommends drop, then requeue and not-now', `${tau['T-1']?.kind} ${tau['T-1']?.need} | ${tau['T-1']?.actions.map(([a]) => a).join()} ${tau['T-1']?.actions[0][1] != null}`,
+  'pr PR #111: closed unmerged: requeue or drop it | drop,requeue,not-now true');
+const dr = N.record({ word: 'tau', ticket: 'T-1', action: 'drop' });
+t('drop takes the ticket out of its batch, through queue.mjs, and it is no longer listed',
+  `${dr.ok} ${'T-1' in queueOf('tau').tickets} ${'T-2' in queueOf('tau').tickets} ${N.collect({ word: 'tau' }).items.map((i) => i.t.key).join()}`, 'true false true T-2');
+t('an open PR offers no drop', N.record({ word: 'eta', ticket: 'E-2', action: 'drop' }).ok, false);
+t('the skill lists drop among the actions that take no text', /Leave `"<text>"` off for [^.]*`drop`/.test(readFileSync(join(ROOT, 'skills', 'desk-needs-you', 'SKILL.md'), 'utf8')), true);
+
+// ---- A ticket the pass would not spawn because its worktree is in use (worktree_busy) needs you, in
+// desk-q and here alike, until a pass finds it clean and drops the record.
+const busyWhy = 'its worktree /w/U-1 has uncommitted changes (a.txt)';
+const aheadWhy = 'its branch fix/U-3 is 2 commit(s) ahead of origin/fix/U-3, not pushed';
+put('upsilon', { port: 4900, beat: 1, supervised: true, tickets: {
+  'U-1': { state: 'triaged', lane: 'A', worktree_busy: { why: busyWhy, at: minsAgo(30) }, fix: { try: 1, of: 2, pr: 121, kind: 'rereview', what: 'review its head' } },
+  'U-2': { state: 'running', lane: 'A', worktree_busy: { why: busyWhy, at: minsAgo(30) } },
+  'U-3': { state: 'triaged', lane: 'A', worktree_busy: { why: aheadWhy, at: minsAgo(20) } },
+} });
+const ur = () => loadRepos().find((x) => x.slug === 'acme__upsilon');
+const ups = N.collect({ word: 'upsilon' }).items;
+t('uncommitted changes and unpushed commits are each an item naming the cause, offering done and not-now', ups.map((i) => `${i.t.key} ${i.kind} ${i.need} ${i.actions.map(([a]) => a).join()}`).join(' | '),
+  `U-1 worktree worktree in use: ${busyWhy} · commit, push or discard it done,not-now | U-3 worktree worktree in use: ${aheadWhy} · commit, push or discard it done,not-now`);
+t('desk-q groups both under Needs you with their reason, not Ready, and counts them', `${/Needs you · 2\b/.test(strip(repoScreen(ur())))} ${/U-1 +◆ needs you +worktree in use: its worktree/.test(strip(repoScreen(ur())))} ${/U-3 +◆ needs you +worktree in use: its branch/.test(strip(repoScreen(ur())))} ${strip(repoScreen(ur())).includes('Ready')} ${N.needsCount(ur()).shown}`,
+  'true true true false 2');
+t('its ticket page says what to do', /Needs you\. No worker starts on it: its worktree \/w\/U-1 has uncommitted changes/.test(ticketScreen(ur(), 'U-1')), true);
+t('done records nothing', N.record({ word: 'upsilon', ticket: 'U-1', action: 'done' }).ok, true);
+const uq = queueOf('upsilon'); delete uq.tickets['U-1'].worktree_busy; delete uq.tickets['U-3'].worktree_busy;
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__upsilon', 'queue.json'), JSON.stringify(uq));
+t('once the pass drops the record it is ready again, and needs nobody', `${shownState(ur().q, ur().q.tickets['U-1'])} ${N.collect({ word: 'upsilon' }).items.length}`, 'ready 0');
+
+// ---- A ready ticket held back by a collision with a running one says so, fix try or not.
+put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
+  'F-1': { state: 'running', lane: 'A', stage: '4/9', collides_with: 'F-2|F-3' },
+  'F-2': { state: 'triaged', lane: 'A', collides_with: 'F-1', fix: { try: 1, of: 2, pr: 131, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
+  'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
+  'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
+} });
+const phr = loadRepos().find((x) => x.slug === 'acme__phi');
+const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
+const phi = strip(repoScreen(phr));
+t('a fix try held back by a collision waits for the running ticket, not the next free worker, in Ready',
+  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (collides), then a worker repairs it, try 1 of 2 true');
+t('a ticket held back by a collision says it collides', /F-3 +○ ready +waits for F-1 \(collides\)/.test(phi), true);
+t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
+t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).includes('waits for F-1 (collides), then a worker repairs it'), true);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

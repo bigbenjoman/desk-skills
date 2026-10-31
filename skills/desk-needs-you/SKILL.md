@@ -46,7 +46,8 @@ at its next tick: start starts the feature batch, an edit is applied as it stand
 starts, and discard removes the batch and releases the children. An edit it cannot apply cleanly
 comes back as a new `plan` item naming why), `triage`
 (open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up), `pr`
-(an unmerged PR only the user's step on GitHub moves) or `usage` (the batch is held on a usage limit:
+(an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
+`worktree` (no worker spawns into its worktree until its changes are committed, pushed or discarded) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
 switch). Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
 outside GitHub (a build, a staging migration) has none: its need names the step, and it leaves the
@@ -78,13 +79,14 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `start`, `requeue`, `approve`, `not-now`, `open` and `done`. Each run prints one
+Leave `"<text>"` off for `start`, `requeue`, `drop`, `approve`, `not-now`, `open` and `done`. Each run prints one
 line saying what it recorded. Keep it for the end.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
   answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
+- **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
 - **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`
   session to open.
 - **`not-now`**: puts the item in the not-now register. `list` and `left` leave it out until its
