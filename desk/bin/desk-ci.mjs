@@ -956,7 +956,7 @@ export function batchRed(c) {
     ...(c.reviews ? { review: reviewMethod(c.prs.map((p) => p.number), c.reviews) } : {}) };
 }
 
-// The method line desk-review writes after its heading: how many seats a general-purpose agent ran.
+// The method line desk-review writes after its heading: how many seats fell back to a general-purpose agent.
 const METHOD = /^<!--\s*desk-review:method\s+v=1\s+fallback=(\d+)\s*-->$/m;
 
 // How each PR's latest desk-review verdict was reached: the PRs refuted same-vendor, those with a

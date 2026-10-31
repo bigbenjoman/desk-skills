@@ -277,8 +277,8 @@ because repos commit their own copy of the gate, and a copy from before carrying
 line exactly: an extra field there would read as no verdict at all. That copy reads this verdict as
 the blocking counts say (`tests/test_review_gate.mjs` holds it to that).
 
-Last comes the method line, `<!-- desk-review:method v=1 fallback=<n> -->`: the seats a
-general-purpose agent ran, `0` when none. The heading names them too. It never decides clean, and it
+Last comes the method line, `<!-- desk-review:method v=1 fallback=<n> -->`: the seats marked
+`"fallback": true`, `0` when none. The heading names them too. It never decides clean, and it
 sits after the heading for the same reason as the carried line. `verdict.mjs --method <results>`
 prints the PR body's line on how the review ran: its rounds, its vendor and its fallback seats.
 
