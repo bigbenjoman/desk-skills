@@ -519,5 +519,23 @@ check "DS-354 AC1: no editor runs on a plain start" '[ "$(count "$T/claude.calls
 filed=$(node --input-type=module -e "import { readEdit } from '$B/epic-plan.mjs'; const out = (plan) => JSON.stringify({ type: 'result', result: 'PLAN_EDIT: ' + JSON.stringify({ plan, drop: [] }) }); const plan = { spine: 'E-11', draft: 'Spine: AC1', owners: { AC1: 'E-6' } }; console.log(readEdit(out({ draft: 'Spine: AC1 and AC2', owners: { AC1: 'E-6' } }), { children: ['E-6'], plan }).cannot ?? 'applied'); console.log(readEdit(out({ draft: 'Spine: AC1', owners: { AC1: 'E-7' } }), { children: ['E-6', 'E-7'], plan }).plan?.owners.AC1)")
 check "DS-354: an edit to a spine already filed cannot be applied, and one to its owner table can" '[ "$filed" = "$(printf "it changes the spine, which is already filed as E-11: edit E-11 in Jira, then answer start\nE-7")" ]'
 
+# ---- DS-380: a ticket whose files are only on a running batch's base joins that batch -------------
+# main and feat/k-1 both have src/both.js; only feat/k-1 has src/only-k.js. Batch K-1 runs on feat/k-1.
+g(){ git -C "$T/repo" -c user.name=t -c user.email=t@t "$@"; }
+g checkout -q main; mkdir -p "$T/repo/src"; echo x > "$T/repo/src/both.js"; g add src/both.js; g commit -q -m both; g push -q origin main
+g checkout -q -b feat/k-1; echo y > "$T/repo/src/only-k.js"; g add src/only-k.js; g commit -q -m only-k; g push -q origin feat/k-1; g checkout -q main
+mkdir -p "$EB/K-1"
+printf '{"version":1,"batch":"K-1","base":"feat/k-1","supervised":true,"tickets":{"K-0":{"key":"K-0","state":"running"}}}\n' > "$EB/K-1/queue.json"
+config yes; running_batch
+rec K-2 A '"files_in_scope":["src/only-k.js","src/new.js"]'; rec K-3 A '"files_in_scope":["src/both.js","src/new.js"]'; rec K-4 A '"files_in_scope":["src/only-k.js"]'
+search K-2; out=$(intake)
+check "DS-380 AC3: intake queues a ticket naming a file only on a running batch's base in that batch" '[ "$(eget K-1 tickets.K-2.state)" = triaged ] && [ "$(qget tickets.K-2)" = undefined ] && grep -q "^intake: admitted K-2 by intake into batch K-1 (lane A, size S): K-2 names src/only-k.js, which is on batch K-1.s base feat/k-1 and not on main: it joins that batch$" <<< "$out"'
+check "DS-380 AC3: it is triaged again in that batch, on its base" 'grep -qx "K-2 K-1 unpinned" "$T/triage.batch"'
+search K-3; out=$(intake)
+check "DS-380 AC4: a ticket whose files are on both bases is queued where it is today" '[ "$(qget tickets.K-3.state)" = triaged ] && [ "$(eget K-1 tickets.K-3)" = undefined ]'
+out=$(admit K-4 --by ben); rc=$?
+check "DS-380 AC3: /desk-admit routes it the same way" '[ $rc -eq 0 ] && [ "$(eget K-1 tickets.K-4.admitted_by)" = ben ] && [ "$(qget tickets.K-4)" = undefined ] && grep -q "^admitted K-4 by ben into feature batch K-1 " <<< "$out"'
+rm -rf "$EB/K-1"
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

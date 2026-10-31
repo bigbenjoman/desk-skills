@@ -69,6 +69,9 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
   moves it. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
   `record` posts on the PR and sends to a worker on it.
 - An `override <id>` action takes the user's choice as its text.
+- A `move` action takes the batch's name as its text (`standing` for the standing batch). A
+  `parked` or `stopped` item offers it when another batch runs in the repo, naming each with its
+  base; an answer that says to move the ticket to another batch is a `move`, never a `resume`.
 
 Ask the next round only after recording this one.
 
@@ -87,6 +90,9 @@ line saying what it recorded. Keep it for the end.
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
 - **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
+- **`move`**: takes the ticket out of its batch and queues it in the named one (`queue.mjs
+  transfer`), whoever runs either. Its old worktree is removed when it holds no work of its own;
+  one that does is refused, naming it.
 - **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`
   session to open.
 - **`not-now`**: puts the item in the not-now register. `list` and `left` leave it out until its
