@@ -36,8 +36,8 @@ import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch } from './evidence.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots } from './evidence.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
@@ -563,8 +563,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
         const saved = join(STATE, 'images', `${t.key}.upload.log`);
         try { mkdirSync(join(STATE, 'images'), { recursive: true }); writeFileSync(saved, `${up}\n`); } catch { /* best effort */ }
         q('set', t.key, 'images_uploaded=partial');
-        report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. Fix the body's \`_drag <file>_\` cells by hand ` +
-          `(tags saved in ${saved}); do not re-upload.`);
+        // A cell whose file was never taken goes to a capture worker at the undraft step (captureTry).
+        report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. A \`_drag <file>_\` cell with no file in ${imgDir} goes to a capture worker; ` +
+          `fix any other by hand (tags saved in ${saved}); do not re-upload.`);
       } else {
         report.failed.push(`${t.key}: image upload did not complete — ${tail}`);
       }
@@ -1893,7 +1894,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
@@ -2108,7 +2109,12 @@ const gateLists = () => {
 };
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence'];
+const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence', 'capture'];
+// The screenshot files a ticket's directory holds: the one its worker was briefed with, or the one a
+// handed-off session printed (images_dir). Its `_drag <file>_` cells naming any other were never taken.
+const shotsOf = (t) => {
+  try { return readdirSync(E.expandHome(t.images_dir ?? join(STATE, 'images', t.key))).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { return []; }
+};
 if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
@@ -2134,7 +2140,7 @@ if (drafts.length) {
     const carry = (sha) => fetched() && verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
     // A head a merge from the base last moved, since the last try's, gets its own review try, outside the fix tries.
     const baseMerge = (from) => fetched() && movedByBase({ from, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, shotsOf(t)) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
@@ -2159,9 +2165,13 @@ if (drafts.length) {
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, ...clearsRows, builds: [] })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge })
-          : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) }) : null;
-    // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on.
+          : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) })
+            // Screenshots nobody took go to a capture worker, once per PR.
+            : c.call === 'capture' ? captureTry(t, { pr: n, head: v.headRefOid, files: c.files }) : null;
+    // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on, nor
+    // are screenshots they have since put in.
     if (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
+    if (c.call !== 'capture' && /still not taken after a capture try/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
     const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) applyFix(t, n, v.headRefOid, rf);
@@ -2171,7 +2181,7 @@ if (drafts.length) {
     else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
     else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
     else if (c.call === 'evidence') rec = startEvidence(t, n, v.headRefOid, c, rec);
-    else if (['person', 'findings', 'checks', 'review', 'conflict'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
+    else if (['person', 'findings', 'checks', 'review', 'conflict', 'capture'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}${carried}`);
     else {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
@@ -2355,7 +2365,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   const f = c.fix;
-  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.extra ? 'an extra review try' : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
+  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? 'an extra review try' : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
@@ -2365,7 +2375,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
-  out.push(`${f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS } from '../desk/bin/evidence.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -183,6 +183,20 @@ rmSync(cbDir, { recursive: true, force: true });
   t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');
   t('EV red checks come first: no run while a check is red', ev(EVB, {})?.call === 'evidence' && undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] },
     { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call === 'checks', true);
+
+  // DS-379: cells whose file was never taken go to a capture worker, where the evidence workflow does not fill them.
+  const shots = (have) => (body) => missingShots(body, have);
+  const cap = ev('_drag a-before.png_ | _drag a-after.png_ | _drag a-after.png_', { evidence: null, missingShots: shots(['a-before.png']) });
+  t('DS-379 AC1 a cell with no screenshot file is a capture call, naming each file once', `${cap?.call} ${cap?.files.join(',')}`, 'capture a-after.png');
+  t('DS-379 AC1 its why names the files', cap?.why, '1 screenshot(s) in its body were never taken: a-after.png');
+  t('DS-379 AC1 a partial upload whose left cells have no file goes to capture too', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call, 'capture');
+  t('DS-379 AC4 every file taken but the upload not approved: the person uploads them, as before', undraftCall({ key: 'T-1', images_reported: true }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots(['a.png']) })?.action, 'upload the screenshots to #740');
+  t('DS-379 an evidence workflow that fills the cells comes before a capture worker', ev(EVB, { missingShots: shots([]) })?.call, 'evidence');
+  t('DS-379 a review not clean comes before a capture worker', undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO.replace('p2=0', 'p2=1')))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call !== 'capture', true);
+  t('DS-379 dragFiles reads each cell\'s file once, in order', dragFiles('_drag b.png_ x _drag a.jpg_ _drag b.png_').join(','), 'b.png,a.jpg');
 
   t('EV row: a workflow file', JSON.stringify(parseEvidenceRow(['pr-evidence.yml'])), '{"workflow":"pr-evidence.yml"}');
   t('EV row: none is off', parseEvidenceRow(['none']), null);

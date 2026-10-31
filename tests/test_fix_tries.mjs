@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, failedSteps, stuckWhy, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -298,5 +298,22 @@ t('DS-375 AC5 a check failing at a §4 Pre-merge steps step: never requeued, stu
 t('DS-375 AC5 the same check failing at another step is a worker\'s', fixCall(tk(), lint375, ctx({ operator: [], premerge, steps: () => ['Run eslint'] }))?.call, 'requeue');
 t('DS-375 AC5 a draft reads the row the same way', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [{ name: 'Lint, Type Check & Build', runId: '904' }] }, { repo: 'acme/widgets', premerge, steps: () => ['Check portal schema mirror'] })?.call, 'stuck');
 t('DS-375 the reason with no worker\'s check left names only what a person clears', stuckWhy({ lead: 'still red after 1 fix try', checks: [{ name: 'Flows image', command: 'x.sh' }] }), 'Flows image · x.sh');
+
+// DS-379: a draft's screenshots nobody took go to a capture worker, once per PR, outside the fix tries.
+const cp = captureTry(tk(), { pr: 761, head: HEAD, files: ['a-before.png', 'a-after.png'] });
+t('DS-379 AC1 missing screenshots requeue a capture try naming them', JSON.stringify([cp?.call, cp?.fix.kind, cp?.fix.pr, cp?.fix.files]), '["requeue","capture",761,["a-before.png","a-after.png"]]');
+t('DS-379 no file missing: no try', captureTry(tk(), { pr: 761, head: HEAD, files: [] }), null);
+const briefCp = fixBrief(tk({ fix: cp.fix }));
+t('DS-379 AC1 its brief lists each file to take', briefCp.includes('## Capture try: PR #761') && briefCp.includes('\n- a-before.png\n- a-after.png\n'), true);
+const taskCp = fixTask(tk({ fix: cp.fix }));
+t('DS-379 AC1 its task is to take them, print AUTOPILOT_IMAGES, change no code and say what it could not take',
+  ['Your task is the capture try on PR #761', 'print AUTOPILOT_IMAGES', 'Change no code', 'leave the PR in draft', 'said=<all taken, or for each screen you could not take'].every((s) => taskCp.includes(s)), true);
+const capDone = [{ try: 1, head: HEAD, kind: 'capture' }];
+const cpStuck = captureTry(tk({ fix_tries: capDone, fix: { ...cp.fix, finished: 'x' }, result: { summary: 'pr=761 jira=Done said=a-after.png: needs a signed-in admin' } }), { pr: 761, head: HEAD, files: ['a-after.png'] });
+t('DS-379 AC3 still missing after the capture try: stuck, naming the screen and why', `${cpStuck?.call}: ${cpStuck?.why}`,
+  'stuck: 1 screenshot(s) still not taken after a capture try: a-after.png; the capture try said: a-after.png: needs a signed-in admin');
+t('DS-379 AC3 with nothing said, it still names the screen', captureTry(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, files: ['a-after.png'] })?.why, '1 screenshot(s) still not taken after a capture try: a-after.png');
+t('DS-379 the capture try is not one of the fix tries', draftChecksFix(tk({ fix_tries: [...capDone, { try: 1, head: 'b'.repeat(40), kind: 'checks' }] }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.fix?.try, 2);
+t('DS-379 nor does it spend the head for a fix try', draftChecksFix(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.call, 'requeue');
 
 process.exit(fails ? 1 : 0);

@@ -5,7 +5,8 @@
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
 // (reviewTry) to a review worker, both within the same tries, and so does a draft in conflict with
-// its base that §3 lets a worker resolve (conflictFix).
+// its base that §3 lets a worker resolve (conflictFix). A draft whose screenshots were never taken goes
+// to a capture worker, once (captureTry).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -42,8 +43,8 @@ export function parseOperatorChecks(items) {
 export const runUrl = (repo, id) => (id ? `https://github.com/${repo}/actions/runs/${id}` : null);
 export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // A fix try already made for this head: one whose worker finished without moving it. A review try
-// (kind `rereview`) moves no head by design, so it does not count here.
-const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview');
+// (kind `rereview`) and a capture try (`capture`) move no head by design, so they do not count here.
+const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview' && x.kind !== 'capture');
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
 // jobs`. A payload of any other shape names none.
@@ -93,8 +94,9 @@ const operatorStuck = (notMine, ctx) => checksStuck(null, [], notMine, ctx);
 // A red-checks fix: each check a worker fixes with its run, and those it leaves to a person.
 const checksFix = (mine, notMine, repo) => ({ kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}`, checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })), not_mine: notMine.map(({ name, command }) => ({ name, command })) });
 const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
-// The tries that count against FIX_TRIES_MAX: all but the review tries a merge from the base earned.
-export const triesMade = (done) => (done ?? []).filter((x) => !x.extra).length;
+// The tries that count against FIX_TRIES_MAX: all but the review tries a merge from the base earned
+// and the capture try (captureTry), which is the PR's own one.
+export const triesMade = (done) => (done ?? []).filter((x) => !x.extra && x.kind !== 'capture').length;
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => triesMade(done) >= FIX_TRIES_MAX || triedHere;
 const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMade(done) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
@@ -288,10 +290,34 @@ export function conflictFix(t, { pr, head, base, files }) {
   return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextTry(done, pr, head, conflictTry(base, files, true));
 }
 
+// A draft whose body has `_drag <file>_` cells for screenshots nobody took (undraft.mjs `capture`) goes
+// to a capture worker, which takes them on the PR's branch for the pass to upload. One capture try per
+// PR, outside FIX_TRIES_MAX: cells still missing after it are the person's, with the screens and what
+// its worker said about them (its AUTOPILOT_DONE `said=`, kept by pass.mjs as result.summary).
+// draft: { pr, head, files } (files: the cells' file names with no screenshot).
+export function captureTry(t, { pr, head, files }) {
+  if (!files?.length) return null;
+  const done = t.fix_tries ?? [];
+  if (done.some((x) => x.kind === 'capture')) {
+    const last = t.fix?.kind === 'capture' && t.fix.finished && t.result?.summary ? String(t.result.summary) : '';
+    const said = last ? `; the capture try said: ${/\bsaid=(.*)$/.exec(last)?.[1]?.trim() || last}` : '';
+    return { call: 'stuck', why: `${files.length} screenshot(s) still not taken after a capture try: ${files.join(', ')}${said}` };
+  }
+  return { call: 'requeue', fix: { try: 1, of: 1, pr, head: head ?? null, kind: 'capture', what: `take ${files.length} screenshot(s) never taken: ${files.join(', ')}`, files } };
+}
+
 // The fix worker's briefing section, while its try is open.
 export function fixBrief(t) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  if (f.kind === 'capture') {
+    return [`## Capture try: PR #${f.pr}`, '',
+      `Your PR #${f.pr} is a draft on this branch, and its body still has \`_drag <file>_\` cells for screenshots nobody took${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, so it cannot leave draft:`, '',
+      ...f.files.map((x) => `- ${x}`), '',
+      'Take each one of the screen its row in the PR body describes, as desk-ticket Stage 5 says, and save it under exactly that file name in your screenshot directory. ' +
+      'Then print AUTOPILOT_IMAGES with that directory: the pass uploads them and swaps them into the body. Change no code and do not edit the PR body.', '',
+      'A screen you cannot take is named in your AUTOPILOT_DONE line with why (its said= field). This is the PR\'s one capture try: a screenshot still missing after it goes to the person with what you said.', ''].join('\n');
+  }
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
       `Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
@@ -348,6 +374,13 @@ export function fixTask(t) {
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
       'Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code. ' +
       `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+  }
+  if (f.kind === 'capture') {
+    return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
+      `Your task is the capture try on PR #${f.pr}, already open on your branch: the "Capture try" section of your briefing lists the screenshots its body is missing. ` +
+      'Take each one (desk-ticket Stage 5), save it under exactly the file name its cell names in your screenshot directory, and print AUTOPILOT_IMAGES with that directory. ' +
+      'Change no code and do not edit the PR body: the pass uploads them and fills its cells. ' +
+      `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<all taken, or for each screen you could not take, <file>: <why>>.`;
   }
   const gaps = f.kind === 'gaps';
   // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is.

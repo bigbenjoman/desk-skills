@@ -1,5 +1,6 @@
 // §4 Evidence workflow: the repo's own workflow that takes a PR's screenshots and writes them into its
-// body, in place of the `_drag <file>_` cells a worker leaves when it cannot take them itself. The pass
+// body, in place of the `_drag <file>_` cells a worker leaves when it cannot take them itself. Where no
+// such workflow fills them, cells whose file was never taken go to a capture worker (missingShots). The pass
 // starts it for a draft PR whose body still has those cells and carries a fenced ```evidence block
 // (undraft.mjs evidenceCall decides when), as `gh workflow run <file> --ref <default branch> -f pr=<n>`:
 // the workflow runs the default branch's code and reads the PR number alone, so a worker's branch can
@@ -33,6 +34,11 @@ export function parseEvidenceRow(items) {
 // saying what to shoot.
 export const dragCells = (body) => (String(body ?? '').match(/_drag \S+_/g) ?? []).length;
 export const hasEvidenceBlock = (body) => /^\s*```evidence\b/m.test(String(body ?? ''));
+// The files a body's `_drag <file>_` cells name, once each, in the order they first appear.
+export const dragFiles = (body) => [...new Set([...String(body ?? '').matchAll(/_drag (\S+)_/g)].map((m) => m[1]))];
+// The files a body's cells name that `shots` (the file names in the ticket's screenshot directory)
+// does not hold: screenshots nobody took, which a capture try (fix-tries.mjs captureTry) takes.
+export const missingShots = (body, shots) => dragFiles(body).filter((f) => !(shots ?? []).includes(f));
 
 // The run id in gh workflow run's output (it prints the run's URL), or null.
 export function runIdFrom(out) {
