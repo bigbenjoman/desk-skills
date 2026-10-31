@@ -1,4 +1,5 @@
 // suite: worker agents (the named review seats reach a worker through --agents)
+// covers: agents/** skills/desk-review/references/**
 // worker-agents.mjs builds the --agents file spawn-worker.sh launches every worker and its preflight
 // with: each named desk-review seat from the installed agent files, a missing one refusing the spawn,
 // and nothing but the agent definitions carried. Scratch HOME and worktree only. That spawn-worker.sh
