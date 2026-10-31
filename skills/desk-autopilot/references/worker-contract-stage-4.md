@@ -161,15 +161,15 @@ finders read-only, and when and how to call `codex`. Read that section before th
 
 **There is no approval block here**: that gate belongs to a session with a human in it. Instead:
 
-- **P0, P1 or P2 on rounds 1 and 2**: fix it, and say in `AUTOPILOT_DONE` what it was and what you
-  did.
-- **Then run it again.** Your fix is itself unreviewed code, so only a full round that finds nothing
+- **P0, P1 or P2 on round 1**: fix it, and say in `AUTOPILOT_DONE` what it was and what you did.
+- **Then run it again.** Your fix is itself unreviewed code, so only a round that finds nothing
   has reviewed everything. Keep going until a round comes back reading as §4 Clean review verdict
   (**no P0, no P1 and no P2**, where the review grades that way). Three rounds is the ceiling, and
-  round 3 reads **only the fix range**, the commits since round 2's reviewed SHA (`since` in its
-  results; `desk-review`'s round-3 rules). With no PR yet the review counts every run as round 1,
-  so give it the round of your loop and, from round 3, round 2's reviewed SHA. Say in
-  `AUTOPILOT_DONE` how many rounds ran.
+  from round 2 a round reads **only the fix range**, the commits since the previous round's reviewed
+  SHA (`since` in its results; `desk-review`'s fix-range rules). With no PR yet the review counts
+  every run as round 1, so give it the round of your loop and, from round 2, the previous round's
+  reviewed SHA. Say in `AUTOPILOT_DONE` how many rounds ran.
+- **Round 2, a P0 or P1**: fix it, then run round 3 on the fix range since round 2's reviewed SHA.
 - **Round 3, a P0 or P1**: park, naming each finding and its `file:line`. No fourth round.
   **Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.** Carry on
   through Stage 7 as for a clean round, open the draft PR, and post the round-3 review on it as below,
@@ -182,7 +182,7 @@ finders read-only, and when and how to call `codex`. Read that section before th
   posting a P0 left in place; a P0 you cannot fix still parks (below). Where §3
   `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks
   as above.
-- **Round 3, only P2s**: **carry them, do not park.** Mark each `"carried": true`, so the verdict
+- **Round 2 or 3, only P2s**: **carry them, do not park.** Mark each `"carried": true`, so the verdict
   reads clean on the blocking counts and records the number carried, and open the draft PR. Put the
   section `verdict.mjs --carried <results>` prints (`### Carried review findings`, `file:line` each)
   in the body. More than five, with §3 `jira-create` `yes` and a tracker: create one follow-up ticket
@@ -192,7 +192,7 @@ finders read-only, and when and how to call `codex`. Read that section before th
   carrying a P0 you have understood and left.
 - **Do not defer a P2.** A deferral keeps the verdict off clean, and a review gate that reads the
   deferred count fails on any non-zero value, so a deferred finding is a PR that can never merge.
-  Carrying is not deferring: it exists only from round 3, only for a P2, and leaves the counts.
+  Carrying is not deferring: it exists only from round 2, only for a P2, and leaves the counts.
   Cost the fix before calling it out of scope: a "restructuring" is often ~30 lines. Fix it where it
   stands. **A fix that grows parks**: one needing a new file other than its own spec, or a file your
   diff does not already touch, is the user's call to widen the PR or split it out, so park naming it.

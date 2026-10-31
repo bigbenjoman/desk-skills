@@ -82,6 +82,11 @@ const stage4 = read('worker-contract-stage-4.md').replace(/\s+/g, ' ');
 t('DS-335 AC3 a round-3 P0 or P1 still parks by default', stage4.includes('**Round 3, a P0 or P1**: park, naming each finding and its `file:line`. No fourth round.'), true);
 t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the review for a fix try instead',
   stage4.includes('**Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.**') && stage4.includes('`AUTOPILOT_DONE: pr=<n> jira=<status> review=round 3 left <counts> for a fix try`'), true);
+t('DS-368 AC1 from round 2 a round reads only the fix range since the previous round',
+  stage4.includes('from round 2 a round reads **only the fix range**, the commits since the previous round\'s reviewed SHA') && stage4.includes('from round 2, the previous round\'s reviewed SHA'), true);
+t('DS-368 AC1 only round 1 fixes a P2', stage4.includes('- **P0, P1 or P2 on round 1**: fix it'), true);
+t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('it exists only from round 2, only for a P2'), true);
+t('DS-368 AC3 a round-2 P0 or P1 is fixed and round 3 runs on the fix range', stage4.includes('- **Round 2, a P0 or P1**: fix it, then run round 3 on the fix range since round 2\'s reviewed SHA.'), true);
 t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 
 // A CI or end-to-end run a worker asks for is the narrowest that covers its change, with its reason.
@@ -113,7 +118,15 @@ const norm = (s) => s.replace(/\s+/g, ' ').trim();
 const after = norm(files.map(read).join('\n\n'));
 // A paragraph ends at a blank line or where a list item starts, so each bullet is checked on its own.
 const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).map(norm).filter(Boolean);
-const dropped = paras.filter((p) => !after.includes(p));
+// The fixture stays frozen, so a paragraph a later ticket rewrote is named here, by text only it holds.
+const REWRITTEN = [
+  ['DS-368', 'P0, P1 or P2 on rounds 1 and 2', 1], // round 2 reads the fix range and carries P2s
+  ['DS-368', 'round 3 reads **only the fix range**', 1],
+  ['DS-368', '**Round 3, only P2s**', 1],
+  ['DS-368', 'it exists only from round 3', 1],
+];
+for (const [key, s, n] of REWRITTEN) t(`AC4 ${key} rewrote ${n} paragraph of the old contract: ${s}`, paras.filter((p) => p.includes(s)).length, n);
+const dropped = paras.filter((p) => !after.includes(p) && !REWRITTEN.some(([, s]) => p.includes(s)));
 t(`AC4 every paragraph of the old contract survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 

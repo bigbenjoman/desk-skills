@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { rewrittenBy, checkRewritten } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -17,6 +18,18 @@ const read = (f) => (f === 'SKILL.md' ? core : readFileSync(join(refs, f), 'utf8
 const stageFiles = readdirSync(refs).filter((f) => /^stage-.*\.md$/.test(f)).sort();
 const files = ['SKILL.md', ...stageFiles, 'design-canvas.md'];
 const before = readFileSync(join(root, 'tests/fixtures/desk-ticket-before-split.md'), 'utf8');
+// Round 2 reads the fix range and carries P2s, so the round-3 wording of these was rewritten.
+const REWRITTEN = [
+  ['DS-368', 'The third round reads only the fix range, the commits since round 2', 1],
+  ['DS-368', '"Round 3 found only P2s, so I\'ll ask whether to fix them"', 1],
+  ['DS-368', 'The branch has been read whole twice by round 3', 1],
+  ['DS-368', '**A P0 or P1 still open**', 1],
+  ['DS-368', '**Only P2s**: mark each', 1],
+  ['DS-368', 'the P2s round 3 carried to the PR body', 1],
+  ['DS-368', 'A round 3 that reads `origin/<default>...HEAD`', 1],
+  ['DS-368', 'or a P2 before round 3', 1],
+];
+const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
 // AC4: the core is at most 18KB, and the check is a real bound, not one that always passes.
 const CAP = 18000;
@@ -61,7 +74,7 @@ const rows = before.split('\n').filter((l) => /^\|/.test(l));
 const header = new Set(before.split('\n').flatMap((l, i, a) => (/^\|/.test(l) && /^\|[-| ]+\|$/.test(a[i + 1] || '') ? [l] : [])));
 const body = rows.filter((r) => !header.has(r) && !/^\|[-| ]+\|$/.test(r));
 t(`AC3 the old file's table rows are read (${body.length} body rows)`, body.length > 40, true);
-for (const r of rows) {
+for (const r of rows.filter(kept)) {
   const n = files.filter((f) => lines(f).includes(r)).length;
   if (body.includes(r)) t(`AC3 row "${r.slice(0, 60)}" is in exactly one file`, n, 1);
   else t(`AC3 header "${r.slice(0, 40)}" is in a file`, n >= 1, true);
@@ -73,7 +86,8 @@ for (const r of rows) {
 const norm = (s) => s.replace(/\s+/g, ' ').trim();
 const after = norm(files.map(read).join('\n\n'));
 const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).filter((p) => !/^\|/.test(p.trimStart())).map(norm).filter(Boolean);
-const dropped = paras.filter((p) => !after.includes(p));
+checkRewritten({ t, label: 'AC3', rewritten: REWRITTEN, items: [...paras, ...body] });
+const dropped = paras.filter((p) => !after.includes(p) && kept(p));
 t(`AC3 every paragraph of the old file survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 

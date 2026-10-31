@@ -139,11 +139,26 @@ t('carried section: names the fix range', section[1].includes('fix range fedcba9
 t('carried section: file:line each', section.slice(2).join('|'), '- `src/a.ts:12` name reads as a count (F1)|- `src/b.ts:4` name reads as a count (F2)')
 t('carried section: empty when nothing is carried', carriedSection(r3()), '')
 
+// ---- round 2 reads the fix range from round 1's reviewed SHA, and carries P2s as round 3 does
+const r2 = (findings = [], o = {}) => base({ round: 2, since: SINCE, findings, ...o })
+t('DS-368 AC1 round 2: heading names the fix range it read', heading(r2()).startsWith('**desk-review, round 2, fix range fedcba9..0123456: No P0, P1 or P2 findings at `0123456`**'), true)
+t('DS-368 AC1 round 2: the carried line records the range', render(r2()).split('\n')[3], `<!-- desk-review:carried v=1 p2=0 since=${SINCE} -->`)
+const r2Carried = r2([p2(), p2({ id: 'F2', where: 'src/b.ts:4' })])
+t('DS-368 AC2 round 2, only carried P2s: the marker reads clean', reads(r2Carried), true)
+t('DS-368 AC2 round 2, only carried P2s: heading says none block and how many carried', heading(r2Carried).includes(': No P0 or P1 findings; P2 findings carried: 2 at `0123456`**'), true)
+t('DS-368 AC2 round 2: the carried section names the range and the round', carriedSection(r2Carried).split('\n')[1], 'desk-review round 2 read the fix range fedcba9..0123456. These P2 findings are left for later: from round 2 only P0 and P1 block.')
+t('DS-368 AC3 round 2 with a P1 is not clean', reads(r2([p2(), f({ id: 'F2' })])), false)
+t('DS-368 AC3 round 2 with a P0 is not clean', reads(r2([f({ severity: 'P0' })])), false)
+t('DS-368 an uncarried P2 on round 2 still blocks', reads(r2([f({ severity: 'P2' })])), false)
+
 // ---- results it refuses, each on the guard it names
 const want = (name, r, msg) => { const got = refused(r); t(name, got.includes(msg) ? msg : got, msg) }
 want('refuses a carried P1, naming it', r3([p2({ severity: 'P1' })]), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
 want('refuses a carried P0, naming it', r3([p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9' })]), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
-want('refuses a carried P2 before round 3', base({ round: 2, findings: [p2()] }), 'carried only from round 3')
+want('refuses a carried P2 on round 1', base({ findings: [p2()] }), 'carried only from round 2; on round 1 it is fixed')
+want('DS-368 refuses a carried P1 on round 2, naming it', r2([p2({ severity: 'P1' })]), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
+want('DS-368 refuses a carried P0 on round 2, naming it', r2([p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9' })]), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
+want('DS-368 AC1 refuses round 2 with no fix range', base({ round: 2 }), 'round 2 reads only the fix range')
 want('refuses a finding carried and deferred', r3([p2({ deferred: true })]), 'carried or deferred, not both')
 want('refuses a carried finding with no file:line', r3([p2({ where: 'src/a.ts' })]), 'where as file:line')
 want('refuses a carried REJECTED finding', r3([p2({ result: 'REJECTED' })]), 'not outstanding')
@@ -151,7 +166,7 @@ want('refuses carried that is not a boolean', r3([p2({ carried: 'yes' })]), 'car
 want('refuses round 3 with no fix range', base({ round: 3 }), 'reads only the fix range')
 want('refuses a fix range that is not a full SHA', r3([], { since: 'fedcba9' }), 'reads only the fix range')
 want('refuses an empty fix range', r3([], { since: SHA }), 'fix range is empty')
-want('refuses a fix range before round 3', base({ round: 2, since: SINCE }), 'round 2 reads the whole branch')
+want('refuses a fix range on round 1', base({ since: SINCE }), 'since is for round 2 on; round 1 reads the whole branch')
 want('refuses a short SHA', base({ sha: '0123456' }), 'full 40-character')
 want('refuses round 0', base({ round: 0 }), 'round must be')
 want('refuses gaps left out', base({ gaps: undefined }), 'gaps is required')
@@ -198,11 +213,12 @@ const SKILL = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf
 const template = marker(base()).replace(`sha=${SHA}`, 'sha=<full reviewed SHA>')
 t('SKILL.md shows the marker form verdict.mjs prints', SKILL.includes(template), true)
 t('SKILL.md states the clean verdict verdict.mjs tests', SKILL.some((l) => l.includes(`\`${CLEAN}\``)), true)
-// Round 3's finders read only the fix range: the dispatch template's diff command must say so, for
-// a branch and a PR, or round 3 rereads the whole branch whatever verdict.mjs records as `since`.
+// From round 2 the finders read only the fix range: the dispatch template's diff command must say so,
+// for a branch and a PR, or round 2 rereads the whole branch whatever verdict.mjs records as `since`.
 const dispatch = SKILL.join('\n').match(/^3\. The diff command[\s\S]*?(?=^4\. )/m)?.[0] ?? ''
-t('the finder diff command has a round-3 fix-range form for a branch', dispatch.includes('git diff "<since>..HEAD"'), true)
-t('the finder diff command has a round-3 fix-range form for a PR', dispatch.includes('git diff "<since>..refs/desk-review/pr-<n>"'), true)
+t('DS-368 AC1 the finder diff command switches to the fix range from round 2', dispatch.includes('**From round 2, the fix range instead**'), true)
+t('the finder diff command has a fix-range form for a branch', dispatch.includes('git diff "<since>..HEAD"'), true)
+t('the finder diff command has a fix-range form for a PR', dispatch.includes('git diff "<since>..refs/desk-review/pr-<n>"'), true)
 t('the fix-range rule names since as the previous round\'s SHA', SKILL.some((l) => l.includes("git diff <previous round's reviewed SHA>..HEAD")), true)
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')
