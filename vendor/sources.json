@@ -173,12 +173,12 @@
         "path": "skills/directory-submissions"
       },
       "pin": {
-        "commit": "435cde424",
-        "date": "2026-10-15"
+        "commit": "7f7b9bca6",
+        "date": "2026-10-26"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (2b12b936); current upstream HEAD version (metadata.version 2.0.0). Installed 2026-09-27.",
-      "tree_sha256": "b654475ef5770969f900f6c863294ee03ccc19879c2a56f41755c5768c7bb674"
+      "tree_sha256": "619a62582692f6f36749b73ab264a79e6f80f2771dc11c997439dade42dbfff0"
     },
     "error-handling-patterns": {
       "source": {
@@ -411,12 +411,12 @@
         "path": "skills/docker-expert"
       },
       "pin": {
-        "commit": "e0bcf882d",
-        "date": "2026-10-14"
+        "commit": "bbfc66fe6",
+        "date": "2026-10-23"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 8 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 7). Installed via `npx ski",
-      "tree_sha256": "3a15a37feeeb061591740837246b8010a658781caa2cf16f00fd66ba5c94062b"
+      "tree_sha256": "7f96ee3d4a7e877c367d5171bdf772ca81b20296a5c6595811bb64746776d94a"
     },
     "fastapi-pro": {
       "source": {
@@ -467,12 +467,12 @@
         "path": "skills/neon"
       },
       "pin": {
-        "commit": "51c7d594c",
-        "date": "2026-10-16"
+        "commit": "7afbc5558",
+        "date": "2026-10-27"
       },
       "license": "Apache-2.0",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 47 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 11). Listed in ~/skills-l",
-      "tree_sha256": "11b559cbccc05f6ab704fba2be47aad90b4e13fd64358289957eb9449e2914b0"
+      "tree_sha256": "d8a6bebf5c9ef43bc0fb04377f146d0b8a152fc9243476226cc5f8e3486714a9"
     },
     "nextjs-app-router-patterns": {
       "source": {
@@ -607,12 +607,12 @@
         "path": "skills/ai-seo/"
       },
       "pin": {
-        "commit": "001fd4e08",
-        "date": "2026-10-19"
+        "commit": "44a17a03b",
+        "date": "2026-10-26"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit is the one that introduced this blob; it is also upstream HEAD.",
-      "tree_sha256": "ac21c1e5ab26ca33ee6f1e13010ce39e0fb3c02f8777b8f651a934be855c9d56"
+      "tree_sha256": "58bd6c7a85703c8f897ad52271791713ba9928f7cc06a2a737963f45cb8e91a6"
     },
     "async-python-patterns": {
       "source": {
@@ -691,12 +691,12 @@
         "path": "skills/gcp-cloud-run/"
       },
       "pin": {
-        "commit": "e69f4f039",
-        "date": "2026-09-05"
+        "commit": "dd8e9923c",
+        "date": "2026-10-24"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13. Tree == lock skillFolderHash dd1788e; SKILL.md changed 9 times since (latest e69f4f0, 2026-09-05) - local behind. sickn33 is an aggregator repo; the skill may itself be copied from elsewhere, but it is the install source. Repo also has LICENSE-CONTENT.",
-      "tree_sha256": "1ba8f61335f1e856cf0bd4e2779beb028ae59331be21cf5098f9dd6bb9b95913"
+      "tree_sha256": "60c1b8ccf9749e1b4a46391457d6d8e2614770c01d10cf08578abd05ee45ccbf"
     },
     "ml-pipeline-workflow": {
       "source": {
@@ -719,12 +719,12 @@
         "path": "skills/neon-postgres/"
       },
       "pin": {
-        "commit": "f333dd0a5",
-        "date": "2026-10-15"
+        "commit": "ccca3334a",
+        "date": "2026-10-23"
       },
       "license": "Apache-2.0",
       "notes": "Listed in ~/skills-lock.json (source neondatabase/agent-skills). SKILL.md + all 3 references byte-identical at ca7821e; SKILL.md changed 4 times since (latest dd290a9, 2026-09-23) - local behind.",
-      "tree_sha256": "d12fc5510e40d63681dc80ba150a1a44ba5753110a5aba9662a1e0aa28ff93aa"
+      "tree_sha256": "1afe8f71d4a9653e7cc3b24228d9ba255e93e5963511453e77c7843e10910985"
     },
     "openapi-spec-generation": {
       "source": {
