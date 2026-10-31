@@ -15,7 +15,9 @@
 //                           review left gaps, the call on them: posted on the PR, kept for its next
 //                           worker, and requeued for a worker on the PR
 //       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
-//       requeue             send a ticket whose worker stopped back to a worker (queue.mjs requeue)
+//       requeue             send a ticket whose worker stopped, or whose PR was closed unmerged, back to
+//                           a worker (queue.mjs requeue)
+//       drop                take a ticket whose PR was closed unmerged out of the batch (queue.mjs drop)
 //       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
 //       not-now             put it off (the not-now register), asked again once its inputs change
@@ -31,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf, stuckOf } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
@@ -86,6 +88,8 @@ function itemOf(r, x) {
   // review left gaps also takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
     const need = `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`;
+    // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
+    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
     if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
     // and the item leaves the list once every check it is still stuck on is green.
@@ -97,6 +101,10 @@ function itemOf(r, x) {
     }
     return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
+  // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
+  // it, makes it clean, and the pass drops the record once it is.
+  const wb = worktreeBusy(t);
+  if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', SESSION_WHY], ['not-now']] };
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']] };
   // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
@@ -279,8 +287,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     }
     case 'requeue': {
       if (w.by === 'session') {
+        const why = item.kind === 'pr' ? `'s PR #${x.t.result.pr} was closed unmerged` : "'s worker stopped";
         return say(true, `not requeued, because a live session runs ${r.name}: message it to requeue ${ticket}.`,
-          { to: w.name, text: `${ticket}'s worker stopped and the person asked through desk-needs-you to requeue it (node ~/.claude/desk/bin/queue.mjs requeue ${ticket}).` });
+          { to: w.name, text: `${ticket}${why} and the person asked through desk-needs-you to requeue it (node ~/.claude/desk/bin/queue.mjs requeue ${ticket}).` });
       }
       const q = queueCmd(r, ['requeue', ticket]);
       return q.ok ? say(true, 'requeued; the next pass can spawn it.') : say(false, `requeue refused: ${q.out}`);
@@ -310,6 +319,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString() }), r.stateDir);
       return say(true, `put off (${notNowPath(r.stateDir)}).`);
     }
+    // Nothing spawns from a drop, so it is made here whoever runs the batch.
+    case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, 'dropped from the batch (queue.mjs drop).') : say(false, `drop refused: ${q.out}`); }
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
       return say(true, `not requeued (lane C or D). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);

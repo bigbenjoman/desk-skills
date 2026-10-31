@@ -58,7 +58,7 @@ const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs' };
 const groupOf = (k) => GROUP_OF[k] ?? k;
 // A reason key draws as its group: the same glyph, word and colour (STATE_SGR).
 const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] = m[groupOf(k)]; return m; };
-const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done' });
+const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -114,6 +114,7 @@ function stateOf(q, t, ctx, seen) {
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
+  if (worktreeBusy(t)) return 'needs';
   if (answeredPark(t, ctx)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
@@ -125,6 +126,11 @@ const NOBODY = { releases: false, merges: false, reruns: false, live: false, sta
 // stopped nothing will requeue it, so it needs them again.
 const answeredPark = (t, ctx) => t?.state === 'parked' && !!t.park?.answered && ctx?.live === true;
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
+// A triaged ticket the last pass would not spawn because its worktree is in use (pass.mjs busyWorktree,
+// recorded as `worktree_busy`): uncommitted changes, unpushed commits or another process working in it.
+// No pass clears that, so it needs the person until a pass finds the worktree clean and drops the record.
+export const worktreeBusy = (t) => (t?.state === 'triaged' && t.worktree_busy?.why ? t.worktree_busy : null);
+export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, push or discard it`;
 export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
@@ -777,7 +783,8 @@ const TRUECOLOR = ['truecolor', '24bit'].includes(process.env.COLORTERM);
 const HUE = LIGHT ? { green: '32', cyan: '36', blue: '34', yellow: '33', magenta: '35', red: '31' }
   : TRUECOLOR ? { green: '38;2;152;195;121', cyan: '38;2;86;182;194', blue: '38;2;97;175;239', yellow: '38;2;229;192;123', magenta: '38;2;208;139;227', red: '38;2;240;124;132' }
     : { green: '38;5;108', cyan: '38;5;73', blue: '38;5;75', yellow: '38;5;180', magenta: '38;5;176', red: '38;5;210' };
-const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.blue, waiting: HUE.yellow, needs: HUE.magenta });
+// A Needs you row put off with not-now (PUT_OFF) is grey: it is not counted until its inputs change.
+const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.blue, waiting: HUE.yellow, needs: HUE.magenta, putoff: GREY });
 // The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).
 // The band, when nothing can run, is bold and reversed on red.
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;
@@ -1786,16 +1793,18 @@ function countsLine(r) {
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY]]);
 }
 
-// Why a ready ticket has not started: its batch's worker slots, a running ticket it collides with,
-// or the pass that will start it.
-function readyWhy(r, t) {
+// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, or a
+// running ticket it collides with, which the pass never starts it beside ("held back by a collision").
+function startWait(r, t) {
   if (r.workers === 0) return 'workers set to 0';
   const busy = count(r, 'running');
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
   const clash = String(t.collides_with ?? '').split('|').filter((c) => r.q.tickets?.[c]?.state === 'running');
-  if (clash.length) return `waits for ${clash.join(', ')} to finish`;
-  return r.live ? 'starts at the next pass' : 'starts when passes resume';
+  if (clash.length) return `waits for ${clash.join(', ')} (collides)`;
+  return null;
 }
+// Why a ready ticket has not started: startWait, or the pass that will start it.
+const readyWhy = (r, t) => startWait(r, t) ?? (r.live ? 'starts at the next pass' : 'starts when passes resume');
 
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from.
@@ -1832,9 +1841,10 @@ function prSegs(r, t, now) {
 }
 
 // A ticket on a fix try: its PR, what is wrong with it, and that a worker repairs it, running or next.
-function fixSegs(f, running) {
+// One not running that startWait holds back says what it waits for first.
+function fixSegs(f, running, wait = null) {
   const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
-  const who = running ? 'a worker' : 'next free worker';
+  const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
   if (f.kind === 'gaps') return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${who} repairs it, try ${f.try} of ${f.of}`, null]];
 }
@@ -1881,8 +1891,10 @@ function needSegs(r, x, now = Date.now()) {
   // One with a question of its own needs the user for that, whatever it is held behind.
   if (heldAsks(t)) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
+  const wb = worktreeBusy(t);
+  if (wb) return [[worktreeBusyText(wb), null]];
   const f = fixOn(t);
-  if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running');
+  if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
@@ -1949,7 +1961,10 @@ const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
 // The columns before TITLE on a ticket row, less WHAT IT NEEDS.
 const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
 // A repo's Queue in groups, each in queue order: what autopilot is moving first, then what needs the user.
-const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs']];
+// A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
+// every count, so Needs you lists exactly what the counts and /desk-needs-you do.
+const PUT_OFF = 'putoff';
+const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
@@ -1981,33 +1996,36 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r: of(x), x });
   const tt = titler(list.map(summary));
+  // needsCount's rows are those not put off: the rest of Needs you is Put off.
+  const asked = new Set(needsCount(r).rows);
+  const gk = (x) => (groupOf(x.k) === 'needs' && !asked.has(x) ? PUT_OFF : x.k);
   // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
   // says how long it has been there instead, amber for a Merging PR with no change for STALL_MS.
   const starts = (x) => { const a = afterPrs(of(x), x), g = inGroup(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
   const startsSgr = (x) => (of(x).live && groupOf(x.k) === 'merging' && inGroup(x, now) != null && stalledFor(x.t, now) != null ? WARN : null);
   const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
   const row = (x) => segRow(x.t.key, [
-    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[x.k], STATE_W), STATE_SGR[x.k]],
+    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
-    // 1 of 2 done" keeps as much as it can.
-    ...fitSegs(needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
+    // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
+    ...fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
     [pad(starts(x), 13), startsSgr(x)], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
   const rows = GROUPS.flatMap(([name, k]) => {
-    const g = list.filter((x) => groupOf(x.k) === k);
-    return g.length ? [segRow(null, [[`  ${name}`, BOLD], [` · ${g.length}`, GREY]], null), ...g.map(row)] : [];
+    const g = list.filter((x) => groupOf(gk(x)) === k);
+    return g.length ? [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${g.length}`, GREY]], null), ...g.map(row)] : [];
   });
-  const foot = !list.length ? ['  No unfinished tickets.'] : ['', ...stateKey(list, width)];
+  const foot = !list.length ? ['  No unfinished tickets.'] : ['', ...stateKey(list.map(gk), width)];
   if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: letting it start or a requeue leaves it where it is');
   return { head: fit, rows, foot };
 }
 
 // What each shown state means, for the key line under a Queue.
 const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', merging: 'merges by itself once green', waiting: 'moves by itself',
-  needs: 'nothing moves until you act' };
+  needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes' };
 // The key line: each state on screen in its colour, its meaning grey. Narrower than the line, it
 // breaks between states, each further line indented under the first.
-const stateKey = (list, width) => keyLine(shownOf(list.map((x) => x.k)).map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
+const stateKey = (ks, width) => keyLine([...shownOf(ks), ...(ks.includes(PUT_OFF) ? [PUT_OFF] : [])].map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
 
 export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
@@ -2047,10 +2065,12 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Will not start on its own. ${n} Jira ticket${n === 1 ? '' : 's'} outside this batch must be done first, and nothing in this batch moves it.`,
       lead: `If it can start without them, say so, in ${r.name}:`, cmds: [answerCmd(t.key)] };
   }
+  const wb = worktreeBusy(t);
+  if (wb) return { text: `Needs you. No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
   // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
   if (f && groupOf(k) !== 'needs') {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
-    return { text: `Moves without you: ${segText(fixSegs(f, false))}.` };
+    return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
   if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
