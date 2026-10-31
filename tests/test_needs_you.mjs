@@ -199,7 +199,7 @@ const left = cli('left').out.trim().split('\n');
 t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 2 items needing you. 2 put off with not-now, left out until they change.');
 t('DS-324 AC4 left matches list', N.collect().items.length, 2);
 
-// ---- DS-376: desk-q's NEEDS YOU and left's count are one number, the put-off items said beside it
+// ---- desk-q's NEEDS YOU and left's count are one number, the put-off items said beside it
 const { overview } = await import('../desk/bin/desk-q.mjs');
 const home = () => overview(loadRepos(), { now: NOW, avail: 30 }).split('\n');
 // The cell ends where its right-aligned header does.

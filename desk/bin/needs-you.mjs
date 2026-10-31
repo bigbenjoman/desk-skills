@@ -151,23 +151,28 @@ function judged(r, x, register) {
 }
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
-// `b`): the rows that need the person, less `putOff`, those put off with unchanged inputs.
+// `b`): the rows that need the person (`rows`, `shown` of them), less `putOff`, those put off with
+// unchanged inputs.
 export function needsCount(r) {
   const registers = new Map();
-  let shown = 0, putOff = 0;
+  const rows = [];
+  let putOff = 0;
   for (const x of needsRows(r)) {
     const b = x.b ?? r;
     if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir));
-    if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else shown++;
+    if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else rows.push(x);
   }
-  return { shown, putOff };
+  return { shown: rows.length, putOff, rows };
 }
+
+// The batches `word` names, else every batch desk-q's home screen shows.
+const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: null, scope: shownRepos(repos, false) });
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
 // A usage-limit hold is an item here, but not in desk-q's count.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
-  const { named = null, scope } = word ? batchesNamed(repos, word) : { scope: shownRepos(repos, false) };
+  const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
   for (const r of scope.filter((x) => !x.error && x.q)) {
@@ -317,10 +322,11 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are
 // stopped, needing the person or not: one just answered no longer does, and still waits on a pass.
 export function leftText({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
-  const c = collect({ word, now, repos });
+  const c = scopeOf(repos, word);
   const where = c.named ? ` in ${c.named.name}` : '';
-  const n = c.items.filter((i) => i.kind !== 'usage').length;
-  const lines = [`desk-q counts ${n} item${n === 1 ? '' : 's'} needing you${where}.${putOffLine(c)}`];
+  const counts = c.scope.filter((x) => !x.error && x.q).map(needsCount);
+  const n = counts.reduce((a, y) => a + y.shown, 0);
+  const lines = [`desk-q counts ${n} item${n === 1 ? '' : 's'} needing you${where}.${putOffLine({ putOff: counts.reduce((a, y) => a + y.putOff, 0) })}`];
   for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }

@@ -528,7 +528,7 @@ const supervisorOff = (r) => r.run?.agent === 'off';
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
-const attention = (r) => needsRows(r).length;
+const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);
 const hasBatch = (r) => r.q != null || r.error != null;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
@@ -537,8 +537,9 @@ const hasBatch = (r) => r.q != null || r.error != null;
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
-  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
-    .sort((a, c) => attention(c) - attention(a));
+  const you = new Map(b.map((r) => [r, r.live ? 0 : attention(r)]));
+  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
+    .sort((a, c) => you.get(c) - you.get(a));
   return [...live, ...quiet];
 }
 
@@ -624,11 +625,12 @@ const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged a
 const stoppedNote = (r, now) => (r.last == null ? 'no pass yet, so no dates until passes start' : `passes stopped ${ago(now - r.last)}, so no dates until they resume`);
 export { needsSession };
 function idleNote(r) {
-  const you = attention(r);
-  if (!you) return 'Nothing left for autopilot: every ticket is done.';
-  const session = r.rows.filter((x) => x.k === 'needs' && needsSession(x.t)).length;
+  const { shown: you, putOff, rows } = needsCount(r);
+  const off = putOff ? `${putOff} put off with not-now` : '';
+  if (!you) return `Nothing left for autopilot: ${off || 'every ticket is done'}.`;
+  const session = rows.filter((x) => x.k === 'needs' && needsSession(x.t)).length;
   return `Nothing left for autopilot: ${you} ticket${you === 1 ? ' needs' : 's need'} you`
-    + `${session ? ` (${session} need${session === 1 ? 's' : ''} an interactive session)` : ''}.`;
+    + `${session ? ` (${session} need${session === 1 ? 's' : ''} an interactive session)` : ''}${off ? `, ${off}` : ''}.`;
 }
 
 // The forecast and hit-rate wording `desk-q ships` and the tabs' forecast line share.
@@ -717,9 +719,11 @@ function epicWhy(r, F, e, checkin) {
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
-  const you = undated.filter((x) => groupOf(x.k) === 'needs').length;
-  const why = you ? [`${you} need${you === 1 ? 's' : ''} you`] : [];
-  const rest = undated.length - you;
+  const needs = new Set(needsCount(r).rows);
+  const asks = undated.filter((x) => groupOf(x.k) === 'needs').length;
+  const you = undated.filter((x) => needs.has(x)).length, off = asks - you;
+  const why = [...(you ? [`${you} need${you === 1 ? 's' : ''} you`] : []), ...(off ? [`${off} put off`] : [])];
+  const rest = undated.length - asks;
   if (rest) why.push(`${rest} behind those`);
   return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c: date them as if answered at the next check-in' : ''}`;
 }
@@ -1490,11 +1494,11 @@ const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's 
 // from when it parked, else from when it was added.
 function needsLine(list, now) {
   const ok = list.filter((r) => !r.error);
-  const n = new Map(ok.map((r) => [r, needsCount(r).shown]));
-  const you = ok.reduce((a, r) => a + n.get(r), 0);
-  const per = ok.filter((r) => n.get(r)).sort((a, c) => n.get(c) - n.get(a))
-    .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n.get(r)), BOLD]]);
-  const waited = ok.flatMap((r) => r.rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
+  const c = new Map(ok.map((r) => [r, needsCount(r)])), n = (r) => c.get(r).shown;
+  const you = ok.reduce((a, r) => a + n(r), 0);
+  const per = ok.filter((r) => n(r)).sort((a, x) => n(x) - n(a))
+    .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n(r)), BOLD]]);
+  const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
   const oldest = waited.length ? [['  oldest ', GREY], [since(Math.max(0, now - Math.min(...waited))), null]] : [];
   return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
@@ -2634,7 +2638,7 @@ export function interactive({
   const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
   // The parked note is shown while any ticket in view waits on the user, or c is on.
-  const badge = (rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? parkedBadge(checkin) : '');
+  const badge = (rs) => (checkin || rs.some((r) => attention(r) > 0) ? parkedBadge(checkin) : '');
 
   // The breadcrumb's parts, each with the place a click on it goes to; the last is where you are.
   function crumbParts() {
