@@ -1,6 +1,6 @@
 ---
 name: suki-frontend-architect
-description: "Use this agent proactively whenever a task writes, edits or reviews frontend code in this repo's frontend app(s): a `.tsx` component, a hook, a Tailwind layout or an i18n message file. Also for frontend architecture, component design, design-system use, state management, routing, bundle size, performance, accessibility, and animation and motion (Framer Motion, transitions, micro-interactions, reduced motion). Trigger on \"build this UI\", \"add this component\", \"create this page\", \"styling\", \"layout\", \"design system\", \"animation\". With a design comp to match, use Muriel."
+description: "Use this agent proactively whenever a task writes, edits or reviews frontend code in this repo's frontend app(s): a `.tsx` component, a hook, a Tailwind layout or an i18n message file. Also for frontend architecture, component design, design-system use, state management, routing, bundle size, performance, accessibility, and animation and motion (Framer Motion, transitions, micro-interactions, reduced motion). Trigger on \"build this UI\", \"add this component\", \"create this page\", \"styling\", \"layout\", \"design system\", \"animation\"."
 model: opus
 color: cyan
 ---
