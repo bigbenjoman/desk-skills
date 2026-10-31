@@ -6,7 +6,7 @@
 //        [--worktrees-dir <§2 dir>] [--key-pattern <§4 Ticket key pattern>] [--prs <file>] [--no-fetch]
 //   node cleanup-scan.mjs remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>...
 //   node cleanup-scan.mjs memory [--repo <root>] [--worktrees-dir <dir>] [--ports <3500-3600,6006>]
-//   node cleanup-scan.mjs memory-index [--repo <root>] [--memory-dir <dir>]   an oversized MEMORY.md, or nothing
+//   node cleanup-scan.mjs memory-index [--repo <root>]   an oversized auto-memory MEMORY.md, or nothing
 //   node cleanup-scan.mjs key-filter <TICKET>        gh pr list --json … on stdin, whole-key matches out
 //
 // `worktrees` prints one TSV row per worktree: verdict path branch ticket tip pr author reason
@@ -21,7 +21,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, mkdirSync, cpSync, rmSync, appendFileSync } from 'node:fs'
 import { homedir, totalmem, freemem, platform } from 'node:os'
 import { join, dirname, basename, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // ---- pure parts (exported for tests/test_cleanup.mjs) ----------------------------------------
 
@@ -215,9 +215,6 @@ export function memoryReport({ ps, cwds, listen, ports, worktrees = [], dirs = [
 // Claude Code loads MEMORY.md into every session and worker on every call; past this it is a document.
 export const MEMORY_INDEX_CAP = { bytes: 6144, lines: 60 }
 
-// Claude Code's auto-memory directory for a repo root (desk-env's memoryDir, the same formula).
-export const memoryDirOf = (root, home = homedir()) => join(home, '.claude', 'projects', root.replace(/[^A-Za-z0-9]/g, '-'), 'memory')
-
 // The index's entries that run past one line: a bullet, heading or paragraph with continuation lines.
 export function longEntries(text) {
   const out = []; let cur = null
@@ -232,7 +229,8 @@ export function longEntries(text) {
 }
 
 // The report lines for one MEMORY.md, or none when it is within the cap (or absent).
-export function memoryIndexReport(path, text, cap = MEMORY_INDEX_CAP) {
+export function memoryIndexReport(path, text) {
+  const cap = MEMORY_INDEX_CAP
   if (text === null || text === undefined) return []
   const bytes = Buffer.byteLength(text), lines = text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
   if (bytes <= cap.bytes && lines <= cap.lines) return []
@@ -464,10 +462,24 @@ function scanMemory(o) {
   }
 }
 
+// The directory comes from desk-env's memoryDir, the one reading of how Claude Code names it. Found as
+// groom-scan finds desk/bin (DESK_ENV_MJS, DESK_HOME, the install, then a source checkout), and only
+// here, so the other subcommands and the scripts importing this file need no desk/bin.
+async function loadMemoryDir() {
+  const c = [
+    process.env.DESK_ENV_MJS,
+    process.env.DESK_HOME && join(process.env.DESK_HOME, 'bin', 'desk-env.mjs'),
+    join(homedir(), '.claude', 'desk', 'bin', 'desk-env.mjs'),
+    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'desk', 'bin', 'desk-env.mjs'),
+  ].filter(Boolean).find((f) => existsSync(f))
+  if (!c) die('desk-env.mjs not found in desk/bin. Run install.sh from desk-skills.')
+  return (await import(pathToFileURL(c).href)).memoryDir
+}
+
 // Prints nothing when the index is within the cap, and nothing when the repo has no memory directory.
-function scanMemoryIndex(o) {
-  const dir = o['memory-dir'] ? expand(o['memory-dir']) : memoryDirOf(rootOf(o.repo).root)
-  const path = join(dir, 'MEMORY.md')
+async function scanMemoryIndex(o) {
+  const memoryDir = await loadMemoryDir()
+  const path = join(memoryDir(rootOf(o.repo).root), 'MEMORY.md')
   let text = null
   try { text = readFileSync(path, 'utf8') } catch { /* no index */ }
   for (const l of memoryIndexReport(path, text)) console.log(l)
