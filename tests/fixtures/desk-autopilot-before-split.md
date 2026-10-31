@@ -711,7 +711,9 @@ or an `advisory`), read the artifact's current version (`Artifact action:list`) 
 `desk-design.mjs status <URL> --version <v>`. Exit 3 means it has moved on: re-saving is a Stage 3
 question, and on a yes you snapshot it as above.
 An artifact the user does not own returns a summary, not the files: that, or one that will not
-read, is a Stage 3 question. A worker never builds from a summary or a guess.
+read, is asked at Stage 1, before any ticket is spawned, never left for Stage 3: name the artifact
+and ask the user to share it with this subscription or give its files. A worker never builds from a
+summary or a guess.
 
 ## A batch that targets a feature branch
 

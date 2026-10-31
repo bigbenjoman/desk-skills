@@ -108,5 +108,17 @@ console.log(deciderPrompt({ slug: 's', report: '', items: ask, rules: '', bin: '
 check "decider: a lane D worker's park goes to the session, a triage park is handed on" 'grep -qx "ask=w hand=t" <<< "$out"'
 check "decider: the prompt lets it requeue lane D, and forbids only a triage park" 'grep -q "more agent work, on lane A, B, D or E:" <<< "$out" && grep -q "never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\`" <<< "$out" && ! grep -q "never requeue a lane C or D park" <<< "$out"'
 
+# DS-358: a lane A ticket parks on a canvas no worker can read, and runs on a snapshotted one.
+ticket a-loose A "Match $LOOSE exactly."
+ticket a-snapped A "Match $SNAP exactly."
+plan a-loose a-snapped
+check "DS-358 AC6: a lane A ticket whose canvas has no snapshot parks, naming the artifact" '[ "$(qg a-loose .state)" = parked ] && [[ "$(qg a-loose .park.question)" == "design not snapshotted: $LOOSE: snapshot it from a session"* ]]'
+check "DS-358 AC6: the plan lists it under PARKED ON DESIGN" 'grep -q "^PARKED ON DESIGN (1)" <<< "$out" && grep -q "^  a-loose: design not snapshotted: $LOOSE" <<< "$out"'
+check "DS-358 AC2: a lane A ticket with a snapshot runs" '[ "$(qg a-snapped .state)" = triaged ]'
+mkdir -p "$T/state/batches/EPIC-9/triage" "$T/state/batches/EPIC-9/tickets"
+cp "$T/state/tickets/a-snapped.md" "$T/state/batches/EPIC-9/tickets/"; cp "$T/state/triage/a-snapped.json" "$T/state/batches/EPIC-9/triage/"
+DESK_AUTOPILOT_STATE="$T/state/batches/EPIC-9" node "$B/ticket-facts.mjs" a-snapped >/dev/null 2>&1
+check "DS-358 AC7: a feature batch's triage finds the repo state's snapshot" '[ "$(jq -r ".design.canvases[0].snapshot" "$T/state/batches/EPIC-9/triage/a-snapped.json")" = "$T/state/designs/snap-ticket" ]'
+
 echo "lane D: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

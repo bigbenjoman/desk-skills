@@ -78,6 +78,19 @@ export function designGap(r) {
   return null;
 }
 
+// The Claude Design canvases a triage record links that a worker cannot read: neither saved on the
+// base nor snapshotted.
+export const unreadCanvases = (r) => (r?.design?.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+
+// The park for a ticket in any lane whose design no worker can read, or null: a session that can read
+// the artifact snapshots it, since a worker has no Artifact tool and would only park asking for it.
+export function designPark(r) {
+  const urls = unreadCanvases(r);
+  return urls.length
+    ? `design not snapshotted: ${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
+    : null;
+}
+
 // Lane C always needs a person before code; lane D only while its design is not saved where a worker
 // can read it.
 export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && designGap(r) !== null);

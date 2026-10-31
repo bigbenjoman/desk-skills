@@ -104,16 +104,19 @@ function walkFiles(dir, base = dir) {
 }
 
 // What to copy out of a snapshot: canvas.json, every HTML file beside it, and every local file
-// those reference, followed through CSS. A reference that leaves <src> or names a file the
+// those reference, followed through CSS. A single-page artifact has no canvas.json (`canvas` is
+// null): its pages are the HTML files beside the shallowest one. A reference that leaves <src> or names a file the
 // snapshot lacks is `missing`; one to another host is `remote` (it needs the network to render).
 // `blobs` maps each asset id the boards use to its saved path, and `copyFrom` maps a saved path to
 // the snapshot file it comes from where the two differ: an asset, or support.js from dc-runtime.js.
 export function collect(src) {
   const all = walkFiles(src);
-  const canvasRel = all.filter((f) => basename(f) === 'canvas.json').sort((a, b) => a.length - b.length)[0];
-  if (!canvasRel) fail(`no canvas.json under ${src}: read the artifact's project/canvas.json first`);
-  const home = dirname(canvasRel);
-  const files = new Set([canvasRel]);
+  const shallowest = (name) => all.filter(name).sort((a, b) => a.split(sep).length - b.split(sep).length || a.length - b.length)[0];
+  const canvasRel = shallowest((f) => basename(f) === 'canvas.json') ?? null;
+  const page = canvasRel ? null : shallowest((f) => /\.html?$/i.test(f));
+  if (!canvasRel && !page) fail(`no canvas.json or page under ${src}: read the artifact's project/canvas.json, or its page, first`);
+  const home = dirname(canvasRel ?? page);
+  const files = new Set(canvasRel ? [canvasRel] : []);
   const queue = all.filter((f) => /\.html?$/i.test(f) && (home === '.' || f.startsWith(home + sep)));
   const missing = []; const remote = [];
   const blobs = {}; const copyFrom = {}; const noAsset = new Set();
@@ -345,7 +348,7 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
 
   const { canvas, files, missing, remote, blobs, copyFrom } = collect(src);
   if (missing.length) fail(`not saved: the snapshot lacks files the boards reference; read them from the artifact too:\n${missing.map((m) => `missing: ${m}`).join('\n')}`, 4);
-  const boards = parseBoards(readJson(join(src, canvas)) ?? {});
+  const boards = canvas ? parseBoards(readJson(join(src, canvas)) ?? {}) : [];
 
   // A re-save replaces the old version's files, so none outlive it: its screens included.
   const stale = String(prev?.screens?.version) !== String(version) ? (prev?.screens?.images ?? []).map((s) => s.file) : [];
@@ -414,7 +417,7 @@ export function screenNames(boards) {
 // drawn when a board was drawn at it, interpolated when none was.
 export function renderPlan(boards, bps) {
   const names = screenNames(boards);
-  const shots = boards.flatMap((b, i) => [...new Set([...bps, b.width])].sort((x, y) => x - y)
+  const shots = boards.flatMap((b, i) => [...new Set([...bps, b.width])].filter(Number.isFinite).sort((x, y) => x - y)
     .map((width) => ({ board: b.name, screen: names[i], width, file: `screens/${names[i]}@${width}.png`, drawn: b.width === width })));
   const widths = [...new Set(shots.map((s) => s.width))].sort((x, y) => x - y).map((width) => {
     const drawnBy = boards.filter((b) => b.width === width).map((b) => b.name);
@@ -449,13 +452,16 @@ function serve(dir) {
 export async function render(dir, { chromium, bps = breakpoints(), now = new Date().toISOString(), height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: render a folder desk-design save wrote`);
-  const { canvas } = collect(dir);
-  const boards = parseBoards(readJson(join(dir, canvas)) ?? {});
+  const { canvas, files } = collect(dir);
+  // A single-page artifact's pages render at every breakpoint, with no width of their own.
+  const home = canvas ? dirname(canvas) : dirname(files.find((f) => /\.html?$/i.test(f)));
+  const boards = canvas ? parseBoards(readJson(join(dir, canvas)) ?? {})
+    : files.filter((f) => /\.html?$/i.test(f) && dirname(f) === home).map((f) => ({ name: basename(f).replace(/\.html?$/i, ''), width: null, file: basename(f) }));
   if (!boards.length) fail(`${canvas} names no boards: nothing to render`);
   const plan = renderPlan(boards, bps);
   const names = screenNames(boards);
   const pages = new Map(boards.map((b, i) => {
-    const rel = b.file && normalize(join(dirname(canvas), b.file));
+    const rel = b.file && normalize(join(home, b.file));
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) fail(`board "${b.name}" names no file inside ${dir}`);
     if (!existsSync(join(dir, rel))) fail(`not rendered: board "${b.name}" is ${rel}, which is not in ${dir}`, 4);
     return [names[i], rel];
@@ -532,13 +538,18 @@ export function claudeDesignLinks(section) {
   return out;
 }
 
-// The snapshot folder under <state>/designs/ that holds this artifact, or null. Autopilot snapshots
-// an artifact before triage, and the worker saves it on its branch.
+// The snapshot folder under <state>/designs/ that holds this artifact, or null. /desk-admit snapshots
+// an artifact when it admits the ticket, and autopilot before triage; the worker saves it on its
+// branch. A named batch's state (<repo state>/batches/<name>) also reads the repo's own, where
+// /desk-admit saves.
 export function snapshotOf(state, url) {
-  const base = join(state, 'designs');
-  if (!existsSync(base)) return null;
-  const d = readdirSync(base).find((x) => canonicalUrl(readJson(join(base, x, 'source.json'))?.url) === canonicalUrl(url));
-  return d ? join(base, d) : null;
+  const repoState = state.replace(new RegExp(`[/\\\\]${E.BATCHES_DIR}[/\\\\][^/\\\\]+[/\\\\]?$`), '');
+  for (const base of [...new Set([state, repoState])].map((s) => join(s, 'designs'))) {
+    if (!existsSync(base)) continue;
+    const d = readdirSync(base).find((x) => canonicalUrl(readJson(join(base, x, 'source.json'))?.url) === canonicalUrl(url));
+    if (d) return join(base, d);
+  }
+  return null;
 }
 
 // Every saved canvas under <dir> as committed at <ref>: [{path, url}].
@@ -569,8 +580,9 @@ export function designFact(text, { root, dir, ref, state }) {
 
 // Findings for one ticket: {severity: 'blocking'|'advisory', message}. `issue` is desk-jira's
 // --json issue, or {key, text} for a ticket file. The canvas belongs under the ticket's epic when it
-// has one, else under the ticket itself.
-export function checkTicket(issue, { root, dir }) {
+// has one, else under the ticket itself. One with a snapshot under <state> is advisory: the worker
+// saves it from there.
+export function checkTicket(issue, { root, dir, state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
   // a code span ({{…/p/1a2b\-3c4d}}); unescaped, the link and the repo path read as written.
@@ -582,7 +594,9 @@ export function checkTicket(issue, { root, dir }) {
   for (const url of claudeDesignLinks(section)) {
     const saved = findSaved(root, dir, url);
     if (!saved) {
-      findings.push({ severity: 'blocking', message: `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/: save it to ${join(dir, epic ?? key)}/ (desk-design save)` });
+      const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
+      const snap = state ? snapshotOf(state, url) : null;
+      findings.push(snap ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` } : { severity: 'blocking', message });
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {
       findings.push({ severity: 'advisory', message: `design: ${key}'s Design section links ${url} but not its saved copy ${saved.path}: add the repo path beside the link` });
     }
@@ -655,7 +669,7 @@ if (isMain) {
       else { console.log(`newer: saved version ${s.saved}, the artifact is at ${version}; re-save it with desk-design save`); process.exit(3); }
     } else if (cmd === 'check') {
       if (!target) fail('usage: desk-design check <KEY | ticket file> [--key <K>]');
-      const findings = checkTicket(loadIssue(target, opt(rest, '--key')), { root: toplevel(), dir: designDir() });
+      const findings = checkTicket(loadIssue(target, opt(rest, '--key')), { root: toplevel(), dir: designDir(), state: E.stateDir() });
       for (const f of findings) console.log(`${f.severity}: ${f.message}`);
       if (!findings.length) console.log('ok: no unsaved Claude Design canvas');
       process.exit(findings.some((f) => f.severity === 'blocking') ? 1 : 0);

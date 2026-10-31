@@ -12,7 +12,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, needsPersonLane, designGap, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget } from './desk-env.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES } from './desk-q-eta.mjs';
@@ -70,7 +70,11 @@ const parked = ours.filter(needsPersonLane);
 const unchecked = parked.filter(laneUnchecked);
 const failedReads = (r) => (r.lane_challenge?.failed_reads ?? []).join('; ') || 'none listed';
 const sized = ours.filter(sizeParked);
-let admitted = ours.filter((r) => laneOk(r) && !sizeParked(r));
+// A ticket in any lane that links a Claude Design canvas no worker can read parks until a session
+// snapshots it.
+const designParked = (r) => laneOk(r) && !sizeParked(r) && designPark(r) !== null;
+const undesigned = ours.filter(designParked);
+let admitted = ours.filter((r) => laneOk(r) && !sizeParked(r) && !designParked(r));
 
 // Collision detection. Two tickets that touch the same file cannot run concurrently:
 // they would conflict on the file, and worse, each is blind to a helper the other just
@@ -369,6 +373,7 @@ if (notOurs.length) {
 const ticketVerdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
   : needsPersonLane(r) ? `PARK (lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually)`
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
+  : designParked(r) ? `PARK (${designPark(r)})`
   : onCycle.has(r.ticket) ? `PARK (dependency cycle: ${onCycle.get(r.ticket)})`
   : held(r.ticket) ? `HELD (blocked by ${preds[r.ticket].join(', ')} — starts once their PRs merge)`
   : 'ADMIT');
@@ -420,6 +425,10 @@ if (linted.length) {
 if (sized.length) {
   say(`\n${'='.repeat(60)}\nPARKED ON SIZE (${sized.length}) — L and XL are split before they are batched:`);
   for (const r of sized) say(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
+}
+if (undesigned.length) {
+  say(`\n${'='.repeat(60)}\nPARKED ON DESIGN (${undesigned.length}) — snapshot each artifact before any worker starts:`);
+  for (const r of undesigned) say(`  ${r.ticket}: ${designPark(r)}`);
 }
 if (parked.length) {
   say(`\n${'='.repeat(60)}\nPARKED AT TRIAGE (${parked.length}) — lane C, and lane D without a saved canvas, need a person, not run unattended:`);
@@ -519,6 +528,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
     const park = lanePark(r)
       ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
+      : designParked(r) ? designPark(r)
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`
       : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once their PRs merge`
       : null);
@@ -539,7 +549,7 @@ const needsPerson = [
   ...parked.filter((r) => r.lane_challenge?.verdict !== 'CONFIRM').map((r) => (laneUnchecked(r)
     ? { ticket: r.ticket, why: 'challenge_inconclusive', detail: `lane ${r.lane} is unchecked, reads failed: ${failedReads(r)}` }
     : { ticket: r.ticket, why: 'challenge_not_run', detail: `lane ${r.lane} is unreviewed: ${r.lane_challenge?.reason ?? 'no challenge recorded'}` })),
-  ...[...parked, ...sized, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
+  ...[...parked, ...sized, ...undesigned, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
   ...(feature?.on && !feature.filed ? [{ ticket: batchEpic, why: 'feature_plan',
     detail: feature.plan ? 'approve the drafted spine and owner table, then file the spine under the epic and plan it with the rest' : `draft the spine and the owner table into ${featurePath}, then re-run plan-batch` }] : []),
 ];

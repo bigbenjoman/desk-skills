@@ -642,7 +642,7 @@ klint KAN-47
 check "lint KEY: an unsaved Claude Design canvas is desk-design's blocking finding" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: design: KAN-47.s Design section links the Claude Design artifact https://claude.ai/design/p/abc123, but no copy is saved"'
 mkdir -p "$T/state/designs/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123#board"}' > "$T/state/designs/KAN-47/source.json"
 out=$(cd "$A" && DESK_AUTOPILOT_STATE="$T/state" JIRA_SITE="http://127.0.0.1:$LPORT" "$J" lint KAN-47 2>&1); rc=$?
-check "lint KEY: a canvas autopilot has snapshotted is advisory, the worker saves it" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*no copy is saved.*autopilot has snapshotted it"'
+check "lint KEY: a snapshotted canvas is advisory, the worker saves it from the snapshot" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*no copy is saved.*it is snapshotted at .*/state/designs/KAN-47, so the worker saves it from there"'
 mkdir -p "$A/docs/design/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123","version":"1","tickets":[{"key":"KAN-47","boards":[]}]}' > "$A/docs/design/KAN-47/source.json"
 klint KAN-47
 check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'

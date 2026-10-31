@@ -36,4 +36,18 @@ or an `advisory`), read the artifact's current version (`Artifact action:list`) 
 `desk-design.mjs status <URL> --version <v>`. Exit 3 means it has moved on: re-saving is a Stage 3
 question, and on a yes you snapshot it as above.
 An artifact the user does not own returns a summary, not the files: that, or one that will not
-read, is a Stage 3 question. A worker never builds from a summary or a guess.
+read, is asked at Stage 1, before any ticket is spawned, never left for Stage 3: name the artifact
+and ask the user to share it with this subscription or give its files. A worker never builds from a
+summary or a guess.
+
+**A single-page artifact** (no `project/canvas.json`, no boards) is snapshotted the same way: its
+page (`project/index.html` or whatever HTML it publishes) and every file and `/_blob/<id>` asset the
+page loads. `desk-design.mjs save` copies a page with no canvas.json, and `render` shoots it at every
+breakpoint.
+
+**Every way into a batch takes the snapshot first.** `/desk-admit` snapshots in its own session
+before it admits (its step 0), from the same list as above. Where no session can (standing intake, a
+feature batch started headless, a ticket plan-batch seeds with no snapshot), the ticket is parked on
+`design not snapshotted: <URL>` rather than admitted runnable, so it shows as one need naming the
+artifact, and plan-batch lists it under `PARKED ON DESIGN`. A snapshot in the repo's own state
+folder is found from a feature batch's too.

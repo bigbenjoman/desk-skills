@@ -179,6 +179,26 @@ t('check: wiki-escaped code spans read as written', checkTicket(issue(`h2. Desig
 t('check: a wiki numbered item stays in the Design section', checkTicket(issue(`h2. Design\n# Canvas: ${URL1}\nh2. Out of scope`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
 const esc = checkTicket(issue('h2. Design\n{{https://claude.ai/design/p/ab\\-c\\_d}}'), { root: r5, dir: DIR });
 t('check: an escaped link names the unescaped URL', esc.length === 1 && esc[0].message.includes('https://claude.ai/design/p/ab-c_d,'), true);
+// A snapshot under the state directory (/desk-admit's, or autopilot's) is what a worker saves from.
+const st = join(T, 'state');
+put(join(st, 'designs/DS-70/source.json'), JSON.stringify({ url: `${URL1}#board`, version: '7' }));
+const snapped = checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, state: st });
+t('check: a snapshotted link is advisory, naming the snapshot', `${snapped.map((f) => f.severity).join(' ')} ${snapped[0]?.message.includes(`snapshotted at ${join(st, 'designs/DS-70')}`)}`, 'advisory true');
+t('check: a feature batch reads the repo state\'s snapshot', checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, state: join(st, 'batches/DS-50') })[0].severity, 'advisory');
+t('check: another artifact is still blocking', checkTicket(issue('h2. Design\nhttps://claude.ai/design/p/other'), { root: r5, dir: DIR, state: st })[0].severity, 'blocking');
+
+// ---- a single-page artifact: no canvas.json, one page and the files it loads ----
+const page = join(T, 'page');
+put(join(page, 'source.json'), JSON.stringify({ url: 'https://claude.ai/artifact/PAGE1', version: '3', dir: 'DS-90', tickets: [{ key: 'DS-91', boards: [] }] }));
+put(join(page, 'project/index.html'), '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter"><link rel="stylesheet" href="page.css"><h1>after</h1>');
+put(join(page, 'project/page.css'), 'h1 { color: red }');
+t('collect: a page with no canvas.json is the page and what it loads', `${collect(page).canvas} ${collect(page).files.join(' ')}`, 'null project/index.html project/page.css');
+const rP = repo('rP');
+const sp = save(page, { root: rP, dir: DIR, tickets: [{ key: 'DS-91', boards: [] }] });
+t('save: a single page is saved with no canvas.json asked for', `${sp.path} ${existsSync(join(rP, DIR, 'DS-90/project/index.html'))} ${existsSync(join(rP, DIR, 'DS-90/project/page.css'))}`, 'docs/design/DS-90/ true true');
+t('save: a single page has no boards', sp.source.boards.length, 0);
+t('render plan: a page with no width renders at the breakpoints only', renderPlan([{ name: 'index', width: null }], [390, 1280]).shots.map((s) => s.width).join(' '), '390 1280');
+t('collect: neither a canvas nor a page is refused', throws(() => collect(join(T, 'state/designs'))).startsWith('2:no canvas.json or page'), true);
 
 // ---- the command line, reading config §2 Design canvases directory ----
 const r6 = repo('r6');

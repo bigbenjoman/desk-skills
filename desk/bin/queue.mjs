@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, waitingOnMerge, waitingOnPark, lanePark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
@@ -395,7 +395,7 @@ switch (cmd) {
     const elsewhere = belongsElsewhere(key, r, QUEUE);
     if (elsewhere) throw new Error(elsewhere.why);
     const size = String(r.size ?? '').toUpperCase();
-    const park = lanePark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
+    const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
     const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
     // The collision check plan-batch makes, against every ticket still to finish: two tickets that
     // touch one file never run at once.

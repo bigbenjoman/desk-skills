@@ -20,7 +20,8 @@
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
 //     or XL, or a blocker that is not done and not in the batch;
 //   - otherwise admitted (queue.mjs admit --by intake), held behind every blocker in the batch in the
-//     same write.
+//     same write; or, when it links a Claude Design canvas no worker can read, parked on that instead,
+//     so Needs you names the artifact to snapshot or share.
 // With no queue, or one whose tickets are all done with no PR open, a batch is started for it
 // (`standing-<time>`, handed to the supervisor at once). A batch not handed over, an empty one included
 // (a session between `queue.mjs init` and its plan), is a session's and gets nothing until it is
@@ -30,7 +31,8 @@
 //
 // `admit` is the same gate for tickets named by hand: no search, no interval and no cap, every one
 // triaged afresh, and what fails a check is refused back to the person (exit 11) rather than handed to
-// the digest. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
+// the digest; so is one linking a Claude Design canvas with no snapshot, which the person's session
+// snapshots first. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
 // An epic has its own feature batch started beside the standing batch and any other epic's, its plan
 // drafted headless and left for the person in needs-you (epic-plan.mjs); without config §3
 // autopilot-workers `yes` it is reported as one to plan in a session (the /desk-autopilot epic flow).
@@ -43,7 +45,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, needsPersonLane, planPark, readQueue as readQueueAt } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, planPark, unreadCanvases, readQueue as readQueueAt } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
 
@@ -188,8 +190,10 @@ function startStanding(cur, now) {
 
 // Admit one ticket that passed, held behind every blocker in the batch in the same write, so no pass
 // sees it runnable first: the held blockers, or why queue.mjs refused.
+// One whose design no worker can read is admitted parked on it instead (queue.mjs admit), which a hold
+// would replace.
 function admitHeld(key, rec, tickets, by) {
-  const held = openBlockers(rec).filter((b) => tickets[b]);
+  const held = designPark(rec) ? [] : openBlockers(rec).filter((b) => tickets[b]);
   const a = queueCmd('admit', key, '--by', by, ...(held.length ? ['--hold', held.join(',')] : []));
   return a.status === 0 ? { held } : { why: lastLine(a) };
 }
@@ -347,10 +351,11 @@ function intake({ state, query, reg, now }) {
     }
     if (r.started) { started = r.started; lines.push(`intake: started standing batch ${started}, handed to the supervisor`); }
     if (r.admitFailed) { lines.push(`intake: ${key} not admitted: ${r.admitFailed}; the next intake tries again`); continue; }
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r.held)}` };
+    const parked = designPark(rec) ? `, parked: ${designPark(rec)}` : '';
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r.held)}${parked}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r.held)}`);
+    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r.held)}${parked}`);
   }
   return done({ started });
 }
@@ -443,6 +448,9 @@ function byHand(keys, { state, by, front, now }) {
       lines.push(...s.lines);
       continue;
     }
+    // A design no worker can read is snapshotted by the person's session before the admit, never after.
+    const unread = needsPersonLane(t.rec) ? [] : unreadCanvases(t.rec);
+    if (unread.length) { refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), or have it shared with this subscription, then run /desk-admit ${key} again`); continue; }
     recs[key] = t.rec;
   }
   let started = null;
