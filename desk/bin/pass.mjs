@@ -2017,10 +2017,7 @@ const buildRow = parseOperatorChecks(E.configValues('check-builds'));
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
 const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
-const viewRun = (id) => {
-  const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,conclusion']);
-  try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
-};
+const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
 // The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
 // check, and whether the last rerun has had its cooldown.
