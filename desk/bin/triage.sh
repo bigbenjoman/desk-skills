@@ -105,6 +105,10 @@ Things that are not in that file and matter here:
   - **A step from the routing file's "Steps only the user can take" list** goes in \`ben_steps\`, one
     entry per step, each with a proposed blocker ticket for the user. It does not set the lane: the
     rest of the ticket keeps the lane it would otherwise get.
+- **A change that adds or edits any file under \`.claude/\` is lane C**, whatever its size: the
+  harness write-protects \`.claude/\` for a headless worker, and no setting or allow rule unlocks it,
+  so only an interactive \`desk-ticket\` session can build it. List those paths in \`files_in_scope\`
+  and start \`lane_reason\` with "the harness write-protects .claude/ for workers".
 - **\`unknowns\` is only for decisions that are the user's.** Before listing one, check: is it
   already settled by the repo's own instructions ($INSTRUCTIONS) or a memory? Is it really the product
   owner's or the reviewer's call (config §4) — if so say whose call it is. Would any reasonable
@@ -258,6 +262,9 @@ Lane C stands only on its own signals: a feature sized L or XL (with no size, mo
 judged from the code), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
 XL stays C. A lane C ticket with none of these fails the check: downgrade it to A or B.
 
+A change that adds or edits any file under \`.claude/\` stays C whatever its size: the harness
+write-protects \`.claude/\` for a headless worker, so a downgrade only sends it to a worker that parks.
+
 Downgrade to A, B or E when the change is one you could describe file by file right now.
 
 The file-by-file test is evidence for a downgrade, not a precondition for one. Do not apply it to a
@@ -336,6 +343,24 @@ console.log(d.lane_original
   : `[challenge] ${d.ticket}  lane ${d.lane} ${ch.verdict ?? ''}`);
 MERGE_END
 fi
+
+# A change writing under .claude/ is lane C whatever either pass said: the harness write-protects it
+# for a headless worker, and no grant unlocks it, so a worker given it only parks.
+node - "$OUT" <<'CLAUDE_DIR_END'
+const fs = require('fs');
+const out = process.argv[2];
+const d = JSON.parse(fs.readFileSync(out, 'utf8'));
+const WHY = 'the harness write-protects .claude/ for workers';
+const hit = (d.files_in_scope ?? []).map(String).filter((p) => /(?:^|\/)\.claude(?:\/|$)/.test(p));
+if (hit.length && !(d.lane === 'C' && String(d.lane_reason ?? '').startsWith(WHY))) {
+  const was = d.lane !== 'C' ? `; lane ${d.lane} before this rule` : d.lane_reason ? `; ${d.lane_reason}` : '';
+  d.lane = 'C';
+  if (d.lane_original === 'C') delete d.lane_original;
+  d.lane_reason = `${WHY}, so only an interactive desk-ticket session can write ${hit.join(', ')}${was}`;
+  fs.writeFileSync(out, JSON.stringify(d, null, 2));
+  console.log(`[triage] ${d.ticket}  lane C: writes under .claude/`);
+}
+CLAUDE_DIR_END
 
 # Jira facts plan-batch needs (Blocks links, size, the lint findings), read deterministically rather
 # than taken from the model: a read failure is recorded as facts_error, which plan-batch turns into a

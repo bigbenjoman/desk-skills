@@ -233,6 +233,30 @@ check "DS-242 AC6: the routing file lists the person-only steps and what is not 
 check "DS-242 AC6: Stage 2 commits lane C on the same signals" \
   'grep -qF "Commit lane C only on its own signals" "$S2" && grep -qF "M or smaller that spans several packages is lane A or B" "$S2"'
 
+# DS-374: a change writing under .claude/ is lane C, whatever either pass said, since no grant lets a
+# worker write there.
+WP='the harness write-protects .claude/ for workers'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["CLAUDE.md",".claude/rules/api.md",".claude/rules/web.md"]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-374 AC1: the first pass is told a change under .claude/ is lane C, and why" \
+  'P0 | grep -qF "A change that adds or edits any file under \`.claude/\` is lane C" && P0 | grep -qF "start \`lane_reason\` with \"$WP\""'
+check "DS-374 AC1: a lane A record writing .claude/rules/ becomes lane C, its reason naming the write-protect" \
+  '[ $rc -eq 0 ] && lc_ok C && [[ "$(lc .lane_reason)" == "$WP, so only an interactive desk-ticket session can write .claude/rules/api.md, .claude/rules/web.md; lane A before this rule" ]] && [ "$(lc .lane_original)" = null ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=C STUB_EXTRA=',"lane_reason":"size L","files_in_scope":["apps/web/.claude/settings.json"]' STUB_CHAL='{"verdict":"DOWNGRADE","lane":"A","reason":"size M"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-374 AC1: the challenge is told a change under .claude/ stays C" \
+  'P1 | grep -qF "A change that adds or edits any file under \`.claude/\` stays C whatever its size"'
+check "DS-374 AC1: a challenge downgrade of a .claude/ change is undone, with no lane_original left" \
+  '[ $rc -eq 0 ] && lc_ok C && [[ "$(lc .lane_reason)" == "$WP, so only an interactive desk-ticket session can write apps/web/.claude/settings.json; lane A before this rule" ]] && [ "$(lc .lane_original)" = null ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=C STUB_EXTRA=",\"lane_reason\":\"$WP: .claude/rules/a.md\",\"files_in_scope\":[\".claude/rules/a.md\"]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-374 AC1: a lane C record already giving the reason is kept as written" \
+  '[ $rc -eq 0 ] && lc_ok C && [ "$(lc .lane_reason)" = "$WP: .claude/rules/a.md" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["docs/claude/rules.md","skills/x/.claude-plugin/plugin.json"]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-374 AC1: a path that only looks like .claude/ keeps its lane" \
+  '[ $rc -eq 0 ] && lc_ok B && [ "$(lc .lane_reason)" = "size S" ]'
+
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'
 
