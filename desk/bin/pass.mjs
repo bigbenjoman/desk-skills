@@ -33,7 +33,7 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch } from './evidence.mjs';
@@ -2132,7 +2132,7 @@ if (drafts.length) {
     const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
     const git = (args) => shOut('git', ['-C', MAIN, ...args]);
     const carry = (sha) => fetched() && verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
-    // A head only merges from the base moved past the last try's gets its own review try, outside the fix tries.
+    // A head a merge from the base last moved, since the last try's, gets its own review try, outside the fix tries.
     const baseMerge = (from) => fetched() && movedByBase({ from, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
     const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun) });
     if (!c) continue;
@@ -2607,6 +2607,18 @@ function updateLedger(qx) {
   q('set-batch', `promotion.ledger=${hash}`);
 }
 updateLedger(queue());
+
+// A §4 Merge hold holds the merge that deploys: a child into the base merged past it, so the base's own
+// merge into the default branch is the person's, after the hold's step. Said on every pass until the
+// promotion PR that carries it merges.
+function reportPromotionHolds(qx) {
+  if (!BASE || !SOURCE || BASE === SOURCE) return;
+  const held = promotionHolds(Object.values(qx.tickets ?? {}), qx.promotion?.since ?? null);
+  if (!held.length) return;
+  const pr = qx.promotion?.pr;
+  report.waiting.push(`${pr != null ? `promotion PR #${pr}` : `${BASE} into ${SOURCE}`}: only a person merges it, after the §4 Merge holds its children carry — ${held.join('; ')}`);
+}
+reportPromotionHolds(queue());
 
 // A taken call the person overrode from the digest (digest.mjs override) is listed once, on the next
 // pass, for the orchestrator to act on: the work may need redoing to the new choice.

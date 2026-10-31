@@ -36,7 +36,8 @@ the driver or by you, whatever §3 grants: the repo needs a manual step first (t
 The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
 PR link and its head SHA, and it stays there until the user says they have merged it. A PR into any
 other base (a feature batch's) deploys nothing, so it merges as any other; the hold falls on that
-base's own PR into the default branch.
+base's own PR into the default branch. The driver records it on the child's ticket as it merges, and
+each pass names it under `WAITING ON YOU` against the promotion PR until that PR merges.
 
 **Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
 flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once

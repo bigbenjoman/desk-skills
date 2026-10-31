@@ -218,6 +218,14 @@ export function matchHolds(files, holds, contents) {
   }).filter((h) => h.files.length);
 }
 
+// The holds a batch's children carried into its base (merge-driver.sh records each as `promotion_hold`
+// on the ticket when it merges one past them), for the base's own merge into the default branch: one
+// `<key> (#<pr>): <holds>` per child merged after `since` (the last promotion's merge), every one
+// without it.
+export const promotionHolds = (tickets, since = null) => (tickets ?? [])
+  .filter((t) => t?.promotion_hold && t.merged_at && (since == null || Date.parse(t.merged_at) > Date.parse(since)))
+  .map((t) => `${t.key}${t.result?.pr != null ? ` (#${t.result.pr})` : ''}: ${t.promotion_hold}`);
+
 // §4 Known flaky checks items: `<check>: <glob> [<glob>…]`, split on the last `: ` so a check name may
 // hold one. The globs are the paths whose change can make that check fail for real: a PR touching one
 // never has the check waived. An item with no check or no glob is an error, never a guess.

@@ -478,6 +478,7 @@ q add T-51 Bug A; q set T-51 branch=fix/T-51 state=done result.pr=151
 hloop T-51; hloop T-51
 check "DS-377 AC1: a held path into a feature base merges, pinned to its head" '[ "$(merged)" = 151 ] && grep -qx "151 feat/epics $SHA51" "$T/merges.log"'
 check "DS-377 AC1: the log says the hold falls on the base'\''s own PR, and nothing is left for the person" 'echo "$out" | grep -q "#151 touches §4 Merge holds (deploys the infrastructure on merge — infra/\*\*, 1 file(s), e.g. infra/main.tf), but its base feat/epics is not main, so merging it deploys nothing" && [ "$(qf T-51 .merge_blocked)" = null ]'
+check "DS-377 the hold it merged past goes with the ticket, for the base'\''s own PR into main" '[ "$(qf T-51 .promotion_hold)" = "deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ] && echo "$out" | grep -q "#151 §4 Merge holds recorded for feat/epics'\''s own PR"'
 q init merge-holds-main
 q add T-52 Bug A; q set T-52 branch=fix/T-52 state=done result.pr=152
 hloop T-52; hloop T-52

@@ -144,23 +144,33 @@ export function verdictCarries({ from, head, base, git }) {
   });
 }
 
-// The first-parent chain from `from` to `head`, as [commit, ours, theirs] each, when every commit on it
-// is a two-parent merge whose second parent is on `base`; null otherwise, or whenever git cannot say.
-function baseMergeChain({ from, head, base, git }) {
+// The first-parent chain from `from` down to `head`, newest first, as [commit, ours, theirs, …] each;
+// null when `head` does not descend from `from` that way, or whenever git cannot say.
+function firstParentChain({ from, head, base, git }) {
   if (!from || !head || !base) return null;
   const at = git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]);
   if (!at.ok || !git(['merge-base', '--is-ancestor', at.out, head]).ok) return null;
   const r = git(['rev-list', '--first-parent', '--parents', `${at.out}..${head}`]);
   const chain = r.ok ? r.out.split('\n').filter(Boolean).map((l) => l.split(' ')) : [];
   // The first-parent chain must come down to `from` itself, not pass it on a side branch.
-  if (!chain.length || chain[chain.length - 1][1] !== at.out) return null;
-  const merges = chain.every(([, , theirs, ...more]) => theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok);
-  return merges ? chain : null;
+  return chain.length && chain[chain.length - 1][1] === at.out ? chain : null;
+}
+// A two-parent merge whose second parent is on `base`.
+const isBaseMerge = ([, , theirs, ...more], base, git) => !!theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok;
+
+// That chain when every commit on it is a merge from the base; null otherwise.
+function baseMergeChain({ from, head, base, git }) {
+  const chain = firstParentChain({ from, head, base, git });
+  return chain && chain.every((c) => isBaseMerge(c, base, git)) ? chain : null;
 }
 
-// Whether `head` was reached from `from` by merges from the base alone, conflicts resolved or not:
-// nothing but the base moved it.
-export const movedByBase = ({ from, head, base, git }) => !!baseMergeChain({ from, head, base, git });
+// Whether a merge from the base, conflicts resolved or not, last moved `head` since `from`: the newest
+// commit on the chain is one. Commits of the PR's own before it (a fix try's worker's) do not matter:
+// the head it leaves is what the base merge moved.
+export const movedByBase = ({ from, head, base, git }) => {
+  const chain = firstParentChain({ from, head, base, git });
+  return !!chain && isBaseMerge(chain[0], base, git);
+};
 
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
 // review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on

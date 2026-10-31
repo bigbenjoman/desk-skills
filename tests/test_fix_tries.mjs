@@ -209,7 +209,9 @@ const git = ({ chain, onBase = true }) => (args) => (args[0] === 'rev-parse' ? {
   : args[0] === 'rev-list' ? { ok: true, out: chain.join('\n') } : { ok: args[3] === HEAD || onBase });
 const moved = (o) => movedByBase({ from: OLD, head: HEAD, base: 'origin/feat', git: git(o) });
 t('DS-377 a head that only merges from the base moved past the last try\'s head moved by the base', moved({ chain: [`${HEAD} ${MID} ${THEIRS}`, `${MID} ${OLD} ${THEIRS}`] }), true);
-t('DS-377 a commit of the PR\'s own on the way, or a merge of a branch off the base, is not', moved({ chain: [`${HEAD} ${MID} ${THEIRS}`, `${MID} ${OLD}`] }) || moved({ chain: [`${HEAD} ${OLD} ${THEIRS}`], onBase: false }), false);
+t('DS-377 AC3 a fix try\'s own commits before the base merge still leave the head moved by the base', moved({ chain: [`${HEAD} ${MID} ${THEIRS}`, `${MID} ${OLD}`] }), true);
+t('DS-377 a head a commit of the PR\'s own last moved, or a merge of a branch off the base, is not', moved({ chain: [`${HEAD} ${MID}`, `${MID} ${OLD} ${THEIRS}`] }) || moved({ chain: [`${HEAD} ${OLD} ${THEIRS}`], onBase: false }), false);
+t('DS-377 nor is a head that does not come down to the last try\'s head', moved({ chain: [`${HEAD} ${MID} ${THEIRS}`] }), false);
 t('DS-377 the last try\'s head is what the base merges are read from', (() => { let from; reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, baseMerge: (f) => { from = f; return false; } }); return from; })(), 'c'.repeat(40));
 
 const redDraft = draft(reviewBody('p0=0 p1=0 p2=0'), { checks: [ok('tests'), red('tests-i18n', '931')] });

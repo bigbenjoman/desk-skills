@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -29,6 +29,14 @@ t('hold split on first ": "', holds[0].why, 'build and push Lambda images first 
 t('hold match', matchHolds(['backend/app/x.py', 'frontend/a.ts'], holds).map((h) => h.glob).join(','), 'backend/**');
 t('hold basename any depth', matchHolds(['docs/claude.md'], holds).length, 1);
 t('no hold', matchHolds(['backendish/x', 'frontend/backend.ts'], holds).length, 0);
+const kids = [
+  { key: 'T-1', merged_at: '2026-10-01T10:00:00Z', result: { pr: 11 }, promotion_hold: 'deploys infra — infra/**, 1 file(s), e.g. infra/a.tf' },
+  { key: 'T-2', merged_at: '2026-10-03T10:00:00Z', result: { pr: 12 }, promotion_hold: 'build the images first — backend/**, 2 file(s), e.g. backend/x.py' },
+  { key: 'T-3', merged_at: '2026-10-03T11:00:00Z', result: { pr: 13 } },
+  { key: 'T-4', result: { pr: 14 }, promotion_hold: 'not merged yet' },
+];
+t('DS-377 the holds children carried into the base name each child and its PR', promotionHolds(kids).join(' | '), 'T-1 (#11): deploys infra — infra/**, 1 file(s), e.g. infra/a.tf | T-2 (#12): build the images first — backend/**, 2 file(s), e.g. backend/x.py');
+t('DS-377 only children merged since the last promotion merged carry a hold to the next', promotionHolds(kids, '2026-10-02T00:00:00Z').map((l) => l.split(' ')[0]).join(','), 'T-2');
 // Holds on what CI checks things with. The defaults /desk-setup proposes, then fixture diffs.
 const ciHolds = parseHolds(['.github/**: changes CI, which decides what a merge is checked against', '.githooks/**: changes the pre-push hook',
   'package.json#scripts: changes the commands CI runs', 'tsconfig*.json: changes the typecheck', 'eslint.config.*: changes lint', 'vitest.config.*: changes the tests']);

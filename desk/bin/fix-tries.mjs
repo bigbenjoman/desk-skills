@@ -249,8 +249,8 @@ export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head
 // A draft with no review verdict the pass can read at its head (undraft.mjs `review`: none posted, one
 // it cannot read, or one for an older head) goes to a review worker, which reviews the head and posts
 // it. Its try is one of the FIX_TRIES_MAX, once per head: still unread after one, it is the person's,
-// with `why` saying what the pass read last. A head only merges from the base moved past the last
-// try's head (baseMerge(lastHead), asked only when no review try was made at this head) changed with
+// with `why` saying what the pass read last. A head a merge from the base last moved, since the last
+// try's head (baseMerge(lastHead), asked only when no review try was made at this head), changed with
 // no worker behind it, so its try is an extra one (`extra`), outside FIX_TRIES_MAX.
 export function reviewTry(t, { pr, head, why, base = null, baseMerge = null }) {
   if (!head) return null;
