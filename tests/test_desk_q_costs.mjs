@@ -118,7 +118,7 @@ const bySupplier = [...(f2[at3] ?? '').matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]
 t('AC3 the suppliers sum to the charged line too', `${bySupplier.length} ${bySupplier.reduce((a, c) => a + c, 0) === charged3}`, '3 true');
 
 // ---- AC8: the Claude usage line above the keys, and none of home's batch lines
-t('AC8 the Claude usage line sits above the keys, a blank line between', `${f2[keysAt(f2) - 2]?.startsWith('Claude usage  ')} ${f2[keysAt(f2) - 1]}`, 'true ');
+t('AC8 (DS-357 AC6) the Claude usage line sits right above the keys, a blank line above it', `${f2[keysAt(f2) - 1]?.startsWith('Claude usage  ')} ${f2[keysAt(f2) - 2]}`, 'true ');
 t('AC8 no needs-you, workers or ports lines', f2.some((l) => /^◆ |^● \d+ worker|▲ ports|nothing needs you/.test(l)), false);
 
 // ---- AC11 (DS-292 opens a name): enter on the shared row changes nothing
@@ -242,7 +242,7 @@ t('DS-292 AC2 the rows sum to the total row and to voicepa\'s row on the Costs t
 t('DS-292 AC3 FOR is fixed by supplier', fv.filter((l) => /^[ ›] (GitHub|Vercel|AWS) /.test(l)).map((l) => `${l.slice(2, 12).trim()}: ${l.slice(12, 36).trim()}`).join(' | '),
   'GitHub: CI minutes | Vercel: hosting and builds | AWS: hosting and CI runners');
 t('DS-292 AC12 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
-  `${fv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fv[keysAt(fv) - 2]?.startsWith('Claude usage  ')} ${fv[keysAt(fv) - 1]}`, '0 true ');
+  `${fv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fv[keysAt(fv) - 1]?.startsWith('Claude usage  ')} ${fv[keysAt(fv) - 2]}`, '0 true ');
 t('DS-292 the keys say o opens the bill, and esc goes back', ['o open the bill', 'esc back'].every((k) => fv.slice(keysAt(fv)).join(' ').includes(k)), true);
 
 // ---- DS-293: enter on a supplier opens its screen; GitHub's shows its runners and this month against last
@@ -261,7 +261,7 @@ t('DS-293 AC4 the WHAT rows sum to its total and to the GitHub row on voicepa\'s
   `${whatCents.length} ${whatCents.reduce((a, c) => a + c, 0) === cents(fg.find((l) => l.startsWith('  total '))?.slice(33).trim() ?? 'NaN')} ${whatCents.reduce((a, c) => a + c, 0) === cents('$255.74')}`, '1 true true');
 t('DS-293 AC6 the ▲ tag is amber', V.raw().some((l) => l.includes(`${AMBER}  ${UP}`)), true);
 t('DS-293 AC12 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
-  `${fg.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fg[keysAt(fg) - 2]?.startsWith('Claude usage  ')} ${fg[keysAt(fg) - 1]}`, '0 true ');
+  `${fg.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fg[keysAt(fg) - 1]?.startsWith('Claude usage  ')} ${fg[keysAt(fg) - 2]}`, '0 true ');
 t('DS-293 the keys say o opens GitHub billing, and esc goes back', ['o open GitHub billing', 'esc back'].every((k) => fg.slice(keysAt(fg)).join(' ').includes(k)), true);
 await V.press('o');
 t('DS-293 AC11 o opens GitHub\'s billing page', V.opened.join(' '), 'https://github.com/settings/billing/usage');
@@ -379,7 +379,7 @@ const fixedLines = fvv.filter((l) => /^ {2}(Pro plan|Extra seat) /.test(l));
 t('DS-294 AC3 the plan and seat lines have blank BUILDS and OTHER USE cells', `${fixedLines.length} ${fixedLines.every((l) => !l.slice(18, 38).trim())}`, '2 true');
 t('DS-294 AC4 the builds note\'s tag is grey', VV.raw().some((l) => l.includes(`${GREY}builds `)), true);
 t('DS-294 AC7 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
-  `${fvv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fvv[keysAt(fvv) - 2]?.startsWith('Claude usage  ')} ${fvv[keysAt(fvv) - 1]}`, '0 true ');
+  `${fvv.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fvv[keysAt(fvv) - 1]?.startsWith('Claude usage  ')} ${fvv[keysAt(fvv) - 2]}`, '0 true ');
 t('DS-294 the keys say o opens Vercel usage, and esc goes back', ['o open Vercel usage', 'esc back'].every((k) => fvv.slice(keysAt(fvv)).join(' ').includes(k)), true);
 await VV.press('o');
 t('DS-294 AC6 o opens the voice-pa team\'s Vercel usage page', VV.opened.join(' '), 'https://vercel.com/voice-pa/~/usage');
@@ -418,7 +418,7 @@ t('DS-325 AC3 a profile removed from costs.md is in no supplier\'s figure', Q.su
 const awsPage = (cache) => JSON.stringify(Q.supplierPageParts([], 'voicepa', 'aws', { now: FIXED, cache }).head);
 t('DS-293 AC10 (DS-325 AC3) the AWS screen leaves out a profile removed from costs.md, as the repo screen does', awsPage(gone), awsPage(fixture()));
 
-// ---- DS-296: home's Charged line under Claude usage, and its budget and credits notes
+// ---- DS-296: home's budget and credits notes
 // Home on a cost reading and cost sources, each written to its own place.
 const homeAt = async ({ cache = fixture(), costs = readFileSync(join(FIX, 'costs.md'), 'utf8'), columns = 104 } = {}) => {
   process.env.DESK_COST_DIR = join(T, `variant-${++variants}`);
@@ -430,35 +430,27 @@ const homeAt = async ({ cache = fixture(), costs = readFileSync(join(FIX, 'costs
   await sleep(20);
   return S;
 };
-const chargedOf = (S) => S.frame().find((l) => l.startsWith('Charged ')) ?? null;
 const budgetSaved = (usd) => readFileSync(join(FIX, 'costs.md'), 'utf8').replace('| `actions-budget-usd` | `600` |', `| \`actions-budget-usd\` | \`${usd}\` |`);
 // forewatt's AWS figure read today, so no figure is old.
 const fresh = fixture();
 Object.assign(fresh.aws.profiles.forewatt, { at: FIXED, failed: null });
-const CHARGED_HOME = 'Charged       $899.97 in October, 1–26 │ GitHub $620.52 · AWS $175.88 · Vercel $103.57';
-
+// DS-357 AC5: home has no Charged line, with a reading, without one, or with no cost sources; the
+// charges stay on Costs, and the bottom is a blank line, Claude usage, then the keys.
 const H1 = await homeAt({ cache: fresh });
 const f1 = H1.frame();
-t('DS-296 AC1 the line under Claude usage reads Charged, both labels the same width, above a blank line and the keys',
-  `${f1[keysAt(f1) - 3]?.slice(0, 14)}| ${f1[keysAt(f1) - 2]} | ${f1[keysAt(f1) - 1]}`, `Claude usage  | ${CHARGED_HOME} | `);
-const sup1 = [...(chargedOf(H1) ?? '').matchAll(/(?:GitHub|AWS|Vercel) (\$[\d.,]+)/g)].map((m) => cents(m[1]));
-const total1 = cents(/^Charged +(\S+)/.exec(chargedOf(H1) ?? '')?.[1] ?? 'NaN');
 await H1.press('5');
-const costsTotal = cents(H1.frame().find((l) => /^ {2}total /.test(l))?.trim().split(/\s+/)[1] ?? 'NaN');
-t('DS-296 AC2 its suppliers add up to its total and to the Costs tab\'s total, in cents',
-  `${sup1.length} ${sup1.reduce((a, c) => a + c, 0) === total1} ${total1 === costsTotal}`, '3 true true');
+const costsTotal = H1.frame().find((l) => /^ {2}total /.test(l))?.trim().split(/\s+/)[1] ?? null;
 H1.ui.finish(0);
-
 const H3 = await homeAt({ cache: null, costs: null });
 const f3 = H3.frame();
-t('DS-296 AC3 with no cost sources, no Charged line, and the usage line sits where it does today',
-  `${chargedOf(H3)} | ${f3[keysAt(f3) - 2]?.startsWith('Claude usage  ')} | ${f3[keysAt(f3) - 1]}`, 'null | true | ');
 H3.ui.finish(0);
-
 const H4 = await homeAt({ cache: null });
-t('DS-296 AC4 with sources and no reading, the line reads no reading yet, grey',
-  `${chargedOf(H4)} | ${H4.raw().some((l) => l.includes(`${GREY}Charged       no reading yet`))}`, 'Charged       no reading yet | true');
+const f4 = H4.frame();
 H4.ui.finish(0);
+t('DS-357 AC5 home has no Charged line, and Costs still has the total',
+  `${[f1, f3, f4].map((f) => f.some((l) => l.startsWith('Charged '))).join()} ${costsTotal}`, 'false,false,false $899.97');
+t('DS-357 AC6 home ends in a blank line, the Claude usage line, then the keys',
+  [f1, f3, f4].map((f) => `${f[keysAt(f) - 2]}|${f[keysAt(f) - 1]?.startsWith('Claude usage  ')}`).join(), '|true,|true,|true');
 
 // The fixture's Actions minutes are $617.96 on bigbenjoman: $2.56 of storage and pranicuk's other account are left out.
 const H5 = await homeAt();
@@ -469,15 +461,9 @@ t('DS-296 AC7 a ▲ credits note names who credits are covering',
   'AWS credits are covering $61.24 of use for pr-ninja and yield-index. It becomes a charge when they run out. | true');
 const f10 = H5.frame();
 const at10 = f10.findIndex((l) => l.slice(6).startsWith('▲ credits'));
-const charged10 = f10.indexOf(CHARGED_HOME);
-t('DS-296 AC10 at 104 columns the Charged line and both notes fit, a note wrapping under its first line, the old bill under the figures',
-  `${f10.filter((l) => l.endsWith('…') || [...l].length > 104).length} | ${f10[at10 + 1]?.startsWith(`${' '.repeat(21)}charge when`)} | ${f10[charged10 + 1]}`,
-  `0 | true | ${' '.repeat(14)}◌ 1 bill from 2 days ago`);
+t('DS-296 AC10 at 104 columns both notes fit, a note wrapping under its first line',
+  `${f10.filter((l) => l.endsWith('…') || [...l].length > 104).length} | ${f10[at10 + 1]?.startsWith(`${' '.repeat(21)}charge when`)}`, '0 | true');
 H5.ui.finish(0);
-const H9 = await homeAt({ columns: 140 });
-t('DS-296 AC9 a figure last read two days ago ends the Charged line, grey',
-  `${chargedOf(H9)} | ${H9.raw().some((l) => l.includes(`${GREY}  ◌ 1 bill from 2 days ago`))}`, `${CHARGED_HOME}  ◌ 1 bill from 2 days ago | true`);
-H9.ui.finish(0);
 
 const H6 = await homeAt({ costs: budgetSaved('617.97') });
 const H6n = await homeAt({ costs: budgetSaved('none') });
@@ -542,7 +528,7 @@ const awsTotal = cents(ffa[awsTot]?.slice(40).trim() ?? 'NaN');
 t('DS-295 AC4 the rows sum to the total row and to the AWS row on forewatt\'s screen, in cents',
   `${awsRows.length} ${awsRows.reduce((a, c) => a + c, 0) === awsTotal} ${awsTotal === repoAws} ${repoAws}`, '10 true true 11910');
 t('DS-295 AC11 at 104 columns no line is cut or wider, and the Claude usage line sits above the keys',
-  `${ffa.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${ffa[keysAt(ffa) - 2]?.startsWith('Claude usage  ')} ${ffa[keysAt(ffa) - 1]}`, '0 true ');
+  `${ffa.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${ffa[keysAt(ffa) - 1]?.startsWith('Claude usage  ')} ${ffa[keysAt(ffa) - 2]}`, '0 true ');
 t('DS-295 AC10 the keys say o opens Cost Explorer', ffa.slice(keysAt(ffa)).join(' ').includes('o open Cost Explorer'), true);
 await FA.press('o');
 t('DS-295 AC10 o opens AWS Cost Explorer', FA.opened.join(' '), 'https://console.aws.amazon.com/costmanagement/home#/cost-explorer');
@@ -568,7 +554,7 @@ t('DS-295 AC6 credits covering all of the month\'s use: the ▲ credits note, am
 t('DS-295 AC8 no balance saved: a grey ◌ balance note', `${noteText(PN, '◌ balance')} | ${PN.raw().some((l) => l.includes(`${GREY}◌ balance      `))}`, `${NO_BALANCE} | true`);
 const fpn = PN.frame();
 t('DS-295 AC11 pr-ninja at 104 columns: no line cut or wider, the Claude usage line above the keys',
-  `${fpn.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fpn[keysAt(fpn) - 2]?.startsWith('Claude usage  ')}`, '0 true');
+  `${fpn.filter((l) => l.endsWith('…') || [...l].length > 104).length} ${fpn[keysAt(fpn) - 1]?.startsWith('Claude usage  ')}`, '0 true');
 PN.ui.finish(0);
 
 // AC7: credits covering part of the month's use.

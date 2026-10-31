@@ -1688,27 +1688,24 @@ t('DS-219 AC9 the bands and notes are drawn, and every text colour is 4.5:1 or m
   + `${textCodes(drawn219).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands219.join()} ${bands219.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
   'true |1;7;38;5;210 true');
 
-// ---- DS-310: a named batch beside the standing one has its own row, and the repo's cap is shown once
+// ---- DS-310: a named batch beside the standing one; DS-357: home and the repo's place add them up
 const W310 = world({ voicepa: null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null });
 const ov310a = W310.run('--plain').out;
-const repo310a = W310.run('--plain', 'desk-skills').out;
 const named310 = (dir) => join(dir, 'acme__desk-skills', 'batches', 'X-1');
 const q310 = join(named310(join(W310.env.DESK_HOME, 'repos')), 'queue.json');
 const s310 = named310(join(W310.env.HOME, '.desk-autopilot'));
 mkdirSync(dirname(q310), { recursive: true });
 mkdirSync(join(s310, 'orchestrators'), { recursive: true });
-writeFileSync(q310, JSON.stringify({ version: 1, batch: 'x1', base: 'feat/x', concurrency: 1, tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'which copy?' } } } }));
+writeFileSync(q310, JSON.stringify({ version: 1, batch: 'x1', base: 'feat/x', concurrency: 2, tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'which copy?' } } } }));
 writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: minsAgo(3) }));
 const ov310 = W310.run('--plain').out;
 t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s2 \(cap 3\)$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
-t('DS-310 AC1 the standing batch keeps its row and its own last pass', /^ {2}desk-skills +● session · 1m ago /.test(rowOf(ov310, 'desk-skills') ?? ''), true);
-t('DS-310 AC1 the named batch has a row of its own, named with its base, and its own last pass',
-  /^ {2}desk-skills · X-1 \(feat\/x\) +● session · 3m ago +1 +0 +0 +0 +1 /.test(rowOf(ov310, 'desk-skills · X-1') ?? ''), true);
-t('DS-310 AC2 the repo\'s cap is shown once, as shared', `${/\s2 \(cap 3, shared\)$/.test(rowOf(ov310, 'desk-skills') ?? '')} ${/\s1 \(cap shared\)$/.test(rowOf(ov310, 'desk-skills · X-1') ?? '')}`, 'true true');
-t('DS-310 AC1 the needs-you line names the named batch', lines(ov310)[0].includes('desk-skills · X-1 (feat/x) 1'), true);
+t('DS-357 AC1 AC2 one desk-skills row, named with the repo only, its counts added up, the latest pass and the workers within the cap',
+  `${lines(ov310).filter((l) => /^ {2}desk-skills/.test(l)).length} ${ov310.includes('X-1')} ${/^ {2}desk-skills +● session · 1m ago +1 +1 +0 +0 +1 +0 +no date yet +3 \(cap 3\)$/.test(rowOf(ov310, 'desk-skills') ?? '')}`, '1 false true');
+t('DS-357 AC4 the needs-you line names the repo once', lines(ov310)[0].endsWith('│ desk-skills 1'), true);
 const x310 = W310.run('--plain', 'desk-skills:X-1');
 t('DS-310 AC1 desk-q <repo>:<name> opens the named batch, and only its tickets', `${x310.code} ${/X-2/.test(x310.out)} ${/X-3/.test(x310.out)} ${/DS-1/.test(x310.out)}`, '0 true true false');
-t('DS-310 AC4 the repo\'s name still opens its standing batch, as before', W310.run('--plain', 'desk-skills').out, repo310a);
+t('DS-357 AC2b the repo\'s name opens all its batches\' tickets', ['X-2', 'X-3', 'DS-1'].every((k) => new RegExp(`  ${k} `).test(W310.run('--plain', 'desk-skills').out)), true);
 t('DS-310 a ticket in the named batch is shown from it', /which copy\?/.test(W310.run('--plain', 'desk-skills:X-1', 'show', 'X-3').out), true);
 const over310 = W310.run('desk-skills:X-1', 'workers', '4');
 t('DS-310 a named batch\'s workers past the cap counts its sibling batch in the machine total', `${over310.code !== 0} ${/live batches would then allow 6 /.test(over310.out + over310.err)}`, 'true true');
@@ -1883,6 +1880,77 @@ t('DS-280 AC9 and AC10 the header counts #698 and V-510 once each, and V-504 not
   `${q280[1].startsWith('◆ 3 tickets need you')} ${Q.needsRows(r280).map((x) => x.t.key ?? '').sort().join(',')}`, 'true N-5,V-510,V-698');
 t('DS-280 the pass\'s groups match what desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds280', stateDir: r280.stateDir, queuePath: r280.queuePath, q: r280.q, now: NOW })),
   JSON.stringify(Object.fromEntries(Object.keys(ds280).map((k) => [k, { 'N-5': 'needs', 'V-698': 'needs', 'V-510': 'needs', 'V-504': 'waiting' }[k] ?? 'merging']))));
+
+// ---- DS-357: a repo with its standing batch and a batch in a slot named after a long branch is one
+// row on home, and one Queue in its place, whose moves act within each ticket's own batch.
+const SLOT357 = 'feat-epics-coverage-to-podcasts';
+const ready357 = { state: 'triaged', open_questions: 0 };
+put(I.T, I.env, 'twob', { port: 5700, conc: '2 / 3', beat: 1, queue: { batch: 'tb', concurrency: 2, tickets: {
+  'TB-1': { state: 'running', stage: '2/9' }, 'TB-2': ready357, 'TB-3': { state: 'parked', park: { question: 'which copy?' } } } } });
+const q357 = join(I.env.DESK_HOME, 'repos', 'acme__twob', 'batches', SLOT357, 'queue.json');
+const s357 = join(I.env.HOME, '.desk-autopilot', 'acme__twob', 'batches', SLOT357);
+mkdirSync(dirname(q357), { recursive: true });
+mkdirSync(join(s357, 'orchestrators'), { recursive: true });
+writeFileSync(q357, JSON.stringify({ version: 1, batch: 'feat', base: 'feat/epics-coverage-to-podcasts', concurrency: 2, tickets: {
+  'TB-7': { key: 'TB-7', ...ready357 }, 'TB-8': { key: 'TB-8', ...ready357 }, 'TB-9': { key: 'TB-9', state: 'parked', park: { question: 'which word?' } } } }));
+writeFileSync(join(s357, 'orchestrators', 'q.json'), JSON.stringify({ queue: q357, batch: 'feat', pid: 1, at: minsAgo(5) }));
+const twob = () => Q.loadRepos(NOW).filter((r) => r.slug === 'acme__twob');
+const badge357 = 'Tickets that need your answer have no date · c: date them as if answered at the next check-in';
+const ov357 = lines(Q.overview(twob(), { now: NOW, avail: 30, width: 120, badge: badge357 }));
+t('DS-357 AC1 one row for the repo, named with the repo only, and no batch or branch on home',
+  `${ov357.filter((l) => /^ {2}twob/.test(l)).length} ${ov357.some((l) => /feat-epics|feat\/epics/.test(l))}`, '1 false');
+t('DS-357 AC2 its counts are the sums, the last pass the latest, the workers the total within the cap, and a batch with no date makes ALL DONE BY no date yet',
+  /^ {2}twob +● session · 1m ago +1 +3 +0 +0 +2 +0 +no date yet +3 \(cap 3\)$/.test(ov357.find((l) => l.startsWith('  twob')) ?? ''), true);
+t('DS-357 AC3 at 120 columns every column shows, and a note\'s text starts after a tag column the repo name sizes',
+  `${['RUN', 'READY', 'MERGING', 'WAIT', 'NEEDS YOU', 'DONE', 'ALL DONE BY', 'WORKERS'].every((h) => ov357.find((l) => l.includes('LAST PASS'))?.includes(h))} ${ov357.find((l) => l.includes('  dates'))?.indexOf('Tickets')} ${ov357.every((l) => l.length <= 120)}`,
+  'true 21 true');
+t('DS-357 AC4 the needs-you line names the repo once, its batches added', ov357[0].endsWith('│ twob 2'), true);
+const p357 = lines(Q.run(['--plain', 'twob'], { now: NOW }));
+t('DS-357 AC2b the repo\'s header adds up its batches, with no batch named',
+  `${p357[1]} | ${p357[2].includes('workers 1 of 3 · cap 3')} ${p357.some((l) => /batch|feat/.test(l))}`, '◆ 2 tickets need you  ● 1 running  ○ 3 ready │ ✓ 0 done, not shown | true false');
+t('DS-357 AC2b one list grouped by state, every batch\'s tickets in it',
+  p357.filter((l) => /^ {2}[A-Z][a-z]/.test(l)).map((l) => l.trim()).join(' | ') + ' | ' + ['TB-1', 'TB-2', 'TB-3', 'TB-7', 'TB-8', 'TB-9'].every((k) => p357.some((l) => l.includes(`  ${k} `))),
+  'Running · 1 | Ready · 3 | Needs you · 2 | true');
+const M357 = screen({ kind: 'repo', slug: 'acme__twob' }, 120, () => NOW);
+await sleep(20);
+await M357.press(DOWN); await M357.press(DOWN);
+const sel357 = M357.selected();
+await M357.press('b');
+t('DS-357 AC2b a move on the repo\'s Queue acts within the ticket\'s own batch',
+  `${/TB-7/.test(sel357)} ${M357.frame().some((l) => l.startsWith('TB-7 → position 3 of 3, placed by you.'))} ${Object.keys(JSON.parse(readFileSync(q357, 'utf8')).tickets).join()}`,
+  'true true TB-8,TB-9,TB-7');
+M357.ui.finish(0);
+// AC5 and AC6: home with cost sources set, with and without a cost reading, draws no Charged line, and
+// its bottom is a blank line, the Claude usage line, then the keys.
+const FIX357 = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'costs-october');
+const cost357 = { DESK_COSTS: process.env.DESK_COSTS, DESK_COST_DIR: process.env.DESK_COST_DIR };
+const home357 = async (reading) => {
+  const d = mkdtempSync(join(tmpdir(), 'desk-q-357-'));
+  writeFileSync(join(d, 'costs.md'), readFileSync(join(FIX357, 'costs.md'), 'utf8'));
+  if (reading) writeFileSync(join(d, 'cache.json'), readFileSync(join(FIX357, 'cache.json'), 'utf8'));
+  Object.assign(process.env, { DESK_COSTS: join(d, 'costs.md'), DESK_COST_DIR: d });
+  const S = screen({ kind: 'overview', all: false }, 120, () => NOW);
+  await sleep(20);
+  S.ui.finish(0);
+  return S.frame();
+};
+const h357 = [await home357(true), await home357(false)];
+for (const [k, v] of Object.entries(cost357)) if (v == null) delete process.env[k]; else process.env[k] = v;
+const keys357 = (f) => f.findIndex((l) => /^(move  |↑↓ )/.test(l));
+t('DS-357 AC5 home has no Charged line, with a cost reading or without one',
+  h357.map((f) => f.some((l) => l.startsWith('Charged '))).join(), 'false,false');
+t('DS-357 AC6 home ends in one blank line, the Claude usage line, then the keys',
+  h357.map((f) => `${f[keys357(f) - 3] !== ''}|${f[keys357(f) - 2]}|${f[keys357(f) - 1]?.startsWith('Claude usage  ')}`).join(), 'true||true,true||true');
+// A batch whose queue cannot be read leaves the repo's other batch counted and listed, and says so.
+writeFileSync(q357, '{ not json');
+const ov357u = lines(Q.overview(twob(), { now: NOW, avail: 30, width: 120 }));
+const p357u = lines(Q.run(['--plain', 'twob'], { now: NOW }));
+const said357 = `Batch ${SLOT357}'s queue is unreadable, so its tickets are not counted`;
+t('DS-357 AC2 one unreadable batch: home counts the readable one, names the repo in the needs-you line, and notes the unreadable one',
+  `${/^ {2}twob +● session · 1m ago +1 +1 +0 +0 +1 +0 /.test(ov357u.find((l) => l.startsWith('  twob')) ?? '')} ${ov357u[0].endsWith('│ twob 1')} ${ov357u.some((l) => l.includes(said357))}`,
+  'true true true');
+t('DS-357 AC2b one unreadable batch: the repo\'s place lists the readable batch\'s tickets and says which queue it could not read',
+  `${['TB-1', 'TB-2', 'TB-3'].every((k) => p357u.some((l) => l.includes(`  ${k} `)))} ${p357u.some((l) => l.includes(said357))}`, 'true true');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
