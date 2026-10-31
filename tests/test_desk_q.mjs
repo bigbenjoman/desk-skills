@@ -1701,7 +1701,7 @@ writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q31
 const ov310 = W310.run('--plain').out;
 t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s2 \(cap 3\)$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
 t('DS-357 AC1 AC2 one desk-skills row, named with the repo only, its counts added up, the latest pass and the workers within the cap',
-  `${lines(ov310).filter((l) => /^ {2}desk-skills/.test(l)).length} ${ov310.includes('X-1')} ${/^ {2}desk-skills +● session · 1m ago +1 +1 +0 +0 +1 +0 +no history +3 \(cap 3\)$/.test(rowOf(ov310, 'desk-skills') ?? '')}`, '1 false true');
+  `${lines(ov310).filter((l) => /^ {2}desk-skills/.test(l)).length} ${ov310.includes('X-1')} ${/^ {2}desk-skills +● session · 1m ago +1 +1 +0 +0 +1 +0 +no date yet +3 \(cap 3\)$/.test(rowOf(ov310, 'desk-skills') ?? '')}`, '1 false true');
 t('DS-357 AC4 the needs-you line names the repo once', lines(ov310)[0].endsWith('│ desk-skills 1'), true);
 const x310 = W310.run('--plain', 'desk-skills:X-1');
 t('DS-310 AC1 desk-q <repo>:<name> opens the named batch, and only its tickets', `${x310.code} ${/X-2/.test(x310.out)} ${/X-3/.test(x310.out)} ${/DS-1/.test(x310.out)}`, '0 true true false');
@@ -1899,8 +1899,8 @@ const badge357 = 'Tickets that need your answer have no date · c: date them as 
 const ov357 = lines(Q.overview(twob(), { now: NOW, avail: 30, width: 120, badge: badge357 }));
 t('DS-357 AC1 one row for the repo, named with the repo only, and no batch or branch on home',
   `${ov357.filter((l) => /^ {2}twob/.test(l)).length} ${ov357.some((l) => /feat-epics|feat\/epics/.test(l))}`, '1 false');
-t('DS-357 AC2 its counts are the sums, the last pass the latest, the workers the total within the cap, and no history in either batch is no history',
-  /^ {2}twob +● session · 1m ago +1 +3 +0 +0 +2 +0 +no history +3 \(cap 3\)$/.test(ov357.find((l) => l.startsWith('  twob')) ?? ''), true);
+t('DS-357 AC2 its counts are the sums, the last pass the latest, the workers the total within the cap, and a batch with no date makes ALL DONE BY no date yet',
+  /^ {2}twob +● session · 1m ago +1 +3 +0 +0 +2 +0 +no date yet +3 \(cap 3\)$/.test(ov357.find((l) => l.startsWith('  twob')) ?? ''), true);
 t('DS-357 AC3 at 120 columns every column shows, and a note\'s text starts after a tag column the repo name sizes',
   `${['RUN', 'READY', 'MERGING', 'WAIT', 'NEEDS YOU', 'DONE', 'ALL DONE BY', 'WORKERS'].every((h) => ov357.find((l) => l.includes('LAST PASS'))?.includes(h))} ${ov357.find((l) => l.includes('  dates'))?.indexOf('Tickets')} ${ov357.every((l) => l.length <= 120)}`,
   'true 21 true');
@@ -1920,6 +1920,27 @@ t('DS-357 AC2b a move on the repo\'s Queue acts within the ticket\'s own batch',
   `${/TB-7/.test(sel357)} ${M357.frame().some((l) => l.startsWith('TB-7 → position 3 of 3, placed by you.'))} ${Object.keys(JSON.parse(readFileSync(q357, 'utf8')).tickets).join()}`,
   'true true TB-8,TB-9,TB-7');
 M357.ui.finish(0);
+// AC5 and AC6: home with cost sources set, with and without a cost reading, draws no Charged line, and
+// its bottom is a blank line, the Claude usage line, then the keys.
+const FIX357 = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'costs-october');
+const cost357 = { DESK_COSTS: process.env.DESK_COSTS, DESK_COST_DIR: process.env.DESK_COST_DIR };
+const home357 = async (reading) => {
+  const d = mkdtempSync(join(tmpdir(), 'desk-q-357-'));
+  writeFileSync(join(d, 'costs.md'), readFileSync(join(FIX357, 'costs.md'), 'utf8'));
+  if (reading) writeFileSync(join(d, 'cache.json'), readFileSync(join(FIX357, 'cache.json'), 'utf8'));
+  Object.assign(process.env, { DESK_COSTS: join(d, 'costs.md'), DESK_COST_DIR: d });
+  const S = screen({ kind: 'overview', all: false }, 120, () => NOW);
+  await sleep(20);
+  S.ui.finish(0);
+  return S.frame();
+};
+const h357 = [await home357(true), await home357(false)];
+for (const [k, v] of Object.entries(cost357)) if (v == null) delete process.env[k]; else process.env[k] = v;
+const keys357 = (f) => f.findIndex((l) => /^(move  |↑↓ )/.test(l));
+t('DS-357 AC5 home has no Charged line, with a cost reading or without one',
+  h357.map((f) => f.some((l) => l.startsWith('Charged '))).join(), 'false,false');
+t('DS-357 AC6 home ends in one blank line, the Claude usage line, then the keys',
+  h357.map((f) => `${f[keys357(f) - 3] !== ''}|${f[keys357(f) - 2]}|${f[keys357(f) - 1]?.startsWith('Claude usage  ')}`).join(), 'true||true,true||true');
 // A batch whose queue cannot be read leaves the repo's other batch counted and listed, and says so.
 writeFileSync(q357, '{ not json');
 const ov357u = lines(Q.overview(twob(), { now: NOW, avail: 30, width: 120 }));

@@ -643,14 +643,15 @@ function undatedWhy(r, F, x) {
 }
 
 // When the repo's last dated ticket ships.
-// A repo's batches together: the latest of their dates, or what they all say, else no date yet.
+// A repo's batches together (DS-357 AC2): the latest of their dates, or "no date yet" if any batch
+// with work left has none. A repo with one batch left says what that batch says ("no history" too).
 function queueDone(r, now, checkin) {
   if (r.batches) {
-    const Fs = r.batches.map((b) => forecastOf(b, { now, checkin })).filter((F) => F && !F.idle);
-    if (!Fs.length) return 'nothing left';
-    if (Fs.every((F) => !F.none && !F.paused && F.clears)) return when(Math.max(...Fs.map((F) => F.clears)), now);
-    const cells = r.batches.map((b) => queueDone(b, now, checkin)).filter((c) => c && c !== 'nothing left');
-    return cells.every((c) => c === cells[0]) ? cells[0] : 'no date yet';
+    const left = r.batches.filter((b) => { const F = forecastOf(b, { now, checkin }); return F && !F.idle; });
+    if (!left.length) return 'nothing left';
+    if (left.length === 1) return queueDone(left[0], now, checkin);
+    const Fs = left.map((b) => forecastOf(b, { now, checkin }));
+    return Fs.every((F) => !F.none && !F.paused && F.clears) ? when(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
   }
   const F = forecastOf(r, { now, checkin });
   return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? when(F.clears, now) : 'no date yet';
