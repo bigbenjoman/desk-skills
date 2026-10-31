@@ -13,7 +13,8 @@
 //   node desk-ci.mjs batch-red [--prs 12,13 | --queue <queue.json>] [--baseline <measure json>] [--repo owner/name]
 // batch-red measures an autopilot batch's PRs (default: the queue's finished tickets) the way measure
 // does and compares their CI red rate per PR with the newest measure baseline; exit 1 on a rise of
-// more than 5 percentage points.
+// more than 5 percentage points. It also lists the PRs whose latest desk-review was same-vendor or
+// ran a fallback seat.
 //   node desk-ci.mjs profile [<workflow file or directory>...] [--required <check>]... [--measure <measure json>] [--batch-prs <n>]
 // profile places each job light (no database, preview or browser) or full, prints the change that runs
 // only light jobs on PRs into a batch base, and estimates the saving from a measure report.
@@ -27,6 +28,7 @@ import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFile
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { permissionOrUnset, queueFile, configValue, configValues, isNone } from './desk-env.mjs';
+import { parseVerdict as gateVerdict } from '../templates/scripts/desk/review-gate.mjs';
 
 // ---- a line scanner for workflow YAML ---------------------------------------------------------
 // Workflows are block YAML, and every rule here needs the line it fired on, which a YAML parser
@@ -919,9 +921,17 @@ export function collectBatch({ repo, prs: numbers, api = ghApi }) {
   const runs = new Map();
   let calls = 0;
   const get = (path) => { calls++; return api(path); };
+  const reviews = new Map();
   for (const n of numbers) {
     const p = get(`repos/${repo}/pulls/${n}`);
     prs.push(p);
+    const rs = [];
+    for (let page = 1; ; page++) {
+      const r = get(`repos/${repo}/pulls/${n}/reviews?per_page=100&page=${page}`);
+      rs.push(...r);
+      if (r.length < 100) break;
+    }
+    reviews.set(p.number, rs);
     for (let page = 1; ; page++) {
       const r = get(`repos/${repo}/actions/runs?branch=${enc(p.head.ref)}&per_page=100&page=${page}`);
       for (const x of r.workflow_runs) runs.set(x.id, x);
@@ -936,13 +946,32 @@ export function collectBatch({ repo, prs: numbers, api = ghApi }) {
     if (!js) throw new Error(`batch-red: could not read the jobs of run ${r.id}; the red rate would undercount`);
     jobs.set(r.id, js);
   }
-  return { prs, runs: [...runs.values()], jobs, calls };
+  return { prs, runs: [...runs.values()], jobs, calls, reviews };
 }
 
 export function batchRed(c) {
   const dates = c.runs.map((r) => (r.created_at ?? '').slice(0, 10)).filter(Boolean).sort();
   const m = measure({ runs: c.runs, jobs: c.jobs, prs: c.prs, since: dates[0] ?? '', until: dates[dates.length - 1] ?? '' });
-  return { prs: c.prs.length, withCi: m.prs.withCi, red: m.prs.red, redNumbers: m.prs.redNumbers };
+  return { prs: c.prs.length, withCi: m.prs.withCi, red: m.prs.red, redNumbers: m.prs.redNumbers,
+    ...(c.reviews ? { review: reviewMethod(c.prs.map((p) => p.number), c.reviews) } : {}) };
+}
+
+// The method line desk-review writes after its heading: how many seats fell back to a general-purpose agent.
+const METHOD = /^<!--\s*desk-review:method\s+v=1\s+fallback=(\d+)\s*-->$/m;
+
+// How each PR's latest desk-review verdict was reached: the PRs refuted same-vendor, those with a
+// fallback seat, those whose review predates the method line, and those with no verdict at all.
+export function reviewMethod(numbers, reviews) {
+  const out = { sameVendor: [], fallback: [], unrecorded: [], none: [] };
+  for (const n of numbers) {
+    const body = (reviews.get(n) ?? []).map((r) => r.body).filter((b) => gateVerdict(b)).pop();
+    if (!body) { out.none.push(n); continue; }
+    if (gateVerdict(body).vendor !== 'codex-cross') out.sameVendor.push(n);
+    const m = METHOD.exec(body);
+    if (!m) out.unrecorded.push(n);
+    else if (Number(m[1]) > 0) out.fallback.push(n);
+  }
+  return out;
 }
 
 // The newest `<date>-ci-measure-<owner>__<name>.json` in a directory, or null.
@@ -974,7 +1003,19 @@ export function batchReport(batch, cmp, baselineFile, baseline) {
       : cmp.flag === 'ok' ? `change: ${sign(cmp.deltaPp)} pp against the baseline, within ${RED_RISE_PP} pp`
         : cmp.flag === 'no-ci' ? 'change: n/a — no PR in the batch has a completed CI run' : 'change: n/a — no baseline',
     `summary: red=${batch.red} with_ci=${batch.withCi} rate=${pct(batch.red, batch.withCi)} baseline=${cmp.base === null ? 'none' : `${Math.round(cmp.base * 1000) / 10}%`} delta_pp=${cmp.deltaPp ?? 'n/a'} flag=${cmp.flag}`,
+    ...(batch.review ? reviewLines(batch.review, batch.prs) : []),
   ].join('\n');
+}
+
+const prNumbers = (ns) => (ns.length ? `: ${ns.map((n) => `#${n}`).join(' ')}` : '');
+function reviewLines(r, prs) {
+  return [
+    `review: ${r.sameVendor.length} of ${prs} PRs reviewed same-vendor${prNumbers(r.sameVendor)}`,
+    `review: ${r.fallback.length} of ${prs} PRs reviewed with a fallback seat${prNumbers(r.fallback)}`,
+    ...(r.unrecorded.length ? [`review: fallback seats unknown on ${r.unrecorded.length}, reviewed before the method line${prNumbers(r.unrecorded)}`] : []),
+    ...(r.none.length ? [`review: no desk-review verdict on ${r.none.length}${prNumbers(r.none)}`] : []),
+    `review summary: prs=${prs} same_vendor=${r.sameVendor.length} fallback=${r.fallback.length} unknown=${r.unrecorded.length} no_verdict=${r.none.length}`,
+  ];
 }
 
 // The PRs of a batch: every ticket in the queue whose worker finished with one.

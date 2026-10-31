@@ -16,6 +16,18 @@ desk_cfg()  { node "$DESK_ENV_MJS" get "$1"; }    # desk_cfg <config id>      (e
 desk_perm() { node "$DESK_ENV_MJS" perm "$1"; }   # desk_perm <permission id> -> yes|ask|no|never|stop
 desk_budget() { node "$DESK_ENV_MJS" budget "$1"; } # desk_budget worker|batch -> <usd>|none (exit 4 if malformed)
 
+# desk_tool_args worker|triage|none: sets DESK_TOOL_ARGS to the --tools flag a headless claude -p call
+# is launched with (worker-tools.mjs), or to nothing when AUTOPILOT_DEFAULT_TOOLS is set, so the
+# call gets Claude Code's default tool list. Expand it as ${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"}.
+desk_tool_args() {
+  local list
+  DESK_TOOL_ARGS=()
+  [ -n "${AUTOPILOT_DEFAULT_TOOLS:-}" ] && return 0
+  list="$(node "$DESK_ENV_DIR/worker-tools.mjs" "$1")" || return 1
+  # shellcheck disable=SC2034  # read by the scripts that source this file
+  DESK_TOOL_ARGS=(--tools "$list")
+}
+
 # desk_where: exports DESK_SLUG_WHERE, DESK_CONFIG_PATH, DESK_CREDS for the cwd's repo; fails outside one.
 desk_where() {
   local out

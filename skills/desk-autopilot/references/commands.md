@@ -45,6 +45,8 @@ AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only whe
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
 nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log; not for a batch handed to the supervisor
 
+AUTOPILOT_DEFAULT_TOOLS=1 node ~/.claude/desk/bin/pass.mjs            # workers, preflights and triage get Claude Code's default tool list, not worker-tools.mjs's
+
 # config
 desk-env where                   # which repo, which config, does it exist
 desk-env ids                     # every §3 key and config row the scripts read, and its value
