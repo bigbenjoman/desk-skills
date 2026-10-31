@@ -11,3 +11,4 @@ printf -v out '%s' x
 echo a | cat; echo b >> f 2>&1
 case $x in a) echo ;; esac
 out = lines[-1]
+check "x" '[ "$(node --input-type=module -e "import { f } from \"m\"; f([JSON.parse(process.argv[1])], \"${x%%,*}\")" "$item")" = 1 ]'

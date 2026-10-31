@@ -1,5 +1,5 @@
-# Bash 4+ features that bash 3.2 (macOS /bin/bash) parses but fails on when run, or rejects. One ERE
-# per line, for grep -E (GNU and BSD); tests/bash32_check.sh scans shell scripts with them. Lines
+# Bash 4+ features that bash 3.2 (macOS /bin/bash) parses but fails on when run, or rejects, and
+# shapes 3.2 misparses. One ERE per line, for grep -E (GNU and BSD); tests/bash32_check.sh scans shell scripts with them. Lines
 # starting with # and blank lines are skipped. tests/fixtures/bash32-newer.txt holds a case for each.
 # case conversion ${v,,} ${v^^} ${v,} ${v^}
 \$\{[!#]?[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,|\^)
@@ -34,6 +34,9 @@
 # |& and &>>
 \|&
 &>>
+# a {a, b} literal in a node -e source in a check string: under eval, 3.2 misreads the \" in "$(…)"
+# and brace-expands the literal into one word per element. Pass the object as JSON in an argument.
+(^|[;&|[:space:](!{])check[[:space:]].*node[[:space:]].*-e[[:space:]].*[^$]\{[^{}]*,[^{}]*\}
 # ;& and ;;& in case
 ;;&
 [^;];&([[:space:]]|$)

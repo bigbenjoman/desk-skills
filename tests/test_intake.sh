@@ -430,7 +430,8 @@ check "DS-351 AC2: its children are triaged in the batch and wait held behind th
 check "DS-351 AC2: the line says the plan waits in /desk-needs-you" 'grep -q "its plan waits for you in /desk-needs-you" <<< "$out" && grep -q "^admitted: feature batch E-5 started, 2 children held behind its plan, by ben$" <<< "$(handed E-5)"'
 out=$(cd "$T/repo" && env -u DESK_QUEUE -u DESK_AUTOPILOT_STATE node "$T/bin/queue.mjs" requeue E-5 --batch E-5 2>&1); rc=$?
 check "DS-351: no queue.mjs requeue sends the epic to a worker" '[ $rc -ne 0 ] && grep -q "E-5 is lane epic" <<< "$out" && [ "$(eget E-5 tickets.E-5.state)" = parked ]'
-check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd "$T/repo" && node --input-type=module -e "import { presort } from \"$B/decider.mjs\"; const r = presort([{ id: \"p\", ticket: \"E-5\", kind: \"parked\", lane: \"epic\", text: process.argv[1] }]); console.log(r.hand.length, r.ask.length)" "$(eget E-5 tickets.E-5.park.question)")" = "1 0" ]'
+item=$(node -e 'console.log(JSON.stringify({ id: "p", ticket: "E-5", kind: "parked", lane: "epic", text: process.argv[1] }))' "$(eget E-5 tickets.E-5.park.question)")
+check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd "$T/repo" && node --input-type=module -e "import { presort } from \"$B/decider.mjs\"; const r = presort([JSON.parse(process.argv[1])]); console.log(r.hand.length, r.ask.length)" "$item")" = "1 0" ]'
 rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
 out=$(admit E-10 --by ben); rc=$?
 check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
