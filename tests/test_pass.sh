@@ -799,7 +799,7 @@ respawn R-5
 check "DS-156 AC2 a worktree on its branch with no resume file resumes too" 'spawned_for R-5 | grep -q "stage=6 " && brief R-5 | grep -qF "## Last round: this session resumes at Stage 6"'
 check "DS-339 with no resume file, the resumed round names the worker's in the state dir" 'brief R-5 | grep -qF "read your resume file $DESK_AUTOPILOT_STATE/resume/R-5.json where there is one"'
 q set R-5 state=done
-# DS-362: R-2's round carries notes far over the cap, and an answer.
+# R-2's round carries notes far over the cap, and an answer.
 cp "$T/state-h/batch-notes.md" "$T/notes.keep"
 node -e 'let s = "# Batch notes\n\n## MEMORY — mandatory\n\nHEADER-RULE cap the runner\n\n"; for (let i = 1; i <= 600; i++) s += `- [X-${i}] NOTE-${i} a helper a sibling found, padded to a realistic length\n`; process.stdout.write(s)' > "$T/state-h/batch-notes.md"
 node "$B/answer.mjs" R-2 "the badge is in scope" >/dev/null 2>&1
