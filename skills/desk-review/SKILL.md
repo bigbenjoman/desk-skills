@@ -210,8 +210,8 @@ one `file:line` per finding (desk-pr places it).
 
 ## The verdict
 
-**The body's opening lines are computed, never written by hand**: the review marker, the
-verdict marker, the heading, from round 2 the carried line, then the method line. A hand count is how a
+**The body's opening lines are computed, never written by hand**: the review and verdict
+markers, the heading, from round 2 the carried line, then the method line. A hand count is how a
 review reads clean when it is not. Once every finder and refuter has answered, write the run's
 results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker:
 `desk-review-results.json` at its worktree root, removed at the end with `git clean -f`):
@@ -225,9 +225,8 @@ results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker
 ```
 
 - `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
-  A seat whose named agent did not resolve, so a general-purpose agent ran its brief, is
-  `"fallback": true`. The simplicity and domain seats run general-purpose by design, so they are
-  never a fallback for that alone.
+  `"fallback": true` where its named agent did not resolve and general-purpose ran its brief (not
+  simplicity or domain: general-purpose by design).
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
@@ -277,10 +276,9 @@ because repos commit their own copy of the gate, and a copy from before carrying
 line exactly: an extra field there would read as no verdict at all. That copy reads this verdict as
 the blocking counts say (`tests/test_review_gate.mjs` holds it to that).
 
-Last comes the method line, `<!-- desk-review:method v=1 fallback=<n> -->`: the seats marked
-`"fallback": true`, `0` when none. The heading names them too. It never decides clean, and it
-sits after the heading for the same reason as the carried line. `verdict.mjs --method <results>`
-prints the PR body's line on how the review ran: its rounds, its vendor and its fallback seats.
+Last, `<!-- desk-review:method v=1 fallback=<n> -->` counts the fallback seats (the heading
+names them); like the carried line, it never decides clean. `verdict.mjs --method <results>`
+prints the PR body's line: rounds, vendor, fallback seats.
 
 With these markers §4 Clean review verdict for this skill is
 `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
