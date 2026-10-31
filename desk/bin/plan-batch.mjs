@@ -71,10 +71,11 @@ const unchecked = parked.filter(laneUnchecked);
 const failedReads = (r) => (r.lane_challenge?.failed_reads ?? []).join('; ') || 'none listed';
 const sized = ours.filter(sizeParked);
 // A ticket in any lane that links a Claude Design canvas no worker can read parks until a session
-// snapshots it.
+// snapshots it. It is still planned (its blockers, collisions and spine hold), so its held_by is
+// written beside the design park and a requeue holds it behind what has not merged (queue.mjs requeue).
 const designParked = (r) => laneOk(r) && !sizeParked(r) && designPark(r) !== null;
 const undesigned = ours.filter(designParked);
-let admitted = ours.filter((r) => laneOk(r) && !sizeParked(r) && !designParked(r));
+let admitted = ours.filter((r) => laneOk(r) && !sizeParked(r));
 
 // Collision detection. Two tickets that touch the same file cannot run concurrently:
 // they would conflict on the file, and worse, each is blind to a helper the other just
@@ -516,7 +517,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
   for (const r of order) {
     const t = r.ticket;
     execFileSync('node', [QUEUE, 'add', t, r.type ?? 'Bug', r.lane], { stdio: 'ignore' });
-    const runnable = admitted.includes(r) && !held(t);
+    const runnable = admitted.includes(r) && !held(t) && !designParked(r);
     const sets = [
       `lane=${r.lane}`, `branch=${r.branch}`,
       `state=${runnable ? 'triaged' : 'parked'}`,

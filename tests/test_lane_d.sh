@@ -115,6 +115,11 @@ plan a-loose a-snapped
 check "DS-358 AC6: a lane A ticket whose canvas has no snapshot parks, naming the artifact" '[ "$(qg a-loose .state)" = parked ] && [[ "$(qg a-loose .park.question)" == "design not snapshotted: $LOOSE: snapshot it from a session"* ]]'
 check "DS-358 AC6: the plan lists it under PARKED ON DESIGN" 'grep -q "^PARKED ON DESIGN (1)" <<< "$out" && grep -q "^  a-loose: design not snapshotted: $LOOSE" <<< "$out"'
 check "DS-358 AC2: a lane A ticket with a snapshot runs" '[ "$(qg a-snapped .state)" = triaged ]'
+# A design-parked ticket is still planned: held behind what it collides with, recorded beside its park.
+ticket b-first A "Match $SNAP exactly."; ticket b-second A "Match $LOOSE exactly."
+for k in b-first b-second; do jq '.files_in_scope = ["src/shared.js"]' "$T/state/triage/$k.json" > "$T/fis.json" && mv "$T/fis.json" "$T/state/triage/$k.json"; done
+plan b-first b-second
+check "DS-358: a design-parked ticket keeps its hold behind the ticket it collides with" '[ "$(qg b-second .state)" = parked ] && [[ "$(qg b-second .park.question)" == "design not snapshotted: $LOOSE"* ]] && [ "$(qg b-second .held_by)" = b-first ]'
 mkdir -p "$T/state/batches/EPIC-9/triage" "$T/state/batches/EPIC-9/tickets"
 cp "$T/state/tickets/a-snapped.md" "$T/state/batches/EPIC-9/tickets/"; cp "$T/state/triage/a-snapped.json" "$T/state/batches/EPIC-9/triage/"
 DESK_AUTOPILOT_STATE="$T/state/batches/EPIC-9" node "$B/ticket-facts.mjs" a-snapped >/dev/null 2>&1
