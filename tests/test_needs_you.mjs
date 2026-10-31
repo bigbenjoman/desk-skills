@@ -447,6 +447,7 @@ put('sigma', { port: 4600, beat: 1, supervised: true, merge: 'yes', tickets: {
   'S-3': stuckPr(103, [lintRed, ...passed], why375([{ name: LINT, step: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }])),
   'S-4': stuckPr(104, [flowsGreen, ...passed], why375([flowsCmd])),
   'S-5': stuckPr(105, [lintRed, ...passed], { why: 'still red after 2 fix tries: Lint' }),
+  'S-6': stuckPr(106, [lintRed, flowsRed[0], ...passed], why375([{ name: LINT, step: 'Run eslint' }, flowsCmd])),
 } });
 const sg = Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
 const recommends = (i) => i?.actions[0]?.[1] != null;
@@ -461,6 +462,8 @@ t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and sa
 t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
 t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
   `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: ${LINT} (failed step: Check portal schema mirror) · apply the PR's migrations to staging first | false`);
+t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
+  sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
 t('DS-375 a reason recorded before the pass kept its checks holds as it was written', sg['S-5']?.need, 'PR #105: still red after 2 fix tries: Lint');
 const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
 t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);

@@ -88,10 +88,11 @@ function itemOf(r, x) {
     const need = `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`;
     if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
-    // and the item leaves the list once the check it clears is green.
-    const outside = stuckOf(t, r.ctx)?.outside ?? [];
+    // and the item leaves the list once every check it is still stuck on is green.
+    const stuck = stuckOf(t, r.ctx);
+    const outside = stuck?.outside ?? [];
     if (outside.length) {
-      const checks = `${outside.map((c) => `"${c.name}"`).join(', ')} ${outside.length === 1 ? 'is' : 'are'} green`;
+      const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
       return { kind: 'pr', need, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
     }
     return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };

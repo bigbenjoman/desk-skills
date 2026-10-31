@@ -198,17 +198,18 @@ function blockerHold(q, key, b, ctx, seen) {
 }
 
 // What a PR the pass recorded stuck is still stuck on, read against its checks as they are now:
-// { why, outside }, `outside` being the still-red checks a person clears off GitHub ({ name, command }).
-// A check named in the record that is no longer red is dropped, and once none is left it is null. A
-// record that names no checks (a conflict, a review) holds as it was written.
+// { why, checks, outside }: `checks` the recorded checks still red, `outside` those of them a person
+// clears off GitHub ({ name, command }). A check named in the record that is no longer red is dropped,
+// and once none is left it is null. A record that names no checks (a conflict, a review) holds as it
+// was written.
 export function stuckOf(t, ctx = NOBODY) {
   const s = t?.stuck;
   if (!s) return null;
-  if (!Array.isArray(s.checks)) return { why: s.why, outside: [] };
+  if (!Array.isArray(s.checks)) return { why: s.why, checks: [], outside: [] };
   const gate = evaluateGate(prStatusOf(t)?.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   const red = new Set(gate.failing.map((f) => f.name));
   const left = s.checks.filter((c) => red.has(c.name));
-  return left.length ? { why: stuckWhy({ lead: s.lead, checks: left }), outside: left.filter((c) => c.command) } : null;
+  return left.length ? { why: stuckWhy({ lead: s.lead, checks: left }), checks: left, outside: left.filter((c) => c.command) } : null;
 }
 
 const segText = (segs) => segs.map((s) => s[0]).join('');
