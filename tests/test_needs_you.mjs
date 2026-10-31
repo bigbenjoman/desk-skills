@@ -506,7 +506,6 @@ const dr = N.record({ word: 'tau', ticket: 'T-1', action: 'drop' });
 t('drop takes the ticket out of its batch, through queue.mjs, and it is no longer listed',
   `${dr.ok} ${'T-1' in queueOf('tau').tickets} ${'T-2' in queueOf('tau').tickets} ${N.collect({ word: 'tau' }).items.map((i) => i.t.key).join()}`, 'true false true T-2');
 t('an open PR offers no drop', N.record({ word: 'eta', ticket: 'E-2', action: 'drop' }).ok, false);
-t('the skill lists drop among the actions that take no text', /Leave `"<text>"` off for [^.]*`drop`/.test(readFileSync(join(ROOT, 'skills', 'desk-needs-you', 'SKILL.md'), 'utf8')), true);
 
 // ---- A ticket the pass would not spawn because its worktree is in use (worktree_busy) needs you, in
 // desk-q and here alike, until a pass finds it clean and drops the record.

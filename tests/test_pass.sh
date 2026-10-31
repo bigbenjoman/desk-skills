@@ -1899,11 +1899,22 @@ shown(){ node "$T/shown.mjs" "$B/desk-q.mjs" "$DESK_QUEUE" "$1"; }
 check "desk-q groups it as needing you, not ready" '[ "$(shown W-2)" = needs ] && [ "$(shown W-3)" = needs ]'
 : > "$T/lsof.out"; git -C "$T/wt/W-2" checkout -q -- a.txt; git -C "$T/wt/W-3" push -q origin fix/W-3 2>/dev/null
 # The repo's shared cap leaves this batch one slot a pass here: each spawned worker is finished before the next.
-held=""
+held=""; left=""; stale=""
 for k in 1 2 3; do
   for w in W-1 W-2 W-3 W-4; do [ "$(field "$w" state)" = "\"running\"" ] && q set "$w" state=done session_id=null; done
   out=$(node "$B/pass.mjs" 2>&1); echo "$out" | grep -q "WORKTREE IN USE" && held=yes
+  # The first pass spawns one of them: the record is dropped from the others, still triaged, because
+  # their worktrees are clean now, and they read as ready again.
+  if [ "$k" = 1 ]; then
+    stale=""
+    for w in W-1 W-2 W-3; do
+      [ "$(field "$w" state)" = "\"triaged\"" ] || continue
+      [ "$(field "$w" worktree_busy)" = null ] && [ "$(shown "$w")" = ready ] || stale="$stale $w"
+      left=yes
+    done
+  fi
 done
+check "a pass drops the record from a ticket still triaged once its worktree is clean, and it reads as ready" '[ -n "${left:-}" ] && [ -z "$stale" ]'
 check "DS-348 AC3 once each cause clears, the next pass spawns the worker" \
   '[ "$(grep -cxE "W-[123]" "$T/wb-spawns")" = 3 ] && [ -z "$held" ]'
 check "and the record is dropped from each ticket once its worktree is clean" \
