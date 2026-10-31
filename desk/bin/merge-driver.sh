@@ -23,7 +23,9 @@
 # Per loop, every ready (non-draft) batch PR is considered in turn, and the first that is mergeable
 # is merged; one merge per loop, because a merge moves the default branch under every other PR. A
 # PR that cannot merge is skipped with its reason logged and never blocks the others:
-#   - touches a §4 Merge holds path          held for a person, with the hold's reason
+#   - touches a §4 Merge holds path          held for a person, with the hold's reason, when its base
+#                                            is §0 Default branch; into any other base it merges, and
+#                                            the hold falls on that base's own PR
 #   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
 #                                            unless §3 merge-feedback-first is explicitly `no`
 #                                            (unset, ask and yes are all the strict default). A
@@ -479,8 +481,10 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
 
-  holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.glob) (\(.why); \(.count) file(s), e.g. \(.files[0] // "?"))"')
-  if [ -n "$holds" ]; then
+  holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
+  if [ -n "$holds" ] && [ "$(printf '%s' "$g" | jq -r .holdsApply)" = false ]; then
+    log "#$n touches §4 Merge holds ($(printf '%s' "$holds" | paste -sd ';' -)), but its base $BASE_BRANCH is not $(printf '%s' "$g" | jq -r .defaultBranch), so merging it deploys nothing; the hold falls on $BASE_BRANCH's own PR"
+  elif [ -n "$holds" ]; then
     [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
     log "#$n HELD by §4 Merge holds — a person merges it: $(printf '%s' "$holds" | paste -sd ';' -)"
     queue_note "$key" "merge hold: $(printf '%s' "$holds" | head -1)"

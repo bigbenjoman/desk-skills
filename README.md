@@ -546,7 +546,7 @@ Setup writes these for you; this is what to know when you read or edit the file 
 | `none` means the repo does not have that thing; the step is skipped and said so | `` | Staging | `none` | `` |
 | `TODO` means not answered yet; a skill stops and asks rather than guess. In §3 it means `no` | `` | Designer | `TODO` | `` |
 | §3 permissions are `yes` (standing), `ask` (ask each time) or `no` | `` | `pr-merge-green` | … | `ask` | `` |
-| A merge hold is `<glob>: <why>`, or `<glob>#<key>: <why>` to hold a JSON file only when that key changes; a PR touching it is always left for you to merge | `` | Merge holds | `backend/**: build and push the Lambda images first` | `` |
+| A merge hold is `<glob>: <why>`, or `<glob>#<key>: <why>` to hold a JSON file only when that key changes; a PR into the default branch touching it is always left for you to merge | `` | Merge holds | `backend/**: build and push the Lambda images first` | `` |
 
 "Green" means one thing everywhere: every required check succeeded on the exact commit (skipped
 does not count), nothing else failed or is still running unless it is listed as advisory, and at
@@ -622,8 +622,8 @@ suite. Every push to main runs every suite on Linux, and every suite runs nightl
    one; otherwise its database variables are blanked, so no worker can reach a shared or production
    database.
 5. **Merge**: if you allowed merging in this repo, each PR is merged with the repo's merge method
-   once it is green at its head, pinned to that commit, one at a time. PRs touching a merge hold
-   are always left for you. The recommended settings leave merging to you, so green PRs are
+   once it is green at its head, pinned to that commit, one at a time. PRs into the default branch
+   that touch a merge hold are always left for you. The recommended settings leave merging to you, so green PRs are
    reported instead.
 6. **Park**: anything that needs a person waits, and you get a notification.
 

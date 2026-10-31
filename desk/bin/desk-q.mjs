@@ -40,7 +40,7 @@ import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
@@ -221,7 +221,7 @@ export function stuckOf(t, ctx = NOBODY) {
 
 const segText = (segs) => segs.map((s) => s[0]).join('');
 const checksFailed = (n) => `${n} check${n === 1 ? '' : 's'} failed`;
-const tryOf = (t) => `try ${(t.fix_tries?.length ?? 0) + 1} of ${FIX_TRIES_MAX}`;
+const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 
 // What a done ticket's unmerged PR needs, as { k, segs }: `merging` while it moves without the user
 // (checks running, green where something merges it, a draft the pass is undrafting, a red check or a
@@ -236,13 +236,15 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const stuck = stuckOf(t, ctx);
   if (stuck) return needs([stuck.why, null]);
   if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
-  // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
-  if (String(t.merge_blocked ?? '').startsWith('merge hold:')) return needs(['merge hold: merge it', null]);
+  // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
+  // <glob>, …`) and leaves it for a person to merge, so the item says the hold's reason.
+  const hold = /^merge hold: (.+?)(?: — .*)?$/.exec(String(t.merge_blocked ?? ''));
+  if (hold) return needs([`only a person merges it: ${hold[1]}`, WARN], [' · merge it', null]);
   // It records a green PR it has held for unresolved review threads on two loops, naming the first.
   const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (fb) return needs([fb[1], WARN], [' · resolve or answer it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
-  const triesLeft = (t.fix_tries?.length ?? 0) < FIX_TRIES_MAX;
+  const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
     if (!triesLeft) return needs([`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
     return merging([`merge conflict with ${ctx.base}`, FAIL], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);

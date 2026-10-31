@@ -1236,7 +1236,7 @@ dated('hold', 5000, { hours: twelveHours, tickets: {
 dated('holdsup', 5010, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, tickets: {
   'B-GREEN': prAt(177), 'W-2': heldBy('B-GREEN'), 'B-MERGED': mergedAt(171), 'W-6': heldBy('B-MERGED'),
   'B-CONF': prAt(178, { mergeable: 'CONFLICTING' }), 'W-2C': heldBy('B-CONF'),
-  'B-HOLD': { ...prAt(180), merge_blocked: 'merge hold: desk/bin/** (a person merges it; 1 file(s), e.g. desk/bin/pass.mjs)' }, 'W-2H': heldBy('B-HOLD'),
+  'B-HOLD': { ...prAt(180), merge_blocked: 'merge hold: build and push the Lambda images first — backend/**, 1 file(s), e.g. backend/handler.ts' }, 'W-2H': heldBy('B-HOLD'),
   'W-0': { ...heldBy(''), park: { question: 'held by orchestrator' } } } });
 dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK'), 'B-MERGED': mergedAt(172), 'W-6A': heldBy('B-MERGED'),
@@ -1274,7 +1274,7 @@ const rail217 = (name, key) => railText(Q.ticketScreen(repo217(name), key, { now
 t('DS-218 AC1 (DS-279) a PR\'s own page says whether it needs you: a draft, one nothing merges, a conflict a fix try takes on, a merge hold',
   ['hold B-DRAFT', 'hold B-READY', 'holdsup B-CONF', 'holdsup B-HOLD'].map((s) => rail217(...s.split(' '))).join(' / '),
   'Needs you: PR #175, draft · undraft it once it is reviewed. / Needs you: PR #176, tests running, 0m · 0 of 1 done · merge it once green. / '
-  + 'Moves without you: PR #178, merge conflict with main · the next pass sends it to a worker, try 1 of 2. / Needs you: PR #180, merge hold: merge it.');
+  + 'Moves without you: PR #178, merge conflict with main · the next pass sends it to a worker, try 1 of 2. / Needs you: PR #180, only a person merges it: build and push the Lambda images first · merge it.');
 t('DS-218 AC1 a PR that merges by itself moves without you', rail217('holdsup', 'B-GREEN').startsWith('Moves without you: PR #177, tests running'), true);
 const halted218 = Q.loadRepos(NOW).find((r) => r.name === 'halted');
 t('DS-218 AC1 with passes stopped a ready ticket will not move until they resume, and says how',

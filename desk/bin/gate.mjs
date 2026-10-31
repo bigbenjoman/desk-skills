@@ -28,6 +28,7 @@
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
 //     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks), holds,
+//     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
 //     (with no diff to read, a `#<key>` hold on a listed file holds)
@@ -340,6 +341,10 @@ if (isMain) {
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
       const held = filesOk ? matchHolds(files, holds, contents) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];
+      // A hold is for the merge that deploys: one into the repo's default branch (§0, never a batch
+      // base). A PR into any other base merges past it, and the hold falls on that base's own PR.
+      const repoDefault = String(E.configValue('default-branch') ?? '').trim();
+      const defaultBranch = repoDefault && !/^(todo|none)\b/i.test(repoDefault) ? repoDefault : 'main';
       const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
       // The failing runs of the checks it would waive, for the ticket filed after the merge.
       if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
@@ -349,6 +354,7 @@ if (isMain) {
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids] },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
+        defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
         waiver,
       }));
     } else if (cmd === 'holds') {

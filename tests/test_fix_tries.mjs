@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, failedSteps, stuckWhy, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
-import { undraftCall, undraftComment } from '../desk/bin/undraft.mjs';
+import { undraftCall, undraftComment, headIsBaseMerge } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -188,6 +188,25 @@ const rvTried = [{ try: 1, head: HEAD, kind: 'rereview' }];
 t('DS-316 AC5 a review try already made at this head leaves it to the person, saying what is unread', reviewTry(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, why: 'no desk-review verdict is posted on it' })?.why, 'no review verdict readable at its head after 1 fix try: no desk-review verdict is posted on it');
 t('DS-316 AC5 so does one with both tries spent', reviewTry(tk({ fix_tries: tried }), { pr: 702, head: HEAD, why: 'x' })?.call, 'stuck');
 t('DS-316 a review try at this head does not use up a fix of the findings it then posts', reviewFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, verdict: u1.verdict, body: u1.review })?.call, 'requeue');
+
+// ---- DS-377: a head a merge from the base moved gets a review try of its own, outside the fix tries
+const unread = 'its latest review is for ccccccccc, not the head aaaaaaaaa';
+const merged = reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, base: 'feat/epics', baseMerge: () => true });
+t('DS-377 AC3 tries spent, a head moved by a base merge goes to a review worker, not the person', `${merged?.call} ${merged?.fix.kind} ${merged?.fix.extra} ${merged?.fix.head === HEAD}`, 'requeue rereview true true');
+t('DS-377 AC3 it says the base merge moved the head', merged?.fix.what, `review its head, moved by a merge from feat/epics: ${unread}`);
+const briefX = fixBrief(tk({ fix: merged.fix }));
+t('DS-377 AC3 its brief says the try is not one of the fix tries', briefX.includes('## Review try for a merge from the base: PR #871') && briefX.includes(`at its head ${HEAD.slice(0, 12)}: ${unread}.`) && briefX.includes('this try is not one of the 2 fix tries'), true);
+t('DS-377 AC3 its task names the extra review try', fixTask(tk({ fix: merged.fix })).includes('Your task is a review try after a merge from the base on PR #871'), true);
+t('DS-377 AC3 a head no base merge moved is stuck as before, and the merge is not asked of a head already tried', reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, baseMerge: () => false })?.call
+  + ' ' + reviewTry(tk({ fix_tries: rvTried }), { pr: 871, head: HEAD, why: unread, baseMerge: () => { throw new Error('asked'); } })?.call, 'stuck stuck');
+const afterX = [...tried, { try: 2, head: HEAD, kind: 'rereview', extra: true }];
+t('DS-377 AC4 still unreadable after that try, it is the person\'s as today', reviewTry(tk({ fix_tries: afterX }), { pr: 871, head: HEAD, why: unread, baseMerge: () => true })?.why, `no review verdict readable at its head after 3 fix tries: ${unread}`);
+const oneX = [{ try: 0, head: OLD, kind: 'rereview', extra: true }];
+t('DS-377 the extra try is not counted: a fix try after it is try 1 of 2', reviewTry(tk({ fix_tries: oneX }), { pr: 871, head: HEAD, why: unread })?.fix.try, 1);
+const git = (map) => (args) => (args[0] === 'rev-list' ? { ok: true, out: map.parents } : { ok: map.onBase });
+t('DS-377 a two-parent head whose second parent is on the base is a base merge', headIsBaseMerge({ head: HEAD, base: 'origin/feat', git: git({ parents: `${HEAD} ${OLD} ${'d'.repeat(40)}`, onBase: true }) }), true);
+t('DS-377 a single-parent head, or one whose second parent is off the base, is not', headIsBaseMerge({ head: HEAD, base: 'origin/feat', git: git({ parents: `${HEAD} ${OLD}`, onBase: true }) })
+  || headIsBaseMerge({ head: HEAD, base: 'origin/feat', git: git({ parents: `${HEAD} ${OLD} ${'d'.repeat(40)}`, onBase: false }) }), false);
 
 const redDraft = draft(reviewBody('p0=0 p1=0 p2=0'), { checks: [ok('tests'), red('tests-i18n', '931')] });
 const ucheck = undraftCall(tk(), redDraft, { ...ucfg, required: ['tests', 'tests-i18n'] });

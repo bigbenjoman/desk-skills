@@ -461,4 +461,27 @@ jq '."143".sha = "'"$H282"'" | ."143".extra = [{ id: "REFUSED", isResolved: fals
 tloop; tloop   # the first merges #142, so only the second reaches #143
 check "DS-347: a thread GitHub refuses to resolve still holds the PR"  'echo "$out" | grep -qF "#143 could not resolve desk-review thread src/b.ts:2" && echo "$out" | grep -q "#143 has outstanding review feedback (NONE, 1 unresolved)"'
 
+# ---- DS-377: a §4 Merge holds path holds a PR into the default branch, never one into a feature base --
+sed -e 's/| Merge holds | `none` |/| Merge holds | `infra\/**: deploys the infrastructure on merge` |/' "$T/config.md" > "$T/config-holds.md"
+SHA51=e111111111111111111111111111111111111111; SHA52=e222222222222222222222222222222222222222
+cat > "$T/prs.json" <<EOF
+{
+  "151": { "head": "fix/T-51", "base": "feat/epics", "sha": "$SHA51", "state": "open", "draft": false, "files": ["infra/main.tf"], "checks": [["test", "SUCCESS"]] },
+  "152": { "head": "fix/T-52", "base": "main", "sha": "$SHA52", "state": "open", "draft": false, "files": ["infra/main.tf", "src/a.ts"], "checks": [["test", "SUCCESS"]] }
+}
+EOF
+hloop(){ out=$(DESK_CONFIG="$T/config-holds.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$1" 2>&1); rc=$?; }
+# set-batch asks origin for the base, and this repo has none, so the base is written as set-batch would.
+q init merge-holds-feature; jq '.base = "feat/epics"' "$DESK_QUEUE" > "$T/q.tmp" && mv "$T/q.tmp" "$DESK_QUEUE"
+q add T-51 Bug A; q set T-51 branch=fix/T-51 state=done result.pr=151
+: > "$T/merges.log"
+hloop T-51; hloop T-51
+check "DS-377 AC1: a held path into a feature base merges, pinned to its head" '[ "$(merged)" = 151 ] && grep -qx "151 feat/epics $SHA51" "$T/merges.log"'
+check "DS-377 AC1: the log says the hold falls on the base'\''s own PR, and nothing is left for the person" 'echo "$out" | grep -q "#151 touches §4 Merge holds (deploys the infrastructure on merge — infra/\*\*, 1 file(s), e.g. infra/main.tf), but its base feat/epics is not main, so merging it deploys nothing" && [ "$(qf T-51 .merge_blocked)" = null ]'
+q init merge-holds-main
+q add T-52 Bug A; q set T-52 branch=fix/T-52 state=done result.pr=152
+hloop T-52; hloop T-52
+check "DS-377 AC2: a held path into the default branch is still held for a person" '[ "$(merged)" = 151 ] && echo "$out" | grep -q "#152 HELD by §4 Merge holds — a person merges it"'
+check "DS-377 AC2: the record leads with the hold'\''s reason from the row" '[ "$(qf T-52 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

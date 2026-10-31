@@ -151,6 +151,15 @@ export function verdictCarries({ from, head, base, git }) {
   });
 }
 
+// Whether `head` is a merge from the base: a two-parent commit whose second parent is on `base`.
+// git(args) returns { ok, out }; false whenever git cannot say.
+export function headIsBaseMerge({ head, base, git }) {
+  if (!head || !base) return false;
+  const r = git(['rev-list', '--parents', '-n', '1', head]);
+  const [, ours, theirs, ...more] = r.ok ? String(r.out).trim().split(' ') : [];
+  return !!ours && !!theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok;
+}
+
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
 // review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on
 // when it was carried to this head.
