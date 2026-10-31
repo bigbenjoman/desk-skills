@@ -53,8 +53,9 @@ or extended file. A new skill's description is a draft: say so in the plan, and 
 A file over its cap with no headed sections gets no move; the plan says to split it by topic first.
 
 A section holding an `@` line never moves, so its import stays with the file that names it. Where
-moving every other section would still leave the file and its imports over the cap, nothing moves:
-the plan names the largest import to slim, and that import's own row carries any move for it.
+moving every other section would still leave the file and its imports over the cap, nothing moves.
+The plan names the largest import to slim, or, where the lines that cannot move are over the cap on
+their own, says to split them into headed sections.
 
 ## Run /skill-doctor and /doctor prompt-audit, never a copy of them
 

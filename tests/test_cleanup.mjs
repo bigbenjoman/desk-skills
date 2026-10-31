@@ -352,4 +352,11 @@ const short = auditReport(launchFiles({ root: RS, home: join(T, 'hs') }), { root
 t('imports: a short importer over the cap by its imports alone moves nothing and names the import', short.filter((l) => l.startsWith('propose : CLAUDE.md')).join('\n'), 'propose : CLAUDE.md · its @ imports keep it over the cap: slim docs/agents.md (240 lines with its own imports)')
 t('imports: no diff takes a line out of the importer', short.includes('--- a/CLAUDE.md'), false)
 
+// Where the section holding the @ line is over the cap by itself, slimming the import cannot help.
+const RP = join(T, 'rp')
+put(join(RP, 'CLAUDE.md'), ['## Everything', 'See @docs/x.md.', ...fill(249, 'all'), ''].join('\n'))
+put(join(RP, 'docs', 'x.md'), `${fill(5, 'x').join('\n')}\n`)
+const pinned = auditReport(launchFiles({ root: RP, home: join(T, 'hp') }), { root: RP, home: join(T, 'hp') })
+t('imports: a section holding the @ line over the cap by itself is to be split, not the import slimmed', pinned.filter((l) => l.startsWith('propose : CLAUDE.md')).join('\n'), 'propose : CLAUDE.md · nothing to move: its 251 lines holding @ imports or above the first heading are over the cap on their own: split them into headed sections by topic')
+
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1) }
