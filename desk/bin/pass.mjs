@@ -36,6 +36,7 @@ import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
 import { undraftCall, undraftComment, verdictCarries, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
@@ -2013,6 +2014,10 @@ function readPrStatus(n) {
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const BUILD_DIR = join(STATE, 'check-builds');
 const buildRow = parseOperatorChecks(E.configValues('check-builds'));
+const EVIDENCE_DIR = join(STATE, 'evidence-runs');
+const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
+// A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
+const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
 // The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
 // check, and whether the last rerun has had its cooldown.
@@ -2080,7 +2085,7 @@ const gateLists = () => {
 };
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt'];
+const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence'];
 if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
@@ -2088,8 +2093,9 @@ if (drafts.length) {
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
-    ...gateLists(), builds: buildRow.checks,
+    ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
   };
+  if (evidenceRow?.errors) out.push(`undraft: no evidence runs this pass, since config §4 Evidence workflow does not parse: ${evidenceRow.errors.join(', ')} (want \`<workflow>.yml\` or \`none\`). Run /desk-setup`);
   if (buildRow.errors.length) out.push(`undraft: no check builds this pass, since config §4 Check builds does not parse: ${buildRow.errors.join(', ')} (want \`<check>: <command>\`). Run /desk-setup`);
   const notesFile = join(STATE, 'batch-notes.md');
   for (const { t, s } of drafts) {
@@ -2102,7 +2108,7 @@ if (drafts.length) {
     // A verdict for an older head holds at this one when only clean merges of the base came since.
     const carry = (sha) => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok &&
       verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git: (args) => shOut('git', ['-C', MAIN, ...args]) });
-    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
@@ -2138,6 +2144,7 @@ if (drafts.length) {
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
     else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
     else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
+    else if (c.call === 'evidence') rec = startEvidence(t, n, v.headRefOid, c, rec);
     else if (['person', 'findings', 'checks', 'review', 'conflict'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}${carried}`);
     else {
@@ -2184,6 +2191,22 @@ function startCheckBuild(t, n, head, c, rec) {
   }
   const why = `its check build \`${c.command}\` could not start: ${failed}`;
   const action = `run \`${c.command}\` at the head of #${n}, then re-run ${c.checks.map((x) => `"${x}"`).join(', ')}`;
+  report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
+  return { ...rec, call: 'person', why, action };
+}
+// A draft whose screenshot cells §4 Evidence workflow fills gets that workflow, on the default branch,
+// once per head (evidence.mjs). Where it cannot start, the cells are the person's.
+function startEvidence(t, n, head, c, rec) {
+  const cmd = ['workflow', 'run', c.workflow, '--repo', GH_REPO, '--ref', DEFAULT_BRANCH, '-f', `pr=${n}`];
+  if (DRY) { out.push(`undraft (dry run): would run \`gh ${cmd.join(' ')}\` for PR #${n} (${t.key}): ${c.why}`); return rec; }
+  const r = shOut('gh', cmd);
+  if (r.ok) {
+    const run = recordDispatch(EVIDENCE_DIR, n, head, { workflow: c.workflow, out: r.out });
+    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (started ${run.url ?? 'its run'})`);
+    return rec;
+  }
+  const why = `its evidence workflow \`${c.workflow}\` could not start: ${r.out.split('\n').pop()}`;
+  const action = `run \`gh workflow run ${c.workflow} -f pr=${n}\`, or upload the screenshots to #${n}`;
   report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
   return { ...rec, call: 'person', why, action };
 }

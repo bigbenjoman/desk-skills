@@ -163,6 +163,12 @@ How to turn what you find into rows:
   autopilot pass runs the command once per head on this computer, in the ticket's worktree, for a
   draft whose only red checks it names, then re-runs them, and that it needs whatever that command
   needs in the supervisor's environment (a Docker context, cloud credentials).
+- **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
+  into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
+  `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;
+  `none` is the default. Say that the autopilot pass starts it once per head for a draft whose body
+  still has `_drag` cells and an `evidence` block, so those screenshots are never put to the user
+  while it can take them.
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
   changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
