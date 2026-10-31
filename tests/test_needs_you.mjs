@@ -199,6 +199,18 @@ const left = cli('left').out.trim().split('\n');
 t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 2 items needing you. 2 put off with not-now, left out until they change.');
 t('DS-324 AC4 left matches list', N.collect().items.length, 2);
 
+// ---- desk-q's NEEDS YOU and left's count are one number, the put-off items said beside it
+const { overview } = await import('../desk/bin/desk-q.mjs');
+const home = () => overview(loadRepos(), { now: NOW, avail: 30 }).split('\n');
+// The cell ends where its right-aligned header does.
+const needsCell = () => {
+  const h = home(), end = h.find((l) => l.includes('NEEDS YOU')).indexOf('NEEDS YOU') + 'NEEDS YOU'.length;
+  return h.find((l) => l.startsWith('  alpha '))?.slice(0, end).match(/(\d+(?: \(\+\d+ put off\))?)$/)?.[1];
+};
+t('DS-376 AC1 the NEEDS YOU cell shows what needs you, then how many are put off', needsCell(), '2 (+2 put off)');
+t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 2 tickets need you'), true);
+t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '2 2');
+
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
 const aq = queueOf('alpha');
 aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(600) };
@@ -207,6 +219,8 @@ writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.st
 const back = N.collect({ word: 'alpha' }).items;
 t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^A-9 finished with no PR: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
 t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
+t('DS-376 AC3, AC4 both count the changed ones as needing you, and the cell is the count alone with none put off',
+  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${cli('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
 // DS-324 AC1, AC3: two holds with the same words are put off each on its own; the second does not bring the first back.
 const held = (k) => ({ key: k, state: 'parked', lane: 'A', held_by: 'A-9', added_at: minsAgo(25), park: { question: `held by orchestrator: blocked by A-9 — starts once their PRs merge (${k})` } });
 const tq = queueOf('alpha');

@@ -143,18 +143,43 @@ function putOffKey(r, t, item) {
   return { question: `${t.key} ${item.kind}`, inputs };
 }
 
+// A needs row as an item, and what the not-now register says of it: the one rule desk-q's count and
+// this list both go by.
+function judged(r, x, register) {
+  const item = itemOf(r, x);
+  return { item, l: lookup(register, putOffKey(r, x.t, item)) };
+}
+
+// desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
+// `b`): the rows that need the person (`rows`, `shown` of them), less `putOff`, those put off with
+// unchanged inputs.
+export function needsCount(r) {
+  const registers = new Map();
+  const rows = [];
+  let putOff = 0;
+  for (const x of needsRows(r)) {
+    const b = x.b ?? r;
+    if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir));
+    if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else rows.push(x);
+  }
+  return { shown: rows.length, putOff, rows };
+}
+
+// The batches `word` names, else every batch desk-q's home screen shows.
+const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: null, scope: shownRepos(repos, false) });
+
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
+// A usage-limit hold is an item here, but not in desk-q's count.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
-  const { named = null, scope } = word ? batchesNamed(repos, word) : { scope: shownRepos(repos, false) };
+  const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     const hold = usageRow(r);
     for (const x of [...(hold ? [hold] : []), ...needsRows(r)]) {
-      const item = itemOf(r, x);
-      const l = lookup(register, putOffKey(r, x.t, item));
+      const { item, l } = judged(r, x, register);
       if (l.status === 'put_off') { putOff++; continue; }
       if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
       const since = x.usage ? timeOf(r.q.usage_hold.since) : timeOf(x.t.park?.since ?? x.t.added_at);
@@ -294,12 +319,14 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   }
 }
 
-// What is left: desk-q's count in scope, then a line for each unfinished batch there whose passes are
+// What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are
 // stopped, needing the person or not: one just answered no longer does, and still waits on a pass.
 export function leftText({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
-  const c = collect({ word, now, repos });
+  const c = scopeOf(repos, word);
   const where = c.named ? ` in ${c.named.name}` : '';
-  const lines = [`desk-q counts ${c.items.length} item${c.items.length === 1 ? '' : 's'} needing you${where}.${putOffLine(c)}`];
+  const counts = c.scope.filter((x) => !x.error && x.q).map(needsCount);
+  const n = counts.reduce((a, y) => a + y.shown, 0);
+  const lines = [`desk-q counts ${n} item${n === 1 ? '' : 's'} needing you${where}.${putOffLine({ putOff: counts.reduce((a, y) => a + y.putOff, 0) })}`];
   for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }

@@ -48,6 +48,7 @@ import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-pr
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
+import { needsCount } from './needs-you.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -527,7 +528,7 @@ const supervisorOff = (r) => r.run?.agent === 'off';
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
-const attention = (r) => needsRows(r).length;
+const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);
 const hasBatch = (r) => r.q != null || r.error != null;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
@@ -536,8 +537,9 @@ const hasBatch = (r) => r.q != null || r.error != null;
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
-  const quiet = b.filter((r) => !r.live && (all || r.error || attention(r) > 0 || supervisorOff(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
-    .sort((a, c) => attention(c) - attention(a));
+  const you = new Map(b.map((r) => [r, r.live ? 0 : attention(r)]));
+  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
+    .sort((a, c) => you.get(c) - you.get(a));
   return [...live, ...quiet];
 }
 
@@ -623,11 +625,12 @@ const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged a
 const stoppedNote = (r, now) => (r.last == null ? 'no pass yet, so no dates until passes start' : `passes stopped ${ago(now - r.last)}, so no dates until they resume`);
 export { needsSession };
 function idleNote(r) {
-  const you = attention(r);
-  if (!you) return 'Nothing left for autopilot: every ticket is done.';
-  const session = r.rows.filter((x) => x.k === 'needs' && needsSession(x.t)).length;
+  const { shown: you, putOff, rows } = needsCount(r);
+  const off = putOff ? `${putOff} put off with not-now` : '';
+  if (!you) return `Nothing left for autopilot: ${off || 'every ticket is done'}.`;
+  const session = rows.filter((x) => x.k === 'needs' && needsSession(x.t)).length;
   return `Nothing left for autopilot: ${you} ticket${you === 1 ? ' needs' : 's need'} you`
-    + `${session ? ` (${session} need${session === 1 ? 's' : ''} an interactive session)` : ''}.`;
+    + `${session ? ` (${session} need${session === 1 ? 's' : ''} an interactive session)` : ''}${off ? `, ${off}` : ''}.`;
 }
 
 // The forecast and hit-rate wording `desk-q ships` and the tabs' forecast line share.
@@ -716,9 +719,11 @@ function epicWhy(r, F, e, checkin) {
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
-  const you = undated.filter((x) => groupOf(x.k) === 'needs').length;
-  const why = you ? [`${you} need${you === 1 ? 's' : ''} you`] : [];
-  const rest = undated.length - you;
+  const needs = new Set(needsCount(r).rows);
+  const asks = undated.filter((x) => groupOf(x.k) === 'needs').length;
+  const you = undated.filter((x) => needs.has(x)).length, off = asks - you;
+  const why = [...(you ? [`${you} need${you === 1 ? 's' : ''} you`] : []), ...(off ? [`${off} put off`] : [])];
+  const rest = undated.length - asks;
   if (rest) why.push(`${rest} behind those`);
   return `No date: ${why.join(', ')}${c('needs') && !checkin ? ' · c: date them as if answered at the next check-in' : ''}`;
 }
@@ -1489,10 +1494,11 @@ const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's 
 // from when it parked, else from when it was added.
 function needsLine(list, now) {
   const ok = list.filter((r) => !r.error);
-  const you = ok.reduce((a, r) => a + count(r, 'needs'), 0);
-  const per = ok.filter((r) => count(r, 'needs')).sort((a, c) => count(c, 'needs') - count(a, 'needs'))
-    .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(count(r, 'needs')), BOLD]]);
-  const waited = ok.flatMap((r) => r.rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
+  const c = new Map(ok.map((r) => [r, needsCount(r)])), n = (r) => c.get(r).shown;
+  const you = ok.reduce((a, r) => a + n(r), 0);
+  const per = ok.filter((r) => n(r)).sort((a, x) => n(x) - n(a))
+    .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n(r)), BOLD]]);
+  const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
   const oldest = waited.length ? [['  oldest ', GREY], [since(Math.max(0, now - Math.min(...waited))), null]] : [];
   return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
@@ -1624,17 +1630,22 @@ function overviewHead(repos, list, { now = Date.now(), solid = false, avail = av
 // Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
 // no free slot" count moves into the notes, LAST PASS and ALL DONE BY narrow to their longest cells,
 // then DONE goes, then MERGING, whose counts move into the notes. DONE counts merged tickets only.
+// NEEDS YOU is needsCount's, the count /desk-needs-you lists, with any put off after it, and widens
+// to fit.
 const NUM_COLS = [['RUN', 'running', 4], ['READY', 'ready', 7], ['MERGING', 'merging', 9], ['WAIT', 'waiting', 6], ['NEEDS YOU', 'needs', 11], ['DONE', 'done', 6]];
-function homeLayout(list, w, width, now, checkin) {
+const needsCell = ({ shown, putOff }) => `${shown}${putOff ? ` (+${putOff} put off)` : ''}`;
+function homeLayout(list, w, width, now, checkin, needs) {
   const ok = list.filter((r) => !r.error);
+  const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
+  const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
   const workers = (r, slot) => `  ${r.workers} (cap ${r.cap})${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [] }, fit = { lastW: lastFit, qdW: qdFit, slot: false };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] }];
-  const span = (l) => 2 + w + l.lastW + NUM_COLS.filter(([h]) => !l.drop.includes(h)).reduce((a, c) => a + c[2], 0) + 2 + l.qdW;
+  const span = (l) => 2 + w + l.lastW + numCols.filter(([h]) => !l.drop.includes(h)).reduce((a, c) => a + c[2], 0) + 2 + l.qdW;
   const fits = (l) => span(l) + Math.max(9, ...ok.map((r) => workers(r, l.slot).length)) <= width;
   const l = width == null ? steps[0] : steps.find(fits) ?? steps.at(-1);
-  return { ...l, cols: NUM_COLS.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
+  return { ...l, cols: numCols.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
 }
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
@@ -1644,7 +1655,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
   // REPO fits the names with a row; with a width, only those on screen.
   const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.repo.length + 2));
-  const lay = homeLayout(list, w, width, now, checkin);
+  const needs = new Map(list.filter((r) => !r.error).map((r) => [r, needsCount(r)]));
+  const lay = homeLayout(list, w, width, now, checkin, needs);
   const head = [
     ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage }),
     '',
@@ -1656,7 +1668,10 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     if (r.error) { row(r, `  ${pad(r.name, w)}queue unreadable: ${r.error}`); continue; }
     const [last, lastSgr] = lastPass(r, now);
     // Each state count in its state's colour, a zero dim; DONE in the text colour.
-    const n = ([, k, cw]) => { const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[k]) : DIM]; };
+    const n = ([, k, cw]) => {
+      if (k === 'needs') { const y = needs.get(r); return [rpad(needsCell(y), cw), y.shown ? STATE_SGR.needs : DIM]; }
+      const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[k]) : DIM];
+    };
     const qd = queueDone(r, now, checkin);
     rows.push(segRow(r.id, [[`  ${pad(r.name, w)}`, null], [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
       ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], { kind: 'repo', slug: r.id }));
@@ -1691,7 +1706,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     }
   }
   if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
-  const you = list.filter((r) => !r.error).reduce((a, r) => a + count(r, 'needs'), 0);
+  const you = [...needs.values()].reduce((a, y) => a + y.shown, 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
   const unset = new Set(repos.filter((r) => r.run?.unset).map((r) => r.slug)).size;
   if (unset) {
@@ -1766,7 +1781,7 @@ function barWrap(line, width) {
 // A repo screen's first header line: what needs the user, each state's count in its colour, then
 // the merged tickets left off the list.
 function countsLine(r) {
-  const segs = [needsYou(count(r, 'needs'))];
+  const segs = [needsYou(needsCount(r).shown)];
   for (const k of SHOWN.filter((g) => g !== 'needs')) if (count(r, k)) segs.push(['  ', null], [`${LABEL[k][0]} ${count(r, k)} ${k}`, STATE_SGR[k]]);
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY]]);
 }
@@ -2623,7 +2638,7 @@ export function interactive({
   const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
   // The parked note is shown while any ticket in view waits on the user, or c is on.
-  const badge = (rs) => (checkin || rs.some((r) => count(r, 'needs') > 0) ? parkedBadge(checkin) : '');
+  const badge = (rs) => (checkin || rs.some((r) => attention(r) > 0) ? parkedBadge(checkin) : '');
 
   // The breadcrumb's parts, each with the place a click on it goes to; the last is where you are.
   function crumbParts() {
