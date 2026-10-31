@@ -14,6 +14,13 @@ ticket's epic, or the ticket itself):
 node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # blocking: … names the URL and the path; exit 1
 ```
 
+**An `advisory` that says `it is snapshotted at <path>`** means `/desk-admit` or the orchestrator has
+already saved every file the design needs. Save from that path (`desk-design.mjs save <path> --key
+<TICKET>`, below; its `source.json` carries the URL and version) and build from the saved copy, with
+no Artifact read: the snapshot stands in for the artifact even once it can no longer be read, so a
+headless worker never parks asking for the design. A single-page artifact (a page with no
+`canvas.json`) is saved and read the same way.
+
 **Two kinds of file a board needs are not among the published files.** Its images are `/_blob/<id>`
 asset ids, in its attributes or in strings in its script: read each by its id, one `read` with
 `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), into the same `out_dir` as the files

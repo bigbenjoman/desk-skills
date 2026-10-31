@@ -11,9 +11,37 @@ argument-hint: "<TICKET>... [--front]"
 
 # desk-admit
 
-One script makes every check and every write. **Read nothing else**: no queue, triage record or
-supervisor log, and do not load `desk-autopilot` except for an epic the script says to plan (step
-1b). Never run `queue.mjs admit` yourself.
+One script makes every check and every write, after step 0 saves any design. **Read nothing
+else**: no queue, triage record or supervisor log, and do not load `desk-autopilot` except for an
+epic the script says to plan (step 1b). Never run `queue.mjs admit` yourself.
+
+## 0. Snapshot each design
+
+A worker has no Artifact tool, and an artifact private to one subscription cannot be read from
+another, so a ticket's Claude Design canvas is saved now, by this session, before it is admitted.
+For each ticket the user named (an epic is skipped: its children are admitted on their own):
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
+```
+
+`ok`, or an `advisory`, needs nothing. Each `blocking` line names an artifact URL with no copy a
+worker can read: snapshot it with the Artifact tool, reading every file
+`desk-autopilot/references/design-snapshot.md` (read it now) lists, a single-page artifact's page
+and what it loads included, into `out_dir: $DESK_STATE/designs/<TICKET>/` (`desk-env paths` prints
+`DESK_STATE`). Then record it, and check again:
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs write $DESK_STATE/designs/<TICKET> --url <artifact URL> \
+  --version <its version> --key <TICKET>
+node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory naming the snapshot
+```
+
+The snapshot holds every file the boards need, so the worker builds from it even once the artifact
+can no longer be read. **An artifact that returns a summary, or an error, rather than its files** is
+not one this subscription can read: never admit that ticket on a summary. Leave it out of step 1, and
+ask the user in step 2's round, header the ticket key: share the artifact `<URL>` with this
+subscription, or give its files (Recommended: share it, then run /desk-admit for it again).
 
 ## 1. Admit
 
@@ -62,6 +90,7 @@ below as `(Recommended)`, with its reason as the description:
 | `lane C` or `lane D` | Work it in its own session: `/desk-ticket <TICKET>` (a worker would only park on it) | Leave it out of the batch |
 | `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`) | Run step 1 again for it |
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
+| `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, have it shared with this subscription | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
 | `blocked by <B>, which is not done and not in the batch` | Admit `<B>` with it | Run step 1 with both |
 | `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |
