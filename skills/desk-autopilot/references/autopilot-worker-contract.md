@@ -56,8 +56,8 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 
 | Stage | File | Holds |
 |---|---|---|
-| 3 implement | `worker-contract-stage-3.md` | the design skills as files; §6 the command forms you may run, a dev server's too |
-| 4 verify, 4b self-review | `worker-contract-stage-4.md` | §3 verification, the test lock and memory, self-review and codex |
+| 3 implement | `worker-contract-stage-3.md` | the design skills as files; §6 the command forms you may run, a dev server's too; codex |
+| 4 verify, 4b self-review | `worker-contract-stage-4.md` | §3 verification, the test lock and memory, self-review |
 | 5 evidence (even when you skip it), 7 PR | `worker-contract-stage-5.md` | §4 rebase before you push; §5 what the orchestrator owns: images, the draft PR, merging |
 | 8 Jira | `worker-contract-stage-8.md` | Jira comments and transitions under config §3 |
 

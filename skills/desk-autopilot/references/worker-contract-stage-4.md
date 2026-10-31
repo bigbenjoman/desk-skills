@@ -156,63 +156,9 @@ Everything it needs is inside your worktree: where the command is a repo-local s
 itself, the rubric it reviews against, and the documentation the repo's knowledge check names for
 each path.
 
-**The named agents are already synced: confirm, do not assume.** Where the repo gitignores its
-generated `.claude/agents/*.md`, a hand-made worktree starts empty and every named agent silently
-resolves to `general-purpose`, while the report still reads as a full fleet run. `setup-worktree.sh`
-runs §4 Project subagents sync and hard-fails the spawn if the directory is still empty. `ls
-.claude/agents/` to confirm, and only if it is genuinely empty run §4 Project subagents sync yourself;
-if that fails (or the row is `none` and the directory is empty), say so in `AUTOPILOT_DONE`. Never
-let a general-purpose-only review pass as a fleet one.
-
-**Dispatch every finder read-only, and check the tree after each round.** Finders inherit Edit and
-Write, and one will sometimes implement a fix mid-round, so the refutations confirm findings about
-code nobody pushed. Open every finder prompt with: no Edit or Write, no git state changes, fixes
-described in prose only, and no permission to run `gh pr review` or `gh run rerun` (a finder once
-posted its own verdict marker and turned the gate green on a superseded verdict). After each round,
-`git status --porcelain`; a dirty tree is an aborted round: restore with `git checkout -- <paths>`
-and say in the review that a round was discarded. Subagents may also be denied commands you can run,
-so run the suite yourself and hand them the result.
-
-**`codex` follows config §3 `codex-review`.** Where the review refutes its findings with codex and
-the key is `yes`, `codex exec --sandbox read-only …` and `codex --version` (and the resolved absolute
-path's same forms) are in the worker allow-list and the
-spawn preflight asserted `CODEX=OK` before you were launched, so the refutation is a **real
-cross-vendor refutation** and findings are **not** tagged `(same-vendor)`. Where a required check
-reads the verdict's vendor, it may require the cross-vendor one. Where your prompt lists
-`codex-review` as denied, the user has not agreed to send diffs to OpenAI: never call `codex`, skip
-the codex probe, refute with the review's same-vendor refuter, tag every finding `(same-vendor)`, and
-say in `AUTOPILOT_DONE` that a gate requiring cross-vendor refutation cannot pass for that reason.
-
-**Keep every codex call a single `codex`-prefixed command.** `dontAsk` allows a command only when
-every part of it matches an allow rule, so the moment a call grows a `$(mktemp)`, an `if`, a pipe or a
-`timeout` wrapper, `Bash(codex:*)` stops covering it and the harness refuses the whole thing before
-the shell runs, silently. That is the call being shaped wrong, not codex failing. The probe:
-
-```bash
-codex exec --sandbox read-only "Reply with exactly: CODEX_OK"
-```
-
-- Exit 0: proceed, cross-vendor, untagged. `codex login status` proves nothing: it reports logged in
-  on a seat that is out of usage.
-- Non-zero with an error: the seat is out of usage (the error names a reset date; "start a free
-  trial of Plus" means a personal seat, not the team one) or the model is at capacity.
-- **No output at all**: the harness denied it (the call was compound), or codex is reading stdin.
-  Fix the call shape, and add `< /dev/null` if it printed `Reading additional input from stdin`.
-
-**Refutation prompts: one finding per call, under ~800 characters, mechanism stated flat.** Name the
-`file:line` and let codex read the file; never paste a diff or ask it to run `git show`. A large
-prompt hangs `codex exec` for as long as it is allowed to run, heartbeating into your log so the
-orchestrator cannot see the stall. Never offer a benign alternative ("or is this deliberate?"):
-codex rejects when uncertain, so that clause can flip a CONFIRMED P1 to REJECTED with no code
-change. Never pass `-m`. A useless or empty reply counts as REJECTED and says the refutation did
-not run, not that it passed.
-
-You cannot answer a question, so **do not let the codex probe stop you.** If codex is genuinely
-unusable after a correctly-shaped call, fall back to the same-vendor refuter, tag every finding
-`(same-vendor)`, and say in `AUTOPILOT_DONE` which outcome you saw: a gate requiring cross-vendor
-refutation will not pass, and the orchestrator needs to know why. Never tag a run `(same-vendor)`
-that actually refuted with codex, and never claim codex on a run that fell back. Bound the probe at
-~120s by your tool timeout.
+**The review's agents, finders and codex follow the Stage 3 file**, its last section, "Stage 4b's
+review tools" (`worker-contract-stage-3.md`): confirming the named agents are synced, dispatching
+finders read-only, and when and how to call `codex`. Read that section before the first finder.
 
 **There is no approval block here**: that gate belongs to a session with a human in it. Instead:
 
