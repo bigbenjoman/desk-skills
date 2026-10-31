@@ -13,8 +13,9 @@
 //   stuck    no worker can fix it, so it goes to the person; `why` says what is left
 //   null     nothing to do: green, still running, reruns still to come, or waived as a known flaky check
 //
-// A check §4 Checks workers can't fix names is never sent to a worker: on its own it is stuck with
-// the command that fixes it, and beside a check a worker can fix it is named in the brief as not theirs.
+// A check §4 Checks workers can't fix or §4 Check builds names, or one failing at a step §4 Pre-merge
+// steps names, is never sent to a worker: on its own it is stuck with what clears it, and beside a
+// check a worker can fix it is named in the brief as not theirs.
 import { evaluateGate } from './gate.mjs';
 
 export const FIX_TRIES_MAX = 2;
@@ -44,17 +45,54 @@ export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // (kind `rereview`) moves no head by design, so it does not count here.
 const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview');
 
-// A gate's failing checks, one per name, split into those a worker fixes and those §4 Checks workers
-// can't fix names ({ name, command }).
-function splitFailing(failing, operator) {
-  const all = [...new Map(failing.map((f) => [f.name, f])).values()];
-  const op = new Map((operator ?? []).map((o) => [o.name, o.command]));
-  return { mine: all.filter((f) => !op.has(f.name)), notMine: all.filter((f) => op.has(f.name)).map((f) => ({ name: f.name, command: op.get(f.name) })) };
+// The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
+// jobs`. A payload of any other shape names none.
+const STEP_FAILED = new Set(['failure', 'timed_out']);
+export function failedSteps(view, check) {
+  const job = (Array.isArray(view?.jobs) ? view.jobs : []).find((j) => j?.name === check);
+  if (!Array.isArray(job?.steps)) return [];
+  return job.steps.filter((s) => typeof s?.name === 'string' && STEP_FAILED.has(String(s.conclusion ?? '').toLowerCase())).map((s) => s.name);
 }
-const operatorStuck = (notMine) => ({ call: 'stuck', why: notMine.map((o) => `${o.name} · ${o.command}`).join('; ') });
+// A failing check's failed steps, by ctx.steps(check) where the pass reads them from its run.
+const stepsOf = (f, ctx) => (f.runId && ctx.steps ? ctx.steps(f) ?? [] : []);
+
+// A gate's failing checks, one per name, split into those a worker fixes and those a person clears
+// ({ name, command }): one §4 Checks workers can't fix or ctx.builds (§4 Check builds) names, or one
+// that is, or failed at a step that is, a §4 Pre-merge steps item.
+function splitFailing(failing, ctx) {
+  const all = [...new Map(failing.map((f) => [f.name, f])).values()];
+  const op = new Map([...(ctx.builds ?? []), ...(ctx.operator ?? [])].map((o) => [o.name, o.command]));
+  const pre = ctx.premerge ?? [];
+  const mine = [], notMine = [];
+  for (const f of all) {
+    if (op.has(f.name)) { notMine.push({ name: f.name, runId: f.runId, command: op.get(f.name) }); continue; }
+    const steps = pre.length && !pre.some((p) => p.name === f.name) ? stepsOf(f, ctx) : [];
+    const p = pre.find((x) => x.name === f.name || steps.includes(x.name));
+    if (p) notMine.push({ name: f.name, runId: f.runId, ...(p.name !== f.name ? { step: p.name } : {}), command: p.command });
+    else mine.push(f);
+  }
+  return { mine, notMine };
+}
+
+// A stuck reason's text: `lead` and the checks a worker could not fix, each with the step it failed at
+// where its run reports one, then each check a person clears with what clears it.
+export function stuckWhy({ lead = null, checks }) {
+  const label = (c) => `${c.name}${c.step ? ` (failed step: ${c.step})` : ''}`;
+  const mine = checks.filter((c) => !c.command), theirs = checks.filter((c) => c.command);
+  return [mine.length ? `${lead ?? 'red'}: ${mine.map(label).join(', ')}` : '', ...theirs.map((c) => `${label(c)} · ${c.command}`)].filter(Boolean).join('; ');
+}
+// A PR stuck on red checks, keeping each check by name so desk-q can drop one that has since gone green.
+function checksStuck(lead, mine, notMine, ctx) {
+  const checks = [...mine, ...notMine].map((f) => {
+    const step = f.step ?? stepsOf(f, ctx)[0];
+    return { name: f.name, ...(step ? { step } : {}), ...(f.command ? { command: f.command } : {}) };
+  });
+  return { call: 'stuck', why: stuckWhy({ lead, checks }), lead, checks };
+}
+const operatorStuck = (notMine, ctx) => checksStuck(null, [], notMine, ctx);
 // A red-checks fix: each check a worker fixes with its run, and those it leaves to a person.
-const checksFix = (mine, notMine, repo) => ({ kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}`, checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })), not_mine: notMine });
-const stillRed = (done, fix) => `still red after ${tries(done.length)}: ${fix.checks.map((c) => c.name).join(', ')}`;
+const checksFix = (mine, notMine, repo) => ({ kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}`, checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })), not_mine: notMine.map(({ name, command }) => ({ name, command })) });
+const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => done.length >= FIX_TRIES_MAX || triedHere;
 const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: done.length + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
@@ -69,27 +107,30 @@ const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { d
 const lastSaid = (t) => (t.fix?.kind === 'conflict' && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
 const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(done.length)}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
 
-// t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, operator (parsed),
-// reruns(name) -> reruns tried at s.head, cooledDown (the last rerun has had its gap to report),
-// waived(names) -> the driver merges past these as known flaky checks, conflictFiles() -> [file] | null }.
+// t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, operator, builds and
+// premerge (§4 Checks workers can't fix, Check builds and Pre-merge steps, parsed), steps(check) ->
+// the step names its run failed at, reruns(name) -> reruns tried at s.head, cooledDown (the last rerun
+// has had its gap to report), waived(names) -> the driver merges past these as known flaky checks,
+// conflictFiles() -> [file] | null }.
 export function fixCall(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const done = t.fix_tries ?? [];
   const conflict = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
-  let fix;
+  let fix, split;
   if (conflict) {
     fix = conflictTry(ctx.base, ctx.conflictFiles?.(), false);
   } else {
     const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
     if (gate.state !== 'fail' || gate.pending.length) return null;
-    const { mine, notMine } = splitFailing(gate.failing, ctx.operator);
-    if (!mine.length) return notMine.length ? operatorStuck(notMine) : null;
+    split = splitFailing(gate.failing, ctx);
+    const { mine, notMine } = split;
+    if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
     fix = checksFix(mine, notMine, ctx.repo);
   }
   if (spent(done, fixedAt(done, s.head))) {
-    return { call: 'stuck', why: conflict ? stillInConflict(t, done, ctx.base) : stillRed(done, fix) };
+    return conflict ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : stillRed(done, split.mine, split.notMine, ctx);
   }
   return nextTry(done, s.pr, s.head, fix);
 }
@@ -218,14 +259,15 @@ export function reviewTry(t, { pr, head, why }) {
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
 // check's name and run, under the same tries as fixCall. There are no driver reruns to wait for: the
-// merge driver reruns only a PR out of draft. ctx: { repo, operator (parsed) }.
+// merge driver reruns only a PR out of draft. ctx: { repo, operator, premerge (parsed), steps }, as
+// fixCall's.
 export function draftChecksFix(t, { pr, head, failing }, ctx) {
   if (!head) return null;
-  const { mine, notMine } = splitFailing(failing ?? [], ctx.operator);
-  if (!mine.length) return notMine.length ? operatorStuck(notMine) : null;
+  const { mine, notMine } = splitFailing(failing ?? [], ctx);
+  if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
   const done = t.fix_tries ?? [];
   const fix = { ...checksFix(mine, notMine, ctx.repo), draft: true };
-  return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillRed(done, fix) } : nextTry(done, pr, head, fix);
+  return spent(done, fixedAt(done, head)) ? stillRed(done, mine, notMine, ctx) : nextTry(done, pr, head, fix);
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3

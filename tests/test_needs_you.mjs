@@ -431,6 +431,40 @@ t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting
 t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === planQ} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
 t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 start');
 
+// ---- DS-375: a PR stuck after its fix tries is read against its checks now, names the step its run
+// failed at, and recommends done only when the step is on GitHub.
+const LINT = 'Lint, Type Check & Build';
+const stuckPr = (pr, checks, stuck) => ({ state: 'done', lane: 'A', result: { pr }, stuck: { pr, head: `h${pr}`, at: minsAgo(30), ...stuck },
+  pr_status: { pr, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', head: `h${pr}`, checks, at: minsAgo(1) } });
+const lintRed = { name: LINT, status: 'completed', conclusion: 'failure' };
+const flowsGreen = { name: 'Flows image', status: 'completed', conclusion: 'success' };
+const flowsCmd = { name: 'Flows image', command: './scripts/ensure-flows-image.sh' };
+const lead375 = 'still red after 1 fix try';
+const why375 = (checks) => ({ lead: lead375, checks, why: 'as the pass wrote it' });
+put('sigma', { port: 4600, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'S-1': stuckPr(101, [lintRed, flowsGreen, ...passed], why375([{ name: LINT, step: 'Run eslint' }, flowsCmd])),
+  'S-2': stuckPr(102, [flowsRed[0], ...passed], why375([flowsCmd])),
+  'S-3': stuckPr(103, [lintRed, ...passed], why375([{ name: LINT, step: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }])),
+  'S-4': stuckPr(104, [flowsGreen, ...passed], why375([flowsCmd])),
+  'S-5': stuckPr(105, [lintRed, ...passed], { why: 'still red after 2 fix tries: Lint' }),
+} });
+const sg = Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
+const recommends = (i) => i?.actions[0]?.[1] != null;
+t('DS-375 AC1 a check gone green on the same head is no longer named', sg['S-1']?.need, `PR #101: ${lead375}: ${LINT} (failed step: Run eslint)`);
+t('DS-375 AC2 the item names the step the run failed at', sg['S-1']?.need.includes('(failed step: Run eslint)'), true);
+t('DS-375 AC1 a step on GitHub left: done is still recommended', `${sg['S-1']?.actions[0][0]} ${recommends(sg['S-1'])}`, 'done true');
+t('DS-375 AC1 once every check it named is green it is not stuck: a PR the driver merges is no item', 'S-4' in sg, false);
+t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', sg['S-2']?.need, 'PR #102: Flows image · ./scripts/ensure-flows-image.sh');
+t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and says what the step is',
+  `${sg['S-2']?.actions.map(([a]) => a).join()} ${recommends(sg['S-2'])} ${sg['S-2']?.actions[0][2]}`,
+  'done,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
+t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
+t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
+  `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: ${LINT} (failed step: Check portal schema mirror) · apply the PR's migrations to staging first | false`);
+t('DS-375 a reason recorded before the pass kept its checks holds as it was written', sg['S-5']?.need, 'PR #105: still red after 2 fix tries: Lint');
+const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
+t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

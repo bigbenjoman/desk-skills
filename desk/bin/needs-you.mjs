@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, keysOf, triageOf, laneOf, usageHoldOf, stuckOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
@@ -87,6 +87,13 @@ function itemOf(r, x) {
   if (x.pr) {
     const need = `PR #${t.result.pr}: ${needText(r, x).replace(/^#\d+ · /, '')}`;
     if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
+    // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
+    // and the item leaves the list once the check it clears is green.
+    const outside = stuckOf(t, r.ctx)?.outside ?? [];
+    if (outside.length) {
+      const checks = `${outside.map((c) => `"${c.name}"`).join(', ')} ${outside.length === 1 ? 'is' : 'are'} green`;
+      return { kind: 'pr', need, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
+    }
     return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
   if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', SESSION_WHY], ['not-now']] };

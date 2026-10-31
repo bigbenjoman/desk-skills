@@ -1,5 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { readFileSync } from 'node:fs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, failedSteps, stuckWhy, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -244,5 +245,33 @@ t('DS-318 AC5 the same for a conflict out of draft', fixCall(tk({ ...said318, fi
   'still in conflict with main after 2 fix tries; the last try said: pr=702 jira=In Progress said=src/a.ts left unresolved: both sides rename the export');
 t('DS-318 AC5 a last try that was not for the conflict gave no reason for it', conflictFix(tk({ ...said318, fix: { try: 2, kind: 'review', finished: '2026-10-29T12:00:00Z' } }), { pr: 702, head: HEAD, base: 'main' })?.why,
   'still in conflict with main after 2 fix tries');
+
+// ---- DS-375: a stuck reason names the step each run failed at, keeps its checks by name, and leaves a
+// §4 Check builds check (out of draft) or a §4 Pre-merge steps one to the person, with what clears it.
+// The run's jobs are as `gh run view 41190703208 --repo bigbenjoman/desk-skills --json jobs` returned them.
+const jobs375 = JSON.parse(readFileSync(new URL('./fixtures/gh-run-view-jobs.json', import.meta.url), 'utf8'));
+t('DS-375 AC2 the failed step is read from the run, by its job\'s name', failedSteps(jobs375, 'tests').join(), 'Run tests');
+t('DS-375 AC2 a check with no job in the run, or a payload of another shape, names none',
+  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => x.length).join(), '0,0,0,0');
+const steps375 = (f) => (f.name === 'Lint' ? ['Run eslint'] : []);
+const c375 = fixCall(tk({ fix_tries: two }), both, ctx({ steps: steps375 }));
+t('DS-375 AC2 still red after both tries: each check with the step its run failed at', c375?.why, 'still red after 2 fix tries: Backend tests, Lint (failed step: Run eslint)');
+t('DS-375 AC1 the stuck call keeps its checks by name, for desk-q to read against the PR now', JSON.stringify(c375?.checks), JSON.stringify([{ name: 'Backend tests' }, { name: 'Lint', step: 'Run eslint' }]));
+const builds = [{ name: 'Flows image', command: './scripts/ensure-flows-image.sh' }];
+const flows375 = pr([ok('tests'), red('Flows image', '903')]);
+const b375 = fixCall(tk(), flows375, ctx({ operator: [], builds, reruns: () => 0 }));
+t('DS-375 AC3 out of draft, red only on a §4 Check builds check: never requeued, stuck with its command', `${b375?.call} | ${b375?.why}`, 'stuck | Flows image · ./scripts/ensure-flows-image.sh');
+const b375b = fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), red('Lint', '902')]), ctx({ operator: [], builds }));
+t('DS-375 AC3 beside a fixable check, only that one goes to the worker', `${b375b?.call} | ${b375b?.fix.what} | ${b375b?.fix.not_mine.map((c) => `${c.name}: ${c.command}`).join()}`, 'requeue | red: Lint | Flows image: ./scripts/ensure-flows-image.sh');
+t('DS-375 AC3 and once its tries are spent, the stuck reason names both', fixCall(tk({ fix_tries: two }), pr([ok('tests'), red('Flows image', '903'), red('Lint', '902')]), ctx({ operator: [], builds }))?.why,
+  'still red after 2 fix tries: Lint; Flows image · ./scripts/ensure-flows-image.sh');
+const premerge = [{ name: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }];
+const lint375 = pr([ok('tests'), red('Lint, Type Check & Build', '904')]);
+const p375 = fixCall(tk(), lint375, ctx({ operator: [], premerge, steps: () => ['Check portal schema mirror'], reruns: () => 0 }));
+t('DS-375 AC5 a check failing at a §4 Pre-merge steps step: never requeued, stuck naming the step', `${p375?.call} | ${p375?.why}`,
+  'stuck | Lint, Type Check & Build (failed step: Check portal schema mirror) · apply the PR\'s migrations to staging first');
+t('DS-375 AC5 the same check failing at another step is a worker\'s', fixCall(tk(), lint375, ctx({ operator: [], premerge, steps: () => ['Run eslint'] }))?.call, 'requeue');
+t('DS-375 AC5 a draft reads the row the same way', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [{ name: 'Lint, Type Check & Build', runId: '904' }] }, { repo: 'acme/widgets', premerge, steps: () => ['Check portal schema mirror'] })?.call, 'stuck');
+t('DS-375 the reason with no worker\'s check left names only what a person clears', stuckWhy({ lead: 'still red after 1 fix try', checks: [{ name: 'Flows image', command: 'x.sh' }] }), 'Flows image · x.sh');
 
 process.exit(fails ? 1 : 0);

@@ -40,7 +40,7 @@ import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
@@ -197,6 +197,20 @@ function blockerHold(q, key, b, ctx, seen) {
   return { k: 'waiting', name: b, text: bk === 'needs' ? `behind ${b}, which needs you` : `behind ${b}` };
 }
 
+// What a PR the pass recorded stuck is still stuck on, read against its checks as they are now:
+// { why, outside }, `outside` being the still-red checks a person clears off GitHub ({ name, command }).
+// A check named in the record that is no longer red is dropped, and once none is left it is null. A
+// record that names no checks (a conflict, a review) holds as it was written.
+export function stuckOf(t, ctx = NOBODY) {
+  const s = t?.stuck;
+  if (!s) return null;
+  if (!Array.isArray(s.checks)) return { why: s.why, outside: [] };
+  const gate = evaluateGate(prStatusOf(t)?.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
+  const red = new Set(gate.failing.map((f) => f.name));
+  const left = s.checks.filter((c) => red.has(c.name));
+  return left.length ? { why: stuckWhy({ lead: s.lead, checks: left }), outside: left.filter((c) => c.command) } : null;
+}
+
 const segText = (segs) => segs.map((s) => s[0]).join('');
 const checksFailed = (n) => `${n} check${n === 1 ? '' : 's'} failed`;
 const tryOf = (t) => `try ${(t.fix_tries?.length ?? 0) + 1} of ${FIX_TRIES_MAX}`;
@@ -210,8 +224,9 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
   const needs = (...segs) => ({ k: 'needs', segs }), merging = (...segs) => ({ k: 'merging', segs });
   if (ps.state === 'CLOSED') return needs(['closed unmerged: requeue or drop it', null]);
-  // What no fix try can move: a check only an operator fixes, or one still red after both tries.
-  if (t.stuck) return needs([t.stuck.why, null]);
+  // What no fix try can move: a check only a person clears, or one still red after both tries.
+  const stuck = stuckOf(t, ctx);
+  if (stuck) return needs([stuck.why, null]);
   if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
   // The merge driver records a PR under §4 Merge holds and leaves it for a person to merge.
   if (String(t.merge_blocked ?? '').startsWith('merge hold:')) return needs(['merge hold: merge it', null]);
@@ -2190,7 +2205,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   };
   if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
   // The PR's fix try and what no fix try can move, as the last pass recorded them on the ticket.
-  const stuck = t.stuck && !t.merged_at ? t.stuck : null;
+  const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
   if (t.fix?.kind === 'gaps') field('Your call', [[t.fix.what, null]]);
   else if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
   if (stuck) field('For you', [[stuck.why, WARN]]);

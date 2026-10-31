@@ -37,7 +37,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { undraftCall, undraftComment, verdictCarries, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch } from './evidence.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow } from './desk-q.mjs';
@@ -2078,6 +2078,16 @@ for (const m of merges) out.push(`merge recorded: ${m}`);
 const undraftErrors = [];
 // §4 Checks workers can't fix, for a draft's red checks here and a ready PR's in the fix tries below.
 const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
+// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
+// applied to staging), so no fix worker is sent for it and the person is told the step.
+const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
+// The rows the fix tries read: one that does not parse makes none this pass.
+const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow], ['§4 Pre-merge steps', preMergeRow]].filter(([, r]) => r.errors.length).map(([row, r]) => `${row} does not parse: ${r.errors.join(', ')}`);
+// The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; none when gh cannot read it.
+const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'jobs']); return r.ok ? JSON.parse(r.out) : null; });
+const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
+// What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
+const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
 const gateLists = () => {
   const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
@@ -2131,7 +2141,7 @@ if (drafts.length) {
     };
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
-      : c.call === 'checks' && !operatorRow.errors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, operator: operatorRow.checks })
+      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, ...clearsRows, builds: [] })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) }) : null;
     // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on.
@@ -2265,10 +2275,10 @@ function reviewComments(id) {
 // ---- fix tries -----------------------------------------------------------
 // A ready PR the merge driver cannot merge, red after its two reruns or in conflict with its base,
 // goes back to a fix worker on the same branch, at most twice (fix-tries.mjs). What no worker can
-// fix, a §4 Checks workers can't fix check or a third failure, is recorded on the ticket as `stuck`
+// fix, a check a person clears (§4 Checks workers can't fix, Check builds or Pre-merge steps) or a third failure, is recorded on the ticket as `stuck`
 // and put to the person. The driver's per-head rerun record is read from its state directory.
-if (operatorRow.errors.length && undrafted.length) {
-  out.push(`fix tries: none this pass, since config §4 Checks workers can't fix does not parse: ${operatorRow.errors.join(', ')} (want \`<check>: <what fixes it>\`). Run /desk-setup`);
+if (fixRowErrors.length && undrafted.length) {
+  out.push(`fix tries: none this pass, since config ${fixRowErrors.join('; ')} (want \`<check>: <what fixes it>\`). Run /desk-setup`);
 }
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
@@ -2291,7 +2301,7 @@ function humanSeen(n) {
   if (!v || typeof v !== 'object') return true;
   return humanReviewed(v, conflictHandle);
 }
-for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
+for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   const n = s.pr;
   // A conflict goes to a fix worker only under the §3 row the base's conflict reads too.
   if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') {
@@ -2303,7 +2313,8 @@ for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
     }
   }
   const ctx = {
-    repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), operator: operatorRow.checks,
+    // Out of draft, a §4 Check builds check is the person's too: the pass builds only a draft's.
+    repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows,
     ...driverReruns(n, s.head),
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {
@@ -2322,7 +2333,9 @@ for (const { t, s } of operatorRow.errors.length ? [] : undrafted) {
 function applyFix(t, n, head, c) {
   if (c.call === 'stuck') {
     report.waiting.push(`${t.key}: STUCK — PR #${n}: ${c.why}`);
-    if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head, at: PASS_AT })}`);
+    // Its checks are kept by name, so desk-q drops one from the reason once it is green.
+    const checks = c.checks ? { lead: c.lead ?? null, checks: c.checks } : {};
+    if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head, at: PASS_AT, ...checks })}`);
     return;
   }
   const f = c.fix;
