@@ -798,7 +798,7 @@ const segLine = (segs) => segRow(null, segs, null);
 const bold = (s) => segLine([[s, BOLD]]);
 const dim = (s) => segLine([[s, DIM]]);
 const dmy = (t) => dayAndTime(t).slice(0, -6);
-const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+export const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // The Timeline's scale, from how far away the last could-run-to time is: hours up to 2 days, days
 // up to 21, weeks beyond; `zoom` other than auto overrides it. Ticks are labelled local times.
@@ -1133,7 +1133,7 @@ function staleReads(x, now) {
     .map((r) => ({ ...r, days: -calendarDays(r.at, now), failedToday: r.failedAt != null && r.failedAt > r.at && calendarDays(r.failedAt, now) === 0 }))
     .sort((a, b) => b.days - a.days);
 }
-const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+export const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 
 // What a row's figure leaves out, one tag: a bill that can't be read, a figure not read today, use
 // AWS credits covered, a name with no repo, CI minutes GitHub discounted in full, a Neon org on the

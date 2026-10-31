@@ -430,6 +430,11 @@ t('DS-314 AC2 its ticket page says how to release it',
 onGitHub(51, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: null });
 const d51 = N.record({ word: 'iota', ticket: 'E-1', action: 'done' });
 t('DS-314 AC2 (DS-378) done reads it on GitHub, and says it is still a draft', `${d51.ok} ${/GitHub still shows PR #51 unmerged, still a draft/.test(d51.line)}`, 'false true');
+onGitHub(51, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: null });
+const u51 = N.record({ word: 'iota', ticket: 'E-1', action: 'done' });
+t('DS-378 done on a held draft once undrafted says it is released, and records it',
+  `${u51.ok} ${u51.line} ${queueOf('iota').tickets['E-1'].pr_status.isDraft}`, 'true iota E-1: GitHub shows PR #51 out of draft, so it is released; the next pass takes it on from there. false');
+t('DS-378 it is no longer held', N.collect({ word: 'iota' }).items.find((i) => i.t.key === 'E-1')?.kind ?? 'none', 'pr');
 
 // ---- DS-347 AC3: a green PR the merge driver has held on two loops for an unresolved thread is the
 // person's, naming the thread; a green PR it merges is not.
@@ -586,11 +591,20 @@ onGitHub(141, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: sha(1
 const q1 = N.record({ word: 'psi', ticket: 'Q-1', action: 'done' });
 t('DS-378 AC1 done on a PR still open says GitHub still shows it unmerged', `${q1.ok} ${q1.line}`, 'false psi Q-1: GitHub still shows PR #141 unmerged, so it stays on your list with that note.');
 t('DS-378 AC1 it is read from the repo\'s GitHub', readFileSync(GH_LOG, 'utf8').includes('pr view 141 --repo acme/psi --json state,mergedAt,isDraft,headRefOid'), true);
-t('DS-378 AC1 it is listed again with that note', /\(You said done at \d{4}-\d\d-\d\d \d\d:\d\d UTC, and GitHub still showed it unmerged\.\)$/.test(psi()['Q-1']?.need ?? ''), true);
+t('DS-378 AC1 it is listed again with that note', /^\(You said done at \d{4}-\d\d-\d\d \d\d:\d\d UTC, and GitHub still showed it unmerged\.\)$/.test(psi()['Q-1']?.note ?? ''), true);
+const q1Line = cli('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
+t('DS-378 AC1 the listed line keeps the need and the note whole', q1Line.includes(`| ${psi()['Q-1'].need} ${psi()['Q-1'].note} |`), true);
+// AC4 on the listed line: recorded text a need quotes is cut short, so the line's cut never takes the next step.
+const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'touches a very long list of held paths, '.repeat(6)}` }));
+const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
+t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
+  (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Merge it on GitHub when you are ready; the ticket is then done. |'), true);
+delete qhl.tickets['Q-7']; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC1 the CLI shows it to the person', cli('record', 'psi', 'Q-1', 'done').code, 11);
 const qh = queueOf('psi'); qh.tickets['Q-1'].pr_status.head = sha(999);
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qh));
-t('DS-378 AC1 once its head moves, the note goes', psi()['Q-1']?.need.includes('You said done'), false);
+t('DS-378 AC1 once its head moves, the note goes', psi()['Q-1']?.note, '');
 // AC2: done after merging it: said, recorded, and not listed again.
 onGitHub(142, { state: 'MERGED', mergedAt: '2026-10-31T09:00:00Z', isDraft: false, headRefOid: sha(142) });
 const q2 = N.record({ word: 'psi', ticket: 'Q-2', action: 'done' });

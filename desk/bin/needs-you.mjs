@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
 
@@ -60,11 +60,11 @@ const reviewGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bg
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 
 // ---- A PR item in the person's words: what is wrong, then what to do and what happens once they have.
-// No commit SHA, fix try or review-verdict wording: those are the pass's, for its log.
-const names = (xs) => (xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
-const plainWords = (s) => one(s).replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
-  .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
-const upper = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+// No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
+// quoted in one is cut short (clip), so the line's cut never takes what to do and what happens next.
+const clip = (s, n = 80) => cut(one(s), n);
+const plainWords = (s) => clip(one(s).replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+  .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review'));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
 const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green' : 'then merge it on GitHub once its checks are green');
 const REPAIRED = "desk's own repairs did not fix";
@@ -74,7 +74,7 @@ function stuckPlain(r, n, s) {
   if (checks.length) {
     const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : ''}`;
     const mine = checks.filter((c) => !c.command), theirs = checks.filter((c) => c.command);
-    const parts = [...(mine.length ? [`${names(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
+    const parts = [...(mine.length ? [`${andList(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
       ...theirs.map((c) => `${label(c)} needs a step outside GitHub: ${c.command}`)];
     const todo = mine.length ? `Fix ${mine.length === 1 ? 'it' : 'them'} on its branch${theirs.length ? ', and do that step' : ''}` : `Do ${theirs.length === 1 ? 'that step' : 'those steps'}`;
     return `${n}: ${parts.join('; ')}. ${todo}; ${thenMerge(r)}.`;
@@ -95,14 +95,14 @@ function draftPlain(r, n, u) {
     const kv = dirty[1].split(/\s+/).filter(Boolean).map((p) => p.split('=')).filter(([, v]) => Number(v) > 0);
     const found = kv.filter(([k]) => /^p\d$/i.test(k)).map(([k, v]) => `${v} ${k.toUpperCase()}`);
     const gaps = Number(kv.find(([k]) => k === 'gaps')?.[1] ?? 0);
-    const what = names([...(found.length ? [`${names(found)} finding${found.length === 1 && found[0].startsWith('1 ') ? '' : 's'}`] : []), ...(gaps ? [`${gaps} requirement gap${gaps === 1 ? '' : 's'}`] : [])]);
+    const what = andList([...(found.length ? [`${andList(found)} finding${found.length === 1 && found[0].startsWith('1 ') ? '' : 's'}`] : []), ...(gaps ? [`${gaps} requirement gap${gaps === 1 ? '' : 's'}`] : [])]);
     if (gaps) return `${n} is a draft, and its code review left ${what}. Say how to settle ${gaps === 1 && !found.length ? 'it' : 'them'}; a worker on the PR carries out your call.`;
     if (what) return `${n} is a draft, and its code review found ${what} that ${REPAIRED}. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.`;
   }
   if (/Clean review verdict is not set/.test(why)) return `${n} is a draft, and desk can not read its code review because §4 Clean review verdict is not set. Set it with /desk-setup; the next pass then reads the review.`;
   if (/clean and green/.test(why)) return `${n} is a draft with a clean review and green checks. Undraft it; ${thenMerge(r)}.`;
   if (!u) return `${n} is a draft with no review recorded. Review it, then undraft it; ${thenMerge(r)}.`;
-  return `${n} is a draft: ${plainWords(why.replace(/^its? /, ''))}. ${upper(plainWords(u.action ?? 'settle it'))}; the next pass then picks it up.`;
+  return `${n} is a draft: ${plainWords(why.replace(/^its? /, ''))}. ${capital(plainWords(u.action ?? 'settle it'))}; the next pass then picks it up.`;
 }
 
 // An unmerged PR's need, from the reason desk-q has it need the person (prWhy).
@@ -115,10 +115,10 @@ function prPlain(r, t) {
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
-    case 'hold': return `${n} touches files under a merge hold (${w.text}), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.`;
-    case 'feedback': return `${n} is green, but held for review: ${w.text}. Resolve or answer it; desk then merges it.`;
+    case 'hold': return `${n} touches files under a merge hold (${clip(w.text)}), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.`;
+    case 'feedback': return `${n} is green, but held for review: ${clip(w.text, 150)}. Resolve or answer it; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
-    case 'red': return `${n} has ${w.names.length === 1 ? 'a failing check' : `${w.names.length} failing checks`}, ${names(w.names.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${w.names.length === 1 ? 'it' : 'them'}. Fix or re-run ${w.names.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.`;
+    case 'red': return `${n} has ${w.names.length === 1 ? 'a failing check' : `${w.names.length} failing checks`}, ${andList(w.names.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${w.names.length === 1 ? 'it' : 'them'}. Fix or re-run ${w.names.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.`;
     case 'gate': return `${n} is not green: ${plainWords(w.text ?? 'a required check did not pass')}. Fix that check, or §4 Required checks if it should not be required; ${thenMerge(r)}.`;
     case 'green': return `${n} has ${w.checks === 1 ? 'its check' : `all ${w.checks} checks`} green${w.advisory ? ` (${w.advisory} advisory failed, which holds nothing)` : ''}, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done.`;
     case 'running': return `${n}${w.checks ? `'s checks are still running (${w.done} of ${w.checks} done)` : ' has no checks reported yet'}, and desk may not merge in this repo. Merge it on GitHub once its checks are green; the ticket is then done.`;
@@ -127,11 +127,12 @@ function prPlain(r, t) {
 }
 
 // What GitHub showed the last time the person said done on a PR, while its head is the one it showed.
+// It is the item's `note`, which listText keeps whole when it cuts the need.
 function doneNote(t) {
   const d = t.done_check;
   if (!d || (d.head ?? null) !== (t.pr_status?.head ?? null)) return '';
   const shown = d.state === 'CLOSED' ? 'closed without merging' : `unmerged${d.draft ? ', still a draft' : ''}`;
-  return ` (You said done at ${String(d.at).slice(0, 16).replace('T', ' ')} UTC, and GitHub still showed it ${shown}.)`;
+  return `(You said done at ${String(d.at).slice(0, 16).replace('T', ' ')} UTC, and GitHub still showed it ${shown}.)`;
 }
 
 // The batches `word` names: a repo's name is all of its batches, `<repo>:<name>` one named batch.
@@ -158,25 +159,25 @@ function itemOf(r, x) {
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
   if (heldDraft(t)) {
     const n = t.result.pr;
-    return { kind: 'held', need: `you put PR #${n} back to draft, so nothing undrafts or merges it: undraft it to release it (gh pr ready ${n} --repo ${r.slug.replace('__', '/')})${doneNote(t)}`,
+    return { kind: 'held', need: `you put PR #${n} back to draft, so nothing undrafts or merges it: undraft it to release it (gh pr ready ${n} --repo ${r.slug.replace('__', '/')})`, note: doneNote(t),
       actions: [['done', 'only you can undraft it; say done once you have'], ['not-now']] };
   }
   // An unmerged PR: only the person's step on GitHub moves it. A draft whose review left gaps also
   // takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
-    const need = `${prPlain(r, t)}${doneNote(t)}`;
+    const need = prPlain(r, t), note = doneNote(t);
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
-    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
-    if (reviewGaps(t)) return { kind: 'pr', need, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
+    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
+    if (reviewGaps(t)) return { kind: 'pr', need, note, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
     // and the item leaves the list once every check it is still stuck on is green.
     const stuck = stuckOf(t, r.ctx);
     const outside = stuck?.outside ?? [];
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
-      return { kind: 'pr', need, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
+      return { kind: 'pr', need, note, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
     }
-    return { kind: 'pr', need, actions: [['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then'], ['not-now']] };
+    return { kind: 'pr', need, note, actions: [['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then'], ['not-now']] };
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
   // it, makes it clean, and the pass drops the record once it is.
@@ -292,7 +293,9 @@ export function listText(c, now = Date.now()) {
   const lines = repos.map(runLine);
   for (const i of c.items) {
     const waited = i.since == null ? '' : ` ${since(now - i.since)}`;
-    lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${cut(i.need, QUESTION_MAX)} | ${i.actions.map(actionText).join(' | ')}`);
+    // A done note follows the need whole: it is what GitHub showed when the person last said done.
+    const need = `${cut(i.need, QUESTION_MAX)}${i.note ? ` ${i.note}` : ''}`;
+    lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${need} | ${i.actions.map(actionText).join(' | ')}`);
   }
   const n = new Set(repos.map((r) => r.slug)).size;
   lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);
@@ -357,6 +360,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const m = queueCmd(r, ['set', ticket, 'pr_status.state=MERGED', `pr_status.merged_at=${at}`]);
       if (!m.ok) return say(false, `GitHub shows PR #${pr} merged, but recording it was refused: ${m.out}`);
       return say(true, `GitHub shows PR #${pr} merged, so it is off your list.`);
+    }
+    // A PR held in draft asked only for undrafting: out of draft is that step done.
+    if (heldDraft(x.t) && v.state === 'OPEN' && v.isDraft === false) {
+      const m = queueCmd(r, ['set', ticket, 'pr_status.isDraft=false']);
+      if (!m.ok) return say(false, `GitHub shows PR #${pr} out of draft, but recording it was refused: ${m.out}`);
+      return say(true, `GitHub shows PR #${pr} out of draft, so it is released; the next pass takes it on from there.`);
     }
     const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null };
     const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${check.draft ? ', still a draft' : ''}`;
