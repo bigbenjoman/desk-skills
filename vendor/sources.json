@@ -747,12 +747,12 @@
         "path": "skills/programmatic-seo/"
       },
       "pin": {
-        "commit": "759933ed7",
-        "date": "2026-10-02"
+        "commit": "15b38b538",
+        "date": "2026-10-27"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
-      "tree_sha256": "397a2a3c0a9261c030afb55677b43a6105678354109819261bc4ccb7e4c541b5"
+      "tree_sha256": "0f24ae992b856417d7ab5434ca0edd2b8191704dcd8731e67749208f4ff70139"
     },
     "python-observability": {
       "source": {
