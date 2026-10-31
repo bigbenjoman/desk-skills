@@ -30,7 +30,10 @@ checkSize({ t, root, name: 'desk-setup', core, before });
 
 // AC2: each heading, table row and paragraph of the old file is in exactly one file, word for word.
 // The headings counted include the `# §0 this repo` comments of step 1's detection block.
-checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40 });
+const REWRITTEN = [
+  ['DS-368', 'P2s a third round carried are out of `p2`', 1], // round 2 carries P2s too
+];
+checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40, rewritten: REWRITTEN });
 
 // AC3: the core's step table names, for each step, the sections it moved and the one file to read.
 const table = stepTable(core);

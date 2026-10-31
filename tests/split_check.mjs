@@ -37,11 +37,19 @@ export const stepTable = (core) => [...core.matchAll(/^\| ([^|]+) \| ([^|]+) \| 
 // Every file under a directory whose name ends with one of the extensions.
 export const walk = (d, exts = ['.md']) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name), exts) : exts.some((x) => e.name.endsWith(x)) ? [join(d, e.name)] : []));
 
-export function checkSplit({ t, label, before, files, read, headings: headingCount, minRows }) {
+// The fixtures stay frozen, so a heading, table row or paragraph a later ticket rewrote is named by
+// text only it holds: [ticket, text, how many of the old file's paragraphs and table rows hold it].
+export const rewrittenBy = (rewritten, s) => rewritten.find(([, x]) => norm(s).includes(x));
+export function checkRewritten({ t, label, rewritten, items }) {
+  for (const [key, s, n] of rewritten) t(`${label} ${key} rewrote ${n} of the old file: ${s}`, items.filter((p) => norm(p).includes(s)).length, n);
+}
+
+export function checkSplit({ t, label, before, files, read, headings: headingCount, minRows, rewritten = [] }) {
   const lines = (f) => read(f).split('\n').map((l) => l.trim());
+  const kept = (s) => !rewrittenBy(rewritten, s);
   const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
   t(`${label} the old file has its ${headingCount} headings`, headings.length, headingCount);
-  for (const h of headings) t(`${label} "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
+  for (const h of headings.filter(kept)) t(`${label} "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
 
   // A header or separator row repeats in every file that holds part of its table, so only body rows
   // must be in exactly one.
@@ -50,7 +58,7 @@ export function checkSplit({ t, label, before, files, read, headings: headingCou
   const header = new Set(all.flatMap((l, i) => (/^\|/.test(l) && /^\|[-| ]+\|$/.test(all[i + 1] || '') ? [l] : [])));
   const body = rows.filter((r) => !header.has(r) && !/^\|[-| ]+\|$/.test(r));
   t(`${label} the old file's table rows are read (${body.length} body rows)`, body.length >= minRows, true);
-  for (const r of rows) {
+  for (const r of rows.filter(kept)) {
     const n = files.filter((f) => lines(f).includes(r)).length;
     if (body.includes(r)) t(`${label} row "${r.slice(0, 60)}" is in exactly one file`, n, 1);
     else t(`${label} header "${r.slice(0, 40)}" is in a file`, n >= 1, true);
@@ -59,7 +67,8 @@ export function checkSplit({ t, label, before, files, read, headings: headingCou
   // Word for word, whitespace aside: the split moves text, it does not reword it, and it does not
   // leave a copy behind.
   const after = files.map((f) => norm(read(f)));
-  const paras = paragraphs(before);
+  checkRewritten({ t, label, rewritten, items: [...paragraphs(before), ...body] });
+  const paras = paragraphs(before).filter(kept);
   const counts = paras.map((p) => after.filter((a) => a.includes(p)).length);
   const dropped = paras.filter((_, i) => counts[i] === 0);
   // A heading is counted line by line above; as a substring, "# x" is also inside every "## x".

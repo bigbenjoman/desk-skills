@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The first three lines of every posted desk-review: the review marker, the verdict marker and the
-// heading, and from round 3 a fourth: the carried marker. They are computed from the run's finder
+// heading, and from round 2 a fourth: the carried marker. They are computed from the run's finder
 // and refuter results, never written by hand, because a required check reads the verdict marker and
 // a hand count is how a review reads clean when it is not. The marker is a contract with every gate
 // that reads it: it changes only with a version bump. The carried count is a line of its own, after
@@ -18,7 +18,7 @@
 //     "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
 //                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
 //
-// From round 3 the finders read only the fix range, the commits since the previous round, so the
+// From round 2 the finders read only the fix range, the commits since the previous round, so the
 // results carry "since": the full SHA that round reviewed. Only then may a P2 be "carried": true,
 // left for the PR body or a follow-up ticket instead of blocking. P0 and P1 always block.
 //
@@ -31,14 +31,14 @@
 //     it counts in `partial` beside the files the oversized cap skipped;
 //   - vendor=codex-cross only when codex read the diff cold on this run and every finding was
 //     refuted by the other vendor: codex's by Claude, Claude's by codex;
-//   - a carried finding is an outstanding P2 on round 3 or later, never deferred, with a file:line;
+//   - a carried finding is an outstanding P2 on round 2 or later, never deferred, with a file:line;
 //     it counts in `carried`, not in p2, and an unrefuted one still counts in unrefuted.
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
-const FIX_RANGE_ROUND = 3
+const FIX_RANGE_ROUND = 2
 const TOP = ['sha', 'round', 'since', 'gaps', 'skipped_files', 'seats', 'findings']
 const SEAT = ['role', 'agent', 'vendor', 'status', 'note']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
@@ -190,7 +190,7 @@ export function carriedSection(r) {
   return [
     '### Carried review findings',
     `desk-review round ${t.round} read the fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}. ` +
-      'These P2 findings are left for later: from round 3 only P0 and P1 block.',
+      `These P2 findings are left for later: from round ${FIX_RANGE_ROUND} only P0 and P1 block.`,
     ...rows,
   ].join('\n')
 }

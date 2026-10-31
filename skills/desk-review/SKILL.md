@@ -130,8 +130,8 @@ Each Claude prompt carries, in order:
    Nadia's findings table or verdict, and never `P3`.
 3. The diff command, substituted literally: branch `git diff "origin/<base>...HEAD"`; PR
    `git diff "origin/<base>...refs/desk-review/pr-<n>"` after `git fetch --quiet origin <base>`.
-   **From round 3, the fix range instead**: branch `git diff "<since>..HEAD"`, PR
-   `git diff "<since>..refs/desk-review/pr-<n>"` (*Round 3 and above*). Bea alone keeps the whole
+   **From round 2, the fix range instead**: branch `git diff "<since>..HEAD"`, PR
+   `git diff "<since>..refs/desk-review/pr-<n>"` (*Round 2 and above*). Bea alone keeps the whole
    range.
    Agents run it themselves. Never paste a diff into a prompt. Not `gh pr diff`: GitHub refuses any
    diff over 20,000 lines (`HTTP 406 … too_large`), so a big PR's finders would all error.
@@ -173,34 +173,45 @@ adds:
 4. **`NO FINDINGS` is the expected ending.** If the history shows the same ground covered round after
    round, say so in the report: that needs a human, not another lap.
 
-### Round 3 and above: the fix range, and only P0 and P1 block
+### Round 2 and above: the fix range, and only P0 and P1 block
 
-By round 3 the branch has been read whole twice. What is left unreviewed is the fixes, so from round
-3 the finders, codex's cold read included, read **only the commits since the previous round**:
+By round 2 the branch has been read whole once. What is left unreviewed is the fixes, so from round
+2 the finders, codex's cold read included, read **only the commits since the previous round**:
 
 ```bash
-git diff <previous round's reviewed SHA>..HEAD     # never origin/<base>...HEAD from round 3
+git diff <previous round's reviewed SHA>..HEAD     # never origin/<base>...HEAD from round 2
 ```
 
 The previous round's SHA is the `sha=` of the last verdict on the PR, or, before a PR exists
 (desk-ticket Stage 4b), the SHA that round reviewed. It goes in the results file as `since`, the
-header names the range (`fix range <since short>..<head short>`), and verdict.mjs refuses a round-3
-results file without it. An empty range is a stated stop, as an empty diff is. Earlier findings
+header names the range (`fix range <since short>..<head short>`), and verdict.mjs refuses a results
+file from round 2 on without it. An empty range is a stated stop, as an empty diff is. Earlier findings
 still carried forward (rule 3 above) stay in the counts whatever the range. **The requirements seat
 still reads the whole branch** (`origin/<base>...HEAD`): criteria are met by the whole change, and
 judged against a few fix commits most of them would read as unmet.
 
-**From round 3 a P2 can be carried** instead of blocking: `"carried": true` on its finding, which
+**The fix range holds only when the previous round read the whole branch and the branch only grew
+since.** Otherwise `since` is the branch's merge base, `git merge-base origin/<base> HEAD`, so this
+round reads the whole branch again, and the report header says why. That applies in three cases:
+
+- **The previous verdict was partial** (`partial` non-zero: a file the oversized cap skipped or a seat
+  that died). A fix range never reads what that round missed, and this round's `partial` counts only
+  its own gaps, so a clean verdict would attest code no finder read.
+- **The branch was rebased**: `git merge-base --is-ancestor <since> HEAD` fails.
+- **The base was merged in**: `git log --merges --oneline <since>..HEAD` prints anything. A two-dot
+  range would hand the finders every base commit that merge brought in as this branch's fixes.
+
+**From round 2 a P2 can be carried** instead of blocking: `"carried": true` on its finding, which
 takes it out of `p2` and counts it on the carried line instead. Carry a P2 when fixing it would mean
 another round. A P0 or P1 is never carried; verdict.mjs refuses one, naming the finding, and a P2 on
-rounds 1 and 2 is fixed rather than carried. A carried finding needs `where` as `file:line`.
+round 1 is fixed rather than carried. A carried finding needs `where` as `file:line`.
 `node verdict.mjs --carried <results>` prints the PR body's `### Carried review findings` section,
 one `file:line` per finding (desk-pr places it).
 
 ## The verdict
 
 **The body's first three lines are computed, never written by hand**: the review marker, the
-verdict marker and the heading, and from round 3 a fourth, the carried line. A hand count is how a
+verdict marker and the heading, and from round 2 a fourth, the carried line. A hand count is how a
 review reads clean when it is not. Once every finder and refuter has answered, write the run's
 results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker:
 `desk-review-results.json` at its worktree root, removed at the end with `git clean -f`):
@@ -217,13 +228,13 @@ results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
-  finding deliberately left unfixed; `carried: true` for a P2 carried from round 3 (above). A
+  finding deliberately left unfixed; `carried: true` for a P2 carried from round 2 (above). A
   merged duplicate is `"result": "DUPLICATE"` with `duplicate_of` naming the finding kept, and it
   still counts unless that one is counted at the same severity or higher: merging must never drop a
   confirmed finding behind a rejected one.
 - `gaps`, `skipped_files`: the open requirement gaps and the files the oversized cap skipped. Every
   count is required, `0` when there are none: one left out is refused, never read as zero.
-- `since`: from round 3 only, the full SHA the previous round reviewed (the fix range's start).
+- `since`: from round 2 on, the full SHA the previous round reviewed (the fix range's start).
 
 Then:
 
@@ -233,7 +244,7 @@ node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 
 `<results>` is the file's full scratchpad path, or `desk-review-results.json` in a worker (run from
 its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
-elsewhere. It prints the three lines (four from round 3) and refuses (exit 2) any results file that
+elsewhere. It prints the three lines (four from round 2) and refuses (exit 2) any results file that
 is incomplete or contradicts itself. Its tests, `tests/test_review_verdict.mjs`, prove that no
 combination with an open finding, a skipped file, a dead seat or an open gap prints the clean
 verdict. Use its output verbatim, then the report below it. The clean form, which the tests hold
@@ -248,7 +259,7 @@ this line to:
 | Field | Meaning |
 | --- | --- |
 | `sha` | The full SHA the finders read, equal to the PR head when posted. It attests that commit and no other |
-| `p0` `p1` `p2` | Findings **outstanding at this head**: `CONFIRMED` or `UNREFUTED`, deferred ones included, except P2s carried from round 3, which count only on the carried line. One raised and already fixed in this SHA is not in the results file |
+| `p0` `p1` `p2` | Findings **outstanding at this head**: `CONFIRMED` or `UNREFUTED`, deferred ones included, except P2s carried from round 2, which count only on the carried line. One raised and already fixed in this SHA is not in the results file |
 | `deferred` | Findings deliberately left unfixed, any severity (also counted in their `p` field). A body reading "clean" that defers one is `deferred=1` |
 | `gaps` | Open requirement gaps, excluding `UNVERIFIED CODE CLAIM` ones (never posted) |
 | `unrefuted` | Findings whose refutation did not run (also counted in their `p` field, or on the carried line when carried) |
@@ -256,7 +267,7 @@ this line to:
 | `vendor` | `codex-cross` only when codex read this head cold on this run **and** every finding was refuted by the other vendor; else `same-vendor` |
 | `round` | The round this review is |
 
-From round 3 a fourth line follows the heading, `<!-- desk-review:carried v=1 p2=<n> since=<full SHA> -->`:
+From round 2 a fourth line follows the heading, `<!-- desk-review:carried v=1 p2=<n> since=<full SHA> -->`:
 the P2 findings carried (counted there, **not** in `p2`) and the fix range's start. It never decides
 clean; the blocking counts above do. It sits after the heading rather than in the verdict line
 because repos commit their own copy of the gate, and a copy from before carrying matches the verdict
