@@ -255,13 +255,17 @@ function requeue(q, key) {
   const prevPark = t.state === 'parked' && t.park?.question && !wedged
     ?{ question: String(t.park.question), since: t.park.since ?? null, requeued_at: new Date().toISOString(), round: (t.prev_park?.round ?? 0) + 1 }
     : null;
+  // A ticket admitted parked on its design kept its blockers in held_by (admit): it goes back behind the
+  // ones not yet merged, never straight to a worker. A released hold clears held_by, so nothing else
+  // leaves one on a ticket that is not held.
+  const pending = String(t.held_by ?? '').split('|').filter((p) => p && q.tickets[p] && !q.tickets[p].merged_at);
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: 'triaged', open_questions: 0, park: null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
+  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   save(q);
-  return `${key} requeued: ${placed}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  return `${key} requeued: ${placed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 const [, , cmd, ...args] = process.argv;
@@ -412,8 +416,11 @@ switch (cmd) {
       }
     }
     if (args.includes('--hold-collisions')) for (const k of collides) if (!holds.includes(k)) holds.push(k);
-    // A hold would let a release send a ticket parked for its own reason to a worker (hold, above).
-    if (park && holds.length) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
+    // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
+    // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
+    // ones once the design is snapshotted.
+    const designOnly = park != null && park === designPark(r);
+    if (park && holds.length && !designOnly) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
     q.tickets[key] = {
       key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
       worktree: null, branch: r.branch ?? null, database: null, port: null,
@@ -424,7 +431,7 @@ switch (cmd) {
       added_at: new Date().toISOString(),
     };
     save(q);
-    const said = holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`;
+    const said = designOnly && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`;
     console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !holds.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;
   }

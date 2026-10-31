@@ -198,6 +198,11 @@ const sp = save(page, { root: rP, dir: DIR, tickets: [{ key: 'DS-91', boards: []
 t('save: a single page is saved with no canvas.json asked for', `${sp.path} ${existsSync(join(rP, DIR, 'DS-90/project/index.html'))} ${existsSync(join(rP, DIR, 'DS-90/project/page.css'))}`, 'docs/design/DS-90/ true true');
 t('save: a single page has no boards', sp.source.boards.length, 0);
 t('render plan: a page with no width renders at the breakpoints only', renderPlan([{ name: 'index', width: null }], [390, 1280]).shots.map((s) => s.width).join(' '), '390 1280');
+const nested = join(T, 'nested');
+put(join(nested, 'source.json'), JSON.stringify({ url: 'https://claude.ai/artifact/PAGE2', version: '1' }));
+put(join(nested, 'project/index.html'), '<h1>home</h1>');
+put(join(nested, 'project/about/team.html'), '<h1>team</h1>');
+t('collect: a page\'s home is its shallowest HTML, not the first alphabetically', collect(nested).home, 'project');
 t('collect: neither a canvas nor a page is refused', throws(() => collect(join(T, 'state/designs'))).startsWith('2:no canvas.json or page'), true);
 
 // ---- the command line, reading config §2 Design canvases directory ----

@@ -26,12 +26,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
 ```
 
 `ok`, or an `advisory`, needs nothing. Each `blocking` line names an artifact URL with no copy a
-worker can read: snapshot it with the Artifact tool, exactly as
-`desk-autopilot/references/design-snapshot.md` (read it now) lists, into `out_dir: $DESK_STATE/designs/<TICKET>/`
-(`desk-env paths` prints `DESK_STATE`): `project/canvas.json`, every board's `project/*.dc.html`, the
-`support.js`, stylesheets and fonts they load, each `/_blob/<id>` asset a board names, and
-`artifact-type/dc-runtime.js` where the boards load a `support.js` the artifact does not publish.
-Then record it, and check again:
+worker can read: snapshot it with the Artifact tool, reading every file
+`desk-autopilot/references/design-snapshot.md` (read it now) lists, a single-page artifact's page
+and what it loads included, into `out_dir: $DESK_STATE/designs/<TICKET>/` (`desk-env paths` prints
+`DESK_STATE`). Then record it, and check again:
 
 ```bash
 node ~/.claude/desk/bin/desk-design.mjs write $DESK_STATE/designs/<TICKET> --url <artifact URL> \

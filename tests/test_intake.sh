@@ -250,6 +250,19 @@ config yes; running_batch; rec G-1 A "$(design https://claude.ai/artifact/G1 nul
 out=$(intake)
 check "DS-358 AC5: intake admits a ticket whose canvas has no snapshot parked, not runnable" '[ "$(qget tickets.G-1.state)" = parked ] && grep -q "^design not snapshotted: https://claude.ai/artifact/G1: snapshot it from a session" <<< "$(qget tickets.G-1.park.question)"'
 check "DS-358 AC5: the report names the artifact" 'grep -q "intake: admitted G-1 by intake into batch b1 (lane A, size S), parked: design not snapshotted: https://claude.ai/artifact/G1" <<< "$out"'
+# Triage's lint flags the same canvas as blocking; the design park names it, so intake parks rather
+# than hands it on. Its blocker in the batch is kept, and a requeue once it is snapshotted holds it.
+config yes; running_batch; rm -f "$T/state/intake.json"
+rec G-2 A "$(design https://claude.ai/artifact/G2 null),\"lint\":[{\"severity\":\"blocking\",\"rule\":\"design\",\"message\":\"design: G-2's Design section links the Claude Design artifact https://claude.ai/artifact/G2, but no copy is saved under docs/design/\"}],\"blockers\":[{\"key\":\"R\",\"category\":\"new\"}]"; search G-2
+out=$(intake)
+check "DS-358 AC5: a blocking design lint on the unread canvas still parks the ticket on its design" '[ "$(qget tickets.G-2.state)" = parked ] && grep -q "^design not snapshotted: https://claude.ai/artifact/G2" <<< "$(qget tickets.G-2.park.question)"'
+check "DS-358: the design-parked ticket keeps its blocker in the batch" '[ "$(qget tickets.G-2.held_by)" = R ]'
+requeue(){ (cd "$T/repo" && node "$T/bin/queue.mjs" requeue "$1" 2>&1); }
+out=$(requeue G-2)
+check "DS-358: a requeue holds it behind its unmerged blocker, never straight to a worker" '[ "$(qget tickets.G-2.state)" = parked ] && grep -q "^held by orchestrator: blocked by R" <<< "$(qget tickets.G-2.park.question)" && grep -q "held behind R until they merge" <<< "$out"'
+node -e 'const f=process.argv[1],fs=require("fs"),q=JSON.parse(fs.readFileSync(f,"utf8")); q.tickets.R={key:"R",state:"done",merged_at:"2026-10-01T00:00:00Z"}; Object.assign(q.tickets["G-2"],{park:{question:"design not snapshotted: x"}}); fs.writeFileSync(f,JSON.stringify(q))' "$DESK_QUEUE"
+out=$(requeue G-2)
+check "DS-358: with its blocker merged, a requeue sends it to a worker" '[ "$(qget tickets.G-2.state)" = triaged ] && [ "$(qget tickets.G-2.held_by)" = null ]'
 
 # ---- by hand: intake.mjs admit (/desk-admit) -----------------------------------------------------
 admit(){ (cd "$T/repo" && node "$T/bin/intake.mjs" admit "$@" 2>&1); }

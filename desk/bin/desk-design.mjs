@@ -159,7 +159,7 @@ export function collect(src) {
       if (TEXT.has(extname(rel).toLowerCase())) queue.push(rel);
     }
   }
-  return { canvas: canvasRel, files: [...files].sort(), missing, remote, blobs, copyFrom };
+  return { canvas: canvasRel, home, files: [...files].sort(), missing, remote, blobs, copyFrom };
 }
 
 // A board's text with each /_blob/<id> pointing at the asset's saved path, relative to the board.
@@ -452,9 +452,8 @@ function serve(dir) {
 export async function render(dir, { chromium, bps = breakpoints(), now = new Date().toISOString(), height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: render a folder desk-design save wrote`);
-  const { canvas, files } = collect(dir);
+  const { canvas, home, files } = collect(dir);
   // A single-page artifact's pages render at every breakpoint, with no width of their own.
-  const home = canvas ? dirname(canvas) : dirname(files.find((f) => /\.html?$/i.test(f)));
   const boards = canvas ? parseBoards(readJson(join(dir, canvas)) ?? {})
     : files.filter((f) => /\.html?$/i.test(f) && dirname(f) === home).map((f) => ({ name: basename(f).replace(/\.html?$/i, ''), width: null, file: basename(f) }));
   if (!boards.length) fail(`${canvas} names no boards: nothing to render`);

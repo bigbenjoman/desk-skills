@@ -71,16 +71,17 @@ export function designGap(r) {
   if (r?.design_error) return `its design could not be read (${r.design_error})`;
   const d = r?.design;
   if (!d) return 'its design was never read: re-run triage';
-  const canvases = d.canvases ?? [];
-  const missing = canvases.filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+  const missing = unreadCanvases(r);
   if (missing.length) return `its canvas is not on ${d.ref}: save ${missing.join(', ')} there (desk-design save), or snapshot it`;
-  if (!canvases.length) return d.figma ? 'its only design is a Figma frame, which a worker cannot read' : 'it links no Claude Design canvas';
+  if (!(d.canvases ?? []).length) return d.figma ? 'its only design is a Figma frame, which a worker cannot read' : 'it links no Claude Design canvas';
   return null;
 }
 
 // The Claude Design canvases a triage record links that a worker cannot read: neither saved on the
 // base nor snapshotted.
-export const unreadCanvases = (r) => (r?.design?.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+export function unreadCanvases(r) {
+  return (r?.design?.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+}
 
 // The park for a ticket in any lane whose design no worker can read, or null: a session that can read
 // the artifact snapshots it, since a worker has no Artifact tool and would only park asking for it.

@@ -80,8 +80,12 @@ const writeIntake = (state, r) => writeFileSync(intakePath(state), `${JSON.strin
 export const handedByIntake = (state) => Object.entries(readIntake(state).tickets)
   .filter(([, e]) => e.outcome === 'handed').map(([ticket, e]) => ({ ticket, text: e.text, at: e.at }));
 
-// Why a triage record keeps its ticket from a worker, one reason each: [] admits it.
-const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
+// Why a triage record keeps its ticket from a worker, one reason each: [] admits it. A canvas no worker
+// can read is not a lint reason as well: the ticket is admitted parked on it (designPark), which names it.
+const lintBlocking = (r) => {
+  const unread = unreadCanvases(r);
+  return (r.lint ?? []).filter((f) => f.severity === 'blocking' && !(f.rule === 'design' && unread.some((u) => f.message.includes(u))));
+};
 export function intakeReasons(r) {
   const out = [];
   if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
@@ -189,11 +193,10 @@ function startStanding(cur, now) {
 }
 
 // Admit one ticket that passed, held behind every blocker in the batch in the same write, so no pass
-// sees it runnable first: the held blockers, or why queue.mjs refused.
-// One whose design no worker can read is admitted parked on it instead (queue.mjs admit), which a hold
-// would replace.
+// sees it runnable first: the held blockers, or why queue.mjs refused. One whose design no worker can
+// read is admitted parked on it, its holds kept for when it is requeued (queue.mjs admit).
 function admitHeld(key, rec, tickets, by) {
-  const held = designPark(rec) ? [] : openBlockers(rec).filter((b) => tickets[b]);
+  const held = openBlockers(rec).filter((b) => tickets[b]);
   const a = queueCmd('admit', key, '--by', by, ...(held.length ? ['--hold', held.join(',')] : []));
   return a.status === 0 ? { held } : { why: lastLine(a) };
 }
