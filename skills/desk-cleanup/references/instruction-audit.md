@@ -29,7 +29,8 @@ listed by name only under `name-only`, and otherwise its description with its `w
 skills are not counted. A `total` line ends the list.
 
 The caps: 200 lines for an instruction file (Claude Code's own target for one `CLAUDE.md`), 6 KB or
-60 lines for `MEMORY.md`, and 1,024 characters for a description. A line over its cap says so.
+60 lines for `MEMORY.md`, and 1,024 characters for a description. A line over its cap says so. A
+file's lines include those of every file it `@` imports, which load with it.
 
 **An `@` import is listed under the file that names it, and says that it does not reduce what
 loads.** Claude Code reads the imported file when it reads the importer, so moving text behind an
@@ -45,7 +46,7 @@ the file would be within the cap:
 | a section naming paths under several directories | a rule in `.claude/rules/` with those directories in `paths:` | when a matching file is read |
 | a section naming no path, or in a file outside the repo | a skill whose body is the section | when the skill runs |
 | a `MEMORY.md` entry longer than one line | a memory topic file, with a one-line pointer left in the index | when the session looks it up |
-| a skill or agent description past its first sentence | the skill or agent body, under `## When to use` | when it runs |
+| a skill or agent description past its first sentence, and a skill's `when_to_use` | the skill or agent body, under `## When to use` | when it runs |
 
 Then `diff :` and every change as a unified diff: the source file losing each section, and each new
 or extended file. A new skill's description is a draft: say so in the plan, and offer a better one.

@@ -244,7 +244,7 @@ t('AC1 lists the CLAUDE.md and AGENTS.md chain, unscoped rules, MEMORY.md, skill
   ['launch : CLAUDE.md · ~/.claude/CLAUDE.md', 'launch : CLAUDE.md · CLAUDE.md', 'launch : import · docs/guide.md', 'launch : AGENTS.md · AGENTS.md', 'launch : CLAUDE.local.md · CLAUDE.local.md',
     'launch : rule · .claude/rules/style.md', `launch : MEMORY.md · ${join(memDir, 'MEMORY.md').replace(env.HOME, '~')}`, 'launch : skill · big (~/.claude/skills/big/SKILL.md)',
     'launch : agent · helper (~/.claude/agents/helper.md)', 'launch : total · 9 files'].join('\n'))
-t('AC1 a file row carries its bytes and lines, and says when it is over the cap', launch[1].endsWith(`· ${Buffer.byteLength(claudeMd.join('\n'))} B · ${claudeMd.length - 1} lines · over cap 200 lines`), true)
+t('AC1 a file row carries its bytes and lines, and says when it is over the cap with its imports', launch[1].endsWith(`· ${Buffer.byteLength(claudeMd.join('\n'))} B · ${claudeMd.length - 1} lines · over cap 200 lines with its imports (${claudeMd.length - 1 + 5})`), true)
 t('AC1 a skill row carries its description length', /· big .* · \d{4} chars of description · over cap 1024 chars$/.test(launch[7]), true)
 t('AC1 a description within the cap is not flagged', launch[8].endsWith('· helper (~/.claude/agents/helper.md) · 15 chars of description'), true)
 
@@ -317,5 +317,23 @@ t('targetFor: nor is a rule another move already took', targetFor({ heading: 'Da
 t('targetFor: an existing skill is not appended to', targetFor({ heading: 'Testing' }, 'No paths here.', rowL, RL, HL, used).path, join(RL, '.claude', 'skills', 'testing-2', 'SKILL.md'))
 const dotClaude = targetFor({ heading: 'Tooling' }, 'Edit `.claude/rules/` and `.claude/skills/`.', rowL, RL, HL, used)
 t('targetFor: text naming only .claude/ goes to a scoped rule, not .claude/CLAUDE.md', `${dotClaude.kind} ${dotClaude.body.slice(1, 4).join(' ')}`, 'path-scoped rule paths:   - ".claude/rules/**"   - ".claude/skills/**"')
+mkdirSync(join(RL, '.claude', 'rules', 'web'), { recursive: true })
+const inRules = targetFor({ heading: 'Web rules' }, 'Edit `.claude/rules/web/`.', rowL, RL, HL, used)
+t('targetFor: text naming only a folder under .claude/rules goes to a scoped rule, not a CLAUDE.md there', `${inRules.kind} ${inRules.body[2]}`, 'path-scoped rule   - ".claude/rules/web/**"')
+
+// when_to_use is listed with the description, so it moves into the body with the rest of it.
+const RW = join(T, 'rw'); const HW = join(T, 'hw')
+put(join(HW, '.claude', 'skills', 'wordy', 'SKILL.md'), `---\nname: wordy\ndescription: Does wordy things.\nwhen_to_use: ${'Often. '.repeat(160).trim()}\n---\n\n# wordy\n`)
+const wordy = auditReport(launchFiles({ root: RW, home: HW }).filter((x) => x.kind === 'skill'), { root: RW, home: HW })
+t('when_to_use: a skill over the cap only by its when_to_use moves it into the body', wordy.filter((l) => l.startsWith('propose : ')).join('\n'), `propose : ~/.claude/skills/wordy/SKILL.md · "when_to_use" (${'Often. '.repeat(160).trim().length} chars) → the skill body, which loads only when it runs`)
+t('when_to_use: the diff drops the field and adds it under ## When to use', wordy.includes(`-when_to_use: ${'Often. '.repeat(160).trim()}`) && wordy.includes('+## When to use') && wordy.includes(`+${'Often. '.repeat(160).trim()}`), true)
+
+// An @ import loads with its parent, so its lines count towards the parent's cap.
+const RI = join(T, 'ri')
+put(join(RI, 'CLAUDE.md'), ['## Kept', ...fill(149, 'kept'), '', '@more.md', ''].join('\n'))
+put(join(RI, 'more.md'), `${fill(100, 'more').join('\n')}\n`)
+const withImport = auditReport(launchFiles({ root: RI, home: join(T, 'hi') }), { root: RI, home: join(T, 'hi') })
+t('imports: a file under the cap alone is over it with its imports', withImport.some((l) => /^launch : CLAUDE\.md +· CLAUDE\.md · .* · 152 lines · over cap 200 lines with its imports \(252\)$/.test(l)), true)
+t('imports: the import itself is not flagged on its own lines', withImport.some((l) => /^launch : import +· more\.md · .* · 100 lines · loads with CLAUDE\.md/.test(l)), true)
 
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1) }

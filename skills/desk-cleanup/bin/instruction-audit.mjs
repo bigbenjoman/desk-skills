@@ -154,8 +154,9 @@ export function launchFiles({ root, home, memoryPath = null, policy = [] }) {
 }
 
 const INSTRUCTION = new Set(['policy', 'CLAUDE.md', 'AGENTS.md', 'CLAUDE.local.md', 'rule', 'import'])
-export function overCap(row) {
-  if (INSTRUCTION.has(row.kind)) return row.lines > INSTRUCTION_CAP_LINES ? `over cap ${INSTRUCTION_CAP_LINES} lines` : ''
+// `imported` is the lines of the files it @ imports, which load with it and so count towards its cap.
+export function overCap(row, imported = 0) {
+  if (INSTRUCTION.has(row.kind)) return row.lines + imported > INSTRUCTION_CAP_LINES ? `over cap ${INSTRUCTION_CAP_LINES} lines${imported ? ` with its imports (${row.lines + imported})` : ''}` : ''
   if (row.kind === 'MEMORY.md') return row.bytes > MEMORY_INDEX_CAP.bytes || row.lines > MEMORY_INDEX_CAP.lines ? `over cap ${MEMORY_INDEX_CAP.bytes} B or ${MEMORY_INDEX_CAP.lines} lines` : ''
   return row.chars > DESCRIPTION_CAP ? `over cap ${DESCRIPTION_CAP} chars` : ''
 }
@@ -219,8 +220,10 @@ export function targetFor(section, text, row, root, home, used = new Set()) {
   if (inRepo) {
     const dirs = dirsNamed(text, root)
     const common = dirs.length ? commonDir(dirs) : ''
-    // .claude/CLAUDE.md loads at launch, so text moved there would still load in every session.
-    if (common && common !== '.claude') return { kind: 'subdirectory CLAUDE.md', path: join(root, common, 'CLAUDE.md'), body: text.split('\n') }
+    // .claude/CLAUDE.md and every unscoped file under .claude/rules load at launch, so text moved
+    // there would still load in every session.
+    const atLaunch = common === '.claude' || common === '.claude/rules' || common.startsWith('.claude/rules/')
+    if (common && !atLaunch) return { kind: 'subdirectory CLAUDE.md', path: join(root, common, 'CLAUDE.md'), body: text.split('\n') }
     if (dirs.length) {
       const tops = dirs.filter((d) => !dirs.some((o) => o !== d && d.startsWith(`${o}/`))).sort()
       const s = free((x) => join(root, '.claude', 'rules', `${x}.md`))
@@ -238,12 +241,12 @@ export function targetFor(section, text, row, root, home, used = new Set()) {
 
 // The moves that bring one oversized file under its cap, largest section first: the source's new
 // lines, and each target's lines to add.
-export function planFor(row, { root, home, memoryDir, used = new Set() }) {
+export function planFor(row, { root, home, memoryDir, used = new Set(), imported = 0 }) {
   const lines = linesOf(row.text)
   if (row.kind === 'MEMORY.md') {
-    const used = new Set()
+    const topics = new Set()
     const moves = longEntries(row.text).map((e) => {
-      let s = slug(e.first.split(/\s+/).slice(0, 6).join(' ')); while (used.has(s)) s += '-2'; used.add(s)
+      let s = slug(e.first.split(/\s+/).slice(0, 6).join(' ')); while (topics.has(s)) s += '-2'; topics.add(s)
       const body = lines.slice(e.start, e.start + e.lines).map((l, k) => (k ? l.trim() : l.trim().replace(/^([-*+]|\d+[.)])\s*/, '')))
       return { from: e.start, count: e.lines, heading: e.first, size: e.lines, replace: [`- [${e.first}](${s}.md)`], target: { kind: 'memory topic file', path: join(memoryDir ?? dirname(row.path), `${s}.md`), body: [`# ${e.first}`, '', ...body] } }
     })
@@ -254,11 +257,16 @@ export function planFor(row, { root, home, memoryDir, used = new Set() }) {
     const first = t.match(/^[\s\S]*?[.!?](?=\s|$)/)?.[0] ?? t
     const kept = first.length <= DESCRIPTION_CAP ? first : t.slice(0, t.lastIndexOf(' ', DESCRIPTION_CAP - 1))
     const rest = t.slice(kept.length).trim()
-    if (!rest) return []
-    return [{ from: d.start, count: d.count, heading: 'description', size: rest.length, replace: ['description: >-', `  ${kept}`], insertAfter: d.end, insert: ['', '## When to use', '', rest], target: null }]
+    // when_to_use is listed after the description, so it moves into the body with the rest.
+    const w = row.kind === 'skill' ? descriptionOf(row.text, 'when_to_use') : null
+    const moves = []
+    if (rest) moves.push({ from: d.start, count: d.count, heading: 'description', size: rest.length, replace: ['description: >-', `  ${kept}`], target: null })
+    if (w) moves.push({ from: w.start, count: w.count, heading: 'when_to_use', size: w.text.length, replace: [], target: null })
+    if (moves.length) Object.assign(moves[0], { insertAfter: d.end, insert: ['', '## When to use', '', ...[rest, w?.text].filter(Boolean).flatMap((x, k) => (k ? ['', x] : [x]))] })
+    return moves
   }
   const secs = sections(lines).sort((a, b) => b.count - a.count || a.start - b.start)
-  const moves = []; let left = lines.length
+  const moves = []; let left = lines.length + imported
   for (const sec of secs) {
     if (left <= INSTRUCTION_CAP_LINES) break
     const text = lines.slice(sec.start, sec.start + sec.count).join('\n').replace(/\n+$/, '')
@@ -278,8 +286,11 @@ export function auditReport(rows, { root, home, memoryDir = null, doctor = {} })
   root = real(root); home = real(home)
   const out = []; const pad = (k) => k.padEnd(15)
   const judged = (r) => !((r.kind === 'skill' || r.kind === 'agent') && doctor['skill-doctor'] !== undefined)
+  // The lines a file's @ imports add, at every depth; an import's own row is judged on its own lines.
+  const below = (p) => rows.filter((x) => x.kind === 'import' && x.parent === p).reduce((s, x) => s + x.lines + below(x.path), 0)
+  const imported = (r) => (INSTRUCTION.has(r.kind) && r.kind !== 'import' ? below(r.path) : 0)
   for (const r of rows) {
-    const over = judged(r) ? overCap(r) : ''
+    const over = judged(r) ? overCap(r, imported(r)) : ''
     const size = r.listed === 'name-only' ? 'listed by name only' : r.kind === 'skill' || r.kind === 'agent' ? `${r.chars} chars of description` : `${r.bytes} B · ${r.lines} lines`
     const where = r.kind === 'skill' || r.kind === 'agent' ? `${r.name} (${shown(r.path, root, home)})` : shown(r.path, root, home)
     const note = r.kind === 'import' ? ` · loads with ${shown(r.parent, root, home)}: an @ import does not reduce what loads` : ''
@@ -293,17 +304,18 @@ export function auditReport(rows, { root, home, memoryDir = null, doctor = {} })
   if (doctor['skill-doctor'] !== undefined) out.push('launch : skill and agent descriptions are judged by skill-doctor above, not here')
 
   const proposals = []; const diffs = []; const targets = new Map(); const used = new Set()
-  for (const r of rows.filter((x) => judged(x) && overCap(x))) {
-    const moves = planFor(r, { root, home, memoryDir, used })
+  const advice = { 'MEMORY.md': 'every entry is one line: shorten the longest', skill: 'nothing to move: shorten the description', agent: 'nothing to move: shorten the description' }
+  for (const r of rows.filter((x) => judged(x) && overCap(x, imported(x)))) {
+    const moves = planFor(r, { root, home, memoryDir, used, imported: imported(r) })
     if (!moves.length) {
-      proposals.push(`propose : ${shown(r.path, root, home)} · ${r.kind === 'MEMORY.md' ? 'every entry is one line: shorten the longest' : 'nothing to move: split it into headed sections by topic first'}`)
+      proposals.push(`propose : ${shown(r.path, root, home)} · ${advice[r.kind] ?? 'nothing to move: split it into headed sections by topic first'}`)
       continue
     }
+    // Inserts land after the frontmatter, past every range a move removes, so they go in first and
+    // shift none of those ranges.
     const old = linesOf(r.text); let next = [...old]
-    for (const mv of [...moves].sort((a, b) => b.from - a.from)) {
-      if (mv.insertAfter !== undefined) next.splice(mv.insertAfter + 1, 0, ...mv.insert)
-      next.splice(mv.from, mv.count, ...mv.replace)
-    }
+    for (const mv of moves.filter((m) => m.insertAfter !== undefined)) next.splice(mv.insertAfter + 1, 0, ...mv.insert)
+    for (const mv of [...moves].sort((a, b) => b.from - a.from)) next.splice(mv.from, mv.count, ...mv.replace)
     while (next.length && next.at(-1) === '') next.pop()
     for (const mv of moves) {
       const to = mv.target ? `${mv.target.kind} ${shown(mv.target.path, root, home)}` : 'the skill body, which loads only when it runs'
