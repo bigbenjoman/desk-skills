@@ -33,7 +33,10 @@ t('AC1 the 20 KB check\'s UNSPLIT list is read', Boolean(unsplit), true);
 t('AC1 desk-autopilot is still on UNSPLIT while its core is over 20 KB', unsplit?.[1].includes("'desk-autopilot'") ?? false, Buffer.byteLength(core) > 20480);
 
 // AC4: each heading, table row and paragraph of the old file is in exactly one file, word for word.
-checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100 });
+const REWRITTEN = [
+  ['DS-361', 'the handoff briefing in its system prompt in place of the sibling notes', 1], // the briefing moved to the first message
+];
+checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));
 for (const h of deep) t(`AC4 "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
 

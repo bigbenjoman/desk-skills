@@ -2,7 +2,7 @@
 // end of Stage 6 to Stage 7, so self-review and the PR stage each start on a short briefing rather
 // than on a context that has grown through the build. The worker writes $DESK_STATE/handoffs/<TICKET>.json
 // and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
-// from git, and spawns the next session with the rendered briefing in its system prompt.
+// from git, and spawns the next session with the rendered briefing in its first message.
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';

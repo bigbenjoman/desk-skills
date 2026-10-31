@@ -267,10 +267,10 @@ elif [ -n "${AUTOPILOT_TASK:-}" ]; then
   PROMPT="${PROMPT}${DRY_NOTE}${CONFIG_NOTE}"
 elif [ -n "${AUTOPILOT_START_STAGE:-}" ]; then
   # A fresh session after a handoff (pass.mjs spawnHandoff) or a park (pass.mjs resumeRound): it starts
-  # at the stage named, from the briefing in its system prompt, not at Stage 0.
+  # at the stage named, from the briefing in this first message, not at Stage 0.
   case "$AUTOPILOT_START_STAGE" in 3|4|4b|5|6|7|8|9) ;; *) echo "FAIL: AUTOPILOT_START_STAGE is \"$AUTOPILOT_START_STAGE\" — want a stage from 3 to 9, or 4b" >&2; exit 1 ;; esac
   RESUME_ARGS=(--session-id "$SID")
-  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it, and the briefing in your system prompt is what it left for you. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE and its Stage 3 file, whose §6 holds every command form you may run (a dev server's included), check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
+  PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT, on branch $BRANCH. Your dev-server port is $PORT — never use $DESK_DEV_PORT. This session starts at Stage $AUTOPILOT_START_STAGE: an earlier session did every stage before it, and the briefing below in this message is what it left for you. Do not redo the stages before it: read the contract's stage file for Stage $AUTOPILOT_START_STAGE and its Stage 3 file, whose §6 holds every command form you may run (a dev server's included), check git status and git log in your worktree, and carry on from Stage $AUTOPILOT_START_STAGE with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
 else
   RESUME_ARGS=(--session-id "$SID")
   PROMPT="Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT — never use $DESK_DEV_PORT. Work the ticket with the desk-ticket skill.${DRY_NOTE}${CONFIG_NOTE}"
@@ -309,11 +309,18 @@ if [ -n "$CFG_DEFAULT" ] && [ "$CFG_DEFAULT" != "$CFG_ROW" ]; then
 
 This batch targets \`$CFG_DEFAULT\`, not config §0 Default branch (\`$CFG_ROW\`). Everywhere this contract or a skill says \`<default>\`, the default branch, or §0 Default branch, it means \`$CFG_DEFAULT\`: your worktree is based on \`origin/$CFG_DEFAULT\`, you rebase onto it, and your PR is \`gh pr create … --base $CFG_DEFAULT\`. \`desk-env get default-branch\` prints it. A PR opened against \`$CFG_ROW\` is the wrong PR: the merge driver will not see it."
 fi
-[ -n "$BRIEFING" ] && [ -f "$BRIEFING" ] && SYSTEM="$SYSTEM
+# Every ticket worker in a batch sends the same system prompt, so its cache is written once and read
+# by the rest: the briefing rides in the first user message. A task worker's system prompt differs
+# anyway, so its briefing stays in it. A resumed session already holds its briefing either way: claude
+# reuses the system prompt it recorded on the first request, whatever a later launch passes.
+if [ -n "$BRIEFING" ] && [ -f "$BRIEFING" ] && [ -z "${AUTOPILOT_RESUME:-}" ]; then
+  BRIEF_TEXT="
 
 # Briefing for this ticket
 
 $(cat "$BRIEFING")"
+  if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$BRIEF_TEXT"; else PROMPT="$PROMPT$BRIEF_TEXT"; fi
+fi
 
 cd "$WT"
 # Marks the worker as headless for desk-jira, which then refuses config §4 Priorities only you set.
@@ -332,6 +339,7 @@ desk_detach claude -p "$PROMPT" \
   --agents "$AGENTS" \
   "${ADD_DIRS[@]}" \
   --append-system-prompt "$SYSTEM" \
+  --exclude-dynamic-system-prompt-sections \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"} \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   >> "$LOG" 2>&1 < /dev/null &
