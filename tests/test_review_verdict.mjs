@@ -140,7 +140,6 @@ t('carried section: names the fix range', section[1].includes('fix range fedcba9
 t('carried section: file:line each', section.slice(2).join('|'), '- `src/a.ts:12` name reads as a count (F1)|- `src/b.ts:4` name reads as a count (F2)')
 t('carried section: empty when nothing is carried', carriedSection(r3()), '')
 
-<<<<<<< HEAD
 // ---- round 2 reads the fix range from round 1's reviewed SHA, and carries P2s as round 3 does
 const r2 = (findings = [], o = {}) => base({ round: 2, since: SINCE, findings, ...o })
 t('DS-368 AC1 round 2: heading names the fix range it read', heading(r2()).startsWith('**desk-review, round 2, fix range fedcba9..0123456: No P0, P1 or P2 findings at `0123456`**'), true)
