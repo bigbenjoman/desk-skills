@@ -111,6 +111,20 @@ Your settings are an **allow-list**: anything not named here is refused.
 
 If something is refused, try the plain form once before concluding you lack the capability.
 
+**Some refusals no setting unlocks.** The harness or the launcher enforces these whatever §3, an
+allow rule or a settings change says:
+
+- a write under your worktree's `.claude/`: the harness write-protects it for a headless worker,
+  though your settings allow edits across the worktree;
+- a write granted only by a `Write(...)` rule: the harness ignores those and reads `Edit(...)` rules;
+- anything in the user's own settings: you are launched with `--setting-sources ""`, so none reach you;
+- `gh api`, in any form.
+
+When your ticket needs one of these, park with a question that starts `lane C: `, names the step and
+says no setting unlocks it, and recommend opening an interactive `/desk-ticket` session. Never offer
+an allow rule, a grant or a settings change as an option: the user takes it, you are requeued, and
+you park again. A refusal a §3 row does control still parks naming that row (core section 2).
+
 Your tools are an allow-list too, fixed at launch to the ones this contract and the skills you load
 name. A tool shown to you as deferred, such as `SendMessage`, is loaded with `ToolSearch` before its
 first call.

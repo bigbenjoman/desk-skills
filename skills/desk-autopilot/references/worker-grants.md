@@ -44,6 +44,13 @@ a worker cannot:
 It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harness write-protects its
 worktree's `.claude/`, where `desk-ticket` keeps one interactively.
 
+**No grant unlocks the fixed refusals.** A write under the worktree's `.claude/`, a write allowed only
+by a `Write(...)` rule, anything in your own settings, and `gh api` are refused by the harness or the
+launcher whatever §3 or a worker's settings say (the Stage 3 worker contract lists them). A park on
+one is answered by opening an interactive `/desk-ticket` session, never by adding an allow rule and
+requeueing: the worker would only park again. Triage puts a change that writes under `.claude/` in
+lane C for the same reason.
+
 It may run `desk-env …` and the §4 toolchain rows, a directory item as
 `~/.claude/desk/bin/with-lock.sh <test|tsc|browser|nolock> --cwd <dir> -- <cmd>`. **Database
 variables**: in each worker's worktree every §4 Database URL variable is repointed at its own

@@ -50,6 +50,20 @@ t('lane D: the Stage 3 section builds from the saved canvas and does not stop fo
   stage3.includes('**A lane D ticket builds from its saved canvas, and does not stop for agreement.**') && stage3.includes('as a repo\nwith no design-build agent does'), true);
 t('lane D: the PR holds each board beside the build, with every difference accepted', /board's render and the built screen\nat that board's width, with every difference you accepted/.test(stage3), true);
 t('lane D: the core parks only a demotion to D with no saved canvas', core.includes('**A lane demotion to C, or to D with no saved canvas.**'), true);
+// DS-374: a refusal no setting unlocks parks for an interactive session, never for a grant.
+const n3 = stage3.replace(/\s+/g, ' ');
+const fixed = n3.split('**Some refusals no setting unlocks.**')[1]?.split(' ## ')[0] ?? '';
+for (const [what, text] of [['a .claude/ write', 'a write under your worktree\'s `.claude/`'], ['a Write(...)-only grant', 'a write granted only by a `Write(...)` rule'], ['the user\'s settings', '`--setting-sources ""`'], ['gh api', '`gh api`, in any form']]) {
+  t(`DS-374 AC3 the fixed refusals list ${what}`, fixed.includes(text), true);
+}
+t('DS-374 AC2 a fixed refusal parks as lane C, recommending an interactive session', fixed.includes('park with a question that starts `lane C: `') && fixed.includes('recommend opening an interactive `/desk-ticket` session'), true);
+t('DS-374 AC2/AC3 and never offers an allow rule or a settings change', fixed.includes('Never offer an allow rule, a grant or a settings change as an option'), true);
+t('DS-374 AC4 a refusal a §3 row controls still parks naming that row', fixed.includes('A refusal a §3 row does control still parks naming that row'), true);
+const grants = read('worker-grants.md').replace(/\s+/g, ' ');
+t('DS-374 AC2 worker-grants answers a fixed-refusal park with a session, not an allow rule', grants.includes('**No grant unlocks the fixed refusals.**') && grants.includes('is answered by opening an interactive `/desk-ticket` session, never by adding an allow rule'), true);
+const { needsSession, sessionPark } = await import('../desk/bin/batch-state.mjs');
+const park = 'lane C: writing .claude/rules/api.md is refused to every worker, and no setting unlocks it';
+t('DS-374 AC2 a park in that shape is offered only an interactive session', sessionPark(park) && needsSession({ lane: 'A', state: 'parked', park: { question: park } }), true);
 const routing = readFileSync(join(root, 'skills/desk-ticket/references/desk-ticket-routing.md'), 'utf8');
 t('lane D: the routing exempts an autopilot worker from stopping for agreement', routing.includes('**An autopilot worker does not stop**'), true);
 
