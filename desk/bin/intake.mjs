@@ -137,6 +137,11 @@ const batchEnv = (b) => {
 function liveFeatureBatches() {
   try { return listBatches().filter((b) => b.name && liveBatch(b.name)); } catch { return []; /* outside a repo there are none */ }
 }
+// Whether live named batch `name` is handed to the supervisor.
+function handedOver(name) {
+  const b = liveFeatureBatches().find((x) => x.name === name);
+  try { return !!b && readQueueAt(b.queue).supervised === true; } catch { return false; }
+}
 
 // ---- one run -----------------------------------------------------------------------------------
 export function runIntake({ state = E.stateDir(), force = false, now = new Date() } = {}) {
@@ -308,7 +313,9 @@ function intake({ state, query, reg, now }) {
   // for its epic's feature batch is skipped while that batch is live. One that cannot be checked, because
   // another batch's queue cannot be read, waits for the next intake and is said to.
   const unchecked = new Map();
-  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch);
+  // One routed to a session-run batch by its files waits only until that batch is handed over: then the
+  // next intake triages it again and joins it there, as the standing batch's own gate does.
+  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch) && !(e.handover && handedOver(e.batch));
   const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
     && !skipped(reg.tickets[k]) && !away(k);
@@ -375,8 +382,16 @@ function intake({ state, query, reg, now }) {
       lines.push(`intake: admitted ${key} by intake into batch ${r.elsewhere.route} (${laneSize(j.rec)})${heldText(j.held)}: ${r.elsewhere.why}`);
       continue;
     }
+    // One a session runs is the session's until it is handed over (closed's 'session'): it waits for that.
+    if (r.elsewhere?.route) {
+      const why = `${r.elsewhere.why}, once a session hands batch ${r.elsewhere.route} to the supervisor (queue.mjs set-batch supervised=true): /desk-admit ${key} adds it now`;
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.route, handover: true, text: why };
+      writeIntake(state, reg);
+      lines.push(`intake: ${key} not admitted yet: ${why}`);
+      continue;
+    }
     if (r.elsewhere) {
-      const why = r.elsewhere.epic || r.elsewhere.route ? `${r.elsewhere.why}: /desk-admit ${key} adds it to that batch` : r.elsewhere.why;
+      const why = r.elsewhere.epic ? `${r.elsewhere.why}: /desk-admit ${key} adds it to that batch` : r.elsewhere.why;
       reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: why };
       writeIntake(state, reg);
       lines.push(`intake: ${key} not admitted: ${why}`);

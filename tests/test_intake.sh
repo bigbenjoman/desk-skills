@@ -535,7 +535,19 @@ search K-3; out=$(intake)
 check "DS-380 AC4: a ticket whose files are on both bases is queued where it is today" '[ "$(qget tickets.K-3.state)" = triaged ] && [ "$(eget K-1 tickets.K-3)" = undefined ]'
 out=$(admit K-4 --by ben); rc=$?
 check "DS-380 AC3: /desk-admit routes it the same way" '[ $rc -eq 0 ] && [ "$(eget K-1 tickets.K-4.admitted_by)" = ben ] && [ "$(qget tickets.K-4)" = undefined ] && grep -q "^admitted K-4 by ben into feature batch K-1 " <<< "$out"'
-rm -rf "$EB/K-1"
+# A batch a session runs (K-5 on feat/k-5, not handed over) gets its ticket once it is handed over.
+g checkout -q -b feat/k-5; echo z > "$T/repo/src/only-k5.js"; g add src/only-k5.js; g commit -q -m only-k5; g push -q origin feat/k-5; g checkout -q main
+mkdir -p "$EB/K-5"
+printf '{"version":1,"batch":"K-5","base":"feat/k-5","tickets":{"K-0":{"key":"K-0","state":"running"}}}\n' > "$EB/K-5/queue.json"
+rec K-6 A '"files_in_scope":["src/only-k5.js"]'
+search K-6; out=$(intake)
+check "DS-380 AC3: a ticket for a session-run batch waits for its handover, saying so" '[ "$(eget K-5 tickets.K-6)" = undefined ] && [ "$(qget tickets.K-6)" = undefined ] && grep -q "^intake: K-6 not admitted yet: K-6 names src/only-k5.js, which is on batch K-5.s base feat/k-5 and not on main: it joins that batch, once a session hands batch K-5 to the supervisor (queue.mjs set-batch supervised=true): /desk-admit K-6 adds it now$" <<< "$out"'
+n=$(count "$T/triage.calls"); out=$(intake)
+check "DS-380 AC3: it is not triaged again while that batch is still the session's" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(eget K-5 tickets.K-6)" = undefined ]'
+printf '{"version":1,"batch":"K-5","base":"feat/k-5","supervised":true,"tickets":{"K-0":{"key":"K-0","state":"running"}}}\n' > "$EB/K-5/queue.json"
+out=$(intake)
+check "DS-380 AC3: once handed over, the next intake queues it in that batch" '[ "$(eget K-5 tickets.K-6.state)" = triaged ] && [ "$(qget tickets.K-6)" = undefined ] && grep -q "^intake: admitted K-6 by intake into batch K-5 " <<< "$out"'
+rm -rf "$EB/K-1" "$EB/K-5"
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
