@@ -242,16 +242,24 @@ check "DS-374 AC1: the first pass is told a change under .claude/ is lane C, and
   'P0 | grep -qF "A change that adds or edits any file under \`.claude/\` is lane C" && P0 | grep -qF "start \`lane_reason\` with \"$WP\""'
 check "DS-374 AC1: a lane A record writing .claude/rules/ becomes lane C, its reason naming the write-protect" \
   '[ $rc -eq 0 ] && lc_ok C && [[ "$(lc .lane_reason)" == "$WP, so only an interactive desk-ticket session can write .claude/rules/api.md, .claude/rules/web.md; lane A before this rule" ]] && [ "$(lc .lane_original)" = null ]'
+check "DS-374 AC1: a lane C lifted by the rule reads as confirmed, not as an unreviewed park" \
+  '[ "$(lc .lane_challenge.verdict)" = CONFIRM ] && [ "$(lc .lane_challenge.reason)" = "$WP: lane C set by rule, not by the challenge" ]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=C STUB_EXTRA=',"lane_reason":"size L","files_in_scope":["apps/web/.claude/settings.json"]' STUB_CHAL='{"verdict":"DOWNGRADE","lane":"A","reason":"size M"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-374 AC1: the challenge is told a change under .claude/ stays C" \
   'P1 | grep -qF "A change that adds or edits any file under \`.claude/\` stays C whatever its size"'
 check "DS-374 AC1: a challenge downgrade of a .claude/ change is undone, with no lane_original left" \
   '[ $rc -eq 0 ] && lc_ok C && [[ "$(lc .lane_reason)" == "$WP, so only an interactive desk-ticket session can write apps/web/.claude/settings.json; lane A before this rule" ]] && [ "$(lc .lane_original)" = null ]'
+check "DS-374 AC1: the undone downgrade leaves no DOWNGRADE challenge for plan-batch to read as unreviewed" \
+  '[ "$(lc .lane_challenge.verdict)" = CONFIRM ] && [ "$(lc .lane_challenge.reason)" = "$WP: lane C set by rule, not by the challenge" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=C STUB_EXTRA=",\"lane_reason\":\"$WP: .claude/rules/a.md\",\"files_in_scope\":[\".claude/rules/a.md\"]" STUB_CHAL='{"verdict":"INCONCLUSIVE","lane":"C","reason":"could not read","failed_reads":["x"]}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-374 AC1: an inconclusive challenge on a .claude/ change leaves the lane confirmed by the rule, not unchecked" \
+  '[ $rc -eq 0 ] && lc_ok C && [ "$(lc .lane_reason)" = "$WP: .claude/rules/a.md" ] && [ "$(lc .lane_challenge.verdict)" = CONFIRM ]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=C STUB_EXTRA=",\"lane_reason\":\"$WP: .claude/rules/a.md\",\"files_in_scope\":[\".claude/rules/a.md\"]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-374 AC1: a lane C record already giving the reason is kept as written" \
-  '[ $rc -eq 0 ] && lc_ok C && [ "$(lc .lane_reason)" = "$WP: .claude/rules/a.md" ]'
+  '[ $rc -eq 0 ] && lc_ok C && [ "$(lc .lane_reason)" = "$WP: .claude/rules/a.md" ] && [ "$(lc .lane_challenge.reason)" = stub ]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["docs/claude/rules.md","skills/x/.claude-plugin/plugin.json"]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-374 AC1: a path that only looks like .claude/ keeps its lane" \

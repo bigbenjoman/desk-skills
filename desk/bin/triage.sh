@@ -352,11 +352,21 @@ const out = process.argv[2];
 const d = JSON.parse(fs.readFileSync(out, 'utf8'));
 const WHY = 'the harness write-protects .claude/ for workers';
 const hit = (d.files_in_scope ?? []).map(String).filter((p) => /(?:^|\/)\.claude(?:\/|$)/.test(p));
+let changed = false;
 if (hit.length && !(d.lane === 'C' && String(d.lane_reason ?? '').startsWith(WHY))) {
   const was = d.lane !== 'C' ? `; lane ${d.lane} before this rule` : d.lane_reason ? `; ${d.lane_reason}` : '';
   d.lane = 'C';
   if (d.lane_original === 'C') delete d.lane_original;
   d.lane_reason = `${WHY}, so only an interactive desk-ticket session can write ${hit.join(', ')}${was}`;
+  changed = true;
+}
+// The rule settles the lane, so a downgrade, an unchecked or a missing challenge must not leave this C
+// reading as unreviewed: plan-batch and desk-q would invite a re-lane to A, back to a worker that parks.
+if (hit.length && d.lane_challenge?.verdict !== 'CONFIRM') {
+  d.lane_challenge = { verdict: 'CONFIRM', reason: `${WHY}: lane C set by rule, not by the challenge` };
+  changed = true;
+}
+if (changed) {
   fs.writeFileSync(out, JSON.stringify(d, null, 2));
   console.log(`[triage] ${d.ticket}  lane C: writes under .claude/`);
 }
