@@ -68,6 +68,13 @@ const plainWords = (s) => clip(one(s).replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').r
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
 const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green' : 'then merge it on GitHub once its checks are green');
 const REPAIRED = "desk's own repairs did not fix";
+// A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.
+const CAPTURE = /^(\d+) screenshot\(s\) still not taken after a capture try: (.+?)(?:; the capture try said: ([^]*))?$/;
+// Those screens and the worker's reason, whole: the item's note, which listText never cuts.
+const captureNote = (s) => {
+  const m = CAPTURE.exec(String(s?.why ?? ''));
+  return m ? `(Not taken: ${m[2]}.${m[3] ? ` The capture try said: ${one(m[3])}` : ''})` : '';
+};
 
 function stuckPlain(r, n, s) {
   const checks = s?.checks ?? [];
@@ -80,6 +87,11 @@ function stuckPlain(r, n, s) {
     return `${n}: ${parts.join('; ')}. ${todo}; ${thenMerge(r)}.`;
   }
   const why = String(s?.why ?? '');
+  const shots = CAPTURE.exec(why);
+  if (shots) {
+    const k = Number(shots[1]);
+    return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}. Take ${k === 1 ? 'it' : 'them'} and upload ${k === 1 ? 'it' : 'them'} to the PR; the next pass then takes it out of draft.`;
+  }
   if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
   if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${REPAIRED}. Fix them on its branch and post a fresh review; ${thenMerge(r)}.`;
   if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
@@ -165,13 +177,13 @@ function itemOf(r, x) {
   // An unmerged PR: only the person's step on GitHub moves it. A draft whose review left gaps also
   // takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
-    const need = prPlain(r, t), note = doneNote(t);
+    const stuck = stuckOf(t, r.ctx);
+    const need = prPlain(r, t), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
     if (reviewGaps(t)) return { kind: 'pr', need, note, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
     // and the item leaves the list once every check it is still stuck on is green.
-    const stuck = stuckOf(t, r.ctx);
     const outside = stuck?.outside ?? [];
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
