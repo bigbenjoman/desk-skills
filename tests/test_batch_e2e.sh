@@ -279,7 +279,9 @@ check "DS-367 AC1 each worker is started with every named review seat as an agen
 check "DS-367 AC4 and still with no user setting sources and the one generated settings file" 'grep -qF "\"sources\":\"\",\"settings\":1" "$T/runs/T-1.1" && grep -qF "\"sources\":\"\",\"settings\":1" "$T/runs/T-2.1"'
 check "DS-158 AC4 a worker is started with no partial messages" 'grep -q "\"partial\":false" "$T/runs/T-1.1" && grep -q "\"partial\":false" "$T/runs/T-2.1"'
 REFS="$SRC/skills/desk-autopilot/references"
-check "a ticket worker's system prompt holds the core contract and its briefing" 'grep -q "Stage sections: read each one when you reach it" "$T/runs/T-1.1" && grep -q "# Briefing for this ticket" "$T/runs/T-1.1"'
+# run_has <run file> <prompt|system> <text>: the round's recorded prompt or system prompt holds the text.
+run_has() { node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit((r[process.argv[2]] ?? "").includes(process.argv[3]) ? 0 : 1)' "$1" "$2" "$3"; }
+check "a ticket worker's system prompt holds the core contract, and its first message the briefing" 'run_has "$T/runs/T-1.1" system "Stage sections: read each one when you reach it" && run_has "$T/runs/T-1.1" prompt "# Briefing for this ticket" && ! run_has "$T/runs/T-1.1" system "# Briefing for this ticket"'
 check "and no stage section: verification, command forms, the orchestrator's part, Jira, the task" '! grep -qE "## 3\. Verification|### Self-review|## 6\. Command forms|## 5\. What the orchestrator|### Jira comments|## 0\. If you were given a task|## Review-sweep" "$T/runs/T-1.1"'
 check "and the directory its stage sections are read from" 'grep -q "in \`$REFS\`" "$T/runs/T-1.1" && ! grep -q "{{STAGE_DIR}}" "$T/runs/T-1.1"'
 check "with no Worker models row, no worker or preflight is passed a model" '[ "$(ran_on T-1 1)" = none ] && [ "$(ran_on T-2 1)" = none ] && [ "$(grep -c "^claude preflight model=none$" "$T/calls.log")" = 2 ] && [ "$(field T-1 model)" = "\"default\"" ]'
@@ -347,7 +349,7 @@ printf '{"ticket": "T-80", "stage": "4b", "criteria": ["AC1: h saves"], "lane": 
 finish T-80
 pass
 check "DS-155 AC2 after a handoff the real spawn-worker starts a new session in the same worktree, told to start at Stage 4b" '[ "$(state T-80)" = running ] && [ -e "$T/runs/T-80.2" ] && grep -q "This session starts at Stage 4b" "$T/runs/T-80.2" && grep -q "\"cwd\":\"$T/wt/T-80\"" "$T/runs/T-80.2" && [ "$(node -e "const r = (n) => JSON.parse(require(\"fs\").readFileSync(process.argv[1] + n, \"utf8\")).sid; console.log(r(1) !== r(2))" "$T/runs/T-80.")" = true ]'
-check "DS-155 AC2 with the handoff briefing in its system prompt" 'grep -q "# Briefing for this ticket" "$T/runs/T-80.2" && grep -q "## Handoff: this session starts at Stage 4b" "$T/runs/T-80.2" && grep -q "AC1: h saves" "$T/runs/T-80.2" && grep -q "fix/T-80" "$T/runs/T-80.2" && [ "$(ran_on T-80 2)" = sonnet ]'
+check "DS-155 AC2 with the handoff briefing in its first message" 'run_has "$T/runs/T-80.2" prompt "# Briefing for this ticket" && run_has "$T/runs/T-80.2" prompt "## Handoff: this session starts at Stage 4b" && grep -q "AC1: h saves" "$T/runs/T-80.2" && grep -q "fix/T-80" "$T/runs/T-80.2" && [ "$(ran_on T-80 2)" = sonnet ]'
 finish T-80
 pass
 out=$(node "$B/queue.mjs" requeue T-80 2>&1)

@@ -1537,7 +1537,7 @@ function resumeRound(t, { wt, kept, branch }) {
 }
 
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
-// on the same branch, starting at the stage it named with the handoff briefing in its system prompt.
+// on the same branch, starting at the stage it named with the handoff briefing in its first message.
 // Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
 // A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, with no worktree,
 // preflight or local worker. The session reads nothing from this computer, the tracker included, so
