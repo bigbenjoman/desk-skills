@@ -43,3 +43,4 @@ echo {a..z..2}
 coproc cat
 case $x in a) ;;& b) ;; esac
 printf '%(%F)T\n' -1
+check "x" '[ "$(node --input-type=module -e "f([{ id: \"p\", ticket: \"E-5\" }])" "$q")" = 1 ]'
