@@ -110,3 +110,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   write-protected
 
 If something is refused, try the plain form once before concluding you lack the capability.
+
+Your tools are an allow-list too, fixed at launch to the ones this contract and the skills you load
+name. A tool shown to you as deferred, such as `SendMessage`, is loaded with `ToolSearch` before its
+first call.
