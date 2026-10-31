@@ -102,6 +102,11 @@ with `PRODUCTION BROKEN: <what is broken>`, so its promotion question is asked a
 
 Never "self-reviewed" or "review passed" with nothing after it. That is a checkbox nobody can check.
 
+**Where the review ran before the PR opened, its first bullet says how**: paste the line
+`node <desk-review>/bin/verdict.mjs --method <results>` prints on the last round's results file, as
+printed. It gives the rounds, the vendor (`same-vendor` is said, never dropped) and the fallback
+seats, so a review that fell short does not read like a full one.
+
 **The full report is posted to the PR as well** — `desk-ticket` Stage 7, under §3
 `pr-self-review-comment`. The bullet is the summary; the posted review is the detail and the
 record. A bullet reading "see the review comment" is the same empty checkbox.

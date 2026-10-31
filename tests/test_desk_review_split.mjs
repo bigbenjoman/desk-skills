@@ -61,6 +61,7 @@ const REWRITTEN = [
     'From round 3 a fourth line follows the heading',
     'except P2s carried from round 3',
   ].map((s) => ['DS-368', s, 1]),
+  ['DS-369', 'first three lines are computed', 1], // the method line follows the heading
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
