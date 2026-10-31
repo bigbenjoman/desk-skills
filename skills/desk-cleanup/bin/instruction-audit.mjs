@@ -265,7 +265,11 @@ export function planFor(row, { root, home, memoryDir, used = new Set(), imported
     if (moves.length) Object.assign(moves[0], { insertAfter: d.end, insert: ['', '## When to use', '', ...[rest, w?.text].filter(Boolean).flatMap((x, k) => (k ? ['', x] : [x]))] })
     return moves
   }
-  const secs = sections(lines).sort((a, b) => b.count - a.count || a.start - b.start)
+  // A section holding an @ line stays, or its import would move with it. Moves clear only the file's
+  // own lines: where its imports keep it over the cap anyway, they are what to slim, so plan none.
+  const secs = sections(lines).filter((s) => !importsOf(lines.slice(s.start, s.start + s.count).join('\n'), row.path, home).length)
+    .sort((a, b) => b.count - a.count || a.start - b.start)
+  if (imported && lines.length + imported - secs.reduce((s, x) => s + x.count, 0) > INSTRUCTION_CAP_LINES) return []
   const moves = []; let left = lines.length + imported
   for (const sec of secs) {
     if (left <= INSTRUCTION_CAP_LINES) break
@@ -308,7 +312,9 @@ export function auditReport(rows, { root, home, memoryDir = null, doctor = {} })
   for (const r of rows.filter((x) => judged(x) && overCap(x, imported(x)))) {
     const moves = planFor(r, { root, home, memoryDir, used, imported: imported(r) })
     if (!moves.length) {
-      proposals.push(`propose : ${shown(r.path, root, home)} · ${advice[r.kind] ?? 'nothing to move: split it into headed sections by topic first'}`)
+      const big = rows.filter((x) => x.kind === 'import' && x.parent === r.path).sort((a, b) => b.lines + below(b.path) - (a.lines + below(a.path)))[0]
+      const slim = big && sections(linesOf(r.text)).length ?`its @ imports keep it over the cap: slim ${shown(big.path, root, home)} (${big.lines + below(big.path)} lines with its own imports)` : null
+      proposals.push(`propose : ${shown(r.path, root, home)} · ${slim ?? advice[r.kind] ?? 'nothing to move: split it into headed sections by topic first'}`)
       continue
     }
     // Inserts land after the frontmatter, past every range a move removes, so they go in first and

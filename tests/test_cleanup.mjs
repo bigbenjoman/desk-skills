@@ -335,5 +335,21 @@ put(join(RI, 'more.md'), `${fill(100, 'more').join('\n')}\n`)
 const withImport = auditReport(launchFiles({ root: RI, home: join(T, 'hi') }), { root: RI, home: join(T, 'hi') })
 t('imports: a file under the cap alone is over it with its imports', withImport.some((l) => /^launch : CLAUDE\.md +· CLAUDE\.md · .* · 152 lines · over cap 200 lines with its imports \(252\)$/.test(l)), true)
 t('imports: the import itself is not flagged on its own lines', withImport.some((l) => /^launch : import +· more\.md · .* · 100 lines · loads with CLAUDE\.md/.test(l)), true)
+t('imports: a section holding the @ line never moves, so the import is what to slim', withImport.filter((l) => l.startsWith('propose : CLAUDE.md')).join('\n'), 'propose : CLAUDE.md · its @ imports keep it over the cap: slim more.md (100 lines with its own imports)')
+
+// Own sections move until the file and its imports fit; the section holding the @ line stays.
+const RM = join(T, 'rm')
+put(join(RM, 'CLAUDE.md'), ['## Big', ...fill(119, 'big'), '', '## Imports', '@more.md', ''].join('\n'))
+put(join(RM, 'more.md'), `${fill(100, 'more').join('\n')}\n`)
+const mixed = auditReport(launchFiles({ root: RM, home: join(T, 'hm') }), { root: RM, home: join(T, 'hm') })
+t('imports: an own section moves and the @ line stays', mixed.filter((l) => l.startsWith('propose : CLAUDE.md')).map((l) => l.split(' · ')[1]).join('\n') + (mixed.includes('-@more.md') ? ' and the @ line moved' : ''), '"Big" (121 lines) → skill reference .claude/skills/big/SKILL.md')
+
+// A short file over the cap only by what it imports keeps all its own text: the import is what to slim.
+const RS = join(T, 'rs')
+put(join(RS, 'CLAUDE.md'), ['## Setup', 'Run it.', '', '## Agents', '@docs/agents.md', ''].join('\n'))
+put(join(RS, 'docs', 'agents.md'), ['## Big', ...fill(239, 'agent'), ''].join('\n'))
+const short = auditReport(launchFiles({ root: RS, home: join(T, 'hs') }), { root: RS, home: join(T, 'hs') })
+t('imports: a short importer over the cap by its imports alone moves nothing and names the import', short.filter((l) => l.startsWith('propose : CLAUDE.md')).join('\n'), 'propose : CLAUDE.md · its @ imports keep it over the cap: slim docs/agents.md (240 lines with its own imports)')
+t('imports: no diff takes a line out of the importer', short.includes('--- a/CLAUDE.md'), false)
 
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1) }
