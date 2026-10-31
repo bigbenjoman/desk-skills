@@ -244,8 +244,8 @@ const usedT = [...new Set([0.17, 0.6, 0.88].flatMap((u) => QT.usageLine({ readin
 t('DS-277 AC3 with truecolor each bar\'s used colour is One Dark\'s, 3:1 or more on the window, the selected row and the unused part',
   `${usedT.sort().join(' ')} ${usedT.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '38;2;152;195;121 38;2;229;192;123 38;2;240;124;132 ');
 
-// ---- DS-215 AC21: on screen the line is labelled and pinned at the bottom: usage, a blank line, then
-// the keys. Plain output keeps it in its header.
+// ---- DS-215 AC21 (DS-357 AC6): on screen the line is labelled and pinned at the bottom: a blank line,
+// usage, then the keys. Plain output keeps it in its header.
 reading([0.17, at(24, 11, 20)], [0.6, at(25, 15, 0)]);
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const bottom = async (start) => {
@@ -255,10 +255,10 @@ const bottom = async (start) => {
   const f = S.frame().map(plain);
   const i = f.findIndex((l) => l.startsWith(LABEL));
   const keys = f.findIndex((l) => /^(move  |↑↓ )/.test(l));
-  return `${i === f.findLastIndex((l) => l.startsWith(LABEL))} ${keys - i} ${f.slice(i + 2).every((l) => /^(move|act|      )|↑↓|q quit/.test(l))} ${f[i]?.slice(LABEL.length).startsWith('5h ██')}`;
+  return `${i === f.findLastIndex((l) => l.startsWith(LABEL))} ${f[i - 1] === ''} ${keys - i} ${f.slice(i + 1).every((l) => /^(move|act|      )|↑↓|q quit/.test(l))} ${f[i]?.slice(LABEL.length).startsWith('5h ██')}`;
 };
-t('DS-215 AC21 home: the line once, a blank line then the keys under it, and nothing after the keys', await bottom({ kind: 'overview', all: false }), 'true 2 true true');
-t('DS-215 AC21 a repo screen too', await bottom({ kind: 'repo', slug: 'acme__solo' }), 'true 2 true true');
+t('DS-357 AC6 (DS-215 AC21) home: a blank line, the line once, the keys right under it, and nothing after the keys', await bottom({ kind: 'overview', all: false }), 'true true 1 true true');
+t('DS-357 AC6 (DS-215 AC21) a repo screen too', await bottom({ kind: 'repo', slug: 'acme__solo' }), 'true true 1 true true');
 const SR = screen({ kind: 'repo', slug: 'acme__solo' });
 await sleep(20);
 SR.ui.finish(0);
