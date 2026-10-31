@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -162,6 +163,55 @@ const cbList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mj
   { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(cbDir, 'config.md'), DESK_MACHINE: join(cbDir, 'none.md'), HOME: cbDir } });
 t('DS-327 AC5 desk-env reads the row as check-builds', `${cbList.status} ${cbList.stdout.trim()}`, '0 Flows image: ./scripts/ensure-flows-image.sh');
 rmSync(cbDir, { recursive: true, force: true });
+
+// Evidence workflow: screenshot cells a repo's own workflow fills are started there, not put to the person.
+{
+  const EVB = 'Before | After\n_drag a-before.png_ | _drag a-after.png_\n\n```evidence\na-before.png | before | /x | 1280\n```\n';
+  const ev = (body, cfgX = {}) => undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body, reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' }, ...cfgX });
+  const start = ev(EVB);
+  t('EV cells left with an evidence block start the workflow', `${start?.call} ${start?.workflow}`, 'evidence pr-evidence.yml');
+  t('EV it says how many cells', start?.why.startsWith('2 screenshot cell(s) left'), true);
+  t('EV while it runs, the PR waits', ev(EVB, { evidenceRun: () => ({ state: 'running', url: null }) })?.call, 'wait');
+  const after = ev(EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'success', url: 'https://x/actions/runs/1' }) });
+  t('EV cells still left after the run are the person\'s', after?.call, 'person');
+  t('EV and the person is told how to re-run it', after?.action.includes('gh workflow run pr-evidence.yml -f pr=740'), true);
+  t('EV no evidence block: the person uploads them, as before', ev('_drag a.png_')?.action, 'upload the screenshots to #740');
+  t('EV no §4 row: the person uploads them, as before', ev(EVB, { evidence: null })?.action, 'upload the screenshots to #740');
+  t('EV a local upload left partial is the person\'s, whatever the row', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call, 'person');
+  t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');
+  t('EV red checks come first: no run while a check is red', ev(EVB, {})?.call === 'evidence' && undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call === 'checks', true);
+
+  t('EV row: a workflow file', JSON.stringify(parseEvidenceRow(['pr-evidence.yml'])), '{"workflow":"pr-evidence.yml"}');
+  t('EV row: none is off', parseEvidenceRow(['none']), null);
+  t('EV row: unset is off', parseEvidenceRow(null), null);
+  t('EV row: not a workflow file is refused', !!parseEvidenceRow(['run the screenshots'])?.errors, true);
+  t('EV run id from gh workflow run', runIdFrom('https://github.com/o/r/actions/runs/41191877067\n'), '41191877067');
+  const evDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
+  t('EV nothing recorded at a head reads as none', evidenceRecord(evDir, 740, HEAD, () => null), null);
+  recordDispatch(evDir, 740, HEAD, { workflow: 'pr-evidence.yml', out: 'https://github.com/o/r/actions/runs/9' });
+  t('EV a run not completed is running', evidenceRecord(evDir, 740, HEAD, () => ({ status: 'in_progress' }))?.state, 'running');
+  t('EV an unreadable run is running', evidenceRecord(evDir, 740, HEAD, () => null)?.state, 'running');
+  const doneRec = evidenceRecord(evDir, 740, HEAD, (id) => (id === '9' ? { status: 'completed', conclusion: 'success' } : null));
+  t('EV a completed run is done, with its url', `${doneRec?.state} ${doneRec?.conclusion} ${doneRec?.url}`, 'done success https://github.com/o/r/actions/runs/9');
+  t('EV another head has its own record', evidenceRecord(evDir, 740, OLD, () => null), null);
+  const at = new Date(0).toISOString();
+  recordDispatch(evDir, 741, HEAD, { workflow: 'pr-evidence.yml', out: '', at });
+  t('EV no run id: running within the grace', evidenceRecord(evDir, 741, HEAD, () => null, Date.parse(at) + DISPATCH_GRACE_MS - 1)?.state, 'running');
+  t('EV no run id: done after it', evidenceRecord(evDir, 741, HEAD, () => null, Date.parse(at) + DISPATCH_GRACE_MS)?.state, 'done');
+  rmSync(evDir, { recursive: true, force: true });
+
+  t('EV setup step 1 proposes §4 Evidence workflow', /\*\*Evidence workflow\.\*\*[\s\S]*propose it for §4 Evidence workflow/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
+  t('EV the config template has the row', /^\| Evidence workflow \| /m.test(doc('../desk-config.md')), true);
+  const evCfg = mkdtempSync(join(tmpdir(), 'desk-evidence-cfg-'));
+  writeFileSync(join(evCfg, 'config.md'), '## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `pr-evidence.yml` |\n');
+  const evList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'list', 'evidence-workflow'],
+    { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(evCfg, 'config.md'), DESK_MACHINE: join(evCfg, 'none.md'), HOME: evCfg } });
+  t('EV desk-env reads the row as evidence-workflow', `${evList.status} ${evList.stdout.trim()}`, '0 pr-evidence.yml');
+  rmSync(evCfg, { recursive: true, force: true });
+}
 
 // DS-316: a verdict for an older head is read at the head when only clean merges of the base came since.
 const withCarry = (reviews, carry, clean = 'p0=0 p1=0 gaps=0', checks = green) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks, carry },

@@ -12,6 +12,8 @@
 //   build   every red check is one §4 Check builds names, and no build has run at this head: the pass
 //           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
+//   evidence  screenshot cells are left and §4 Evidence workflow names the workflow that fills them:
+//           the pass starts it, once per head (evidence.mjs), and the next pass reads the body again
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //   held    (personHold, read by the pass before acting on any other call) a person put it back to
 //           draft: it stays draft, and nothing undrafts it or sends it to a worker until they undraft it
@@ -42,6 +44,7 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
 import { RERUNS_MAX } from './fix-tries.mjs';
+import { dragCells, hasEvidenceBlock } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
@@ -208,6 +211,25 @@ function buildCall(gate, cfg, n, head) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
 }
 
+// A body with `_drag <file>_` cells left and a fenced ```evidence block, where §4 Evidence workflow
+// names the workflow that fills them (cfg.evidence, evidence.mjs), once per head (cfg.evidenceRun(head)):
+// `evidence` starts it, `wait` while it runs, and `person` once it has run and cells are still left.
+// Anything else is null: the cells are the person's, as before.
+function evidenceCall(pr, cfg) {
+  const wf = cfg.evidence?.workflow;
+  if (!wf || !hasEvidenceBlock(pr.body)) return null;
+  const n = pr.number;
+  const at = String(pr.head ?? '?').slice(0, 9);
+  const left = dragCells(pr.body);
+  const rec = cfg.evidenceRun?.(pr.head) ?? null;
+  if (!rec) return { call: 'evidence', why: `${left} screenshot cell(s) left at ${at}, which §4 Evidence workflow \`${wf}\` fills`, workflow: wf };
+  if (rec.state === 'running') return { call: 'wait', why: `its evidence workflow \`${wf}\` is taking the screenshots at ${at}${rec.url ? ` (${rec.url})` : ''}` };
+  return {
+    call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s)`,
+    action: `fill the cells it could not on #${n}, or fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\``,
+  };
+}
+
 // Whether anyone but `handle`, and not a bot, has reviewed or commented on the PR: the line between
 // §3 pr-conflict-unreviewed and pr-conflict-reviewed. With no handle to tell them apart, everyone counts.
 export function humanReviewed(pr, handle) {
@@ -234,7 +256,8 @@ export function personHold(t, n, redrafts = []) {
 // the head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
-// check build recorded at that head, conflictUnreviewed, conflictReviewed (§3 pr-conflict-unreviewed
+// check build recorded at that head, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
+// evidence run recorded at that head, conflictUnreviewed, conflictReviewed (§3 pr-conflict-unreviewed
 // and -reviewed) }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
@@ -307,7 +330,8 @@ export function undraftCall(t, pr, cfg) {
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
-  if (unsent || /_drag \S+_/.test(pr.body ?? '')) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
+  if (unsent) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
+  if (dragCells(pr.body)) return evidenceCall(pr, cfg) ?? person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
   if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
   if (cfg.perm === 'yes') return withCarried({ call: 'ready', why: null, note: null, verdict: read });
