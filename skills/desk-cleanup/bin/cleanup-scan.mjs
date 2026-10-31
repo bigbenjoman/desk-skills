@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // The scripted half of desk-cleanup: the same reading every run, rather than prose re-derived by hand
-// across dozens of worktrees. Two subcommands only read; `remove` acts on the paths it is given.
+// across dozens of worktrees. Every subcommand but `remove` only reads; `remove` acts on the paths it is given.
 //
 //   node cleanup-scan.mjs worktrees --repo <root> --author <§1 handle> [--default <branch>]
 //        [--worktrees-dir <§2 dir>] [--key-pattern <§4 Ticket key pattern>] [--prs <file>] [--no-fetch]
 //   node cleanup-scan.mjs remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>...
 //   node cleanup-scan.mjs memory [--repo <root>] [--worktrees-dir <dir>] [--ports <3500-3600,6006>]
+//   node cleanup-scan.mjs memory-index [--repo <root>] [--memory-dir <dir>]   an oversized MEMORY.md, or nothing
 //   node cleanup-scan.mjs key-filter <TICKET>        gh pr list --json … on stdin, whole-key matches out
 //
 // `worktrees` prints one TSV row per worktree: verdict path branch ticket tip pr author reason
@@ -207,6 +208,40 @@ export function memoryReport({ ps, cwds, listen, ports, worktrees = [], dirs = [
   if (wm.length && watchRoots === null) out.push('  roots: unknown (watchman watch-list did not answer)')
   for (const r of watchRoots ?? []) out.push(`  watching ${r}${exists(r) ? '' : '  [GONE: watchman watch-del]'}`)
   return out
+}
+
+// ---- the auto-memory index -------------------------------------------------------------------
+
+// Claude Code loads MEMORY.md into every session and worker on every call; past this it is a document.
+export const MEMORY_INDEX_CAP = { bytes: 6144, lines: 60 }
+
+// Claude Code's auto-memory directory for a repo root (desk-env's memoryDir, the same formula).
+export const memoryDirOf = (root, home = homedir()) => join(home, '.claude', 'projects', root.replace(/[^A-Za-z0-9]/g, '-'), 'memory')
+
+// The index's entries that run past one line: a bullet, heading or paragraph with continuation lines.
+export function longEntries(text) {
+  const out = []; let cur = null
+  for (const l of String(text).split('\n')) {
+    if (!l.trim()) { cur = null; continue }
+    const heading = /^\s*#/.test(l)
+    if (cur && !heading && !/^\s*([-*+]|\d+[.)])\s/.test(l)) { cur.lines++; continue }
+    cur = heading ? null : { first: l.trim().replace(/^([-*+]|\d+[.)])\s*/, ''), lines: 1 }
+    if (cur) out.push(cur)
+  }
+  return out.filter((e) => e.lines > 1)
+}
+
+// The report lines for one MEMORY.md, or none when it is within the cap (or absent).
+export function memoryIndexReport(path, text, cap = MEMORY_INDEX_CAP) {
+  if (text === null || text === undefined) return []
+  const bytes = Buffer.byteLength(text), lines = text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
+  if (bytes <= cap.bytes && lines <= cap.lines) return []
+  const long = longEntries(text)
+  const head = `memory-index : ${path} · ${bytes} B · ${lines} lines · cap ${cap.bytes} B or ${cap.lines} lines   [report only]`
+  const name = (e) => `"${e.first.length > 60 ? `${e.first.slice(0, 57)}...` : e.first}" (${e.lines} lines)`
+  return [head, long.length
+    ? `               move into their own memory files: ${long.map(name).join(', ')}`
+    : '               every entry is one line: shorten the longest, one pointer each']
 }
 
 // ---- the live machine ------------------------------------------------------------------------
@@ -429,6 +464,15 @@ function scanMemory(o) {
   }
 }
 
+// Prints nothing when the index is within the cap, and nothing when the repo has no memory directory.
+function scanMemoryIndex(o) {
+  const dir = o['memory-dir'] ? expand(o['memory-dir']) : memoryDirOf(rootOf(o.repo).root)
+  const path = join(dir, 'MEMORY.md')
+  let text = null
+  try { text = readFileSync(path, 'utf8') } catch { /* no index */ }
+  for (const l of memoryIndexReport(path, text)) console.log(l)
+}
+
 function keyFilter(o) {
   const key = o._[0]
   if (!key) die('key-filter needs a ticket key')
@@ -437,7 +481,7 @@ function keyFilter(o) {
 
 if (process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))) {
   const [cmd, ...rest] = process.argv.slice(2); const o = args(rest)
-  const run = { worktrees: scanWorktrees, remove: removeWorktrees, memory: scanMemory, 'key-filter': keyFilter }[cmd]
-  if (!run) die('usage: cleanup-scan.mjs worktrees|remove|memory|key-filter … (see the header)')
+  const run = { worktrees: scanWorktrees, remove: removeWorktrees, memory: scanMemory, 'memory-index': scanMemoryIndex, 'key-filter': keyFilter }[cmd]
+  if (!run) die('usage: cleanup-scan.mjs worktrees|remove|memory|memory-index|key-filter … (see the header)')
   run(o)
 }
