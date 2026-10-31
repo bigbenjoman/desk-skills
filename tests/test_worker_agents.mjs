@@ -1,7 +1,9 @@
 // suite: worker agents (the named review seats reach a worker through --agents)
 // worker-agents.mjs builds the --agents file spawn-worker.sh launches every worker and its preflight
 // with: each named desk-review seat from the installed agent files, a missing one refusing the spawn,
-// and nothing but the agent definitions carried. Scratch HOME and worktree only.
+// and nothing but the agent definitions carried. Scratch HOME and worktree only. That spawn-worker.sh
+// passes the file to the preflight and the worker, and refuses a spawn when it cannot be built, is
+// proved by running it: tests/test_batch_e2e.sh.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +13,6 @@ import { REVIEW_AGENTS, buildAgents, parseAgent } from '../desk/bin/worker-agent
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'desk', 'bin', 'worker-agents.mjs');
-const SPAWN = readFileSync(join(ROOT, 'desk', 'bin', 'spawn-worker.sh'), 'utf8');
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -44,11 +45,6 @@ const over = buildAgents({ home, wt });
 t('AC1 a repo override wins', over.agents['lena-code-reviewer'].prompt, 'Repo Lena.');
 rmSync(join(wt, '.claude'), { recursive: true });
 
-// spawn-worker launches the worker and its preflight with the file.
-t('AC1 spawn-worker builds the file', SPAWN.includes('node "$BIN/worker-agents.mjs" --out "$AGENTS" --wt "$WT"'), true);
-t('AC1 the preflight and the worker both get --agents', SPAWN.split('--agents "$AGENTS"').length - 1, 2);
-t('AC1 the preflight proves the seats resolve', /\ncheck AGENTS OK|\n\s+check AGENTS OK/.test(SPAWN) && SPAWN.includes('$AGENT_NAMES'), true);
-
 // Every named agent desk-review dispatches is in the list: a seat added there and not here would
 // silently fall back again.
 const shipped = readdirSync(join(ROOT, 'agents')).map((f) => f.replace(/\.md$/, ''));
@@ -69,10 +65,6 @@ t('AC2 no file is written', existsSync(out2), false);
 writeFileSync(join(userDir, 'nadia-security-auditor.md'), '---\nname: nadia-security-auditor\n---\n');
 t('AC2 an agent with no description or prompt fails too', /nadia-security-auditor .*no description or no prompt/.test(run(['--out', out2]).stderr), true);
 writeFileSync(join(userDir, 'nadia-security-auditor.md'), agentFile('nadia-security-auditor'));
-const pre = SPAWN.indexOf('if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then');
-const build = SPAWN.indexOf('worker-agents.mjs" --out');
-t('AC2 spawn-worker builds the agents before the preflight runs', build > 0 && build < pre, true);
-t('AC2 a failed build fails the preflight', /worker-agents\.mjs[\s\S]{0,200}\[preflight\] FAILED[\s\S]{0,80}exit 1/.test(SPAWN), true);
 
 // ---- AC4: only the agent definitions reach the worker
 writeFileSync(join(userDir, 'jim-solution-architect.md'), agentFile('jim-solution-architect',
@@ -81,10 +73,6 @@ const jim = buildAgents({ home, wt }).agents['jim-solution-architect'];
 t('AC4 only description, prompt, model and tool lists are carried', JSON.stringify(Object.keys(jim)), JSON.stringify(['description', 'prompt', 'model', 'tools', 'disallowedTools']));
 t('AC4 an inline tool list is read', JSON.stringify(jim.tools), JSON.stringify(['Read', 'Grep', 'Bash']));
 t('AC4 a block tool list is read', JSON.stringify(jim.disallowedTools), JSON.stringify(['Write', 'Edit']));
-const launches = SPAWN.split('claude -p "').slice(1).filter((c) => c.includes('--agents'));
-t('AC4 every launch with --agents still drops the user setting sources', launches.length === 2 && launches.every((c) => c.includes('--setting-sources "" --strict-mcp-config')), true);
-t('AC4 the permission list is still the generated settings file alone', launches.every((c) => (c.match(/--settings /g) ?? []).length === 1 && c.includes('--settings "$SETTINGS"')), true);
-t('AC4 the worker settings are generated as before', SPAWN.includes('node "$BIN/worker-settings.mjs" worker --ticket "$TICKET" --wt "$WT" --out "$SETTINGS"'), true);
 
 t('a file with no frontmatter is not an agent', parseAgent('You are nobody.'), null);
 

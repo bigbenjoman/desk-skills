@@ -17,6 +17,9 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : 
 git config --global user.email t@example.com; git config --global user.name t
 # No network for git: every transport but a local file is refused.
 git config --global protocol.allow never; git config --global protocol.file.allow always
+# The named review agents, installed user-level as install.sh puts them: spawn-worker.sh builds every
+# worker's --agents file from these and refuses a spawn with one missing.
+mkdir -p "$T/home/.claude/agents"; cp "$SRC"/agents/*.md "$T/home/.claude/agents/"
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   DESK_BIN DESK_QUEUE DESK_SKILLS_DIR DESK_MEMORY_DIR DESK_GH_REPO DESK_CONFIG_ROOT DESK_ENV_MJS DESK_ENV_DIR \
   DESK_AUTOPILOT_WORKER CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_TASK AUTOPILOT_RESUME \
@@ -149,7 +152,12 @@ if (prompt.startsWith('Perform these')) {
     console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', num_turns: 1, total_cost_usd: 0, result: "You've hit your weekly limit · resets Nov 1 at 3pm" }));
     process.exit(1);
   }
-  const reply = [...prompt.matchAll(/^(\w+)=OK or \1=BLOCKED/gm)].map((m) => m[1] + '=' + (/^(W_IN|TOOL\d+|JIRA)\$/.test(m[1]) ? 'OK' : 'BLOCKED')).join('\n');
+  // AGENTS is OK only when the --agents file it was given defines every seat the check names, as
+  // a real session offers exactly the subagent types that file holds.
+  const seats = (/^AGENTS=OK or AGENTS=BLOCKED[^\n]*: ([^\n]*)/m.exec(prompt)?.[1] ?? '').trim().split(/\s+/).filter(Boolean);
+  const offered = (() => { try { return JSON.parse(fs.readFileSync(at('--agents'), 'utf8')); } catch { return {}; } })();
+  const agentsOk = a.includes('--agents') && seats.length > 0 && seats.every((n) => offered[n]?.prompt);
+  const reply = [...prompt.matchAll(/^(\w+)=OK or \1=BLOCKED/gm)].map((m) => m[1] + '=' + (/^(W_IN|TOOL\d+|JIRA)\$/.test(m[1]) || (m[1] === 'AGENTS' && agentsOk) ? 'OK' : 'BLOCKED')).join('\n');
   if (at('--output-format') === 'json' && !fs.existsSync(T + '/preflight-text')) console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 9, total_cost_usd: 0.4321, result: reply }));
   else console.log(reply);
   process.exit(0);
@@ -158,7 +166,7 @@ const ticket = /Your ticket is (\S+?)\./.exec(prompt)?.[1];
 const sid = at('--session-id');
 fs.appendFileSync(T + '/calls.log', 'claude worker ' + ticket + '\n');
 const round = fs.readdirSync(T + '/runs').filter((f) => f.startsWith(ticket + '.')).length + 1;
-fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages') }));
+fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages'), agents: a.includes('--agents') ? Object.keys(JSON.parse(fs.readFileSync(at('--agents'), 'utf8'))) : null, sources: a.includes('--setting-sources') ? at('--setting-sources') : null, settings: a.filter((x) => x === '--settings').length }));
 const reg = T + '/live/' + sid + '.json';
 fs.writeFileSync(reg, JSON.stringify({ sessionId: sid, pid: process.pid }));
 const script = fs.readFileSync(T + '/scripts/' + ticket + '.' + round, 'utf8').split('\n').filter(Boolean);
@@ -266,6 +274,9 @@ check "each worker runs in its own worktree on its own branch"  'grep -q "\"cwd\
 check "each worker passed a real preflight first"               '[ "$(grep -c "^claude preflight" "$T/calls.log")" = 2 ]'
 check "DS-158 AC1 each spawn line shows its preflight's cost and turns" '[ "$(echo "$out" | grep "^spawned: " | grep -o "preflight \$0.43, 9 turn(s)" | wc -l | tr -d " ")" = 2 ]'
 check "DS-158 AC1 and the ticket's log holds them, ahead of the worker" 'head -1 "$T/state/logs/T-1.log" | grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9"'
+REVIEW_SEATS='["lena-code-reviewer","nadia-security-auditor","theo-api-designer","mira-playwright-expert","jim-solution-architect","suki-frontend-architect","bea-business-analyst","ada-devils-advocate"]'
+check "DS-367 AC1 each worker is started with every named review seat as an agent" 'grep -qF "\"agents\":$REVIEW_SEATS" "$T/runs/T-1.1" && grep -qF "\"agents\":$REVIEW_SEATS" "$T/runs/T-2.1"'
+check "DS-367 AC4 and still with no user setting sources and the one generated settings file" 'grep -qF "\"sources\":\"\",\"settings\":1" "$T/runs/T-1.1" && grep -qF "\"sources\":\"\",\"settings\":1" "$T/runs/T-2.1"'
 check "DS-158 AC4 a worker is started with no partial messages" 'grep -q "\"partial\":false" "$T/runs/T-1.1" && grep -q "\"partial\":false" "$T/runs/T-2.1"'
 REFS="$SRC/skills/desk-autopilot/references"
 check "a ticket worker's system prompt holds the core contract and its briefing" 'grep -q "Stage sections: read each one when you reach it" "$T/runs/T-1.1" && grep -q "# Briefing for this ticket" "$T/runs/T-1.1"'
@@ -459,6 +470,15 @@ record T-17 src/p.txt A S; q admit T-17
 pass
 check "DS-157 AC4 a rejected text model fails it too"            '[ "$(state T-17)" = failed ] && [ ! -e "$T/runs/T-17.1" ] && echo "$out" | grep -q "TEXT  FAIL .*Worker models names text=\"no-such-model\""'
 q drop T-17
+
+# DS-367 AC2: a named review agent that is not installed fails the preflight, naming it, and no
+# worker spawns to review with a general-purpose stand-in.
+config "standard=sonnet high=opus"
+mkdir -p "$T/away"; mv "$T/home/.claude/agents/nadia-security-auditor.md" "$T/away/"
+record T-19 src/r.txt A S; q admit T-19
+pass
+check "DS-367 AC2 a missing review agent fails the preflight, naming it" '[ "$(state T-19)" = failed ] && [ ! -e "$T/runs/T-19.1" ] && echo "$out" | grep -q "T-19: preflight failed" && echo "$out" | grep -q "review agent missing: nadia-security-auditor" && ! echo "$out" | grep -q "review agent missing: lena-code-reviewer"'
+mv "$T/away/nadia-security-auditor.md" "$T/home/.claude/agents/"; q drop T-19
 
 # DS-344 AC2: a preflight the account's usage limit refuses (HTTP 429) is told apart from a failed
 # one by the real spawn-worker.sh. The ticket keeps its place, and the batch holds on the limit.
