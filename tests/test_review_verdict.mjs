@@ -209,6 +209,13 @@ t('CLI --carried prints the section', `${sec.status} ${sec.stdout.startsWith('##
 const noSec = spawnSync('node', [SCRIPT, '--carried', join(T, 'ok.json')], { encoding: 'utf8' })
 t('CLI --carried with nothing carried prints nothing', `${noSec.status} ${JSON.stringify(noSec.stdout)}`, '0 ""')
 
+// A named seat that ran as general-purpose is named in the heading.
+const as = (role, agent) => ({ ...seat(role), agent })
+const fellBack = base({ seats: [as('correctness', 'general-purpose'), as('frontend', 'general-purpose'), as('security', 'nadia-security-auditor'), as('simplicity', 'general-purpose'), seat('codex', 'codex')] })
+t('AC3 the heading names each fallback seat', heading(fellBack).endsWith(' · agents: general-purpose fallback for correctness, frontend'), true)
+t('AC3 a fallback alone leaves the verdict clean', reads(fellBack), true)
+t('AC3 seats that ran as their named agent add nothing', heading(base({ seats: [as('correctness', 'lena-code-reviewer'), seat('codex', 'codex')] })).includes('fallback'), false)
+
 const SKILL = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf8').split('\n')
 const template = marker(base()).replace(`sha=${SHA}`, 'sha=<full reviewed SHA>')
 t('SKILL.md shows the marker form verdict.mjs prints', SKILL.includes(template), true)

@@ -46,6 +46,10 @@ const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
 const VENDORS = ['claude', 'codex']
 
+// The seats that have a named agent. One that ran as general-purpose is a fallback, and the heading
+// names it, so a fleet that became one model checking itself never reads as a full run.
+const NAMED_SEATS = ['correctness', 'security', 'api', 'tests', 'infra', 'frontend', 'requirements']
+
 export class VerdictError extends Error {}
 const no = (m) => { throw new VerdictError(m) }
 
@@ -145,8 +149,9 @@ export function tally(r) {
   }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
   n.partial += died.length
+  const fallback = [...seats.values()].filter((s) => NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose').map((s) => s.role)
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried,
-    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped,
+    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
 
@@ -176,7 +181,8 @@ export function render(r) {
     ? 'codex read the diff cold · refuted cross-vendor'
     : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`
   const range = t.since ? `, fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}` : ''
-  const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how}`
+  const agents = t.fallback.length ? ` · agents: general-purpose fallback for ${t.fallback.join(', ')}` : ''
+  const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how}${agents}`
   const lines = ['<!-- desk-review:local -->', marker, heading]
   if (t.since) lines.push(`<!-- desk-review:carried v=1 p2=${t.carried.length} since=${t.since} -->`)
   return lines.join('\n')

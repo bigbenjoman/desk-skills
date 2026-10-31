@@ -47,6 +47,9 @@ LOG="$STATE/logs/$TICKET.log"
 # Per repo: $DESK_STATE is this repo's batch state, so two repos with the same ticket key never
 # share (or overwrite) one another's permission file.
 SETTINGS="$STATE/workers/$TICKET.settings.json"
+# The named review agents, passed with --agents: --setting-sources "" drops ~/.claude/agents with
+# the rest of the user's settings, and loosening it would bring their permissions and hooks too.
+AGENTS="$STATE/workers/$TICKET.agents.json"
 
 [ -d "$WT" ] || { echo "FAIL: worktree $WT does not exist — run setup-worktree.sh first" >&2; exit 1; }
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
@@ -100,6 +103,12 @@ printf '%s\n' "$WS_OUT" | grep '^CONFIG_WARN: ' | sed 's/^/[spawn] /' >&2 || tru
 TOOL_PROBES=()
 while IFS= read -r l; do [ -n "$l" ] && TOOL_PROBES+=("$l"); done < <(printf '%s\n' "$WS_OUT" | sed -n 's/^TOOLCHAIN_PROBE: //p')
 [ "${#TOOL_PROBES[@]}" -gt 0 ] || { echo "FAIL: worker-settings produced no toolchain probe — config §4 toolchain unset?" >&2; exit 1; }
+if ! AGENTS_OUT="$(node "$BIN/worker-agents.mjs" --out "$AGENTS" --wt "$WT" 2>&1)"; then
+  printf '%s\n' "$AGENTS_OUT" >&2
+  [ -n "${AUTOPILOT_PREFLIGHT:-}" ] && echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
+  exit 1
+fi
+AGENT_NAMES="$(printf '%s\n' "$AGENTS_OUT" | sed -n 's/^AGENTS: //p')"
 
 # A database URL in the orchestrator's own environment would reach the worker however carefully its
 # env files were repointed. Every §4 Database URL variable is removed from what the worker inherits.
@@ -134,12 +143,14 @@ JIRA=OK or JIRA=BLOCKED — run: desk-jira whoami
 DENY=OK or DENY=BLOCKED — run: git stash list
 DENY2=OK or DENY2=BLOCKED — run: git -c alias.st=status st
 ESCAPE=OK or ESCAPE=BLOCKED — run: touch $CANARY.bash
-CODEX=OK or CODEX=BLOCKED — run: codex --version"
-  NCHECKS=$((i + 7))
+CODEX=OK or CODEX=BLOCKED — run: codex --version
+AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subagent type your Agent tool offers (do not launch any): $AGENT_NAMES"
+  NCHECKS=$((i + 8))
   RAW=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS" \
     --setting-sources "" --strict-mcp-config \
     --settings "$SETTINGS" \
+    --agents "$AGENTS" \
     --permission-mode dontAsk \
     "${ADD_DIRS[@]}" \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
@@ -197,6 +208,7 @@ $CHECKS" \
   check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
   i=0
   for _ in "${TOOL_PROBES[@]}"; do i=$((i + 1)); check "TOOL$i" OK; done   # every toolchain binary (config §4) executes
+  check AGENTS OK       # the named review seats resolve, not general-purpose
   check DENY  BLOCKED   # deny must still win over allow
   check DENY2 BLOCKED   # git config and aliases are not reachable through -c
   check ESCAPE BLOCKED  # a shell write outside the worktree is refused: proves user-level settings
@@ -310,6 +322,7 @@ desk_detach claude -p "$PROMPT" \
   --setting-sources "" --strict-mcp-config \
   --permission-mode dontAsk \
   --settings "$SETTINGS" \
+  --agents "$AGENTS" \
   "${ADD_DIRS[@]}" \
   --append-system-prompt "$SYSTEM" \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"} \

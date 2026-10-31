@@ -51,7 +51,8 @@
 //     Edit(/abs/...) is SILENTLY IGNORED, in both directions.
 //   - Workers are launched with --setting-sources "" (spawn-worker.sh, triage.sh), so the user's own
 //     settings, which may allow Bash(*), never widen this list. That also drops the user-level
-//     attribution hook, so it is re-registered here.
+//     attribution hook, so it is re-registered here. The named review agents alone come back, as
+//     spawn-worker.sh's --agents file (worker-agents.mjs), which adds no permission or hook.
 //   - A malformed --settings file is silently IGNORED in --print mode, handing the worker full
 //     permissions while looking locked down. So this validates before writing.
 //   - A denial reported by a worker may be the FILESYSTEM sandbox, not the rule list: /tmp (locks)

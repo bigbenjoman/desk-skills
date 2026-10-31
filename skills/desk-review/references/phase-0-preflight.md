@@ -57,3 +57,9 @@ missing in both places, and §4 Project subagents sync is set, run it once. Anyt
 falls back to `general-purpose`, and the header says so:
 `agents: general-purpose fallback for <roles>`. A fleet that silently became one model checking
 itself must never read as a full run.
+
+An autopilot worker gets these agents through `--agents` (spawn-worker.sh builds the file from the
+installed agent files, and its preflight refuses to spawn when one is missing), so in a worker they
+resolve like anywhere else. Record each seat's `agent` in the results file as the type you actually
+launched: `verdict.mjs` writes the fallback line into the heading for every named seat that ran as
+`general-purpose`.
