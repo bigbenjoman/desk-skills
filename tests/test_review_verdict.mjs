@@ -220,6 +220,13 @@ t('DS-368 AC1 the finder diff command switches to the fix range from round 2', d
 t('the finder diff command has a fix-range form for a branch', dispatch.includes('git diff "<since>..HEAD"'), true)
 t('the finder diff command has a fix-range form for a PR', dispatch.includes('git diff "<since>..refs/desk-review/pr-<n>"'), true)
 t('the fix-range rule names since as the previous round\'s SHA', SKILL.some((l) => l.includes("git diff <previous round's reviewed SHA>..HEAD")), true)
+// A fix range reads only what changed, so it is safe only after a whole read of a branch that has
+// only grown since: after a partial round, a rebase or a base merge, the round reads the whole branch.
+const whole = SKILL.join('\n').match(/^\*\*The fix range holds only when[\s\S]*?(?=\n\n(?!- ))/m)?.[0] ?? ''
+t('the fix range falls back to the merge base', whole.includes('`since` is the branch\'s merge base, `git merge-base origin/<base> HEAD`'), true)
+t('after a partial previous round', whole.includes('**The previous verdict was partial**'), true)
+t('after a rebase', whole.includes('`git merge-base --is-ancestor <since> HEAD` fails'), true)
+t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEAD` prints anything'), true)
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')
 process.exit(fails ? 1 : 0)

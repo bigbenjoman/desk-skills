@@ -190,6 +190,17 @@ still carried forward (rule 3 above) stay in the counts whatever the range. **Th
 still reads the whole branch** (`origin/<base>...HEAD`): criteria are met by the whole change, and
 judged against a few fix commits most of them would read as unmet.
 
+**The fix range holds only when the previous round read the whole branch and the branch only grew
+since.** Otherwise `since` is the branch's merge base, `git merge-base origin/<base> HEAD`, so this
+round reads the whole branch again, and the report header says why. That applies in three cases:
+
+- **The previous verdict was partial** (`partial` non-zero: a file the oversized cap skipped or a seat
+  that died). A fix range never reads what that round missed, and this round's `partial` counts only
+  its own gaps, so a clean verdict would attest code no finder read.
+- **The branch was rebased**: `git merge-base --is-ancestor <since> HEAD` fails.
+- **The base was merged in**: `git log --merges --oneline <since>..HEAD` prints anything. A two-dot
+  range would hand the finders every base commit that merge brought in as this branch's fixes.
+
 **From round 2 a P2 can be carried** instead of blocking: `"carried": true` on its finding, which
 takes it out of `p2` and counts it on the carried line instead. Carry a P2 when fixing it would mean
 another round. A P0 or P1 is never carried; verdict.mjs refuses one, naming the finding, and a P2 on

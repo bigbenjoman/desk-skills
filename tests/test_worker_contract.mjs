@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { rewrittenBy, checkRewritten } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -125,8 +126,8 @@ const REWRITTEN = [
   ['DS-368', '**Round 3, only P2s**', 1],
   ['DS-368', 'it exists only from round 3', 1],
 ];
-for (const [key, s, n] of REWRITTEN) t(`AC4 ${key} rewrote ${n} paragraph of the old contract: ${s}`, paras.filter((p) => p.includes(s)).length, n);
-const dropped = paras.filter((p) => !after.includes(p) && !REWRITTEN.some(([, s]) => p.includes(s)));
+checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
+const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));
 t(`AC4 every paragraph of the old contract survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 
