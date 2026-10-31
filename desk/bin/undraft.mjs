@@ -136,29 +136,31 @@ export function plainVerdictAt(reviews, handle, head, clean) {
 // nothing, and the PR's own commits are the ones reviewed. git(args) runs git and returns { ok, out };
 // false whenever git cannot say.
 export function verdictCarries({ from, head, base, git }) {
-  if (!from || !head || !base) return false;
-  const at = git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]);
-  if (!at.ok || !git(['merge-base', '--is-ancestor', at.out, head]).ok) return false;
-  const r = git(['rev-list', '--first-parent', '--parents', `${at.out}..${head}`]);
-  const chain = r.ok ? r.out.split('\n').filter(Boolean).map((l) => l.split(' ')) : [];
-  // The first-parent chain must come down to the reviewed commit itself, not pass it on a side branch.
-  if (!chain.length || chain[chain.length - 1][1] !== at.out) return false;
-  return chain.every(([c, ours, theirs, ...more]) => {
-    if (!theirs || more.length || !git(['merge-base', '--is-ancestor', theirs, base]).ok) return false;
+  const chain = baseMergeChain({ from, head, base, git });
+  return !!chain && chain.every(([c, ours, theirs]) => {
     const merged = git(['merge-tree', '--write-tree', '--no-messages', ours, theirs]);
     const tree = git(['rev-parse', `${c}^{tree}`]);
     return merged.ok && tree.ok && merged.out.split('\n')[0] === tree.out;
   });
 }
 
-// Whether `head` is a merge from the base: a two-parent commit whose second parent is on `base`.
-// git(args) returns { ok, out }; false whenever git cannot say.
-export function headIsBaseMerge({ head, base, git }) {
-  if (!head || !base) return false;
-  const r = git(['rev-list', '--parents', '-n', '1', head]);
-  const [, ours, theirs, ...more] = r.ok ? String(r.out).trim().split(' ') : [];
-  return !!ours && !!theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok;
+// The first-parent chain from `from` to `head`, as [commit, ours, theirs] each, when every commit on it
+// is a two-parent merge whose second parent is on `base`; null otherwise, or whenever git cannot say.
+function baseMergeChain({ from, head, base, git }) {
+  if (!from || !head || !base) return null;
+  const at = git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]);
+  if (!at.ok || !git(['merge-base', '--is-ancestor', at.out, head]).ok) return null;
+  const r = git(['rev-list', '--first-parent', '--parents', `${at.out}..${head}`]);
+  const chain = r.ok ? r.out.split('\n').filter(Boolean).map((l) => l.split(' ')) : [];
+  // The first-parent chain must come down to `from` itself, not pass it on a side branch.
+  if (!chain.length || chain[chain.length - 1][1] !== at.out) return null;
+  const merges = chain.every(([, , theirs, ...more]) => theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok);
+  return merges ? chain : null;
 }
+
+// Whether `head` was reached from `from` by merges from the base alone, conflicts resolved or not:
+// nothing but the base moved it.
+export const movedByBase = ({ from, head, base, git }) => !!baseMergeChain({ from, head, base, git });
 
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
 // review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on

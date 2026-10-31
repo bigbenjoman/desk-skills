@@ -55,7 +55,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §3b "Autopilot worker concurrency", "Memory ceiling for parallel work (GB)", "Test worker cap under the test lock", "Autopilot per-worker budget (USD)", "Autopilot batch budget (USD)", "Preferred dev-server port", "Worker models", "Worker location", "Borrow idle workers", "Resume a killed worker (times)", "Usage pacing headroom (points)", "Maintenance window", "Maintenance drain limit (minutes)" | the ladder, the test cap, spend guards, the port workers must never take, each worker's model, where workers run (locally, or in cloud sessions: `references/stalls-and-spend.md`), whether a batch may borrow idle machine slots, how often a worker a reboot or crash killed is resumed in its own session, how far 7-day usage may run ahead of an even weekly pace before new spawns hold, and when the weekly maintenance window drains, updates and restarts (with §3 `machine-reboot`) |
 | §4 "Tracker", "Ticket key pattern", "Other work id patterns" | what a batch argument is, and what the scripts accept as a key |
 | §4 "Required checks", "Advisory checks", "Known flaky checks", "Branch protection", "Merge method", "Repo merge settings" | what "green" means, and how the driver merges |
-| §4 "Merge holds" | PRs a person merges: the driver and you never merge them |
+| §4 "Merge holds" | PRs into §0 Default branch a person merges: the driver and you never merge them |
 | §4 "Checks workers can't fix" | checks the pass never sends back to a fix worker: a PR red only on one is stuck, with what fixes it (*Fix tries*) |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
@@ -786,11 +786,13 @@ merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-he
 push after the checks cannot be merged unchecked. With §4 Branch protection `none`, GitHub will
 accept a merge with red checks, so the rule is enforced only by you and the driver.
 
-**Merge holds.** A PR whose diff touches any glob in §4 Merge holds (for a `<glob>#<key>` hold, changes
-that key of the file) is merged by a person, never by
+**Merge holds.** A PR into §0 Default branch whose diff touches any glob in §4 Merge holds (for a
+`<glob>#<key>` hold, changes that key of the file) is merged by a person, never by
 the driver or by you, whatever §3 grants: the repo needs a manual step first (the hold says which).
 The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
-PR link and its head SHA, and it stays there until the user says they have merged it.
+PR link and its head SHA, and it stays there until the user says they have merged it. A PR into any
+other base (a feature batch's) deploys nothing, so it merges as any other; the hold falls on that
+base's own PR into the default branch.
 
 **Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
 flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once

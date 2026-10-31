@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, failedSteps, stuckWhy, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
-import { undraftCall, undraftComment, headIsBaseMerge } from '../desk/bin/undraft.mjs';
+import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -203,10 +203,14 @@ const afterX = [...tried, { try: 2, head: HEAD, kind: 'rereview', extra: true }]
 t('DS-377 AC4 still unreadable after that try, it is the person\'s as today', reviewTry(tk({ fix_tries: afterX }), { pr: 871, head: HEAD, why: unread, baseMerge: () => true })?.why, `no review verdict readable at its head after 3 fix tries: ${unread}`);
 const oneX = [{ try: 0, head: OLD, kind: 'rereview', extra: true }];
 t('DS-377 the extra try is not counted: a fix try after it is try 1 of 2', reviewTry(tk({ fix_tries: oneX }), { pr: 871, head: HEAD, why: unread })?.fix.try, 1);
-const git = (map) => (args) => (args[0] === 'rev-list' ? { ok: true, out: map.parents } : { ok: map.onBase });
-t('DS-377 a two-parent head whose second parent is on the base is a base merge', headIsBaseMerge({ head: HEAD, base: 'origin/feat', git: git({ parents: `${HEAD} ${OLD} ${'d'.repeat(40)}`, onBase: true }) }), true);
-t('DS-377 a single-parent head, or one whose second parent is off the base, is not', headIsBaseMerge({ head: HEAD, base: 'origin/feat', git: git({ parents: `${HEAD} ${OLD}`, onBase: true }) })
-  || headIsBaseMerge({ head: HEAD, base: 'origin/feat', git: git({ parents: `${HEAD} ${OLD} ${'d'.repeat(40)}`, onBase: false }) }), false);
+// A fake git: `chain` is rev-list's first-parent lines from OLD to HEAD, and `onBase` the ancestry answer.
+const MID = 'e'.repeat(40), THEIRS = 'd'.repeat(40);
+const git = ({ chain, onBase = true }) => (args) => (args[0] === 'rev-parse' ? { ok: true, out: OLD }
+  : args[0] === 'rev-list' ? { ok: true, out: chain.join('\n') } : { ok: args[3] === HEAD || onBase });
+const moved = (o) => movedByBase({ from: OLD, head: HEAD, base: 'origin/feat', git: git(o) });
+t('DS-377 a head that only merges from the base moved past the last try\'s head moved by the base', moved({ chain: [`${HEAD} ${MID} ${THEIRS}`, `${MID} ${OLD} ${THEIRS}`] }), true);
+t('DS-377 a commit of the PR\'s own on the way, or a merge of a branch off the base, is not', moved({ chain: [`${HEAD} ${MID} ${THEIRS}`, `${MID} ${OLD}`] }) || moved({ chain: [`${HEAD} ${OLD} ${THEIRS}`], onBase: false }), false);
+t('DS-377 the last try\'s head is what the base merges are read from', (() => { let from; reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, baseMerge: (f) => { from = f; return false; } }); return from; })(), 'c'.repeat(40));
 
 const redDraft = draft(reviewBody('p0=0 p1=0 p2=0'), { checks: [ok('tests'), red('tests-i18n', '931')] });
 const ucheck = undraftCall(tk(), redDraft, { ...ucfg, required: ['tests', 'tests-i18n'] });
