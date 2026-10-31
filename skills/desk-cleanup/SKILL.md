@@ -51,6 +51,7 @@ rather than re-deriving each check by hand across dozens of worktrees. `worktree
 | `worktrees --repo <root> --author <§1 GitHub handle> --default <default branch> --worktrees-dir <§2 Worktrees directory> --key-pattern '<§4 Ticket key pattern>'` | classifies every worktree of one repo (step 2) |
 | `remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>…` | removes approved worktrees only, backing up first (step 2) |
 | `memory --repo <root> --worktrees-dir <§2 Worktrees directory> --ports <dev-server ports>` | prices RAM, dev servers, sessions, test runs, watchman, Docker and caches (steps 5 and 6) |
+| `memory-index --repo <root>` | only reads: flags the repo's auto-memory `MEMORY.md` past 6 KB or 60 lines, and prints nothing otherwise (step 6) |
 
 The rules below are what the script implements, with two exceptions it leaves to you: it checks
 live processes by **cwd** only, so open files and the owners of the dev-server ports (step 2,
@@ -175,6 +176,14 @@ ready      : PR #<n> · required checks green (<names>) · no CHANGES_REQUESTED 
 memory     : <proc> <rss> · port <n> · <TICKET> · in-flight? <signal> · session <pid>  [stop | restart on <port>]
 report only: <ports+RSS, swap, sessions, caches, handoff folders — no action>
 skipped    : <thing> · <the signal, config §3 row, or §4 none that said no>
+```
+
+When step 6's `memory-index` scan prints anything, its two lines go in the table above `report
+only`, as printed:
+
+```
+memory-index : <path> · <bytes> B · <lines> lines · cap 6144 B or 60 lines   [report only]
+               move into their own memory files: "<entry>" (<n> lines), …
 ```
 
 The `skipped` line matters as much as the rest — it is how a wrong guard becomes visible.

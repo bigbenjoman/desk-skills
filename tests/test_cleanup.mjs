@@ -190,4 +190,24 @@ writeFileSync(join(T, 'listen.txt'), ''); writeFileSync(join(T, 'wm.json'), JSON
 const mc = scan('memory', '--repo', R, '--ps', join(T, 'ps.txt'), '--proc', join(T, 'cwds.txt'), '--listen', join(T, 'listen.txt'), '--watchman', join(T, 'wm.json'))
 t('memory CLI on fixtures: watchman line', /^pid 101 · 6\.6 GiB/m.test(mc.stdout) && mc.status === 0, true)
 
+// ---- memory-index: the repo's auto-memory MEMORY.md against the cap
+const memDir = join(env.HOME, '.claude', 'projects', R.replace(/[^A-Za-z0-9]/g, '-'), 'memory')
+const mi = () => scan('memory-index', '--repo', R)
+let r4 = mi()
+t('memory-index: no memory directory prints nothing and exits 0', `${r4.status} ${JSON.stringify(r4.stdout)}`, '0 ""')
+mkdirSync(memDir, { recursive: true })
+writeFileSync(join(memDir, 'MEMORY.md'), Array.from({ length: 20 }, (_, i) => `- [Note ${i}](n${i}.md) — one line`).join('\n') + '\n')
+r4 = mi()
+t('memory-index: within the cap prints nothing', `${r4.status} ${JSON.stringify(r4.stdout)}`, '0 ""')
+const big = ['# Memory', '', ...Array.from({ length: 70 }, (_, i) => `- [Note ${i}](n${i}.md) — one line`), '- Deploys go through the release train', '  and staging must be green first', '  (Ben, 2026-09)', '', 'A loose paragraph that', 'runs on.', '']
+writeFileSync(join(memDir, 'MEMORY.md'), big.join('\n'))
+r4 = mi()
+const [l1, l2] = r4.stdout.split('\n')
+const bytes = Buffer.byteLength(big.join('\n'))
+t('memory-index: over the cap prints the report line', l1, `memory-index : ${join(memDir, 'MEMORY.md')} · ${bytes} B · ${big.length - 1} lines · cap 6144 B or 60 lines   [report only]`)
+t('memory-index: the line below names the multi-line entries only', l2.trim(), 'move into their own memory files: "Deploys go through the release train" (3 lines), "A loose paragraph that" (2 lines)')
+writeFileSync(join(memDir, 'MEMORY.md'), `- ${'x'.repeat(7000)}\n`)
+r4 = mi()
+t('memory-index: over the byte cap alone is reported', /^memory-index : .* · 7003 B · 1 lines .*\n +every entry is one line/.test(r4.stdout), true)
+
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1) }
