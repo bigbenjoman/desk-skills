@@ -210,8 +210,8 @@ one `file:line` per finding (desk-pr places it).
 
 ## The verdict
 
-**The body's first three lines are computed, never written by hand**: the review marker, the
-verdict marker and the heading, and from round 2 a fourth, the carried line. A hand count is how a
+**The body's opening lines are computed, never written by hand**: the review marker, the
+verdict marker, the heading, from round 2 the carried line, then the method line. A hand count is how a
 review reads clean when it is not. Once every finder and refuter has answered, write the run's
 results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker:
 `desk-review-results.json` at its worktree root, removed at the end with `git clean -f`):
@@ -225,6 +225,8 @@ results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker
 ```
 
 - `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
+  A seat whose named agent did not resolve, so a general-purpose agent ran its brief, is
+  `"fallback": true` (or names `"agent": "general-purpose"`).
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
@@ -244,7 +246,7 @@ node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 
 `<results>` is the file's full scratchpad path, or `desk-review-results.json` in a worker (run from
 its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
-elsewhere. It prints the three lines (four from round 2) and refuses (exit 2) any results file that
+elsewhere. It prints four lines (five from round 2) and refuses (exit 2) any results file that
 is incomplete or contradicts itself. Its tests, `tests/test_review_verdict.mjs`, prove that no
 combination with an open finding, a skipped file, a dead seat or an open gap prints the clean
 verdict. Use its output verbatim, then the report below it. The clean form, which the tests hold
@@ -273,6 +275,11 @@ clean; the blocking counts above do. It sits after the heading rather than in th
 because repos commit their own copy of the gate, and a copy from before carrying matches the verdict
 line exactly: an extra field there would read as no verdict at all. That copy reads this verdict as
 the blocking counts say (`tests/test_review_gate.mjs` holds it to that).
+
+Last comes the method line, `<!-- desk-review:method v=1 fallback=<n> -->`: the seats a
+general-purpose agent ran, `0` when none. The heading names them too. It never decides clean, and it
+sits after the heading for the same reason as the carried line. `verdict.mjs --method <results>`
+prints the PR body's line on how the review ran: its rounds, its vendor and its fallback seats.
 
 With these markers §4 Clean review verdict for this skill is
 `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.

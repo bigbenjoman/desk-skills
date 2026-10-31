@@ -6,7 +6,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { quantile, jobMinutes, pickSample, measure, collect, report, collectBatch, batchRed, compareRed, batchReport, newestBaseline, queuePrs } from '../desk/bin/desk-ci.mjs';
+import { quantile, jobMinutes, pickSample, measure, collect, report, collectBatch, batchRed, compareRed, batchReport, newestBaseline, queuePrs, reviewMethod } from '../desk/bin/desk-ci.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -298,9 +298,20 @@ t('a red run last in the list is still read when job pages run the budget out', 
 // ---- batch-red: a batch's PRs against the measured baseline
 // The window's three PRs as a batch: the API lists each PR, the runs on its branch, and jobs only for
 // a re-run run (run 1), whose first attempt is red only through its jobs.
+// Each PR's reviews: #1 reviewed cross-vendor with a fallback seat, after an older same-vendor one;
+// #2 same-vendor before the method line existed; #3 no verdict at all.
+const HEAD = 'a'.repeat(40);
+const verdictBody = (vendor, method) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=${vendor} round=1 -->\n**heading**${method == null ? '' : `\n<!-- desk-review:method v=1 fallback=${method} -->`}`;
+const REVIEWS = {
+  1: [{ body: verdictBody('same-vendor', 0) }, { body: verdictBody('codex-cross', 1) }, { body: 'thanks' }],
+  2: [{ body: verdictBody('same-vendor') }],
+  3: [{ body: '<!-- desk-review:reply -->\nfixed' }],
+};
 const batchCalls = [];
 const batchApi = (path) => {
   batchCalls.push(path);
+  const rv = /pulls\/(\d+)\/reviews\?per_page=100&page=(\d+)$/.exec(path);
+  if (rv) return rv[2] === '1' ? REVIEWS[rv[1]] : [];
   const pr = /pulls\/(\d+)$/.exec(path);
   if (pr) return prs.find((p) => p.number === Number(pr[1]));
   const br = /actions\/runs\?branch=([^&]+)&/.exec(path);
@@ -326,6 +337,13 @@ const rep = batchReport(br, compareRed(br, base(1, 10)), '/x/2026-10-17-ci-measu
 t('report: the batch line names the red PRs', rep[0], 'batch: 2 of 3 PRs with CI went red at least once (66.7%); 3 PRs read; red: #1 #2');
 t('report: the rise is flagged', rep[2], 'RED RATE ROSE: +56.7 pp against the baseline, more than 5 pp');
 t('report: summary line', rep[3], 'summary: red=2 with_ci=3 rate=66.7% baseline=10% delta_pp=56.7 flag=rise');
+t('review: the latest verdict decides, per PR', JSON.stringify(br.review), JSON.stringify({ sameVendor: [2], fallback: [1], unrecorded: [2], none: [3] }));
+t('report: same-vendor PRs counted and listed', rep[4], 'review: 1 of 3 PRs reviewed same-vendor: #2');
+t('report: fallback PRs counted and listed', rep[5], 'review: 1 of 3 PRs reviewed with a fallback seat: #1');
+t('report: a review from before the method line is unknown, not zero', rep[6], 'review: fallback seats unknown on 1, reviewed before the method line: #2');
+t('report: a PR with no verdict is named', rep[7], 'review: no desk-review verdict on 1: #3');
+t('report: review summary line', rep[8], 'review summary: prs=3 same_vendor=1 fallback=1 unknown=1 no_verdict=1');
+t('report: none of a kind is 0, and nothing listed', reviewMethod([4], new Map([[4, [{ body: verdictBody('codex-cross', 0) }]]])).sameVendor.length, 0);
 t('report: no baseline says how to get one', batchReport(br, compareRed(br, null), null, null).split('\n')[1], 'baseline: none — run `desk-ci.mjs measure` to record one');
 t('queuePrs: finished tickets\' PRs, once each, in order', queuePrs({ tickets: { A: { result: { pr: 12 } }, B: { result: { pr: '9' } }, C: { state: 'running' }, D: { result: { pr: 12 } } } }).join(','), '9,12');
 const hand = mkdtempSync(join(tmpdir(), 'desk-batch-red-'));
