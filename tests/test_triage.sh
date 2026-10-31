@@ -70,6 +70,7 @@ has(){ [ -f "$STUB_LOG.$1" ] && node -e '
 
 flags_ok(){ local n="$1" budget="$2"
   has "$n" -p && has "$n" --setting-sources "" && has "$n" --strict-mcp-config \
+    && has "$n" --tools "Bash,Read,Write" \
     && has "$n" --settings "$T/state/workers/fix-thing.triage.settings.json" \
     && has "$n" --permission-mode dontAsk \
     && has "$n" --add-dir "$T/state" && has "$n" --add-dir "$T/skills" \

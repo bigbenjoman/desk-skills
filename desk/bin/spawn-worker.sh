@@ -123,6 +123,11 @@ if [ -n "$DENIED" ]; then
 fi
 
 ADD_DIRS=(--add-dir "$DESK_SKILLS_DIR" --add-dir "$STATE")
+# The model checks below need no tool; the worker and its preflight get the same list (worker-tools.mjs).
+desk_tool_args none || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
+NO_TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
+desk_tool_args worker || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
+TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
 [ -d "$DESK_MEMORY_DIR" ] && ADD_DIRS+=(--add-dir "$DESK_MEMORY_DIR")
 
 if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
@@ -149,6 +154,7 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
   RAW=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS" \
     --setting-sources "" --strict-mcp-config \
+    ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \
     --settings "$SETTINGS" \
     --agents "$AGENTS" \
     --permission-mode dontAsk \
@@ -200,7 +206,7 @@ $CHECKS" \
     key="${extra%%:*}"; val="${extra#*:}"
     [ -n "$val" ] || continue
     GOT=$(desk_timeout 120 claude -p "Reply with exactly one word: MODEL_OK" --setting-sources "" --strict-mcp-config \
-      --model "$val" --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
+      ${NO_TOOL_ARGS[@]+"${NO_TOOL_ARGS[@]}"} --model "$val" --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
     if printf '%s\n' "$GOT" | grep -q MODEL_OK; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"
     else echo "  $(printf '%s' "$key" | tr 'a-z' 'A-Z')  FAIL     (config §3b Worker models names $key=\"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
   done
@@ -320,6 +326,7 @@ desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
   --output-format stream-json --verbose \
   --setting-sources "" --strict-mcp-config \
+  ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \
   --permission-mode dontAsk \
   --settings "$SETTINGS" \
   --agents "$AGENTS" \

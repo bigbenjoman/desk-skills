@@ -72,6 +72,8 @@ mkdir -p "$STATE/triage" "$STATE/workers"
 [ -f "$ROUTING" ] || { echo "FAIL: routing file missing at $ROUTING — is desk-ticket installed?" >&2; exit 1; }
 node "$DESK_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
   || { echo "FAIL: could not generate triage settings" >&2; exit 1; }
+# Both passes are offered only the tools they use (worker-tools.mjs).
+desk_tool_args triage || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
 
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
@@ -170,6 +172,7 @@ cd "$MAIN"
 # read-only triage settings. The settings file alone decides what triage may run.
 desk_timeout 600 claude -p "$PROMPT" \
   --setting-sources "" --strict-mcp-config \
+  ${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"} \
   --settings "$SETTINGS" \
   --permission-mode dontAsk \
   --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
@@ -279,6 +282,7 @@ CHALLENGE_END
   cd "$MAIN"
   desk_timeout 420 claude -p "$CHALLENGE_PROMPT" \
     --setting-sources "" --strict-mcp-config \
+    ${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"} \
     --settings "$SETTINGS" \
     --permission-mode dontAsk \
     --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
