@@ -1886,6 +1886,17 @@ check "DS-348 AC2 a fix try whose worktree has an uncommitted change is held, sa
 check "DS-348 AC2 a fix try whose branch is ahead of origin is held, saying so" \
   '[ "$(field W-3 state)" = "\"triaged\"" ] && ! grep -qx W-3 "$T/wb-spawns" && echo "$out" | grep -qF "W-3: WORKTREE IN USE — its branch fix/W-3 is 1 commit(s) ahead of origin/fix/W-3, not pushed"'
 check "DS-348 an untracked file alone does not hold a fix try" '[ "$(field W-4 state)" = "\"running\"" ] && grep -qx W-4 "$T/wb-spawns"'
+check "a held worktree is kept on its ticket, with why, so desk-q and needs-you show it as needing you" \
+  'field W-2 worktree_busy.why | grep -qF "its worktree $T/wt/W-2 has uncommitted changes (a.txt)" && field W-1 worktree_busy.why | grep -qF "pid 4242" && field W-3 worktree_busy.why | grep -qF "its branch fix/W-3 is 1 commit(s) ahead of origin/fix/W-3, not pushed" && [ "$(field W-4 worktree_busy)" = null ]'
+# desk-q's own rule, read from a script file: desk-q.mjs takes an -e script's arguments for its own.
+cat > "$T/shown.mjs" <<'EOF'
+const { shownState } = await import(process.argv[2]);
+const { readFileSync } = await import('node:fs');
+const q = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+console.log(shownState(q, q.tickets[process.argv[4]]));
+EOF
+shown(){ node "$T/shown.mjs" "$B/desk-q.mjs" "$DESK_QUEUE" "$1"; }
+check "desk-q groups it as needing you, not ready" '[ "$(shown W-2)" = needs ] && [ "$(shown W-3)" = needs ]'
 : > "$T/lsof.out"; git -C "$T/wt/W-2" checkout -q -- a.txt; git -C "$T/wt/W-3" push -q origin fix/W-3 2>/dev/null
 # The repo's shared cap leaves this batch one slot a pass here: each spawned worker is finished before the next.
 held=""
@@ -1895,5 +1906,7 @@ for k in 1 2 3; do
 done
 check "DS-348 AC3 once each cause clears, the next pass spawns the worker" \
   '[ "$(grep -cxE "W-[123]" "$T/wb-spawns")" = 3 ] && [ -z "$held" ]'
+check "and the record is dropped from each ticket once its worktree is clean" \
+  '[ "$(field W-1 worktree_busy)$(field W-2 worktree_busy)$(field W-3 worktree_busy)" = nullnullnull ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
