@@ -11,7 +11,7 @@ import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
-import { ANSWER_HEAD, collectAnswers, capBriefing, MAX_BRIEF, BRIEF_CUT } from './briefing.mjs';
+import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
@@ -1478,6 +1478,7 @@ async function resumeKilled(t) {
 // what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
 function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
+  const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
   const answerFile = join(STATE, 'answers', `${t.key}.txt`);
   mkdirSync(join(STATE, 'briefings'), { recursive: true });
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
@@ -1506,7 +1507,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
-    notes && existsSync(notesFile) ? `## What sibling workers in this batch have found\n\n${readFileSync(notesFile, 'utf8')}` : '',
+    notes && existsSync(notesFile) ? `${notesHead}${capNotes(readFileSync(notesFile, 'utf8'), notesFile, MAX_NOTES - notesHead.length)}` : '',
   ].filter(Boolean).join('\n');
   // An oversized handoff briefing is cut, with the note, before the answers that follow it, so a cut
   // never drops a binding answer. The whole briefing is capped either way (capBriefing).
