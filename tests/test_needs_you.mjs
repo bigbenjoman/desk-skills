@@ -21,9 +21,13 @@ mkdirSync(join(T, 'bin'));
 // macOS, with a fake launchctl that has each label in bin/loaded loaded.
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\nexit 0\n', { mode: 0o755 });
 writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\n');
-// A fake gh that logs its arguments.
+// A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none.
 const GH_LOG = join(T, 'gh.log');
-writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n`, { mode: 0o755 });
+const GH_PRS = join(T, 'prs');
+mkdirSync(GH_PRS);
+writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
+  `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n`, { mode: 0o755 });
+const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_LOCK_DIR: join(T, 'locks'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
 for (const k of Object.keys(process.env)) if (k.startsWith('DESK_') || k.startsWith('AUTOPILOT_')) delete process.env[k];
@@ -278,10 +282,12 @@ t('DS-279 a held ticket also held outside the batch asks the outside question, a
 const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
-  'E-2 pr PR #61: 1 check passed · merge it | E-1 stopped worker stopped: tests red · requeue it | 2');
+  'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red · requeue it | 2');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
-t('DS-279 a PR only you move is recorded as done', N.record({ word: 'eta', ticket: 'E-2', action: 'done' }).ok, true);
+onGitHub(61, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: null });
+const d61 = N.record({ word: 'eta', ticket: 'E-2', action: 'done' });
+t('DS-279 (DS-378 AC1) done on a PR only you move reads it on GitHub and says it is still unmerged', `${d61.ok} ${/GitHub still shows PR #61 unmerged, so it stays on your list/.test(d61.line)}`, 'false true');
 // DS-324 AC1, AC2: a PR put off is left out until its head moves.
 const eq = () => join(env.DESK_HOME, 'repos', 'acme__eta', 'queue.json');
 const moveHead = (h) => { const q = queueOf('eta'); q.tickets['E-2'].pr_status.head = h; writeFileSync(eq(), JSON.stringify(q)); };
@@ -307,10 +313,10 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 } });
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
-t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71: draft · review not clean: 2 gaps | answer,done,not-now');
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,not-now');
 t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
-t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72: draft · CI does not run on a draft, so its checks were skipped: undraft #72');
+t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
 t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,not-now false');
 const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
 const gr = cli('record', 'iota', 'I-1', 'answer', call323);
@@ -329,12 +335,12 @@ put('flows', { port: 4777, beat: 1, supervised: true, tickets: {
   'FL-1': draftPr(81, flowsRed, { call: 'build', why: '"Flows image" red at h81, which §4 Check builds clears: `./scripts/ensure-flows-image.sh` runs at the head, then the check is re-run' }),
   'FL-2': draftPr(82, flowsRed, { call: 'wait', why: 'its check build `./scripts/ensure-flows-image.sh` is running at h82, then "Flows image" is re-run' }),
   'FL-3': draftPr(83, flowsRed, { call: 'rebuilt', why: 'its check build `./scripts/ensure-flows-image.sh` ran at h83, so "Flows image" is re-run' }),
-  'FL-4': draftPr(84, flowsRed, { call: 'person', why: 'its check build `./scripts/ensure-flows-image.sh` exited 1 at h84: no Docker context', action: 'fix the build, run it at the head of #84, then re-run "Flows image"' }),
+  'FL-4': draftPr(84, flowsRed, { call: 'person', why: 'its check build `./scripts/ensure-flows-image.sh` exited 1 at 9f3c2a1b7: no Docker context', action: 'fix the build, run it at the head of #84, then re-run "Flows image"' }),
 } });
 const flows = N.collect({ word: 'flows' }).items.map((i) => i.t.key).join();
 t('DS-327 AC1 a draft whose check build runs, or whose check was re-run after it, is not listed', flows.includes('FL-1') || flows.includes('FL-2') || flows.includes('FL-3'), false);
 t('DS-327 AC2 one whose build failed is, with the command, its exit code and its output', N.collect({ word: 'flows' }).items.find((i) => i.t.key === 'FL-4')?.need,
-  'PR #84: draft · check build `./scripts/ensure-flows-image.sh` exited 1 at h84: no Docker context: fix the build, run it at the head of #84, then re-run "Flows image"');
+  'PR #84 is a draft: check build `./scripts/ensure-flows-image.sh` exited 1: no Docker context. Fix the build, run it at the head of #84, then re-run "Flows image"; the next pass then picks it up.');
 
 // ---- DS-345: a draft whose gaps outlast its fix tries keeps undraft.call `findings` (DS-342's record),
 // and still takes the person's call on them; one with findings and no gaps does not.
@@ -421,7 +427,14 @@ t('DS-314 AC2 desk-q\'s Queue lists it under Needs you, held by them on its PR',
   /Needs you · 2/.test(eScreen) && /E-1 +◆ needs you +#51 · held by you in draft · undraft it to release/.test(eScreen), true);
 t('DS-314 AC2 its ticket page says how to release it',
   /Held by you: you put its PR #51 back to draft/.test(ticketScreen(er, 'E-1')) && ticketScreen(er, 'E-1').includes('gh pr ready 51 --repo acme/iota'), true);
-t('DS-314 AC2 done records nothing', N.record({ word: 'iota', ticket: 'E-1', action: 'done' }).ok, true);
+onGitHub(51, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: null });
+const d51 = N.record({ word: 'iota', ticket: 'E-1', action: 'done' });
+t('DS-314 AC2 (DS-378) done reads it on GitHub, and says it is still a draft', `${d51.ok} ${/GitHub still shows PR #51 unmerged, still a draft/.test(d51.line)}`, 'false true');
+onGitHub(51, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: null });
+const u51 = N.record({ word: 'iota', ticket: 'E-1', action: 'done' });
+t('DS-378 done on a held draft once undrafted says it is released, and records it',
+  `${u51.ok} ${u51.line} ${queueOf('iota').tickets['E-1'].pr_status.isDraft}`, 'true iota E-1: GitHub shows PR #51 out of draft, so it is released; the next pass takes it on from there. false');
+t('DS-378 it is no longer held', N.collect({ word: 'iota' }).items.find((i) => i.t.key === 'E-1')?.kind ?? 'none', 'pr');
 
 // ---- DS-347 AC3: a green PR the merge driver has held on two loops for an unresolved thread is the
 // person's, naming the thread; a green PR it merges is not.
@@ -433,7 +446,7 @@ put('xi', { port: 4300, beat: 1, supervised: true, merge: 'yes', tickets: {
 } });
 const xi = N.collect({ word: 'xi' }).items;
 t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread is', xi.map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
-t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi[0]?.need, 'PR #92: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?" · resolve or answer it');
+t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi[0]?.need, 'PR #92 is green, but held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
 
 // ---- DS-351 AC2: an epic admitted with no session waits on its drafted plan as one item, and its
 // children held behind it are not items of their own.
@@ -465,20 +478,20 @@ put('sigma', { port: 4600, beat: 1, supervised: true, merge: 'yes', tickets: {
 } });
 const sg = Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
 const recommends = (i) => i?.actions[0]?.[1] != null;
-t('DS-375 AC1 a check gone green on the same head is no longer named', sg['S-1']?.need, `PR #101: ${lead375}: ${LINT} (failed step: Run eslint)`);
-t('DS-375 AC2 the item names the step the run failed at', sg['S-1']?.need.includes('(failed step: Run eslint)'), true);
+t('DS-375 AC1 a check gone green on the same head is no longer named', sg['S-1']?.need, `PR #101: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green.`);
+t('DS-375 AC2 the item names the step the run failed at', sg['S-1']?.need.includes('(failed at "Run eslint")'), true);
 t('DS-375 AC1 a step on GitHub left: done is still recommended', `${sg['S-1']?.actions[0][0]} ${recommends(sg['S-1'])}`, 'done true');
 t('DS-375 AC1 once every check it named is green it is not stuck: a PR the driver merges is no item', 'S-4' in sg, false);
-t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', sg['S-2']?.need, 'PR #102: Flows image · ./scripts/ensure-flows-image.sh');
+t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', sg['S-2']?.need, 'PR #102: "Flows image" needs a step outside GitHub: ./scripts/ensure-flows-image.sh. Do that step; desk then merges it once its checks are green.');
 t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and says what the step is',
   `${sg['S-2']?.actions.map(([a]) => a).join()} ${recommends(sg['S-2'])} ${sg['S-2']?.actions[0][2]}`,
   'done,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
 t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
 t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
-  `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: ${LINT} (failed step: Check portal schema mirror) · apply the PR's migrations to staging first | false`);
+  `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: "${LINT}" (failed at "Check portal schema mirror") needs a step outside GitHub: apply the PR's migrations to staging first. Do that step; desk then merges it once its checks are green. | false`);
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
   sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
-t('DS-375 a reason recorded before the pass kept its checks holds as it was written', sg['S-5']?.need, 'PR #105: still red after 2 fix tries: Lint');
+t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
 const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
 t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);
 
@@ -501,7 +514,7 @@ const closedPr = (pr) => ({ state: 'done', lane: 'A', result: { pr }, pr_status:
 put('tau', { port: 4800, beat: 1, supervised: true, tickets: { 'T-1': closedPr(111), 'T-2': closedPr(112) } });
 const tau = Object.fromEntries(N.collect({ word: 'tau' }).items.map((i) => [i.t.key, i]));
 t('a closed PR recommends drop, then requeue and not-now', `${tau['T-1']?.kind} ${tau['T-1']?.need} | ${tau['T-1']?.actions.map(([a]) => a).join()} ${tau['T-1']?.actions[0][1] != null}`,
-  'pr PR #111: closed unmerged: requeue or drop it | drop,requeue,not-now true');
+  'pr PR #111 was closed without merging, so nothing will merge it. Drop the ticket, or requeue it; a requeued ticket gets a worker that opens a new PR. | drop,requeue,not-now true');
 const dr = N.record({ word: 'tau', ticket: 'T-1', action: 'drop' });
 t('drop takes the ticket out of its batch, through queue.mjs, and it is no longer listed',
   `${dr.ok} ${'T-1' in queueOf('tau').tickets} ${'T-2' in queueOf('tau').tickets} ${N.collect({ word: 'tau' }).items.map((i) => i.t.key).join()}`, 'true false true T-2');
@@ -543,6 +556,66 @@ t('a fix try held back by a collision waits for the running ticket, not the next
 t('a ticket held back by a collision says it collides', /F-3 +○ ready +waits for F-1 \(collides\)/.test(phi), true);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
 t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).includes('waits for F-1 (collides), then a worker repairs it'), true);
+
+// ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
+// done reads the PR on GitHub there and then.
+const held378 = 'merge hold: touches billing — src/billing/**';
+const psiPr = (pr, more = {}) => greenPr(pr, { merge_blocked: held378, ...more });
+const sha = (pr) => `575fa8c5c${pr}aa`;
+const withHead = (t) => ({ ...t, pr_status: { ...t.pr_status, head: sha(t.result.pr) } });
+put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'Q-1': withHead(psiPr(141)),
+  'Q-2': withHead(psiPr(142)),
+  'Q-3': withHead(psiPr(143)),
+  'Q-4': withHead(stuckPr(144, passed, { why: `no review verdict readable at its head after 2 fix tries: the verdict is at ${sha(1)}, not ${sha(144)}` })),
+  'Q-5': withHead(draftPr(145, passed, { call: 'findings', why: `its review verdict at ${sha(145)} is not clean (p1=2)`, action: 'settle the findings on #145' })),
+  'Q-6': withHead(stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' })),
+} });
+const psi = () => Object.fromEntries(N.collect({ word: 'psi' }).items.map((i) => [i.t.key, i]));
+const p0 = psi();
+t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6');
+t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged', p0['Q-1']?.need,
+  'PR #141 touches files under a merge hold (touches billing — src/billing/**), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.');
+t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,
+  'PR #144 has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.');
+t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
+  'PR #145 is a draft, and its code review found 2 P1 findings that desk\'s own repairs did not fix. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
+t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
+  'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
+// AC3 and AC4 across every PR item any fixture repo lists.
+const prItems = N.collect().items.filter((i) => i.kind === 'pr' || /PR #\d+/.test(i.need));
+t('DS-378 AC3 no PR item names a commit SHA, a fix try or a review verdict', prItems.filter((i) => /\b[0-9a-f]{7,40}\b|fix tr(y|ies)|verdict readable/i.test(i.need)).map((i) => `${i.t.key}: ${i.need}`).join(' | '), '');
+t('DS-378 AC4 every PR item says what is wrong, then what to do and what happens next', prItems.filter((i) => i.kind === 'pr' && !/^PR #\d+[^]*\. [A-Z][^]*; [^]*?\.(?: \([^]*\))?$/.test(i.need)).map((i) => `${i.t.key}: ${i.need}`).join(' | '), '');
+// AC1: done on a PR still open says so, and the item comes back with that note.
+onGitHub(141, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: sha(141) });
+const q1 = N.record({ word: 'psi', ticket: 'Q-1', action: 'done' });
+t('DS-378 AC1 done on a PR still open says GitHub still shows it unmerged', `${q1.ok} ${q1.line}`, 'false psi Q-1: GitHub still shows PR #141 unmerged, so it stays on your list with that note.');
+t('DS-378 AC1 it is read from the repo\'s GitHub', readFileSync(GH_LOG, 'utf8').includes('pr view 141 --repo acme/psi --json state,mergedAt,isDraft,headRefOid'), true);
+t('DS-378 AC1 it is listed again with that note', /^\(You said done at \d{4}-\d\d-\d\d \d\d:\d\d UTC, and GitHub still showed it unmerged\.\)$/.test(psi()['Q-1']?.note ?? ''), true);
+const q1Line = cli('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
+t('DS-378 AC1 the listed line keeps the need and the note whole', q1Line.includes(`| ${psi()['Q-1'].need} ${psi()['Q-1'].note} |`), true);
+// AC4 on the listed line: recorded text a need quotes is cut short, so the line's cut never takes the next step.
+const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'touches a very long list of held paths, '.repeat(6)}` }));
+const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
+t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
+  (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Merge it on GitHub when you are ready; the ticket is then done. |'), true);
+delete qhl.tickets['Q-7']; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
+t('DS-378 AC1 the CLI shows it to the person', cli('record', 'psi', 'Q-1', 'done').code, 11);
+const qh = queueOf('psi'); qh.tickets['Q-1'].pr_status.head = sha(999);
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qh));
+t('DS-378 AC1 once its head moves, the note goes', psi()['Q-1']?.note, '');
+// AC2: done after merging it: said, recorded, and not listed again.
+onGitHub(142, { state: 'MERGED', mergedAt: '2026-10-31T09:00:00Z', isDraft: false, headRefOid: sha(142) });
+const q2 = N.record({ word: 'psi', ticket: 'Q-2', action: 'done' });
+const q2t = queueOf('psi').tickets['Q-2'];
+t('DS-378 AC2 done after merging says it merged', `${q2.ok} ${q2.line}`, 'true psi Q-2: GitHub shows PR #142 merged, so it is off your list.');
+t('DS-378 AC2 the merge is recorded for the next pass', `${q2t.pr_status.state} ${q2t.pr_status.merged_at}`, 'MERGED 2026-10-31T09:00:00Z');
+t('DS-378 AC2 it is not listed again, nor counted', `${'Q-2' in psi()} ${N.needsCount(loadRepos().find((x) => x.slug === 'acme__psi')).rows.some((x) => x.t.key === 'Q-2')}`, 'false false');
+// AC5: GitHub cannot be read: said, and nothing claims the step done.
+const q3 = N.record({ word: 'psi', ticket: 'Q-3', action: 'done' });
+t('DS-378 AC5 an unreadable PR says its state could not be read, and is not marked done',
+  `${q3.ok} ${/could not read PR #143's state from GitHub \(GraphQL: Could not resolve to a PullRequest \(143\)\), so it is not marked done and stays on your list\./.test(q3.line)} ${queueOf('psi').tickets['Q-3'].done_check} ${'Q-3' in psi()}`, 'false true undefined true');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
