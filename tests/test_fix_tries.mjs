@@ -312,6 +312,10 @@ const capDone = [{ try: 1, head: HEAD, kind: 'capture' }];
 const cpStuck = captureTry(tk({ fix_tries: capDone, fix: { ...cp.fix, finished: 'x' }, result: { summary: 'pr=761 jira=Done said=a-after.png: needs a signed-in admin' } }), { pr: 761, head: HEAD, files: ['a-after.png'] });
 t('DS-379 AC3 still missing after the capture try: stuck, naming the screen and why', `${cpStuck?.call}: ${cpStuck?.why}`,
   'stuck: 1 screenshot(s) still not taken after a capture try: a-after.png; the capture try said: a-after.png: needs a signed-in admin');
+const longSaid = Array.from({ length: 6 }, (_, i) => `shot-${i}.png: the page needs a signed-in admin and seeded data`).join('; ');
+t('DS-379 AC3 every screen\'s reason comes from result.said, which the 200-character summary would cut',
+  captureTry(tk({ fix_tries: capDone, fix: { ...cp.fix, finished: 'x' }, result: { summary: `pr=761 jira=Done said=${longSaid}`.slice(0, 200), said: longSaid } }), { pr: 761, head: HEAD, files: ['shot-5.png'] })?.why,
+  `1 screenshot(s) still not taken after a capture try: shot-5.png; the capture try said: ${longSaid}`);
 t('DS-379 AC3 with nothing said, it still names the screen', captureTry(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, files: ['a-after.png'] })?.why, '1 screenshot(s) still not taken after a capture try: a-after.png');
 t('DS-379 the capture try is not one of the fix tries', draftChecksFix(tk({ fix_tries: [...capDone, { try: 1, head: 'b'.repeat(40), kind: 'checks' }] }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.fix?.try, 2);
 t('DS-379 nor does it spend the head for a fix try', draftChecksFix(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.call, 'requeue');

@@ -614,7 +614,10 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     logDecisions(t, log, pr);
     // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
     // the stage its last handoff named.
-    q('set', t.key, 'state=done', 'handoff_stage=null', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []));
+    // A capture try's said= names each screen it could not take and why: kept whole (result.said), as
+    // the summary's 200 characters cut all but the first few (fix-tries.mjs captureTry).
+    const said = /\bsaid=(.*)$/.exec(done.trim())?.[1]?.trim();
+    q('set', t.key, 'state=done', 'handoff_stage=null', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []), ...(said ? [`result.said=${said.slice(0, 2000)}`] : []));
     report.done.push(`${t.key}: ${done.trim()}${stopped}`);
     recordScope(t);
     if (isSpine(t)) parkSpine(t, pr);
