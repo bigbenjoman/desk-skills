@@ -447,6 +447,10 @@ context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, w
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.
+**`desk-worker-reread.py`** is registered the same way, on the worker's Read calls and on
+compaction. It refuses a worker's Read of a file and range it has already read in this session when
+the file's content (by hash) has not changed since, naming the earlier read. A changed file, a new
+range, a compaction, a subagent's Read or `DESK_ALLOW_REREAD=1` in the environment lets it through.
 - **Never** writes a repo config. That is `/desk-setup`'s job, per repo.
 
 Requirements (`./install.sh --check` names anything missing):

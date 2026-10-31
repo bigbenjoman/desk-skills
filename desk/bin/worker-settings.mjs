@@ -627,6 +627,14 @@ const STOP_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-worker-stop.py');
 if (existsSync(STOP_HOOK)) {
   settings.hooks = { ...settings.hooks, Stop: [{ hooks: [{ type: 'command', command: `python3 "${STOP_HOOK}"`, timeout: 30 }] }] };
 }
+// Refuses a worker's Read of a file and range it already read with the content unchanged: records
+// each Read after it runs, checks before the next, and forgets them all on compaction.
+const REREAD_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-worker-reread.py');
+if (existsSync(REREAD_HOOK)) {
+  const h = (matcher) => ({ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command: `python3 "${REREAD_HOOK}"`, timeout: 10 }] });
+  const hooks = settings.hooks || {};
+  settings.hooks = { ...hooks, PreToolUse: [...(hooks.PreToolUse || []), h('Read')], PostToolUse: [...(hooks.PostToolUse || []), h('Read')], PreCompact: [h()] };
+}
 
 // Validate before writing: a silently-ignored settings file is full permissions.
 const p = JSON.parse(JSON.stringify(settings)).permissions;
