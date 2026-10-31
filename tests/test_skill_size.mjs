@@ -49,7 +49,7 @@ const refProblems = (skills, installed) => skills.flatMap(({ name, core }) => ci
 const orphanProblems = (skills) => skills.flatMap(({ name, refs, files }) => refs.filter((f) =>
   !Object.entries(files).some(([p, text]) => p !== `references/${f}` && text.includes(basename(f)))).map((f) => `skills/${name}/references/${f} is named by no file of ${name}`));
 
-// DS-364: each worker contract stage file is a core too, read whole by every worker that reaches its
+// Each worker contract stage file is a core too, read whole by every worker that reaches its
 // stage. A stage is { file, text }, its file name under desk-autopilot/references/.
 const STAGES = 'desk-autopilot/references';
 const loadStages = (dir) => readdirSync(join(dir, STAGES)).filter((f) => /^worker-contract-stage-.*\.md$/.test(f)).sort().map((file) => ({ file, text: readFileSync(join(dir, STAGES, file), 'utf8') }));
