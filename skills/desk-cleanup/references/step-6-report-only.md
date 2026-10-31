@@ -18,6 +18,12 @@ prints nothing when the file is within 6 KB and 60 lines, or when the repo has n
 Its second line names the entries that run past one line: those are the ones to move into their own
 memory files. Report only: never rewrite a memory file here.
 
+**The instruction files.** Everything Claude Code reads into a session at launch, measured, with a
+proposed move for each oversized part. Read `instruction-audit.md`, beside this file, and run its
+scan. Its moves go in the plan for approval; the rest of this step stays report only. The audit
+measures `MEMORY.md` too, so where it runs, the index goes in the plan once, from the audit, with
+its moves.
+
 **Never quote a per-worktree `du` figure.** Package managers that link `node_modules` from a global
 store (§4 Package manager; the reference says which do) make `du` over one worktree overcharge it and
 `du` over several undercharge all but the first. Measure the containing directory once, expect ~1 GB
