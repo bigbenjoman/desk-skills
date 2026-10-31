@@ -32,14 +32,12 @@
 //
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then the longest waiting, less any put off with not-now whose inputs are unchanged. Exits 0, or 11 (show the person) on anything it refuses.
-import { realpathSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { listBatches } from './batches.mjs';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand } from './desk-env.mjs';
-import { isHeld, spinePark, planPark, openQuestion, sessionPark, readQueue, EXIT } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, openQuestion, sessionPark, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
@@ -153,23 +151,15 @@ export function runner(r) {
   return r.run?.by === 'supervisor' ? { by: 'supervisor' } : { by: 'session', name: r.q?.batch ?? null };
 }
 
-// The other batches of r's repo a parked or stopped ticket can be moved into (queue.mjs transfer):
-// readable, and not finished as batches.mjs finished() has it (a batch on a base never is), read from
-// the queue's own PR records. -> [{ name, base, word }], the standing batch's name null.
+// The other batches of r's repo a parked or stopped ticket can be moved into, as queue.mjs transfer
+// judges them (queue.mjs running, in that repo's checkout). -> [{ name, base, word }], the standing
+// batch's name null.
 const MOVABLE = ['parked', 'stopped'];
-const unfinishedQueue = (q) => {
-  const rows = Object.values(q.tickets ?? {});
-  return !!q.base || !rows.length || rows.some((t) => t.state !== 'done' || (t.result?.pr != null && !t.merged_at && !['MERGED', 'CLOSED'].includes(t.pr_status?.state)));
-};
 export function moveTargets(r) {
-  let all;
-  try { all = listBatches(r.slug); } catch { return []; }
-  return all.filter((b) => resolve(b.queue) !== resolve(r.queuePath) && existsSync(b.queue)).flatMap((b) => {
-    let q;
-    try { q = readQueue(b.queue); } catch { return []; }
-    if (!unfinishedQueue(q)) return [];
-    return [{ name: b.name, base: q.base ?? repoConfigValue(r.slug, 'default-branch') ?? 'main', word: b.name ?? 'standing' }];
-  });
+  try {
+    const q = queueRun(r, ['running'], checkoutOf(r, 'list its batches'));
+    return q.ok ? JSON.parse(q.out).map((b) => ({ ...b, word: b.name ?? 'standing' })) : [];
+  } catch { return []; /* no checkout to ask in: nothing to offer */ }
 }
 const targetsText = (ts) => ts.map((b) => `${b.word} (on ${b.base})`).join(', ');
 const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`]] : []; };

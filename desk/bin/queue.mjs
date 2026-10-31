@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
@@ -273,10 +273,19 @@ function requeue(q, key) {
   return `${key} requeued: ${placed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
+// What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
+// while that is parked on its drafted plan (epic-plan.mjs), and its spine until that is done.
+const spineHolds = (q, key) => [
+  ...(q.batch && q.batch !== key && planPark(q.tickets[q.batch]) ? [q.batch] : []),
+  ...(q.feature === true && q.spine && q.spine !== key && q.tickets[q.spine] && q.tickets[q.spine].state !== 'done' ? [q.spine] : []),
+];
+
 // Put triaged ticket `key` into queue `q` from its triage record `r`, the way plan-batch seeds one, and
 // say how it stands. `state` holds the triage records of q's tickets. `holds` (its blockers in q) gains
-// every unfinished ticket it collides with when `holdCollisions` is set.
-function admitInto(q, key, r, { state, by = null, holds = [], holdCollisions = false }) {
+// q's spine and plan holds when `holdSpine` is set, and every unfinished ticket it collides with when
+// `holdCollisions` is.
+function admitInto(q, key, r, { state, by = null, holds = [], holdSpine = false, holdCollisions = false }) {
+  if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
@@ -330,8 +339,8 @@ function dropStaleWorktree(key, cut) {
   const holds = [];
   let branch = 'HEAD';
   try {
-    const dirty = git('status', '--porcelain', '--untracked-files=no');
-    if (dirty) holds.push('uncommitted changes');
+    const dirty = git('status', '--porcelain');
+    if (dirty) holds.push('uncommitted changes or untracked files');
     branch = git('rev-parse', '--abbrev-ref', 'HEAD');
     const own = Number(git('rev-list', '--count', `origin/${cut}..HEAD`));
     if (own > 0) holds.push(`${own} commit(s) not on origin/${cut}`);
@@ -374,12 +383,13 @@ function transfer(q, key, to) {
   if (finished(tq)) throw new Error(`${batchWord(dest)} finished meanwhile. Nothing was moved`);
   if (tq.tickets?.[key]) throw new Error(`${key} is already in ${batchWord(dest)} (${tq.tickets[key].state}). Nothing was moved`);
   tq.tickets ??= {};
+  // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
+  const holds = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
+  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, holdSpine: true, holdCollisions: true });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
   mkdirSync(join(dest.state, 'triage'), { recursive: true });
   copyFileSync(recFile, join(dest.state, 'triage', `${key}.json`));
-  const holds = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
-  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, holdCollisions: true });
   const from = listBatches(repoSlug()).find((b) => resolve(b.queue) === resolve(QUEUE)) ?? { name: q.batch };
   tq.tickets[key].moved_from = { batch: from.name ?? null, base: baseOf(q), at: new Date().toISOString() };
   // In both queues for an instant rather than in neither: a crash between the writes leaves it in two,
@@ -511,10 +521,11 @@ switch (cmd) {
     // --by names who admitted it, where that is not the orchestrator: `intake` for standing intake.
     // --hold holds it behind blockers in this batch in the same write, so no pass sees it runnable first.
     // --hold-collisions holds it behind every unfinished ticket it collides with too, so it waits for
-    // their PRs to merge rather than only for them to stop running.
+    // their PRs to merge rather than only for them to stop running. --hold-spine holds it behind this
+    // feature batch's spine until done, and its epic while that waits on its plan.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-collisions]   (after triage.sh <TICKET>)');
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
     const holds = args.includes('--hold') ? String(args[args.indexOf('--hold') + 1] ?? '').split(/[,|]/).filter(Boolean) : [];
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
     for (const p of holds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
@@ -524,9 +535,10 @@ switch (cmd) {
     const r = readTriage(stateDir(), key);
     const elsewhere = belongsElsewhere(key, r, QUEUE);
     if (elsewhere) throw new Error(elsewhere.why);
-    const said = admitInto(q, key, r, { state: stateDir(), by, holds, holdCollisions: args.includes('--hold-collisions') });
+    const asked = holds.length;
+    const said = admitInto(q, key, r, { state: stateDir(), by, holds, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
     save(q);
-    console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !holds.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !asked ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;
   }
 
@@ -536,6 +548,13 @@ switch (cmd) {
     const [key, to] = args;
     if (!key || !to) throw new Error('usage: queue.mjs transfer <TICKET> <batch | standing>');
     console.log(transfer(q, key, to));
+    break;
+  }
+
+  // The batches a ticket here could be moved into, as transfer judges them: JSON [{name, base}], the
+  // standing batch's name null.
+  case 'running': {
+    console.log(JSON.stringify(otherRunning().map((b) => ({ name: b.name ?? null, base: b.base }))));
     break;
   }
 

@@ -88,7 +88,8 @@ line saying what it recorded. Keep it for the end.
   answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
-- **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).- **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`
+- **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
+- **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`
   session to open.
 - **`not-now`**: puts the item in the not-now register. `list` and `left` leave it out until its
   question, blocker or PR head changes. Do not ask about it again in this run.

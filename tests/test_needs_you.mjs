@@ -622,7 +622,9 @@ put('omega', { port: 3900, beat: 1, supervised: true, tickets: {
   'M-1': parked('A', 30, 'a worker cannot change its own base: please move it to batch F-1'),
   'M-2': parked('A', 20, 'the file is on the feature branch'),
   'M-3': parked('A', 10, 'this one too'),
-}, triage: { 'M-1': { lane: 'A', size: 'S', files_in_scope: ['src/m1.js'] }, 'M-2': { lane: 'A', size: 'S', files_in_scope: ['src/m2.js'] }, 'M-3': { lane: 'A', size: 'S' } } });
+  'M-4': parked('A', 9, 'and this one'),
+  'M-5': parked('A', 8, 'and this one'),
+}, triage: { 'M-1': { lane: 'A', size: 'S', files_in_scope: ['src/m1.js'] }, 'M-2': { lane: 'A', size: 'S', files_in_scope: ['src/m2.js'] }, 'M-3': { lane: 'A', size: 'S' }, 'M-4': { lane: 'A', size: 'S' }, 'M-5': { lane: 'A', size: 'S' } } });
 const omegaRoot = join(T, 'repos', 'omega');
 const og = (...a) => spawnSync('git', ['-C', omegaRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
 og('commit', '-q', '--allow-empty', '-m', 'init'); og('branch', '-M', 'main'); og('update-ref', 'refs/remotes/origin/main', 'HEAD');
@@ -648,6 +650,16 @@ t('DS-380 a worktree holding its own commits is never removed, and nothing moves
 const m3 = N.record({ word: 'omega', ticket: 'M-3', action: 'move', text: 'G-9' });
 t('DS-380 AC2 a move naming a batch that is not running is refused, naming those that are', `${m3.ok} ${m3.line}`, 'false omega M-3: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).');
 t('DS-380 AC2 and nothing moved', `${'M-3' in queueOf('omega').tickets} ${'M-3' in fQueue().tickets}`, 'true false');
+// A feature batch whose spine is not done holds a ticket moved into it behind that spine.
+writeFileSync(fq, JSON.stringify({ ...fQueue(), feature: true, spine: 'F-2' }));
+const m4 = N.record({ word: 'omega', ticket: 'M-4', action: 'move', text: 'F-1' });
+const mv4 = fQueue().tickets['M-4'];
+t('DS-380 a ticket moved into a feature batch waits behind its unfinished spine', `${m4.ok} ${mv4?.state} ${mv4?.held_by}`, 'true parked F-2');
+// New files nobody committed are work too: the worktree stays, and nothing moves.
+og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
+writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
+const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
+t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

@@ -48,7 +48,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, designPark, needsPersonLane, planPark, unreadCanvases, readQueue as readQueueAt } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
 
@@ -425,11 +425,9 @@ function joinFeature(key, epic, { by }) {
   const tickets = fq.tickets ?? {};
   const reasons = reasonsAgainst(t.rec, tickets);
   if (reasons.length) return { why: reasons.join('; ') };
-  const spine = fq.feature === true && fq.spine && fq.spine !== key && tickets[fq.spine] && tickets[fq.spine].state !== 'done' ? [fq.spine] : [];
-  // An epic still waiting on its drafted plan (epic-plan.mjs) holds a child that joins, as it holds the first.
-  const plan = planPark(tickets[epic]) ? [epic] : [];
-  const holds = [...new Set([...plan, ...spine, ...openBlockers(t.rec).filter((x) => tickets[x])])];
-  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-collisions', ...(holds.length ? ['--hold', holds.join(',')] : [])]);
+  // queue.mjs adds the spine and an epic still waiting on its drafted plan (--hold-spine).
+  const holds = [...new Set(openBlockers(t.rec).filter((x) => tickets[x]))];
+  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', '--hold-collisions', ...(holds.length ? ['--hold', holds.join(',')] : [])]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter(Boolean); } catch { /* admitted: say the holds asked for */ }
