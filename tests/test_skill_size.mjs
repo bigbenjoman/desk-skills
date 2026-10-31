@@ -1,9 +1,11 @@
 // suite: skill size (every desk SKILL.md a core of 20 KB or less, and its reference files resolve)
-// covers: skills/desk-*/**
+// covers: skills/desk-*/** agents/**
 // Every skills/desk-*/SKILL.md is at most 20,480 bytes unless it is on UNSPLIT, every
 // `references/<file>.md` a core names exists, and every file under a skill's references/ is named
 // by some file of that skill. Each desk-autopilot worker-contract-stage-*.md is held to the same cap,
-// and every file it names exists. Each check is also run on made-up skills, to prove it can fail.
+// and every file it names exists. Every agents/*.md description, listed in full in every session,
+// is at most 600 characters and keeps its trigger phrase. Each check is also run on made-up input,
+// to prove it can fail.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +67,41 @@ const stageRefProblems = (stages, skills) => stages.flatMap(({ file, text }) => 
   ...[...new Set(text.match(/worker-contract-[\w-]+\.md/g) || [])].map((f) => ({ owner: 'desk-autopilot', f })),
 ].filter(({ owner, f }) => !skills.find((s) => s.name === owner)?.refs.includes(f)).map(({ owner, f }) => `${STAGES}/${file} names ${owner}/references/${f}, which is not in skills/${owner}/references/`));
 
+// Each agent install.sh copies into ~/.claude/agents is listed by its description in every
+// session; its worked examples belong in the body, which loads only when the agent runs.
+// An agent is { name, text }, its file name under agents/ without .md.
+const AGENT_CAP = 600;
+const loadAgents = (dir) => readdirSync(dir).filter((f) => f.endsWith('.md')).sort().map((f) => ({ name: f.slice(0, -3), text: readFileSync(join(dir, f), 'utf8') }));
+// The frontmatter's one-line description: a double-quoted value unescaped, a plain one as written,
+// null for none or a block scalar.
+const description = (text) => {
+  const line = (text.match(/^---\n([\s\S]*?)\n---/)?.[1] || '').split('\n').find((l) => l.startsWith('description:'));
+  if (!line) return null;
+  const v = line.slice('description:'.length).trim();
+  if (v.startsWith('"')) { try { return JSON.parse(v); } catch { return null; } }
+  return /^[>|]/.test(v) ? null : v;
+};
+// AC1, AC2: each description is readable, non-empty and within the cap, counted in characters.
+const agentProblems = (agents) => agents.flatMap(({ name, text }) => {
+  const d = description(text);
+  if (d === null) return [`agents/${name}.md has no one-line description the check can read`];
+  if (!d.trim()) return [`agents/${name}.md has an empty description`];
+  const n = [...d].length;
+  return n > AGENT_CAP ? [`agents/${name}.md description is ${n} characters, over the ${AGENT_CAP}-character cap`] : [];
+});
+// AC3: a phrase each agent's description held before it was trimmed, which must still route to it.
+const TRIGGERS = {
+  'ada-devils-advocate': "devil's advocate", 'bea-business-analyst': 'Hello Bea', 'jim-solution-architect': 'infrastructure-as-code',
+  'karen-seo-optimizer': 'schema markup', 'lena-code-reviewer': 'check my code', 'mira-playwright-expert': 'Playwright tests',
+  'muriel-design-engineer': 'figma.com link', 'nadia-security-auditor': 'tenant boundaries', 'otto-ia-mapper': '/userflow',
+  'suki-frontend-architect': 'build this UI', 'theo-api-designer': 'API surface',
+};
+const triggerProblems = (agents, triggers) => Object.entries(triggers).flatMap(([name, phrase]) => {
+  const a = agents.find((x) => x.name === name);
+  if (!a) return [`TRIGGERS names ${name}, which is not in agents/`];
+  return (description(a.text) || '').includes(phrase) ? [] : [`agents/${name}.md description lost its trigger phrase "${phrase}"`];
+});
+
 // The checks on the real skills.
 const skills = loadSkills(join(root, 'skills'));
 const installed = (path) => path in INSTALLED && existsSync(join(root, INSTALLED[path]));
@@ -80,6 +117,10 @@ t(`DS-364 the worker contract stage files are read (${stages.length})`, stages.l
 t('DS-364 AC1 every worker contract stage file is within the cap', stageSizeProblems(stages), []);
 t('DS-364 AC4 the Stage 4 file names a sibling file the check resolves', /worker-contract-stage-3\.md/.test(stages.find((s) => s.file === 'worker-contract-stage-4.md')?.text || ''), true);
 t('DS-364 AC4 every file a stage file names exists', stageRefProblems(stages, skills), []);
+const agents = loadAgents(join(root, 'agents'));
+t(`DS-366 the agents are read (${agents.length})`, agents.length >= 11, true);
+t('DS-366 AC1 every agent description is within the cap', agentProblems(agents), []);
+t('DS-366 AC3 every agent description keeps its trigger phrase', triggerProblems(agents, TRIGGERS), []);
 
 // The same checks on made-up skills, so each is shown to fail.
 const fake = (name, core, files = {}) => ({ name, core, refs: Object.keys(files).filter((p) => p.startsWith('references/')).map((p) => p.slice('references/'.length)), files: { 'SKILL.md': core, ...files } });
@@ -103,6 +144,13 @@ t('DS-364 AC2 a stage file one byte over fails naming the file and its size', st
 t('DS-364 AC4 a stage file naming files that exist passes', stageRefProblems([st('worker-contract-stage-4.md', 'See `worker-contract-stage-3.md`, `references/a.md` and desk-y\'s `references/a.md`.')], [ap, y]), []);
 t('DS-364 AC4 a sibling stage file that does not exist fails naming it', stageRefProblems([st('worker-contract-stage-4.md', 'See `worker-contract-review.md`.')], [ap]), [`${STAGES}/worker-contract-stage-4.md names desk-autopilot/references/worker-contract-review.md, which is not in skills/desk-autopilot/references/`]);
 t('DS-364 AC4 a missing references/ file fails naming its skill', stageRefProblems([st('worker-contract-stage-4.md', 'See (`desk-y`\'s\n`references/b.md`).')], [ap, y]), [`${STAGES}/worker-contract-stage-4.md names desk-y/references/b.md, which is not in skills/desk-y/references/`]);
+const ag = (name, desc) => ({ name, text: `---\nname: ${name}\ndescription: ${desc}\nmodel: opus\n---\n\nBody.\n` });
+t('DS-366 AC1 a description of exactly 600 characters passes', agentProblems([ag('x', JSON.stringify('é'.repeat(AGENT_CAP)))]), []);
+t('DS-366 AC2 one character over fails naming the agent and its length', agentProblems([ag('x', JSON.stringify(`a\n${'b'.repeat(AGENT_CAP - 1)}`))]), [`agents/x.md description is ${AGENT_CAP + 1} characters, over the ${AGENT_CAP}-character cap`]);
+t('DS-366 AC2 a plain description is measured as written', agentProblems([ag('x', 'c'.repeat(AGENT_CAP + 1))]).length, 1);
+t('DS-366 AC3 an empty description fails', agentProblems([ag('x', '""')]), ['agents/x.md has an empty description']);
+t('DS-366 AC1 a block-scalar or missing description fails as unreadable', agentProblems([ag('x', '>-'), { name: 'y', text: 'no frontmatter' }]), ['agents/x.md has no one-line description the check can read', 'agents/y.md has no one-line description the check can read']);
+t('DS-366 AC3 a description that lost its phrase fails naming it', triggerProblems([ag('x', '"Use for reviews."')], { x: 'check my code', gone: 'z' }), ['agents/x.md description lost its trigger phrase "check my code"', 'TRIGGERS names gone, which is not in agents/']);
 t('AC5 a reference file no file names fails naming it', orphanProblems([fake('desk-x', 'Nothing here.', { 'references/c.md': 'names c.md itself' })]), ['skills/desk-x/references/c.md is named by no file of desk-x']);
 
 console.log(fails ? `${fails} failed` : 'all passed');
