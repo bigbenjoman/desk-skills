@@ -6,7 +6,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { norm, walk } from './split_check.mjs';
+import { norm, walk, rewrittenBy, checkRewritten } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -42,18 +42,41 @@ t(`AC3 the core names reference files (${new Set(named).size})`, new Set(named).
 t('AC3 every reference file the core names exists', JSON.stringify(named.filter((f) => !existsSync(join(refs, f)))), '[]');
 t('AC3 a phase file that cannot be read stops the review', core.includes('**A phase file you cannot read stops the review.**'), true);
 
+// The fixture stays frozen, so a heading, row or paragraph a later ticket rewrote is named here, by
+// text only it holds.
+const REWRITTEN = [
+  ['DS-176', 'desk-review-codex-brief.txt', 3], // the codex brief's path is per run
+  ...[ // the fix range, and carrying P2s, start at round 2
+    'from round 3, the SHA the previous round reviewed',
+    '**From round 3, the fix range instead**',
+    '### Round 3 and above: the fix range',
+    'By round 3 the branch has been read whole twice',
+    'never origin/<base>...HEAD from round 3',
+    'verdict.mjs refuses a round-3 results file',
+    '**From round 3 a P2 can be carried**',
+    'and from round 3 a fourth, the carried line',
+    '`carried: true` for a P2 carried from round 3',
+    '`since`: from round 3 only',
+    'lines (four from round 3)',
+    'From round 3 a fourth line follows the heading',
+    'except P2s carried from round 3',
+  ].map((s) => ['DS-368', s, 1]),
+  ['DS-369', 'first three lines are computed', 1], // the method line follows the heading
+];
+const kept = (s) => !rewrittenBy(REWRITTEN, s);
+
 // AC2: each heading of the old file is in exactly one new file.
 const lines = (f) => read(f).split('\n');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
 t('AC2 the old file has its 22 headings', headings.length, 22);
-for (const h of headings) t(`AC2 "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
+for (const h of headings.filter(kept)) t(`AC2 "${h}" is in exactly one file`, files.filter((f) => lines(f).includes(h)).length, 1);
 
 // AC2: each table body row is in exactly one file; a header or separator row in at least one.
 const rows = before.split('\n').filter((l) => /^\|/.test(l));
 const header = new Set(before.split('\n').flatMap((l, i, a) => (/^\|/.test(l) && /^\|[-| ]+\|$/.test(a[i + 1] || '') ? [l] : [])));
 const body = rows.filter((r) => !header.has(r) && !/^\|[-| ]+\|$/.test(r));
 t(`AC2 the old file's table rows are read (${body.length} body rows)`, body.length > 50, true);
-for (const r of rows) {
+for (const r of rows.filter(kept)) {
   const n = files.filter((f) => lines(f).includes(r)).length;
   if (body.includes(r)) t(`AC2 row "${r.slice(0, 60)}" is in exactly one file`, n, 1);
   else t(`AC2 header "${r.slice(0, 40)}" is in a file`, n >= 1, true);
@@ -63,15 +86,10 @@ for (const r of rows) {
 // are checked row by row above. Not split_check.mjs's checkSplit: it counts a paragraph by
 // substring, so the old file's bare "Then:" reads as in two files (the core's, and the end of a
 // Phase 7 paragraph).
-// The fixture stays frozen, so a paragraph a later ticket rewrote is named here, by text only it holds.
-const REWRITTEN = [
-  ['DS-176', 'desk-review-codex-brief.txt', 3], // the codex brief's path is per run
-];
 const after = norm(files.map(read).join('\n\n'));
 const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).filter((p) => !/^\|/.test(p.trimStart())).map(norm).filter(Boolean);
-const rewrittenBy = (p) => REWRITTEN.find(([, s]) => p.includes(s));
-for (const [key, s, n] of REWRITTEN) t(`AC2 ${key} rewrote ${n} paragraphs of the old file`, paras.filter((p) => p.includes(s)).length, n);
-const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(p));
+checkRewritten({ t, label: 'AC2', rewritten: REWRITTEN, items: [...paras, ...body] });
+const dropped = paras.filter((p) => !after.includes(p) && kept(p));
 t(`AC2 every paragraph of the old file survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 
@@ -106,7 +124,7 @@ t(`AC4 the gotchas.md anchors were read (${byAnchor})`, byAnchor >= 5, true);
 // A section named in italics inside desk-review (*Which review bar*, *The verdict*…) that names one
 // of its own headings is in exactly one file.
 const allHeadings = files.flatMap((f) => lines(f).filter((l) => /^#{2,3} /.test(l)).map((l) => l.replace(/^#+ /, '')));
-const SECTIONS = ['Which review bar', 'Round 3 and above', 'Every seat\'s prompt', 'The verdict', 'Phases'];
+const SECTIONS = ['Which review bar', 'Round 2 and above', 'Every seat\'s prompt', 'The verdict', 'Phases'];
 for (const s of SECTIONS) {
   const cites = own.filter((p) => readFileSync(p, 'utf8').includes(`*${s}*`)).length;
   t(`AC4 *${s}* is cited inside desk-review (${cites})`, cites >= 1, true);

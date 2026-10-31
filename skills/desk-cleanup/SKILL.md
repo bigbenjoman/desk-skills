@@ -52,6 +52,7 @@ rather than re-deriving each check by hand across dozens of worktrees. `worktree
 | `remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>…` | removes approved worktrees only, backing up first (step 2) |
 | `memory --repo <root> --worktrees-dir <§2 Worktrees directory> --ports <dev-server ports>` | prices RAM, dev servers, sessions, test runs, watchman, Docker and caches (steps 5 and 6) |
 | `memory-index --repo <root>` | only reads: flags the repo's auto-memory `MEMORY.md` past 6 KB or 60 lines, and prints nothing otherwise (step 6) |
+| `instructions --repo <root> [--skill-doctor <file>] [--prompt-audit <file>]` | only reads: lists every file loaded at launch with its size, and prints each oversized part's proposed move as a diff (step 6) |
 
 The rules below are what the script implements, with two exceptions it leaves to you: it checks
 live processes by **cwd** only, so open files and the owners of the dev-server ports (step 2,
@@ -139,6 +140,10 @@ commands that step names.
 | 4 | Open PRs, and the ready-to-merge report | `references/step-4-open-prs.md` |
 | 5 | Memory | `references/step-5-memory.md` |
 | 6 | Report only | `references/step-6-report-only.md` |
+| — | The instruction-file audit, at step 6 or on its own as `/desk-cleanup instructions` | `references/instruction-audit.md` |
+
+**`/desk-cleanup instructions` runs the audit alone**: the config and the precondition above, then
+only the instruction-file audit and its confirmation. `/desk-setup` offers it when it finishes.
 
 **A step file you cannot read stops the run.** If the file for the step you are starting is missing
 or empty, stop and name it by its full path; never work the step from memory or from an earlier copy
@@ -186,6 +191,14 @@ memory-index : <path> · <bytes> B · <lines> lines · cap 6144 B or 60 lines   
                move into their own memory files: "<entry>" (<n> lines), …
 ```
 
+The instruction-file audit's lines go in the same table: its `propose` lines and diffs under
+`instructions`, awaiting approval one by one, and its `launch` lines under `report only`:
+
+```
+instructions : <file> · "<section>" (<n> lines) → <subdirectory CLAUDE.md | path-scoped rule | skill reference | memory topic file> <target>   [approve each]
+               <the diffs, as printed>
+```
+
 The `skipped` line matters as much as the rest — it is how a wrong guard becomes visible.
 
 ## Red flags — stop
@@ -206,6 +219,7 @@ The `skipped` line matters as much as the rest — it is how a wrong guard becom
   still is not agreement
 - Proposing `swapoff` as a memory win
 - Merging a PR — never this skill's job
+- Writing an instruction-file move the user has not approved, or any move into a file the repo tracks
 
 ## Common mistakes
 
