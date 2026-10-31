@@ -1,7 +1,8 @@
-// suite: desk-cleanup scans (verdicts, whole keys, backups, watchman)
+// suite: desk-cleanup scans (verdicts, whole keys, backups, watchman, instruction files)
 // desk-cleanup's scripted scans against fixture worktrees, a fixture PR list and a fake process
-// table: verdicts, whole-key matching, the ignored-file backup on removal, and watchman. Nothing
-// reads this computer's processes, worktrees or GitHub.
+// table: verdicts, whole-key matching, the ignored-file backup on removal, watchman, and the audit of
+// the instruction files a fixture repo and home load at launch. Nothing reads this computer's
+// processes, worktrees, home or GitHub.
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -209,5 +210,86 @@ t('memory-index: the line below names the multi-line entries only', l2.trim(), '
 writeFileSync(join(memDir, 'MEMORY.md'), `- ${'x'.repeat(7000)}\n`)
 r4 = mi()
 t('memory-index: over the byte cap alone is reported', /^memory-index : .* · 7003 B · 1 lines .*\n +every entry is one line/.test(r4.stdout), true)
+
+// ---- instructions: what loads at launch, and the moves proposed for what is over its cap
+const put = (p, text) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, text) }
+const fill = (n, what) => Array.from({ length: n }, (_, i) => `- ${what} rule ${i}`)
+mkdirSync(join(R, 'apps', 'api', 'src'), { recursive: true }); mkdirSync(join(R, 'apps', 'api', 'lib'), { recursive: true }); mkdirSync(join(R, 'packages', 'db'), { recursive: true })
+const claudeMd = ['# Project', '', 'See @docs/guide.md for more, and mail ben@example.com.', ...fill(107, 'general'), '',
+  '## API conventions', 'Handlers live in `apps/api/src/` and `apps/api/lib/`.', ...fill(101, 'api'), '',
+  '## Data layer', 'Touches `apps/api/` and `packages/db/` together.', ...fill(100, 'data'), '',
+  '## Writing style', 'Plain sentences.', ...fill(99, 'style'), '']
+put(join(R, 'CLAUDE.md'), claudeMd.join('\n'))
+put(join(R, 'docs', 'guide.md'), 'one\ntwo\nthree\nfour\nfive\n')
+put(join(R, 'AGENTS.md'), '# Agents\n\nShort.\n')
+put(join(R, 'CLAUDE.local.md'), 'local\n')
+put(join(R, '.claude', 'rules', 'style.md'), '# Style\n\nAlways.\n')
+put(join(R, '.claude', 'rules', 'api.md'), '---\npaths:\n  - "apps/api/**"\n---\n\nOnly for the API.\n')
+put(join(env.HOME, '.claude', 'CLAUDE.md'), 'user rules\n')
+put(join(env.HOME, '.claude', 'skills', 'big', 'SKILL.md'), `---\nname: big\ndescription: >-\n  Use when testing the audit. ${'More words here. '.repeat(70).trim()}\n---\n\n# big\n`)
+put(join(env.HOME, '.claude', 'agents', 'helper.md'), '---\nname: helper\ndescription: "A small helper."\n---\n\nBody.\n')
+writeFileSync(join(memDir, 'MEMORY.md'), big.join('\n'))
+const tree = (d) => readdirSync(d, { withFileTypes: true }).filter((e) => e.name !== '.git').flatMap((e) => (e.isDirectory() ? tree(join(d, e.name)) : [`${join(d, e.name)}\n${readFileSync(join(d, e.name), 'utf8')}`])).sort().join('\n')
+const snapshot = () => tree(R) + tree(env.HOME)
+const beforeAudit = snapshot()
+const ia = scan('instructions', '--repo', R, '--policy', 'none')
+const out = ia.stdout.split('\n')
+const launch = out.filter((l) => l.startsWith('launch : '))
+t('instructions: exits 0', `${ia.status} ${ia.stderr}`, '0 ')
+
+// AC1: every file read at launch, with its size; a rule with paths: is not one of them.
+t('AC1 lists the CLAUDE.md and AGENTS.md chain, unscoped rules, MEMORY.md, skills and agents',
+  launch.map((l) => l.split(' · ').slice(0, 2).join(' · ').replace(/ +/g, ' ')).join('\n'),
+  ['launch : CLAUDE.md · ~/.claude/CLAUDE.md', 'launch : CLAUDE.md · CLAUDE.md', 'launch : import · docs/guide.md', 'launch : AGENTS.md · AGENTS.md', 'launch : CLAUDE.local.md · CLAUDE.local.md',
+    'launch : rule · .claude/rules/style.md', `launch : MEMORY.md · ${join(memDir, 'MEMORY.md').replace(env.HOME, '~')}`, 'launch : skill · big (~/.claude/skills/big/SKILL.md)',
+    'launch : agent · helper (~/.claude/agents/helper.md)', 'launch : total · 9 files'].join('\n'))
+t('AC1 a file row carries its bytes and lines, and says when it is over the cap', launch[1].endsWith(`· ${Buffer.byteLength(claudeMd.join('\n'))} B · ${claudeMd.length - 1} lines · over cap 200 lines`), true)
+t('AC1 a skill row carries its description length', /· big .* · \d{4} chars of description · over cap 1024 chars$/.test(launch[7]), true)
+t('AC1 a description within the cap is not flagged', launch[8].endsWith('· helper (~/.claude/agents/helper.md) · 15 chars of description'), true)
+
+// AC3: an @ import is listed with the file that names it, and said not to reduce what loads.
+t('AC3 an import loads with its parent and does not reduce what loads', launch[2].endsWith('· 5 lines · loads with CLAUDE.md: an @ import does not reduce what loads'), true)
+
+// AC2: each oversized file gets moves to a lazily loaded place, and every change as a diff.
+const propose = out.filter((l) => l.startsWith('propose : '))
+t('AC2 the largest sections move until the file is under the cap, each to where it loads lazily', propose.join('\n'), [
+  'propose : CLAUDE.md · "API conventions" (104 lines) → subdirectory CLAUDE.md apps/api/CLAUDE.md',
+  'propose : CLAUDE.md · "Data layer" (103 lines) → path-scoped rule .claude/rules/data-layer.md',
+  'propose : CLAUDE.md · "Writing style" (101 lines) → skill reference .claude/skills/writing-style/SKILL.md',
+  `propose : ${join(memDir, 'MEMORY.md').replace(env.HOME, '~')} · "Deploys go through the release train" (3 lines) → memory topic file ${join(memDir, 'deploys-go-through-the-release-train.md').replace(env.HOME, '~')}`,
+  `propose : ${join(memDir, 'MEMORY.md').replace(env.HOME, '~')} · "A loose paragraph that" (2 lines) → memory topic file ${join(memDir, 'a-loose-paragraph-that.md').replace(env.HOME, '~')}`,
+  `propose : ~/.claude/skills/big/SKILL.md · "description" (${'More words here. '.repeat(70).trim().length} chars) → the skill body, which loads only when it runs`,
+].join('\n'))
+const diff = out.slice(out.indexOf('diff :') + 1)
+const blocks = diff.join('\n').split(/\n(?=--- )/)
+const inRepo = blocks.filter((b) => /^\+\+\+ b\//m.test(b))
+t('AC2 the repo-side diffs name the source and each new file', inRepo.map((b) => b.split('\n').slice(0, 2).join(' ')).join('\n'),
+  ['--- a/CLAUDE.md +++ b/CLAUDE.md', '--- /dev/null +++ b/apps/api/CLAUDE.md', '--- /dev/null +++ b/.claude/rules/data-layer.md', '--- /dev/null +++ b/.claude/skills/writing-style/SKILL.md'].join('\n'))
+t('AC2 the scoped rule names each directory the section does', /\n\+paths:\n\+ {2}- "apps\/api\/\*\*"\n\+ {2}- "packages\/db\/\*\*"\n/.test(inRepo[2]), true)
+writeFileSync(join(T, 'audit.patch'), `${inRepo.join('\n')}\n`)
+const applies = spawnSync('git', ['apply', '--check', join(T, 'audit.patch')], { cwd: R, env, encoding: 'utf8' })
+t('AC2 the diffs apply cleanly to the repo as shown', `${applies.status} ${applies.stderr.trim()}`, '0 ')
+t('AC2 the memory index keeps one pointer line per moved entry', diff.includes('+- [Deploys go through the release train](deploys-go-through-the-release-train.md)'), true)
+t('AC2 the skill keeps its first sentence as the description', diff.includes('+  Use when testing the audit.') && diff.includes('+## When to use'), true)
+
+// AC4: the audit writes nothing; the proposals are only printed.
+t('AC4 running the audit changes no file in the repo or home', snapshot() === beforeAudit, true)
+t('AC4 no proposed target exists after the audit', ['apps/api/CLAUDE.md', '.claude/rules/data-layer.md', '.claude/skills/writing-style/SKILL.md'].some((p) => existsSync(join(R, p))), false)
+
+// AC5: skill-doctor's and prompt-audit's findings are included verbatim, and the audit then judges no
+// description itself.
+writeFileSync(join(T, 'sd.txt'), 'big: description too long\nhelper: ok\n'); writeFileSync(join(T, 'pa.txt'), 'CLAUDE.md: repeats itself\n')
+const withDoctor = scan('instructions', '--repo', R, '--policy', 'none', '--skill-doctor', join(T, 'sd.txt'), '--prompt-audit', join(T, 'pa.txt')).stdout
+t('AC5 skill-doctor\'s output is included verbatim', withDoctor.includes('skill-doctor : big: description too long\n             : helper: ok\n'), true)
+t('AC5 prompt-audit\'s output is included verbatim', withDoctor.includes('prompt-audit : CLAUDE.md: repeats itself\n'), true)
+t('AC5 with skill-doctor, the audit neither flags nor moves a description', /chars of description · over cap|"description" \(/.test(withDoctor), false)
+t('AC5 and still measures the instruction files', withDoctor.includes('propose : CLAUDE.md · "API conventions"'), true)
+
+// AC6, and the skill text the scan answers to.
+const skillsDir = join(dirname(SCAN), '..', '..')
+const audit = readFileSync(join(skillsDir, 'desk-cleanup', 'references', 'instruction-audit.md'), 'utf8')
+t('AC4 the audit reference writes nothing before the user approves', /\*\*Nothing is written until the user approves it\.\*\*/.test(audit), true)
+t('AC5 the audit reference runs /skill-doctor and /doctor prompt-audit rather than copying them', audit.includes('/skill-doctor') && audit.includes('/doctor prompt-audit'), true)
+t('AC6 /desk-setup offers the audit when it finishes', readFileSync(join(skillsDir, 'desk-setup', 'references', 'step-5-write.md'), 'utf8').includes('/desk-cleanup instructions'), true)
 
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1) }

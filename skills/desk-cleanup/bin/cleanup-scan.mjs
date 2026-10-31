@@ -7,6 +7,8 @@
 //   node cleanup-scan.mjs remove --repo <root> --backups <§2 Backups directory> [--allow-untracked] <path>...
 //   node cleanup-scan.mjs memory [--repo <root>] [--worktrees-dir <dir>] [--ports <3500-3600,6006>]
 //   node cleanup-scan.mjs memory-index [--repo <root>]   an oversized auto-memory MEMORY.md, or nothing
+//   node cleanup-scan.mjs instructions [--repo <root>] [--skill-doctor <file>] [--prompt-audit <file>]
+//        [--policy <file>|none]   what loads at launch, and each oversized part's proposed move as a diff
 //   node cleanup-scan.mjs key-filter <TICKET>        gh pr list --json … on stdin, whole-key matches out
 //
 // `worktrees` prints one TSV row per worktree: verdict path branch ticket tip pr author reason
@@ -22,6 +24,7 @@ import { existsSync, readFileSync, realpathSync, readdirSync, statSync, mkdirSyn
 import { homedir, totalmem, freemem, platform } from 'node:os'
 import { join, dirname, basename, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { MEMORY_INDEX_CAP, longEntries, launchFiles, auditReport } from './instruction-audit.mjs'
 
 // ---- pure parts (exported for tests/test_cleanup.mjs) ----------------------------------------
 
@@ -212,21 +215,7 @@ export function memoryReport({ ps, cwds, listen, ports, worktrees = [], dirs = [
 
 // ---- the auto-memory index -------------------------------------------------------------------
 
-// Claude Code loads MEMORY.md into every session and worker on every call; past this it is a document.
-export const MEMORY_INDEX_CAP = { bytes: 6144, lines: 60 }
-
-// The index's entries that run past one line: a bullet, heading or paragraph with continuation lines.
-export function longEntries(text) {
-  const out = []; let cur = null
-  for (const l of String(text).split('\n')) {
-    if (!l.trim()) { cur = null; continue }
-    const heading = /^\s*#/.test(l)
-    if (cur && !heading && !/^\s*([-*+]|\d+[.)])\s/.test(l)) { cur.lines++; continue }
-    cur = heading ? null : { first: l.trim().replace(/^([-*+]|\d+[.)])\s*/, ''), lines: 1 }
-    if (cur) out.push(cur)
-  }
-  return out.filter((e) => e.lines > 1)
-}
+export { MEMORY_INDEX_CAP, longEntries }
 
 // The report lines for one MEMORY.md, or none when it is within the cap (or absent).
 export function memoryIndexReport(path, text) {
@@ -485,6 +474,21 @@ async function scanMemoryIndex(o) {
   for (const l of memoryIndexReport(path, text)) console.log(l)
 }
 
+// Managed policy CLAUDE.md, which Claude Code reads before every other instruction file.
+const POLICY = { darwin: '/Library/Application Support/ClaudeCode/CLAUDE.md', linux: '/etc/claude-code/CLAUDE.md' }
+
+// Reads only: lists what loads at launch and prints the proposed moves as diffs.
+async function scanInstructions(o) {
+  const memoryDir = await loadMemoryDir()
+  const { root } = rootOf(o.repo)
+  const home = homedir(); const dir = memoryDir(root)
+  const policy = o.policy === 'none' ? [] : [o.policy ? expand(o.policy) : POLICY[platform()]].filter(Boolean)
+  const doctor = {}
+  for (const k of ['skill-doctor', 'prompt-audit']) if (o[k]) doctor[k] = read(expand(o[k]))
+  const rows = launchFiles({ root, home, memoryPath: join(dir, 'MEMORY.md'), policy })
+  for (const l of auditReport(rows, { root, home, memoryDir: dir, doctor })) console.log(l)
+}
+
 function keyFilter(o) {
   const key = o._[0]
   if (!key) die('key-filter needs a ticket key')
@@ -493,7 +497,7 @@ function keyFilter(o) {
 
 if (process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))) {
   const [cmd, ...rest] = process.argv.slice(2); const o = args(rest)
-  const run = { worktrees: scanWorktrees, remove: removeWorktrees, memory: scanMemory, 'memory-index': scanMemoryIndex, 'key-filter': keyFilter }[cmd]
-  if (!run) die('usage: cleanup-scan.mjs worktrees|remove|memory|memory-index|key-filter … (see the header)')
+  const run = { worktrees: scanWorktrees, remove: removeWorktrees, memory: scanMemory, 'memory-index': scanMemoryIndex, instructions: scanInstructions, 'key-filter': keyFilter }[cmd]
+  if (!run) die('usage: cleanup-scan.mjs worktrees|remove|memory|memory-index|instructions|key-filter … (see the header)')
   run(o)
 }

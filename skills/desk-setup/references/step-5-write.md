@@ -57,3 +57,8 @@ still TODO: <rows>
 
 Every row appears, including the `no`s. Then say how to change it: re-run `/desk-setup` in this
 repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other repos are untouched.
+
+**Then offer the instruction-file audit**, `/desk-cleanup instructions`: it measures everything a
+session in this repo loads at launch (the `CLAUDE.md` and `AGENTS.md` chain, rules, `MEMORY.md`,
+skill and agent descriptions) and proposes where each oversized part could move. It writes nothing
+until the user approves a move. Offer it once, as the last question of setup.
