@@ -89,6 +89,22 @@ for (const [name, findings, clean] of CASES) {
 }
 t('the old copy reads the round-3 heading without a mismatch', oldGate.headingMismatch(oldGate.parseVerdict(printed([fnd()]))), null);
 
+// The method line, after the heading, as verdict.mjs prints it with fallback seats: every gate copy
+// reads the same verdict, the same blocking counts and the same heading as before it existed.
+const fellBack = [{ role: 'correctness', vendor: 'claude', status: 'ran', agent: 'general-purpose', fallback: true }, { role: 'requirements', vendor: 'claude', status: 'ran', fallback: true }, seats[1]];
+const METHOD_CASES = [
+  ['round 1, clean, two fallback seats', render({ sha: HEAD, round: 1, gaps: 0, skipped_files: 0, seats: fellBack, findings: [] }), true],
+  ['round 1, an open P1, two fallback seats', render({ sha: HEAD, round: 1, gaps: 0, skipped_files: 0, seats: fellBack, findings: [fnd({ severity: 'P1', carried: false })] }), false],
+  ['round 3, carried P2s, two fallback seats', printed([fnd()], { seats: fellBack }), true],
+];
+for (const [name, b, clean] of METHOD_CASES) {
+  t(`${name}: the body carries the method line`, b.includes('<!-- desk-review:method v=1 fallback=2 -->'), true);
+  t(`gate copy before the method line, ${name}: ${clean ? 'clean' : 'not clean'}`, oldGate.checkVerdict([review(b)], HEAD, WRITERS).ok, clean);
+  t(`new gate, ${name}: ${clean ? 'clean' : 'not clean'}`, checkVerdict([review(b)], HEAD, WRITERS).ok, clean);
+  t(`gate copy before the method line, ${name}: the same counts`, JSON.stringify(COUNTS.map((k) => oldGate.parseVerdict(b)[k])), JSON.stringify(COUNTS.map((k) => parseVerdict(b)[k])));
+  t(`gate copy before the method line, ${name}: the heading is still the heading`, oldGate.parseVerdict(b).heading.startsWith('**desk-review, round '), true);
+}
+
 // The pass's undraft step reads the same bodies the same way: the same sha and counts where this
 // gate reads a verdict, and nothing it can call clean where this gate reads none.
 const marker = (rest) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} ${rest} -->\nclean`;

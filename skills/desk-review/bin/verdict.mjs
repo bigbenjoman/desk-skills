@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// The first three lines of every posted desk-review: the review marker, the verdict marker and the
-// heading, and from round 2 a fourth: the carried marker. They are computed from the run's finder
-// and refuter results, never written by hand, because a required check reads the verdict marker and
-// a hand count is how a review reads clean when it is not. The marker is a contract with every gate
-// that reads it: it changes only with a version bump. The carried count is a line of its own, after
-// the heading, because a gate copy committed before it existed matches the verdict line exactly and
-// would read any extra field there as no verdict at all.
+// The opening lines of every posted desk-review: the review marker, the verdict marker, the heading,
+// from round 2 the carried marker, and then the method marker. They are computed from the run's
+// finder and refuter results, never written by hand, because a required check reads the verdict
+// marker and a hand count is how a review reads clean when it is not. The marker is a contract with
+// every gate that reads it: it changes only with a version bump. The carried count and the method
+// are lines of their own, after the heading, because a gate copy committed before them matches the
+// verdict line exactly and would read any extra field there as no verdict at all.
 //
 //   node verdict.mjs <results.json>            prints the lines; exit 2 refuses the results
 //   node verdict.mjs --carried <results.json>  prints the PR body's carried-findings section, if any
+//   node verdict.mjs --method <results.json>   prints the PR body's line on how the review ran
 //
 // results.json, written by the reviewer once every finder and refuter has answered:
 //
@@ -17,6 +18,10 @@
 //                { "role": "codex", "vendor": "codex", "status": "ran" } ],
 //     "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
 //                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
+//
+// A seat whose named agent was not available, and whose brief a general-purpose agent ran instead,
+// is "fallback": true; the method marker counts them. A seat routed to general-purpose by design
+// (simplicity, domain) is not a fallback, so naming that agent alone never counts.
 //
 // From round 2 the finders read only the fix range, the commits since the previous round, so the
 // results carry "since": the full SHA that round reviewed. Only then may a P2 be "carried": true,
@@ -40,7 +45,7 @@ export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
 const TOP = ['sha', 'round', 'since', 'gaps', 'skipped_files', 'seats', 'findings']
-const SEAT = ['role', 'agent', 'vendor', 'status', 'note']
+const SEAT = ['role', 'agent', 'vendor', 'status', 'note', 'fallback']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
@@ -81,6 +86,7 @@ export function tally(r) {
     if (seats.has(s.role)) no(`seat ${s.role} is listed twice`)
     if (!VENDORS.includes(s.vendor)) no(`seat ${s.role}: vendor must be claude or codex`)
     if (s.status !== 'ran' && s.status !== 'died') no(`seat ${s.role}: status must be ran or died`)
+    if (s.fallback != null && typeof s.fallback !== 'boolean') no(`seat ${s.role}: fallback must be true or false`)
     seats.set(s.role, s)
   })
   // Correctness fires on every review, so a results file without it is a run that never finished.
@@ -145,8 +151,9 @@ export function tally(r) {
   }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
   n.partial += died.length
+  const fallback = [...seats.values()].filter((s) => s.fallback === true).map((s) => s.role)
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried,
-    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped,
+    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
 
@@ -154,7 +161,7 @@ export const isClean = (n) => Object.values(n).every((v) => v === 0)
 
 const plural = (c, one, many = `${one}s`) => `${c} ${c === 1 ? one : many}`
 
-// The three lines, in the exact form a gate reads.
+// The opening lines, in the exact form a gate reads.
 export function render(r) {
   const t = tally(r)
   const { n } = t
@@ -172,14 +179,24 @@ export function render(r) {
   const verdict = isClean(n)
     ? (carried ? `No P0 or P1 findings; ${carried}` : 'No P0, P1 or P2 findings')
     : `not clean: ${[...parts, ...(carried ? [carried] : [])].join(', ')}`
-  const how = t.vendor === 'codex-cross'
-    ? 'codex read the diff cold · refuted cross-vendor'
-    : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`
   const range = t.since ? `, fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}` : ''
-  const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how}`
+  const fell = t.fallback.length ? ` · ${plural(t.fallback.length, 'fallback seat')} (${t.fallback.join(', ')})` : ''
+  const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how(t)}${fell}`
   const lines = ['<!-- desk-review:local -->', marker, heading]
   if (t.since) lines.push(`<!-- desk-review:carried v=1 p2=${t.carried.length} since=${t.since} -->`)
+  lines.push(`<!-- desk-review:method v=1 fallback=${t.fallback.length} -->`)
   return lines.join('\n')
+}
+
+const how = (t) => (t.vendor === 'codex-cross'
+  ? 'codex read the diff cold · refuted cross-vendor'
+  : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`)
+
+// The PR body's line on how the review ran: its rounds, its vendor and its fallback seats.
+export function methodLine(r) {
+  const t = tally(r)
+  const roles = t.fallback.length ? ` (${t.fallback.join(', ')})` : ''
+  return `desk-review: ${plural(t.round, 'round')}, last at \`${t.sha.slice(0, 7)}\` · ${how(t)} · fallback seats: ${t.fallback.length}${roles}`
 }
 
 // The PR body's section for the carried findings, file:line each, or '' when none are carried.
@@ -201,12 +218,12 @@ const isMain = (() => {
 if (isMain) {
   try {
     const args = process.argv.slice(2)
-    const section = args[0] === '--carried'
-    const [file, ...rest] = section ? args.slice(1) : args
-    if (!file || rest.length) no('usage: verdict.mjs [--carried] <results.json>')
+    const mode = args[0] === '--carried' || args[0] === '--method' ? args[0] : null
+    const [file, ...rest] = mode ? args.slice(1) : args
+    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
-    const out = section ? carriedSection(r) : render(r)
+    const out = mode === '--carried' ? carriedSection(r) : mode === '--method' ? methodLine(r) : render(r)
     if (out) process.stdout.write(`${out}\n`)
   } catch (e) {
     process.stderr.write(`verdict.mjs: ${e.message}\n`)

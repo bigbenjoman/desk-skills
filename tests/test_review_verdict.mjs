@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, methodLine, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -120,7 +120,8 @@ const r3 = (findings = [], o = {}) => base({ round: 3, since: SINCE, findings, .
 const p2 = (o = {}) => f({ severity: 'P2', carried: true, title: 'name reads as a count', ...o })
 t('round 3: heading names the fix range it read', heading(r3()).startsWith('**desk-review, round 3, fix range fedcba9..0123456: No P0, P1 or P2 findings at `0123456`**'), true)
 t('round 3: the carried line records the range', render(r3()).split('\n')[3], `<!-- desk-review:carried v=1 p2=0 since=${SINCE} -->`)
-t('round 1: no carried line', render(base()).split('\n').length, 3)
+t('round 1: no carried line', render(base()).includes('desk-review:carried'), false)
+t('round 3: the method line follows the carried line', render(r3()).split('\n')[4], '<!-- desk-review:method v=1 fallback=0 -->')
 const onlyCarried = r3([p2(), p2({ id: 'F2', where: 'src/b.ts:4' })])
 t('only carried P2s: the marker reads clean', reads(onlyCarried), true)
 t('only carried P2s: p2 is 0 in the marker', marker(onlyCarried).includes(' p1=0 p2=0 deferred=0 '), true)
@@ -151,8 +152,22 @@ t('DS-368 AC3 round 2 with a P1 is not clean', reads(r2([p2(), f({ id: 'F2' })])
 t('DS-368 AC3 round 2 with a P0 is not clean', reads(r2([f({ severity: 'P0' })])), false)
 t('DS-368 an uncarried P2 on round 2 still blocks', reads(r2([f({ severity: 'P2' })])), false)
 
+// ---- the seats a general-purpose agent stood in for
+const gp = (role, o = {}) => ({ ...seat(role), agent: 'general-purpose', ...o })
+const fellBack = base({ seats: [{ ...seat('correctness'), agent: 'lena-code-reviewer', fallback: true }, gp('requirements', { fallback: true }), gp('simplicity'), seat('codex', 'codex')] })
+const byDesign = base({ seats: [seat('correctness'), gp('simplicity'), gp('domain'), seat('codex', 'codex')] })
+t('fallback: a seat general-purpose by design is not one', render(byDesign).split('\n')[3], '<!-- desk-review:method v=1 fallback=0 -->')
+t('fallback: the method line counts every fallback seat', render(fellBack).split('\n')[3], '<!-- desk-review:method v=1 fallback=2 -->')
+t('fallback: none is 0, never left out', render(base()).split('\n')[3], '<!-- desk-review:method v=1 fallback=0 -->')
+t('fallback: the verdict line is unchanged', marker(fellBack), marker(base()))
+t('fallback: the heading names the seats', heading(fellBack).endsWith('refuted cross-vendor · 2 fallback seats (correctness, requirements)'), true)
+t('fallback: it never decides clean', reads(fellBack), true)
+t('method line: rounds, vendor and fallback count', methodLine(fellBack), 'desk-review: 1 round, last at `0123456` · codex read the diff cold · refuted cross-vendor · fallback seats: 2 (correctness, requirements)')
+t('method line: same-vendor is said', methodLine(r2([], { seats: [seat('correctness')] })), 'desk-review: 2 rounds, last at `0123456` · same-vendor · codex did not read the diff · fallback seats: 0')
+
 // ---- results it refuses, each on the guard it names
 const want = (name, r, msg) => { const got = refused(r); t(name, got.includes(msg) ? msg : got, msg) }
+want('refuses fallback that is not a boolean', base({ seats: [{ ...seat('correctness'), fallback: 'yes' }] }), 'fallback must be true or false')
 want('refuses a carried P1, naming it', r3([p2({ severity: 'P1' })]), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
 want('refuses a carried P0, naming it', r3([p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9' })]), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
 want('refuses a carried P2 on round 1', base({ findings: [p2()] }), 'carried only from round 2; on round 1 it is fixed')
@@ -195,7 +210,7 @@ process.on('exit', () => rmSync(T, { recursive: true, force: true }))
 writeFileSync(join(T, 'ok.json'), JSON.stringify(base()))
 writeFileSync(join(T, 'bad.json'), JSON.stringify(base({ gaps: undefined })))
 const ok = spawnSync('node', [SCRIPT, join(T, 'ok.json')], { encoding: 'utf8' })
-t('CLI prints the three lines', `${ok.status} ${ok.stdout.trim().split('\n').length}`, '0 3')
+t('CLI prints the four lines', `${ok.status} ${ok.stdout.trim().split('\n').length}`, '0 4')
 t('CLI first line is the review marker', ok.stdout.startsWith('<!-- desk-review:local -->\n'), true)
 const bad = spawnSync('node', [SCRIPT, join(T, 'bad.json')], { encoding: 'utf8' })
 t('CLI refuses with exit 2 and prints nothing', `${bad.status} ${bad.stdout === ''} ${bad.stderr.includes('gaps is required')}`, '2 true true')
@@ -203,7 +218,9 @@ const none = spawnSync('node', [SCRIPT], { encoding: 'utf8' })
 t('CLI with no file refuses', none.status, 2)
 writeFileSync(join(T, 'r3.json'), JSON.stringify(onlyCarried))
 const r3cli = spawnSync('node', [SCRIPT, join(T, 'r3.json')], { encoding: 'utf8' })
-t('CLI on round 3 prints four lines', `${r3cli.status} ${r3cli.stdout.trim().split('\n').length}`, '0 4')
+t('CLI on round 3 prints five lines', `${r3cli.status} ${r3cli.stdout.trim().split('\n').length}`, '0 5')
+const meth = spawnSync('node', [SCRIPT, '--method', join(T, 'ok.json')], { encoding: 'utf8' })
+t('CLI --method prints the PR body line', `${meth.status} ${meth.stdout.startsWith('desk-review: 1 round, last at ')}`, '0 true')
 const sec = spawnSync('node', [SCRIPT, '--carried', join(T, 'r3.json')], { encoding: 'utf8' })
 t('CLI --carried prints the section', `${sec.status} ${sec.stdout.startsWith('### Carried review findings\n')}`, '0 true')
 const noSec = spawnSync('node', [SCRIPT, '--carried', join(T, 'ok.json')], { encoding: 'utf8' })

@@ -61,6 +61,11 @@ report. **`RED RATE ROSE`** (more than 5 percentage points above the baseline, e
 say it first, with the PRs that went red, and do not lower it to a note. With no baseline it says so;
 offer `desk-ci measure` rather than reporting the rate as normal.
 
+**It counts the reviews that fell short too.** `batch-red` reads each PR's latest desk-review verdict
+and prints `review:` lines: the PRs reviewed same-vendor and the PRs with a fallback seat, each
+counted and listed, plus any whose review predates the method line (fallback unknown, never zero)
+and any with no verdict. Put them in the report as printed.
+
 **The batch report also carries what each worker cost.** The idle pass prints a `WORKER COST` table:
 each worker's input and output tokens, cost in USD and wall time, summed over every round of it in
 this batch, and a total row. Put the table in the report as printed. A worker whose log has no result event reads `unknown`, and
