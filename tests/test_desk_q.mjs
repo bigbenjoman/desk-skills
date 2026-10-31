@@ -1920,6 +1920,16 @@ t('DS-357 AC2b a move on the repo\'s Queue acts within the ticket\'s own batch',
   `${/TB-7/.test(sel357)} ${M357.frame().some((l) => l.startsWith('TB-7 → position 3 of 3, placed by you.'))} ${Object.keys(JSON.parse(readFileSync(q357, 'utf8')).tickets).join()}`,
   'true true TB-8,TB-9,TB-7');
 M357.ui.finish(0);
+// A batch whose queue cannot be read leaves the repo's other batch counted and listed, and says so.
+writeFileSync(q357, '{ not json');
+const ov357u = lines(Q.overview(twob(), { now: NOW, avail: 30, width: 120 }));
+const p357u = lines(Q.run(['--plain', 'twob'], { now: NOW }));
+const said357 = `Batch ${SLOT357}'s queue is unreadable, so its tickets are not counted`;
+t('DS-357 AC2 one unreadable batch: home counts the readable one, names the repo in the needs-you line, and notes the unreadable one',
+  `${/^ {2}twob +● session · 1m ago +1 +1 +0 +0 +1 +0 /.test(ov357u.find((l) => l.startsWith('  twob')) ?? '')} ${ov357u[0].endsWith('│ twob 1')} ${ov357u.some((l) => l.includes(said357))}`,
+  'true true true');
+t('DS-357 AC2b one unreadable batch: the repo\'s place lists the readable batch\'s tickets and says which queue it could not read',
+  `${['TB-1', 'TB-2', 'TB-3'].every((k) => p357u.some((l) => l.includes(`  ${k} `)))} ${p357u.some((l) => l.includes(said357))}`, 'true true');
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

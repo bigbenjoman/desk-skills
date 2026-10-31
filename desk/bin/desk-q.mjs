@@ -526,16 +526,20 @@ export function shownRepos(repos, all) {
 
 // One repo's batches as one: named with the repo, its counts their sums, its last pass the latest,
 // its workers their total within the repo's cap. Each row keeps its batch as `b`, which acts on it.
-// A repo whose only batch is its standing one is that batch; any batch's unreadable queue is the row's.
+// A repo whose only batch is its standing one is that batch. A batch whose queue cannot be read is
+// left out of the sums and kept in `unreadable`; the row is unreadable only when every batch is.
 export function repoRow(bs) {
   if (bs.length === 1 && !bs[0].batch) return bs[0];
   const ok = bs.filter((b) => !b.error);
   const lead = (ok.length ? ok : bs).reduce((a, b) => ((b.last ?? -Infinity) > (a.last ?? -Infinity) ? b : a));
   const tag = (b, xs) => xs.map((x) => ({ ...x, b }));
-  return { ...lead, name: lead.repo, word: lead.repo, id: lead.slug, batch: null, batches: ok, error: bs.find((b) => b.error)?.error ?? null,
+  return { ...lead, name: lead.repo, word: lead.repo, id: lead.slug, batch: null, batches: ok,
+    unreadable: ok.length ? bs.filter((b) => b.error) : [], error: ok.length ? null : lead.error,
     rows: ok.flatMap((b) => tag(b, b.rows)), prs: ok.flatMap((b) => tag(b, b.prs)), done: ok.reduce((a, b) => a + b.done, 0),
     workers: Math.min(lead.cap, ok.reduce((a, b) => a + (b.workers ?? 0), 0)) };
 }
+// A merged row's batch whose queue cannot be read, said where its tickets would have been.
+const unreadableText = (b) => `${b.batch ? `Batch ${b.batch}` : 'The standing batch'}'s queue is unreadable, so its tickets are not counted: ${b.error}`;
 // Each repo in `list` once, in the order its first batch comes.
 export const byRepo = (list) => [...new Set(list.map((r) => r.slug))].map((s) => repoRow(list.filter((r) => r.slug === s)));
 // A repo's place shows every batch of it with a queue; a named batch's place shows that batch.
@@ -1645,7 +1649,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
-  const notes = [...shown.filter((r) => !r.error).flatMap(stallNotes), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+  const notes = [...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
+    ...shown.filter((r) => !r.error).flatMap(stallNotes), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);
@@ -1933,6 +1938,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r),
     ...passHead(r, now),
+    ...(r.unreadable ?? []).map(unreadableText),
     ...(pinUsage ? [] : [usageLine(usage ?? usageOf([r], now), { now, solid: solidBars(width) })]),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
