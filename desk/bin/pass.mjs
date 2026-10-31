@@ -2613,6 +2613,8 @@ updateLedger(queue());
 // promotion PR that carries it merges.
 function reportPromotionHolds(qx) {
   if (!BASE || !SOURCE || BASE === SOURCE) return;
+  // The last promotion's merge is recorded without a next one to move `since` past it.
+  if (qx.promotion?.pr != null && (qx.promotion.merged ?? []).some((m) => m.pr === qx.promotion.pr)) return;
   const held = promotionHolds(Object.values(qx.tickets ?? {}), qx.promotion?.since ?? null);
   if (!held.length) return;
   const pr = qx.promotion?.pr;
