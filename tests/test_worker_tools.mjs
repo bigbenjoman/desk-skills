@@ -3,7 +3,7 @@
 // The worker's --tools list matches what the worker contract and the skills it loads name, in both
 // directions; spawn-worker.sh passes it to the worker and its preflight, and passes nothing with the
 // off switch set. A stub claude on PATH records each call's argv. Scratch HOME and repo only.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync, cpSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -82,6 +82,8 @@ t('worker-tools.mjs <unknown> exits 2', cli('bogus').status, 2);
 // Dry-run spawns through a stub claude.
 const T = mkdtempSync(join(tmpdir(), 'desk-tools-'));
 for (const d of ['home', 'state', 'stub', 'repo']) mkdirSync(join(T, d), { recursive: true });
+// spawn-worker.sh builds the --agents file from the user-level agents and refuses a spawn without them.
+cpSync(join(root, 'agents'), join(T, 'home', '.claude', 'agents'), { recursive: true });
 const git = (...a) => spawnSync('git', ['-C', join(T, 'repo'), ...a], { env: { ...process.env, HOME: join(T, 'home'), GIT_CONFIG_NOSYSTEM: '1' } });
 git('init', '-q', '-b', 'main'); git('-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
 writeFileSync(join(T, 'config.md'), `## 0. Repo

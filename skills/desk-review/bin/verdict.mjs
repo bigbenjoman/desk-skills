@@ -20,7 +20,8 @@
 //                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
 //
 // A seat whose named agent was not available, and whose brief a general-purpose agent ran instead,
-// is "fallback": true; the method marker counts them. A seat routed to general-purpose by design
+// is "fallback": true; so is a named seat (NAMED_SEATS) whose "agent" is general-purpose, flag or
+// not. The heading and the method marker count them. A seat routed to general-purpose by design
 // (simplicity, domain) is not a fallback, so naming that agent alone never counts.
 //
 // From round 2 the finders read only the fix range, the commits since the previous round, so the
@@ -50,6 +51,10 @@ const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
 const VENDORS = ['claude', 'codex']
+
+// The seats that have a named agent. One that ran as general-purpose is a fallback even without the
+// flag, and the heading names it, so a fleet that became one model checking itself never reads as a full run.
+const NAMED_SEATS = ['correctness', 'security', 'api', 'tests', 'infra', 'frontend', 'requirements']
 
 export class VerdictError extends Error {}
 const no = (m) => { throw new VerdictError(m) }
@@ -151,7 +156,9 @@ export function tally(r) {
   }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
   n.partial += died.length
-  const fallback = [...seats.values()].filter((s) => s.fallback === true).map((s) => s.role)
+  const fallback = [...seats.values()]
+    .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
+    .map((s) => s.role)
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
