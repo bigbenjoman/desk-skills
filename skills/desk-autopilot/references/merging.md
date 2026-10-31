@@ -70,6 +70,13 @@ and its briefing says the other is not the worker's to fix. desk-q shows each ti
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 
+Out of draft, a check §4 Check builds names is a person's too, with its command, and so is one that
+is, or failed at a step that is, a §4 Pre-merge steps item, with that step. A stuck reason names
+each check a worker could not fix with the step its run failed at (`Lint (failed step: Run eslint)`),
+and `stuck` keeps the checks by name: desk-q and desk-needs-you drop any that has since gone green on
+the PR, and stop showing the PR as stuck once none is left. A needs-you item whose blocker is a step
+outside GitHub recommends nothing: it names the step.
+
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
 `yes`, the rows a batch base's conflict reads too (`feature-branch.md`). Otherwise it goes under

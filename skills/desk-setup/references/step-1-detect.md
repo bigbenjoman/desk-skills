@@ -163,6 +163,12 @@ How to turn what you find into rows:
   autopilot pass runs the command once per head on this computer, in the ticket's worktree, for a
   draft whose only red checks it names, then re-runs them, and that it needs whatever that command
   needs in the supervisor's environment (a Docker context, cloud credentials).
+- **Pre-merge steps.** Search the repo instructions and the workflows for a step a person must take
+  before a PR can go green, that a check or a step in one tests ("apply the migration to staging
+  before merging": a schema check run against the real staging database). Propose each for §4
+  Pre-merge steps as `` `<check or step>: <the step>` ``, named exactly as the run shows it; the user
+  confirms each, and `none` is the default. Say that autopilot never sends a PR red on one of these
+  to a fix worker: it is put to the user as stuck, naming the step.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;

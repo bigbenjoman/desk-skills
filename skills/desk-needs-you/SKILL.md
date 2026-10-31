@@ -48,7 +48,9 @@ comes back as a new `plan` item naming why), `triage`
 (open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
-switch). Action 1 is always the recommendation.
+switch). Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
+outside GitHub (a build, a staging migration) has none: its need names the step, and it leaves the
+list once its check is green.
 
 ## 2. Ask, four at a time
 
@@ -57,7 +59,7 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - **header**: the ticket key.
 - **question**: `<repo> <TICKET>: <what is needed>`, in one line.
 - **options**: the recommendation first, labelled `(Recommended)` with its reason as the
-  description, then the other actions. You get four options at most, and the free-text "Other"
+  description, then the other actions. With no recommendation, none is labelled. You get four options at most, and the free-text "Other"
   is always added.
 - For `resume`, `answer` and `reject`, the answer text is what gets recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
