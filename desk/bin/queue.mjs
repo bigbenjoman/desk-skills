@@ -7,18 +7,18 @@
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, HOME as E_HOME } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, HOME as E_HOME } from './desk-env.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
-import { belongsElsewhere, useTicketBatch } from './batches.mjs';
+import { belongsElsewhere, useTicketBatch, listBatches, finished } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -40,7 +40,7 @@ function setBase(q, v) {
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -66,21 +66,22 @@ function load() {
 // A command that changes the queue holds this lock from its read to its save: two read-change-writes
 // that overlap would otherwise each save their own copy, and the first one's change is lost with no
 // error. A directory, because creating one is atomic, with the holder's pid inside. Reads take no
-// lock: save() renames atomically, so a reader always sees one whole version.
+// lock: save() renames atomically, so a reader always sees one whole version. transfer also holds the
+// other batch's queue lock, taken the same way; save() releases every lock held.
 const LOCK = `${QUEUE}.lock`;
 // The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
 // number of milliseconds there is ignored rather than turning the wait into forever or nothing.
 const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
-let locked = false;
+const held = [];
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 // A holder that has exited never lets go. One with no pid yet is between its mkdir and its write,
 // unless it has sat that way for a minute (with-lock.sh's rule).
-function stale() {
-  const pid = lockPid(LOCK);
-  try { return pid ? !alive(pid) : Date.now() - statSync(LOCK).mtimeMs > 60_000; } catch { return false; } // already gone
+function stale(dir) {
+  const pid = lockPid(dir);
+  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > 60_000; } catch { return false; } // already gone
 }
 
 // Clear a stale lock. Writers that all saw the same stale lock must not each remove "the lock", or a
@@ -88,51 +89,55 @@ function stale() {
 // looks again under it: only a clearer can remove the queue lock while it exists, so a lock still
 // stale under the clearing lock is the one that was seen. A clearing lock older than 5 seconds is a
 // clearer that died mid-clear (clearing takes microseconds), and is removed for the next attempt.
-function clearStale() {
-  const clearing = `${LOCK}.clearing`;
+function clearStale(dir) {
+  const clearing = `${dir}.clearing`;
   try { mkdirSync(clearing); } catch (e) {
     if (e.code !== 'EEXIST') throw e;
     try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
     return false;
   }
-  try { if (stale()) rmSync(LOCK, { recursive: true, force: true }); }
+  try { if (stale(dir)) rmSync(dir, { recursive: true, force: true }); }
   finally { rmSync(clearing, { recursive: true, force: true }); }
   return true;
 }
 
-function lock() {
-  mkdirSync(dirname(QUEUE), { recursive: true });
+function lock(dir = LOCK) {
+  mkdirSync(dirname(dir), { recursive: true });
   const until = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
-      mkdirSync(LOCK);
-      writeFileSync(join(LOCK, 'pid'), `${process.pid}\n`);
-      locked = true;
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'pid'), `${process.pid}\n`);
+      held.push(dir);
       return;
     } catch (e) { if (e.code !== 'EEXIST') throw e; }
-    if (stale() && clearStale()) continue; // another writer clearing it: wait like any other holder
-    const pid = lockPid(LOCK);
+    if (stale(dir) && clearStale(dir)) continue; // another writer clearing it: wait like any other holder
+    const pid = lockPid(dir);
     if (Date.now() >= until) {
-      throw new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${LOCK})`);
+      throw new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`);
     }
     sleep(50);
   }
 }
 
 function unlock() {
-  if (!locked) return;
-  locked = false;
-  if (lockPid(LOCK) === process.pid) rmSync(LOCK, { recursive: true, force: true });
+  while (held.length) {
+    const dir = held.pop();
+    if (lockPid(dir) === process.pid) rmSync(dir, { recursive: true, force: true });
+  }
 }
 process.on('exit', unlock);
 
 // Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
 // reject's briefing write, never keeps another writer waiting.
-function save(q) {
-  mkdirSync(dirname(QUEUE), { recursive: true });
-  const tmp = `${QUEUE}.tmp.${process.pid}`;
+function writeQueue(file, q) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp.${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(q, null, 2)}\n`);
-  renameSync(tmp, QUEUE); // atomic within the same filesystem
+  renameSync(tmp, file); // atomic within the same filesystem
+}
+function save(q) {
+  writeQueue(QUEUE, q);
   unlock();
 }
 
@@ -268,9 +273,140 @@ function requeue(q, key) {
   return `${key} requeued: ${placed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
+// What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
+// while that is parked on its drafted plan (epic-plan.mjs), and its spine until that is done.
+const spineHolds = (q, key) => [
+  ...(q.batch && q.batch !== key && planPark(q.tickets[q.batch]) ? [q.batch] : []),
+  ...(q.feature === true && q.spine && q.spine !== key && q.tickets[q.spine] && q.tickets[q.spine].state !== 'done' ? [q.spine] : []),
+];
+
+// Put triaged ticket `key` into queue `q` from its triage record `r`, the way plan-batch seeds one, and
+// say how it stands. `state` holds the triage records of q's tickets. `holds` (its blockers in q) gains
+// q's spine and plan holds when `holdSpine` is set, and every unfinished ticket it collides with when
+// `holdCollisions` is.
+function admitInto(q, key, r, { state, by = null, holds = [], holdSpine = false, holdCollisions = false }) {
+  if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
+  const size = String(r.size ?? '').toUpperCase();
+  const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
+  const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
+  // The collision check plan-batch makes, against every ticket still to finish: two tickets that
+  // touch one file never run at once.
+  const mine = new Set(r.files_in_scope ?? []);
+  const collides = [];
+  for (const [k, other] of Object.entries(q.tickets)) {
+    if (['done', 'failed'].includes(other.state)) continue;
+    if (!existsSync(join(state, 'triage', `${k}.json`))) continue;
+    const files = readTriage(state, k).files_in_scope ?? [];
+    if (files.some((f) => mine.has(f))) {
+      collides.push(k);
+      other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
+    }
+  }
+  if (holdCollisions) for (const k of collides) if (!holds.includes(k)) holds.push(k);
+  // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
+  // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
+  // ones once the design is snapshotted.
+  const designOnly = park != null && park === designPark(r);
+  if (park && holds.length && !designOnly) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
+  q.tickets[key] = {
+    key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
+    worktree: null, branch: r.branch ?? null, database: null, port: null,
+    session_id: null, pid: null, base_sha: null, stage: null,
+    park: park ? { question: park, since: new Date().toISOString() } : holds.length ? heldPark(holds) : null, log: null, result: null,
+    collides_with: collides.join('|') || null, open_questions: unknowns, held_by: holds.join('|') || null,
+    ...(by ? { admitted_by: by } : {}),
+    added_at: new Date().toISOString(),
+  };
+  return designOnly && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`;
+}
+
+const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
+const baseOf = (bq) => bq.base ?? configValue('default-branch') ?? 'main';
+// The repo's batches other than this one that are running (listed, readable and not finished).
+function otherRunning() {
+  return listBatches(repoSlug()).filter((b) => resolve(b.queue) !== resolve(QUEUE) && existsSync(b.queue)).flatMap((b) => {
+    try { const bq = readQueue(b.queue); return finished(bq) ? [] : [{ ...b, base: baseOf(bq) }]; } catch { return []; }
+  });
+}
+
+// The worktree a worker of `key` was given, cut from `cut`: removed with its local branch when it holds
+// no work of its own, so the next worker's is cut from its new base. -> the path removed, or null when
+// there is none. Throws, removing nothing, when it holds work.
+function dropStaleWorktree(key, cut) {
+  const wt = join(worktreesDir(), key);
+  if (!existsSync(wt)) return null;
+  const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const holds = [];
+  let branch = 'HEAD';
+  try {
+    const dirty = git('status', '--porcelain');
+    if (dirty) holds.push('uncommitted changes or untracked files');
+    branch = git('rev-parse', '--abbrev-ref', 'HEAD');
+    const own = Number(git('rev-list', '--count', `origin/${cut}..HEAD`));
+    if (own > 0) holds.push(`${own} commit(s) not on origin/${cut}`);
+    if (branch !== 'HEAD') {
+      try { git('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
+    }
+  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
+  if (holds.length) throw new Error(`${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
+  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
+  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
+  return wt;
+}
+
+// Move `key` from this queue `q` (whose lock is held) to the running batch `to` (`standing` for the
+// standing batch), under that batch's queue lock too. It joins from this batch's triage record, held
+// behind its blockers there and the unfinished tickets it collides with, and its next worker is cut
+// from that batch's base.
+function transfer(q, key, to) {
+  const t = ticket(q, key);
+  if (t.state === 'running') throw new Error(`${key} is running: stop its worker first. Nothing was moved`);
+  if (t.result?.pr != null && t.pr_status?.state !== 'CLOSED') throw new Error(`${key} has PR #${t.result.pr} against this batch's base: close it first. Nothing was moved`);
+  const behind = Object.values(q.tickets).filter((o) => o.key !== key && String(o.held_by ?? '').split('|').includes(key)).map((o) => o.key);
+  if (behind.length) throw new Error(`${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind ${key} in this batch: release ${behind.length === 1 ? 'it' : 'them'} first. Nothing was moved`);
+  const name = /^standing$/i.test(to) ? null : to;
+  if (name != null && (!SAFE_ID.test(name) || name.includes('..'))) throw new Error(`"${to}" is not a batch name. Nothing was moved`);
+  const running = otherRunning();
+  const dest = running.find((b) => b.name === name);
+  if (!dest) {
+    const here = listBatches(repoSlug()).some((b) => b.name === name && resolve(b.queue) === resolve(QUEUE));
+    throw new Error(here ? `${key} is already in ${batchWord({ name })}. Nothing was moved`
+      : `${name ? `batch ${name}` : 'the standing batch'} is not running: ${running.length ? `the batches running are ${running.map((b) => `${batchWord(b)} (on ${b.base})`).join(', ')}` : 'no other batch is running'}. Nothing was moved`);
+  }
+  const recFile = join(stateDir(), 'triage', `${key}.json`);
+  if (!existsSync(recFile)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first. Nothing was moved`);
+  const r = readTriage(stateDir(), key);
+  const epic = r.epic?.key;
+  if (epic && epic !== name && running.some((b) => b.name === epic)) throw new Error(`${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another. Nothing was moved`);
+  lock(`${dest.queue}.lock`);
+  const tq = readQueue(dest.queue);
+  if (finished(tq)) throw new Error(`${batchWord(dest)} finished meanwhile. Nothing was moved`);
+  if (tq.tickets?.[key]) throw new Error(`${key} is already in ${batchWord(dest)} (${tq.tickets[key].state}). Nothing was moved`);
+  tq.tickets ??= {};
+  // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
+  const holds = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
+  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, holdSpine: true, holdCollisions: true });
+  const removed = dropStaleWorktree(key, baseOf(q));
+  // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
+  mkdirSync(join(dest.state, 'triage'), { recursive: true });
+  copyFileSync(recFile, join(dest.state, 'triage', `${key}.json`));
+  const from = listBatches(repoSlug()).find((b) => resolve(b.queue) === resolve(QUEUE)) ?? { name: q.batch };
+  tq.tickets[key].moved_from = { batch: from.name ?? null, base: baseOf(q), at: new Date().toISOString() };
+  // In both queues for an instant rather than in neither: a crash between the writes leaves it in two,
+  // which batchHolding refuses naming both.
+  writeQueue(dest.queue, tq);
+  delete q.tickets[key];
+  for (const o of Object.values(q.tickets)) {
+    const left = String(o.collides_with ?? '').split('|').filter((k) => k && k !== key);
+    if (o.collides_with) o.collides_with = left.join('|') || null;
+  }
+  save(q);
+  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
+}
+
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (WRITES.includes(cmd)) lock();
@@ -385,10 +521,11 @@ switch (cmd) {
     // --by names who admitted it, where that is not the orchestrator: `intake` for standing intake.
     // --hold holds it behind blockers in this batch in the same write, so no pass sees it runnable first.
     // --hold-collisions holds it behind every unfinished ticket it collides with too, so it waits for
-    // their PRs to merge rather than only for them to stop running.
+    // their PRs to merge rather than only for them to stop running. --hold-spine holds it behind this
+    // feature batch's spine until done, and its epic while that waits on its plan.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-collisions]   (after triage.sh <TICKET>)');
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
     const holds = args.includes('--hold') ? String(args[args.indexOf('--hold') + 1] ?? '').split(/[,|]/).filter(Boolean) : [];
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
     for (const p of holds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
@@ -398,41 +535,26 @@ switch (cmd) {
     const r = readTriage(stateDir(), key);
     const elsewhere = belongsElsewhere(key, r, QUEUE);
     if (elsewhere) throw new Error(elsewhere.why);
-    const size = String(r.size ?? '').toUpperCase();
-    const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
-    const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
-    // The collision check plan-batch makes, against every ticket still to finish: two tickets that
-    // touch one file never run at once.
-    const mine = new Set(r.files_in_scope ?? []);
-    const collides = [];
-    for (const [k, other] of Object.entries(q.tickets)) {
-      if (['done', 'failed'].includes(other.state)) continue;
-      const op = join(stateDir(), 'triage', `${k}.json`);
-      if (!existsSync(op)) continue;
-      const files = readTriage(stateDir(), k).files_in_scope ?? [];
-      if (files.some((f) => mine.has(f))) {
-        collides.push(k);
-        other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
-      }
-    }
-    if (args.includes('--hold-collisions')) for (const k of collides) if (!holds.includes(k)) holds.push(k);
-    // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
-    // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
-    // ones once the design is snapshotted.
-    const designOnly = park != null && park === designPark(r);
-    if (park && holds.length && !designOnly) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
-    q.tickets[key] = {
-      key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
-      worktree: null, branch: r.branch ?? null, database: null, port: null,
-      session_id: null, pid: null, base_sha: null, stage: null,
-      park: park ? { question: park, since: new Date().toISOString() } : holds.length ? heldPark(holds) : null, log: null, result: null,
-      collides_with: collides.join('|') || null, open_questions: unknowns, held_by: holds.join('|') || null,
-      ...(by ? { admitted_by: by } : {}),
-      added_at: new Date().toISOString(),
-    };
+    const asked = holds.length;
+    const said = admitInto(q, key, r, { state: stateDir(), by, holds, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
     save(q);
-    const said = designOnly && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`;
-    console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !holds.length ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !asked ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    break;
+  }
+
+  // Move one ticket from this batch to another running batch in the repo (one admitted to the wrong
+  // base), holding both queue locks: out of this queue, and into that one from its triage record.
+  case 'transfer': {
+    const [key, to] = args;
+    if (!key || !to) throw new Error('usage: queue.mjs transfer <TICKET> <batch | standing>');
+    console.log(transfer(q, key, to));
+    break;
+  }
+
+  // The batches a ticket here could be moved into, as transfer judges them: JSON [{name, base}], the
+  // standing batch's name null.
+  case 'running': {
+    console.log(JSON.stringify(otherRunning().map((b) => ({ name: b.name ?? null, base: b.base }))));
     break;
   }
 
@@ -717,7 +839,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|approve|reject|front|move|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

@@ -69,6 +69,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
   moves it. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
   `record` posts on the PR and sends to a worker on it.
 - An `override <id>` action takes the user's choice as its text.
+- A `move` takes the batch's name (`standing` for the standing batch). An answer to move the
+  ticket to another batch is a `move`, never a `resume`.
 
 Ask the next round only after recording this one.
 
