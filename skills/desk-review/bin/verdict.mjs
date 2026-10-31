@@ -20,7 +20,8 @@
 //                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
 //
 // A seat whose named agent was not available, and whose brief a general-purpose agent ran instead,
-// is "fallback": true (or names "agent": "general-purpose"); the method marker counts them.
+// is "fallback": true; the method marker counts them. A seat routed to general-purpose by design
+// (simplicity, domain) is not a fallback, so naming that agent alone never counts.
 //
 // From round 2 the finders read only the fix range, the commits since the previous round, so the
 // results carry "since": the full SHA that round reviewed. Only then may a P2 be "carried": true,
@@ -150,7 +151,7 @@ export function tally(r) {
   }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
   n.partial += died.length
-  const fallback = [...seats.values()].filter((s) => s.fallback || s.agent === 'general-purpose').map((s) => s.role)
+  const fallback = [...seats.values()].filter((s) => s.fallback === true).map((s) => s.role)
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }

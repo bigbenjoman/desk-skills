@@ -91,7 +91,7 @@ t('the old copy reads the round-3 heading without a mismatch', oldGate.headingMi
 
 // The method line, after the heading, as verdict.mjs prints it with fallback seats: every gate copy
 // reads the same verdict, the same blocking counts and the same heading as before it existed.
-const fellBack = [{ role: 'correctness', vendor: 'claude', status: 'ran', agent: 'general-purpose' }, { role: 'requirements', vendor: 'claude', status: 'ran', fallback: true }, seats[1]];
+const fellBack = [{ role: 'correctness', vendor: 'claude', status: 'ran', agent: 'general-purpose', fallback: true }, { role: 'requirements', vendor: 'claude', status: 'ran', fallback: true }, seats[1]];
 const METHOD_CASES = [
   ['round 1, clean, two fallback seats', render({ sha: HEAD, round: 1, gaps: 0, skipped_files: 0, seats: fellBack, findings: [] }), true],
   ['round 1, an open P1, two fallback seats', render({ sha: HEAD, round: 1, gaps: 0, skipped_files: 0, seats: fellBack, findings: [fnd({ severity: 'P1', carried: false })] }), false],

@@ -154,8 +154,10 @@ t('DS-368 AC3 round 2 with a P0 is not clean', reads(r2([f({ severity: 'P0' })])
 t('DS-368 an uncarried P2 on round 2 still blocks', reads(r2([f({ severity: 'P2' })])), false)
 
 // ---- the seats a general-purpose agent stood in for
-const gp = (role) => ({ ...seat(role), agent: 'general-purpose' })
-const fellBack = base({ seats: [{ ...seat('correctness'), agent: 'lena-code-reviewer', fallback: true }, gp('requirements'), seat('codex', 'codex')] })
+const gp = (role, o = {}) => ({ ...seat(role), agent: 'general-purpose', ...o })
+const fellBack = base({ seats: [{ ...seat('correctness'), agent: 'lena-code-reviewer', fallback: true }, gp('requirements', { fallback: true }), gp('simplicity'), seat('codex', 'codex')] })
+const byDesign = base({ seats: [seat('correctness'), gp('simplicity'), gp('domain'), seat('codex', 'codex')] })
+t('fallback: a seat general-purpose by design is not one', render(byDesign).split('\n')[3], '<!-- desk-review:method v=1 fallback=0 -->')
 t('fallback: the method line counts every fallback seat', render(fellBack).split('\n')[3], '<!-- desk-review:method v=1 fallback=2 -->')
 t('fallback: none is 0, never left out', render(base()).split('\n')[3], '<!-- desk-review:method v=1 fallback=0 -->')
 t('fallback: the verdict line is unchanged', marker(fellBack), marker(base()))

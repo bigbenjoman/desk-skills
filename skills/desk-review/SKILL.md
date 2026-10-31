@@ -226,7 +226,8 @@ results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker
 
 - `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
   A seat whose named agent did not resolve, so a general-purpose agent ran its brief, is
-  `"fallback": true` (or names `"agent": "general-purpose"`).
+  `"fallback": true`. The simplicity and domain seats run general-purpose by design, so they are
+  never a fallback for that alone.
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a

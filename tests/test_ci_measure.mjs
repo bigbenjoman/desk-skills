@@ -343,7 +343,9 @@ t('report: fallback PRs counted and listed', rep[5], 'review: 1 of 3 PRs reviewe
 t('report: a review from before the method line is unknown, not zero', rep[6], 'review: fallback seats unknown on 1, reviewed before the method line: #2');
 t('report: a PR with no verdict is named', rep[7], 'review: no desk-review verdict on 1: #3');
 t('report: review summary line', rep[8], 'review summary: prs=3 same_vendor=1 fallback=1 unknown=1 no_verdict=1');
-t('report: none of a kind is 0, and nothing listed', reviewMethod([4], new Map([[4, [{ body: verdictBody('codex-cross', 0) }]]])).sameVendor.length, 0);
+const clean4 = reviewMethod([4], new Map([[4, [{ body: verdictBody('codex-cross', 0) }]]]));
+t('report: none of a kind is 0, and nothing listed', JSON.stringify(clean4), JSON.stringify({ sameVendor: [], fallback: [], unrecorded: [], none: [] }));
+t('report: a batch with none says 0 and lists nothing', batchReport({ ...br, prs: 1, review: clean4 }, compareRed(br, null), null, null).split('\n').find((l) => l.includes('with a fallback seat')), 'review: 0 of 1 PRs reviewed with a fallback seat');
 t('report: no baseline says how to get one', batchReport(br, compareRed(br, null), null, null).split('\n')[1], 'baseline: none — run `desk-ci.mjs measure` to record one');
 t('queuePrs: finished tickets\' PRs, once each, in order', queuePrs({ tickets: { A: { result: { pr: 12 } }, B: { result: { pr: '9' } }, C: { state: 'running' }, D: { result: { pr: 12 } } } }).join(','), '9,12');
 const hand = mkdtempSync(join(tmpdir(), 'desk-batch-red-'));
