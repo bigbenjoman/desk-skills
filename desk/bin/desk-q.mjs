@@ -227,26 +227,27 @@ const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 // (checks running, green where something merges it, a draft the pass is undrafting, a red check or a
 // conflict the merge driver and the fix tries take on), `needs` when nothing moves until they act.
 // `segs` is WHAT IT NEEDS after the PR number: the reason, then the command. With `now` null, an
-// unfinished check's age is left out.
+// unfinished check's age is left out. A `needs` also carries `why`, the reason as a code with what it
+// names, which needs-you words for the person (prWhy).
 function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
-  const needs = (...segs) => ({ k: 'needs', segs }), merging = (...segs) => ({ k: 'merging', segs });
-  if (ps.state === 'CLOSED') return needs(['closed unmerged: requeue or drop it', null]);
+  const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
+  if (ps.state === 'CLOSED') return needs({ code: 'closed' }, ['closed unmerged: requeue or drop it', null]);
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
-  if (stuck) return needs([stuck.why, null]);
+  if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
   if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
   // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
   // <glob>, …`) and leaves it for a person to merge, so the item says the hold's reason.
   const hold = /^merge hold: (.+?)(?: — .*)?$/.exec(String(t.merge_blocked ?? ''));
-  if (hold) return needs([`only a person merges it: ${hold[1]}`, WARN], [' · merge it', null]);
+  if (hold) return needs({ code: 'hold', text: String(t.merge_blocked).replace(/^merge hold:\s*/, '') }, [`only a person merges it: ${hold[1]}`, WARN], [' · merge it', null]);
   // It records a green PR it has held for unresolved review threads on two loops, naming the first.
   const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
-  if (fb) return needs([fb[1], WARN], [' · resolve or answer it', null]);
+  if (fb) return needs({ code: 'feedback', text: fb[1] }, [fb[1], WARN], [' · resolve or answer it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
-    if (!triesLeft) return needs([`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
+    if (!triesLeft) return needs({ code: 'conflict', base: ctx.base }, [`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
     return merging([`merge conflict with ${ctx.base}`, FAIL], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
   }
   const checks = ps.checks ?? [];
@@ -257,21 +258,21 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
     // Only the merge driver reruns a red check, where §3 ci-rerun lets it, and a fix try waits for its
     // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
     // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
-    if (!ctx.merges || !ctx.reruns) return needs([checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
+    if (!ctx.merges || !ctx.reruns) return needs({ code: 'red', names: red }, [checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
     return merging([red.length > 2 ? `${checksFailed(red.length)}: ${red[0]} +${red.length - 1}` : `${red.join(', ')} failed`, FAIL], [` · ${rerunStep(ps, red, triesLeft, now)}`, null]);
   }
   // Not red and nothing running, yet not green: a required check that never reported or was skipped.
   // Nothing reruns or repairs that, so the merge driver never merges it.
-  if (checks.length && (gate.state === 'absent' || gate.state === 'fail')) return needs([gate.reasons[0] ?? 'checks not green', FAIL], [' · fix the check or §4 Required checks', null]);
+  if (checks.length && (gate.state === 'absent' || gate.state === 'fail')) return needs({ code: 'gate', text: gate.reasons[0] ?? null }, [gate.reasons[0] ?? 'checks not green', FAIL], [' · fix the check or §4 Required checks', null]);
   const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;
   if (checks.length && done === checks.length) {
     const all = advisory ? [`${checksFailed(advisory)}, advisory only`, WARN]
       : [checks.length === 1 ? '1 check passed' : `all ${checks.length} checks passed`, GOOD];
-    return ctx.merges ? merging(all, [' · merges at the next pass', null]) : needs(all, [' · merge it', null]);
+    return ctx.merges ? merging(all, [' · merges at the next pass', null]) : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
-  return ctx.merges ? merging(...progress) : needs(...progress, [' · merge it once green', null]);
+  return ctx.merges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
 }
 
 // Where the merge driver is with a red PR's reruns, from what the pass read of its files (pr_status
@@ -299,17 +300,17 @@ function runningCheck(checks, now) {
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
 function draftNeed(q, t, needs, merging) {
   const u = t.undraft;
-  if (heldDraft(t)) return needs(['held by you in draft', null], [' · undraft it to release it', null]);
+  if (heldDraft(t)) return needs({ code: 'held' }, ['held by you in draft', null], [' · undraft it to release it', null]);
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
   if (u?.call === 'wait') return merging(['draft', null], [` · ${/^checks/.test(u.why ?? '') ? 'checks running' : 'GitHub is still checking for conflicts'}, out of draft once green`, null]);
   if (u?.call === 'ready' || u?.call === 'failed') return merging(['draft', null], [' · out of draft at the next pass', null]);
-  if (t.key === q?.spine) return needs(['draft', null], [' · feature spine: approve its specs', null]);
+  if (t.key === q?.spine) return needs({ code: 'spine' }, ['draft', null], [' · feature spine: approve its specs', null]);
   // A pass from before skippedOnly recorded skipped checks as not green: its checks say otherwise.
-  if (u?.call === 'person' && /^its checks are not green/.test(u.why ?? '') && skippedOnly(prStatusOf(t)?.checks)) return needs(['draft', null], [` · ${SKIPPED_ON_DRAFT}: undraft #${t.result.pr}`, null]);
-  return needs(['draft', null], [` · ${draftWhy(u)}`, null]);
+  if (u?.call === 'person' && /^its checks are not green/.test(u.why ?? '') && skippedOnly(prStatusOf(t)?.checks)) return needs({ code: 'skipped' }, ['draft', null], [` · ${SKIPPED_ON_DRAFT}: undraft #${t.result.pr}`, null]);
+  return needs({ code: 'draft', undraft: u ?? null }, ['draft', null], [` · ${draftWhy(u)}`, null]);
 }
 
 // Why the pass left a PR in draft, short enough for a row, then what to do.
@@ -1908,6 +1909,8 @@ function needSegs(r, x, now = Date.now()) {
 }
 const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
+// Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
+export const prWhy = (r, t) => (prRow(t) ? prNeed(r.q, t, r.ctx, null).why ?? null : null);
 // An interactive session's claim on a parked ticket (queue.mjs park --claimed-by). Once a pass finds
 // uncommitted work behind it, the park's question says what to do, so the claim is no longer the news.
 const claimOf = (t) => (t.state === 'parked' && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
