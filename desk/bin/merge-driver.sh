@@ -23,7 +23,9 @@
 # Per loop, every ready (non-draft) batch PR is considered in turn, and the first that is mergeable
 # is merged; one merge per loop, because a merge moves the default branch under every other PR. A
 # PR that cannot merge is skipped with its reason logged and never blocks the others:
-#   - touches a §4 Merge holds path          held for a person, with the hold's reason
+#   - touches a §4 Merge holds path          held for a person, with the hold's reason, when its base
+#                                            is §0 Default branch; into any other base it merges, and
+#                                            the hold falls on that base's own PR
 #   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
 #                                            unless §3 merge-feedback-first is explicitly `no`
 #                                            (unset, ask and yes are all the strict default). A
@@ -473,14 +475,17 @@ close_merged(){
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds fb decision unresolved held settled tid text green_at out waived label grant
+  local n="$1" key="$2" g sha ms state holds carried="" fb decision unresolved held settled tid text green_at out waived label grant
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
 
-  holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.glob) (\(.why); \(.count) file(s), e.g. \(.files[0] // "?"))"')
-  if [ -n "$holds" ]; then
+  holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
+  if [ -n "$holds" ] && [ "$(printf '%s' "$g" | jq -r .holdsApply)" = false ]; then
+    carried=$(printf '%s' "$holds" | paste -sd ';' -)
+    log "#$n touches §4 Merge holds ($carried), but its base $BASE_BRANCH is not $(printf '%s' "$g" | jq -r .defaultBranch), so merging it deploys nothing; once it merges, the hold is the pass's to report on $BASE_BRANCH's own PR"
+  elif [ -n "$holds" ]; then
     [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
     log "#$n HELD by §4 Merge holds — a person merges it: $(printf '%s' "$holds" | paste -sd ';' -)"
     queue_note "$key" "merge hold: $(printf '%s' "$holds" | head -1)"
@@ -544,6 +549,11 @@ EOF_RESOLVE
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
+    # A hold it merged past goes with the ticket to the base's own PR into the default branch (pass.mjs).
+    if [ -n "$carried" ]; then
+      if node "$Q" set "$key" "promotion_hold=$carried" >/dev/null 2>&1; then log "#$n §4 Merge holds recorded for $BASE_BRANCH's own PR: $carried"
+      else log "#$n §4 Merge holds NOT recorded for $BASE_BRANCH's own PR — a person merges that PR only after: $carried"; fi
+    fi
     # A merge only the batch's approval allowed is noted, as an undraft under it is.
     if [ "${grant%%"$TAB"*}" = batch ]; then
       [ -f "$DESK_STATE/batch-notes.md" ] || printf '# Batch notes\n\n' > "$DESK_STATE/batch-notes.md"

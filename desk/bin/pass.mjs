@@ -33,8 +33,8 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment, verdictCarries, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ } from './gate.mjs';
+import { undraftCall, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
@@ -1893,7 +1893,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'rereview' ? ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})` : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
@@ -2129,8 +2129,11 @@ if (drafts.length) {
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
     // A verdict for an older head holds at this one when only clean merges of the base came since.
-    const carry = (sha) => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok &&
-      verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git: (args) => shOut('git', ['-C', MAIN, ...args]) });
+    const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
+    const git = (args) => shOut('git', ['-C', MAIN, ...args]);
+    const carry = (sha) => fetched() && verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
+    // A head a merge from the base last moved, since the last try's, gets its own review try, outside the fix tries.
+    const baseMerge = (from) => fetched() && movedByBase({ from, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
     const c = undraftCall(t, { number: n, head: v.headRefOid, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
@@ -2155,7 +2158,7 @@ if (drafts.length) {
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, ...clearsRows, builds: [] })
-        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why })
+        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) }) : null;
     // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on.
     if (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
@@ -2352,7 +2355,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   const f = c.fix;
-  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for try ${f.try} of ${f.of} on PR #${n} — ${f.what}`); return; }
+  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.extra ? 'an extra review try' : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
@@ -2361,8 +2364,8 @@ function applyFix(t, n, head, c) {
     report.waiting.push(`${t.key}: STUCK — PR #${n} ${f.what}, and its fix try could not be requeued (${rq.out.split('\n').pop()})`);
     return;
   }
-  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, at: PASS_AT }])}`, 'stuck=null');
-  out.push(`${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
+  out.push(`${f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
@@ -2604,6 +2607,20 @@ function updateLedger(qx) {
   q('set-batch', `promotion.ledger=${hash}`);
 }
 updateLedger(queue());
+
+// A §4 Merge hold holds the merge that deploys: a child into the base merged past it, so the base's own
+// merge into the default branch is the person's, after the hold's step. Said on every pass until the
+// promotion PR that carries it merges.
+function reportPromotionHolds(qx) {
+  if (!BASE || !SOURCE || BASE === SOURCE) return;
+  // The last promotion's merge is recorded without a next one to move `since` past it.
+  if (qx.promotion?.pr != null && (qx.promotion.merged ?? []).some((m) => m.pr === qx.promotion.pr)) return;
+  const held = promotionHolds(Object.values(qx.tickets ?? {}), qx.promotion?.since ?? null);
+  if (!held.length) return;
+  const pr = qx.promotion?.pr;
+  report.waiting.push(`${pr != null ? `promotion PR #${pr}` : `${BASE} into ${SOURCE}`}: only a person merges it, after the §4 Merge holds its children carry — ${held.join('; ')}`);
+}
+reportPromotionHolds(queue());
 
 // A taken call the person overrode from the digest (digest.mjs override) is listed once, on the next
 // pass, for the orchestrator to act on: the work may need redoing to the new choice.
