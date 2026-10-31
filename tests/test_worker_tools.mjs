@@ -1,8 +1,10 @@
-// suite: worker tools (each headless claude -p call is offered only the tools it uses)
+// suite: worker tools (each headless claude -p call is offered only the tools it uses, and a batch's workers share one system prompt)
 // covers: desk/bin/worker-tools.mjs desk/bin/spawn-worker.sh desk/bin/desk-env.sh agents/** skills/**/*.md
 // The worker's --tools list matches what the worker contract and the skills it loads name, in both
 // directions; spawn-worker.sh passes it to the worker and its preflight, and passes nothing with the
-// off switch set. A stub claude on PATH records each call's argv. Scratch HOME and repo only.
+// off switch set. Two tickets' workers send the same appended system prompt, drop the per-machine
+// sections, and carry their own briefing in the first message, at a later stage too, and never again
+// on a resume. A stub claude on PATH records each call's argv. Scratch HOME and repo only.
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync, cpSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -132,7 +134,7 @@ const env = (log, extra = {}) => {
     DESK_AUTOPILOT_STATE: join(T, 'state'), DESK_QUEUE: join(T, 'queue.json'), DESK_SKILLS_DIR: join(root, 'skills'),
     AUTOPILOT_PORT: '3999', AUTOPILOT_BRANCH: 'fix/fix-thing', STUB_LOG: join(T, log), ...extra };
 };
-const spawnWorker = (sid, log, extra) => spawnSync('bash', [join(root, 'desk/bin/spawn-worker.sh'), 'fix-thing', join(T, 'repo'), sid],
+const spawnWorker = (sid, log, extra, key = 'fix-thing', brief = []) => spawnSync('bash', [join(root, 'desk/bin/spawn-worker.sh'), key, join(T, 'repo'), sid, ...brief],
   { cwd: join(T, 'repo'), env: env(log, extra), encoding: 'utf8', timeout: 60000 });
 // The argv of call n, waiting a few seconds for a detached one.
 const argv = (log, n) => {
@@ -164,6 +166,48 @@ t('AC6 off switch: the worker still launches', !!a && a.includes('-p'), true);
 t('AC6 off switch: no --tools, so the default list', toolsOf(a), undefined);
 r = spawnWorker('preflight', 'preoff', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER_MODEL: 'opus', AUTOPILOT_DEFAULT_TOOLS: '1' });
 t('AC6 off switch: the preflight passes no --tools', [toolsOf(argv('preoff', 0)), toolsOf(argv('preoff', 1))], [undefined, undefined]);
+
+// A batch's ticket workers share one system prompt: dry-run spawns of two tickets, each with its own
+// briefing, compared by the system prompt and the first message each sends.
+const brief = (key) => {
+  const p = join(T, 'state', `${key}.brief.md`);
+  writeFileSync(p, `Orchestrator session name: batch-x\nAnswer file to wait on: ${join(T, 'state', 'answers', `${key}.txt`)}\n\n` +
+    `## Answer from the user\n\nFor ${key}: use makeFixture from tests/helpers.\n`);
+  return p;
+};
+const launch = (key, log, extra = {}) => {
+  const r2 = spawnWorker(SID, log, { AUTOPILOT_DRY_RUN: '1', ...extra }, key, [brief(key)]);
+  const a2 = argv(log, 0) ?? [];
+  const val = (flag) => (a2.includes(flag) ? a2[a2.indexOf(flag) + 1] : undefined);
+  return { status: r2.status, stderr: r2.stderr, argv: a2, prompt: val('-p') ?? '', system: val('--append-system-prompt') ?? '' };
+};
+const one = launch('fix-one', 'one');
+const two = launch('fix-two', 'two');
+t('briefing: both dry-run spawns launch a worker', [one.status, two.status, !!one.prompt, !!two.prompt], [0, 0, true, true]);
+if (one.status) console.log(one.stderr);
+
+t('briefing AC1 both workers carry the same appended system prompt', one.system === two.system && one.system.length > 0, true);
+t('briefing AC1 and it names neither ticket', [one.system, two.system].some((s) => /fix-one|fix-two/.test(s)), false);
+t('briefing AC2 each includes --exclude-dynamic-system-prompt-sections',
+  [one, two].map((w) => w.argv.includes('--exclude-dynamic-system-prompt-sections')), [true, true]);
+
+t('briefing AC3 the whole briefing is in the first message', one.prompt.includes(`# Briefing for this ticket\n\n${readFileSync(join(T, 'state', 'fix-one.brief.md'), 'utf8').trimEnd()}`), true);
+t('briefing AC3 its binding answer included', one.prompt.includes('For fix-one: use makeFixture'), true);
+t('briefing AC3 and each worker gets only its own', two.prompt.includes('For fix-two: use makeFixture') && !two.prompt.includes('fix-one'), true);
+t('briefing AC3 the system prompt holds no briefing', one.system.includes('Briefing for this ticket'), false);
+
+const later = launch('fix-one', 'later', { AUTOPILOT_START_STAGE: '4b' });
+t('briefing AC4 a later-stage worker starts at its stage', later.prompt.includes('This session starts at Stage 4b'), true);
+t('briefing AC4 and is pointed at the briefing in its first message', later.prompt.includes('the briefing below in this message is what it left for you'), true);
+t('briefing AC4 not at its system prompt', /briefing in your system prompt/.test(later.prompt), false);
+t('briefing AC4 which follows', later.prompt.includes('# Briefing for this ticket') && !later.system.includes('Briefing for this ticket'), true);
+t('briefing AC4 the same system prompt as a Stage 0 worker', later.system === one.system, true);
+
+const RESUME = 'Your previous run of this session was killed before it finished. Carry on.';
+const resumed = launch('fix-one', 'resumed', { AUTOPILOT_RESUME: RESUME });
+t('briefing AC5 a resumed worker resumes its session', resumed.argv.includes('--resume'), true);
+t('briefing AC5 and is not handed a second copy of the briefing', [resumed.prompt, resumed.system].some((s) => s.includes('Briefing for this ticket')), false);
+t('briefing AC5 its prompt is the resume text', resumed.prompt, RESUME);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

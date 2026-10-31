@@ -310,8 +310,9 @@ if [ -n "$CFG_DEFAULT" ] && [ "$CFG_DEFAULT" != "$CFG_ROW" ]; then
 This batch targets \`$CFG_DEFAULT\`, not config §0 Default branch (\`$CFG_ROW\`). Everywhere this contract or a skill says \`<default>\`, the default branch, or §0 Default branch, it means \`$CFG_DEFAULT\`: your worktree is based on \`origin/$CFG_DEFAULT\`, you rebase onto it, and your PR is \`gh pr create … --base $CFG_DEFAULT\`. \`desk-env get default-branch\` prints it. A PR opened against \`$CFG_ROW\` is the wrong PR: the merge driver will not see it."
 fi
 # Every ticket worker in a batch sends the same system prompt, so its cache is written once and read
-# by the rest: the briefing rides in the first user message. A resumed session already holds it there.
-# A task worker's system prompt differs anyway, so its briefing stays in it.
+# by the rest: the briefing rides in the first user message. A task worker's system prompt differs
+# anyway, so its briefing stays in it. A resumed session already holds its briefing either way: claude
+# reuses the system prompt it recorded on the first request, whatever a later launch passes.
 if [ -n "$BRIEFING" ] && [ -f "$BRIEFING" ] && [ -z "${AUTOPILOT_RESUME:-}" ]; then
   BRIEF_TEXT="
 
