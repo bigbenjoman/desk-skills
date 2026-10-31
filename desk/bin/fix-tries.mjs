@@ -293,14 +293,14 @@ export function conflictFix(t, { pr, head, base, files }) {
 // A draft whose body has `_drag <file>_` cells for screenshots nobody took (undraft.mjs `capture`) goes
 // to a capture worker, which takes them on the PR's branch for the pass to upload. One capture try per
 // PR, outside FIX_TRIES_MAX: cells still missing after it are the person's, with the screens and what
-// its worker said about them (its AUTOPILOT_DONE `said=`, kept whole by pass.mjs as result.said).
+// its worker said about them (its AUTOPILOT_DONE `said=`, kept whole by pass.mjs as result.done.said).
 // draft: { pr, head, files } (files: the cells' file names with no screenshot).
 export function captureTry(t, { pr, head, files }) {
   if (!files?.length) return null;
   const done = t.fix_tries ?? [];
   if (done.some((x) => x.kind === 'capture')) {
     const summary = String(t.result?.summary ?? '');
-    const last = t.fix?.kind === 'capture' && t.fix.finished ? String(t.result?.said || /\bsaid=(.*)$/.exec(summary)?.[1]?.trim() || summary) : '';
+    const last = t.fix?.kind === 'capture' && t.fix.finished ? String(t.result?.done?.said ||/\bsaid=(.*)$/.exec(summary)?.[1]?.trim() || summary) : '';
     const said = last ? `; the capture try said: ${last}` : '';
     return { call: 'stuck', why: `${files.length} screenshot(s) still not taken after a capture try: ${files.join(', ')}${said}` };
   }

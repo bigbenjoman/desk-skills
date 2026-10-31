@@ -1503,15 +1503,15 @@ check "DS-379 AC1 the capture worker's task is to take them and print AUTOPILOT_
   'grep -q "^S-1 .*Your task is the capture try on PR #761.*print AUTOPILOT_IMAGES" "$T/spawns" && grep -q "^- s-1-after.png$" "$T/state-s/briefings/S-1.md"'
 # Its worker took both: the next pass uploads them into the body (the stub swaps the cells) and undrafts it.
 mkdir -p "$T/state-s/images/S-1"; : > "$T/state-s/images/S-1/s-1-before.png"; : > "$T/state-s/images/S-1/s-1-after.png"
-said1='all taken, each at 1440 px wide, signed in as the seeded admin with the demo workspace selected, the onboarding banner dismissed and the side panel open, so the before and after frames line up row for row in the body'
+said1='[all taken] each at 1440 px wide, signed in as the seeded admin with the demo workspace selected, the onboarding banner dismissed and the side panel open, so the before and after frames line up row for row in the body'
 say "AUTOPILOT_IMAGES: $T/state-s/images/S-1/" "AUTOPILOT_DONE: pr=761 jira=Done said=$said1" > "$T/state-s/logs/S-1.log"
 q set S-1 state=running session_id=gone; dragbody 761 "Before | After
 <img alt=\"s-1-before\" src=\"https://github.com/user-attachments/assets/1\"> | <img alt=\"s-1-after\" src=\"https://github.com/user-attachments/assets/2\">"
 : > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-379 AC2 what the capture worker took is uploaded into the PR's body, and it leaves draft" \
   'grep -qx "761 $T/state-s/images/S-1/" "$T/uploads" && [ "$(field S-1 images_uploaded)" = true ] && grep -q "^pr ready 761" "$T/gh-calls"'
-check "DS-379 AC3 what a capture worker said is kept whole, past the summary's 200 characters" \
-  '[ "$(field S-1 result.said | jq -r .)" = "$said1" ] && [ "$(field S-1 result.summary | jq -r . | wc -c | tr -d " ")" -le 201 ]'
+check "DS-379 AC3 what a capture worker said is kept whole, past the summary's 200 characters, even opening with a bracket" \
+  '[ "$(field S-1 state)" = "\"done\"" ] && [ "$(field S-1 result.done.said | jq -r .)" = "$said1" ] &&[ "$(field S-1 result.summary | jq -r . | wc -c | tr -d " ")" -le 201 ]'
 
 # ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
 # worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's
