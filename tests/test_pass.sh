@@ -799,8 +799,17 @@ respawn R-5
 check "DS-156 AC2 a worktree on its branch with no resume file resumes too" 'spawned_for R-5 | grep -q "stage=6 " && brief R-5 | grep -qF "## Last round: this session resumes at Stage 6"'
 check "DS-339 with no resume file, the resumed round names the worker's in the state dir" 'brief R-5 | grep -qF "read your resume file $DESK_AUTOPILOT_STATE/resume/R-5.json where there is one"'
 q set R-5 state=done
+# R-2's round carries notes far over the cap, and an answer.
+cp "$T/state-h/batch-notes.md" "$T/notes.keep"
+node -e 'let s = "# Batch notes\n\n## MEMORY — mandatory\n\nHEADER-RULE cap the runner\n\n"; for (let i = 1; i <= 600; i++) s += `- [X-${i}] NOTE-${i} a helper a sibling found, padded to a realistic length\n`; process.stdout.write(s)' > "$T/state-h/batch-notes.md"
+node "$B/answer.mjs" R-2 "the badge is in scope" >/dev/null 2>&1
 respawn R-2
 check "DS-156 AC3 a round that parked before Stage 3 starts at Stage 0 with no last-round summary" 'spawned_for R-2 | grep -q "stage= " && [ "$(field R-2 stage)" = "\"0/9\"" ] && ! brief R-2 | grep -q "## Last round"'
+notes_block(){ brief "$1" | sed -n '/^## What sibling workers/,$p'; }
+check "DS-362 AC1 notes over the cap: the briefing's sibling-notes block is within it" '[ "$(notes_block R-2 | wc -c | tr -d " ")" -le 16000 ]'
+check "DS-362 AC2 the cut block keeps the header and the newest note, drops the oldest, and names the full file" 'b=$(notes_block R-2); grep -q "^## MEMORY" <<< "$b" && grep -q "HEADER-RULE" <<< "$b" && grep -q "NOTE-600 " <<< "$b" && ! grep -q "NOTE-1 " <<< "$b" && grep -qF "every note is in $T/state-h/batch-notes.md: grep it" <<< "$b"'
+check "DS-362 AC4 the cut keeps the binding answer" 'brief R-2 | grep -q "the badge is in scope"'
+cp "$T/notes.keep" "$T/state-h/batch-notes.md"
 q set R-2 state=done
 respawn R-3
 check "DS-156 AC4 a resume file on another branch starts at Stage 0, and the first stage line it is given says why" 'spawned_for R-3 | grep -q "stage= " && brief R-3 | grep -qF "AUTOPILOT_STAGE: 0/9 triage (not resumed from Stage 5: its resume file is for branch fix/R-3-old, not the queue'"'"'s fix/R-3)" && echo "$out" | grep -q "R-3 .*from Stage 0 (not resumed from Stage 5"'

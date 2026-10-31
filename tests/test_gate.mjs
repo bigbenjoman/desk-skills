@@ -1,6 +1,6 @@
 // suite: gate (one definition of green)
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
-import { collectAnswers, ANSWER_HEAD, SIBLING_HEAD } from '../desk/bin/briefing.mjs';
+import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const cr = (name, status, conclusion, runId) => ({ name, status, conclusion, detailsUrl: runId ? `https://github.com/o/r/actions/runs/${runId}/job/1` : '' });
@@ -98,4 +98,20 @@ t('answer after sibling notes kept', kept.includes('BINDING FIX ROUND'), true);
 t('sibling notes not folded in', kept.includes('## MEMORY'), false);
 t('stable on respawn', collectAnswers(`${ANSWER_HEAD} (a)\n\nx\n\n${kept}\n\n${SIBLING_HEAD}\n\nnotes`).split(ANSWER_HEAD).length - 1, 3);
 t('no answers', collectAnswers('just notes'), '');
+
+// The sibling-notes block is capped: the header stays, the newest entries stay, the file is named.
+const header = '# Batch notes\n\n## MEMORY — mandatory\n\nHEADER-RULE cap the runner\n\n';
+const notesOf = (n) => header + Array.from({ length: n }, (_, i) => `- [X-${i + 1}] note ${i + 1} padded to a realistic length\n`).join('');
+const P = '/state/batch-notes.md';
+t('DS-362 AC3 notes below the cap unchanged', capNotes(notesOf(3), P, 1000), notesOf(3));
+const at = notesOf(20);
+t('DS-362 AC3 notes exactly at the cap unchanged', capNotes(at, P, at.length), at);
+const cut = capNotes(notesOf(600), P, 4000);
+t('DS-362 AC1 notes above the cap cut within it', cut.length <= 4000, true);
+t('DS-362 AC2 the header kept', cut.startsWith(header), true);
+t('DS-362 AC2 the newest entry kept', cut.includes('- [X-600] note 600 '), true);
+t('DS-362 AC2 the oldest entry cut', cut.includes('- [X-1] note 1 '), false);
+t('DS-362 AC2 the full file named', cut.trimEnd().endsWith(`every note is in ${P}: grep it]`), true);
+t('DS-362 a header over the cap is cut within it', capNotes(`${'x'.repeat(5000)}\n- [X-1] y\n`, P, 1000).length <= 1000, true);
+t('DS-362 MAX_NOTES is the default cap', capNotes(notesOf(1000), P).length <= MAX_NOTES, true);
 process.exit(fails ? 1 : 0);
