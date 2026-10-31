@@ -24,7 +24,7 @@ import { existsSync, readFileSync, realpathSync, readdirSync, statSync, mkdirSyn
 import { homedir, totalmem, freemem, platform } from 'node:os'
 import { join, dirname, basename, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { MEMORY_INDEX_CAP, longEntries, launchFiles, auditReport } from './instruction-audit.mjs'
+import { MEMORY_INDEX_CAP, longEntries, launchFiles, auditReport, linesOf, overCap, real } from './instruction-audit.mjs'
 
 // ---- pure parts (exported for tests/test_cleanup.mjs) ----------------------------------------
 
@@ -221,8 +221,8 @@ export { MEMORY_INDEX_CAP, longEntries }
 export function memoryIndexReport(path, text) {
   const cap = MEMORY_INDEX_CAP
   if (text === null || text === undefined) return []
-  const bytes = Buffer.byteLength(text), lines = text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
-  if (bytes <= cap.bytes && lines <= cap.lines) return []
+  const bytes = Buffer.byteLength(text), lines = linesOf(text).length
+  if (!overCap({ kind: 'MEMORY.md', bytes, lines })) return []
   const long = longEntries(text)
   const head = `memory-index : ${path} · ${bytes} B · ${lines} lines · cap ${cap.bytes} B or ${cap.lines} lines   [report only]`
   const name = (e) => `"${e.first.length > 60 ? `${e.first.slice(0, 57)}...` : e.first}" (${e.lines} lines)`
@@ -248,7 +248,6 @@ function args(argv) {
   return o
 }
 const expand = (p) => (p ? resolve(String(p).replace(/^~(?=\/|$)/, homedir())) : p)
-const real = (p) => { try { return realpathSync(p) } catch { return p } }
 const read = (f) => { try { return readFileSync(f, 'utf8') } catch (e) { die(`cannot read ${f}: ${e.message}`) } }
 const git = (cwd, ...a) => spawnSync('git', ['-C', cwd, ...a], { encoding: 'utf8', maxBuffer: 1 << 28 })
 const gitOut = (cwd, ...a) => { const r = git(cwd, ...a); return r.status === 0 ? r.stdout.trim() : null }

@@ -23,7 +23,10 @@ It prints one `launch` line per file, in the order Claude Code reads them, with 
 policy `CLAUDE.md`, `~/.claude/CLAUDE.md`, the rules in `~/.claude/rules` and `.claude/rules` that have
 no `paths:`, the `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md` and `CLAUDE.local.md` in the repo root
 and every directory above it, the auto-memory `MEMORY.md`, and the description of every skill and
-agent in `~/.claude` and `.claude`. Plugin skills are not counted. A `total` line ends the list.
+agent in `~/.claude` and `.claude`. A skill is counted as the skill listing carries it: left out when
+`skillOverrides` sets it `off` or `user-invocable-only` or it sets `disable-model-invocation: true`,
+listed by name only under `name-only`, and otherwise its description with its `when_to_use`. Plugin
+skills are not counted. A `total` line ends the list.
 
 The caps: 200 lines for an instruction file (Claude Code's own target for one `CLAUDE.md`), 6 KB or
 60 lines for `MEMORY.md`, and 1,024 characters for a description. A line over its cap says so.

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { keyMatches, prsForKey, ticketOf, parseStatus, isExtra, parsePs, memoryReport, ownerOf } from '../skills/desk-cleanup/bin/cleanup-scan.mjs'
+import { launchFiles, auditReport, sections, linesOf, targetFor } from '../skills/desk-cleanup/bin/instruction-audit.mjs'
 
 const SCAN = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-cleanup', 'bin', 'cleanup-scan.mjs')
 let fails = 0
@@ -291,5 +292,30 @@ const audit = readFileSync(join(skillsDir, 'desk-cleanup', 'references', 'instru
 t('AC4 the audit reference writes nothing before the user approves', /\*\*Nothing is written until the user approves it\.\*\*/.test(audit), true)
 t('AC5 the audit reference runs /skill-doctor and /doctor prompt-audit rather than copying them', audit.includes('/skill-doctor') && audit.includes('/doctor prompt-audit'), true)
 t('AC6 /desk-setup offers the audit when it finishes', readFileSync(join(skillsDir, 'desk-setup', 'references', 'step-5-write.md'), 'utf8').includes('/desk-cleanup instructions'), true)
+
+// The skill listing follows Claude Code's rules: off, user-invocable-only and
+// disable-model-invocation are not listed, name-only lists the name alone, when_to_use is counted.
+const RL = join(T, 'rl'); const HL = join(T, 'hl')
+const skill = (n, extra = '') => put(join(HL, '.claude', 'skills', n, 'SKILL.md'), `---\nname: ${n}\ndescription: Does ${n}.\n${extra}---\n\nBody.\n`)
+skill('named'); skill('hidden'); skill('quiet'); skill('manual', 'disable-model-invocation: true\n'); skill('timed', 'when_to_use: When timing.\n'); skill('plain')
+put(join(HL, '.claude', 'settings.json'), JSON.stringify({ skillOverrides: { named: 'name-only', hidden: 'off', quiet: 'on' } }))
+put(join(RL, '.claude', 'settings.local.json'), JSON.stringify({ skillOverrides: { quiet: 'user-invocable-only' } }))
+const listed = launchFiles({ root: RL, home: HL }).filter((x) => x.kind === 'skill')
+t('listing: off, user-invocable-only (local settings win) and disable-model-invocation are left out', listed.map((x) => x.name).join(','), 'named,plain,timed')
+t('listing: a name-only skill carries no description', auditReport(listed, { root: RL, home: HL }).find((l) => l.includes('· named ')).endsWith('· listed by name only'), true)
+t('listing: when_to_use counts towards what is listed', listed.find((x) => x.name === 'timed').chars, 'Does timed. When timing.'.length)
+
+// A CRLF file's headings are still found.
+t('sections: CRLF headings are found', sections(linesOf('## One\r\nx\r\n## Two\r\ny\r\n')).map((s) => s.heading).join(','), 'One,Two')
+
+// A move never lands on an existing rule or skill, nor on .claude/CLAUDE.md, which loads at launch.
+for (const d of ['a', 'b', '.claude/rules', '.claude/skills/testing']) mkdirSync(join(RL, d), { recursive: true })
+put(join(RL, '.claude', 'rules', 'data-layer.md'), '# Existing\n')
+const rowL = { path: join(RL, 'CLAUDE.md') }; const used = new Set()
+t('targetFor: an existing rule is not appended to', targetFor({ heading: 'Data layer' }, 'Touches `a/` and `b/`.', rowL, RL, HL, used).path, join(RL, '.claude', 'rules', 'data-layer-2.md'))
+t('targetFor: nor is a rule another move already took', targetFor({ heading: 'Data layer' }, 'Touches `a/` and `b/`.', rowL, RL, HL, used).path, join(RL, '.claude', 'rules', 'data-layer-2-2.md'))
+t('targetFor: an existing skill is not appended to', targetFor({ heading: 'Testing' }, 'No paths here.', rowL, RL, HL, used).path, join(RL, '.claude', 'skills', 'testing-2', 'SKILL.md'))
+const dotClaude = targetFor({ heading: 'Tooling' }, 'Edit `.claude/rules/` and `.claude/skills/`.', rowL, RL, HL, used)
+t('targetFor: text naming only .claude/ goes to a scoped rule, not .claude/CLAUDE.md', `${dotClaude.kind} ${dotClaude.body.slice(1, 4).join(' ')}`, 'path-scoped rule paths:   - ".claude/rules/**"   - ".claude/skills/**"')
 
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1) }

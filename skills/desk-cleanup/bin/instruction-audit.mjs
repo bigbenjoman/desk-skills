@@ -15,7 +15,7 @@ const IMPORT_DEPTH = 5
 
 const isFile = (p) => { try { return statSync(p).isFile() } catch { return false } }
 const isDir = (p) => { try { return statSync(p).isDirectory() } catch { return false } }
-const real = (p) => { try { return realpathSync(p) } catch { return p } }
+export const real = (p) => { try { return realpathSync(p) } catch { return p } }
 const fence = (l) => /^\s*(```|~~~)/.test(l)
 export const linesOf = (text) => { const l = String(text).split('\n'); if (l.at(-1) === '') l.pop(); return l }
 export const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '') || 'section'
@@ -38,7 +38,7 @@ export function sections(lines) {
   const heads = []; let inFence = false
   lines.forEach((l, i) => {
     if (fence(l)) inFence = !inFence
-    const m = !inFence && l.match(/^(#{1,2})\s+(.*)$/)
+    const m = !inFence && l.match(/^(#{1,2})\s+(.*?)\s*$/)
     if (m) heads.push({ level: m[1].length, heading: m[2].trim(), start: i })
   })
   const level = heads.some((h) => h.level === 2) ? 2 : 1
@@ -69,13 +69,14 @@ function frontmatter(lines) {
 }
 export const scopedRule = (text) => { const l = linesOf(text); const fm = frontmatter(l); return Boolean(fm && l.slice(1, fm.end).some((x) => /^paths\s*:/.test(x))) }
 
-// The frontmatter description: its text, and the lines it takes.
-export function descriptionOf(text) {
+// One frontmatter field (`description` by default): its text, and the lines it takes.
+export function descriptionOf(text, key = 'description') {
   const lines = linesOf(text); const fm = frontmatter(lines)
   if (!fm) return null
-  const i = lines.findIndex((l, k) => k > 0 && k < fm.end && /^description\s*:/.test(l))
+  const at = new RegExp(`^${key}\\s*:`)
+  const i = lines.findIndex((l, k) => k > 0 && k < fm.end && at.test(l))
   if (i < 0) return null
-  let v = lines[i].replace(/^description\s*:\s*/, ''); let j = i + 1
+  let v = lines[i].replace(at, '').trim(); let j = i + 1
   const block = /^[>|][-+]?\s*$/.test(v)
   if (block) v = ''
   while (j < fm.end && (/^\s+\S/.test(lines[j]) || (block && !lines[j].trim()))) v += ` ${lines[j++].trim()}`
@@ -89,6 +90,15 @@ function rulesIn(dir) {
   if (!isDir(dir)) return []
   return readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
     .flatMap((e) => { const p = join(dir, e.name); return isDir(p) ? rulesIn(p) : e.name.endsWith('.md') ? [p] : [] })
+}
+
+// skillOverrides from the user, project and local settings, the later winning as Claude Code merges them.
+function skillOverrides(root, home) {
+  const out = {}
+  for (const f of [join(home, '.claude', 'settings.json'), join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json')]) {
+    try { Object.assign(out, JSON.parse(readFileSync(f, 'utf8')).skillOverrides ?? {}) } catch { /* absent or unreadable */ }
+  }
+  return out
 }
 
 // Every file Claude Code reads into a session started at `root`, in the order it reads them. Rules
@@ -118,12 +128,21 @@ export function launchFiles({ root, home, memoryPath = null, policy = [] }) {
   }
   for (const p of rulesIn(join(root, '.claude', 'rules'))) if (!scopedRule(readFileSync(p, 'utf8'))) withImports(add('rule', p))
   if (memoryPath) add('MEMORY.md', memoryPath)
+  // What the skill listing carries for each skill, by Claude Code's rules: skillOverrides `off` and
+  // `user-invocable-only`, and `disable-model-invocation: true`, leave it out; `name-only` lists the
+  // name alone; otherwise the description, with `when_to_use` after it.
+  const override = skillOverrides(root, home)
   const described = (kind, path, name) => {
     if (!isFile(path) || seen.has(real(path))) return
     const text = readFileSync(path, 'utf8'); const d = descriptionOf(text)
     if (!d) return
     seen.add(real(path))
-    rows.push({ kind, name, path: real(path), text, description: d, bytes: Buffer.byteLength(d.text), chars: d.text.length })
+    const mode = kind === 'skill' ? override[name] : undefined
+    if (kind === 'skill' && (mode === 'off' || mode === 'user-invocable-only' || /^true$/i.test(descriptionOf(text, 'disable-model-invocation')?.text ?? ''))) return
+    if (mode === 'name-only') { rows.push({ kind, name, path: real(path), text, description: d, listed: 'name-only', bytes: Buffer.byteLength(name), chars: 0 }); return }
+    const when = kind === 'skill' ? descriptionOf(text, 'when_to_use')?.text : ''
+    const listed = when ? `${d.text} ${when}` : d.text
+    rows.push({ kind, name, path: real(path), text, description: d, bytes: Buffer.byteLength(listed), chars: listed.length })
   }
   for (const base of [join(home, '.claude'), join(root, '.claude')]) {
     const skills = join(base, 'skills')
@@ -192,19 +211,24 @@ const commonDir = (dirs) => {
 // Where one section of an oversized file goes. A file outside the repo becomes a user skill; inside,
 // a section naming one directory goes to that directory's CLAUDE.md, one naming several to a rule
 // scoped to them, and one naming none to a project skill. Each of those loads only when needed.
-export function targetFor(section, text, row, root, home) {
+// A rule or skill gets a name no file and no other move already has, so its frontmatter is never
+// appended to an existing one. `used` holds the paths this audit has already proposed.
+export function targetFor(section, text, row, root, home, used = new Set()) {
   const inRepo = row.path.startsWith(root + sep)
-  const s = slug(section.heading)
+  const free = (at) => { let s = slug(section.heading); while (existsSync(at(s)) || used.has(at(s))) s += '-2'; used.add(at(s)); return s }
   if (inRepo) {
     const dirs = dirsNamed(text, root)
     const common = dirs.length ? commonDir(dirs) : ''
-    if (common) return { kind: 'subdirectory CLAUDE.md', path: join(root, common, 'CLAUDE.md'), body: text.split('\n') }
+    // .claude/CLAUDE.md loads at launch, so text moved there would still load in every session.
+    if (common && common !== '.claude') return { kind: 'subdirectory CLAUDE.md', path: join(root, common, 'CLAUDE.md'), body: text.split('\n') }
     if (dirs.length) {
       const tops = dirs.filter((d) => !dirs.some((o) => o !== d && d.startsWith(`${o}/`))).sort()
+      const s = free((x) => join(root, '.claude', 'rules', `${x}.md`))
       return { kind: 'path-scoped rule', path: join(root, '.claude', 'rules', `${s}.md`), body: ['---', 'paths:', ...tops.map((d) => `  - "${d}/**"`), '---', '', ...text.split('\n')] }
     }
   }
   const base = inRepo ? join(root, '.claude', 'skills') : join(home, '.claude', 'skills')
+  const s = free((x) => join(base, x))
   return {
     kind: 'skill reference',
     path: join(base, s, 'SKILL.md'),
@@ -214,7 +238,7 @@ export function targetFor(section, text, row, root, home) {
 
 // The moves that bring one oversized file under its cap, largest section first: the source's new
 // lines, and each target's lines to add.
-export function planFor(row, { root, home, memoryDir }) {
+export function planFor(row, { root, home, memoryDir, used = new Set() }) {
   const lines = linesOf(row.text)
   if (row.kind === 'MEMORY.md') {
     const used = new Set()
@@ -238,7 +262,7 @@ export function planFor(row, { root, home, memoryDir }) {
   for (const sec of secs) {
     if (left <= INSTRUCTION_CAP_LINES) break
     const text = lines.slice(sec.start, sec.start + sec.count).join('\n').replace(/\n+$/, '')
-    moves.push({ from: sec.start, count: sec.count, heading: sec.heading, size: sec.count, replace: [], target: targetFor(sec, text, row, root, home) })
+    moves.push({ from: sec.start, count: sec.count, heading: sec.heading, size: sec.count, replace: [], target: targetFor(sec, text, row, root, home, used) })
     left -= sec.count
   }
   return moves.sort((a, b) => a.from - b.from)
@@ -256,7 +280,7 @@ export function auditReport(rows, { root, home, memoryDir = null, doctor = {} })
   const judged = (r) => !((r.kind === 'skill' || r.kind === 'agent') && doctor['skill-doctor'] !== undefined)
   for (const r of rows) {
     const over = judged(r) ? overCap(r) : ''
-    const size = r.kind === 'skill' || r.kind === 'agent' ? `${r.chars} chars of description` : `${r.bytes} B · ${r.lines} lines`
+    const size = r.listed === 'name-only' ? 'listed by name only' : r.kind === 'skill' || r.kind === 'agent' ? `${r.chars} chars of description` : `${r.bytes} B · ${r.lines} lines`
     const where = r.kind === 'skill' || r.kind === 'agent' ? `${r.name} (${shown(r.path, root, home)})` : shown(r.path, root, home)
     const note = r.kind === 'import' ? ` · loads with ${shown(r.parent, root, home)}: an @ import does not reduce what loads` : ''
     out.push(`launch : ${pad(r.kind)} · ${where} · ${size}${over ? ` · ${over}` : ''}${note}`)
@@ -268,9 +292,9 @@ export function auditReport(rows, { root, home, memoryDir = null, doctor = {} })
   }
   if (doctor['skill-doctor'] !== undefined) out.push('launch : skill and agent descriptions are judged by skill-doctor above, not here')
 
-  const proposals = []; const diffs = []; const targets = new Map()
+  const proposals = []; const diffs = []; const targets = new Map(); const used = new Set()
   for (const r of rows.filter((x) => judged(x) && overCap(x))) {
-    const moves = planFor(r, { root, home, memoryDir })
+    const moves = planFor(r, { root, home, memoryDir, used })
     if (!moves.length) {
       proposals.push(`propose : ${shown(r.path, root, home)} · ${r.kind === 'MEMORY.md' ? 'every entry is one line: shorten the longest' : 'nothing to move: split it into headed sections by topic first'}`)
       continue
