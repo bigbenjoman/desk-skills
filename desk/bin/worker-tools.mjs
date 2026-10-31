@@ -11,9 +11,10 @@ import { fileURLToPath } from 'node:url';
 // A worker, and the preflight that vets it: every tool the worker contract or a skill the worker
 // loads names, and nothing else. tests/test_worker_tools.mjs checks both directions against the files.
 // WebFetch and WebSearch stay listed: worker-settings.mjs denies them unless §3 worker-web-read is yes.
+// ReportFindings is named outside this repo: a repo whose §4 Local review is /code-review reports with it.
 export const WORKER_TOOLS = [
-  'Agent', 'Bash', 'Edit', 'Glob', 'Grep', 'ListAgents', 'Read', 'SendMessage', 'Skill', 'TaskStop',
-  'ToolSearch', 'WebFetch', 'WebSearch', 'Write',
+  'Agent', 'Bash', 'Edit', 'Glob', 'Grep', 'ListAgents', 'Read', 'ReportFindings', 'SendMessage', 'Skill',
+  'TaskStop', 'ToolSearch', 'WebFetch', 'WebSearch', 'Write',
 ];
 
 // Triage and its lane challenge read code through git, read the routing file, and write one record.

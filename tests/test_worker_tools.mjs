@@ -25,6 +25,10 @@ const NOT_OFFERED = {
   AskUserQuestion: 'a headless worker cannot ask: the contract says it has none',
   Monitor: 'a blocking primitive the contract says is refused',
 };
+// Offered, and named only by a skill a worker loads from outside this repo, so the scan cannot see it.
+const NAMED_OUTSIDE = {
+  ReportFindings: "a repo's §4 Local review /code-review reports its findings with it",
+};
 // Text that spells a tool's name but is not the tool.
 const NOT_A_TOOL = [/§4 Workflow/g, /`Workflow` and its named states/g];
 
@@ -56,7 +60,9 @@ for (const f of SOURCES) {
 t(`the scan read the worker's files (${SOURCES.length})`, SOURCES.length > 40, true);
 const missing = [...named].filter(([tool]) => !WORKER_TOOLS.includes(tool) && !NOT_OFFERED[tool]).map(([tool, fs]) => `${tool} (named in ${fs.join(', ')})`);
 t('AC7 every tool the contract and skills name is in the worker list', missing, []);
-t('AC2 every tool in the worker list is named by the contract or a skill', WORKER_TOOLS.filter((x) => !named.has(x)), []);
+t('AC2 every tool in the worker list is named by the contract or a skill', WORKER_TOOLS.filter((x) => !named.has(x) && !NAMED_OUTSIDE[x]), []);
+t('a tool named outside this repo is offered and not also named here (else drop it from NAMED_OUTSIDE)',
+  Object.keys(NAMED_OUTSIDE).filter((x) => !WORKER_TOOLS.includes(x) || named.has(x)), []);
 t('a tool named but not offered is still named (else drop it from NOT_OFFERED)', Object.keys(NOT_OFFERED).filter((x) => !named.has(x)), []);
 
 // AC5: every tool an agent definition names is in the worker's list.
