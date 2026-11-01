@@ -78,6 +78,15 @@ const captureNote = (s) => {
   const m = CAPTURE.exec(String(s?.why ?? ''));
   return m ? `(Not taken: ${m[2]}.${m[3] ? ` The capture try said: ${one(m[3])}` : ''})` : '';
 };
+// A review stuck reason's tries by kind (fix-tries.mjs triesByKind), as `after desk's 3 repairs (1
+// conflict fix, 1 re-review, 1 review fix)`; null for a reason that names none.
+const REPAIR_KIND = { conflict: ['conflict fix', 'conflict fixes'], rereview: ['re-review', 're-reviews'], review: ['review fix', 'review fixes'], checks: ['red-check fix', 'red-check fixes'] };
+function repairsMade(why) {
+  const m = /^review not clean after (\d+) fix tr(?:y|ies) \(([^)]*)\)/.exec(why);
+  if (!m) return null;
+  const kinds = m[2].split(', ').map((p) => { const [c, k] = p.split(' '); const w = REPAIR_KIND[k] ?? ['repair', 'repairs']; return `${c} ${w[c === '1' ? 0 : 1]}`; });
+  return `after desk's ${m[1]} ${m[1] === '1' ? 'repair' : 'repairs'} (${kinds.join(', ')})`;
+}
 
 function stuckPlain(r, n, s) {
   const checks = s?.checks ?? [];
@@ -95,8 +104,9 @@ function stuckPlain(r, n, s) {
     const k = Number(shots[1]);
     return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}. Take ${k === 1 ? 'it' : 'them'} and upload ${k === 1 ? 'it' : 'them'} to the PR; the next pass then takes it out of draft.`;
   }
+  // Before the conflict test: a review reason names the conflict tries it was made after.
+  if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. Fix them on its branch and post a fresh review; ${thenMerge(r)}.`;
   if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
-  if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${REPAIRED}. Fix them on its branch and post a fresh review; ${thenMerge(r)}.`;
   if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
   if (red) return `${n} has failing checks ${REPAIRED}: ${plainWords(red[1])}. Fix them on its branch; ${thenMerge(r)}.`;

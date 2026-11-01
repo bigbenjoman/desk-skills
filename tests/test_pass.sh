@@ -1434,7 +1434,7 @@ for k in 1 2 3 4 5 6; do q add "R-$k"; q set "R-$k" state=done lane=A "branch=fi
 frx 721 "$H1" "$H1" 'p0=0 p1=1 p2=1'
 frx 722 "$H1" "$H1" 'p0=0 p1=0 p2=1'
 q set R-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks","what":"red: Lint"}]'; frx 723 "$H1" "$H1" 'p0=0 p1=1 p2=1'
-q set R-4 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"review"},{"try":2,"head":"'"$H1"'","kind":"checks"}]'; frx 724 "$H2" "$H2" 'p0=0 p1=1 p2=1'
+q set R-4 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"review"},{"try":2,"head":"'"$H1"'","kind":"review"}]'; frx 724 "$H2" "$H2" 'p0=0 p1=1 p2=1'
 q set R-5 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"review"}]'; frx 725 "$H1" "$H1" 'p0=0 p1=1 p2=1'
 frx 726 "$H1" "$H1" 'p0=1 p1=0 p2=0'
 : > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
@@ -1443,12 +1443,12 @@ check "DS-281 AC1 a draft whose review at its head has 1 P1 is requeued once for
 check "DS-281 AC1 and it is not undrafted" '! grep -q "^pr ready 721" "$T/gh-calls"'
 check "DS-281 AC6 a review with only P2s is not requeued and stays draft for the person, as today" \
   '[ "$(field R-2 state)" = "\"done\"" ] && [ "$(field R-2 fix)" = null ] && [ "$(field R-2 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "R-2: DRAFT — PR #722 stays draft: its review verdict at 111111111 is not clean (p2=1)"'
-check "DS-281 AC7 a checks try counts toward the limit: the review try is try 2" '[ "$(field R-3 fix.try)" = 2 ] && [ "$(field R-3 fix_tries | jq -r ".[1].kind")" = review ]'
-check "DS-281 AC5 after 2 fix tries it is not requeued again, and is recorded stuck, naming the finding (DS-335 AC2)" \
-  '[ "$(field R-4 state)" = "\"done\"" ] && [ "$(field R-4 fix_tries | jq length)" = 2 ] && [ "$(field R-4 stuck.why | jq -r .)" = "review not clean after 2 fix tries: 1 P1 — P1: src/money.ts:12         second currency formatter" ]'
-check "DS-281 AC5 and it is put to the person" 'echo "$out" | grep -qF "R-4: STUCK — PR #724: review not clean after 2 fix tries: 1 P1 — P1: src/money.ts:12"'
+check "DS-384 AC1 a checks try leaves a review fix its own tries: the review try is try 1 of 2" '[ "$(field R-3 fix.try)" = 1 ] && [ "$(field R-3 fix_tries | jq -r ".[1].kind")" = review ]'
+check "DS-281 AC5 after 2 review fix tries it is not requeued again, and is recorded stuck, naming the finding (DS-335 AC2)" \
+  '[ "$(field R-4 state)" = "\"done\"" ] && [ "$(field R-4 fix_tries | jq length)" = 2 ] && [ "$(field R-4 stuck.why | jq -r .)" = "review not clean after 2 fix tries (2 review): 1 P1 — P1: src/money.ts:12         second currency formatter" ]'
+check "DS-281 AC5 and it is put to the person" 'echo "$out" | grep -qF "R-4: STUCK — PR #724: review not clean after 2 fix tries (2 review): 1 P1 — P1: src/money.ts:12"'
 check "DS-281 AC4 a try already made for this head is not made again" \
-  '[ "$(field R-5 state)" = "\"done\"" ] && [ "$(field R-5 fix_tries | jq length)" = 1 ] && [ "$(field R-5 stuck.why | jq -r .)" = "review not clean after 1 fix try: 1 P1 — P1: src/money.ts:12         second currency formatter" ]'
+  '[ "$(field R-5 state)" = "\"done\"" ] && [ "$(field R-5 fix_tries | jq length)" = 1 ] && [ "$(field R-5 stuck.why | jq -r .)" = "review not clean after 1 fix try (1 review): 1 P1 — P1: src/money.ts:12         second currency formatter" ]'
 check "DS-281 AC1 a P0 its review body does not list with a file:line is not requeued, and stays draft for the person" \
   '[ "$(field R-6 state)" = "\"done\"" ] && [ "$(field R-6 fix)" = null ] && echo "$out" | grep -q "R-6: DRAFT — PR #726 stays draft: its review verdict at 111111111 is not clean (p0=1)"'
 
@@ -1682,7 +1682,7 @@ check "DS-319 AC1 and it is not put to the person, nor undrafted" '! echo "$out"
 check "DS-319 a review counting a gap it does not list stays draft for the person" \
   '[ "$(field G-2 state)" = "\"done\"" ] && [ "$(field G-2 fix)" = null ] && echo "$out" | grep -q "G-2: DRAFT — PR #742 stays draft: its review verdict at 111111111 is not clean (gaps=1). Settle the findings or gaps on #742"'
 check "DS-319 AC5 after 2 fix tries it is recorded stuck, with the gap the last try's review gives" \
-  '[ "$(field G-3 state)" = "\"done\"" ] && [ "$(field G-3 stuck.why | jq -r .)" = "review not clean after 2 fix tries: 1 gap — $GAP" ] && echo "$out" | grep -qF "G-3: STUCK — PR #743: review not clean after 2 fix tries: 1 gap — $GAP"'
+  '[ "$(field G-3 state)" = "\"done\"" ] && [ "$(field G-3 stuck.why | jq -r .)" = "review not clean after 2 fix tries (2 review): 1 gap — $GAP" ] && echo "$out" | grep -qF "G-3: STUCK — PR #743: review not clean after 2 fix tries (2 review): 1 gap — $GAP"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-319 AC2 the fix worker's task closes the gap and reviews the new head again" \
   'grep -q "^G-1 .*Your task is fix try 1 of 2 on PR #741.*close each requirement gap it quotes.*review the new head with desk-review and post that review on the PR" "$T/spawns"'
