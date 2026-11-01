@@ -26,6 +26,8 @@
 //       not-now             put it off (the not-now register), asked again once its inputs change
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
 //                           api, …): names the desk-ticket session to open; records nothing
+//       admit               a ticket held by open tickets outside its batch that no batch holds: names
+//                           the /desk-admit to run for them; records nothing
 //       done                the person did the step themselves. On a PR it reads the PR from GitHub:
 //                           merged is recorded and leaves the list; unmerged is said, and noted on the
 //                           item until its head moves
@@ -36,17 +38,21 @@
 // `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
 // checks them again).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then the longest waiting, less any put off with not-now whose inputs are unchanged. Exits 0, or 11 (show the person) on anything it refuses.
+// first, then the longest waiting, less any put off with not-now whose inputs are unchanged and, where
+// its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
+// (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
-import { addPutOff, putOffEntry, notNowPath, readRegister, lookup } from './not-now.mjs';
+import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
+import { batchHolding } from './batches.mjs';
 
 // A question longer than this is cut on its line: the session asks it, not reads it in full.
 const QUESTION_MAX = 240;
@@ -194,6 +200,26 @@ export function moveTargets(r) {
 const targetsText = (ts) => ts.map((b) => `${b.word} (on ${b.base})`).join(', ');
 const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`]] : []; };
 
+// The open blockers outside its batch the last pass recorded for a ticket (pass.mjs outside_blockers),
+// each with its Jira status category and the batch of this repo holding it: `standing`, a named
+// batch, or null for none. A key two batches hold reads as held, so it is never offered to admit.
+function outsideHolds(r, t) {
+  return outsideOf(t).map((b) => {
+    let at;
+    try { at = batchHolding(b.key, r.slug); } catch { at = { name: 'more than one batch' }; }
+    return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null };
+  });
+}
+const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
+// Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
+// blocker that moves brings it back.
+function blockerStates(r, t) {
+  const out = new Map(outsideHolds(r, t).map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}`]));
+  return [...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => `${b}:${r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none'}`).join(',');
+}
+// An item's action names, once each: what a put-off entry records, so one it gains brings it back.
+const verbsOf = (item) => [...new Set(item.actions.map(([a]) => a.split(' ')[0]))];
+
 // A batch held on a usage limit is one item, named by this in place of a ticket: its paused workers
 // and held tickets are none of them stopped, so none is an item of its own.
 const USAGE_ITEM = 'usage-limit';
@@ -266,8 +292,17 @@ function itemOf(r, x) {
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', sessionWhy(parkText(r, t))], ['not-now']] };
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now'], ...moveAction(r)] };
-  // Held outside the batch, held inside it or not: its open question is what desk-q asks, and answers.
-  if (x.k === 'stuck') return { kind: 'triage', need: needText(r, x), actions: [['answer', 'say whether it can start without the tickets outside; the next pass can then start it'], ['not-now']] };
+  // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
+  // blocker no batch holds is worked by nobody, so admitting it comes first; answering says whether this
+  // one can start without them.
+  if (x.k === 'stuck') {
+    const outside = outsideHolds(r, t), free = outside.filter((o) => !o.batch).map((o) => o.key);
+    const one1 = free.length === 1;
+    const admit = free.length ? [['admit', `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`]] : [];
+    const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
+    return { kind: 'held', need: `held by ${andList(outside.map(holdWords))}, outside this batch`,
+      actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] };
+  }
   // A held ticket with a question of its own is asked that question, below.
   if (isHeld(t) && !heldAsks(t)) {
     const h = holdOf(r.q, t, r.ctx);
@@ -298,23 +333,54 @@ function itemOf(r, x) {
 
 // The question and inputs an item is put off under. A park is keyed as answer.mjs records it, to its
 // question and park inputs; anything else to its ticket and kind, since several tickets share a need's
-// words, with its need, PR head and blockers' states as inputs, so a moved head or a blocker that went
-// done brings it back. A PR's need is left out: it carries the age of its running checks.
+// words, with its need, PR head and the states of any blockers it names as inputs, so a moved head or
+// a blocker that went done brings it back. A PR's need is left out: it carries the age of its running
+// checks.
 const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
-  if (item.kind === 'held') inputs.blockers = keysOf(t.held_by).map((b) => `${b}:${r.q.tickets?.[b]?.state ?? 'none'}`).join(',');
+  const blockers = blockerStates(r, t);
+  if (blockers || item.kind === 'held') inputs.blockers = blockers;
   return { question: `${t.key} ${item.kind}`, inputs };
 }
 
 // A needs row as an item, and what the not-now register says of it: the one rule desk-q's count and
-// this list both go by.
+// this list both go by. An item put off with unchanged inputs is asked again once it offers an action
+// it did not offer then. An entry from before entries recorded actions is asked again once, and
+// records them. Every way of putting an item off records them since (stampActions), so one written
+// since without them is an item no batch listed when it was put off: it stays put off on its inputs.
+const ACTIONS_SINCE = Date.parse('2026-11-01T15:00:00Z');
+const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
 function judged(r, x, register) {
   const item = itemOf(r, x);
-  return { item, l: lookup(register, putOffKey(r, x.t, item)) };
+  const l = lookup(register, putOffKey(r, x.t, item));
+  if (l.status !== 'put_off') return { item, l };
+  const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
+  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return { item, l };
+  return { item, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
+}
+
+// Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
+// back (judged). answer.mjs and not-now.mjs add call it once they have put a question off, as this
+// file's not-now does: neither knows an item's actions. The batch is the one whose state directory is
+// `stateDir`. Returns the actions recorded, or null where that batch lists no item for the ticket or
+// the item is keyed to another question than the one put off: an older entry of the item's own is
+// never stamped, or the actions it gained since would hide it again.
+export function stampActions({ stateDir, ticket, question, now = Date.now(), repos = loadRepos(now) }) {
+  const r = repos.find((b) => b.q && resolve(b.stateDir) === resolve(stateDir));
+  const x = r && needsRows(r).find((y) => y.t.key === ticket);
+  const item = x && itemOf(r, x);
+  return item && questionKey(putOffKey(r, x.t, item).question) === questionKey(question) ? stampItem(r, x, item) : null;
+}
+function stampItem(r, x, item) {
+  const l = lookup(readRegister(r.stateDir), putOffKey(r, x.t, item));
+  if (l.status !== 'put_off') return null;
+  const actions = verbsOf(item);
+  if (l.entry.actions?.join() !== actions.join()) addPutOff({ ...l.entry, actions }, r.stateDir);
+  return actions;
 }
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
@@ -385,7 +451,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
 const runLine = (r) => {
   const w = runner(r);
-  return `@ ${r.name}: ${w.by === 'supervisor' ? 'run by the supervisor; its next pass picks answers up'
+  return `@ ${r.name}: ${w.by === 'supervisor' ? 'run by the supervisor; an answer wakes it, and its next pass picks the answer up'
     : w.by === 'session' ? `run by a live session${w.name ? ` (${w.name})` : ''}; resumes go to it by message`
       : `passes stopped; answers wait until they resume. To resume: ${w.resume}`}`;
 };
@@ -530,12 +596,15 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return o.ok ? say(true, `decision ${id} overridden to "${text}" (digest.mjs override).`) : say(false, o.why);
     }
     case 'not-now': {
-      // A park is put off by answer.mjs, keyed to its inputs; anything else here, as putOffKey keys it.
+      // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
+      // offers; anything else here, as putOffKey keys it.
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
-        return a.ok ? say(true, 'put off (not-now register).') : say(false, a.why);
+        if (!a.ok) return say(false, a.why);
+        stampItem(r, x, item);
+        return say(true, 'put off (not-now register).');
       }
-      addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString() }), r.stateDir);
+      addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
       return say(true, `put off (${notNowPath(r.stateDir)}).`);
     }
     // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
@@ -554,6 +623,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
       return say(true, `not requeued (${neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
+    }
+    // Admission runs its own checks on each blocker, so it is the person's /desk-admit, not made here.
+    case 'admit': {
+      const free = outsideHolds(r, x.t).filter((o) => !o.batch).map((o) => o.key);
+      const root = repoConfigValue(r.slug, 'repo-root');
+      return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
       if (x.pr || heldDraft(x.t)) return prDone();

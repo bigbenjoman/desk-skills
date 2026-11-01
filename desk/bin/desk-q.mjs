@@ -133,7 +133,7 @@ export const worktreeBusy = (t) => (t?.state === 'triaged' && t.worktree_busy?.w
 export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, push or discard it`;
 export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
-const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
+export const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
 // A held ticket with a question of its own: it needs the user for that, whatever its blockers do.
 export const heldAsks = (t) => isHeld(t) && (t.open_questions ?? 0) > 0;
 const outsideText = (t) => {
@@ -438,7 +438,8 @@ function loadBatch(c, repoName, batch, limits, now) {
     Object.assign(r, { name: `${repoName} · ${batch}${base}`, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` });
   }
   const beat = lastBeat(stateDir, queuePath);
-  r.last = beat?.at ?? null;
+  // The last pass, not the last beat: a supervisor's idle tick refreshes the beat and runs no pass.
+  r.last = beat?.pass ?? null;
   r.next = beat?.next ?? null;
   r.live = liveBeat(beat, now);
   r.ctx = r.q ? holdContext(r) : NOBODY;
@@ -2048,7 +2049,7 @@ const BLOCKERS_SHOWN = 6, FOLD_LINES = 2;
 // The rail the page's first lines sit on, in the ticket's state colour.
 const RAIL = '▌ ';
 // A Jira status category, as Jira names it.
-const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
+export const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
 const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 
 // What a ticket page leads with: whether it moves without the user and, if not, what would. `lead`

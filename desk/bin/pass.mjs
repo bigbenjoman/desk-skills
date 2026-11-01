@@ -15,7 +15,7 @@ import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_B
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
-import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
+import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
@@ -42,7 +42,7 @@ import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, 
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow, keysOf } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
 import { listBatches, lastPromotion } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -154,11 +154,7 @@ process.on('exit', () => { try { if (JSON.parse(readFileSync(LOCK, 'utf8')).pid 
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
 // A heartbeat per queue file closes that window; queue.mjs treats one fresher than 15 minutes as live.
 try {
-  mkdirSync(join(STATE, 'orchestrators'), { recursive: true });
-  writeFileSync(beatFile(STATE, QUEUE_FILE), JSON.stringify({
-    queue: QUEUE_FILE, batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, pid: process.pid, at: new Date().toISOString(),
-    ...(NEXT == null ? {} : { next: new Date(NEXT).toISOString() }),
-  }));
+  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
 const sh = (cmd, args, opts = {}) => {
@@ -1356,6 +1352,36 @@ const baselineBrief = () => {
     '',
   ].join('\n');
 };
+// What triage settled for the worker: the calls it took on their recommendation (logged as decisions
+// when the ticket was admitted, and overridden since where the person did so in the digest), and, where
+// it found every criterion already met, a verify-only task.
+const triageBrief = (t) => {
+  let r = null;
+  try { r = JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8')); } catch { return ''; }
+  const overridden = ticketCalls(readDecisions(STATE), t.key).taken.filter((d) => d.was !== undefined);
+  const taken = triageCalls(r).taken.map((d) => {
+    const o = overridden.find((x) => x.question === d.question && x.was === d.chose);
+    return o ? { ...d, chose: o.chose, was: o.was } : d;
+  });
+  return [
+    ...(taken.length ? [
+      '## Calls triage took',
+      '',
+      'Build these as chosen: each is logged as a decision. List them under `Decisions taken` in the PR.',
+      ...taken.map((d) => `- ${d.question}: "${d.chose}"${d.was !== undefined ? ` (the person overrode triage's "${d.was}")` : ''} (${d.category}; the other options: ${d.options.filter((o) => o !== d.chose).join(', ')})`),
+      '',
+    ] : []),
+    ...(r?.verify_only === true ? [
+      '## Verify-only',
+      '',
+      'Triage found every acceptance criterion already met on the base:',
+      ...(Array.isArray(r.already_met) ? r.already_met : []).map((m) => `- ${m}`),
+      '',
+      'Prove each criterion with a test that exercises it. Change code only where a test shows a criterion is not met, and say in the PR which criteria were already met and where.',
+      '',
+    ] : []),
+  ].join('\n');
+};
 
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
@@ -1513,6 +1539,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     ownedBrief(t, wt),
     fixBrief(t),
     baselineBrief(),
+    triageBrief(t),
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,

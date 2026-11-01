@@ -11,6 +11,7 @@
 //
 // Each ticket the query finds, once (the register is <state>/intake.json):
 //   - already in the queue or another batch, or already admitted or handed on: nothing;
+//   - done in Jira, as the search shows it: said once, and neither triaged nor admitted;
 //   - an epic: triaged, and its feature batch started beside the standing batch with its plan drafted
 //     and left for the person (epic-plan.mjs), one a run; handed to the digest when it cannot start,
 //     and left for later while another feature batch is live;
@@ -22,7 +23,9 @@
 //     routed to that batch the same way;
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
-//     or XL, or a blocker that failed in the batch;
+//     or XL, or a blocker that failed in the batch. A question is open only on a reserved topic or
+//     with no recommendation: each call triage took on its recommendation is logged as a decision
+//     when the ticket is admitted (decisions.mjs triageCalls);
 //   - otherwise admitted (queue.mjs admit --by intake), held in the same write behind every open
 //     blocker in the batch, and every blocker in no batch until it is Done and its code is on the
 //     batch's base (--hold-outside, lifted by pass.mjs); or, when it links a Claude Design canvas no
@@ -35,7 +38,7 @@
 // report says when either leaves tickets for later.
 //
 // `admit` is the same gate for tickets named by hand: no search, no interval and no cap, every one
-// triaged afresh, and what fails a check is refused back to the person (exit 11) rather than handed to
+// triaged afresh unless Jira has it done (then it is said so, exit 0), and what fails a check is refused back to the person (exit 11) rather than handed to
 // the digest; so is one linking a Claude Design canvas with no snapshot, which the person's session
 // snapshots first. It admits only into a batch the supervisor runs, or starts a standing one as intake does.
 // An epic has its own feature batch started beside the standing batch and any other epic's, its plan
@@ -54,6 +57,7 @@ import { isEpic } from './desk-q-eta.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
+import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -98,8 +102,8 @@ export function intakeReasons(r) {
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
   for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}`);
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
-  const unknowns = r.unknowns ?? [];
-  if (unknowns.length) out.push(`open question(s): ${unknowns.join(' · ')}`);
+  const { ask } = triageCalls(r);
+  if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);
   const size = String(r.size ?? '').toUpperCase();
   if (['L', 'XL'].includes(size)) out.push(`size ${size}: it needs splitting before a worker takes it`);
   return out;
@@ -254,11 +258,34 @@ function noteEpic(state, key, s, by, now) {
   reg.tickets[key] = epicEntry(s, by, now);
   writeIntake(state, reg);
 }
-const laneSize = (rec) => `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}`;
+const laneSize = (rec) => `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}${rec.verify_only ? ', verify-only' : ''}`;
 // How an admitted ticket is held, from its placement's {held, outside, base}. `refused`, blockers this
 // call did not admit, are named as such.
 const heldText = ({ held = [], outside = [], base = null }, refused = new Set()) => `${held.length ? `, held behind ${held.join(', ')}` : ''}${outside.length
   ? `, waiting for ${outside.map((k) => (refused.has(k) ? `${k} (not admitted in this call)` : k)).join(', ')}, outside the batch, until ${outside.length === 1 ? 'it is' : 'each is'} Done and on ${base ?? 'its base'}` : ''}`;
+
+// Logs each call the triage record took on its recommendation to the decision log in `state`, the
+// state of the batch the ticket joined, for the check-in digest: ", took N call(s) …", or ''.
+function logTaken(key, rec, state) {
+  const { taken } = triageCalls(rec);
+  if (!taken.length) return '';
+  let repo = null;
+  try { repo = E.ghRepo(); } catch { /* outside a repo: logged without one */ }
+  appendDecisions(taken.map((decision) => decisionEntry({ decision, ticket: key, run: 'triage', repo, source: 'triage' })), state);
+  return `, took ${taken.length} call(s) on triage's recommendation (logged)`;
+}
+
+// An issue (a search result or a get) whose status category is done: its status name, or null.
+const doneInSearch = (issue) => (issue?.fields?.status?.statusCategory?.key === 'done' ? String(issue.fields.status.name || 'Done') : null);
+// The ticket's Jira status name when its status category is done, else null. Only a tracker key is
+// read, and a read that fails is not done here: triage reads the ticket and reports it.
+function doneInJira(key) {
+  const k = E.ticketKind(key);
+  if (!k.ok || k.kind !== 'tracker') return null;
+  const r = spawnSync('desk-jira', ['get', key, '--json'], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
+  if (r.status !== 0) return null;
+  try { return doneInSearch(JSON.parse(r.stdout)); } catch { return null; }
+}
 
 // Whether `path` is on origin's `base`, as the passes fetch it.
 const onBase = (base, path) => spawnSync('git', ['-C', E.repoRoot(), 'cat-file', '-e', `origin/${base}:${path}`], { stdio: 'ignore' }).status === 0;
@@ -296,6 +323,18 @@ function blockerRoute(key, rec) {
   if (hits.length > 1) return { reasons: [`it is blocked by ${hits.map((h) => `${h.on.join(', ')} in batch ${h.name}`).join(' and by ')}: say which batch it joins`] };
   const h = hits[0];
   return h ? { route: h.name, batch: h.name, supervised: h.supervised, why: `${key} is blocked by ${h.on.join(', ')}, in batch ${h.name}: it joins that batch` } : null;
+}
+
+// Whether the other named batch holding `key` (belongsElsewhere's `held`) is where an admit would place
+// it, as its triage record there says: its epic's feature batch, or the batch its files or blockers
+// route it to from the standing queue `own`.
+function placedThere(key, held, own) {
+  if (!held.name) return false;
+  const rec = readJson(join(held.state, 'triage', `${key}.json`), null);
+  if (!rec) return false;
+  if (rec.epic?.key === held.name) return true;
+  const base = own?.base ?? (E.configValue('default-branch') || 'main');
+  return (baseRoute(key, rec, base) ?? blockerRoute(key, rec))?.route === held.name;
 }
 
 // One triaged ticket into the batch, both paths: the queue read again whole (triage took minutes, and a
@@ -381,9 +420,20 @@ function intake({ state, query, reg, now }) {
   // A feature batch whose start was cut off is discarded, and its epic handed on rather than started
   // again into the same timeout.
   for (const a of clearAbandoned()) hand(a.batch, `an epic, and ${a.text}`);
+  // A ticket the search shows done, an epic included, is neither triaged nor admitted, and is said
+  // once; one reopened since is taken as any other.
+  const open = [];
+  for (const i of found.filter((x) => isNew(x.key))) {
+    if (!doneInSearch(i)) { open.push(i); continue; }
+    if (reg.tickets[i.key]?.outcome === 'done') continue;
+    const text = `already done in Jira (${doneInSearch(i)}): nothing triaged or admitted`;
+    reg.tickets[i.key] = { at: now.toISOString(), outcome: 'done', text };
+    writeIntake(state, reg);
+    lines.push(`intake: ${i.key} ${text}`);
+  }
   // An epic is a feature batch's, never a worker's: one a run has its batch started, and its plan
   // drafted and left for the person, beside the standing batch and any other epic's.
-  const epicKeys = found.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key).filter(isNew);
+  const epicKeys = open.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key);
   for (const [n, key] of epicKeys.entries()) {
     if (liveFeatureBatches().some((b) => b.name === key)) {
       const text = `an epic, and its feature batch ${key} is already running: its children join that batch`;
@@ -401,7 +451,8 @@ function intake({ state, query, reg, now }) {
     writeIntake(state, reg);
     lines.push(...s.lines.map((l) => `intake: ${l}`));
   }
-  const fresh = found.map((i) => i.key).filter((k) => !epicKeys.includes(k) && isNew(k));
+  // Asked again: a child of an epic started above now belongs to that epic's feature batch.
+  const fresh = open.filter((i) => !epicKeys.includes(i.key) && isNew(i.key)).map((i) => i.key);
   for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
   const triageNow = fresh.slice(0, MAX_TRIAGE);
@@ -435,10 +486,10 @@ function intake({ state, query, reg, now }) {
     if (r.elsewhere?.route && r.elsewhere.supervised) {
       const j = joinFeature(key, r.elsewhere.route, { by: 'intake' });
       if (j.why) { hand(key, `${r.elsewhere.why}, but it was not admitted there: ${j.why}`); continue; }
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', batch: r.elsewhere.route, text: `${laneSize(j.rec)}${heldText(j)}, into batch ${r.elsewhere.route}` };
+      reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', batch: r.elsewhere.route, text: `${laneSize(j.rec)}${heldText(j)}${j.took}, into batch ${r.elsewhere.route}` };
       writeIntake(state, reg);
       admitted.push(key);
-      lines.push(`intake: admitted ${key} by intake into batch ${r.elsewhere.route} (${laneSize(j.rec)})${heldText(j)}: ${r.elsewhere.why}`);
+      lines.push(`intake: admitted ${key} by intake into batch ${r.elsewhere.route} (${laneSize(j.rec)})${heldText(j)}${j.took}: ${r.elsewhere.why}`);
       continue;
     }
     // One a session runs is the session's until it is handed over (closed's 'session'): it waits for that.
@@ -466,10 +517,11 @@ function intake({ state, query, reg, now }) {
     if (r.started) { started = r.started; lines.push(`intake: started standing batch ${started}, handed to the supervisor`); }
     if (r.admitFailed) { lines.push(`intake: ${key} not admitted: ${r.admitFailed}; the next intake tries again`); continue; }
     const parked = designPark(rec) ? `, parked: ${designPark(rec)}` : '';
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${parked}` };
+    const took = logTaken(key, rec, state);
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}${parked}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r)}${parked}`);
+    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r)}${took}${parked}`);
   }
   return done({ started });
 }
@@ -506,7 +558,7 @@ function joinFeature(key, epic, { by }) {
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }
-  return { batch: b, base, held, outside: holds.outside, rec: t.rec };
+  return { batch: b, base, held, outside: holds.outside, rec: t.rec, took: logTaken(key, t.rec, b.state) };
 }
 
 function byHand(keys, { state, by, front, now }) {
@@ -542,7 +594,10 @@ function byHand(keys, { state, by, front, now }) {
   for (const key of keys) {
     if (!E.SAFE_ID.test(key)) { refuse(key, 'not a ticket id'); continue; }
     if (q?.tickets?.[key]) { lines.push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
+    const doneAs = doneInJira(key);
+    if (doneAs) { lines.push(`${key} is already done in Jira (${doneAs}): nothing triaged or admitted`); continue; }
     const away = belongsElsewhere(key, null, E.queueFile());
+    if (away?.held && placedThere(key, away.held, q)) { lines.push(`${key} is already in batch ${away.batch} (${away.held.ticket})`); continue; }
     if (away) { refuse(key, away.why); continue; }
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
@@ -576,6 +631,7 @@ function byHand(keys, { state, by, front, now }) {
     // A child of an epic whose feature batch is live joins that batch, and so does a ticket whose files
     // are on another running batch's base: the standing queue is untouched.
     let feature = null;
+    let took = null;
     const joinTo = r.elsewhere?.epic ?? r.elsewhere?.route;
     if (joinTo) {
       const j = joinFeature(key, joinTo, { by });
@@ -583,15 +639,17 @@ function byHand(keys, { state, by, front, now }) {
       r = j.why ? { admitFailed: `${why}: ${j.why}` } : j;
       feature = j.batch ?? null;
       rec = j.rec ?? rec;
+      took = j.took ?? null;
     }
     const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.elsewhere?.why ?? r.reasons?.join('; ')
       ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
     if (fail) { refuse(key, fail); continue; }
+    took ??= logTaken(key, rec, state);
     const reg = readIntake(state);
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}, by ${by}` };
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}`);
+    lines.push(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
     if (front) {

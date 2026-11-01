@@ -43,6 +43,19 @@ export const PASS_GRACE_MS = 10 * 60 * 1000;
 // The heartbeat file pass.mjs writes for one queue file.
 export const beatFile = (stateDir, queuePath) => join(stateDir, 'orchestrators', `${queuePath.replace(/[^A-Za-z0-9]/g, '-')}.json`);
 
+// Writes one queue file's heartbeat: `at` now, `next` the pass or tick planned after (epoch ms, where
+// known), and `pass` when the last pass ran: now for a pass, the earlier one carried for a supervisor's
+// idle tick, which runs none (null with none recorded). Advisory: a failed write is ignored.
+export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass = Date.now(), now = Date.now() } = {}) {
+  const iso = (t) => (t == null ? null : new Date(t).toISOString());
+  try {
+    mkdirSync(join(stateDir, 'orchestrators'), { recursive: true });
+    writeFileSync(beatFile(stateDir, queuePath), JSON.stringify({
+      queue: queuePath, batch, pid: process.pid, at: iso(now), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }),
+    }));
+  } catch { /* advisory */ }
+}
+
 // A next-pass time as given on a command line: `+<seconds>` or `<seconds>` from now, or an ISO time.
 //   -> epoch ms, or null for anything else
 export function parseNext(word, now = Date.now()) {
@@ -52,9 +65,10 @@ export function parseNext(word, now = Date.now()) {
   return Number.isFinite(t) ? t : null;
 }
 
-// The newest pass on `queuePath`: pass.mjs writes one heartbeat per queue file into the state
-// directory, so only that queue's count. `next` is the pass it planned after, where one was recorded.
-//   -> { at, next } in epoch ms (next null when none), or null with no heartbeat
+// The newest heartbeat on `queuePath`: pass.mjs (and a supervisor's idle tick) writes one per queue
+// file into the state directory, so only that queue's count. `next` is the pass or tick planned after,
+// where one was recorded; `pass` is when the last pass ran (`at` for a beat that does not say).
+//   -> { at, next, pass } in epoch ms (next and pass null when none), or null with no heartbeat
 export function lastBeat(stateDir, queuePath) {
   const dir = join(stateDir, 'orchestrators');
   let last = null;
@@ -63,7 +77,10 @@ export function lastBeat(stateDir, queuePath) {
       const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
       const at = Date.parse(hb.at);
       const next = hb.next == null ? NaN : Date.parse(hb.next);
-      if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last.at)) last = { at, next: Number.isFinite(next) ? next : null };
+      const pass = 'pass' in hb ? Date.parse(hb.pass ?? '') : at;
+      if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last.at)) {
+        last = { at, next: Number.isFinite(next) ? next : null, pass: Number.isFinite(pass) ? pass : null };
+      }
     } catch { /* a torn heartbeat is no heartbeat */ }
   }
   return last;

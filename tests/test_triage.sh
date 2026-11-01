@@ -168,7 +168,7 @@ check "challenge: a CONFIRM with no failed reads stays CONFIRM"           '[ "$(
 
 # A challenge whose code reads failed is INCONCLUSIVE, with the reads; a CONFIRM that lists failed
 # reads is too, and neither changes the lane.
-lc(){ jq -r "$1" "$T/state/triage/fix-thing.json"; }
+lc(){ jq -r "$@" "$T/state/triage/fix-thing.json"; }
 for chal in '{"verdict":"INCONCLUSIVE","lane":"C","reason":"could not read","failed_reads":["git show main:a.ts: denied"]}' \
             '{"verdict":"CONFIRM","lane":"C","reason":"rests on the first pass","failed_reads":["git show main:a.ts: denied"]}'; do
   rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
@@ -308,6 +308,42 @@ rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-393: a ticket linking no canvas keeps the general rule" \
   '[ $rc -eq 0 ] && P0 | grep -qF "saved under $T/state/designs/fix-thing/project/ when the orchestrator could read"'
+
+# DS-394: only a reserved topic or a call with no recommendation stays a question; already met is
+# verify-only; what is already settled for the ticket rides in the prompt.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+CALLS=',"unknowns":["a plain question",{"question":"what does the pro tier cost?","category":"money","options":["10 GBP","20 GBP"],"recommended":"10 GBP"},{"question":"which retry backoff?","category":"engineering","options":["fixed","exponential"],"recommended":"exponential"},{"question":"keep the old export?","category":"scope","options":["keep","drop"],"recommended":null}]'
+out=$(STUB_LANE=A STUB_EXTRA="$CALLS" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-394 AC2: the prompt asks for each unknown's category and recommendation, and takes a take-category call" \
+  'P0 | grep -qF "\"recommended\": \"<one of options, or null>\"" && P0 | grep -qF "A take-category call with a recommendation" && P0 | grep -qF "\`user-fact\` for a fact only the user holds"'
+check "DS-394 AC2/AC3: the record keeps only the questions for the user in unknowns, as strings" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[\"a plain question\",\"what does the pro tier cost?\",\"keep the old export?\"]" ]'
+check "DS-394 AC2: the call taken on its recommendation goes to decided" \
+  '[ "$(lc -c .decided)" = "[{\"question\":\"which retry backoff?\",\"options\":[\"fixed\",\"exponential\"],\"chose\":\"exponential\",\"category\":\"engineering\"}]" ] && [[ "$out" == *"took 1 call(s) on their recommendation"* ]]'
+check "DS-394 AC4: the prompt says already met is verify-only, proved with tests, and never an unknown" \
+  'P0 | grep -qF "\"Already fixed\" is not a lane, and not a question." && P0 | grep -qF "proves each" && P0 | grep -qF "none of this goes in \`unknowns\`" && P0 | grep -qF "\"verify_only\": <true only when every acceptance criterion is in already_met>"'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_EXTRA=',"verify_only":true,"already_met":["AC1: src/a.js:12"]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-394 AC4: a record with every criterion met stays verify-only" '[ $rc -eq 0 ] && [ "$(lc .verify_only)" = true ] && [ "$(lc -c .already_met)" = "[\"AC1: src/a.js:12\"]" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_EXTRA=',"verify_only":true' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-394 AC4: verify-only naming no met criterion is not verify-only" '[ $rc -eq 0 ] && [ "$(lc .verify_only)" = false ] && [ "$(lc -c .already_met)" = "[]" ]'
+check "DS-394 AC5: with nothing recorded, the prompt has no settled section" '! P0 | grep -qF "Already settled for fix-thing"'
+mkdir -p "$T/state/briefings"
+printf '# Briefing for fix-thing\n\n## Answer from the user (2026-11-01T06:28:00Z)\n\nAC2 holds already: build AC1 only.\n' > "$T/state/briefings/fix-thing.md"
+printf '%s\n' '{"id":"a","ticket":"fix-thing","question":"which retry backoff?","options":["fixed","exponential"],"chose":"exponential","category":"engineering"}' \
+  '{"id":"b","ticket":"other","question":"not this ticket","options":["x","y"],"chose":"x","category":"scope"}' > "$T/state/decisions.jsonl"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-394 AC5: a re-triage prompt carries the recorded answer and calls, and binds them" \
+  '[ $rc -eq 0 ] && P0 | grep -qF "**Already settled for fix-thing.** These bind: raise no unknown they answer, on the same acceptance" && P0 | grep -qxF "AC2 holds already: build AC1 only." && P0 | grep -qxF -- "- which retry backoff?: took \"exponential\" (engineering)"'
+check "DS-394 AC5: another ticket's calls are left out" '! P0 | grep -qF "not this ticket"'
+printf '%s\n' '{"id":"o","override_of":"a","ticket":"fix-thing","question":"which retry backoff?","was":"exponential","chose":"fixed","by":"ben"}' >> "$T/state/decisions.jsonl"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-394 AC5: a call the person overrode binds as overridden, and the overridden choice is not listed" \
+  '[ $rc -eq 0 ] && P0 | grep -qxF -- "- which retry backoff?: took \"fixed\", overriding \"exponential\" (ben) (engineering)" && ! P0 | grep -qF "took \"exponential\""'
+rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'

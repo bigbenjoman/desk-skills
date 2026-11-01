@@ -49,12 +49,14 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
-# The search: whatever $T/search.json holds, or a failure while $T/search.fails exists.
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs decisions.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+# The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
+# with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/jira.calls"
 [ "\$1" = create ] && { echo "created E-11"; exit 0; }
+[ "\$1" = get ] && [ -f "$T/get/\$2.json" ] && { cat "$T/get/\$2.json"; exit 0; }
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
 EOF
@@ -378,6 +380,12 @@ out=$(admit X-1); rc=$?
 check "DS-352 AC1: an epic whose own feature batch is live is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted X-1: an epic, and its feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan X-1" <<< "$out"'
 n=$(count "$T/triage.calls"); out=$(admit X-2); rc=$?
 check "DS-307 AC4: /desk-admit refuses a ticket in another batch before any triage" '[ $rc -eq 11 ] && grep -q "^not admitted X-2: X-2 is in batch X-1" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+check "DS-400 AC2: the refusal of a ticket in a batch it does not belong to names the needs-you move" 'grep -q "^not admitted X-2: X-2 is in batch X-1: a ticket is in one batch at most; if it belongs elsewhere, move it from /desk-needs-you once it is parked or stopped" <<< "$out"'
+n=$(count "$T/triage.calls"); out=$(admit X-4); rc=$?
+check "DS-400 AC1: a child already in its epic's feature batch is said to be there with its state, exit 0, not triaged" '[ $rc -eq 0 ] && grep -qx "X-4 is already in batch X-1 (triaged)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(nget tickets.X-4.state)" = triaged ]'
+out=$(admit Y-1); rc=$?
+check "DS-400 AC1: a ticket already in the batch its blocker routes it to is said to be there, exit 0" '[ $rc -eq 0 ] && grep -qx "Y-1 is already in batch X-1 (parked)" <<< "$out"'
+check "DS-400 AC3: the desk-admit skill asks nothing for a ticket already where it belongs" 'grep -q "is already in batch <B> (<state>)\`, its epic.s feature" "$SK" && grep -q "batch included: ask nothing about it" "$SK"'
 mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"
 out=$(intake)
 check "DS-307: once the feature batch is archived, its child is taken as any other" '[ "$(qget tickets.X-3.state)" = triaged ]'
@@ -598,6 +606,46 @@ g config core.hooksPath "$T/refuse-hooks"; rec E-22 A '"type":"Epic","branch":"f
 out=$(admit E-22 --by ben); rc=$?
 check "DS-383 AC4: a refused push's reason carries the hook's pre-push lines and git's" '[ $rc -eq 11 ] && grep -q "^not admitted E-22: .*could not be read or pushed (pre-push: refused for the test pre-push: here is the fix error: failed to push some refs" <<< "$out"'
 g config --unset core.hooksPath; g checkout -q main; rm -rf "$EB/E-20" "$T/desk/bin"
+
+# ---- DS-394: only a reserved topic or no recommendation refuses; a done ticket is said done ---------
+# tracker: the config with Jira keys, so /desk-admit reads each ticket's status before triage.
+tracker(){ config yes "${1-\`none\`}"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `[A-Z]+-[0-9]+` |\n' >> "$T/cfg/repos/acme__widgets/config.md"; }
+status(){ mkdir -p "$T/get"; printf '{"key":"%s","fields":{"status":{"name":"%s","statusCategory":{"key":"%s"}}}}\n' "$1" "$2" "$3" > "$T/get/$1.json"; }
+# call <question> <category> <option> <option> <recommended as JSON>: one triage unknown.
+call(){ printf '{"question":"%s","category":"%s","options":["%s","%s"],"recommended":%s}' "$1" "$2" "$3" "$4" "$5"; }
+logged(){ jq -s -c "[.[] | select(.ticket == \"$1\") | [.question, .chose, .category, .source]]" "$T/state/decisions.jsonl" 2>/dev/null; }
+tracker; running_batch; rm -f "$T/state/intake.json" "$T/state/decisions.jsonl"
+status DN-1 Done "done"; rec DN-1 A; n=$(count "$T/triage.calls")
+out=$(admit DN-1 --by ben); rc=$?
+check "DS-394 AC1: /desk-admit says a ticket done in Jira is already done, exit 0" '[ $rc -eq 0 ] && grep -q "^DN-1 is already done in Jira (Done): nothing triaged or admitted$" <<< "$out" && ! grep -q "not admitted" <<< "$out"'
+check "DS-394 AC1: nothing is triaged or admitted for it" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.DN-1)" = undefined ] && ! grep -qs DN-1 "$T/state/intake.json"'
+status DN-2 "In Progress" indeterminate; rec DN-2 A
+out=$(admit DN-2 --by ben); rc=$?
+check "DS-394 AC1: a ticket Jira has not done is triaged and admitted as before" '[ $rc -eq 0 ] && [ "$(count "$T/triage.calls")" = $((n + 1)) ] && [ "$(qget tickets.DN-2.state)" = triaged ]'
+tracker '`project = ACME`'; rec DN-3 A; n=$(count "$T/triage.calls")
+echo '{"issues":[{"key":"DN-3","fields":{"status":{"name":"Closed","statusCategory":{"key":"done"}}}}]}' > "$T/search.json"; out=$(intake)
+check "DS-394 AC1: intake says a ticket the search shows done is already done, and triages nothing" 'grep -q "^intake: DN-3 already done in Jira (Closed): nothing triaged or admitted$" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.DN-3)" = undefined ]'
+out=$(intake)
+check "DS-394 AC1: intake says it once" '[ "$out" = "intake: nothing new" ] && [ "$(count "$T/triage.calls")" = "$n" ]'
+echo '{"issues":[{"key":"DN-3","fields":{"status":{"name":"To Do","statusCategory":{"key":"new"}}}}]}' > "$T/search.json"; out=$(intake)
+check "DS-394: once reopened, intake takes it as any other" '[ "$(qget tickets.DN-3.state)" = triaged ]'
+rec DN-4 A '"type":"Epic"'; n=$(count "$T/triage.calls")
+echo '{"issues":[{"key":"DN-4","fields":{"issuetype":{"name":"Epic"},"status":{"name":"Done","statusCategory":{"key":"done"}}}}]}' > "$T/search.json"; out=$(intake)
+check "DS-394 AC1: intake says an epic the search shows done is already done, and starts nothing for it" 'grep -q "^intake: DN-4 already done in Jira (Done): nothing triaged or admitted$" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ ! -e "$EB/DN-4" ]'
+tracker
+# The record as triage.sh writes it: unknowns left to the person, the calls it took in decided.
+rec TK-1 A "\"decided\":[{\"question\":\"which retry backoff?\",\"options\":[\"fixed\",\"exponential\"],\"chose\":\"exponential\",\"category\":\"engineering\"},{\"question\":\"name the flag?\",\"options\":[\"on\",\"enabled\"],\"chose\":\"enabled\",\"category\":\"wording\"}]"
+out=$(admit TK-1 --by ben); rc=$?
+check "DS-394 AC2: a ticket whose only unknowns are calls with a recommendation is admitted, saying so" '[ $rc -eq 0 ] && [ "$(qget tickets.TK-1.state)" = triaged ] && grep -q "^admitted TK-1 by ben into batch b1 (lane A, size S), took 2 call(s) on triage.s recommendation (logged)$" <<< "$out"'
+check "DS-394 AC2: each call is logged as a decision" '[ "$(logged TK-1)" = "[[\"which retry backoff?\",\"exponential\",\"engineering\",\"triage\"],[\"name the flag?\",\"enabled\",\"wording\",\"triage\"]]" ]'
+rec TK-2 A "\"unknowns\":[$(call 'what does the pro tier cost?' money '10 GBP' '20 GBP' '"10 GBP"'),$(call 'which retry backoff?' engineering fixed exponential '"exponential"')]"
+rec TK-3 A "\"unknowns\":[$(call 'keep the old export?' scope keep drop null)]"
+out=$(admit TK-2 TK-3); rc=$?
+check "DS-394 AC3: an unknown on a reserved topic refuses the ticket with that question, as today" '[ $rc -eq 11 ] && grep -q "^not admitted TK-2: open question(s): what does the pro tier cost?$" <<< "$out" && [ "$(qget tickets.TK-2)" = undefined ]'
+check "DS-394 AC3: so does a call with no recommendation, and a refused ticket logs nothing" 'grep -q "^not admitted TK-3: open question(s): keep the old export?$" <<< "$out" && [ "$(logged TK-2)" = "[]" ] && [ "$(logged TK-3)" = "[]" ]'
+rec VO-1 A '"verify_only":true,"already_met":["AC1: src/a.js:12 retries","AC2: src/b.js:4 logs"]'
+out=$(admit VO-1 --by ben); rc=$?
+check "DS-394 AC4: a ticket whose every criterion is already met is admitted as verify-only" '[ $rc -eq 0 ] && [ "$(qget tickets.VO-1.state)" = triaged ] && grep -q "^admitted VO-1 by ben into batch b1 (lane A, size S, verify-only)$" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -38,7 +38,8 @@
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes
 //     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
 //     or, with anything parked or failed, DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch
-//     went idle, so a pass sees what cleared a park outside the queue. Each idle tick still runs the
+//     went idle, so a pass sees what cleared a park outside the queue. Each idle tick refreshes the
+//     batch's heartbeat (so desk-q and needs-you read it as run, not stopped), and still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
@@ -71,6 +72,7 @@ import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
+import { lastBeat, writeBeat } from './borrow.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -376,6 +378,7 @@ function batchInterval(intake) {
     if (reaped.length || driver.length) writeState(state, s);
     if (reaped.length) log([`== ${stamp()} ${reaped.join('\n')}`]);
     if (driver.length) log([`== ${stamp()} idle: the merge driver`, ...driver]);
+    idleBeat(state, q);
     idleCheckin(state, s, log, stamp);
     return;
   }
@@ -417,6 +420,18 @@ function runIntake() {
 
 // An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
 // the check-in alone and pushes what it returns, once per key, as a pass's push would be.
+// An idle tick runs no pass, so it refreshes the batch's heartbeat itself (pass.mjs writes it on a
+// pass): `at` this tick, `next` the agent's next one, and the last pass's time carried, so desk-q's
+// "last pass" still says when one ran. Without it, an idle batch the supervisor still runs, and an
+// answer still wakes, reads as passes stopped once its last pass is LIVE_MS old.
+function idleBeat(state, q) {
+  const every = Number(installedInterval(E.repoSlug()));
+  const now = Date.now();
+  writeBeat(state, E.queueFile(), {
+    batch: q.batch ?? null, now, pass: lastBeat(state, E.queueFile())?.pass ?? null, next: every > 0 ? now + every * 1000 : null,
+  });
+}
+
 // The check-in reads Jira and GitHub; one that hangs is killed so the tick still ends.
 const CHECKIN_TIMEOUT_MS = Number(process.env.DESK_CHECKIN_TIMEOUT_MS) || 5 * 60 * 1000;
 function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {

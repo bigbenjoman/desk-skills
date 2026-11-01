@@ -57,7 +57,8 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 It triages each ticket afresh, which takes a minute or two each, and admits none until every triage
 is done: give the call your longest foreground timeout, and if it moves to the background, wait for
 its notification rather than running it again. Exit 0: every ticket was admitted
-or was already in the batch, any epic had its feature batch started, and any other epic is one to
+or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
+batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to
 plan (step 1b). Print its lines, and stop unless there is an epic to plan or a blocker to admit next.
 
 A ticket blocked by one in no batch is admitted held by it (`waiting for <B>, outside the batch, until
@@ -102,7 +103,7 @@ below as `(Recommended)`, with its reason as the description:
 | `blocked by <B>, which failed in the batch` | Requeue `<B>` (`queue.mjs requeue <B>`), or drop it if it will not be done | Run step 1 again for it |
 | `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |
 | `an epic, and its feature batch was not started: …` | Settle what follows the colon (the line names the push or fix), as the rows here say for it; nothing was left behind | Run step 1 again for it, or plan it in a session: `/desk-autopilot <EPIC>` |
-| `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most | Admit nothing for it |
+| `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most. If it belongs elsewhere, move it from `/desk-needs-you` once it is parked or stopped (`move "<batch>"`) | Admit nothing for it |
 | `is a child of epic <E>, but not admitted into its feature batch: …` | Settle what follows the colon, as the row above for it says | Run step 1 again for it |
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` (or `to its own slot <S>, named after its branch`, for a batch spanning several epics) | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
 | `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
