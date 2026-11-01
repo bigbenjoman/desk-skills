@@ -162,6 +162,11 @@ t('re-save: a file the new version dropped is removed', existsSync(join(r1, DIR,
 t('re-save: other tickets kept', c.source.tickets.map((x) => x.key).join(' '), 'DS-51 DS-53');
 
 // ---- check (the lint finding) ----
+// checkTicket reads the base from the environment, so pin it: a runner inside a feature batch
+// exports another default branch and batch, which these fixture repos do not have.
+process.env.DESK_DEFAULT_BRANCH = 'main';
+process.env.DESK_QUEUE = join(T, 'no-queue.json');
+delete process.env.DESK_BATCH;
 const issue = (desc, parent = { key: 'DS-50', fields: { issuetype: { name: 'Epic', hierarchyLevel: 1 } } }) => ({ key: 'DS-70', fields: { description: desc, parent } });
 const r5 = repo('r5');
 const git = (r, ...a) => execFileSync('git', ['-C', r, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });

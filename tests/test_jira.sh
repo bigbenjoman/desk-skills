@@ -9,7 +9,8 @@ SRC="$(cd "$S/.." && pwd)"
 J="$SRC/bin/desk-jira"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/repos" "$T/state"
 export HOME="$T/home" DESK_CONFIG_ROOT="$T/home/.config/desk" DESK_ENV_MJS="$SRC/desk/bin/desk-env.mjs"
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_AUTOPILOT_WORKER
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_AUTOPILOT_WORKER \
+  DESK_DEFAULT_BRANCH DESK_BATCH DESK_QUEUE DESK_AUTOPILOT_STATE
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf 'ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf 'FAIL %s\n' "$1"; }
