@@ -229,7 +229,7 @@ check "tsx scripts still run from the worktree"            'ok "node $W/node_mod
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
 # okc <command>: every piece of a `;` / `&&` / `||` / `|` compound allowed, as the harness splits one.
-okc(){ local c p; for c in "$@"; do while IFS= read -r p; do [ -z "$p" ] || ok "$p" || return 1; done < <(printf '%s\n' "$c" | perl -pe 's/\s*(;|&&|\|\||\|)\s*/\n/g'); done; }
+okc(){ local c p; for c in "$@"; do while IFS= read -r p; do [ -z "$p" ] || ok "$p" || return 1; done < <(printf '%s\n' "$c" | perl -pe 's/\s*(;|&&|\|\||\|)\s*/\n/g'); done; }  # bash32: ok the |& is inside a perl regex, not a pipe
 check "DS-398 AC1 a status check echoed after desk-env is allowed" 'okc "desk-env model finder; echo \"exit=\$?\"" "printf %s\\\\n x" "true" "git status && echo done"'
 check "DS-398 AC1 a refused piece still sinks the compound" '! okc "echo x; rm -rf build" && no "rm -rf build"'
 R=$(cd "$W" && pwd -P)
