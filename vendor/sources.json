@@ -117,12 +117,12 @@
         "path": "plugins/developer-essentials/skills/auth-implementation-patterns"
       },
       "pin": {
-        "commit": "1f8ac5288",
-        "date": "2026-10-15"
+        "commit": "0f73766f8",
+        "date": "2026-10-30"
       },
       "license": "MIT",
       "notes": "Whole skill folder git-tree-identical to upstream at this commit (tree hash also equals ~/.agents/.skill-lock.json skillFolderHash; installed via npx skills). Newer upstream commits touch this folder; latest wshobson change is be57c0b2e 2026-05-22 (multi-harness marketplace) plus 47a5dbc3f 2026-03-0",
-      "tree_sha256": "88994c0ad2edab7f0c5491edfadd0f29641de0fcf917ab75f6df31d30ac5aa8c"
+      "tree_sha256": "991d107aa41cf60369272703aad8f42ad5592a9f889d0a5f896293b93a820d04"
     },
     "competitors": {
       "source": {
