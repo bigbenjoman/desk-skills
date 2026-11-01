@@ -45,9 +45,9 @@ for start, discard or an edit, and its children wait behind it. The supervisor a
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
 starts, and discard removes the batch and releases the children. An edit it cannot apply cleanly
 comes back as a new `plan` item naming why), `triage`
-(open triage questions), `held` (a hold only you can let start), `stopped` (a worker gave up), `pr`
+(open triage questions), `held` (a hold only you can let start, or `admit` its blocker in no batch), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
-`worktree` (no worker spawns into its worktree until its changes are committed, pushed or discarded) or `usage` (the batch is held on a usage limit:
+`worktree` (no worker spawns into its worktree until it is clean) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
 switch); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
 outside GitHub (a build, a staging migration) has none: its need names the step, and it leaves the
@@ -81,7 +81,7 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `start`, `requeue`, `drop`, `approve`, `not-now`, `open` and `done`. Each run prints one
+Leave `"<text>"` off for `start`, `requeue`, `drop`, `approve`, `not-now`, `open`, `admit` and `done`. Each run prints one
 line saying what it recorded. Keep it for the end.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
@@ -89,10 +89,10 @@ line saying what it recorded. Keep it for the end.
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
 - **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
-- **`open`** (lane C or D): never requeued. Show its line, which names the `/desk-ticket <TICKET>`
-  session to open.
+- **`open`** (lane C or D) and **`admit`**: records nothing. Show its line: it names the
+  `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts the item in the not-now register. `list` and `left` leave it out until its
-  question, blocker or PR head changes. Do not ask about it again in this run.
+  question, blocker or PR head changes, or it gains an action. Do not ask about it again in this run.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, nothing more is needed: its next pass picks the answer up.

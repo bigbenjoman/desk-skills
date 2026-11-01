@@ -42,8 +42,11 @@ export function parseInputs(raw) {
   return { ok: true, inputs: Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Array.isArray(v) ? v.map(String).join(', ') : String(v)])) };
 }
 
-export function putOffEntry({ question, ticket, inputs = {}, by = null, at = new Date().toISOString() }) {
-  return { key: questionKey(question), question: String(question).trim(), ticket, at, by, inputs, hash: inputsHash(inputs) };
+// `actions`, where given, are the actions the item offered when it was put off: not part of its
+// inputs, so a pass or the digest still reads the question as put off, but one it gains brings it back
+// in desk-needs-you.
+export function putOffEntry({ question, ticket, inputs = {}, by = null, at = new Date().toISOString(), actions = null }) {
+  return { key: questionKey(question), question: String(question).trim(), ticket, at, by, inputs, hash: inputsHash(inputs), ...(actions ? { actions } : {}) };
 }
 
 // {ok: true, entries: Map(key -> entry)} or {ok: false, why}. The last line for a key wins, and a
@@ -86,9 +89,11 @@ export function lookup(register, { question, inputs = {} }) {
   const entry = register?.ok ? register.entries.get(questionKey(question)) : null;
   if (!entry) return { status: 'ask' };
   if (entry.hash === inputsHash(inputs)) return { status: 'put_off', entry };
-  const what = changes(entry.inputs, inputs);
-  return { status: 'changed', entry, line: `Changed since ${entry.by ?? 'it was'} put ${entry.by ? 'it ' : ''}off on ${day(entry.at)}: ${what.join('; ') || 'its inputs'}.` };
+  return { status: 'changed', entry, line: changedLine(entry, changes(entry.inputs, inputs)) };
 }
+
+// The line a question asked again carries: who put it off and when, then what changed since.
+export const changedLine = (entry, what) => `Changed since ${entry.by ?? 'it was'} put ${entry.by ? 'it ' : ''}off on ${day(entry.at)}: ${what.join('; ') || 'its inputs'}.`;
 
 // The inputs a pass can read again for itself: `config:<row id>` through read.config(id), and
 // `pr-head` through read.prHead(). A reader that answers null leaves the input as it was; any other
