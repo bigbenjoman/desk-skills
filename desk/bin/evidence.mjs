@@ -32,10 +32,13 @@ export function parseEvidenceRow(items) {
 
 // A body the evidence workflow can fill: `_drag <file>_` cells left, and a fenced ```evidence block
 // saying what to shoot.
-export const dragCells = (body) => (String(body ?? '').match(/_drag \S+_/g) ?? []).length;
+// A cell is never inside a code span or a fenced block: a body that writes `_drag <file>_` there is
+// describing the cell, not leaving one (DS-381).
+const outsideCode = (body) => String(body ?? '').replace(/^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm, '').replace(/(`+)[^`]*?\1/g, '');
+export const dragCells = (body) => (outsideCode(body).match(/_drag \S+_/g) ?? []).length;
 export const hasEvidenceBlock = (body) => /^\s*```evidence\b/m.test(String(body ?? ''));
 // The files a body's `_drag <file>_` cells name, once each, in the order they first appear.
-export const dragFiles = (body) => [...new Set([...String(body ?? '').matchAll(/_drag (\S+)_/g)].map((m) => m[1]))];
+export const dragFiles = (body) => [...new Set([...outsideCode(body).matchAll(/_drag (\S+)_/g)].map((m) => m[1]))];
 // The files a body's cells name that `shots` (the file names in the ticket's screenshot directory)
 // does not hold: screenshots nobody took, which a capture try (fix-tries.mjs captureTry) takes.
 export const missingShots = (body, shots) => dragFiles(body).filter((f) => !(shots ?? []).includes(f));
