@@ -49,9 +49,25 @@ related
 check "a full scope runs every suite"                        '[ $rc -eq 0 ] && ran a && ran b && ran lint && [[ "$out" == *"scope full against origin/main, so every suite runs"* ]]'
 git -C "$R" reset -q --hard HEAD~1
 
-git -C "$R" update-ref -d refs/remotes/origin/main
+printf 'echo b2\n' > "$R/lib/b.sh"
+related
+check "an uncommitted edit counts: its suite runs too"       '[ $rc -eq 0 ] && ran a && ran b && [[ "$out" == *"scope some against origin/main: test_a.sh test_b.sh test_lint.sh"* ]]'
+git -C "$R" checkout -q -- lib/b.sh
+
+git -C "$R" rm -q lib/b.sh
+related
+check "an uncommitted deletion runs every suite" '[ $rc -eq 0 ] && ran a && ran b && [[ "$out" == *"lib/b.sh was deleted or renamed against origin/main, so every suite runs"* ]]'
+git -C "$R" reset -q --hard HEAD
+
+cp "$R/tests/scope_sections.mjs" "$T/scope_sections.mjs"
+printf 'process.exit(1);\n' > "$R/tests/scope_sections.mjs"
 related
 check "AC3 scope_sections.mjs failing runs every suite"      '[ $rc -eq 0 ] && ran a && ran b && ran lint'
 check "AC3 and says why"                                     '[[ "$out" == *"related: scope_sections.mjs failed against origin/main, so every suite runs"* ]]'
+cp "$T/scope_sections.mjs" "$R/tests/scope_sections.mjs"
+
+git -C "$R" update-ref -d refs/remotes/origin/main
+related
+check "no merge base with the default branch runs every suite" '[ $rc -eq 0 ] && ran a && ran b && ran lint && [[ "$out" == *"related: no merge base with origin/main, so every suite runs"* ]]'
 
 echo "related: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

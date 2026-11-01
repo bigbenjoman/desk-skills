@@ -55,8 +55,9 @@
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
-//                                             an unattended batch parks on (STALLS), a dontAsk settings file
-//                                             (DONTASK); "no drift" and exit 0, else exit 1. --all: every repo
+//                                             an unattended batch parks on (STALLS), §4 command items no worker
+//                                             may run (UNLISTED), a dontAsk settings file (DONTASK);
+//                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
