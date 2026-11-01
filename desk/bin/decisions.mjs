@@ -8,7 +8,8 @@
 //   decisions.mjs check <TICKET> '{"question", "checked", "showed"}' [--pr <number or URL>]
 //
 // A check is a question the session settled by checking instead of asking (`AUTOPILOT_CHECKED:` from a
-// worker), logged with what it checked and what that showed.
+// worker), logged with what it checked and what that showed. Intake logs the calls a triage record
+// took (triageCalls) when it admits the ticket.
 // <json> is {"question", "options": [...], "chose", "category"}. Exits 0 once the entry is in the
 // log (or already was), 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
 import { readFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
@@ -41,6 +42,43 @@ export function parseDecision(raw) {
   if (ASK_CATEGORIES.includes(d.category)) return { ok: false, why: `${d.category} is an ask category: ask, never take it` };
   if (!TAKE_CATEGORIES.includes(d.category)) return { ok: false, why: `category must be one of ${TAKE_CATEGORIES.join(', ')}` };
   return { ok: true, decision: { question: d.question.trim(), options: d.options.map((o) => o.trim()), chose: d.chose.trim(), category: d.category } };
+}
+
+// A triage record's questions, split: `ask` (strings) waits for the person, `taken` (decisions) is
+// each call triage made on its recommendation. An unknown is a string, asked, or
+// {question, category, options, recommended}: taken when parseDecision accepts it with `recommended`
+// as the choice, asked otherwise. Entries already in `decided` are taken, so a split record splits
+// the same again.
+export function triageCalls(rec) {
+  const ask = [];
+  const taken = [];
+  const asDecision = (u) => parseDecision(JSON.stringify({ question: u.question, options: u.options, chose: u.recommended ?? u.chose, category: u.category }));
+  for (const u of Array.isArray(rec?.unknowns) ? rec.unknowns : []) {
+    const obj = u && typeof u === 'object' && !Array.isArray(u);
+    const d = obj ? asDecision(u) : null;
+    if (d?.ok) taken.push(d.decision);
+    else if (obj) ask.push(text(u.question) ? u.question.trim() : JSON.stringify(u));
+    else if (text(String(u ?? ''))) ask.push(String(u).trim());
+  }
+  for (const u of Array.isArray(rec?.decided) ? rec.decided : []) {
+    const d = u && typeof u === 'object' ? asDecision(u) : null;
+    if (d?.ok && !taken.some((t) => t.question === d.decision.question)) taken.push(d.decision);
+  }
+  return { ask, taken };
+}
+
+// One ticket's calls and checks from a decision log as digest.mjs readDecisions splits it, each taken
+// call with the person's override applied: `chose` is the override's, `was` the call triage or a worker
+// took, `by` who overrode it.
+export function ticketCalls({ taken = [], checks = [], overrides = [] } = {}, ticket) {
+  const over = new Map(overrides.filter((o) => o.ticket === ticket).map((o) => [o.override_of, o]));
+  return {
+    taken: taken.filter((d) => d.ticket === ticket).map((d) => {
+      const o = over.get(d.id);
+      return o ? { ...d, chose: o.chose, was: d.chose, by: o.by ?? null } : d;
+    }),
+    checks: checks.filter((c) => c.ticket === ticket),
+  };
 }
 
 // A question a session settled by checking rather than asking: {"question", "checked", "showed"}.
