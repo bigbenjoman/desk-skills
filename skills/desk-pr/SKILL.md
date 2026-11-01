@@ -35,7 +35,8 @@ A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `
   **§5 Repo instructions**: the repo's own files (`CLAUDE.md`, `AGENTS.md`…) win over this skill on
   anything they cover. Read the parts about PRs, titles and docs before starting.
 
-`<TICKET>` below is the key matched by §4 Ticket key pattern. With §4 Tracker `none` there is no key:
+`<TICKET>` below is the key matched by §4 Ticket key pattern (`desk-env get ticket-pattern`). With §4
+Tracker (`desk-env get tracker`) `none` there is no key:
 use the branch's slug wherever a path needs one, and titles carry no key.
 
 ## Reference files — read at their step
@@ -72,8 +73,8 @@ docs          : <pages citing a changed file, or "none">
 infra         : <infra paths touched, or "none">
 siblings      : <helper → n sites migrated, m under Not migrated | none>
 unrelated     : none | <files> → own PR
-self-review   : <§4 Local review command's counts at <sha> · refuted by <codex|same-vendor> + any caveat, or "not run — why">
-pre-push      : <passed at <sha> in <n>s, plus any item skipped on the lock | failed: <command> | not set (§4 Pre-push checks <none|unset>)>
+self-review   : <§4 Local review command (desk-env get local-review)'s counts at <sha> · refuted by <codex|same-vendor> + any caveat, or "not run — why">
+pre-push      : <passed at <sha> in <n>s, plus any item skipped on the lock | failed: <command> | not set (§4 Pre-push checks (desk-env list pre-push-checks) <none|unset>)>
 ```
 
 Then check each line against these. Every one has been a real review comment or correction:
@@ -91,7 +92,8 @@ Then check each line against these. Every one has been a real review comment or 
   both are recurring review questions.
 - **No artefacts** — `.playwright-mcp/`, loose `.png`/`.jpeg`, scratch files, preview pages,
   temporary route-allowlist entries, a patched mock.
-- **§4 What review here consistently asks for.** Check the diff against each row of the house bar;
+- **§4 What review here consistently asks for** (`desk-env get review-asks`, one ask per line).
+  Check the diff against each row of the house bar;
   a PR that trips one gets that comment.
 - **Docs.** Every PR carries its own docs update where the repo keeps docs (§5 Repo instructions say
   where, and whether any are generated). Work it out from the diff — a staleness checker that dates
@@ -100,7 +102,7 @@ Then check each line against these. Every one has been a real review comment or 
   - `grep -rl "<changed path>" <docs dir>` — pages that cite repo-relative paths match a path
     straight from `git diff --name-only`, and a cited directory covers everything beneath it.
   - Files that feed a docs generator (an env example, an API router, a schema): regenerate with the
-    command the repo's instructions give, run through §4 Command prefix, and discard a diff that is
+    command the repo's instructions give, run through §4 Command prefix (`desk-env get command-prefix`), and discard a diff that is
     only a date stamp.
 
   No docs in the repo: the slot is "none", and says so. What a change set breaks is nearly always a
@@ -119,7 +121,7 @@ Then check each line against these. Every one has been a real review comment or 
 
 - **Self-review has run.** `desk-ticket` Stage 4b runs §4 Local review command before the branch
   becomes a PR. Fill the slot from that run's report — the counts and the head SHA it read — or
-  state why it did not run. Clean means the report matches §4 Clean review verdict. Do not start the
+  state why it did not run. Clean means the report matches §4 Clean review verdict (`desk-env get clean-verdict`). Do not start the
   body first: a confirmed top-severity finding changes the diff, and every sentence written before
   it is wasted. §4 Local review command `none`: the slot reads "not run — no local review command
   for this repo", and the Testing section carries the checks that did run.
@@ -188,7 +190,7 @@ about immediately, not at the bottom of a finished PR description.
 | Stripping a trailer the repo requires where §5 says `allowed` | Follow the repo's instructions exactly |
 | "Verified it works" in Testing | Give the number, the path, or the name that proves it |
 | Pushing because "the hook will catch it" | The hook runs only where `core.hooksPath` is set; run `scripts/desk/pre-push.sh --head` yourself |
-| Opening the PR and letting CI judge the body | Run §4 PR-description checks on the body file first |
+| Opening the PR and letting CI judge the body | Run §4 PR-description checks (`desk-env cmds pr-description-checks`) on the body file first |
 | A one-off script in the diff | Run it from the branch, delete it, don't merge it |
 | An infra PR with no ping drafted | Draft the note to the §4 infra owner; never send it |
 | `gh pr edit --body-file` from your local draft | It wipes what CI and bots added. Fetch the live body and change only what sits between desk's markers |
@@ -200,7 +202,7 @@ about immediately, not at the bottom of a finished PR description.
 | Screenshots with a consent banner over the content | Seed its cookie before the first `goto` |
 | A before/after table on a change that renders identically | Omit the section and say why in one line |
 | Opening a non-draft PR | Draft first (unless §5 PR lifecycle says otherwise); images and self-review land before it goes ready |
-| Merging with `--squash` because it's the usual | `--<§4 Merge method> --match-head-commit <sha>`, and only once that head is green (desk-config "Green") and no §4 Merge holds entry applies |
+| Merging with `--squash` because it's the usual | `--<§4 Merge method> --match-head-commit <sha>` (`desk-env get merge-method`), and only once that head is green (desk-config "Green") and no §4 Merge holds entry (`desk-env list merge-holds`) applies |
 | Carrying the messages register into a PR body | Different register; normal prose is right here |
 | Shortening a PR by dropping a caveat or a change | Simplify the wording, not the content |
 | "Self-reviewed, all clean" in Testing | Give the counts and the SHA |

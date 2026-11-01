@@ -84,8 +84,8 @@ built, so this list and the tables are where the reviewer agrees it.
 
 **Capturing.** Playwright at the chosen widths, saved to `<§2 Handoff directory>/<TICKET>/`.
 Pick the cheapest surface that renders real copy — **read `references/screenshot-surfaces.md`**
-before the first capture. It covers local surfaces and §4 Staging (with the token from §4 Staging
-bypass token location when staging is protected; §4 Staging `none` means local only). The two traps
+before the first capture. It covers local surfaces and §4 Staging (`desk-env list staging`; with the token from §4 Staging
+bypass token location, `desk-env get staging-bypass`, when staging is protected; §4 Staging `none` means local only). The two traps
 that ruin shots most often: a cookie-consent banner (seed its cookie before the first `goto`) and a
 "before" that renders missing i18n keys (restore the old component *and* its messages file
 together).

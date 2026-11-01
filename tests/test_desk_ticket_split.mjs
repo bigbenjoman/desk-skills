@@ -28,6 +28,18 @@ const REWRITTEN = [
   ['DS-368', 'the P2s round 3 carried to the PR body', 1],
   ['DS-368', 'A round 3 that reads `origin/<default>...HEAD`', 1],
   ['DS-368', 'or a P2 before round 3', 1],
+  // each §3b and §4 row a worker reads is named with its desk-env call
+  ...[
+    'e.g. "§4 Typecheck"', 'a key matching §4 Ticket key pattern (Tracker', 'an id matching §4 Other work id patterns (any tracker)',
+    'A new worktree then runs §4 Project subagents sync', 'Transition to §4 In-progress state (Jira only)', '| 4 | Verify |', '| 4b | Self-review |',
+    'Transition to §4 Review state (skip if it is `none`) by reading', 'linked into a worktree by §4 Project subagents sync', '(the cap is config §3b',
+    'Memory ceiling for parallel work', '§4 E2E tests and §4 Local database', 'house bar (§4 What review here consistently asks for) in',
+    'verdict off §4 Clean review verdict', '§4 Repo merge settings allow auto-merge, right after', 'A PR that touches a glob in §4 Merge',
+    'move the ticket to §4 Done state via', "**Green is the config's one definition**", 'Where §4 Vercel is set and', '§4 Env files from the main checkout',
+    'Env files go in before §4 Install', 'any way other than the §4 Done state', '**Any shared-state mutation stops first**', 'new ticket in <§4 Jira project>',
+    'without having run §4 Project subagents sync: they are all', 'while the ticket sits in §4 Review state', 'is the ticket still in §4 In-progress state',
+    'Assuming the §3b dev-server port is yours',
+  ].map((s) => ['DS-405', s, 1]),
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

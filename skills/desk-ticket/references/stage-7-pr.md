@@ -25,7 +25,7 @@ work went up attached to an unrelated ticket.
 
 ## Posting the self-review
 
-With §4 Local review command `none` there is no report to post: nothing is posted, and the PR's
+With §4 Local review command (`desk-env get local-review`) `none` there is no report to post: nothing is posted, and the PR's
 Testing section says the branch had no local review (the Stage 4b skip).
 
 **Posting the self-review (Stage 7).** Local reviews are posted to the PR so the code reviewer
@@ -65,8 +65,8 @@ change can clear a known P0. If a count is wrong, re-run the review at that head
 
 **Merging (Stage 7).** A draft cannot merge, so a PR left drafted is a merge silently deferred. If
 config §3 `pr-ready` and `pr-auto-merge` are both `yes` (auto-merge merges on green by itself, so it
-also needs `pr-merge-green`), and §4 Repo merge settings allow auto-merge, right after the Stage 4b
-post:
+also needs `pr-merge-green`), and §4 Repo merge settings (`desk-env get repo-merge-settings`) allow auto-merge, right after the
+Stage 4b post (the method is §4 Merge method, `desk-env get merge-method`):
 
 ```bash
 gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>
@@ -75,11 +75,11 @@ gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method> --match-head-comm
 Where the repo does not allow auto-merge, undrafting is the same and the merge is yours to make on
 green under `pr-merge-green`, always pinned: `gh pr merge <n> --<§4 Merge method>
 --match-head-commit <the head SHA whose checks you read>`. **A PR that touches a glob in §4 Merge
-holds is never merged or armed by you**, whatever §3 grants: report it ready with the hold's reason
+holds (`desk-env list merge-holds`) is never merged or armed by you**, whatever §3 grants: report it ready with the hold's reason
 (the manual step the repo needs first) and let the user merge it. Then **shepherd it until it merges** rather than handing back at
 "armed": the same rules the autopilot's merge driver follows, for one PR. If either row is `ask`,
 ask; otherwise stop at the draft and report the link. Once it merges, and it was the last open PR on
-the key, move the ticket to §4 Done state via `desk-jira` under §3 `jira-close-own-merged` (a
+the key, move the ticket to §4 Done state (`desk-env get done-state`) via `desk-jira` under §3 `jira-close-own-merged` (a
 non-tracker ticket: nothing to move). **Then tell the batch**, whether the PR merged or the ticket
 went to Done some other way: an autopilot batch may still hold the ticket parked, and would keep it
 parked for good.
@@ -95,10 +95,10 @@ is for interactive sessions only.
 
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
-  checks entry completed with success (a skipped one passes, as branch protection counts it); no other check failed, errored, timed out
-  or is still queued or running, unless §4 Advisory checks names it; and at least one check
+  checks entry (`desk-env list required-checks`) completed with success (a skipped one passes, as branch protection counts it); no other check failed, errored, timed out
+  or is still queued or running, unless §4 Advisory checks (`desk-env list advisory-checks`) names it; and at least one check
   completed with success. Then merge pinned to that commit with `--match-head-commit`. With §4
-  Branch protection `none`, nothing on GitHub stops a red merge, so the check is entirely yours.
+  Branch protection (`desk-env get branch-protection`) `none`, nothing on GitHub stops a red merge, so the check is entirely yours.
   Read check state with `gh pr checks <n> --json name,state,bucket`, or `awk -F'\t'` on the plain
   output: it is tab-separated, and a check name carrying an emoji breaks whitespace splitting.
 - **A review gate can fail on a fresh PR's first run when the review posts late.** Where a required
@@ -110,7 +110,7 @@ is for interactive sessions only.
   head SHA (`gh run rerun <id> --failed`, under §3 `ci-rerun`). Rerunning one in flight cancels it,
   and a fast loop starves the PR forever.
 - **A red preview-deploy check is often the host's builder running out of memory** (exit 137), not
-  the code. Where §4 Vercel is set and §3 `read-vercel` allows,
+  the code. Where §4 Vercel (`desk-env list vercel`) is set and §3 `read-vercel` allows,
   `vercel inspect --logs <url> --scope <team slug from §4 Vercel>` first. One preview build at a time.
 - **`DIRTY` merges nothing.** Merge `origin/<default>`, typecheck, then re-run Stage 4b at the new
   head and post it: a gate that matches the verdict against the exact head SHA reads nothing older.
