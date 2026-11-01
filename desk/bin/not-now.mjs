@@ -127,7 +127,9 @@ const isMain = (() => {
   catch { return false; }
 })();
 
-if (isMain) {
+// In a function, not at the top level: `add` imports needs-you.mjs, which imports this module, and
+// that import waits forever on a module still evaluating a top-level await.
+if (isMain) (async () => {
   const { EXIT, crashShowsPerson } = await import('./batch-state.mjs');
   crashShowsPerson();
   const args = process.argv.slice(2);
@@ -170,4 +172,4 @@ if (isMain) {
     process.exit(0);
   }
   refuse(usage);
-}
+})();
