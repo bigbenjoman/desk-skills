@@ -706,7 +706,7 @@ og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
 const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
 t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
-// ---- DS-401: a put-off item comes back once it offers an action it did not offer when put off.
+// ---- A put-off item comes back once it offers an action it did not offer when put off.
 const omegaState = join(env.HOME, '.desk-autopilot', 'acme__omega');
 // M-3 put off offering resume and not-now; M-2 by answer.mjs before entries recorded actions, so with
 // none; M-5 by answer.mjs since, with none either.
