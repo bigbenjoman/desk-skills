@@ -207,6 +207,12 @@ rmSync(cbDir, { recursive: true, force: true });
   t('DS-381 AC1 nor asks the person for screenshots', /screenshot/.test(named?.why ?? ''), false);
   t('DS-381 AC2 a real cell beside prose is still a cell', dragCells(`${prose}\n| _drag after.png_ |`), 1);
   t('DS-381 AC3 a cell in a fenced block is not listed; the real one is', dragFiles('| _drag before.png_ |\n```md\n| _drag example.png_ |\n```\n').join(','), 'before.png');
+  // #348 round 7: an unbalanced backtick above the table paired with one below it and hid the real cell.
+  const tail = '\n| _drag after.png_ |\n\nthen ``code`` below';
+  t('DS-379 a lone backtick in prose does not hide a real cell', dragCells('a stray ` here' + tail), 1);
+  t('DS-379 nor does the four-backtick form around three backticks', dragCells('write it as ```` ``` ```` here' + tail), 1);
+  t('DS-379 nor a run with no partner of its own length', dragCells('an unclosed `` run' + tail), 1);
+  t('DS-379 a span still hides a cell on its own line', dragCells('see ``_drag x.png_`` and `_drag y.png_`'), 0);
 
   t('EV row: a workflow file', JSON.stringify(parseEvidenceRow(['pr-evidence.yml'])), '{"workflow":"pr-evidence.yml"}');
   t('EV row: none is off', parseEvidenceRow(['none']), null);

@@ -33,8 +33,9 @@ export function parseEvidenceRow(items) {
 // A body the evidence workflow can fill: `_drag <file>_` cells left, and a fenced ```evidence block
 // saying what to shoot.
 // A cell is never inside a code span or a fenced block: a body that writes `_drag <file>_` there is
-// describing the cell, not leaving one (DS-381).
-const outsideCode = (body) => String(body ?? '').replace(/^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm, '').replace(/(`+)[^`]*?\1/g, '');
+// describing the cell, not leaving one (DS-381). A span stays on its line and closes only on a run of
+// its own length; a backtick run with no partner is left as text, so it cannot hide the cells below it.
+const outsideCode = (body) => String(body ?? '').replace(/^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm, '').replace(/(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g, '');
 export const dragCells = (body) => (outsideCode(body).match(/_drag \S+_/g) ?? []).length;
 export const hasEvidenceBlock = (body) => /^\s*```evidence\b/m.test(String(body ?? ''));
 // The files a body's `_drag <file>_` cells name, once each, in the order they first appear.
