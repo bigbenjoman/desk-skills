@@ -218,20 +218,14 @@ GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
 # A recorded branch is matched exactly; only an id with none falls back to the bounded regex.
 ticket_map(){   # ticket_map <key>...
-  node - "$DESK_QUEUE" "$@" <<'NODE'
-const fs = require('fs');
-const [qf, ...keys] = process.argv.slice(2);
+  node --input-type=module - "$DESK_BIN/batch-state.mjs" "$DESK_QUEUE" "$@" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [mod, qf, ...keys] = process.argv.slice(2);
+const { keyPattern } = await import(pathToFileURL(mod).href);
 let q = {};
-try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: regex only */ }
-const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-const re = (k) => {
-  const n = /^issue-([0-9]+)$/.exec(k)?.[1];
-  if (n) return `(^|[^A-Za-z0-9-])issue-${n}([^0-9]|$)|#${n}([^0-9]|$)`;
-  // Right edge: end, a character that cannot continue an id, or `-` followed by a non-digit — so the
-  // slug after a key (`fix/BUG-119-login`) matches and a longer id (`BUG-119-5`, `BUG-1190`) does not.
-  return `(^|[^A-Za-z0-9-])${esc(k)}($|[^A-Za-z0-9-]|-[^0-9])`;
-};
-console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: re(k) }))));
+try { q = JSON.parse(readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: regex only */ }
+console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: keyPattern(k) }))));
 NODE
 }
 # prs <state> [<key>...] -> lines `<number>\t<isDraft>\t<key>\t<base>` for the batch's PRs (or those

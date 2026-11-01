@@ -14,6 +14,15 @@ export const EXIT = Object.freeze({ GO_ON: 0, NOTHING_YET: 10, SHOW_PERSON: 11 }
 export class Refusal extends Error {}
 export const describeCrash = (e) => (e instanceof Refusal ? e.message : e?.stack ?? String(e));
 
+// The regex source that finds work id `k` in a PR's title or head branch: `issue-N` also as `#N`; any
+// other id bounded so the slug after it (`fix/BUG-119-login`) matches and a longer id (`BUG-119-5`,
+// `BUG-1190`) does not. merge-driver.sh and intake.mjs landedOn both match PRs with it.
+export function keyPattern(k) {
+  const n = /^issue-([0-9]+)$/.exec(k)?.[1];
+  if (n) return `(^|[^A-Za-z0-9-])issue-${n}([^0-9]|$)|#${n}([^0-9]|$)`;
+  return `(^|[^A-Za-z0-9-])${k.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}($|[^A-Za-z0-9-]|-[^0-9])`;
+}
+
 // A JSON state file read at the point of use: a missing, unreadable or corrupt one refuses with the
 // action that fixes it, never a bare JSON.parse stack.
 export function readJsonOrRefuse(path, action) {

@@ -51,7 +51,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
 
@@ -119,24 +119,25 @@ export function landedOn(key, base) {
   let prs;
   try { prs = r.status === 0 ? JSON.parse(r.stdout) : null; } catch { prs = null; }
   if (!Array.isArray(prs)) return null;
-  // A longer id (`DS-3911`, `BUG-119-5`) is not this one; a slug after it (`fix/DS-391-x`) is.
-  const names = new RegExp(`(^|[^A-Za-z0-9-])${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^A-Za-z0-9-]|-[^0-9])`);
+  const names = new RegExp(keyPattern(key));
   const mine = prs.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`));
   const reaches = (sha) => !!sha && spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', sha, `origin/${base}`], { stdio: 'ignore' }).status === 0;
   if (mine.some((p) => p.state === 'MERGED' && (p.baseRefName === base || reaches(p.mergeCommit?.oid)))) return true;
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
 }
 
-// How a triaged ticket's blockers hold it in a batch holding `tickets`, on `base`: `held`, the open
-// ones in the batch, released as they merge there; `outside`, those in no batch, open or Done with
-// their code not yet on `base`, lifted by the pass once each is both; `failed`, open ones that failed
-// in the batch, which nothing releases.
+// How a triaged ticket's blockers hold it in a batch holding `tickets`, on `base`: `held`, those in
+// the batch not merged there, open in Jira or Done with a PR still to merge, released as they merge;
+// `outside`, those in no batch, open or Done with their code not yet on `base`, lifted by the pass once
+// each is both; `failed`, open ones that failed in the batch, which nothing releases.
 function holdsFor(rec, tickets, base) {
   const out = { held: [], outside: [], failed: [] };
   for (const b of Array.isArray(rec.blockers) ? rec.blockers : []) {
     const t = tickets[b.key];
-    if (t) { if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key); }
-    else if (b.category !== 'done' || landedOn(b.key, base) !== true) out.outside.push(b.key);
+    if (t) {
+      if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key);
+      else if (t.state !== 'failed' && !t.merged_at && !(t.state === 'done' && t.result?.pr == null)) out.held.push(b.key);
+    } else if (b.category !== 'done' || landedOn(b.key, base) !== true) out.outside.push(b.key);
   }
   return out;
 }

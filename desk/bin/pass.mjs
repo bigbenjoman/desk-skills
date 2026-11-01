@@ -40,7 +40,7 @@ import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots } from '
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
-import { groupsNow } from './desk-q.mjs';
+import { groupsNow, keysOf } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, beatFile, parseNext } from './borrow.mjs';
 import { listBatches, lastPromotion } from './batches.mjs';
@@ -1978,23 +1978,27 @@ for (const t of onTracker) {
 // ---- outside holds -------------------------------------------------------
 // A ticket admitted behind blockers in no batch (held_outside, also in held_by) waits until each is
 // Done in Jira, as its triage record's `blockers` last read it, and its code is on this batch's base
-// (landedOn, asked only of Done ones). Each such blocker is lifted from the hold; one admitted to this
-// batch since is left in held_by as an ordinary hold, released when it merges here. The merge driver
-// never releases a ticket held outside its batch, so lifting the last blocker releases it here.
+// (landedOn, asked only of Done ones). Each such blocker is lifted from the hold, as is one the record
+// no longer lists (its link was removed, so it blocks nothing); one admitted to this batch since is
+// left in held_by as an ordinary hold, released when it merges here. The merge driver never releases a
+// ticket held outside its batch, so lifting the last blocker releases it here.
 {
   const qO = queue();
   const landed = new Map();
-  const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
   for (const t of Object.values(qO.tickets).filter((x) => isHeld(x) && x.held_outside)) {
     const outside = keysOf(t.held_outside);
-    const done = new Set((triageRec(t.key)?.blockers ?? []).filter((b) => b?.category === 'done').map((b) => b.key));
+    const blockers = triageRec(t.key)?.blockers;
+    const done = new Set((blockers ?? []).filter((b) => b?.category === 'done').map((b) => b.key));
+    const unlinked = Array.isArray(blockers) ? outside.filter((p) => !qO.tickets[p] && !blockers.some((b) => b?.key === p)) : [];
     const isLanded = (p) => { if (!landed.has(p)) landed.set(p, landedOn(p, DEFAULT_BRANCH)); return landed.get(p) === true; };
-    const lifted = outside.filter((p) => !qO.tickets[p] && done.has(p) && isLanded(p));
+    const landedNow = outside.filter((p) => !qO.tickets[p] && done.has(p) && isLanded(p));
+    const lifted = [...landedNow, ...unlinked];
     const left = outside.filter((p) => !qO.tickets[p] && !lifted.includes(p));
     if (left.length === outside.length) continue;
     const by = keysOf(t.held_by).filter((p) => !lifted.includes(p));
     const joined = outside.filter((p) => qO.tickets[p]);
-    const what = [lifted.length && `${lifted.join(', ')} Done and on ${DEFAULT_BRANCH}`, joined.length && `${joined.join(', ')} now in this batch`].filter(Boolean).join('; ');
+    const what = [landedNow.length && `${landedNow.join(', ')} Done and on ${DEFAULT_BRANCH}`, unlinked.length && `${unlinked.join(', ')} no longer linked as a blocker`,
+      joined.length && `${joined.join(', ')} now in this batch`].filter(Boolean).join('; ');
     if (DRY) { epicLines.push(`outside hold (dry run): ${t.key}: ${what}`); continue; }
     if (by.length) {
       q('set', t.key, `held_by=${by.join('|')}`, `held_outside=${left.join('|') || 'null'}`);
