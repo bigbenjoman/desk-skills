@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS } from '../desk/bin/evidence.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -183,6 +183,36 @@ rmSync(cbDir, { recursive: true, force: true });
   t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');
   t('EV red checks come first: no run while a check is red', ev(EVB, {})?.call === 'evidence' && undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] },
     { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call === 'checks', true);
+
+  // DS-379: cells whose file was never taken go to a capture worker, where the evidence workflow does not fill them.
+  const shots = (have) => (body) => missingShots(body, have);
+  const cap = ev('_drag a-before.png_ | _drag a-after.png_ | _drag a-after.png_', { evidence: null, missingShots: shots(['a-before.png']) });
+  t('DS-379 AC1 a cell with no screenshot file is a capture call, naming each file once', `${cap?.call} ${cap?.files.join(',')}`, 'capture a-after.png');
+  t('DS-379 AC1 its why names the files', cap?.why, '1 screenshot(s) in its body were never taken: a-after.png');
+  t('DS-379 AC1 a partial upload whose left cells have no file goes to capture too', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call, 'capture');
+  t('DS-379 AC4 every file taken but the upload not approved: the person uploads them, as before', undraftCall({ key: 'T-1', images_reported: true }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots(['a.png']) })?.action, 'upload the screenshots to #740');
+  t('DS-379 an evidence workflow that fills the cells comes before a capture worker', ev(EVB, { missingShots: shots([]) })?.call, 'evidence');
+  t('DS-379 a review not clean comes before a capture worker', undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO.replace('p2=0', 'p2=1')))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call !== 'capture', true);
+  t('DS-379 dragFiles reads each cell\'s file once, in order', dragFiles('_drag b.png_ x _drag a.jpg_ _drag b.png_').join(','), 'b.png,a.jpg');
+  // DS-381: #348's own body named the cell in backticks, and that held it for screenshots it never needed.
+  const prose = 'A body whose `_drag <file>_` cells had no file went to the person, and ``_drag <file>_`` too.';
+  t('DS-381 AC1 a cell named in a code span is not a cell', dragCells(prose), 0);
+  t('DS-381 AC1 nor a file to capture', dragFiles(prose).length, 0);
+  const named = undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: prose, reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots([]) });
+  t('DS-381 AC1 a body that only names the cell sends no capture worker', named?.call !== 'capture', true);
+  t('DS-381 AC1 nor asks the person for screenshots', /screenshot/.test(named?.why ?? ''), false);
+  t('DS-381 AC2 a real cell beside prose is still a cell', dragCells(`${prose}\n| _drag after.png_ |`), 1);
+  t('DS-381 AC3 a cell in a fenced block is not listed; the real one is', dragFiles('| _drag before.png_ |\n```md\n| _drag example.png_ |\n```\n').join(','), 'before.png');
+  // An unbalanced backtick above the table must not pair with one below it and hide the real cell.
+  const tail = '\n| _drag after.png_ |\n\nthen ``code`` below';
+  t('DS-379 a lone backtick in prose does not hide a real cell', dragCells('a stray ` here' + tail), 1);
+  t('DS-379 nor does the four-backtick form around three backticks', dragCells('write it as ```` ``` ```` here' + tail), 1);
+  t('DS-379 nor a run with no partner of its own length', dragCells('an unclosed `` run' + tail), 1);
+  t('DS-379 a span still hides a cell on its own line', dragCells('see ``_drag x.png_`` and `_drag y.png_`'), 0);
 
   t('EV row: a workflow file', JSON.stringify(parseEvidenceRow(['pr-evidence.yml'])), '{"workflow":"pr-evidence.yml"}');
   t('EV row: none is off', parseEvidenceRow(['none']), null);

@@ -617,6 +617,23 @@ const q3 = N.record({ word: 'psi', ticket: 'Q-3', action: 'done' });
 t('DS-378 AC5 an unreadable PR says its state could not be read, and is not marked done',
   `${q3.ok} ${/could not read PR #143's state from GitHub \(GraphQL: Could not resolve to a PullRequest \(143\)\), so it is not marked done and stays on your list\./.test(q3.line)} ${queueOf('psi').tickets['Q-3'].done_check} ${'Q-3' in psi()}`, 'false true undefined true');
 
+// ---- DS-379 AC3: a draft whose capture try could not take its screenshots names each screen and what
+// its worker said, whole, however long, and says what to do.
+const said379 = '[s-2-before.png: the settings route needs a signed-in admin and the seed has none; s-2-after.png: same, and the page 500s without one]';
+const capturePr = (pr, files, said) => { const s = stuckPr(pr, passed, { why: `${files.length} screenshot(s) still not taken after a capture try: ${files.join(', ')}${said ? `; the capture try said: ${said}` : ''}` }); return { ...s, pr_status: { ...s.pr_status, isDraft: true } }; };
+put('chi', { port: 5200, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'C-1': capturePr(151, ['s-2-before.png', 's-2-after.png'], said379),
+  'C-2': capturePr(152, ['a-after.png'], null),
+} });
+const chi = Object.fromEntries(N.collect({ word: 'chi' }).items.map((i) => [i.t.key, i]));
+t('DS-379 AC3 a stuck capture try says what to do', chi['C-1']?.need,
+  'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots. Take them and upload them to the PR; the next pass then takes it out of draft.');
+t('DS-379 AC3 its note names each screen and the worker\'s reason, whole', chi['C-1']?.note, `(Not taken: s-2-before.png, s-2-after.png. The capture try said: ${said379})`);
+const c1Line = cli('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
+t('DS-379 AC3 the listed line keeps the need and the note whole', c1Line.includes(`| ${chi['C-1'].need} ${chi['C-1'].note} |`), true);
+t('DS-379 AC3 one screen with nothing said still names it', `${chi['C-2']?.need} ${chi['C-2']?.note}`,
+  'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots. Take it and upload it to the PR; the next pass then takes it out of draft. (Not taken: a-after.png.)');
+
 // ---- DS-380: a parked ticket moved into the repo's other running batch, on that batch's base
 put('omega', { port: 3900, beat: 1, supervised: true, tickets: {
   'M-1': parked('A', 30, 'a worker cannot change its own base: please move it to batch F-1'),
@@ -660,7 +677,6 @@ og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
 const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
 t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
-
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

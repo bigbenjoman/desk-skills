@@ -28,6 +28,7 @@
 //     in <profile>.github-session.json instead, which Claude's Playwright MCP loads too)
 import { readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { dragCells } from './evidence.mjs';
 import { join } from 'node:path';
 import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, SCREENSHOT_FILE } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
@@ -149,7 +150,7 @@ try {
 
   const after = execFileSync('gh', ['pr', 'view', pr, '--repo', REPO, '--json', 'body', '-q', '.body'], { encoding: 'utf8' });
   const live = (after.match(/user-attachments\/assets/g) ?? []).length;
-  const left = (after.match(/_drag /g) ?? []).length;
+  const left = dragCells(after);
   console.log(`[upload] done: ${live} image(s) in the body, ${left} placeholder(s) left`);
   if (left) process.exitCode = 4;
 

@@ -278,8 +278,9 @@ export function personHold(t, n, redrafts = []) {
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
 // check build recorded at that head, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
-// evidence run recorded at that head, conflictUnreviewed, conflictReviewed (§3 pr-conflict-unreviewed
-// and -reviewed) }.
+// evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
+// the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
+// pr-conflict-unreviewed and -reviewed) }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -350,9 +351,16 @@ export function undraftCall(t, pr, cfg) {
     const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
+  const evidence = dragCells(pr.body) ? evidenceCall(pr, cfg) : null;
+  // Cells §4 Evidence workflow does not fill and whose file was never taken go to a capture worker
+  // (fix-tries.mjs captureTry); the person gets them only once its try is spent.
+  const missing = evidence ? [] : cfg.missingShots?.(pr.body) ?? [];
+  if (missing.length) {
+    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, `take ${missing.join(', ')} and upload them to #${n}`), call: 'capture', files: missing };
+  }
   const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
   if (unsent) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
-  if (dragCells(pr.body)) return evidenceCall(pr, cfg) ?? person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
+  if (dragCells(pr.body)) return evidence ?? person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
   if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
   if (cfg.perm === 'yes') return withCarried({ call: 'ready', why: null, note: null, verdict: read });

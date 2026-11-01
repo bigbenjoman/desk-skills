@@ -1849,6 +1849,7 @@ function fixSegs(f, running, wait = null) {
   const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
   if (f.kind === 'gaps') return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
+  if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
   return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${who} repairs it, try ${f.try} of ${f.of}`, null]];
 }
 

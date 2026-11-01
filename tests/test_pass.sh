@@ -1473,6 +1473,46 @@ check "DS-281 AC3 a clean re-review on the new head undrafts it" '[ "$(grep -c "
 check "DS-281 AC3 with one comment saying its review on that head was clean, quoting the verdict" \
   '[ "$(grep -c "^pr comment 721 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.222222222222.) is clean" "$T/gh-calls")" = 1 ] && grep -q "^> .sha=$H2 p0=0 p1=0 p2=0 deferred=0" "$T/gh-calls"'
 
+# ---- DS-379: a clean, green draft whose body has `_drag <file>_` cells with no screenshot file goes to a
+# capture worker, once; still missing after it, the person gets the screens and why. dragbody <n> <body>.
+dragbody(){ node -e 'const fs = require("fs"); const [f, b] = process.argv.slice(1); const j = JSON.parse(fs.readFileSync(f, "utf8")); j.body = b; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json" "$2"; }
+node -e 'const fs = require("fs"); const [a, b] = process.argv.slice(1); const row = "| `pr-ready` | Undraft PRs | `yes` | `yes` |";
+  fs.writeFileSync(b, fs.readFileSync(a, "utf8").replace(row, `${row}\n| \`pr-images\` | Upload PR screenshots | \`yes\` | \`yes\` |`));' "$T/config-r.md" "$T/config-s.md"
+export DESK_CONFIG="$T/config-s.md" DESK_QUEUE="$T/queue-s.json" DESK_AUTOPILOT_STATE="$T/state-s"
+mkdir -p "$T/state-s/logs" "$T/state-s/images/S-3"; : > "$T/state-s/images/S-3/s-3-after.png"
+q init s; q set-batch concurrency=5
+for k in 1 2 3; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=76$k" images_uploaded=none; frx "76$k" "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody "76$k" "Before | After
+_drag s-$k-before.png_ | _drag s-$k-after.png_"; done
+q set S-2 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"capture","what":"take 2 screenshot(s) never taken"}]' \
+  'fix={"try":1,"of":1,"pr":762,"head":"'"$H1"'","kind":"capture","what":"take 2","files":["s-2-before.png","s-2-after.png"],"finished":"x"}' \
+  'result.summary=pr=762 jira=Done said=s-2-before.png: the page needs a signed-in admin; s-2-after.png: same'
+# S-3: its worker took both, but config §3 pr-images was not yes when it finished, so they wait for the person.
+: > "$T/state-s/images/S-3/s-3-before.png"; q set S-3 images_uploaded=null images_reported=true
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-379 AC1 cells with no screenshot file send the draft to a capture worker, naming the files" \
+  '[ "$(field S-1 state)" = "\"triaged\"" ] && [ "$(field S-1 fix | jq -c "[.kind, .pr, .files]")" = "[\"capture\",761,[\"s-1-before.png\",\"s-1-after.png\"]]" ] && echo "$out" | grep -qF "capture try: S-1 requeued for PR #761 — take 2 screenshot(s) never taken: s-1-before.png, s-1-after.png"'
+check "DS-379 AC1 and nothing is put to the person, and it is not undrafted" \
+  '! echo "$out" | grep -q "S-1: DRAFT" && [ "$(field S-1 stuck)" = null ] && ! grep -q "^pr ready 761" "$T/gh-calls"'
+check "DS-379 AC1 the capture try is not one of the fix tries" '[ "$(field S-1 fix_tries | jq -c "[.[].kind]")" = "[\"capture\"]" ]'
+check "DS-379 AC3 still missing after the capture try, it is the person's, naming each screen and why" \
+  '[ "$(field S-2 state)" = "\"done\"" ] && [ "$(field S-2 stuck.why | jq -r .)" = "2 screenshot(s) still not taken after a capture try: s-2-before.png, s-2-after.png; the capture try said: s-2-before.png: the page needs a signed-in admin; s-2-after.png: same" ] && echo "$out" | grep -qF "S-2: STUCK — PR #762: 2 screenshot(s) still not taken"'
+check "DS-379 AC4 screenshots taken but not approved for upload wait for the person, as before" \
+  '[ "$(field S-3 state)" = "\"done\"" ] && [ "$(field S-3 fix)" = null ] && echo "$out" | grep -qF "S-3: DRAFT — PR #763 stays draft: its screenshots are not in the body yet (a \`_drag <file>_\` cell is left). Upload the screenshots to #763"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-379 AC1 the capture worker's task is to take them and print AUTOPILOT_IMAGES" \
+  'grep -q "^S-1 .*Your task is the capture try on PR #761.*print AUTOPILOT_IMAGES" "$T/spawns" && grep -q "^- s-1-after.png$" "$T/state-s/briefings/S-1.md"'
+# Its worker took both: the next pass uploads them into the body (the stub swaps the cells) and undrafts it.
+mkdir -p "$T/state-s/images/S-1"; : > "$T/state-s/images/S-1/s-1-before.png"; : > "$T/state-s/images/S-1/s-1-after.png"
+said1='[all taken] each at 1440 px wide, signed in as the seeded admin with the demo workspace selected, the onboarding banner dismissed and the side panel open, so the before and after frames line up row for row in the body'
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-1/" "AUTOPILOT_DONE: pr=761 jira=Done said=$said1" > "$T/state-s/logs/S-1.log"
+q set S-1 state=running session_id=gone; dragbody 761 "Before | After
+<img alt=\"s-1-before\" src=\"https://github.com/user-attachments/assets/1\"> | <img alt=\"s-1-after\" src=\"https://github.com/user-attachments/assets/2\">"
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-379 AC2 what the capture worker took is uploaded into the PR's body, and it leaves draft" \
+  'grep -qx "761 $T/state-s/images/S-1/" "$T/uploads" && [ "$(field S-1 images_uploaded)" = true ] && grep -q "^pr ready 761" "$T/gh-calls"'
+check "DS-379 AC3 what a capture worker said is kept whole, past the summary's 200 characters, even opening with a bracket" \
+  '[ "$(field S-1 state)" = "\"done\"" ] && [ "$(field S-1 result.done.said | jq -r .)" = "$said1" ] &&[ "$(field S-1 result.summary | jq -r . | wc -c | tr -d " ")" -le 201 ]'
+
 # ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
 # worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's
 # reviewed commit CA has main merged in (CB); C-2 has a commit of its own after CA.
