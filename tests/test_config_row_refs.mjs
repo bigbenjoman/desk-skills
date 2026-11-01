@@ -1,5 +1,5 @@
 // suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call)
-// covers: desk/bin/desk-env.mjs skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-autopilot/references/**
+// covers: desk/bin/desk-env.mjs skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-dev/** skills/desk-jira/** skills/desk-kiss/** skills/desk-autopilot/references/**
 // `desk-env get review-asks` prints §4 "What review here consistently asks for", one ask per line,
 // and exits 3 while it is TODO or still says "Not mined". Every file a worker reads names each §3b
 // and §4 row it mentions with the `desk-env get|list|cmds <id>` call that reads it, at or before the
@@ -43,8 +43,10 @@ t('AC3: a paragraph in place of the table is unset', get('').replace(/\s+/g, ' '
 t('AC3: a real ask beside a placeholder row prints only the ask', get('| `TODO` | `TODO` |\n| Keep diffs small | |\n'), 'Keep diffs small');
 
 // ---- AC2: worker-read files name §3b and §4 rows with their id ------------------------------
-// The files a worker loads: the skills desk-ticket routes it through, and the worker contract.
-const WORKER_FILES = ['skills/desk-ticket', 'skills/desk-review', 'skills/desk-pr', 'skills/desk-review-response']
+// The files a worker loads: the skills desk-ticket routes it through (desk-dev at Stage 4, desk-jira
+// at Stage 8), the one desk-review's simplicity finder reads (desk-kiss), and the worker contract.
+const WORKER_FILES = ['skills/desk-ticket', 'skills/desk-review', 'skills/desk-pr', 'skills/desk-review-response',
+  'skills/desk-dev', 'skills/desk-jira', 'skills/desk-kiss']
   .flatMap((d) => walk(join(ROOT, d)))
   .concat(readdirSync(join(ROOT, 'skills/desk-autopilot/references'))
     .filter((f) => /^(autopilot-)?worker-contract.*\.md$/.test(f)).map((f) => join(ROOT, 'skills/desk-autopilot/references', f)));

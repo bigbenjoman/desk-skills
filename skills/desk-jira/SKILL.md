@@ -20,6 +20,13 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
 A `TODO` in any row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`.
 
+An autopilot worker cannot read that file, so each row below is a `desk-env` read: §4 Tracker
+`desk-env get tracker`, Jira site `desk-env get jira-site`, Jira cloudId `desk-env get jira-cloudid`,
+Jira project `desk-env get jira-project`, Ticket key pattern `desk-env get ticket-pattern`, Priority
+`desk-env get jira-priority`, Other fields `desk-env get jira-other-fields`, Labels
+`desk-env list labels`, In-progress state `desk-env get in-progress-state`, Review state
+`desk-env get review-state` and Done state `desk-env get done-state`.
+
 - **§4 Tracker `none`: there is no tracker for this repo.** Say so and stop. Nothing below applies;
   a ticket in this repo is a plain description or a GitHub issue, which `desk-ticket` handles.
 - §4 Tracker has the site (`Jira site`), `Jira cloudId`, `Jira project` (key, name and the issue

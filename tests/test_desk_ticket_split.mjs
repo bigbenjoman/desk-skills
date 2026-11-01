@@ -38,6 +38,7 @@ const REWRITTEN = [
     'move the ticket to §4 Done state via', "**Green is the config's one definition**", 'Where §4 Vercel is set and', '§4 Env files from the main checkout',
     'Env files go in before §4 Install', 'any way other than the §4 Done state', '**Any shared-state mutation stops first**', 'new ticket in <§4 Jira project>',
     'without having run §4 Project subagents sync: they are all', 'while the ticket sits in §4 Review state', 'is the ticket still in §4 In-progress state',
+    'Assuming the §3b dev-server port is yours',
   ].map((s) => ['DS-405', s, 1]),
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
